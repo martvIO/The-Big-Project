@@ -7,15 +7,29 @@ from app.models.staff_user import StaffUser
 
 
 class StaffUsersRepository:
-    """Tenant-scoped: RLS restricts every query to the session's tenant context,
-    so no explicit tenant_id filter is needed (nor sufficient) for isolation."""
+    """Tenant-scoped via RLS (the session's tenant context). The explicit
+    tenant_id predicate is redundant defense-in-depth: it keeps the auth-critical
+    reads correct even if a future RLS regression (a missing FORCE, a policy typo,
+    an over-privileged role) slipped through."""
 
-    async def by_email(self, session: AsyncSession, email: str) -> StaffUser | None:
-        stmt = select(StaffUser).where(StaffUser.email == email, StaffUser.deleted_at.is_(None))
+    async def by_email(
+        self, session: AsyncSession, tenant_id: UUID, email: str
+    ) -> StaffUser | None:
+        stmt = select(StaffUser).where(
+            StaffUser.tenant_id == tenant_id,
+            StaffUser.email == email,
+            StaffUser.deleted_at.is_(None),
+        )
         return (await session.execute(stmt)).scalar_one_or_none()
 
-    async def by_id(self, session: AsyncSession, staff_id: UUID) -> StaffUser | None:
-        stmt = select(StaffUser).where(StaffUser.id == staff_id, StaffUser.deleted_at.is_(None))
+    async def by_id(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID
+    ) -> StaffUser | None:
+        stmt = select(StaffUser).where(
+            StaffUser.tenant_id == tenant_id,
+            StaffUser.id == staff_id,
+            StaffUser.deleted_at.is_(None),
+        )
         return (await session.execute(stmt)).scalar_one_or_none()
 
     async def insert(

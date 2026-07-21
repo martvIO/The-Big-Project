@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import UTC
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
@@ -66,7 +67,7 @@ def test_login_lifecycle_and_audit(app_role_url: str) -> None:
         asyncio.run(engine.dispose())
 
 
-def test_wrong_and_unknown_both_raise_invalid_credentials(app_role_url: str) -> None:
+def test_wrong_and_unknown_both_raise_and_audit_login_failed(app_role_url: str) -> None:
     engine = _engine(app_role_url)
     factory = _factory(engine)
     service = AuthService(factory, SETTINGS)
@@ -77,6 +78,50 @@ def test_wrong_and_unknown_both_raise_invalid_credentials(app_role_url: str) -> 
             asyncio.run(service.login(TENANT_A, email, "wrong"))
         with pytest.raises(InvalidCredentialsError):
             asyncio.run(service.login(TENANT_A, "ghost@nowhere.example", "whatever"))
+
+        # The failure audit must COMMIT despite the raise — it's the durable
+        # brute-force record. Both the wrong-password and unknown-email paths log.
+        async def actions() -> list[str]:
+            async with tenant_session(factory, TENANT_A) as session:
+                return await AuditLogRepository().list_actions(session)
+
+        recorded = asyncio.run(actions())
+        assert recorded.count("login_failed") == 2
+        assert "login" not in recorded
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_soft_deleted_staff_cannot_authenticate(app_role_url: str) -> None:
+    from datetime import datetime
+
+    from sqlalchemy import update
+
+    from app.models.staff_user import StaffUser
+
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = AuthService(factory, SETTINGS)
+    try:
+        email = f"owner-{uuid.uuid4().hex[:8]}@bella.example"
+        staff_id = asyncio.run(_seed_owner(factory, TENANT_A, email))
+        # Establish a live session, then soft-delete the owner underneath it.
+        _, token = asyncio.run(service.login(TENANT_A, email, "s3cret-owner-pw"))
+
+        async def soft_delete() -> None:
+            async with tenant_session(factory, TENANT_A) as session:
+                await session.execute(
+                    update(StaffUser)
+                    .where(StaffUser.id == staff_id)
+                    .values(deleted_at=datetime.now(UTC))
+                )
+
+        asyncio.run(soft_delete())
+
+        # New login rejected, and the existing session no longer resolves.
+        with pytest.raises(InvalidCredentialsError):
+            asyncio.run(service.login(TENANT_A, email, "s3cret-owner-pw"))
+        assert asyncio.run(service.resolve_session(TENANT_A, token)) is None
     finally:
         asyncio.run(engine.dispose())
 

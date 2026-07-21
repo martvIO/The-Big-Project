@@ -16,38 +16,45 @@ def _limiter(clock: FakeClock) -> FixedWindowRateLimiter:
     return FixedWindowRateLimiter(max_attempts=3, window_seconds=900, clock=clock)
 
 
-def test_allows_up_to_the_limit_then_blocks() -> None:
+def test_blocks_only_after_max_failures() -> None:
     clock = FakeClock()
     limiter = _limiter(clock)
-    assert limiter.check_and_increment("k") is True
-    assert limiter.check_and_increment("k") is True
-    assert limiter.check_and_increment("k") is True
-    assert limiter.check_and_increment("k") is False
+    for _ in range(3):
+        assert limiter.is_blocked("k") is False
+        limiter.record_failure("k")
+    assert limiter.is_blocked("k") is True
+
+
+def test_reads_do_not_increment() -> None:
+    clock = FakeClock()
+    limiter = _limiter(clock)
+    for _ in range(10):
+        assert limiter.is_blocked("k") is False  # never recorded → never blocks
 
 
 def test_window_expiry_resets_the_counter() -> None:
     clock = FakeClock()
     limiter = _limiter(clock)
     for _ in range(3):
-        limiter.check_and_increment("k")
-    assert limiter.check_and_increment("k") is False
+        limiter.record_failure("k")
+    assert limiter.is_blocked("k") is True
     clock.advance(901)
-    assert limiter.check_and_increment("k") is True
+    assert limiter.is_blocked("k") is False
 
 
 def test_keys_are_independent() -> None:
     clock = FakeClock()
     limiter = _limiter(clock)
     for _ in range(3):
-        limiter.check_and_increment("a")
-    assert limiter.check_and_increment("a") is False
-    assert limiter.check_and_increment("b") is True
+        limiter.record_failure("a")
+    assert limiter.is_blocked("a") is True
+    assert limiter.is_blocked("b") is False
 
 
 def test_reset_clears_a_key() -> None:
     clock = FakeClock()
     limiter = _limiter(clock)
     for _ in range(3):
-        limiter.check_and_increment("k")
+        limiter.record_failure("k")
     limiter.reset("k")
-    assert limiter.check_and_increment("k") is True
+    assert limiter.is_blocked("k") is False

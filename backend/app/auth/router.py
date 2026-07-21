@@ -26,6 +26,19 @@ def _staff_response(staff: StaffContext) -> StaffResponse:
     )
 
 
+def _client_ip(request: Request, trust_forwarded_for: bool) -> str | None:
+    # Per-IP limiting is only meaningful with the REAL client IP. Without a trusted
+    # proxy that appends XFF, request.client.host is the proxy → a global bucket, so
+    # we skip the per-IP key entirely (None). With one trusted proxy hop, the last
+    # XFF entry is the client the proxy saw.
+    if not trust_forwarded_for:
+        return None
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[-1].strip()
+    return request.client.host if request.client else None
+
+
 @router.post("/login")
 async def login(
     request: Request,
@@ -37,18 +50,26 @@ async def login(
     tenant = get_current_tenant(request)
     limiter: FixedWindowRateLimiter = request.app.state.login_rate_limiter
     email = body.email.lower()
-    client_ip = request.client.host if request.client else "unknown"
-    # Both keys must have headroom — an attacker can't exhaust one victim's budget
-    # from many IPs, nor spray many accounts from one IP.
-    for key in (f"t:{tenant.id}:e:{email}", f"ip:{client_ip}"):
-        if not limiter.check_and_increment(key):
-            raise RateLimitedError
+
+    # Per-(tenant,email) is the always-on brute-force control; the per-IP key is
+    # extra and only present when we can trust a real client IP.
+    keys = [f"t:{tenant.id}:e:{email}"]
+    ip = _client_ip(request, settings.trust_forwarded_for)
+    if ip is not None:
+        keys.append(f"ip:{ip}")
+
+    if any(limiter.is_blocked(key) for key in keys):
+        raise RateLimitedError
 
     try:
         staff, token = await service.login(tenant.id, email, body.password)
     except InvalidCredentialsError:
+        # Only failures count toward the limit — successes never throttle anyone.
+        for key in keys:
+            limiter.record_failure(key)
         raise
-    limiter.reset(f"t:{tenant.id}:e:{email}")
+
+    limiter.reset(keys[0])
     set_session_cookie(
         response, token, secure=settings.secure_cookies, max_age=settings.session_ttl_seconds
     )

@@ -29,9 +29,12 @@ class SessionsRepository:
         return row
 
     async def active_by_token_hash(
-        self, session: AsyncSession, token_hash: str, now: datetime
+        self, session: AsyncSession, tenant_id: UUID, token_hash: str, now: datetime
     ) -> Session | None:
+        # Explicit tenant_id predicate = defense-in-depth beside RLS on the
+        # session-resolution path (the cross-tenant boundary that matters most).
         stmt = select(Session).where(
+            Session.tenant_id == tenant_id,
             Session.token_hash == token_hash,
             Session.deleted_at.is_(None),
             Session.expires_at > now,

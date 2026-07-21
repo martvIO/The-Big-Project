@@ -57,7 +57,13 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX idx_sessions_token_hash ON sessions(token_hash)")
+    # Active-session lookup (hot path): token_hash where not soft-deleted.
+    op.execute(
+        "CREATE INDEX idx_sessions_token_hash_active "
+        "ON sessions(token_hash) WHERE deleted_at IS NULL"
+    )
+    # Supports a future expired/revoked-session sweep job.
+    op.execute("CREATE INDEX idx_sessions_expires_at ON sessions(expires_at)")
     op.execute(_updated_at_trigger("sessions"))
 
     op.execute(
