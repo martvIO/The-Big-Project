@@ -71,23 +71,25 @@ def test_wrong_and_unknown_both_raise_and_audit_login_failed(app_role_url: str) 
     engine = _engine(app_role_url)
     factory = _factory(engine)
     service = AuthService(factory, SETTINGS)
+    # A fresh tenant so its audit log holds only this test's rows (the container
+    # DB is shared across the session and audit_log is never truncated).
+    tenant = uuid.uuid4()
     try:
         email = f"owner-{uuid.uuid4().hex[:8]}@bella.example"
-        asyncio.run(_seed_owner(factory, TENANT_A, email))
+        asyncio.run(_seed_owner(factory, tenant, email))
         with pytest.raises(InvalidCredentialsError):
-            asyncio.run(service.login(TENANT_A, email, "wrong"))
+            asyncio.run(service.login(tenant, email, "wrong"))
         with pytest.raises(InvalidCredentialsError):
-            asyncio.run(service.login(TENANT_A, "ghost@nowhere.example", "whatever"))
+            asyncio.run(service.login(tenant, "ghost@nowhere.example", "whatever"))
 
         # The failure audit must COMMIT despite the raise — it's the durable
         # brute-force record. Both the wrong-password and unknown-email paths log.
         async def actions() -> list[str]:
-            async with tenant_session(factory, TENANT_A) as session:
+            async with tenant_session(factory, tenant) as session:
                 return await AuditLogRepository().list_actions(session)
 
         recorded = asyncio.run(actions())
-        assert recorded.count("login_failed") == 2
-        assert "login" not in recorded
+        assert recorded == ["login_failed", "login_failed"]
     finally:
         asyncio.run(engine.dispose())
 
