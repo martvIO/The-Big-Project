@@ -72,7 +72,9 @@ def test_suspended_and_deleted_tenants_are_404(app_role_url: str) -> None:
 def test_reserved_slug_is_404_even_with_a_row(app_role_url: str) -> None:
     engine, repo, app = _setup(app_role_url)
     try:
-        # Suppress: a previous test in this container session may have inserted it.
+        # "admin" is a fixed slug (from RESERVED_SLUGS), so re-running just this
+        # test against a still-warm container session would collide on the
+        # partial unique index — suppress makes the test re-runnable.
         with contextlib.suppress(IntegrityError):
             asyncio.run(repo.insert(slug="admin", name="Sneaky"))
         with TestClient(app, base_url="http://admin.localtest.me") as client:

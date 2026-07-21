@@ -2,7 +2,7 @@ import dataclasses
 from typing import Any, Protocol
 from uuid import UUID
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
@@ -11,7 +11,9 @@ from app.tenancy.slugs import extract_slug, is_valid_slug
 
 # Host-agnostic paths: infra probes hit /health by IP; the OpenAPI schema feeds
 # api-client generation. Docs exposure is revisited at the Feature 21 hardening gate.
-EXEMPT_PATHS = frozenset({"/health", "/openapi.json", "/docs", "/redoc"})
+# /docs/oauth2-redirect is auto-registered by FastAPI whenever docs are enabled —
+# it must stay in sync with this set or Swagger's Authorize flow silently breaks.
+EXEMPT_PATHS = frozenset({"/health", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"})
 
 # One body for every failure kind (unknown, suspended, deleted, reserved, apex) —
 # responses must not reveal whether a slug exists.
@@ -57,9 +59,15 @@ class TenantResolutionMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class TenantNotResolvedError(Exception):
+    """A tenant-scoped route ran without a resolved tenant (route mounted on an
+    exempt path). create_app registers a handler converting this to the same
+    generic 404 as every other resolution failure — the anti-enumeration
+    invariant holds even for this misconfiguration path."""
+
+
 def get_current_tenant(request: Request) -> TenantContext:
     tenant = getattr(request.state, "tenant", None)
     if tenant is None:
-        # Only reachable if a tenant-scoped route is mounted on an exempt path.
-        raise HTTPException(status_code=404, detail="tenant_not_resolved")
+        raise TenantNotResolvedError
     return tenant

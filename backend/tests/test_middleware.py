@@ -5,7 +5,11 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.tenancy.middleware import TenantContext, get_current_tenant
+from app.tenancy.middleware import (
+    TenantContext,
+    TenantNotResolvedError,
+    get_current_tenant,
+)
 
 BELLA_ID = uuid.uuid4()
 
@@ -87,6 +91,25 @@ def test_exempt_paths_ignore_host() -> None:
         assert client.get("/health").status_code == 200
         assert client.get("/openapi.json").status_code == 200
     assert resolver.calls == []
+
+
+def test_backstop_returns_the_same_generic_body() -> None:
+    """A tenant-scoped handler running without a resolved tenant must produce
+    the identical 404 body — the anti-enumeration invariant has no exceptions."""
+    resolver = RecordingResolver()
+    app = _probe_app(resolver)
+
+    @app.get("/boom")
+    async def boom() -> dict[str, str]:
+        raise TenantNotResolvedError
+
+    with TestClient(
+        app, base_url="http://bella.localtest.me", raise_server_exceptions=False
+    ) as client:
+        resp = client.get("/boom")
+        reference = client.get("/whoami", headers={"host": "nosuch.localtest.me"})
+    assert resp.status_code == 404
+    assert resp.json() == reference.json()
 
 
 def test_host_header_with_port_and_case_resolves() -> None:

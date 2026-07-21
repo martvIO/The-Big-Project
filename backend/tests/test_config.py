@@ -22,8 +22,16 @@ def test_non_dev_without_database_url_fails_fast() -> None:
 
 def test_non_dev_with_database_url_is_used_verbatim() -> None:
     url = "postgresql+asyncpg://app:secret@db.internal:5432/boutique"
-    settings = Settings(app_env="production", database_url=url)
+    settings = Settings(app_env="production", database_url=url, base_domain="ourbrand.co.il")
     assert settings.effective_database_url == url
+
+
+def test_non_dev_with_dev_base_domain_fails_fast() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            app_env="production",
+            database_url="postgresql+asyncpg://app:secret@db.internal:5432/boutique",
+        )
 
 
 def test_unknown_app_env_rejected() -> None:

@@ -30,7 +30,9 @@ def extract_slug(host: str | None, base_domain: str) -> str | None:
     """Leftmost DNS label of `<label>.<base_domain>` — the ONLY source of tenant
     identity in the platform. Anything else (apex, deeper nesting, foreign
     domains, IP/IPv6 literals, missing header) returns None and fails closed."""
-    if not host or "]" in host:
+    # ASCII-only: rejects IDN/homograph hosts outright, and blocks Unicode
+    # case-folding surprises (e.g. U+212A "KELVIN SIGN".lower() == "k").
+    if not host or "]" in host or not host.isascii():
         return None
     hostname = host.rsplit(":", 1)[0] if ":" in host else host
     hostname = hostname.lower().rstrip(".")
