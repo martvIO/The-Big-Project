@@ -1,0 +1,216 @@
+import asyncio
+import uuid
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from app.auth.service import AuthService, InvalidCredentialsError
+from app.core.config import Settings
+from app.platform.service import ProvisioningService
+
+pytestmark = pytest.mark.db
+
+SETTINGS = Settings(app_env="dev", session_ttl_seconds=3600)
+
+
+def _engine(app_role_url: str) -> AsyncEngine:
+    return create_async_engine(app_role_url, poolclass=NullPool)
+
+
+def _factory(engine: AsyncEngine) -> async_sessionmaker:
+    return async_sessionmaker(engine, expire_on_commit=False)
+
+
+def _slug() -> str:
+    return f"shop-{uuid.uuid4().hex[:8]}"
+
+
+def test_provision_creates_a_loginable_owner(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    auth = AuthService(factory, SETTINGS)
+    try:
+        slug = _slug()
+        result = asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="Bella Bridal",
+                owner_email="owner@bella.example",
+                owner_password="s3cret-owner-pw",
+                operator="tester",
+            )
+        )
+        assert result.ok and result.tenant_id is not None
+
+        # End-to-end: the freshly provisioned owner can authenticate.
+        staff, _ = asyncio.run(
+            auth.login(result.tenant_id, "owner@bella.example", "s3cret-owner-pw")
+        )
+        assert staff.email == "owner@bella.example"
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_provision_rejects_reserved_and_invalid_slugs(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    try:
+        for bad in ("admin", "www", "Bella", "bad_slug"):
+            result = asyncio.run(
+                provisioning.provision(
+                    slug=bad,
+                    name="X",
+                    owner_email="o@x.example",
+                    owner_password="pw",
+                    operator="tester",
+                )
+            )
+            assert result.ok is False
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_provision_rejects_duplicate_slug(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    try:
+        slug = _slug()
+        first = asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="First",
+                owner_email="a@x.example",
+                owner_password="pw",
+                operator="t",
+            )
+        )
+        assert first.ok
+        second = asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="Second",
+                owner_email="b@x.example",
+                owner_password="pw",
+                operator="t",
+            )
+        )
+        assert second.ok is False
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_suspend_flips_status_and_list_reflects_it(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    try:
+        slug = _slug()
+        asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="Paused",
+                owner_email="o@x.example",
+                owner_password="pw",
+                operator="t",
+            )
+        )
+        assert asyncio.run(provisioning.suspend(slug=slug, operator="t")).ok
+
+        rows = asyncio.run(provisioning.list_tenants())
+        match = [r for r in rows if r.slug == slug]
+        assert match and match[0].status == "suspended"
+
+        assert asyncio.run(provisioning.suspend(slug=_slug(), operator="t")).ok is False
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_reset_password_changes_credentials(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    auth = AuthService(factory, SETTINGS)
+    try:
+        slug = _slug()
+        result = asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="Shop",
+                owner_email="owner@shop.example",
+                owner_password="old-pw",
+                operator="t",
+            )
+        )
+        tenant_id = result.tenant_id
+        assert tenant_id is not None
+
+        reset = asyncio.run(
+            provisioning.reset_owner_password(
+                slug=slug,
+                owner_email="owner@shop.example",
+                new_password="brand-new-pw",
+                operator="t",
+            )
+        )
+        assert reset.ok
+
+        with pytest.raises(InvalidCredentialsError):
+            asyncio.run(auth.login(tenant_id, "owner@shop.example", "old-pw"))
+        staff, _ = asyncio.run(auth.login(tenant_id, "owner@shop.example", "brand-new-pw"))
+        assert staff.email == "owner@shop.example"
+
+        assert (
+            asyncio.run(
+                provisioning.reset_owner_password(
+                    slug=_slug(),
+                    owner_email="nobody@x.example",
+                    new_password="pw",
+                    operator="t",
+                )
+            ).ok
+            is False
+        )
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_each_state_change_writes_platform_audit(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    try:
+        slug = _slug()
+        r = asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="Audited",
+                owner_email="o@x.example",
+                owner_password="pw",
+                operator="opsy",
+            )
+        )
+        asyncio.run(provisioning.suspend(slug=slug, operator="opsy"))
+
+        async def audit_rows() -> list[tuple[str, str]]:
+            async with factory() as session:
+                res = await session.execute(
+                    text(
+                        "SELECT action, operator FROM platform_audit_log "
+                        "WHERE target_tenant_id = :tid ORDER BY created_at"
+                    ),
+                    {"tid": str(r.tenant_id)},
+                )
+                return [(row[0], row[1]) for row in res.all()]
+
+        rows = asyncio.run(audit_rows())
+        actions = [a for a, _ in rows]
+        assert "tenant_provisioned" in actions
+        assert "tenant_suspended" in actions
+        assert all(op == "opsy" for _, op in rows)
+    finally:
+        asyncio.run(engine.dispose())

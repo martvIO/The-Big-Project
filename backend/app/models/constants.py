@@ -15,3 +15,10 @@ class AuditAction(StrEnum):
     LOGIN = "login"
     LOGIN_FAILED = "login_failed"
     LOGOUT = "logout"
+
+
+class PlatformAuditAction(StrEnum):
+    TENANT_PROVISIONED = "tenant_provisioned"
+    TENANT_PROVISION_FAILED = "tenant_provision_failed"
+    TENANT_SUSPENDED = "tenant_suspended"
+    OWNER_PASSWORD_RESET = "owner_password_reset"
