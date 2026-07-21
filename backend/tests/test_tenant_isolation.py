@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.db.rls import enable_tenant_rls
+from app.db.rls import TENANT_ID_SETTING, enable_tenant_rls
 from app.db.tenant import tenant_connection
 
 pytestmark = pytest.mark.db
@@ -49,14 +49,17 @@ def probe_table(migrated_db: str, run_sql: Callable[[str, list[str]], None]) -> 
 async def test_app_role_is_not_superuser_or_table_owner(
     app_role_url: str, probe_table: None
 ) -> None:
-    """Guard against a vacuous pass: superusers and owners can bypass RLS."""
+    """Guard against a vacuous pass: superusers, BYPASSRLS roles, and owners
+    can all bypass RLS."""
     engine = create_async_engine(app_role_url)
     try:
         async with engine.connect() as conn:
-            is_super = await conn.execute(
-                text("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+            flags = await conn.execute(
+                text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
             )
-            assert is_super.scalar_one() is False
+            rolsuper, rolbypassrls = flags.one()
+            assert rolsuper is False
+            assert rolbypassrls is False
             owner = await conn.execute(
                 text("SELECT tableowner FROM pg_tables WHERE tablename = 'rls_probe'")
             )
@@ -128,3 +131,100 @@ async def test_write_for_own_tenant_is_allowed(app_role_url: str, probe_table: N
     finally:
         await engine.dispose()
     assert "a-ok" not in notes_b
+
+
+async def test_update_for_other_tenant_is_a_noop(app_role_url: str, probe_table: None) -> None:
+    """USING hides B's rows from A's UPDATE — 0 rows affected, B's data intact."""
+    engine = create_async_engine(app_role_url)
+    try:
+        async with tenant_connection(engine, TENANT_A) as conn:
+            result = await conn.execute(
+                text("UPDATE rls_probe SET note = 'defaced' WHERE tenant_id = :tid"),
+                {"tid": str(TENANT_B)},
+            )
+            assert result.rowcount == 0
+        async with tenant_connection(engine, TENANT_B) as conn:
+            notes_b = (await conn.execute(text("SELECT note FROM rls_probe"))).scalars().all()
+    finally:
+        await engine.dispose()
+    assert "defaced" not in notes_b
+    assert "b-1" in notes_b
+
+
+async def test_delete_for_other_tenant_is_a_noop(app_role_url: str, probe_table: None) -> None:
+    """A cannot destroy B's data: DELETE against invisible rows affects 0 rows."""
+    engine = create_async_engine(app_role_url)
+    try:
+        async with tenant_connection(engine, TENANT_A) as conn:
+            result = await conn.execute(
+                text("DELETE FROM rls_probe WHERE tenant_id = :tid"),
+                {"tid": str(TENANT_B)},
+            )
+            assert result.rowcount == 0
+        async with tenant_connection(engine, TENANT_B) as conn:
+            notes_b = (await conn.execute(text("SELECT note FROM rls_probe"))).scalars().all()
+    finally:
+        await engine.dispose()
+    assert "b-1" in notes_b
+
+
+async def test_reparenting_own_row_to_other_tenant_is_rejected(
+    app_role_url: str, probe_table: None
+) -> None:
+    """WITH CHECK also governs UPDATE's new values: A cannot push a row into B."""
+    engine = create_async_engine(app_role_url)
+    try:
+        with pytest.raises(DBAPIError):
+            async with tenant_connection(engine, TENANT_A) as conn:
+                await conn.execute(
+                    text("UPDATE rls_probe SET tenant_id = :other WHERE note = 'a-1'"),
+                    {"other": str(TENANT_B)},
+                )
+    finally:
+        await engine.dispose()
+
+
+async def test_garbage_context_fails_loudly_not_open(app_role_url: str, probe_table: None) -> None:
+    """A non-UUID context that somehow bypassed the typed helper must error the
+    query on the ::uuid cast (fail closed) — never fall back to showing rows."""
+    engine = create_async_engine(app_role_url)
+    try:
+        with pytest.raises(DBAPIError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("SELECT set_config(:name, 'not-a-uuid', true)"),
+                    {"name": TENANT_ID_SETTING},
+                )
+                await conn.execute(text("SELECT count(*) FROM rls_probe"))
+    finally:
+        await engine.dispose()
+
+
+async def test_every_tenant_id_table_has_forced_rls(migrated_db: str, probe_table: None) -> None:
+    """Makes the 'secure every tenant table via enable_tenant_rls' promise
+    enforceable rather than conventional: any table carrying a tenant_id column
+    without FORCEd RLS fails this suite."""
+    engine = create_async_engine(migrated_db)
+    try:
+        async with engine.connect() as conn:
+            missing = (
+                (
+                    await conn.execute(
+                        text(
+                            """
+                            SELECT c.relname FROM pg_class c
+                            JOIN pg_attribute a ON a.attrelid = c.oid
+                            WHERE a.attname = 'tenant_id'
+                              AND c.relkind = 'r'
+                              AND NOT a.attisdropped
+                              AND NOT c.relforcerowsecurity
+                            """
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    finally:
+        await engine.dispose()
+    assert missing == []

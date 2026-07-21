@@ -9,7 +9,11 @@ from app.models.tenant import Tenant
 
 class TenantsRepository:
     """Platform-scoped repository — the tenants table has no tenant_id and no RLS.
-    updated_at is maintained by the DB trigger, never set here."""
+    updated_at is maintained by the DB trigger, never set here.
+
+    Requires a session factory built with expire_on_commit=False (as
+    get_session_factory() provides): methods return ORM entities after their
+    transaction commits, which would otherwise raise DetachedInstanceError."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory

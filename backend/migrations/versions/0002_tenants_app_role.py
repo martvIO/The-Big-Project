@@ -68,6 +68,12 @@ def upgrade() -> None:
     )
     op.execute("GRANT USAGE ON SCHEMA public TO app_user")
     op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user")
+    # Least privilege: the app must never touch Alembic's bookkeeping table.
+    op.execute("REVOKE ALL ON alembic_version FROM app_user")
+    # CAVEAT: default privileges attach to the role RUNNING this migration, not to
+    # the schema. They only cover tables later created by that same role — a table
+    # created out-of-band (different deploy role, manual DBA DDL) needs an explicit
+    # GRANT ... TO app_user or the app gets 'permission denied' at runtime.
     op.execute(
         """
         ALTER DEFAULT PRIVILEGES IN SCHEMA public

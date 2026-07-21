@@ -10,6 +10,8 @@ DEV_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/boutiq
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # "dev" default keeps local ergonomics; the runtime backstop for a
+    # misconfigured deployment is verify_database_role() at app startup.
     app_env: Literal["dev", "staging", "production"] = "dev"
     database_url: str | None = None
     app_version: str = "0.1.0"

@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.db.repositories.tenants import TenantsRepository
+from app.models.constants import TenantStatus
 
 pytestmark = pytest.mark.db
 
@@ -23,7 +24,7 @@ async def test_insert_returns_server_defaults(app_role_url: str) -> None:
     try:
         tenant = await repo.insert(slug=_unique_slug("bella"), name="Bella Bridal")
         assert tenant.id is not None
-        assert tenant.status == "active"
+        assert tenant.status == TenantStatus.ACTIVE
         assert tenant.settings == {}
         assert tenant.created_at is not None
         assert tenant.deleted_at is None
@@ -76,6 +77,24 @@ async def test_duplicate_active_slug_rejected(app_role_url: str) -> None:
         await repo.insert(slug=slug, name="One")
         with pytest.raises(IntegrityError):
             await repo.insert(slug=slug, name="Two")
+    finally:
+        await engine.dispose()
+
+
+async def test_list_active_excludes_suspended_and_deleted(app_role_url: str) -> None:
+    engine, repo = _make(app_role_url)
+    try:
+        marker = uuid.uuid4().hex[:8]
+        active = await repo.insert(slug=f"active-{marker}", name="Active")
+        suspended = await repo.insert(slug=f"susp-{marker}", name="Suspended")
+        deleted = await repo.insert(slug=f"del-{marker}", name="Deleted")
+        await repo.suspend(suspended.id)
+        await repo.soft_delete(deleted.id)
+
+        listed_ids = {tenant.id for tenant in await repo.list_active()}
+        assert active.id in listed_ids
+        assert suspended.id not in listed_ids
+        assert deleted.id not in listed_ids
     finally:
         await engine.dispose()
 

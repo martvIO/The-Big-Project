@@ -27,6 +27,8 @@ make lint         # ruff + mypy + oxlint + typecheck
 
 Backend env: copy `backend/.env.example` → `backend/.env` (never commit real `.env`).
 
+**DB tests run as a non-owner role on purpose.** The test harness provisions a `boutique_app` login role (member of the `app_user` group from migration 0002) and runs the isolation suite as it — not as the container superuser. Superusers and table owners bypass row-level security unconditionally, so testing as one would make every isolation assertion vacuously pass. The suite asserts this about its own role, and the app refuses to start outside dev if its role could bypass RLS.
+
 ## Repo layout
 
 ```
