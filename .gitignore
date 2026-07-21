@@ -83,8 +83,7 @@ cover/
 profile_default/
 ipython_config.py
 
-# pyenv
-.python-version
+# pyenv — NOTE: backend/.python-version IS tracked (uv pin)
 
 # pipenv
 Pipfile.lock
