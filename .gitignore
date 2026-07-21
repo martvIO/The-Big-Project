@@ -318,3 +318,6 @@ config/local.*
 # Monorepo build artifacts (if using Turborepo/Nx/etc.)
 .turbo/
 .nx/cache
+
+# Spartan AI config (contains API keys)
+.spartan/ai.env
