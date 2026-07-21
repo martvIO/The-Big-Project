@@ -5,7 +5,9 @@ from fastapi import FastAPI
 
 from app.api.routes.health import router as health_router
 from app.core.config import get_settings
-from app.db.session import get_engine, verify_database_role
+from app.db.session import get_engine, get_session_factory, verify_database_role
+from app.tenancy.middleware import TenantResolutionMiddleware, TenantResolver
+from app.tenancy.resolver import RepositoryTenantResolver
 
 
 @asynccontextmanager
@@ -17,11 +19,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-def create_app() -> FastAPI:
+def create_app(resolver: TenantResolver | None = None) -> FastAPI:
+    settings = get_settings()
     app = FastAPI(
         title="Boutique Platform API",
-        version=get_settings().app_version,
+        version=settings.app_version,
         lifespan=lifespan,
+    )
+    if resolver is None:
+        resolver = RepositoryTenantResolver(get_session_factory())
+    app.add_middleware(
+        TenantResolutionMiddleware,
+        resolver=resolver,
+        base_domain=settings.base_domain,
     )
     app.include_router(health_router)
     return app

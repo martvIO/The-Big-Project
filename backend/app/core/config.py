@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     app_env: Literal["dev", "staging", "production"] = "dev"
     database_url: str | None = None
     app_version: str = "0.1.0"
+    # {slug}.localtest.me resolves to 127.0.0.1 — no /etc/hosts editing in dev.
+    # Staging/production set the real platform domain via BASE_DOMAIN.
+    base_domain: str = "localtest.me"
 
     @model_validator(mode="after")
     def _require_database_url_outside_dev(self) -> Self:

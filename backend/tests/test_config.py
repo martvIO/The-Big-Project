@@ -4,6 +4,11 @@ from pydantic import ValidationError
 from app.core.config import Settings
 
 
+def test_base_domain_defaults_to_local_dev_domain() -> None:
+    settings = Settings(app_env="dev", database_url=None)
+    assert settings.base_domain == "localtest.me"
+
+
 def test_dev_defaults_to_localhost_database() -> None:
     settings = Settings(app_env="dev", database_url=None)
     assert settings.effective_database_url.startswith("postgresql+asyncpg://")
