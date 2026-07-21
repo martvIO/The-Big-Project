@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     # Staging/production set the real platform domain via BASE_DOMAIN.
     base_domain: str = "localtest.me"
 
+    login_max_attempts: int = 5
+    login_window_seconds: int = 900
+    session_ttl_seconds: int = 60 * 60 * 12
+
+    @property
+    def secure_cookies(self) -> bool:
+        return self.app_env != "dev"
+
     @model_validator(mode="after")
     def _require_database_url_outside_dev(self) -> Self:
         # A non-dev deployment missing DATABASE_URL must fail fast — never
