@@ -44,6 +44,7 @@ Staging environment (Postgres, S3 bucket, secrets), wildcard DNS + ACM/TLS for t
 
 ### Feature 3: Tenant core + RLS isolation harness (M)
 `tenants` table (slug, status, settings JSONB), house DB conventions (UUID PKs, TEXT, TIMESTAMPTZ, soft delete, no FK constraints). Every request transaction runs `SET LOCAL app.tenant_id`; app connects as a non-owner role with `FORCE ROW LEVEL SECURITY` policies on all tenant tables; repository base injects the tenant filter. Delivers the **permanent CI cross-tenant isolation suite** — blocking from this feature onward.
+**Security-review advisories from Feature 1 (must be honored here):** (a) migrations must create a non-superuser, non-owner `app` role and dev/tests must connect through it — superusers bypass RLS unconditionally, so isolation tests running as the Testcontainers superuser would be vacuous; (b) make `DATABASE_URL` required (no localhost default) outside a dev environment flag so misconfigured deployments fail fast instead of silently targeting localhost as superuser.
 
 ### Feature 4: Subdomain routing & tenant resolution (S)
 Middleware extracts the leftmost host label → resolves `tenants.slug` via **direct indexed DB lookup** (Redis cache deferred to E5 #6 — premature at pilot traffic; middleware interface designed so the cache slots in later) → binds tenant to request context; tenant is never accepted from client input. Reserved-slug list (www, api, admin, app…). Unknown host → 404/marketing page. Local dev via `{slug}.localtest.me`.

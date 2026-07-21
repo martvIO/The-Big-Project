@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -60,6 +63,8 @@ jobs:
 
   audit:
     name: Dependency audits (warn-only)
+    # warn-only until the E4 ship gate flips this to blocking
+    # (.planning/security-checklist-v1.md → "Dependency scanning green in CI")
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -75,4 +80,4 @@ jobs:
           package_json_file: frontend/package.json
       - name: pnpm audit (frontend)
         working-directory: frontend
-        run: pnpm audit --prod
+        run: pnpm audit
