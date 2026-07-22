@@ -27,6 +27,8 @@ make lint         # ruff + mypy + oxlint + typecheck
 
 Backend env: copy `backend/.env.example` → `backend/.env` (never commit real `.env`).
 
+**Tenant subdomains in dev**: the API resolves boutiques from the hostname. `*.localtest.me` resolves to `127.0.0.1`, so after inserting a tenant with slug `bella`, browse `http://bella.localtest.me:8000/` — no `/etc/hosts` editing. Unknown, suspended, deleted, and reserved subdomains all return the same generic 404. `BASE_DOMAIN` env sets the real platform domain in staging/production.
+
 **DB tests run as a non-owner role on purpose.** The test harness provisions a `boutique_app` login role (member of the `app_user` group from migration 0002) and runs the isolation suite as it — not as the container superuser. Superusers and table owners bypass row-level security unconditionally, so testing as one would make every isolation assertion vacuously pass. The suite asserts this about its own role, and the app refuses to start outside dev if its role could bypass RLS.
 
 ## Repo layout

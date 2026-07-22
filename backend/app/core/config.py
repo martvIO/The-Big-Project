@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     app_env: Literal["dev", "staging", "production"] = "dev"
     database_url: str | None = None
     app_version: str = "0.1.0"
+    # {slug}.localtest.me resolves to 127.0.0.1 — no /etc/hosts editing in dev.
+    # Staging/production set the real platform domain via BASE_DOMAIN.
+    base_domain: str = "localtest.me"
 
     @model_validator(mode="after")
     def _require_database_url_outside_dev(self) -> Self:
@@ -22,6 +25,14 @@ class Settings(BaseSettings):
         # silently boot against localhost as superuser (Feature 1 security review).
         if self.app_env != "dev" and not self.database_url:
             raise ValueError("DATABASE_URL is required when APP_ENV is not 'dev'")
+        return self
+
+    @model_validator(mode="after")
+    def _require_real_base_domain_outside_dev(self) -> Self:
+        # Forgetting BASE_DOMAIN in prod would 404 every request (no real host
+        # ends with .localtest.me) — fail at boot, not as a silent outage.
+        if self.app_env != "dev" and self.base_domain == "localtest.me":
+            raise ValueError("BASE_DOMAIN must be set when APP_ENV is not 'dev'")
         return self
 
     @property
