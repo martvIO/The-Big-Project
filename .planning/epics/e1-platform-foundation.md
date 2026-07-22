@@ -1,7 +1,7 @@
 # Epic: E1 — Platform Foundation
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: planning
+**Status**: in progress — features 1, 3–6 shipped (PRs #1–#5 merged to main 2026-07-22); only #2 (staging + external applications) remains
 **Owner**: team
 **PRD**: §1 (multi-tenancy, wildcard routing), §2 (admin access)
 
@@ -16,8 +16,8 @@ Everything in this product sits on three guarantees: a request on `{slug}.ourbra
 ## Success Criteria
 
 - [ ] A tenant provisioned via the CLI is reachable at its subdomain (staging wildcard DNS + TLS); unknown slugs 404; suspension takes effect on next request
-- [ ] CI cross-tenant isolation suite passes: every repository/endpoint probed as tenant A against tenant B's data returns nothing; unset tenant context returns zero rows (RLS forced, non-owner role)
-- [ ] Owner can log in at `{slug}…/manage`; sessions are subdomain-scoped and inert across boutiques; a locked-out owner is recoverable via the operator CLI password reset
+- [x] CI cross-tenant isolation suite passes: every repository/endpoint probed as tenant A against tenant B's data returns nothing; unset tenant context returns zero rows (RLS forced, non-owner role)
+- [x] Owner can log in at `{slug}…/manage`; sessions are subdomain-scoped and inert across boutiques; a locked-out owner is recoverable via the operator CLI password reset
 
 ---
 
@@ -25,11 +25,11 @@ Everything in this product sits on three guarantees: a request on `{slug}.ourbra
 
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
-| 1 | Repo scaffolds & CI | building | [spec](../specs/repo-scaffolds-and-ci.md) | [plan](../plans/repo-scaffolds-and-ci.md) | — |
+| 1 | Repo scaffolds & CI | done | [spec](../specs/repo-scaffolds-and-ci.md) | [plan](../plans/repo-scaffolds-and-ci.md) | — |
 | 2 | Staging env + external lead-time applications | todo | — | — | #1 |
-| 3 | Tenant core + RLS isolation harness | building | [spec](../specs/tenant-core-rls.md) | [plan](../plans/tenant-core-rls.md) | #1 |
-| 4 | Subdomain routing & tenant resolution | building | [spec](../specs/subdomain-routing.md) | [plan](../plans/subdomain-routing.md) | #3 |
-| 5 | Owner auth | building | [spec](../specs/owner-auth.md) | [plan](../plans/owner-auth.md) | #3, #4 |
+| 3 | Tenant core + RLS isolation harness | done | [spec](../specs/tenant-core-rls.md) | [plan](../plans/tenant-core-rls.md) | #1 |
+| 4 | Subdomain routing & tenant resolution | done | [spec](../specs/subdomain-routing.md) | [plan](../plans/subdomain-routing.md) | #3 |
+| 5 | Owner auth | done | [spec](../specs/owner-auth.md) | [plan](../plans/owner-auth.md) | #3, #4 |
 | 6 | Tenant provisioning CLI | done | [spec](../specs/tenant-provisioning-cli.md) | [plan](../plans/tenant-provisioning-cli.md) | #5 |
 
 ---
