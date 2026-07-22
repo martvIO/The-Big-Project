@@ -98,3 +98,26 @@ def test_operator_defaults_but_is_overridable() -> None:
     service = FakeService()
     _dispatch(["suspend", "--slug", "bella", "--operator", "ci-bot"], service)
     assert service.calls[-1][1]["operator"] == "ci-bot"
+
+
+def test_list_output_strips_control_chars(capsys: object) -> None:
+    import datetime
+
+    from app.cli import _print_tenants
+
+    _print_tenants(
+        [
+            TenantSummary(
+                slug="bella",
+                name="Bella\t\x1b[31mEVIL\nName",
+                status="active",
+                created_at=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+            )
+        ]
+    )
+    out = capsys.readouterr().out  # type: ignore[attr-defined]
+    line = out.splitlines()[0]
+    # Exactly the 3 intended column tabs; no stray tab/newline/ESC from the name.
+    assert line.count("\t") == 3
+    assert "\x1b" not in line
+    assert "EVIL" in line

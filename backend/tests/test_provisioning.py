@@ -104,6 +104,25 @@ def test_provision_rejects_duplicate_slug(app_role_url: str) -> None:
         asyncio.run(engine.dispose())
 
 
+def test_provision_rejects_blank_password(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    try:
+        result = asyncio.run(
+            provisioning.provision(
+                slug=_slug(),
+                name="Blank",
+                owner_email="o@x.example",
+                owner_password="   ",
+                operator="t",
+            )
+        )
+        assert result.ok is False and result.message == "empty_password"
+    finally:
+        asyncio.run(engine.dispose())
+
+
 def test_suspend_flips_status_and_list_reflects_it(app_role_url: str) -> None:
     engine = _engine(app_role_url)
     factory = _factory(engine)
@@ -179,10 +198,14 @@ def test_reset_password_changes_credentials(app_role_url: str) -> None:
         asyncio.run(engine.dispose())
 
 
-def test_each_state_change_writes_platform_audit(app_role_url: str) -> None:
+def test_each_state_change_writes_platform_audit(app_role_url: str, migrated_db: str) -> None:
     engine = _engine(app_role_url)
     factory = _factory(engine)
     provisioning = ProvisioningService(factory)
+    # app_user has INSERT-only on platform_audit_log; reading operator history
+    # is a privileged action, so the audit read uses the superuser connection.
+    reader_engine = _engine(migrated_db)
+    reader_factory = _factory(reader_engine)
     try:
         slug = _slug()
         r = asyncio.run(
@@ -197,7 +220,7 @@ def test_each_state_change_writes_platform_audit(app_role_url: str) -> None:
         asyncio.run(provisioning.suspend(slug=slug, operator="opsy"))
 
         async def audit_rows() -> list[tuple[str, str]]:
-            async with factory() as session:
+            async with reader_factory() as session:
                 res = await session.execute(
                     text(
                         "SELECT action, operator FROM platform_audit_log "
@@ -212,5 +235,25 @@ def test_each_state_change_writes_platform_audit(app_role_url: str) -> None:
         assert "tenant_provisioned" in actions
         assert "tenant_suspended" in actions
         assert all(op == "opsy" for _, op in rows)
+    finally:
+        asyncio.run(engine.dispose())
+        asyncio.run(reader_engine.dispose())
+
+
+def test_app_user_cannot_read_platform_audit(app_role_url: str) -> None:
+    """Least privilege: the tenant-facing role writes operator history but must
+    never read this cross-tenant table."""
+    from sqlalchemy.exc import ProgrammingError
+
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+
+    async def read_as_app_user() -> None:
+        async with factory() as session:
+            await session.execute(text("SELECT count(*) FROM platform_audit_log"))
+
+    try:
+        with pytest.raises(ProgrammingError):
+            asyncio.run(read_as_app_user())
     finally:
         asyncio.run(engine.dispose())

@@ -31,7 +31,10 @@ def upgrade() -> None:
         "CREATE INDEX idx_platform_audit_log_target "
         "ON platform_audit_log(target_tenant_id, created_at)"
     )
-    op.execute("GRANT SELECT, INSERT ON platform_audit_log TO app_user")
+    # INSERT only, no SELECT: the tenant-facing app (running as app_user) writes
+    # operator-history rows but must never read this cross-tenant table. Operators
+    # reading history connect with a separate, more-privileged role.
+    op.execute("GRANT INSERT ON platform_audit_log TO app_user")
 
 
 def downgrade() -> None:

@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -11,7 +11,7 @@ from app.auth.passwords import hash_password
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
-from app.models.constants import PlatformAuditAction, TenantStatus
+from app.models.constants import PlatformAuditAction, StaffRole, TenantStatus
 from app.models.staff_user import StaffUser
 from app.models.tenant import Tenant
 from app.platform.repository import PlatformAuditLogRepository
@@ -55,6 +55,10 @@ class ProvisioningService:
     ) -> CommandResult:
         if not is_valid_slug(slug):
             return await self._fail_provision(operator, slug, "invalid_or_reserved_slug")
+        if not owner_password.strip():
+            # A blank password (e.g. `echo -n | … provision`) would create a
+            # loginable owner with a hashed empty string — reject it.
+            return await self._fail_provision(operator, slug, "empty_password")
         if await self._tenants.by_slug(slug) is not None:
             return await self._fail_provision(operator, slug, "slug_taken")
 
@@ -115,18 +119,22 @@ class ProvisioningService:
     async def reset_owner_password(
         self, *, slug: str, owner_email: str, new_password: str, operator: str
     ) -> CommandResult:
+        if not new_password.strip():
+            return CommandResult(ok=False, message="empty_password")
         tenant = await self._tenants.by_slug(slug)
         if tenant is None:
             return CommandResult(ok=False, message="tenant_not_found")
         async with tenant_session(self._session_factory, tenant.id) as session:
+            # updated_at is set by the DB trigger — never assign it here.
             result = await session.execute(
                 update(StaffUser)
                 .where(
                     StaffUser.tenant_id == tenant.id,
                     StaffUser.email == owner_email.lower(),
+                    StaffUser.role == StaffRole.OWNER,
                     StaffUser.deleted_at.is_(None),
                 )
-                .values(password_hash=hash_password(new_password), updated_at=func.now())
+                .values(password_hash=hash_password(new_password))
                 .returning(StaffUser.id)
             )
             if result.scalar_one_or_none() is None:

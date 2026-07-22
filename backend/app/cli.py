@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import getpass
 import os
+import re
 import sys
 from collections.abc import Callable
 from typing import Protocol
@@ -16,6 +17,14 @@ from typing import Protocol
 from app.platform.service import CommandResult, TenantSummary
 
 PasswordReader = Callable[[], str]
+
+# Strip control chars before printing operator-supplied text — a tab/newline
+# corrupts the columnar output and an ANSI sequence could spoof the terminal.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _safe(text: str) -> str:
+    return _CONTROL_CHARS.sub(" ", text)
 
 
 class ProvisioningLike(Protocol):
@@ -74,7 +83,7 @@ def _print_tenants(rows: list[TenantSummary]) -> None:
         print("(no tenants)")
         return
     for r in rows:
-        print(f"{r.slug}\t{r.status}\t{r.name}\t{r.created_at.isoformat()}")
+        print(f"{r.slug}\t{r.status}\t{_safe(r.name)}\t{r.created_at.isoformat()}")
 
 
 async def _dispatch(
@@ -118,12 +127,22 @@ def _read_password() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from app.db.session import get_session_factory
+    from app.core.config import get_settings
+    from app.db.session import get_engine, get_session_factory, verify_database_role
     from app.platform.service import ProvisioningService
 
     args = build_parser().parse_args(argv)
-    service = ProvisioningService(get_session_factory())
-    return run(args, service, _read_password)
+
+    async def _bootstrap() -> int:
+        # Same fail-fast as the web app: refuse to run against a role that can
+        # bypass RLS (superuser/BYPASSRLS/owner), so an operator using personal
+        # elevated creds can't silently void the WITH CHECK isolation net.
+        if get_settings().app_env != "dev":
+            await verify_database_role(get_engine())
+        service = ProvisioningService(get_session_factory())
+        return await _dispatch(args, service, _read_password)
+
+    return asyncio.run(_bootstrap())
 
 
 if __name__ == "__main__":
