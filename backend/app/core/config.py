@@ -19,6 +19,22 @@ class Settings(BaseSettings):
     # Staging/production set the real platform domain via BASE_DOMAIN.
     base_domain: str = "localtest.me"
 
+    login_max_attempts: int = 5
+    login_window_seconds: int = 900
+    session_ttl_seconds: int = 60 * 60 * 12
+
+    # Per-IP login rate limiting needs the REAL client IP. Behind a proxy
+    # (Railway/ALB) request.client.host is the proxy — one global bucket that a
+    # tiny burst could use to 429 every tenant. So the per-IP key is OFF unless
+    # this is set AND the deployment terminates a single trusted proxy that
+    # appends X-Forwarded-For (see README). The per-(tenant,email) key — the real
+    # brute-force control — is always on and proxy-independent.
+    trust_forwarded_for: bool = False
+
+    @property
+    def secure_cookies(self) -> bool:
+        return self.app_env != "dev"
+
     @model_validator(mode="after")
     def _require_database_url_outside_dev(self) -> Self:
         # A non-dev deployment missing DATABASE_URL must fail fast — never
