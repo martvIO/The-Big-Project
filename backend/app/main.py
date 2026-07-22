@@ -12,7 +12,7 @@ from app.auth.router import RateLimitedError
 from app.auth.router import router as auth_router
 from app.auth.service import AuthService, InvalidCredentialsError
 from app.core.config import get_settings
-from app.db.session import get_engine, get_session_factory, verify_database_role
+from app.db.session import ensure_safe_database_role, get_session_factory
 from app.tenancy.middleware import (
     TENANT_NOT_FOUND_BODY,
     TenantNotResolvedError,
@@ -34,10 +34,7 @@ NOT_AUTHENTICATED_BODY = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Dev is exempt (local runs use the postgres superuser); every other
-    # environment must prove its role cannot bypass RLS before serving traffic.
-    if get_settings().app_env != "dev":
-        await verify_database_role(get_engine())
+    await ensure_safe_database_role()
     yield
 
 
