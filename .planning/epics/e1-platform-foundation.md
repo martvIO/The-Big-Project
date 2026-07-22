@@ -27,10 +27,10 @@ Everything in this product sits on three guarantees: a request on `{slug}.ourbra
 |---|---------|--------|------|------|------------|
 | 1 | Repo scaffolds & CI | building | [spec](../specs/repo-scaffolds-and-ci.md) | [plan](../plans/repo-scaffolds-and-ci.md) | — |
 | 2 | Staging env + external lead-time applications | todo | — | — | #1 |
-| 3 | Tenant core + RLS isolation harness | todo | — | — | #1 |
-| 4 | Subdomain routing & tenant resolution | todo | — | — | #3 |
-| 5 | Owner auth | todo | — | — | #3, #4 |
-| 6 | Tenant provisioning CLI | todo | — | — | #5 |
+| 3 | Tenant core + RLS isolation harness | building | [spec](../specs/tenant-core-rls.md) | [plan](../plans/tenant-core-rls.md) | #1 |
+| 4 | Subdomain routing & tenant resolution | building | [spec](../specs/subdomain-routing.md) | [plan](../plans/subdomain-routing.md) | #3 |
+| 5 | Owner auth | building | [spec](../specs/owner-auth.md) | [plan](../plans/owner-auth.md) | #3, #4 |
+| 6 | Tenant provisioning CLI | done | [spec](../specs/tenant-provisioning-cli.md) | [plan](../plans/tenant-provisioning-cli.md) | #5 |
 
 ---
 
