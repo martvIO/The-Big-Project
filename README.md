@@ -22,6 +22,7 @@ make test         # backend unit tests (fast, no Docker)
 make test-db      # backend DB tests (needs Docker; runs migrations against real Postgres)
 make dev          # run the API on :8000  →  curl localhost:8000/health
 make fe-dev       # storefront dev server
+make fe-test      # frontend unit tests (Vitest, no backend needed)
 make lint         # ruff + mypy + oxlint + typecheck
 ```
 
@@ -33,9 +34,22 @@ Backend env: copy `backend/.env.example` → `backend/.env` (never commit real `
 
 **Provisioning tenants (operator CLI)**: onboarding is done over SSH/CI, not a web console. `python -m app.cli provision --slug bella --name "Bella Bridal" --owner-email owner@bella.example` creates the tenant + its first owner atomically (the owner can log in immediately); the **password is read from stdin/getpass, never an argv** (which would leak into the process list). Other commands: `suspend --slug`, `reset-password --slug --owner-email`, `list`. Every state change is written to `platform_audit_log` — a **platform-scoped** table (column `target_tenant_id`, deliberately not `tenant_id`, so it stays cross-tenant-readable and isn't caught by the forced-RLS metadata scan). `--operator` (default `$USER`) labels the audit row.
 
+**Owner settings (`/manage` API)**: once logged in, the owner configures the boutique — profile + v1 toggles (`deposits_enabled`, `brides_only`; stored under `tenants.settings` JSONB and written with a single atomic SQL merge so concurrent writers of sibling keys never clobber each other), weekly opening hours with per-window capacity plus per-date exceptions (closed all day or special hours), appointment types (duration, audience, deposit in integer agorot; delete = archive, so booking history stays intact), and a **versioned cancellation policy**: each save creates a new immutable version combining terms text with machine-readable refund fields (`refundable_until_hours_before`, `forfeit_percent`). The `terms_versions` table is append-only at the database level (UPDATE/DELETE revoked from the app role), so what a customer accepted at booking time is reconstructable forever. The API surface is `GET/PUT /manage/settings`, `GET/POST/PATCH/DELETE /manage/appointment-types[/{id}]`, `GET /manage/availability` + `PUT /manage/availability/rules` (atomic full-replace of the weekly set, serialized per tenant by an advisory lock) + `POST/DELETE /manage/availability/exceptions[/{id}]`, and `GET/POST /manage/terms` (history paginated, 50 per page) — every route requires the session cookie and is tenant-scoped under RLS; mutations additionally pass an Origin-vs-Host CSRF check, and all errors use the house shape `{"error": {"code", "message"}}`. An active terms version is required for any booking (enforced in E3), so the manage console surfaces "no policy yet" as a setup blocker rather than an optional section.
+
 > **Deploying behind a proxy**: the per-IP login limit is OFF by default because `request.client.host` behind a load balancer is the proxy's IP (one global bucket). To enable it, terminate a single trusted proxy that appends `X-Forwarded-For`, run uvicorn with `--proxy-headers --forwarded-allow-ips=<lb-ip>`, and set `TRUST_FORWARDED_FOR=true`. The per-tenant+email limit (the real brute-force control) is always on and needs no proxy config.
 
 **DB tests run as a non-owner role on purpose.** The test harness provisions a `boutique_app` login role (member of the `app_user` group from migration 0002) and runs the isolation suite as it — not as the container superuser. Superusers and table owners bypass row-level security unconditionally, so testing as one would make every isolation assertion vacuously pass. The suite asserts this about its own role, and the app refuses to start outside dev if its role could bypass RLS.
+
+## Frontend dev workflow (manage app)
+
+```bash
+make dev                                 # backend API on :8000 (terminal 1)
+cd frontend && pnpm --filter manage dev  # Vite dev server on :5173 (terminal 2)
+```
+
+Browse **`http://{slug}.localtest.me:5173`** (e.g. `http://bella.localtest.me:5173` after provisioning slug `bella`) — not plain `localhost`. The Vite dev server proxies `/manage` and `/health` to `http://localhost:8000` with `changeOrigin: false`, so the original `{slug}.localtest.me` Host header reaches the backend: tenant resolution and the host-only session cookie work exactly as in production. `allowedHosts: [".localtest.me"]` in `apps/manage/vite.config.ts` is what lets Vite accept the subdomain Host at all — without it the proxy alone is not enough. The manage app is same-origin in production and proxied in dev; **CORS must never be added for it**.
+
+Frontend unit tests: `make fe-test` (= `pnpm -r --if-present test`) — `apps/manage` runs Vitest + Testing Library under jsdom via a standalone `vitest.config.ts`, no backend or browser required. CI runs the same command.
 
 ## Repo layout
 
