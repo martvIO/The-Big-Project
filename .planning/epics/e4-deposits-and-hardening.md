@@ -47,8 +47,8 @@ When the tenant's deposit toggle is on: booking enters `pending_payment` with a 
 ### Feature 20: PPL compliance build (M)
 Runs in parallel with 17–19. Consent capture (terms checkbox required; separate unbundled marketing opt-in, default OFF, with timestamp + terms-version + source), per-tenant privacy notice, DPA text in boutique ToS, PII-scrub job (anonymize in place — soft-delete is not erasure), retention jobs per data class (OTP minutes, queue days, bookings years), processing-activities record.
 
-### Feature 21: Hardening, audits & pilot UAT (M)
-The ship gate. Runs **`.planning/security-checklist-v1.md`** (in-repo, versioned — created with this epic) to fully green: RLS suite, cookies, rate limits, token hygiene, webhook security, KMS, audit log, secrets in Secrets Manager, WAF/headers/dependency scanning, backups + tested restore with written RPO/RTO. axe-core + manual IS 5568 accessibility audit. Pilot onboarding with real Hebrew content + UAT sign-off. (k6 load testing deliberately cut from v1 — concurrency *correctness* is covered by Feature 13/19 race tests; load testing gates multi-tenant onboarding in E5 #6.)
+### Feature 21: Hardening, audits & pilot UAT (L — includes production stand-up)
+Also owns **production environment stand-up** (compute, production wildcard DNS/TLS, prod Postgres, Secrets Manager migration) and **Terraform-izing the F2 infra runbook** — previously unowned scope, folded in here per the F2 rev-2 verification pass. The ship gate. Runs **`.planning/security-checklist-v1.md`** (in-repo, versioned — created with this epic) to fully green: RLS suite, cookies, rate limits, token hygiene, webhook security, KMS, audit log, secrets in Secrets Manager, WAF/headers/dependency scanning, backups + tested restore with written RPO/RTO. axe-core + manual IS 5568 accessibility audit. Pilot onboarding with real Hebrew content + UAT sign-off. (k6 load testing deliberately cut from v1 — concurrency *correctness* is covered by Feature 13/19 race tests; load testing gates multi-tenant onboarding in E5 #6.)
 
 ---
 

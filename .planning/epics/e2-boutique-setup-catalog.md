@@ -26,7 +26,7 @@ Before anyone can book, the boutique must exist as a configured business (hours,
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
 | 7 | Owner settings, toggles & structured cancellation policy | todo | — | — | E1 #5 |
-| 8 | Catalog management | todo | — | — | E1 #5 |
+| 8 | Catalog management | todo | — | — | E1 #2 (S3 base), E1 #5 |
 | 9 | RTL design system & tokens | todo | — | — | E1 #1 |
 | 10 | Storefront browse | todo | — | — | E1 #4, #7, #8, #9 |
 
@@ -38,7 +38,7 @@ Before anyone can book, the boutique must exist as a configured business (hours,
 Boutique profile, weekly opening hours + exception dates (Israeli week: Sun–Thu, short Friday, holidays), appointment types (name, duration, audience brides-only/all, deposit required + amount), and the v1 subset of the §2 toggle matrix. **Cancellation policy = free-text terms PLUS structured fields (refundable-until-hours-before-appointment, forfeit rule), versioned immutably together** — the structured fields are what E4 Feature 19 evaluates; the text is what the customer accepts (evidence for forfeiture + PPL). Tables: `appointment_types`, `availability_rules`, `terms_versions`, settings JSONB.
 
 ### Feature 8: Catalog management (M)
-Dress CRUD (name, description, price, price-visibility flag, status), size/quantity variant matrix, multi-image upload via presigned S3 (tenant-prefixed keys, content-type/size validation — **S3 bucket + upload config provisioned here** on the Feature 2 staging base), gallery ordering. Owner UI in `apps/manage`. Video reels are E10. **"Reserved" is a manual, date-less owner flag in v1; date-bound reservation semantics (מוזמן לתאריך מסוים) are explicitly deferred to E5 #7**, pending the pilot's purchase/rental/made-to-order answer.
+Dress CRUD (name, description, price, price-visibility flag, status), size/quantity variant matrix, multi-image upload via presigned S3 (tenant-prefixed keys, content-type/size validation — **consumes the bucket provisioned by E1 Feature 2**; upload config lands here, gated on AWS-account approval), gallery ordering. Owner UI in `apps/manage`. Video reels are E10. **"Reserved" is a manual, date-less owner flag in v1; date-bound reservation semantics (מוזמן לתאריך מסוים) are explicitly deferred to E5 #7**, pending the pilot's purchase/rental/made-to-order answer.
 
 ### Feature 9: RTL design system & tokens (M)
 `packages/ui`: cream/gold token system, RTL-first components (CSS logical properties), typography, luxury motion language. **Design gate via `/spartan:ux prototype` happens here** — including resolving the AA-contrast problem (raw #D4AF37 gold on cream fails for text; gold becomes accent, darker ink carries text). Depends only on the repo scaffold, so it runs in parallel with E1's backend features.

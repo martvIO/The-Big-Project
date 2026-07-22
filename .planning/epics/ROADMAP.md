@@ -38,7 +38,7 @@ Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutiq
 | 5 | Owner auth (owner-only accounts, subdomain-scoped sessions, audit log) | E1 | 3, 4 | M |
 | 6 | Tenant provisioning CLI (audited create/suspend/list; operator password reset) | E1 | 5 | S |
 | 7 | Owner settings & toggles + structured cancellation policy (refund-window fields versioned with terms) | E2 | 5 | M |
-| 8 | Catalog management (dress CRUD, variants, statuses, S3 + presigned image upload) | E2 | 5 | M |
+| 8 | Catalog management (dress CRUD, variants, statuses, S3 + presigned image upload) | E2 | 2, 5 | M |
 | 9 | RTL design system & tokens (`packages/ui`, `/spartan:ux` design gate, AA contrast) | E2 | 1 | M |
 | 10 | Storefront browse (catalog grid + dress pages on tenant subdomain) | E2 | 4, 7, 8, 9 | M |
 | 11 | SMS foundation (provider, NotificationService, message_log, OTP send/verify primitive) | E3 | 2, 3 | M |
