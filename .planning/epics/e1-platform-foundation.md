@@ -26,7 +26,7 @@ Everything in this product sits on three guarantees: a request on `{slug}.ourbra
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
 | 1 | Repo scaffolds & CI | done | [spec](../specs/repo-scaffolds-and-ci.md) | [plan](../plans/repo-scaffolds-and-ci.md) | — |
-| 2 | Staging env + external lead-time applications | todo | — | — | #1 |
+| 2 | Staging env + external lead-time applications | planned | [spec](../specs/staging-and-external-apps.md) | [plan](../plans/staging-and-external-apps.md) | #1 |
 | 3 | Tenant core + RLS isolation harness | done | [spec](../specs/tenant-core-rls.md) | [plan](../plans/tenant-core-rls.md) | #1 |
 | 4 | Subdomain routing & tenant resolution | done | [spec](../specs/subdomain-routing.md) | [plan](../plans/subdomain-routing.md) | #3 |
 | 5 | Owner auth | done | [spec](../specs/owner-auth.md) | [plan](../plans/owner-auth.md) | #3, #4 |
