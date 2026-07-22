@@ -144,3 +144,14 @@ You MUST create:
 ### Exposed ORM Compatibility
 - Use `TEXT` for flexible data fields (contains JSON) — Exposed reads as String
 - JSONB columns use `text()` in Exposed Table definition, serialize/deserialize in Entity
+
+### Gotcha: INSERT-only / append-only tables (restricted-access audit logs)
+When a table must be writable-but-not-readable by the app role (e.g. a
+platform-wide operator audit log), a plain `GRANT INSERT` is NOT enough:
+- An early migration's `ALTER DEFAULT PRIVILEGES … GRANT …CRUD… TO app_user`
+  auto-grants full CRUD on every later table created by that migration role, so
+  you must `REVOKE ALL ON <table> FROM app_user` **before** `GRANT INSERT`.
+- With SELECT revoked, `INSERT … RETURNING` (which the ORM emits to fetch a
+  server-generated PK or `created_at`) fails with `permission denied`. Generate
+  those values client-side (`uuid_generate_v4()` → client UUID, `now()` →
+  client UTC) so the INSERT returns nothing. See `.memory/patterns/insert-only-table-no-returning.md`.

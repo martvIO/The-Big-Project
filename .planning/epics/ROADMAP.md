@@ -118,5 +118,6 @@ Waitlist + auto-reallocation loop · client OTP dashboard + `.ics` links + clien
 - **Two external lead-time items start in Feature 2, week 1**: the Grow merchant-account application **and Israeli SMS sender-ID/route registration** — both can take weeks and both gate the v1 DoD.
 - **Cross-tenant leakage** is the existential risk — the CI isolation suite (Feature 3) is permanent and blocking from the first migration onward.
 - Open product questions to resolve with the pilot boutique **before E3 spec**: slot capacity model details (parallel appointments/fitting rooms), bride-priority in the walk-in queue. Before E5 #7: dress "Reserved" semantics (purchase/rental/made-to-order).
+- Tenant resolution does one DB lookup per request with no rate limit until Feature 21; E5 #6's caching work should include a bounded negative-result cache (Feature 4 security review). API docs paths stay tenant-exempt until the Feature 21 gate.
 - IS 5568 accessibility (WCAG 2.0 AA) is a legal requirement — enforced from Feature 9, audited in Feature 21. The gold-on-cream palette needs contrast resolution at the design gate.
 - Israeli receipt (קבלה/חשבונית) obligation for J4 charges — verified against Grow's auto-issuance in Feature 17; if absent, receipt issuance enters Feature 19 scope.
