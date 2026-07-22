@@ -11,6 +11,13 @@ class StaffRole(StrEnum):
     OWNER = "owner"
 
 
+class AppointmentAudience(StrEnum):
+    # brides_only on a type — or the tenant-wide brides_only toggle — hides it
+    # from non-bride visitors (consumers: E3 slot engine, E2 storefront).
+    ALL = "all"
+    BRIDES_ONLY = "brides_only"
+
+
 class AuditAction(StrEnum):
     LOGIN = "login"
     LOGIN_FAILED = "login_failed"

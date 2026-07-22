@@ -12,7 +12,11 @@ from app.core.config import get_settings
 async def verify_database_role(engine: AsyncEngine) -> None:
     """Fail fast if the connected role could bypass RLS. Postgres RLS — even
     FORCEd — does not apply to superusers or BYPASSRLS roles, so running the app
-    with one would silently void tenant isolation with zero test failures."""
+    with one would silently void tenant isolation with zero test failures.
+
+    Table OWNERSHIP is refused too: an owner passes the flags check yet can
+    disable FORCE RLS at will and holds implicit privileges no REVOKE binds —
+    voiding every REVOKE-based guarantee (terms_versions immutability included)."""
     async with engine.connect() as conn:
         result = await conn.execute(
             text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
@@ -22,6 +26,18 @@ async def verify_database_role(engine: AsyncEngine) -> None:
             raise RuntimeError(
                 "Refusing to start: the database role can bypass row-level security "
                 "(superuser or BYPASSRLS). Connect as a non-privileged application role."
+            )
+        owned = await conn.execute(
+            text(
+                "SELECT count(*) FROM pg_tables "
+                "WHERE schemaname = 'public' AND tableowner = current_user"
+            )
+        )
+        if owned.scalar_one() > 0:
+            raise RuntimeError(
+                "Refusing to start: the database role owns tables in schema public. "
+                "Owners can disable FORCE row-level security and ignore REVOKEs. "
+                "Connect as a non-owner application role."
             )
 
 
