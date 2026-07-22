@@ -185,7 +185,7 @@ def test_provision_rolls_back_the_tenant_on_partial_failure(
     async def _boom(*args: object, **kwargs: object) -> None:
         raise RuntimeError("owner insert failed mid-transaction")
 
-    provisioning._staff.insert = _boom  # type: ignore[method-assign]
+    provisioning._staff.insert = _boom  # type: ignore[method-assign,assignment]
     try:
         slug = _slug()
         with pytest.raises(RuntimeError):
