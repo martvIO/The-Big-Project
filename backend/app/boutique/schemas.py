@@ -18,6 +18,11 @@ from app.boutique.validation import (
     MAX_PROFILE_DESCRIPTION_LENGTH,
     MAX_PROFILE_MAPS_URL_LENGTH,
     MAX_PROFILE_PHONE_LENGTH,
+    MAX_REFUNDABLE_HOURS,
+    MAX_RULE_CAPACITY,
+    MAX_SORT_ORDER,
+    MAX_TERMS_TEXT_BYTES,
+    MAX_WEEKLY_RULES,
 )
 from app.models.constants import AppointmentAudience
 
@@ -60,7 +65,7 @@ class CreateAppointmentTypeRequest(ForbidExtraModel):
     audience: str = AppointmentAudience.ALL
     deposit_required: bool = False
     deposit_amount_agorot: int | None = Field(default=None, ge=1, le=MAX_DEPOSIT_AMOUNT_AGOROT)
-    sort_order: int = 0
+    sort_order: int = Field(default=0, ge=-MAX_SORT_ORDER, le=MAX_SORT_ORDER)
 
 
 class UpdateAppointmentTypeRequest(ForbidExtraModel):
@@ -72,7 +77,7 @@ class UpdateAppointmentTypeRequest(ForbidExtraModel):
     audience: str
     deposit_required: bool
     deposit_amount_agorot: int | None = Field(ge=1, le=MAX_DEPOSIT_AMOUNT_AGOROT)
-    sort_order: int
+    sort_order: int = Field(ge=-MAX_SORT_ORDER, le=MAX_SORT_ORDER)
 
 
 class AppointmentTypeResponse(BaseModel):
@@ -94,11 +99,11 @@ class WeeklyRuleRequest(ForbidExtraModel):
     day_of_week: int = Field(ge=0, le=6)
     open_time: datetime.time
     close_time: datetime.time
-    capacity: int = Field(default=1, ge=1)
+    capacity: int = Field(default=1, ge=1, le=MAX_RULE_CAPACITY)
 
 
 class ReplaceWeeklyRulesRequest(ForbidExtraModel):
-    rules: list[WeeklyRuleRequest]
+    rules: list[WeeklyRuleRequest] = Field(max_length=MAX_WEEKLY_RULES)
 
 
 class AvailabilityRuleResponse(BaseModel):
@@ -137,8 +142,10 @@ class AvailabilityResponse(BaseModel):
 
 
 class CreateTermsRequest(ForbidExtraModel):
-    terms_text: str = Field(min_length=1)
-    refundable_until_hours_before: int = Field(ge=0)
+    # Char cap blocks multi-MB bodies at the schema; the byte-precise 50 KB cap
+    # (Hebrew is 2 bytes/char) stays in validate_terms.
+    terms_text: str = Field(min_length=1, max_length=MAX_TERMS_TEXT_BYTES)
+    refundable_until_hours_before: int = Field(ge=0, le=MAX_REFUNDABLE_HOURS)
     forfeit_percent: int = Field(default=100, ge=0, le=100)
 
 

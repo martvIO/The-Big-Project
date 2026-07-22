@@ -151,6 +151,7 @@ class BoutiqueSettingsService:
             audience=audience,
             deposit_required=deposit_required,
             deposit_amount_agorot=deposit_amount_agorot,
+            sort_order=sort_order,
         )
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -187,6 +188,7 @@ class BoutiqueSettingsService:
             audience=audience,
             deposit_required=deposit_required,
             deposit_amount_agorot=deposit_amount_agorot,
+            sort_order=sort_order,
         )
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:

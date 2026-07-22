@@ -68,6 +68,12 @@ def upgrade() -> None:
         """
     )
     op.execute(_updated_at_trigger("availability_rules"))
+    # E3's slot engine reads the active weekly set on every computation, and
+    # each atomic replace accumulates soft-deleted rows the scan must skip.
+    op.execute(
+        "CREATE INDEX idx_availability_rules_tenant_active "
+        "ON availability_rules (tenant_id) WHERE deleted_at IS NULL"
+    )
 
     op.execute(
         f"""

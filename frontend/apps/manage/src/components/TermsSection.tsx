@@ -29,6 +29,8 @@ export function TermsSection() {
 
   const load = useCallback(async () => {
     try {
+      // v1 shows only the latest page (50 versions); the API supports offset
+      // paging when a deeper history view is needed.
       setHistory(await api.getTerms());
       setLoadError(null);
     } catch (error) {

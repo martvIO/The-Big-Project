@@ -30,6 +30,14 @@ MAX_EXCEPTION_NOTE_LENGTH = 500
 MAX_TERMS_TEXT_BYTES = 50 * 1024
 # 1,000,000 ILS in agorot — sanity cap on money input, well inside INTEGER range.
 MAX_DEPOSIT_AMOUNT_AGOROT = 100_000_000
+# Upper bounds keeping INT4 columns and request bodies inside sane ranges; the
+# service mirrors the schema Field caps so non-router callers get the same 400s
+# instead of DataError 500s (terms rows are immutable evidence — a bad value
+# can never be corrected in place).
+MAX_WEEKLY_RULES = 50
+MAX_RULE_CAPACITY = 1000
+MAX_REFUNDABLE_HOURS = 24 * 365 * 10
+MAX_SORT_ORDER = 1_000_000
 
 ALLOWED_MAPS_URL_SCHEMES = frozenset({"http", "https"})
 _PHONE_SAFE_CHARS = frozenset("0123456789 ()-")
@@ -106,6 +114,7 @@ def validate_appointment_type(
     audience: str,
     deposit_required: bool,
     deposit_amount_agorot: int | None,
+    sort_order: int = 0,
 ) -> None:
     if not name.strip():
         raise BoutiqueValidationError("name must not be blank")
@@ -121,16 +130,20 @@ def validate_appointment_type(
         0 < deposit_amount_agorot <= MAX_DEPOSIT_AMOUNT_AGOROT
     ):
         raise BoutiqueValidationError("deposit_amount_agorot is out of bounds")
+    if abs(sort_order) > MAX_SORT_ORDER:
+        raise BoutiqueValidationError("sort_order is out of bounds")
 
 
 def validate_weekly_rules(rules: Sequence[WeeklyRuleInput]) -> None:
+    if len(rules) > MAX_WEEKLY_RULES:
+        raise BoutiqueValidationError(f"at most {MAX_WEEKLY_RULES} weekly windows are allowed")
     for rule in rules:
         if not 0 <= rule.day_of_week <= 6:
             raise BoutiqueValidationError("day_of_week must be between 0 and 6")
         if rule.close_time <= rule.open_time:
             raise BoutiqueValidationError("close_time must be after open_time")
-        if rule.capacity <= 0:
-            raise BoutiqueValidationError("capacity must be positive")
+        if not 0 < rule.capacity <= MAX_RULE_CAPACITY:
+            raise BoutiqueValidationError(f"capacity must be between 1 and {MAX_RULE_CAPACITY}")
     by_day: dict[int, list[WeeklyRuleInput]] = {}
     for rule in rules:
         by_day.setdefault(rule.day_of_week, []).append(rule)
@@ -168,7 +181,9 @@ def validate_terms(
     # is about storage of immutable evidence, not glyph count.
     if len(terms_text.encode("utf-8")) > MAX_TERMS_TEXT_BYTES:
         raise BoutiqueValidationError("terms_text exceeds 50 KB")
-    if refundable_until_hours_before < 0:
-        raise BoutiqueValidationError("refundable_until_hours_before must be >= 0")
+    if not 0 <= refundable_until_hours_before <= MAX_REFUNDABLE_HOURS:
+        raise BoutiqueValidationError(
+            f"refundable_until_hours_before must be between 0 and {MAX_REFUNDABLE_HOURS}"
+        )
     if not 0 <= forfeit_percent <= 100:
         raise BoutiqueValidationError("forfeit_percent must be between 0 and 100")
