@@ -123,6 +123,115 @@ def test_provision_rejects_blank_password(app_role_url: str) -> None:
         asyncio.run(engine.dispose())
 
 
+async def _tenant_row_count(reader_factory: async_sessionmaker, slug: str) -> int:
+    async with reader_factory() as session:
+        res = await session.execute(
+            text("SELECT count(*) FROM tenants WHERE slug = :slug"), {"slug": slug}
+        )
+        return int(res.scalar_one())
+
+
+def test_provision_after_suspend_hits_integrity_backstop(
+    app_role_url: str, migrated_db: str
+) -> None:
+    """A suspended tenant still holds its slug in the partial unique index, but
+    by_slug (active-only) returns None — so the pre-check passes and the
+    IntegrityError backstop is what rejects the re-provision. No 2nd tenant row."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    reader_engine = _engine(migrated_db)
+    reader_factory = _factory(reader_engine)
+    provisioning = ProvisioningService(factory)
+    try:
+        slug = _slug()
+        assert asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="First",
+                owner_email="a@x.example",
+                owner_password="pw",
+                operator="t",
+            )
+        ).ok
+        assert asyncio.run(provisioning.suspend(slug=slug, operator="t")).ok
+
+        second = asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="Second",
+                owner_email="b@x.example",
+                owner_password="pw",
+                operator="t",
+            )
+        )
+        assert second.ok is False and second.message == "slug_taken"
+        assert asyncio.run(_tenant_row_count(reader_factory, slug)) == 1
+    finally:
+        asyncio.run(engine.dispose())
+        asyncio.run(reader_engine.dispose())
+
+
+def test_provision_rolls_back_the_tenant_on_partial_failure(
+    app_role_url: str, migrated_db: str
+) -> None:
+    """Atomicity: if the owner insert fails after the tenant insert, the whole
+    transaction rolls back — no orphan tenant without an owner."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    reader_engine = _engine(migrated_db)
+    reader_factory = _factory(reader_engine)
+    provisioning = ProvisioningService(factory)
+
+    async def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("owner insert failed mid-transaction")
+
+    provisioning._staff.insert = _boom  # type: ignore[method-assign]
+    try:
+        slug = _slug()
+        with pytest.raises(RuntimeError):
+            asyncio.run(
+                provisioning.provision(
+                    slug=slug,
+                    name="Orphan?",
+                    owner_email="o@x.example",
+                    owner_password="pw",
+                    operator="t",
+                )
+            )
+        assert asyncio.run(_tenant_row_count(reader_factory, slug)) == 0
+    finally:
+        asyncio.run(engine.dispose())
+        asyncio.run(reader_engine.dispose())
+
+
+def test_reset_password_rejects_blank_password(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    try:
+        slug = _slug()
+        asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="Shop",
+                owner_email="owner@shop.example",
+                owner_password="old-pw",
+                operator="t",
+            )
+        )
+        result = asyncio.run(
+            provisioning.reset_owner_password(
+                slug=slug,
+                owner_email="owner@shop.example",
+                new_password="   ",
+                operator="t",
+            )
+        )
+        assert result.ok is False and result.message == "empty_password"
+    finally:
+        asyncio.run(engine.dispose())
+
+
 def test_suspend_flips_status_and_list_reflects_it(app_role_url: str) -> None:
     engine = _engine(app_role_url)
     factory = _factory(engine)

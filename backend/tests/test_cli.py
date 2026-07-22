@@ -1,5 +1,7 @@
 import uuid
 
+import pytest
+
 from app.cli import build_parser, run
 from app.platform.service import CommandResult, TenantSummary
 
@@ -47,12 +49,28 @@ def test_provision_maps_args_and_reads_password_from_stdin() -> None:
 
 
 def test_password_is_not_a_cli_argument() -> None:
-    # The parser must have no --password/--owner-password option (leak via argv).
-    actions = {a.dest for a in build_parser()._subparsers._group_actions}  # type: ignore[union-attr]
-    help_text = build_parser().format_help()
-    assert "--password" not in help_text
-    assert "--owner-password" not in help_text
-    _ = actions
+    # No subcommand accepts a password flag — it must come from stdin only, never
+    # argv (argv leaks into the process list and shell history). argparse exits
+    # non-zero on an unrecognized argument, which proves the flag doesn't exist.
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "provision",
+                "--slug",
+                "b",
+                "--name",
+                "n",
+                "--owner-email",
+                "o@e.co",
+                "--password",
+                "x",
+            ]
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["reset-password", "--slug", "b", "--owner-email", "o@e.co", "--owner-password", "x"]
+        )
 
 
 def test_failure_result_is_nonzero_exit() -> None:

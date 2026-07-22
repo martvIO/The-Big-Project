@@ -127,18 +127,15 @@ def _read_password() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from app.core.config import get_settings
-    from app.db.session import get_engine, get_session_factory, verify_database_role
+    from app.db.session import ensure_safe_database_role, get_session_factory
     from app.platform.service import ProvisioningService
 
     args = build_parser().parse_args(argv)
 
     async def _bootstrap() -> int:
-        # Same fail-fast as the web app: refuse to run against a role that can
-        # bypass RLS (superuser/BYPASSRLS/owner), so an operator using personal
-        # elevated creds can't silently void the WITH CHECK isolation net.
-        if get_settings().app_env != "dev":
-            await verify_database_role(get_engine())
+        # Same fail-fast as the web app: an operator using personal elevated creds
+        # can't silently void the WITH CHECK isolation net.
+        await ensure_safe_database_role()
         service = ProvisioningService(get_session_factory())
         return await _dispatch(args, service, _read_password)
 
