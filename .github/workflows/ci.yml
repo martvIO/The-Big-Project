@@ -44,7 +44,7 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: frontend/package.json
       - uses: actions/setup-node@v4
@@ -75,7 +75,7 @@ jobs:
         run: |
           uv export --locked --no-emit-project -o requirements-audit.txt
           uvx pip-audit -r requirements-audit.txt
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: frontend/package.json
       - name: pnpm audit (frontend)
