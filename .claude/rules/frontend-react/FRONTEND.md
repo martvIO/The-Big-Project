@@ -2,6 +2,10 @@
 
 > Full guide: use `/ui-ux-pro-max` skill
 
+## oxlint Config Is Mandatory (CRITICAL)
+
+Every Vite/React app must lint with an `.oxlintrc.json` that enables the `react` plugin with `"react/rules-of-hooks": "error"` (workspace config lives at `frontend/.oxlintrc.json`, wired via `oxlint -c`). oxlint's zero-config default does NOT catch hooks violations — a conditionally-called hook passes silently. When scaffolding or migrating an app, explicitly diff the old tree's lint configs (`git show <base>:<old-path>`) instead of trusting defaults to reproduce prior guardrails.
+
 ## Build Check (CRITICAL)
 
 Run `yarn build` (or `npm run build`) before committing any `.tsx`/`.ts` changes.
