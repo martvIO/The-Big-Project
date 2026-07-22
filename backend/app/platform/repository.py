@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -16,9 +17,10 @@ class PlatformAuditLogRepository:
         target_tenant_id: UUID | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        # Generate the PK client-side: app_user has INSERT-only (no SELECT) on this
-        # table, and a server-default PK would make the ORM's flush issue
-        # INSERT ... RETURNING id — which needs SELECT — and fail.
+        # Set id AND created_at client-side so the INSERT has no server-generated
+        # columns to fetch back. app_user is INSERT-only (no SELECT) on this table,
+        # and any RETURNING (which the ORM emits to populate server defaults) needs
+        # SELECT and would fail.
         session.add(
             PlatformAuditLog(
                 id=uuid4(),
@@ -26,6 +28,7 @@ class PlatformAuditLogRepository:
                 action=action,
                 target_tenant_id=target_tenant_id,
                 details=details or {},
+                created_at=datetime.now(UTC),
             )
         )
         await session.flush()
