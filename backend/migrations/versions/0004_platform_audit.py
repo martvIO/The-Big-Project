@@ -34,6 +34,9 @@ def upgrade() -> None:
     # INSERT only, no SELECT: the tenant-facing app (running as app_user) writes
     # operator-history rows but must never read this cross-tenant table. Operators
     # reading history connect with a separate, more-privileged role.
+    # REVOKE first: migration 0002's ALTER DEFAULT PRIVILEGES auto-grants full CRUD
+    # on every new table to app_user, so a plain GRANT INSERT would not remove SELECT.
+    op.execute("REVOKE ALL ON platform_audit_log FROM app_user")
     op.execute("GRANT INSERT ON platform_audit_log TO app_user")
 
 
