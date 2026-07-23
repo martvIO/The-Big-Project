@@ -1,6 +1,6 @@
 # Screen: Storefront Catalog (`/`)
 
-**Date**: 2026-07-22 · **Status**: rev 1 — critic-gated, pending interview synthesis · **Layout**: single column, identity header over grid · **Consumes**: F7 profile/hours + F8 dresses (designed against F8's table shape)
+**Date**: 2026-07-22 · **Status**: rev 2 — Design Gate PASSED (round 2, design-critic ACCEPT); FINAL approval pending interview synthesis · **Layout**: single column, identity header over grid · **Consumes**: F7 profile/hours + F8 dresses (designed against F8's table shape)
 
 ## Wireframe (mobile 375 — primary)
 
@@ -16,7 +16,7 @@
 | [dress]  [dress]                      |
 | [photo]  [photo]        2-col grid    |
 |  שם       שם                          |
-|  ₪X,XXX   מחיר בתיאום                  |
+|  X,XXX ₪  מחיר בתיאום                  |
 | [dress]  [dress]                      |
 |   ...      ...                        |
 +---------------------------------------+

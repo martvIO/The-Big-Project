@@ -1,6 +1,6 @@
 # Screen: Manage Console Restyle (F7 components, `/manage`)
 
-**Date**: 2026-07-22 · **Status**: rev 1 — critic-gated, pending interview synthesis · **Constraint**: component APIs/behavior/tests from F7 are frozen — this respec's the visual layer only (tokens, spacing, type, state visuals).
+**Date**: 2026-07-22 · **Status**: rev 2 — Design Gate PASSED (round 2, design-critic ACCEPT); FINAL approval pending interview synthesis · **Constraint**: component APIs/behavior/tests from F7 are frozen — this respec's the visual layer only (tokens, spacing, type, state visuals).
 
 ## Console shell
 
@@ -10,8 +10,9 @@
 +----------------------------------------------------+
 | [ פרופיל ] [ שעות ] [ סוגי תורים ] [ מדיניות ]       |   <- tabs @desktop (active: gold-strong underline)
 +----------------------------------------------------+     stacked accordion @mobile
-| ⚠ אין עדיין מדיניות ביטולים — נדרשת לפני קבלת       |   <- PolicyBlockerBanner (warning-text on paper,
-|   הזמנות. [ליצירת מדיניות ←]                        |      icon + text, not red — cautionary not error)
+| אין עדיין מדיניות ביטולים — נדרשת לפני קבלת         |   <- PolicyBlockerBanner (warning-text on paper,
+|   הזמנות. [ליצירת מדיניות ←]                        |      gold-strong border-stripe + text, no icon —
+|                                                     |      intentional restraint; not red: cautionary)
 +----------------------------------------------------+
 | ┌── Card: הגדרה ראשונית 3/4 ─────────────────┐      |   <- SetupProgress (first-run only)
 | │ ✓ פרופיל  ✓ שעות  ✓ סוגי תורים  ○ מדיניות │      |

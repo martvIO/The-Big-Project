@@ -1,7 +1,9 @@
-# Design Gate Package — F9 rev 1
+# Design Gate Package — F9 rev 2 · **GATE: PASSED (design-critic ACCEPT, round 2)**
 
 **Screens**: `storefront-catalog.md` · `storefront-dress-detail.md` · `storefront-profile-hours.md` · `manage-restyle.md` · **Prototype**: `prototype.html` (self-contained RTL; fonts via Google Fonts link for preview only — production self-hosts)
-**Gate**: design-critic agent, max 3 rounds. Rev-1 verdict recorded per screen; FINAL approval follows interview synthesis (`../../research/interview-status.md`).
+**Gate**: design-critic agent, max 3 rounds. FINAL approval follows interview synthesis (`../../research/interview-status.md`).
+
+**Gate log**: Round 2 — **ACCEPT** (all 16 round-1 findings verified fixed in code; 5 residual minor/nits applied post-accept: CSS-comment syntax in `.fav-slot`, `aria-hidden` on `.monogram`, tokenized `.skip`/`.a11y-btn` px values; error-block-identity and hours-card closed-today variants noted for F9 build QA). **FINAL approval still gates on interview synthesis.** · Round 1 — NEEDS CHANGES (16 findings: missing skip-link + statement-link coverage [blockers]; aria-describedby wiring, a11y-btn touch target, off-scale type sizes, missing detail mobile CTA bar, physical `text-align:left`, no loading/error states rendered, CTA-bar responsive behavior [majors]; token/radius/dir/contrast-table minors). All applied in prototype rev 2 + tokens/spec updates: per-screen skip-links, statement footer on every storefront screen, `--t-*` scale enforced, `.num-col{text-align:end}`, states screen added (skeleton/error/monogram/closed-today), CTA header-inline @≥768 + bottom bar mobile-only, illustration fills tokenized, warning-on-paper contrast computed (5.20:1).
 
 ## Motion plan (shared)
 

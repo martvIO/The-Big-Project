@@ -1,6 +1,6 @@
 # Screen: Dress Detail (`/dress/{id}`)
 
-**Date**: 2026-07-22 · **Status**: rev 1 — critic-gated, pending interview synthesis · **Layout**: gallery-dominant; single column @mobile, 60/40 split @desktop
+**Date**: 2026-07-22 · **Status**: rev 2 — Design Gate PASSED (round 2, design-critic ACCEPT); FINAL approval pending interview synthesis · **Layout**: gallery-dominant; single column @mobile, 60/40 split @desktop
 
 ## Wireframe (mobile / desktop)
 
@@ -8,11 +8,11 @@
 mobile 375:                          desktop 1440 (max 1200 centered):
 +--------------------+               +---------------------------+----------------+
 | ← חזרה לקולקציה     |               | [thumb]  [ MAIN PHOTO ]   |  שם השמלה       |
-| [  MAIN  PHOTO  ]  |               | [thumb]  [    3:4     ]   |  ₪X,XXX         |
+| [  MAIN  PHOTO  ]  |               | [thumb]  [    3:4     ]   |  X,XXX ₪         |
 | [   3:4 swipe   ]  |               | [thumb]                   |  ~ hairline ~   |
 |  • • ○ ○           |               |                           |  תיאור...        |
 |  שם השמלה (serif)   |               |                           |  מידות: 36 38 40 |
-|  ₪X,XXX            |               |                           |                 |
+|  X,XXX ₪            |               |                           |                 |
 |  ~~ hairline ~~    |               |                           |  [קביעת תור]     |
 |  תיאור ...          |               |                           |  [שיתוף ↗]      |
 |  מידות: 36 38 40 42 |               +---------------------------+----------------+

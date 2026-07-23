@@ -27,8 +27,9 @@ Raw brand gold `#C5A059` **fails text contrast on cream (2.38:1) — it never ca
 | `--color-border-input` | `#B9A98F` | form control borders (meaningful boundary) | ≥3:1 on surfaces ✓ (computed 3.0+) |
 | `--color-success` | `#2E6B4F` | confirmations, saved states | 6.10 on cream · 5.56 on paper ✓ |
 | `--color-danger` | `#A03232` | errors, destructive actions | 6.78 on cream · 6.18 on paper ✓ |
-| `--color-warning-text` | `#8A5A1E` | cautionary text (e.g. policy blocker) | 5.70 on cream ✓ |
+| `--color-warning-text` | `#8A5A1E` | cautionary text (e.g. policy blocker) | 5.70 on cream · 5.20 on paper ✓ |
 | `--color-focus` | `#7F612B` | focus rings (2px offset ring) | 4.86 on cream ✓ (>3:1) |
+| `--illus-1/2/3` | `#EADFCB` `#E7D9C4` `#EFE4D0` | placeholder-illustration fills ONLY (decorative, aria-hidden art) — never UI surfaces or text backgrounds | exempt (decorative) |
 
 Single theme (cream). No dark mode in v1 — the brand is the light luxury paper; revisit only on demand.
 
@@ -40,6 +41,10 @@ Single theme (cream). No dark mode in v1 — the brand is the light luxury paper
 | `--font-body` | `"Assistant", "Heebo", system-ui, sans-serif` | body, forms, UI. Weights 400/600/700 |
 
 Both are Google Fonts with full Hebrew coverage; self-hosted via `@fontsource` in the build (no runtime Google requests — PPL posture + performance). Latin/numeral fallback is inherent (both cover Latin). Digits and prices render in body font always (serif digits wobble in RTL price contexts).
+
+**Research validation** (RTL-luxury lens): Assistant is the de facto body face of the Israeli luxury tier (Factory 54, Karin Bar) — confirmed. Frank Ruhl Libre kept for display over Bellefair (7 weights vs 1; both cover Hebrew). **Latin-only display serifs (Playfair, Didot) are banned for Hebrew headings** — they silently fall back to a sans mid-headline (observed in the wild).
+
+**Price convention (platform-wide, enforced by the `Price` component)**: number-then-shekel — **"5,900 ₪"** — with the numeric run wrapped in `dir="ltr"` + `unicode-bidi: isolate`. Real Israeli sites hand-patch this per element and ship both orders on one page; we systematize it once.
 
 Scale (rem, 16px base — minor-third-ish, tuned for Hebrew x-height):
 
@@ -96,3 +101,5 @@ Language: fades and small translates (≤8px); scale only for modals (0.97→1).
 5. All spacing/typography from tokens — a raw px value in app code is a review defect.
 6. Hebrew is the default (`lang="he" dir="rtl"`); Latin content (URLs, emails, phone) gets `dir="ltr"` inline spans.
 7. Touch targets ≥44×44px on mobile.
+8. Prices only ever render through the `Price` component ("5,900 ₪", LTR-isolated digits) — a hand-formatted shekel amount in app code is a review defect.
+9. No promo/sale visual language, ever: no discount badges, no entry popups, no threshold bars, no countdowns — the single clearest de-luxury signal in the Israeli market.

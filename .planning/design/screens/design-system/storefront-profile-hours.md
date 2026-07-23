@@ -1,6 +1,6 @@
 # Screen: Boutique Profile & Hours (`/about`)
 
-**Date**: 2026-07-22 · **Status**: rev 1 — critic-gated, pending interview synthesis · **Layout**: centered editorial column (max 640px) · **Purpose**: the trust surface (Flow S3) — answers "אמיתי? שווה ביקור? מתי פתוח?"
+**Date**: 2026-07-22 · **Status**: rev 2 — Design Gate PASSED (round 2, design-critic ACCEPT); FINAL approval pending interview synthesis · **Layout**: centered editorial column (max 640px) · **Purpose**: the trust surface (Flow S3) — answers "אמיתי? שווה ביקור? מתי פתוח?"
 
 ## Wireframe
 
@@ -32,7 +32,7 @@
 ```
 
 ## Components
-`SectionHeading` · story text (from F7 `profile.description`) · `HoursTable` (weekly rules collapsed to ranges; days with no window = "סגור"; upcoming exceptions listed with dates, `gold-strong` diamond marker + text — never color alone) · `ContactPanel` (tap-to-call, WhatsApp, maps deep-link from `maps_url`, Instagram) · `BookingCTA`.
+`SectionHeading` · story text (from F7 `profile.description`) · `HoursTable` (weekly rules collapsed to ranges; days with no window = "סגור"; upcoming exceptions listed with dates, `gold-strong` diamond marker + text — never color alone) · `ContactPanel` (tap-to-call, WhatsApp wa.me deep link, **Waze + Google Maps** one-tap navigation from `maps_url`/address — Waze is the Israeli standard, Instagram) · `BookingCTA`.
 
 ## States
 
