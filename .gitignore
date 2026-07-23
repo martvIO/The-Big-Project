@@ -321,3 +321,7 @@ config/local.*
 # Spartan AI config (contains API keys)
 .spartan/ai.env
 .worktrees/
+
+# Second brain — machine-local session state only; wiki/ scripts/ hooks/ are tracked
+.brain/queue/
+.brain/output/

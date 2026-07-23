@@ -61,6 +61,22 @@ jobs:
       - name: Build
         run: pnpm -r build
 
+  brain:
+    name: Code wiki drift (warn-only)
+    # warn-only until waves 1-3 are complete and the stale count has held at zero.
+    # This is the only mechanical guard against .brain/ silently rotting, so flipping
+    # it to blocking is what keeps the wiki trustworthy. See .brain/CLAUDE.md.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Brain drift check
+        run: make brain-check
+      - name: Brain lint (structure and links)
+        run: make brain-lint
+
   audit:
     name: Dependency audits (warn-only)
     # warn-only until the E4 ship gate flips this to blocking
