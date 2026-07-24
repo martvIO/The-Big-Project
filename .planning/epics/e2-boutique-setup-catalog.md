@@ -1,7 +1,7 @@
 # Epic: E2 — Boutique Setup & Catalog
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: planning
+**Status**: building — F7 shipped (PR #10, merged 2026-07-24); F9 design gate PASSED; F8 next
 **Owner**: team
 **PRD**: §2 (owner controls), §3 (inventory), storefront browse half of §4
 
@@ -25,7 +25,7 @@ Before anyone can book, the boutique must exist as a configured business (hours,
 
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
-| 7 | Owner settings, toggles & structured cancellation policy | building | [spec](../specs/owner-settings.md) | [plan](../plans/owner-settings.md) | E1 #5 |
+| 7 | Owner settings, toggles & structured cancellation policy | done | [spec](../specs/owner-settings.md) | [plan](../plans/owner-settings.md) | E1 #5 |
 | 8 | Catalog management | todo | — | — | E1 #2 (S3 base), E1 #5 |
 | 9 | RTL design system & tokens | spec | [design package](../design/screens/design-system/README.md) | — (build plan after interview-gated final approval) | E1 #1 |
 | 10 | Storefront browse | todo | — | — | E1 #4, #7, #8, #9 |

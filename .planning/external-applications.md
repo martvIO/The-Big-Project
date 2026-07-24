@@ -5,7 +5,7 @@ Created 2026-07-22 by E1 Feature 2. Lead times are multi-week — filing order i
 
 | # | Item | Status | Blocks | Notes |
 |---|------|--------|--------|-------|
-| 1 | AWS account + il-central-1 opt-in | not-started | E2 #8 (S3 upload), E4 skeleton, production | Create account, enable the il-central-1 opt-in region, billing alarm. Fastest item — do first. |
+| 1 | AWS account + il-central-1 opt-in | not-started | E2 #8 (S3 upload), E4 skeleton, production | Create account, enable the il-central-1 opt-in region, billing alarm. Fastest item — do first. **Re-flagged 2026-07-24 at F8 kickoff — now the live blocker.** F8 ships its upload code behind a storage port, CI-verified against MinIO, so the build is not blocked; but no environment can accept a real upload until this lands. A staging S3 smoke test (presign → upload → confirm → signed GET against `boutique-staging-media`) is queued on approval. |
 | 2 | Production domain | not-started | staging DNS naming, Route 53 zone, production | `.co.il` may require Israeli-entity eligibility — confirm registrar rules before committing. A separate cheap staging domain is an acceptable stopgap (buy now if the production domain will take time). |
 | 3 | Grow (Meshulam) merchant account | not-started | E4 #17–18 (payments), deposit flows | Needs Israeli business registration + bank account docs. Longest lead time — file ASAP. Per-tenant merchant accounts: the pilot boutique files its own; platform needs sandbox access for E4 development. |
 | 4 | SMS sender-ID / route registration | not-started | E3 #11 (OTP + booking SMS) | Provider decision (Twilio vs Inforu vs 019) is F2 Task 1 — comparison pending. Sender-ID registration is filed with the chosen provider/route after the decision. |
