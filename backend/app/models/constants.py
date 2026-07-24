@@ -18,6 +18,14 @@ class AppointmentAudience(StrEnum):
     BRIDES_ONLY = "brides_only"
 
 
+class DressMediaStatus(StrEnum):
+    # pending is written at presign; ready only after confirm has verified the
+    # object's magic bytes. The DB pins this exact set — a third value would put
+    # an unverified upload on the gallery read path.
+    PENDING = "pending"
+    READY = "ready"
+
+
 class AuditAction(StrEnum):
     LOGIN = "login"
     LOGIN_FAILED = "login_failed"

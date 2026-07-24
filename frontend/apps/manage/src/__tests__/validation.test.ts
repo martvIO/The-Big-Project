@@ -1,11 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACCEPTED_CONTENT_TYPES,
   agorotFromIlsInput,
+  EU_SIZE_QUICK_LIST,
+  formatIlsAmount,
   ilsFromAgorot,
   MAX_DEPOSIT_AMOUNT_AGOROT,
+  MAX_DRESS_DESCRIPTION_LENGTH,
+  MAX_DRESS_NAME_LENGTH,
+  MAX_MEDIA_PER_DRESS,
+  MAX_PRICE_AGOROT,
+  MAX_SEARCH_LENGTH,
+  MAX_SIZE_LABEL_LENGTH,
+  MAX_SORT_ORDER,
+  MAX_UPLOAD_BYTES,
+  MAX_VARIANT_QUANTITY,
+  MAX_VARIANTS_PER_DRESS,
+  MIN_UPLOAD_BYTES,
+  normalizeSizeLabel,
   validateAppointmentType,
+  validateDress,
   validateExceptionTimes,
   validateTerms,
+  validateUploadFile,
+  validateVariants,
   validateWeeklyRules,
 } from "../validation";
 
@@ -169,5 +187,180 @@ describe("validateTerms", () => {
     expect(validateTerms({ ...valid, forfeit_percent: -1 })).not.toBeNull();
     expect(validateTerms({ ...valid, forfeit_percent: 101 })).not.toBeNull();
     expect(validateTerms({ ...valid, forfeit_percent: 0 })).toBeNull();
+  });
+});
+
+// --- catalog (Feature 8) ---
+
+describe("catalog constants mirror app/catalog/validation.py", () => {
+  it("carries every mirrored bound at the backend's value", () => {
+    expect(MAX_DRESS_NAME_LENGTH).toBe(200);
+    expect(MAX_DRESS_DESCRIPTION_LENGTH).toBe(4000);
+    expect(MAX_PRICE_AGOROT).toBe(100_000_000);
+    expect(MAX_VARIANTS_PER_DRESS).toBe(60);
+    expect(MAX_SIZE_LABEL_LENGTH).toBe(32);
+    expect(MAX_VARIANT_QUANTITY).toBe(1000);
+    expect(MAX_MEDIA_PER_DRESS).toBe(12);
+    expect(MAX_UPLOAD_BYTES).toBe(10_485_760);
+    expect(MIN_UPLOAD_BYTES).toBe(1024);
+    expect(MAX_SEARCH_LENGTH).toBe(100);
+    expect(MAX_SORT_ORDER).toBe(1_000_000);
+  });
+
+  it("accepts exactly the three image types the presign policy pins", () => {
+    expect(ACCEPTED_CONTENT_TYPES).toEqual({
+      "image/jpeg": ".jpg",
+      "image/png": ".png",
+      "image/webp": ".webp",
+    });
+  });
+
+  it("offers the even EU sizes 32-58 as quick entry (frontend-only)", () => {
+    expect(EU_SIZE_QUICK_LIST).toEqual([32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58]);
+  });
+});
+
+describe("normalizeSizeLabel", () => {
+  it("strips and collapses whitespace", () => {
+    expect(normalizeSizeLabel(" 38 ")).toBe("38");
+    expect(normalizeSizeLabel("US  6")).toBe("US 6");
+    expect(normalizeSizeLabel("\tמידה   מיוחדת\n")).toBe("מידה מיוחדת");
+  });
+
+  it("does NOT lowercase — casing is preserved as typed", () => {
+    expect(normalizeSizeLabel("US 6")).toBe("US 6");
+    expect(normalizeSizeLabel("us 6")).toBe("us 6");
+  });
+});
+
+describe("formatIlsAmount", () => {
+  it("groups thousands and drops a zero fraction", () => {
+    expect(formatIlsAmount(890000)).toBe("8,900");
+    expect(formatIlsAmount(120000)).toBe("1,200");
+    expect(formatIlsAmount(1580000)).toBe("15,800");
+  });
+
+  it("keeps a non-zero fraction", () => {
+    expect(formatIlsAmount(890050)).toBe("8,900.50");
+  });
+
+  it("round-trips ILS input through agorot", () => {
+    const agorot = agorotFromIlsInput("8900.50");
+    expect(agorot).toBe(890050);
+    expect(ilsFromAgorot(agorot as number)).toBe("8900.50");
+    expect(formatIlsAmount(agorot as number)).toBe("8,900.50");
+  });
+});
+
+describe("validateDress", () => {
+  const valid = { name: "עלמה", description: "שמלה", price_agorot: 890000, sort_order: 0 };
+
+  it("accepts a valid dress", () => {
+    expect(validateDress(valid)).toBeNull();
+  });
+
+  it("accepts a dress with no price and no description", () => {
+    expect(validateDress({ ...valid, description: null, price_agorot: null })).toBeNull();
+  });
+
+  it("rejects a blank or over-long name", () => {
+    expect(validateDress({ ...valid, name: "   " })).not.toBeNull();
+    expect(validateDress({ ...valid, name: "א".repeat(MAX_DRESS_NAME_LENGTH + 1) })).not.toBeNull();
+  });
+
+  it("rejects an over-long description", () => {
+    expect(
+      validateDress({ ...valid, description: "א".repeat(MAX_DRESS_DESCRIPTION_LENGTH + 1) }),
+    ).not.toBeNull();
+  });
+
+  it("rejects a price outside 1..MAX_PRICE_AGOROT", () => {
+    expect(validateDress({ ...valid, price_agorot: 0 })).not.toBeNull();
+    expect(validateDress({ ...valid, price_agorot: MAX_PRICE_AGOROT + 1 })).not.toBeNull();
+  });
+
+  it("rejects a sort order beyond the cap", () => {
+    expect(validateDress({ ...valid, sort_order: MAX_SORT_ORDER + 1 })).not.toBeNull();
+  });
+});
+
+describe("validateVariants", () => {
+  it("accepts a valid matrix", () => {
+    expect(validateVariants([{ size_label: "38", quantity: 3 }])).toBeNull();
+  });
+
+  it("rejects a blank or over-long size label", () => {
+    expect(validateVariants([{ size_label: "  ", quantity: 1 }])).not.toBeNull();
+    expect(
+      validateVariants([{ size_label: "a".repeat(MAX_SIZE_LABEL_LENGTH + 1), quantity: 1 }]),
+    ).not.toBeNull();
+  });
+
+  it("rejects a quantity outside 0..MAX_VARIANT_QUANTITY", () => {
+    expect(validateVariants([{ size_label: "38", quantity: -1 }])).not.toBeNull();
+    expect(
+      validateVariants([{ size_label: "38", quantity: MAX_VARIANT_QUANTITY + 1 }]),
+    ).not.toBeNull();
+    expect(validateVariants([{ size_label: "38", quantity: 0 }])).toBeNull();
+  });
+
+  it("rejects duplicate sizes that differ only in case or whitespace", () => {
+    expect(
+      validateVariants([
+        { size_label: "US 6", quantity: 1 },
+        { size_label: "us  6", quantity: 2 },
+      ]),
+    ).not.toBeNull();
+  });
+
+  it("rejects more than MAX_VARIANTS_PER_DRESS rows", () => {
+    const rows = Array.from({ length: MAX_VARIANTS_PER_DRESS + 1 }, (_, index) => ({
+      size_label: String(index),
+      quantity: 1,
+    }));
+    expect(validateVariants(rows)).not.toBeNull();
+  });
+});
+
+describe("validateUploadFile", () => {
+  function file(name: string, type: string, size: number) {
+    return { name, type, size };
+  }
+
+  it("accepts each accepted content type at a legal size", () => {
+    expect(validateUploadFile(file("a.jpg", "image/jpeg", 3_200_000))).toBeNull();
+    expect(validateUploadFile(file("a.png", "image/png", 2048))).toBeNull();
+    expect(validateUploadFile(file("a.webp", "image/webp", MAX_UPLOAD_BYTES))).toBeNull();
+  });
+
+  it("rejects HEIC with the transcode instruction", () => {
+    expect(validateUploadFile(file("IMG_4823.heic", "image/heic", 6_000_000))).toBe(
+      "HEIC אינו נתמך. שמרי כ-JPG",
+    );
+    // Safari hands over an empty type for HEIC — the extension is the fallback.
+    expect(validateUploadFile(file("IMG_4823.HEIC", "", 6_000_000))).toBe(
+      "HEIC אינו נתמך. שמרי כ-JPG",
+    );
+  });
+
+  it("rejects any other unaccepted type", () => {
+    expect(validateUploadFile(file("a.gif", "image/gif", 2048))).toBe(
+      "סוג הקובץ אינו נתמך — JPG, PNG או WebP בלבד",
+    );
+    expect(validateUploadFile(file("a.svg", "image/svg+xml", 2048))).toBe(
+      "סוג הקובץ אינו נתמך — JPG, PNG או WebP בלבד",
+    );
+  });
+
+  it("rejects a file over MAX_UPLOAD_BYTES", () => {
+    expect(validateUploadFile(file("a.jpg", "image/jpeg", MAX_UPLOAD_BYTES + 1))).toBe(
+      "הקובץ גדול מ-10MB",
+    );
+  });
+
+  it("rejects a file under MIN_UPLOAD_BYTES", () => {
+    expect(validateUploadFile(file("a.jpg", "image/jpeg", MIN_UPLOAD_BYTES - 1))).toBe(
+      "הקובץ אינו תמונה תקינה.",
+    );
   });
 });

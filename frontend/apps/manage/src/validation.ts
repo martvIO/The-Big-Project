@@ -27,6 +27,15 @@ export function ilsFromAgorot(agorot: number): string {
   return `${whole}.${String(fraction).padStart(2, "0")}`;
 }
 
+// Display-only: thousands separated, a zero fraction dropped. The caller wraps
+// the result in <bdi dir="ltr"> — the numeric run must never reorder inside
+// surrounding Hebrew.
+export function formatIlsAmount(agorot: number): string {
+  const [whole, fraction] = ilsFromAgorot(agorot).split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction === "00" ? grouped : `${grouped}.${fraction}`;
+}
+
 function toMinutes(time: string): number {
   const [hours = "0", minutes = "0"] = time.split(":");
   return Number(hours) * 60 + Number(minutes);
@@ -149,6 +158,146 @@ export function validateTerms(draft: TermsDraft): string | null {
     draft.forfeit_percent > 100
   ) {
     return "אחוז החילוט חייב להיות בין 0 ל-100";
+  }
+  return null;
+}
+
+// --- catalog (Feature 8) ---
+//
+// Mirrors of backend/app/catalog/validation.py. The backend is the authority;
+// these exist so the owner sees an immediate Hebrew error instead of a
+// round-trip 400 — and, for uploads, so a 10 MB file never leaves her phone
+// only to be refused. backend/tests/test_frontend_constant_parity.py fails if
+// any of these drifts from its Python counterpart.
+
+export const MAX_DRESS_NAME_LENGTH = 200;
+export const MAX_DRESS_DESCRIPTION_LENGTH = 4000;
+export const MAX_PRICE_AGOROT = 100_000_000;
+export const MAX_VARIANTS_PER_DRESS = 60;
+export const MAX_SIZE_LABEL_LENGTH = 32;
+export const MAX_VARIANT_QUANTITY = 1000;
+export const MAX_MEDIA_PER_DRESS = 12;
+export const MAX_UPLOAD_BYTES = 10_485_760;
+export const MIN_UPLOAD_BYTES = 1024;
+export const MAX_SEARCH_LENGTH = 100;
+export const MAX_SORT_ORDER = 1_000_000;
+
+// The extension map is the server's, restated for the client's type check only:
+// the storage key's extension is always derived server-side from the declared
+// type, never from a filename.
+export const ACCEPTED_CONTENT_TYPES: Record<string, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+
+// Frontend-only quick-entry list. The backend accepts free-text labels and has
+// no consumer for this, so defining it server-side too would guarantee drift.
+export const EU_SIZE_QUICK_LIST = [32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58];
+
+// Strip and collapse internal whitespace. Deliberately NOT lowercased — the
+// owner's "US 6" is stored as typed; lower() in the DB's partial unique index is
+// what stops "US 6" and "us 6" becoming two stock buckets for one size, and
+// sizeKey() is how the client predicts that collision.
+export function normalizeSizeLabel(label: string): string {
+  return label.trim().split(/\s+/).join(" ");
+}
+
+// The client-side twin of the index's lower(size_label) expression.
+export function sizeKey(label: string): string {
+  return normalizeSizeLabel(label).toLowerCase();
+}
+
+export interface DressDraft {
+  name: string;
+  description: string | null;
+  price_agorot: number | null;
+  sort_order: number;
+}
+
+export function validateDress(draft: DressDraft): string | null {
+  if (!draft.name.trim()) {
+    return "יש להזין שם לשמלה";
+  }
+  if (draft.name.length > MAX_DRESS_NAME_LENGTH) {
+    return "שם השמלה ארוך מדי";
+  }
+  if (draft.description !== null && draft.description.length > MAX_DRESS_DESCRIPTION_LENGTH) {
+    return "התיאור ארוך מדי";
+  }
+  // NULL price means "no price recorded" — the storefront shows «מחיר בתיאום».
+  if (
+    draft.price_agorot !== null &&
+    (!Number.isInteger(draft.price_agorot) ||
+      draft.price_agorot < 1 ||
+      draft.price_agorot > MAX_PRICE_AGOROT)
+  ) {
+    return "המחיר מחוץ לטווח המותר";
+  }
+  if (!Number.isInteger(draft.sort_order) || Math.abs(draft.sort_order) > MAX_SORT_ORDER) {
+    return "סדר בקטלוג מחוץ לטווח המותר";
+  }
+  return null;
+}
+
+export interface VariantDraft {
+  size_label: string;
+  quantity: number;
+}
+
+export function validateVariants(variants: VariantDraft[]): string | null {
+  if (variants.length > MAX_VARIANTS_PER_DRESS) {
+    return `אפשר עד ${MAX_VARIANTS_PER_DRESS} מידות לשמלה.`;
+  }
+  const seen = new Set<string>();
+  for (const variant of variants) {
+    const label = normalizeSizeLabel(variant.size_label);
+    if (!label) {
+      return "יש להזין שם מידה";
+    }
+    if (label.length > MAX_SIZE_LABEL_LENGTH) {
+      return "שם המידה ארוך מדי";
+    }
+    if (
+      !Number.isInteger(variant.quantity) ||
+      variant.quantity < 0 ||
+      variant.quantity > MAX_VARIANT_QUANTITY
+    ) {
+      return `הכמות חייבת להיות בין 0 ל-${MAX_VARIANT_QUANTITY}`;
+    }
+    const key = sizeKey(label);
+    if (seen.has(key)) {
+      return `המידה «${label}» כבר קיימת ברשימה.`;
+    }
+    seen.add(key);
+  }
+  return null;
+}
+
+// Only the properties we actually read, so tests need no File polyfill.
+export interface UploadCandidate {
+  name: string;
+  type: string;
+  size: number;
+}
+
+export function validateUploadFile(file: UploadCandidate): string | null {
+  const type = file.type.toLowerCase();
+  const name = file.name.toLowerCase();
+  // Safari hands over an empty type for HEIC, so the extension is the fallback.
+  // HEIC gets its own message: no browser renders it, but the owner's phone
+  // can save as JPG, which is an action she can take.
+  if (type === "image/heic" || type === "image/heif" || /\.hei[cf]$/.test(name)) {
+    return "HEIC אינו נתמך. שמרי כ-JPG";
+  }
+  if (!(type in ACCEPTED_CONTENT_TYPES)) {
+    return "סוג הקובץ אינו נתמך — JPG, PNG או WebP בלבד";
+  }
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return "הקובץ גדול מ-10MB";
+  }
+  if (file.size < MIN_UPLOAD_BYTES) {
+    return "הקובץ אינו תמונה תקינה.";
   }
   return null;
 }

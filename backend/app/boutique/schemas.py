@@ -26,10 +26,11 @@ from app.boutique.validation import (
 )
 from app.models.constants import AppointmentAudience
 
-
-class ForbidExtraModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+# Both now live in app/schemas.py so app/catalog/ does not import a boutique
+# schema. Re-exported here — the `as` form is the re-export idiom ruff accepts —
+# so no import site and no wire shape changed.
+from app.schemas import ForbidExtraModel as ForbidExtraModel
+from app.schemas import OkResponse as OkResponse
 
 # --- settings (profile + toggles) ---
 
@@ -167,7 +168,3 @@ class TermsHistoryResponse(BaseModel):
     total: int
     offset: int
     limit: int
-
-
-class OkResponse(BaseModel):
-    ok: bool = True
