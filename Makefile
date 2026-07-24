@@ -2,7 +2,7 @@
 BACKEND := $(CURDIR)/backend
 FRONTEND := $(CURDIR)/frontend
 
-.PHONY: bootstrap dev worker test test-db test-all lint fmt fe-dev fe-build \
+.PHONY: bootstrap dev worker test test-db test-all lint fmt fe-dev fe-build fe-test \
         brain-scan brain-index brain-check brain-lint
 
 bootstrap:
@@ -36,6 +36,9 @@ fe-dev:
 
 fe-build:
 	cd "$(FRONTEND)" && pnpm -r build
+
+fe-test:
+	cd "$(FRONTEND)" && pnpm -r --if-present test
 
 # --- .brain code wiki ---------------------------------------------------------
 brain-scan:

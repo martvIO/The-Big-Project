@@ -1,6 +1,8 @@
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import cast, func, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.constants import TenantStatus
@@ -63,6 +65,34 @@ class TenantsRepository:
             )
             result = await session.execute(stmt)
             return result.scalar_one_or_none() is not None
+
+    async def merge_settings(
+        self,
+        tenant_id: UUID,
+        *,
+        profile: dict[str, Any] | None = None,
+        toggles: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """ONE atomic `settings = settings || :patch::jsonb` — never a Python
+        read-modify-write — so a concurrent writer of a sibling top-level key
+        (E4 #17/#20 will add them) can never be clobbered. Only the provided
+        keys enter the patch. Returns the merged settings, or None when the
+        tenant is missing or soft-deleted."""
+        patch: dict[str, Any] = {}
+        if profile is not None:
+            patch["profile"] = profile
+        if toggles is not None:
+            patch["toggles"] = toggles
+        async with self._session_factory() as session, session.begin():
+            stmt = (
+                update(Tenant)
+                .where(Tenant.id == tenant_id, Tenant.deleted_at.is_(None))
+                .values(settings=Tenant.settings.op("||", return_type=JSONB)(cast(patch, JSONB)))
+                .returning(Tenant.settings)
+            )
+            result = await session.execute(stmt)
+            merged: dict[str, Any] | None = result.scalar_one_or_none()
+            return merged
 
     async def list_active(self) -> list[Tenant]:
         async with self._session_factory() as session:

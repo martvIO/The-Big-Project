@@ -58,6 +58,8 @@ jobs:
         run: pnpm -r lint
       - name: Typecheck
         run: pnpm -r typecheck
+      - name: Test
+        run: pnpm -r --if-present test
       - name: Build
         run: pnpm -r build
 

@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     login_window_seconds: int = 900
     session_ttl_seconds: int = 60 * 60 * 12
 
+    # Modest per-tenant throttle on terms-version creation: the table is
+    # append-only by DB grant, so spam on this path is permanent bloat.
+    terms_creation_max_per_window: int = 10
+    terms_creation_window_seconds: int = 3600
+
     # Per-IP login rate limiting needs the REAL client IP. Behind a proxy
     # (Railway/ALB) request.client.host is the proxy — one global bucket that a
     # tiny burst could use to 429 every tenant. So the per-IP key is OFF unless
