@@ -1,7 +1,7 @@
 # Epic: E2 — Boutique Setup & Catalog
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: building — F7 shipped (PR #10, merged 2026-07-24); F9 design gate PASSED; F8 next
+**Status**: building — F7 (PR #10) and F8 (PR #11) shipped 2026-07-24; F9 design gate PASSED (build pending, see Risks); **F10 is the only feature left, and it is gated on the AWS account**
 **Owner**: team
 **PRD**: §2 (owner controls), §3 (inventory), storefront browse half of §4
 
@@ -16,7 +16,7 @@ Before anyone can book, the boutique must exist as a configured business (hours,
 ## Success Criteria
 
 - [ ] Owner configures hours + exceptions, appointment types (duration, audience, deposit amount), and a **versioned cancellation policy combining terms text + structured refund-window fields**; v1 toggles work (deposit on/off, brides-only, price visibility per item)
-- [ ] Owner manages dresses with size/qty variants, status (available / out-of-stock / manual reserved flag), and multi-image galleries via presigned S3 upload
+- [x] Owner manages dresses with size/qty variants, status (available / out-of-stock / manual reserved flag), and multi-image galleries via presigned S3 upload — F8, merged PR #11 2026-07-24. Out-of-stock is **derived** from the variant rows, never stored; "reserved" is the manual date-less flag. Upload runs behind a storage port, CI-verified against MinIO; with no bucket configured the catalog stays fully usable and only the three media write endpoints answer 503.
 - [ ] Customers browse the catalog and dress pages on the tenant subdomain in Hebrew RTL, luxury cream/gold design, WCAG 2.0 AA (IS 5568), price visibility respected
 
 ---
@@ -26,7 +26,7 @@ Before anyone can book, the boutique must exist as a configured business (hours,
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
 | 7 | Owner settings, toggles & structured cancellation policy | done | [spec](../specs/owner-settings.md) | [plan](../plans/owner-settings.md) | E1 #5 |
-| 8 | Catalog management | planned | [spec](../specs/catalog-management.md) | [plan](../plans/catalog-management.md) | E1 #2 (S3 base), E1 #5 |
+| 8 | Catalog management | done | [spec](../specs/catalog-management.md) | [plan](../plans/catalog-management.md) | E1 #2 (S3 base), E1 #5 |
 | 9 | RTL design system & tokens | spec | [design package](../design/screens/design-system/README.md) | — (build plan after interview-gated final approval) | E1 #1 |
 | 10 | Storefront browse | todo | — | — | E1 #4, #7, #8, #9 |
 
