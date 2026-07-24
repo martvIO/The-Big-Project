@@ -16,8 +16,13 @@ import uuid
 import httpx
 import pytest
 from conftest import MinioEndpoint
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
+from app.auth.rate_limit import FixedWindowRateLimiter
+from app.catalog.service import CatalogService, MediaMismatchError
 from app.core.config import Settings
+from app.models.constants import DressMediaStatus
 from app.storage.base import PresignedPost
 from app.storage.s3 import S3MediaStorage
 
@@ -163,3 +168,87 @@ async def test_delete_object_then_head_object_is_none(storage: S3MediaStorage) -
 
     await storage.delete_object(key=key)
     assert await storage.head_object(key=key) is None
+
+
+# --- the service against real storage ---
+
+
+def _engine(app_role_url: str) -> AsyncEngine:
+    return create_async_engine(app_role_url, poolclass=NullPool)
+
+
+def _service(engine: AsyncEngine, storage: S3MediaStorage) -> CatalogService:
+    return CatalogService(
+        async_sessionmaker(engine, expire_on_commit=False),
+        media_storage=storage,
+        presign_rate_limiter=FixedWindowRateLimiter(
+            max_attempts=1000, window_seconds=3600, clock=time.monotonic
+        ),
+    )
+
+
+async def _dress(service: CatalogService, tenant_id: uuid.UUID) -> uuid.UUID:
+    created = await service.create_dress(
+        tenant_id,
+        name="Aurora",
+        description=None,
+        price_agorot=None,
+        price_visible=True,
+        reserved=False,
+        sort_order=0,
+    )
+    return created.row.id
+
+
+async def test_presign_upload_confirm_round_trips_against_real_storage(
+    app_role_url: str, storage: S3MediaStorage
+) -> None:
+    """The one row that exercises the whole sequence end to end: the service's
+    own key, MinIO's own policy enforcement, then head_object and read_prefix
+    over the wire — the parts InMemoryMediaStorage can only imitate."""
+    engine = _engine(app_role_url)
+    service = _service(engine, storage)
+    tenant_id = uuid.uuid4()
+    payload = _jpeg(4096)
+    try:
+        dress_id = await _dress(service, tenant_id)
+        presigned = await service.presign_media(
+            tenant_id, dress_id, content_type=JPEG, byte_size=len(payload)
+        )
+        assert presigned.fields["key"].startswith(f"tenants/{tenant_id}/dresses/{dress_id}/media/")
+
+        posted = _post(PresignedPost(url=presigned.url, fields=presigned.fields), payload)
+        assert posted.status_code == 204, posted.text
+        assert await storage.head_object(key=presigned.fields["key"]) is not None
+
+        detail = await service.confirm_media(tenant_id, dress_id, presigned.media_id)
+        assert [item.row.id for item in detail.media] == [presigned.media_id]
+        assert detail.media[0].row.status == DressMediaStatus.READY
+        assert detail.media[0].url is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_confirm_deletes_an_honest_size_polyglot(
+    app_role_url: str, storage: S3MediaStorage
+) -> None:
+    """Declared and posted as image/jpeg at exactly the declared size, so the
+    POST policy accepts it — the 16-byte magic check is the only thing between
+    an HTML payload and our bucket, and the object must not survive the refusal."""
+    engine = _engine(app_role_url)
+    service = _service(engine, storage)
+    tenant_id = uuid.uuid4()
+    payload = b"<!DOCTYPE html><script>alert(1)</script>".ljust(2048, b" ")
+    try:
+        dress_id = await _dress(service, tenant_id)
+        presigned = await service.presign_media(
+            tenant_id, dress_id, content_type=JPEG, byte_size=len(payload)
+        )
+        posted = _post(PresignedPost(url=presigned.url, fields=presigned.fields), payload)
+        assert posted.status_code == 204, posted.text
+
+        with pytest.raises(MediaMismatchError):
+            await service.confirm_media(tenant_id, dress_id, presigned.media_id)
+        assert await storage.head_object(key=presigned.fields["key"]) is None
+    finally:
+        await engine.dispose()

@@ -12,12 +12,16 @@ from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
+from app.errors import DomainValidationError
 from app.models.constants import AppointmentAudience
 
 
-class BoutiqueValidationError(Exception):
+class BoutiqueValidationError(DomainValidationError):
     """Domain-rule violation on an owner-settings write; the router maps it to
-    the house-shape 400."""
+    the house-shape 400.
+
+    Re-parented onto the shared base so one handler serves every domain module;
+    behaviour-neutral, since Starlette still matches this class through its MRO."""
 
 
 MAX_PROFILE_PHONE_LENGTH = 32

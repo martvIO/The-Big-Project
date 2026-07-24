@@ -12,6 +12,8 @@ import base64
 import datetime
 import json
 import socket
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +24,18 @@ from botocore.exceptions import (
     NoCredentialsError,
     PartialCredentialsError,
 )
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.auth.rate_limit import FixedWindowRateLimiter
+from app.catalog.service import CatalogService
+from app.catalog.validation import PRESIGN_TTL_SECONDS, SIGNED_GET_TTL_SECONDS
 from app.core.config import Settings
+from app.models.dress_media import DressMedia
 from app.storage.base import (
     MediaNotConfiguredError,
     MediaStorage,
     MediaStorageUnavailableError,
+    ObjectHead,
     PresignedPost,
 )
 from app.storage.memory import InMemoryMediaStorage
@@ -410,6 +418,104 @@ async def test_head_object_never_reads_an_outage_as_a_missing_object(
     storage = _stub_storage(monkeypatch, error)
     with pytest.raises(MediaStorageUnavailableError):
         await storage.head_object(key=KEY)
+
+
+# --- the service passes the production TTLs ---
+
+
+class _RecordingStorage:
+    """Records the expires_in every call site asks for. The MinIO rows sign with
+    expires_in=1 to test S3's *enforcement* of expiry without sleeping 15
+    minutes, so without this fake the production defaults would never be
+    asserted anywhere."""
+
+    def __init__(self) -> None:
+        self.presign_expires_in: list[int] = []
+        self.signed_get_expires_in: list[int] = []
+        self.signed_get_filenames: list[str] = []
+
+    @property
+    def is_configured(self) -> bool:
+        return True
+
+    def presigned_post(
+        self, *, key: str, content_type: str, exact_bytes: int, expires_in: int
+    ) -> PresignedPost:
+        self.presign_expires_in.append(expires_in)
+        return PresignedPost(url="https://media.test/upload", fields={"key": key})
+
+    def signed_get_url(self, *, key: str, content_type: str, filename: str, expires_in: int) -> str:
+        self.signed_get_expires_in.append(expires_in)
+        self.signed_get_filenames.append(filename)
+        return f"https://media.test/{key}"
+
+    async def head_object(self, *, key: str) -> ObjectHead | None:
+        return None
+
+    async def read_prefix(self, *, key: str, length: int) -> bytes:
+        return b""
+
+    async def delete_object(self, *, key: str) -> None:
+        return None
+
+
+def _catalog_service(storage: MediaStorage) -> CatalogService:
+    # The engine is never connected: both assertions below are about what the
+    # service asks the storage port for, not about the database.
+    engine = create_async_engine("postgresql+asyncpg://unused:unused@127.0.0.1:1/unused")
+    return CatalogService(
+        async_sessionmaker(engine, expire_on_commit=False),
+        media_storage=storage,
+        presign_rate_limiter=FixedWindowRateLimiter(
+            max_attempts=1, window_seconds=1, clock=time.monotonic
+        ),
+    )
+
+
+def test_service_presigns_with_the_production_ttl() -> None:
+    storage = _RecordingStorage()
+    _catalog_service(storage)._sign_upload(key=KEY, content_type=JPEG, byte_size=4096)
+    assert storage.presign_expires_in == [PRESIGN_TTL_SECONDS]
+
+
+def test_service_signs_gallery_urls_with_the_production_ttl() -> None:
+    storage = _RecordingStorage()
+    row = DressMedia(
+        id=uuid.UUID(MEDIA_ID),
+        tenant_id=uuid.UUID(TENANT_ID),
+        dress_id=uuid.UUID(DRESS_ID),
+        storage_key=KEY,
+        content_type=JPEG,
+        byte_size=4096,
+        status="ready",
+        sort_order=0,
+    )
+    view = _catalog_service(storage)._media_view(row)
+
+    assert storage.signed_get_expires_in == [SIGNED_GET_TTL_SECONDS]
+    # The download name comes from the row's own id — the original filename is
+    # never stored, so no client string can reach a Content-Disposition header.
+    assert storage.signed_get_filenames == [f"{MEDIA_ID}.jpg"]
+    assert view.url is not None
+    assert view.url_expires_at is not None
+
+
+def test_unconfigured_storage_serialises_a_null_url_instead_of_raising() -> None:
+    """Reads keep working with no bucket: only the media WRITE endpoints answer
+    503. A read that raised would take the whole catalog down with the bucket."""
+    row = DressMedia(
+        id=uuid.UUID(MEDIA_ID),
+        tenant_id=uuid.UUID(TENANT_ID),
+        dress_id=uuid.UUID(DRESS_ID),
+        storage_key=KEY,
+        content_type=JPEG,
+        byte_size=4096,
+        status="ready",
+        sort_order=0,
+    )
+    view = _catalog_service(UnconfiguredMediaStorage())._media_view(row)
+    assert view.url is None
+    assert view.url_expires_at is None
 
 
 # --- marker guard ---

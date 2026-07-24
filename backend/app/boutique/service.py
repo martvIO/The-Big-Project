@@ -26,6 +26,7 @@ from app.db.repositories.availability import (
 from app.db.repositories.tenants import TenantsRepository
 from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
+from app.errors import DomainNotFoundError
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.constants import AppointmentAudience
@@ -34,10 +35,13 @@ from app.models.terms_version import TermsVersion
 TERMS_HISTORY_DEFAULT_LIMIT = 50
 
 
-class NotFoundError(Exception):
+class NotFoundError(DomainNotFoundError):
     """Target row doesn't exist for this tenant — including another tenant's id
     (RLS + the explicit predicate make foreign rows indistinguishable from
-    missing ones, by design)."""
+    missing ones, by design).
+
+    Re-parented onto the shared base so one handler serves every domain module;
+    behaviour-neutral, since Starlette still matches this class through its MRO."""
 
 
 class DuplicateNameError(Exception):
