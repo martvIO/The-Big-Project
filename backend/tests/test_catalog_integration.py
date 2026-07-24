@@ -993,9 +993,14 @@ async def test_list_page_issues_a_fixed_statement_count(app_role_url: str) -> No
 
         assert len(page.items) == 50
         assert len(statements) == 4, statements
-        assert page.items[0].summary.variant_count == 1
-        assert page.items[0].media_count == 1
-        assert page.items[0].cover is not None
+        # Address rows by name, never by position: the documented order is
+        # sort_order ASC, created_at DESC, id ASC, and every dress here shares
+        # sort_order 0, so the newest (Dress 49) leads and the three seeded with
+        # stock and a photo (Dress 0-2) sort last.
+        seeded = next(item for item in page.items if item.row.name == "Dress 0")
+        assert seeded.summary.variant_count == 1
+        assert seeded.media_count == 1
+        assert seeded.cover is not None
         # A dress with no group row must still serialise the zero state.
         bare = next(item for item in page.items if item.row.name == "Dress 49")
         assert bare.summary == StockSummary(variant_count=0, total_quantity=0, out_of_stock=True)
