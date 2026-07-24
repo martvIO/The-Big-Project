@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>אב-טיפוס — מערכת עיצוב F9 (rev 2)</title>
+<!-- Preview-only font loading; production self-hosts via @fontsource -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@400;500;700&family=Assistant:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --color-bg:#FDFBF7; --color-surface:#F6F0E6; --color-surface-raised:#FFFFFF;
+    --color-ink:#2B2118; --color-ink-muted:#6B5D4F;
+    --color-gold:#C5A059; --color-gold-strong:#9E7B36; --color-gold-text:#7F612B;
+    --color-border:#E4DACA; --color-border-input:#B9A98F;
+    --color-success:#2E6B4F; --color-danger:#A03232; --color-warning-text:#8A5A1E; --color-focus:#7F612B;
+    --illus-1:#EADFCB; --illus-2:#E7D9C4; --illus-3:#EFE4D0;
+    --font-display:"Frank Ruhl Libre",serif; --font-body:"Assistant",system-ui,sans-serif;
+    --t-xs:.75rem;--t-sm:.875rem;--t-base:1rem;--t-lg:1.1875rem;--t-xl:1.4375rem;--t-2xl:1.75rem;--t-3xl:2.25rem;
+    --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s6:24px;--s8:32px;--s12:48px;
+    --r-sm:4px;--r-md:8px;--r-full:9999px;
+    --sh-sm:0 1px 2px rgb(43 33 24/.06);--sh-md:0 4px 12px rgb(43 33 24/.10);
+  }
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--color-bg);color:var(--color-ink);font-family:var(--font-body);font-size:16px;line-height:1.6}
+  .display{font-family:var(--font-display)}
+  a{color:var(--color-gold-text)}
+  :focus-visible{outline:2px solid var(--color-focus);outline-offset:2px;border-radius:2px}
+  button{font:inherit;cursor:pointer}
+  img{max-width:100%}
+  .skip{position:absolute;inset-inline-start:var(--s3);top:calc(-1 * var(--s12) * 2);z-index:100;background:var(--color-surface-raised);color:var(--color-ink);padding:var(--s2) var(--s4);border-radius:var(--r-sm);box-shadow:var(--sh-md);font-weight:600}
+  .skip:focus-visible{top:var(--s12)}
+  .only-mobile{display:block}
+  .only-desktop{display:none}
+  @media(min-width:768px){.only-mobile{display:none}.only-desktop{display:block}}
+  .num-col{text-align:end}
+  /* prototype chrome */
+  .proto-nav{position:sticky;top:0;z-index:50;background:var(--color-ink);color:var(--color-bg);display:flex;gap:var(--s2);padding:var(--s2) var(--s4);font-size:var(--t-xs);overflow-x:auto}
+  .proto-nav button{background:transparent;border:1px solid rgb(253 251 247/.3);color:inherit;border-radius:var(--r-sm);padding:var(--s1) var(--s3);white-space:nowrap;min-height:32px}
+  .proto-nav button[aria-pressed="true"]{background:var(--color-gold);color:var(--color-ink);border-color:var(--color-gold)}
+  .screen{display:none;min-height:100vh}
+  .screen.active{display:block}
+  .page{max-width:1200px;margin-inline:auto;padding-inline:var(--s4)}
+  @media(min-width:768px){.page{padding-inline:var(--s6)}}
+  @media(min-width:1024px){.page{padding-inline:var(--s12)}}
+  /* header */
+  .b-header{text-align:center;padding-block:var(--s12) var(--s8)}
+  .b-header h1{font-size:var(--t-3xl);font-weight:500;letter-spacing:0}
+  .b-header .essence{color:var(--color-ink-muted);margin-top:var(--s2)}
+  .b-header .meta{font-size:var(--t-sm);color:var(--color-ink-muted);margin-top:var(--s3)}
+  .b-header .only-desktop{margin-top:var(--s6)}
+  .b-header .only-desktop .btn-primary{max-width:320px}
+  .hairline{width:96px;height:1px;background:var(--color-gold);margin:var(--s6) auto 0}
+  /* grid + cards */
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--s4);padding-block:var(--s6) 96px}
+  @media(min-width:768px){.grid{grid-template-columns:repeat(3,1fr);gap:var(--s6);padding-block-end:var(--s8)}}
+  @media(min-width:1280px){.grid{grid-template-columns:repeat(4,1fr)}}
+  .dress{display:block;text-decoration:none;color:inherit}
+  .ph{aspect-ratio:3/4;border-radius:var(--r-md);background:var(--color-surface);box-shadow:var(--sh-sm);display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+  .ph svg{width:56%;height:auto;opacity:.9}
+  .fav-slot{position:absolute;inset-block-start:var(--s3);inset-inline-end:var(--s3);width:44px;height:44px}/* favorites heart lands here in F10 */
+  .dress h3{font-family:var(--font-display);font-size:var(--t-lg);font-weight:500;margin-top:var(--s3)}
+  .price{font-size:var(--t-sm);margin-top:2px}
+  .price.hidden-price{color:var(--color-ink-muted);font-style:italic}
+  .badge{position:absolute;inset-block-start:var(--s3);inset-inline-start:var(--s3);background:var(--color-surface-raised);color:var(--color-ink);font-size:var(--t-xs);font-weight:600;padding:2px var(--s3);border-radius:var(--r-full);box-shadow:var(--sh-sm)}
+  /* CTA bar */
+  .cta-bar{position:fixed;inset-inline:0;inset-block-end:0;padding:var(--s3) var(--s4);background:linear-gradient(to top,rgb(253 251 247/.97),rgb(253 251 247/.85));backdrop-filter:blur(4px)}
+  .btn-primary{display:block;width:100%;max-width:480px;margin-inline:auto;background:var(--color-gold);color:var(--color-ink);font-weight:700;font-size:var(--t-lg);border:none;border-radius:var(--r-md);min-height:56px;box-shadow:var(--sh-md)}
+  .btn-secondary{background:transparent;border:1px solid var(--color-ink);color:var(--color-ink);border-radius:var(--r-md);padding:var(--s2) var(--s6);min-height:44px;font-weight:600}
+  .btn-ghost-danger{background:transparent;border:none;color:var(--color-danger);font-weight:600;min-height:44px;padding-inline:var(--s3)}
+  footer{padding:var(--s8) 0 120px;text-align:center;font-size:var(--t-sm);color:var(--color-ink-muted);display:flex;gap:var(--s4);justify-content:center;flex-wrap:wrap}
+  @media(min-width:768px){footer{padding-block-end:var(--s8)}}
+  /* empty state */
+  .empty{padding:var(--s12) var(--s4);text-align:center}
+  .empty .note{color:var(--color-ink-muted);margin-top:var(--s2)}
+  .contact-inline{display:flex;gap:var(--s3);justify-content:center;margin-top:var(--s6);flex-wrap:wrap}
+  /* detail */
+  .detail{display:grid;gap:var(--s6);padding-block:var(--s6) 120px}
+  @media(min-width:768px){.detail{grid-template-columns:3fr 2fr;align-items:start;padding-block-end:var(--s12)}}
+  .gallery-main{aspect-ratio:3/4;border-radius:var(--r-md);background:var(--color-surface);box-shadow:var(--sh-sm);display:flex;align-items:center;justify-content:center}
+  .dots{display:flex;gap:var(--s2);justify-content:center;margin-top:var(--s3)}
+  .dots span{width:8px;height:8px;border-radius:50%;background:var(--color-border)}
+  .dots span.on{background:var(--color-gold-strong)}
+  .facts h2{font-family:var(--font-display);font-size:var(--t-2xl);font-weight:500}
+  .facts .price{font-size:var(--t-lg);margin-top:var(--s2)}
+  .facts .hairline{margin:var(--s4) 0}
+  .facts p{color:var(--color-ink-muted)}
+  .sizes{display:flex;gap:var(--s2);margin-top:var(--s4);flex-wrap:wrap}
+  .chip{border:1px solid var(--color-border-input);border-radius:var(--r-full);padding:2px var(--s3);font-size:var(--t-sm)}
+  .back{display:inline-block;margin-top:var(--s6);font-size:var(--t-sm);text-decoration:none}
+  /* about */
+  .about{max-width:640px;margin-inline:auto;padding-block:var(--s12) 140px;display:grid;gap:var(--s6)}
+  @media(min-width:768px){.about{padding-block-end:var(--s12)}}
+  .card{background:var(--color-surface);border-radius:var(--r-md);box-shadow:var(--sh-sm);padding:var(--s6)}
+  .card h3{font-family:var(--font-display);font-weight:500;font-size:var(--t-lg);margin-bottom:var(--s3)}
+  .hours{width:100%;border-collapse:collapse}
+  .hours td{padding-block:var(--s2);border-bottom:1px solid var(--color-border);font-size:var(--t-sm)}
+  .hours tr:last-child td{border-bottom:none}
+  .hours .day{color:var(--color-ink-muted)}
+  .exc{margin-top:var(--s3);font-size:var(--t-sm)}
+  .exc .mark{color:var(--color-gold-strong)}
+  .contact-row{display:flex;align-items:center;justify-content:space-between;padding-block:var(--s2);border-bottom:1px solid var(--color-border);font-size:var(--t-sm)}
+  .contact-row:last-child{border-bottom:none}
+  .ltr{direction:ltr;unicode-bidi:isolate}
+  /* manage */
+  .console-head{display:flex;justify-content:space-between;align-items:center;padding:var(--s4);border-bottom:1px solid var(--color-border);background:var(--color-bg)}
+  .console-head .name{font-family:var(--font-display);font-weight:500;font-size:var(--t-lg)}
+  .tabs{display:flex;gap:var(--s6);padding-inline:var(--s4);border-bottom:1px solid var(--color-border);overflow-x:auto}
+  .tabs button{background:none;border:none;padding:var(--s3) 0;font-weight:600;color:var(--color-ink-muted);border-bottom:2px solid transparent;white-space:nowrap;min-height:44px}
+  .tabs button[aria-selected="true"]{color:var(--color-ink);border-bottom-color:var(--color-gold-strong)}
+  .console-body{max-width:720px;margin-inline:auto;padding:var(--s6) var(--s4) 96px;display:grid;gap:var(--s6)}
+  .banner{background:var(--color-surface);border-inline-start:3px solid var(--color-gold-strong);border-radius:var(--r-sm);padding:var(--s4);color:var(--color-warning-text);font-size:var(--t-sm)}
+  .banner a{font-weight:700}
+  .setup{display:flex;gap:var(--s4);flex-wrap:wrap;font-size:var(--t-sm)}
+  .setup .done{color:var(--color-success)}
+  .setup .todo-item{color:var(--color-ink-muted)}
+  label{display:block;font-weight:600;font-size:var(--t-sm);margin-bottom:var(--s1)}
+  .input, textarea{width:100%;background:var(--color-surface-raised);border:1px solid var(--color-border-input);border-radius:var(--r-sm);padding:var(--s2) var(--s3);font:inherit;min-height:44px}
+  textarea{min-height:120px}
+  .field{margin-bottom:var(--s4)}
+  .field .help{font-size:var(--t-xs);color:var(--color-ink-muted);margin-top:var(--s1)}
+  .field .err{font-size:var(--t-xs);color:var(--color-danger);margin-top:var(--s1)}
+  .save-row{display:flex;justify-content:flex-end;gap:var(--s3);align-items:center}
+  .saved-cue{font-size:var(--t-xs);color:var(--color-ink-muted)}
+  .btn-save{background:var(--color-gold);color:var(--color-ink);border:none;border-radius:var(--r-md);font-weight:700;padding:var(--s2) var(--s8);min-height:44px}
+  .version-row{display:flex;gap:var(--s3);align-items:baseline;padding-block:var(--s3);border-bottom:1px solid var(--color-border);font-size:var(--t-sm)}
+  .version-row:last-child{border-bottom:none}
+  .vbadge{background:var(--color-surface-raised);border:1px solid var(--color-border-input);border-radius:var(--r-full);font-size:var(--t-xs);font-weight:600;padding:1px var(--s3)}
+  .current{color:var(--color-gold-text);font-weight:700;font-size:var(--t-xs)}
+  .vmeta{color:var(--color-ink-muted);font-size:var(--t-xs)}
+  /* states screen */
+  .skel{background:var(--color-surface);border-radius:var(--r-sm)}
+  .skel-line{height:14px;margin-top:var(--s3)}
+  .skel-line.short{width:40%}
+  .skel-ph{aspect-ratio:3/4;border-radius:var(--r-md)}
+  .error-block{background:var(--color-surface);border-radius:var(--r-md);padding:var(--s8);text-align:center}
+  .error-block h3{font-family:var(--font-display);font-size:var(--t-lg);font-weight:500}
+  .error-block p{color:var(--color-ink-muted);margin-block:var(--s2) var(--s4)}
+  .states-note{font-size:var(--t-sm);color:var(--color-ink-muted);margin-block:var(--s6) var(--s3);font-weight:600}
+  .monogram{font-family:var(--font-display);font-size:var(--t-3xl);color:var(--color-gold);border:1px solid var(--color-gold);border-radius:var(--r-full);width:88px;height:88px;display:flex;align-items:center;justify-content:center}
+  .a11y-btn{position:fixed;inset-inline-end:auto;left:12px;bottom:12px;z-index:60;background:var(--color-surface-raised);color:var(--color-ink);border:1px solid var(--color-border-input);border-radius:var(--r-full);font-size:var(--t-xs);font-weight:600;padding:var(--s2) var(--s4);min-height:44px;min-width:44px;box-shadow:var(--sh-sm)}
+  @media (prefers-reduced-motion: no-preference){
+    .screen.active .b-header,.screen.active .grid>*,.screen.active .about>*,.screen.active .detail>*{animation:rise .2s cubic-bezier(.16,1,.3,1) both}
+    @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+    .skel,.skel-ph{animation:pulse 1.5s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+  }
+</style>
+</head>
+<body>
+<nav class="proto-nav" aria-label="מסכי אב-טיפוס">
+  <button aria-pressed="true" data-s="catalog">קטלוג</button>
+  <button aria-pressed="false" data-s="empty">קטלוג ריק</button>
+  <button aria-pressed="false" data-s="detail">עמוד שמלה</button>
+  <button aria-pressed="false" data-s="about">אודות ושעות</button>
+  <button aria-pressed="false" data-s="states">טעינה ושגיאות</button>
+  <button aria-pressed="false" data-s="manage">ניהול (restyle)</button>
+</nav>
+
+<!-- ================= CATALOG ================= -->
+<section class="screen active" id="catalog">
+  <a class="skip" href="#catalog-main">דילוג לתוכן העמוד</a>
+  <div class="page">
+    <header class="b-header">
+      <h1 class="display">בֶּלָה — שמלות כלה</h1>
+      <p class="essence">קולקציות קוטור בהתאמה אישית, בלב תל אביב</p>
+      <p class="meta">היום 10:00–19:00 · דיזנגוף 99, תל אביב ↗</p>
+      <div class="hairline" aria-hidden="true"></div>
+      <div class="only-desktop"><button class="btn-primary">קביעת תור למדידה</button></div>
+    </header>
+    <div class="grid" id="catalog-main">
+      <a class="dress" href="#"><div class="ph"><span class="fav-slot" aria-hidden="true"></span><svg viewBox="0 0 100 140" aria-hidden="true"><path d="M50 8 C46 18 42 22 42 30 L38 44 C30 70 24 96 26 124 C34 132 66 132 74 124 C76 96 70 70 62 44 L58 30 C58 22 54 18 50 8 Z" fill="var(--illus-1)"/><circle cx="50" cy="34" r="3" fill="var(--color-gold)"/></svg></div><h3>עלמה</h3><p class="price"><span class="ltr" dir="ltr">8,900 ₪</span></p></a>
+      <a class="dress" href="#"><div class="ph"><span class="fav-slot" aria-hidden="true"></span><svg viewBox="0 0 100 140" aria-hidden="true"><path d="M50 8 C44 20 38 26 40 38 C28 60 20 92 24 122 C36 132 64 132 76 122 C80 92 72 60 60 38 C62 26 56 20 50 8 Z" fill="var(--illus-2)"/></svg></div><h3>נועה</h3><p class="price hidden-price">מחיר בתיאום</p></a>
+      <a class="dress" href="#"><div class="ph"><span class="badge">הוזמן</span><span class="fav-slot" aria-hidden="true"></span><svg viewBox="0 0 100 140" aria-hidden="true"><path d="M50 10 C47 20 41 24 43 34 L36 52 C32 78 30 100 32 124 C42 132 58 132 68 124 C70 100 68 78 64 52 L57 34 C59 24 53 20 50 10 Z" fill="var(--illus-3)"/><path d="M40 60 Q50 66 60 60" stroke="var(--color-gold)" fill="none" stroke-width="1"/></svg></div><h3>שירה</h3><p class="price"><span class="ltr" dir="ltr">12,400 ₪</span></p></a>
+      <a class="dress" href="#"><div class="ph"><span class="fav-slot" aria-hidden="true"></span><svg viewBox="0 0 100 140" aria-hidden="true"><path d="M50 8 C46 16 44 24 46 32 C34 52 28 88 30 122 C40 132 60 132 70 122 C72 88 66 52 54 32 C56 24 54 16 50 8 Z" fill="var(--illus-1)"/></svg></div><h3>דניאל</h3><p class="price"><span class="ltr" dir="ltr">7,200 ₪</span></p></a>
+    </div>
+    <footer>
+      <a href="#">הצהרת נגישות</a><a href="#">אינסטגרם</a><a href="#" class="ltr" dir="ltr">052-1234567</a>
+    </footer>
+  </div>
+  <div class="cta-bar only-mobile"><button class="btn-primary">קביעת תור למדידה</button></div>
+</section>
+
+<!-- ================= EMPTY CATALOG ================= -->
+<section class="screen" id="empty">
+  <a class="skip" href="#empty-main">דילוג לתוכן העמוד</a>
+  <div class="page">
+    <header class="b-header">
+      <h1 class="display">בֶּלָה — שמלות כלה</h1>
+      <p class="essence">קולקציות קוטור בהתאמה אישית, בלב תל אביב</p>
+      <p class="meta">היום 10:00–19:00 · דיזנגוף 99, תל אביב ↗</p>
+      <div class="hairline" aria-hidden="true"></div>
+      <div class="only-desktop"><button class="btn-primary">קביעת תור למדידה</button></div>
+    </header>
+    <div class="empty" id="empty-main">
+      <p class="display" style="font-size:var(--t-xl)">הקולקציה בדרך</p>
+      <p class="note">בינתיים — נשמח לראות אתכן בסלון. קבעו תור או התקשרו.</p>
+      <div class="contact-inline">
+        <button class="btn-secondary">חיוג לסלון</button>
+        <button class="btn-secondary">WhatsApp</button>
+      </div>
+    </div>
+    <footer>
+      <a href="#">הצהרת נגישות</a><a href="#">אינסטגרם</a><a href="#" class="ltr" dir="ltr">052-1234567</a>
+    </footer>
+  </div>
+  <div class="cta-bar only-mobile"><button class="btn-primary">קביעת תור למדידה</button></div>
+</section>
+
+<!-- ================= DRESS DETAIL ================= -->
+<section class="screen" id="detail">
+  <a class="skip" href="#detail-main">דילוג לתוכן העמוד</a>
+  <div class="page">
+    <a class="back" href="#">‹ חזרה לקולקציה</a>
+    <div class="detail" id="detail-main">
+      <div>
+        <div class="gallery-main"><svg viewBox="0 0 100 140" style="width:52%" aria-hidden="true"><path d="M50 8 C46 18 42 22 42 30 L38 44 C30 70 24 96 26 124 C34 132 66 132 74 124 C76 96 70 70 62 44 L58 30 C58 22 54 18 50 8 Z" fill="var(--illus-1)"/><circle cx="50" cy="34" r="3" fill="var(--color-gold)"/></svg></div>
+        <div class="dots" aria-hidden="true"><span class="on"></span><span></span><span></span></div>
+      </div>
+      <div class="facts">
+        <h2>עלמה</h2>
+        <p class="price"><span class="ltr" dir="ltr">8,900 ₪</span></p>
+        <div class="hairline" style="margin-inline:0" aria-hidden="true"></div>
+        <p>שמלת סאטן בגזרת נסיכה עם מחוך תחרה עדין, שרוולים נשלפים ושובל באורך שני מטרים. נתפרת בהתאמה מלאה בסלון.</p>
+        <div class="sizes">
+          <span class="chip">36</span><span class="chip">38</span><span class="chip">40</span><span class="chip">42</span>
+        </div>
+        <div style="margin-top:var(--s6);display:grid;gap:var(--s3)">
+          <div class="only-desktop"><button class="btn-primary" style="max-width:none">קביעת תור למדידה</button></div>
+          <button class="btn-secondary">שיתוף</button>
+        </div>
+      </div>
+    </div>
+    <footer>
+      <a href="#">הצהרת נגישות</a><a href="#">אינסטגרם</a><a href="#" class="ltr" dir="ltr">052-1234567</a>
+    </footer>
+  </div>
+  <div class="cta-bar only-mobile"><button class="btn-primary">קביעת תור למדידה</button></div>
+</section>
+
+<!-- ================= ABOUT / HOURS ================= -->
+<section class="screen" id="about">
+  <a class="skip" href="#about-main">דילוג לתוכן העמוד</a>
+  <div class="page">
+    <div class="about" id="about-main">
+      <header class="b-header" style="padding-block:0">
+        <h1 class="display" style="font-size:var(--t-2xl)">על הסלון</h1>
+        <div class="hairline" aria-hidden="true"></div>
+      </header>
+      <p style="color:var(--color-ink-muted)">כבר עשרים שנה אנחנו תופרות שמלות כלה בהתאמה אישית. כל שמלה נולדת מפגישה, בד ותשומת לב — ואין שתי כלות שיוצאות מכאן עם אותה שמלה.</p>
+      <div class="card">
+        <h3>שעות פעילות</h3>
+        <table class="hours">
+          <tr><td class="day">א׳–ה׳</td><td class="num-col">10:00–19:00</td></tr>
+          <tr><td class="day">ו׳</td><td class="num-col">09:00–13:00</td></tr>
+          <tr><td class="day">שבת</td><td class="num-col">סגור</td></tr>
+        </table>
+        <p class="exc"><span class="mark" aria-hidden="true">◆</span> שעות מיוחדות: 14.4 — סגור (ערב חג)</p>
+      </div>
+      <div class="card">
+        <h3>יצירת קשר</h3>
+        <div class="contact-row"><span>טלפון</span><a href="#" class="ltr" dir="ltr">052-1234567</a></div>
+        <div class="contact-row"><span>WhatsApp</span><a href="#">שליחת הודעה</a></div>
+        <div class="contact-row"><span>כתובת</span><span>דיזנגוף 99, תל אביב</span></div>
+        <div class="contact-row"><span>ניווט</span><span><a href="#">Waze</a> · <a href="#">Google Maps</a></span></div>
+        <div class="contact-row"><span>אינסטגרם</span><a href="#" class="ltr" dir="ltr">@bella.bridal</a></div>
+      </div>
+      <button class="btn-primary" style="max-width:none">קביעת תור למדידה</button>
+      <footer style="padding:0">
+        <a href="#">הצהרת נגישות</a>
+      </footer>
+    </div>
+  </div>
+</section>
+
+<!-- ================= LOADING / ERROR STATES ================= -->
+<section class="screen" id="states">
+  <a class="skip" href="#states-main">דילוג לתוכן העמוד</a>
+  <div class="page" id="states-main">
+    <p class="states-note">טעינת קטלוג — כרטיסי שלד (pulse מכובה תחת prefers-reduced-motion)</p>
+    <div class="grid" style="padding-block:0 var(--s6)">
+      <div><div class="skel skel-ph"></div><div class="skel skel-line"></div><div class="skel skel-line short"></div></div>
+      <div><div class="skel skel-ph"></div><div class="skel skel-line"></div><div class="skel skel-line short"></div></div>
+      <div class="only-desktop"><div class="skel skel-ph"></div><div class="skel skel-line"></div><div class="skel skel-line short"></div></div>
+    </div>
+    <p class="states-note">שגיאת טעינה — הזהות נשארת, הפעולה ברורה</p>
+    <div class="error-block">
+      <h3>משהו השתבש בטעינת הקולקציה</h3>
+      <p>אפשר לנסות שוב, או פשוט להתקשר אלינו.</p>
+      <button class="btn-secondary">נסו שוב</button>
+    </div>
+    <p class="states-note">שמלה ללא צילום — מונוגרמה במקום תמונה שבורה</p>
+    <div style="max-width:220px">
+      <div class="ph"><span class="monogram" aria-hidden="true">ב</span></div>
+      <h3 class="display" style="font-size:var(--t-lg);margin-top:var(--s3)">אביגיל</h3>
+      <p class="price hidden-price">מחיר בתיאום</p>
+    </div>
+    <p class="states-note">כותרת בוטיק — מצב "סגור היום"</p>
+    <header class="b-header" style="padding-block:var(--s6)">
+      <h1 class="display" style="font-size:var(--t-2xl)">בֶּלָה — שמלות כלה</h1>
+      <p class="meta">סגור היום · נפתח מחר ב-10:00 · דיזנגוף 99, תל אביב ↗</p>
+      <div class="hairline" aria-hidden="true"></div>
+    </header>
+    <footer><a href="#">הצהרת נגישות</a></footer>
+  </div>
+</section>
+
+<!-- ================= MANAGE ================= -->
+<section class="screen" id="manage">
+  <a class="skip" href="#manage-main">דילוג לתוכן העמוד</a>
+  <div class="console-head">
+    <span class="name">בֶּלָה — ניהול</span>
+    <button class="btn-ghost-danger">יציאה</button>
+  </div>
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="false">פרופיל</button>
+    <button role="tab" aria-selected="false">שעות</button>
+    <button role="tab" aria-selected="false">סוגי תורים</button>
+    <button role="tab" aria-selected="true">מדיניות ביטולים</button>
+  </div>
+  <div class="console-body" id="manage-main">
+    <div class="banner">אין עדיין מדיניות ביטולים — נדרשת לפני קבלת הזמנות. <a href="#">ליצירת מדיניות ←</a></div>
+    <div class="card">
+      <div class="setup">
+        <span style="font-weight:700">הגדרה ראשונית 3/4</span>
+        <span class="done">✓ פרופיל</span><span class="done">✓ שעות</span><span class="done">✓ סוגי תורים</span><span class="todo-item">○ מדיניות</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>מדיניות ביטולים חדשה</h3>
+      <div class="field">
+        <label for="t">נוסח התקנון</label>
+        <textarea id="t" aria-describedby="t-help"></textarea>
+        <p class="help" id="t-help">הנוסח שהלקוחה מאשרת בעת ההזמנה. לא ניתן לערוך גרסה לאחר יצירתה — שינוי יוצר גרסה חדשה.</p>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)">
+        <div class="field">
+          <label for="h">החזר עד (שעות לפני התור)</label>
+          <input class="input ltr" dir="ltr" id="h" type="number" value="48">
+        </div>
+        <div class="field">
+          <label for="f">חילוט (% מהמקדמה)</label>
+          <input class="input ltr" dir="ltr" id="f" type="number" value="150" aria-invalid="true" aria-describedby="f-err">
+          <p class="err" id="f-err">חילוט חייב להיות בין 0 ל-100</p>
+        </div>
+      </div>
+      <div class="save-row">
+        <span class="saved-cue">נשמר לפני רגע</span>
+        <button class="btn-save">יצירת גרסה</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>היסטוריית גרסאות</h3>
+      <div class="version-row"><span class="vbadge">גרסה 2</span><span class="current">בתוקף</span><span class="vmeta">נוצרה 12.3.2026 · רבקה</span></div>
+      <div class="version-row"><span class="vbadge">גרסה 1</span><span class="vmeta">נוצרה 2.1.2026 · רבקה</span></div>
+    </div>
+  </div>
+</section>
+
+<button class="a11y-btn" aria-label="תפריט נגישות">נגישות</button>
+
+<script>
+  document.querySelectorAll('.proto-nav button').forEach(function(b){
+    b.addEventListener('click', function(){
+      document.querySelectorAll('.proto-nav button').forEach(function(x){x.setAttribute('aria-pressed','false')});
+      b.setAttribute('aria-pressed','true');
+      document.querySelectorAll('.screen').forEach(function(s){s.classList.remove('active')});
+      document.getElementById(b.dataset.s).classList.add('active');
+      window.scrollTo(0,0);
+    });
+  });
+</script>
+
+<!-- ==================================================================
+     USABILITY-TEST OVERRIDES — Phase 6 (see ../../test-results.md)
+
+     EVERYTHING ABOVE THIS COMMENT IS BYTE-IDENTICAL TO prototype.html
+     rev 2 (Design Gate PASSED, design-critic ACCEPT round 2).
+     Verify with:  diff prototype.html prototype-test.html
+     The diff must show ONLY this appended block. If it shows anything
+     else, the thing being tested is no longer the thing that passed.
+
+     What this adds, and nothing more:
+       1. hides the moderator screen-switcher (it names every screen,
+          which hands the participant the answer to every nav task)
+       2. dress card  -> dress detail        (task B3)
+       3. back-link   -> catalog             (task B3)
+       4. booking CTA -> contact panel sheet (task B4 — the honest v1
+          seam; whether it reads as a dead end is the finding)
+       5. hash routing, so the moderator hands over a per-task URL
+          (#catalog #empty #detail #about #states #manage #manage-steady)
+       6. a font-load guard: the display serif IS the thing under test,
+          so a silent CDN fallback voids the session
+       7. splits the console into the two states manage-restyle.md defines
+          (first-run vs steady) — the prototype renders both at once, and
+          "no policy yet" beside "גרסה 2 בתוקף" would fake an O1/O2 finding
+       8. lifts the accessibility button clear of the booking CTA below
+          768px — works around defect PRE-1, which is real in rev 2 and
+          must still be fixed in the design (see ../../test-results.md)
+
+     KNOWN DEAD ENDS — brief the moderator, do not log as findings:
+       footer links (הצהרת נגישות / אינסטגרם / phone), contact rows
+       inside the sheet and /about, share, the accessibility button,
+       the manage tabs (פרופיל / שעות / סוגי תורים), the banner's
+       "ליצירת מדיניות" link, and "נסו שוב" on the states screen.
+     ================================================================== -->
+<style>
+  /* 1 — the switcher is moderator furniture, not design */
+  .proto-nav{display:none}
+
+  /* 4 — contact sheet: same tokens, same .card/.contact-row idiom as /about */
+  .ut-backdrop{position:fixed;inset:0;z-index:100;background:rgb(43 33 24 / .32)}
+  .ut-backdrop[hidden],.ut-sheet[hidden]{display:none}
+  .ut-sheet{position:fixed;z-index:101;inset-inline:0;inset-block-end:0;
+            padding:var(--s4);padding-block-end:var(--s6);display:block}
+  .ut-sheet .card{max-width:480px;margin-inline:auto;box-shadow:var(--sh-lg);
+                  background:var(--color-surface-raised)}
+  .ut-sheet .ut-close{margin-block-start:var(--s4)}
+  /* the CTA has been actioned — leaving the gold bar poking out under the
+     sheet reads as two booking affordances and would fake a B4 finding */
+  body.ut-sheet-open .cta-bar{display:none}
+  @media(min-width:768px){
+    .ut-sheet{inset-block:0;display:flex;align-items:center;justify-content:center}
+  }
+
+  /* 7 — the prototype shows BOTH console states at once (policy blocker +
+     "גרסה 2 בתוקף"), which is a states-showcase, not a real app state. An
+     owner reading that contradiction would generate a false O1/O2 finding.
+     These are the two states manage-restyle.md actually defines:
+       #manage        first-run — blocker + setup progress, no history yet
+       #manage-steady steady    — history in place, no blocker, no progress */
+  body.ut-manage-firstrun #manage .ut-history{display:none}
+  body.ut-manage-steady   #manage .banner,
+  body.ut-manage-steady   #manage .ut-setup-card{display:none}
+
+  /* 8 — INSTRUMENT FIX for a real rev-2 defect (logged as PRE-1 in
+     ../../test-results.md). In prototype.html at 375px the fixed .a11y-btn
+     (z-index 60) sits ON TOP of the fixed .cta-bar and swallows 60x44px —
+     13.8% — of the primary booking CTA. Left uncorrected, roughly one tap in
+     seven during task B4 would open the accessibility menu (dead in this
+     prototype) and read as "the booking button is broken", which would
+     invalidate the very finding B4 exists to produce.
+     The CTA bar is 80px tall (56px button + 12px padding x2), so clear it. */
+  @media (max-width:767px){ .a11y-btn{ inset-block-end:92px } }
+
+  /* 6 — moderator-only, deliberately ugly: this is not part of the design */
+  .ut-fontwarn{position:fixed;inset-block-start:0;inset-inline:0;z-index:200;
+               background:#A03232;color:#fff;font-family:ui-monospace,monospace;
+               font-size:13px;line-height:1.5;padding:10px 14px;text-align:start}
+  .ut-fontwarn button{background:#fff;color:#A03232;border:none;border-radius:4px;
+                      font-weight:700;min-height:32px;padding:0 10px;margin-inline-start:8px}
+  @media (prefers-reduced-motion: no-preference){
+    .ut-sheet .card{animation:utsheet .2s cubic-bezier(.16,1,.3,1) both}
+    @keyframes utsheet{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
+  }
+</style>
+
+<div class="ut-backdrop" hidden></div>
+<div class="ut-sheet" role="dialog" aria-modal="true" aria-labelledby="ut-sheet-title" hidden>
+  <div class="card">
+    <h3 id="ut-sheet-title">קביעת תור למדידה</h3>
+    <div class="contact-row"><span>טלפון</span><a href="#" class="ltr" dir="ltr">052-1234567</a></div>
+    <div class="contact-row"><span>WhatsApp</span><a href="#">שליחת הודעה</a></div>
+    <div class="contact-row"><span>כתובת</span><span>דיזנגוף 99, תל אביב</span></div>
+    <div class="contact-row"><span>ניווט</span><span><a href="#">Waze</a> · <a href="#">Google Maps</a></span></div>
+    <button class="btn-secondary ut-close">סגירה</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  /* route -> [screen id, body class]. Two routes land on #manage so each
+     owner task gets one coherent console state instead of both at once. */
+  var ROUTES = {
+    'catalog':        ['catalog', null],
+    'empty':          ['empty',   null],
+    'detail':         ['detail',  null],
+    'about':          ['about',   null],
+    'states':         ['states',  null],
+    'manage':         ['manage',  'ut-manage-firstrun'],
+    'manage-steady':  ['manage',  'ut-manage-steady']
+  };
+
+  /* 7 — tag the two console cards the routes need to toggle */
+  (function tagManage(){
+    var setup = document.querySelector('#manage .setup');
+    if(setup && setup.closest('.card')){ setup.closest('.card').classList.add('ut-setup-card'); }
+    document.querySelectorAll('#manage .card h3').forEach(function(h){
+      if(h.textContent.indexOf('היסטוריית גרסאות') !== -1){ h.closest('.card').classList.add('ut-history'); }
+    });
+  })();
+
+  function show(route){
+    var r = ROUTES[route];
+    if(!r){ return; }
+    var el = document.getElementById(r[0]);
+    if(!el){ return; }
+    document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
+    el.classList.add('active');
+    document.body.classList.remove('ut-manage-firstrun','ut-manage-steady');
+    if(r[1]){ document.body.classList.add(r[1]); }
+    document.querySelectorAll('.proto-nav button').forEach(function(b){
+      b.setAttribute('aria-pressed', b.dataset.s === r[0] ? 'true' : 'false');
+    });
+    window.scrollTo(0,0);
+  }
+
+  /* 5 — hash routing. Skip-links (#catalog-main etc.) are not routes, so they
+     fall through untouched and keep working as skip-links. */
+  function fromHash(){
+    var h = (location.hash || '').replace('#','');
+    if(ROUTES[h]){ show(h); }
+  }
+  window.addEventListener('hashchange', fromHash);
+  fromHash();
+
+  /* 4 — sheet with the Modal contract from components.md:
+     focus moved in, Esc closes, backdrop closes, focus returns to trigger. */
+  var sheet    = document.querySelector('.ut-sheet');
+  var backdrop = document.querySelector('.ut-backdrop');
+  var opener   = null;
+
+  function focusables(){
+    return Array.prototype.slice.call(
+      sheet.querySelectorAll('a[href], button:not([disabled])')
+    );
+  }
+  function openSheet(trigger){
+    opener = trigger;
+    backdrop.hidden = false;
+    sheet.hidden = false;
+    document.body.classList.add('ut-sheet-open');
+    var f = focusables();
+    if(f.length){ f[0].focus(); }
+  }
+  function closeSheet(){
+    sheet.hidden = true;
+    backdrop.hidden = true;
+    document.body.classList.remove('ut-sheet-open');
+    if(opener){ opener.focus(); opener = null; }
+  }
+
+  document.addEventListener('click', function(e){
+    /* close: the close button, the backdrop, or the sheet's own empty area
+       (on desktop the sheet is a full-viewport flex centering box) */
+    if(e.target.closest('.ut-close') || e.target === backdrop || e.target === sheet){
+      e.preventDefault(); closeSheet(); return;
+    }
+    /* every .btn-primary in this prototype is the booking CTA — retry is
+       .btn-secondary, manage save is .btn-save, so this stays unambiguous */
+    var cta = e.target.closest('.btn-primary');
+    if(cta){ e.preventDefault(); openSheet(cta); return; }
+
+    if(sheet.hidden === false){ return; }   /* sheet is modal: nothing behind it navigates */
+
+    var dress = e.target.closest('.dress');
+    if(dress){ e.preventDefault(); show('detail'); return; }
+
+    var back = e.target.closest('.back');
+    if(back){ e.preventDefault(); show('catalog'); return; }
+  });
+
+  document.addEventListener('keydown', function(e){
+    if(sheet.hidden){ return; }
+    if(e.key === 'Escape'){ e.preventDefault(); closeSheet(); return; }
+    if(e.key !== 'Tab'){ return; }
+    var f = focusables();
+    if(!f.length){ return; }
+    var first = f[0], last = f[f.length - 1];
+    if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+  });
+
+  /* 6 — if the Google-Fonts CDN did not deliver, the quiet-luxury register
+     collapses to a system sans and the session measures the wrong thing.
+     To remove this dependency entirely, download both families as woff2 and
+     inline them as base64 @font-face in the <style> above. */
+  if(document.fonts && document.fonts.ready){
+    document.fonts.ready.then(function(){
+      var ok = document.fonts.check('500 1.75rem "Frank Ruhl Libre"')
+            && document.fonts.check('400 1rem "Assistant"');
+      if(ok){ return; }
+      var w = document.createElement('div');
+      w.className = 'ut-fontwarn';
+      w.innerHTML = '⚠ FONT LOAD FAILED — do not run the session. '
+                  + 'The display serif fell back; the design under test is not on screen. '
+                  + 'Check the network, then reload.'
+                  + '<button type="button">Dismiss</button>';
+      w.querySelector('button').addEventListener('click', function(){ w.remove(); });
+      document.body.appendChild(w);
+    });
+  }
+})();
+</script>
+</body>
+</html>

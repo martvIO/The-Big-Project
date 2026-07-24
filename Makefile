@@ -2,7 +2,8 @@
 BACKEND := $(CURDIR)/backend
 FRONTEND := $(CURDIR)/frontend
 
-.PHONY: bootstrap dev worker test test-db test-all lint fmt fe-dev fe-build fe-test
+.PHONY: bootstrap dev worker test test-db test-all lint fmt fe-dev fe-build fe-test \
+        brain-scan brain-index brain-check brain-lint
 
 bootstrap:
 	cd "$(BACKEND)" && uv sync
@@ -38,3 +39,17 @@ fe-build:
 
 fe-test:
 	cd "$(FRONTEND)" && pnpm -r --if-present test
+
+# --- .brain code wiki ---------------------------------------------------------
+brain-scan:
+	bash "$(CURDIR)/.brain/scripts/brain-scan.sh" --summary
+
+brain-index:
+	bash "$(CURDIR)/.brain/scripts/brain-index.sh"
+
+brain-lint:
+	bash "$(CURDIR)/.brain/scripts/brain-scan.sh" --lint
+
+# Fails if any page has drifted from the file it documents. Wired into CI.
+brain-check:
+	bash "$(CURDIR)/.brain/scripts/brain-scan.sh" --check

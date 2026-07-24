@@ -78,6 +78,30 @@
       "sourceType": "github",
       "skillPath": "06-webhook-automation-recommendations/SKILL.md",
       "computedHash": "cc3f236badc36d6ae29c97b5aa2b0f334bd736a3f434de652ffa5968446dcbeb"
+    },
+    "second-brain": {
+      "source": "NicholasSpisak/second-brain",
+      "sourceType": "github",
+      "skillPath": "skills/second-brain/SKILL.md",
+      "computedHash": "d52ad88710259bee4fab6f6df9c60fa5d08a539280593c0e0fca49b76d38e592"
+    },
+    "second-brain-ingest": {
+      "source": "NicholasSpisak/second-brain",
+      "sourceType": "github",
+      "skillPath": "skills/second-brain-ingest/SKILL.md",
+      "computedHash": "c3661597c919f1b7202a449b434025a39f73208291a1c9e3365b4451a8d7f141"
+    },
+    "second-brain-lint": {
+      "source": "NicholasSpisak/second-brain",
+      "sourceType": "github",
+      "skillPath": "skills/second-brain-lint/SKILL.md",
+      "computedHash": "4f3363b1f7ed1eb8bcd30003f8abbd5c07e0cef649e7cca047d19722174d21b6"
+    },
+    "second-brain-query": {
+      "source": "NicholasSpisak/second-brain",
+      "sourceType": "github",
+      "skillPath": "skills/second-brain-query/SKILL.md",
+      "computedHash": "66c6e0bcbdf07b46d644faf01344c0c37634d04b7b92f8890699a9d47cb4bba7"
     }
   }
 }

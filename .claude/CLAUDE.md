@@ -93,6 +93,37 @@ Auto mode is ideal for experienced users who trust the workflow and want maximum
 - **When confused:** STOP → name exactly what's unclear → present 2-3 options → wait. Never guess silently.
 - **When wrong:** Admit it immediately. Don't quietly patch over a mistake — say "I was wrong about X, here's the correction."
 
+### 8. Consult the Second Brain First (Orientation, Not Truth)
+
+`.brain/` is a 1:1 wiki of this repo. Every tracked file has a page at a mechanically derived path:
+
+```
+.brain/wiki/sources/<repo-relative-path>.md
+```
+
+e.g. `backend/app/auth/service.py` → `.brain/wiki/sources/backend/app/auth/service.py.md`
+
+**Before reading, editing, or grepping for a repo file, read its brain page first.** Use it to orient — what the file is for, what depends on it, which concepts it belongs to, where its tests are, and above all *which other files you actually need to open*. This routinely replaces three exploratory reads with one.
+
+**The brain is authoritative for orientation. The code is authoritative for behavior.**
+Never state a signature, default, config value, SQL statement, or control-flow claim on the strength of a brain page alone. Before you assert behavior or edit a file, open the file.
+
+**Freshness gate.** A page's `blob:` frontmatter field is the `git hash-object` of the file as it was when the page was written.
+
+- `blob` matches → page is current. Trust its orientation. Still open the file before editing.
+- `blob` differs → page is **stale**. Read the file. Ignore the page's specifics entirely; its links are usually still useful. Do not silently fix it mid-task.
+- **no page exists** → just read the file. Do not block, do not stop to author a page, do not treat the gap as an error. Missing pages are expected while `.brain/` is being built out.
+
+Check one or many files with:
+
+```
+bash .brain/scripts/brain-scan.sh backend/app/auth/service.py
+```
+
+Stale and missing paths are picked up automatically by the SessionEnd hook and surfaced at the start of the next session — you do not need to record them by hand. Reconcile them with `/brain-sync`, not in the middle of unrelated work.
+
+Note the path casing trap: git tracks `backend/` and `frontend/` lowercase even though the on-disk directories are `Backend/` and `Frontend/`. Brain `path:` fields and all `git ls-files` pathspecs use the **lowercase** form.
+
 ---
 
 ## Core Commands (always available)
@@ -446,3 +477,5 @@ restartPolicyType = "on-failure"
 - Don't manually edit `.planning/` files — let the spec/plan commands handle them
 - Don't commit secrets or hardcoded credentials
 - Don't force a command when a simple chat answer is enough
+- Don't cite a `.brain/` page as evidence of how code behaves — open the file
+- Don't stop mid-task to write a missing `.brain/` page — that's what `/brain-sync` is for
