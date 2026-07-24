@@ -12,6 +12,7 @@ dependencies = [
   "pydantic-settings>=2.7",
   "argon2-cffi>=25.1.0",
   "pydantic[email]>=2.13.4",
+  "boto3>=1.36",
 ]
 
 [build-system]
@@ -26,7 +27,7 @@ dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.25",
   "httpx>=0.28",
-  "testcontainers[postgres]>=4.9",
+  "testcontainers[postgres,minio]>=4.9",
   "ruff>=0.9",
   "mypy>=1.14",
 ]
@@ -50,9 +51,17 @@ check_untyped_defs = true
 module = "testcontainers.*"
 ignore_missing_imports = true
 
+# boto3/botocore ship no py.typed marker. warn_unused_ignores is on, so per-line
+# `# type: ignore` comments are not a substitute — the override is the only way
+# `mypy app tests` passes with an AWS SDK import.
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
   "db: needs a running Docker daemon (Testcontainers Postgres)",
+  "s3: additionally needs the MinIO Testcontainer (always also marked db)",
 ]

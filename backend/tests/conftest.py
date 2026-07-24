@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import shutil
 import subprocess
 from collections.abc import Callable, Iterator
@@ -11,9 +12,15 @@ from sqlalchemy.ext.asyncio import create_async_engine
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 DOCKER_HELP = (
-    "DB tests need a running Docker daemon (Docker Desktop, OrbStack, or Colima). "
+    "DB and media tests need a running Docker daemon (Testcontainers Postgres + MinIO): "
+    "Docker Desktop, OrbStack, or Colima. "
     "See README → Prerequisites. Fast tests only: `make test` (or `pytest -m 'not db'`)."
 )
+
+# Pinned like postgres:16-alpine — bumping it is a deliberate commit, not a
+# silent drift in what the POST-policy assertions run against.
+MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
+MEDIA_BUCKET = "boutique-test-media"
 
 # Test-container-only credentials for the non-owner application role. Isolation
 # tests MUST run as this role: the container superuser bypasses RLS unconditionally,
@@ -104,3 +111,56 @@ def app_role_url(migrated_db: str) -> str:
     scheme, rest = migrated_db.split("://", 1)
     _, host_part = rest.split("@", 1)
     return f"{scheme}://{APP_ROLE_NAME}:{APP_ROLE_PASSWORD}@{host_part}"
+
+
+@dataclasses.dataclass(frozen=True)
+class MinioEndpoint:
+    """Everything a test needs to point an S3MediaStorage at the container —
+    and nothing that would make this fixture hold an open client."""
+
+    url: str
+    access_key: str
+    secret_key: str
+    bucket: str
+
+
+def _create_bucket(endpoint: MinioEndpoint) -> None:
+    import boto3
+    from botocore.config import Config
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint.url,
+        aws_access_key_id=endpoint.access_key,
+        aws_secret_access_key=endpoint.secret_key,
+        region_name="us-east-1",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+    )
+    client.create_bucket(Bucket=endpoint.bucket)
+
+
+@pytest.fixture(scope="session")
+def minio_container() -> Iterator[MinioEndpoint]:
+    """Real MinIO via Testcontainers. MinIO over moto by binding decision: it
+    performs genuine SigV4 verification and actually enforces POST-policy
+    conditions, so the upload assertions mean something.
+
+    Yields an endpoint and credentials, never a client — a module-level client
+    anywhere would start this container during collection, including under
+    `-m 'not db'`. The bucket is created with the boto3 client we already depend
+    on rather than the minio SDK, so tests grow no second untyped import."""
+    if not _docker_running():
+        pytest.fail(DOCKER_HELP, pytrace=False)
+
+    from testcontainers.minio import MinioContainer
+
+    with MinioContainer(MINIO_IMAGE) as container:
+        config = container.get_config()
+        endpoint = MinioEndpoint(
+            url=f"http://{config['endpoint']}",
+            access_key=config["access_key"],
+            secret_key=config["secret_key"],
+            bucket=MEDIA_BUCKET,
+        )
+        _create_bucket(endpoint)
+        yield endpoint
