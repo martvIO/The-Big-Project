@@ -24,12 +24,14 @@ from botocore.exceptions import (
     NoCredentialsError,
     PartialCredentialsError,
 )
+from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.catalog.service import CatalogService
 from app.catalog.validation import PRESIGN_TTL_SECONDS, SIGNED_GET_TTL_SECONDS
 from app.core.config import Settings
+from app.main import create_app
 from app.models.dress_media import DressMedia
 from app.storage.base import (
     MediaNotConfiguredError,
@@ -516,6 +518,41 @@ def test_unconfigured_storage_serialises_a_null_url_instead_of_raising() -> None
     view = _catalog_service(UnconfiguredMediaStorage())._media_view(row)
     assert view.url is None
     assert view.url_expires_at is None
+
+
+# --- create_app() selection ---
+
+
+def _app_with_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> FastAPI:
+    async def _resolver(slug: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.main.get_settings", lambda: settings)
+    return create_app(resolver=_resolver)
+
+
+def test_create_app_selects_unconfigured_storage_without_a_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No bucket is a supported deployment, not a boot failure: the app comes up
+    and only the media write endpoints answer 503."""
+    app = _app_with_settings(monkeypatch, _settings(media_bucket=None))
+    assert isinstance(app.state.media_storage, UnconfiguredMediaStorage)
+    assert app.state.media_storage.is_configured is False
+
+
+def test_create_app_selects_s3_storage_with_a_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S3MediaStorage.__init__ does no network I/O, which is what keeps
+    create_app() safe to call in the fast suite whatever the local .env holds."""
+    app = _app_with_settings(monkeypatch, _settings())
+    assert isinstance(app.state.media_storage, S3MediaStorage)
+
+
+def test_create_app_gives_the_catalog_service_the_same_storage_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app_with_settings(monkeypatch, _settings(media_bucket=None))
+    assert app.state.catalog_service._storage is app.state.media_storage
 
 
 # --- marker guard ---
