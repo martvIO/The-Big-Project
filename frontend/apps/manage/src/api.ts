@@ -162,6 +162,131 @@ export interface OkResponse {
   ok: boolean;
 }
 
+// --- catalog wire types (mirror backend/app/catalog/schemas.py) ---
+
+export interface Media {
+  id: string;
+  sort_order: number;
+  content_type: string;
+  byte_size: number;
+  // null when no bucket is configured — reads keep working, only media writes
+  // answer 503.
+  url: string | null;
+  url_expires_at: string | null;
+}
+
+export interface VariantInput {
+  size_label: string;
+  quantity: number;
+  sort_order: number;
+}
+
+export interface Variant extends VariantInput {
+  id: string;
+}
+
+export interface DressInput {
+  name: string;
+  description: string | null;
+  price_agorot: number | null;
+  price_visible: boolean;
+  reserved: boolean;
+  sort_order: number;
+}
+
+export interface Dress extends DressInput {
+  id: string;
+  // Derived server-side from the variant rows, never stored.
+  out_of_stock: boolean;
+  total_quantity: number;
+  variant_count: number;
+  media_count: number;
+  cover: Media | null;
+  archived: boolean;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface DressDetail extends Dress {
+  variants: Variant[];
+  media: Media[];
+  media_uploads_enabled: boolean;
+  media_slots_remaining: number;
+}
+
+export interface DressList {
+  items: Dress[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface DressListQuery {
+  offset: number;
+  limit: number;
+  search: string;
+  archived: boolean;
+}
+
+export interface PresignRequest {
+  content_type: string;
+  byte_size: number;
+}
+
+export interface PresignResponse {
+  media_id: string;
+  url: string;
+  // Bearer material for 300s: never logged, never shown, never persisted.
+  fields: Record<string, string>;
+  expires_in: number;
+  max_bytes: number;
+}
+
+/**
+ * Post a file straight to object storage under a server-minted POST policy.
+ *
+ * Deliberately NOT routed through apiFetch: that helper sends the session
+ * cookie and parses a JSON error envelope, while this request must send no
+ * credentials and never parse a body in either direction (S3 answers 204 with
+ * an empty body on success and XML on error).
+ *
+ * There is no headers object at all — the browser has to set the multipart
+ * boundary itself, and Content-Type travels as a form *field*, not a header.
+ * Fields go in first in iteration order and `file` goes last, because S3
+ * ignores everything after `file`.
+ */
+export async function uploadToStorage(presign: PresignResponse, file: File): Promise<void> {
+  const form = new FormData();
+  for (const [name, value] of Object.entries(presign.fields)) {
+    form.append(name, value);
+  }
+  form.append("file", file);
+
+  let response: Response;
+  try {
+    response = await fetch(presign.url, { method: "POST", body: form, credentials: "omit" });
+  } catch {
+    // fetch REJECTS with a bare TypeError when the network is down or a CORS
+    // preflight fails — it does not return a non-ok Response.
+    throw new ApiError(
+      0,
+      "UPLOAD_BLOCKED",
+      "לא ניתן היה להעלות את הקובץ. בדקי את החיבור ונסי שוב.",
+    );
+  }
+  if (!response.ok) {
+    throw new ApiError(response.status, "UPLOAD_FAILED", "העלאת הקובץ נכשלה. נסי שוב.");
+  }
+}
+
+function dressPath(dressId: string): string {
+  return `/manage/dresses/${encodeURIComponent(dressId)}`;
+}
+
+function mediaPath(dressId: string, mediaId: string): string {
+  return `${dressPath(dressId)}/media/${encodeURIComponent(mediaId)}`;
+}
+
 // --- endpoints ---
 
 export const api = {
@@ -218,5 +343,54 @@ export const api = {
   },
   createTermsVersion(body: CreateTermsRequest): Promise<TermsVersion> {
     return apiFetch("/manage/terms", { method: "POST", body });
+  },
+
+  listDresses(query: DressListQuery): Promise<DressList> {
+    const params = new URLSearchParams({
+      offset: String(query.offset),
+      limit: String(query.limit),
+      archived: String(query.archived),
+    });
+    if (query.search.trim() !== "") {
+      params.set("search", query.search.trim());
+    }
+    return apiFetch(`/manage/dresses?${params.toString()}`);
+  },
+  getDress(dressId: string): Promise<DressDetail> {
+    return apiFetch(dressPath(dressId));
+  },
+  createDress(body: DressInput): Promise<Dress> {
+    return apiFetch("/manage/dresses", { method: "POST", body });
+  },
+  // Full replace: every field is sent, so an omitted key can never silently
+  // clear a value server-side.
+  updateDress(dressId: string, body: DressInput): Promise<Dress> {
+    return apiFetch(dressPath(dressId), { method: "PATCH", body });
+  },
+  archiveDress(dressId: string): Promise<OkResponse> {
+    return apiFetch(dressPath(dressId), { method: "DELETE" });
+  },
+  restoreDress(dressId: string): Promise<DressDetail> {
+    return apiFetch(`${dressPath(dressId)}/restore`, { method: "POST" });
+  },
+  replaceVariants(dressId: string, variants: VariantInput[]): Promise<DressDetail> {
+    return apiFetch(`${dressPath(dressId)}/variants`, { method: "PUT", body: { variants } });
+  },
+  presignMedia(dressId: string, body: PresignRequest): Promise<PresignResponse> {
+    return apiFetch(`${dressPath(dressId)}/media/presign`, { method: "POST", body });
+  },
+  confirmMedia(dressId: string, mediaId: string): Promise<DressDetail> {
+    return apiFetch(`${mediaPath(dressId, mediaId)}/confirm`, { method: "POST" });
+  },
+  // Accepts a pending row too — that is the client's abort/cleanup path after a
+  // failed upload, and it frees the gallery slot immediately.
+  deleteMedia(dressId: string, mediaId: string): Promise<DressDetail> {
+    return apiFetch(mediaPath(dressId, mediaId), { method: "DELETE" });
+  },
+  reorderMedia(dressId: string, mediaIds: string[]): Promise<DressDetail> {
+    return apiFetch(`${dressPath(dressId)}/media/order`, {
+      method: "PUT",
+      body: { media_ids: mediaIds },
+    });
   },
 };

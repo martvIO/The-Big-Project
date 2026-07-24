@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 // Deliberately plain styling — Feature 9's design gate restyles the console.
 export const inputClass =
   "w-full rounded border border-stone-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-1";
@@ -27,4 +29,49 @@ export function SavedNotice() {
 
 export function Loading() {
   return <p className="py-6 text-sm text-stone-500">טוען…</p>;
+}
+
+// App-local on purpose: packages/ui is not extended before Feature 9's design
+// gate. These two get swapped for the real primitives with the rest of the
+// console at F9.
+const badgeVariantClass = {
+  default: "bg-white text-stone-800 shadow-sm",
+  muted: "border border-stone-300 text-stone-600",
+  warning: "border border-stone-300 bg-amber-50 text-amber-800",
+} as const;
+
+export type BadgeVariant = keyof typeof badgeVariantClass;
+
+export function Badge({
+  children,
+  variant = "default",
+}: {
+  children: ReactNode;
+  variant?: BadgeVariant;
+}) {
+  return (
+    <span
+      className={`inline-block rounded-full px-3 py-0.5 text-xs font-semibold ${badgeVariantClass[variant]}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+export function EmptyState({
+  title,
+  body,
+  action,
+}: {
+  title: string;
+  body?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="space-y-2 py-6 text-start">
+      <p className="text-base font-medium">{title}</p>
+      {body !== undefined && <p className="text-sm text-stone-500">{body}</p>}
+      {action}
+    </div>
+  );
 }

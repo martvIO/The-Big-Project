@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { tokens } from "@boutique/ui";
 import { api } from "./api";
 import type { Staff } from "./api";
+import { CatalogSection } from "./components/CatalogSection";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
 import { ProfileSection } from "./components/ProfileSection";
@@ -9,13 +10,16 @@ import { secondaryButtonClass } from "./components/shared";
 import { TermsSection } from "./components/TermsSection";
 import { TypesSection } from "./components/TypesSection";
 
-type SectionKey = "profile" | "hours" | "types" | "terms";
+type SectionKey = "profile" | "hours" | "types" | "terms" | "catalog";
 
 const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "profile", label: "פרופיל והגדרות" },
   { key: "hours", label: "שעות פעילות" },
   { key: "types", label: "סוגי תורים" },
   { key: "terms", label: "מדיניות ביטולים" },
+  // The console names the object the owner manages; "קטלוג" is the
+  // storefront's word for the public grid. The route key stays `catalog`.
+  { key: "catalog", label: "שמלות" },
 ];
 
 export function App() {
@@ -100,6 +104,7 @@ export function App() {
         {section === "hours" && <HoursSection />}
         {section === "types" && <TypesSection />}
         {section === "terms" && <TermsSection />}
+        {section === "catalog" && <CatalogSection />}
       </div>
     </main>
   );

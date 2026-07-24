@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, apiFetch, FALLBACK_ERROR_MESSAGE } from "../api";
+import { api, ApiError, apiFetch, FALLBACK_ERROR_MESSAGE, uploadToStorage } from "../api";
+import type { PresignResponse } from "../api";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -92,5 +93,146 @@ describe("apiFetch request mechanics", () => {
       "/manage/appointment-types/11111111-2222-3333-4444-555555555555",
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+});
+
+// --- catalog (Feature 8) ---
+
+const presign: PresignResponse = {
+  media_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  url: "https://media.example.test/boutique-media",
+  fields: {
+    key: "tenants/t1/dresses/d1/media/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jpg",
+    "Content-Type": "image/jpeg",
+    policy: "eyJ4IjoxfQ==",
+    "x-amz-algorithm": "AWS4-HMAC-SHA256",
+    "x-amz-credential": "AKIA/20260724/il-central-1/s3/aws4_request",
+    "x-amz-date": "20260724T000000Z",
+    "x-amz-signature": "deadbeef",
+  },
+  expires_in: 300,
+  max_bytes: 10_485_760,
+};
+
+function photo(): File {
+  return new File([new Uint8Array([0xff, 0xd8, 0xff, 0x00])], "IMG_4821.jpg", {
+    type: "image/jpeg",
+  });
+}
+
+describe("uploadToStorage", () => {
+  it("posts to S3 without cookies and without a headers object", async () => {
+    // No headers at all: the browser must set the multipart boundary itself,
+    // and Content-Type travels as a form FIELD, not a header.
+    const fetchMock = stubFetch(() => new Response(null, { status: 204 }));
+    await uploadToStorage(presign, photo());
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(presign.url);
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("omit");
+    expect(init.headers).toBeUndefined();
+  });
+
+  it("appends every presign field in iteration order and `file` last", async () => {
+    const fetchMock = stubFetch(() => new Response(null, { status: 204 }));
+    await uploadToStorage(presign, photo());
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const form = init.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect([...form.keys()]).toEqual([...Object.keys(presign.fields), "file"]);
+    expect(form.get("Content-Type")).toBe("image/jpeg");
+    expect(form.get("file")).toBeInstanceOf(File);
+  });
+
+  it("resolves on a 204 with an empty body without parsing it", async () => {
+    const response = new Response(null, { status: 204 });
+    const json = vi.spyOn(response, "json");
+    const text = vi.spyOn(response, "text");
+    stubFetch(() => response);
+    await expect(uploadToStorage(presign, photo())).resolves.toBeUndefined();
+    expect(json).not.toHaveBeenCalled();
+    expect(text).not.toHaveBeenCalled();
+  });
+
+  it("rejects a 403 XML body as UPLOAD_FAILED without parsing the body", async () => {
+    const response = new Response("<Error><Code>AccessDenied</Code></Error>", { status: 403 });
+    const json = vi.spyOn(response, "json");
+    const text = vi.spyOn(response, "text");
+    stubFetch(() => response);
+    await expect(uploadToStorage(presign, photo())).rejects.toMatchObject({
+      name: "ApiError",
+      status: 403,
+      code: "UPLOAD_FAILED",
+      message: "העלאת הקובץ נכשלה. נסי שוב.",
+    });
+    expect(json).not.toHaveBeenCalled();
+    expect(text).not.toHaveBeenCalled();
+  });
+
+  it("maps a rejected fetch (network down / CORS preflight) to UPLOAD_BLOCKED", async () => {
+    // fetch REJECTS with a bare TypeError here — it does not return a non-ok Response.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
+    );
+    await expect(uploadToStorage(presign, photo())).rejects.toMatchObject({
+      name: "ApiError",
+      status: 0,
+      code: "UPLOAD_BLOCKED",
+      message: "לא ניתן היה להעלות את הקובץ. בדקי את החיבור ונסי שוב.",
+    });
+  });
+});
+
+describe("catalog endpoints", () => {
+  it("sends paging, search and the archived flag as query parameters", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, { items: [], total: 0, offset: 0, limit: 24 }),
+    );
+    await api.listDresses({ offset: 24, limit: 24, search: "עלמה", archived: true });
+    const [path] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const query = new URL(path, "https://bella.example.test").searchParams;
+    expect(query.get("offset")).toBe("24");
+    expect(query.get("limit")).toBe("24");
+    expect(query.get("search")).toBe("עלמה");
+    expect(query.get("archived")).toBe("true");
+  });
+
+  it("omits an empty search rather than sending a blank filter", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, { items: [], total: 0, offset: 0, limit: 24 }),
+    );
+    await api.listDresses({ offset: 0, limit: 24, search: "", archived: false });
+    const [path] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).not.toContain("search=");
+  });
+
+  it("routes every media call under its dress and encodes the ids", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.confirmMedia("d 1", "m 1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/manage/dresses/d%201/media/m%201/confirm",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("replaces the whole variant matrix in one PUT", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.replaceVariants("d1", [{ size_label: "38", quantity: 3, sort_order: 0 }]);
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/manage/dresses/d1/variants");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({
+      variants: [{ size_label: "38", quantity: 3, sort_order: 0 }],
+    });
+  });
+
+  it("reorders media as a full permutation under the order path", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.reorderMedia("d1", ["m2", "m1"]);
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/manage/dresses/d1/media/order");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ media_ids: ["m2", "m1"] });
   });
 });
