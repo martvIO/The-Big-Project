@@ -52,6 +52,8 @@ Dress CRUD (name, description, price, price-visibility flag, status), size/quant
 
 - Design gate (Feature 9) is a serialization point for Feature 10 — schedule it early; backend features 7–8 proceed in parallel.
 - Catalog photography quality is outside our control but defines the "luxury" perception — give the pilot upload guidelines.
+- **BLOCKING on the F9 build start (raised 2026-07-24 by F8's design gate):** `design/system/tokens.md` line 27 ships `--color-border-input: #B9A98F` and publishes "≥3:1 on surfaces ✓ (computed 3.0+)" — a figure that cannot be reproduced. Recomputed it is **2.03 paper / 2.30 white / 2.22 cream**. This token is the *only* visible boundary of every form field in the console (the fields have no fill contrast against the paper or white behind them either), so today a 2.03:1 hairline is the sole thing saying "this is a field". Remedy: darken to **`#8A7A5E`** → 3.69 / 4.18 / 4.04. Do **not** paper over it by reusing `--color-gold-strong` as the resting border — that makes every field gold and collides with the listed-chip signal. F8 deliberately did not edit `tokens.md` (F9 owns it and its gate already passed); full working in `design/screens/manage-catalog/manage-catalog.md` §12 item 3a.
+- **F9 `manage-restyle.md` amendment required:** F8 adds a fifth console tab ("קטלוג") to a design that passed its gate against four, and the per-component table has no rows for `CatalogSection`, `DressEditor`, `VariantMatrix` or `MediaGallery`. Ruled during F8's spec pass: Catalog does **not** join `SetupProgress` (setup means the prerequisites for accepting bookings; catalog is ongoing content), so that checklist stays 4-item.
 
 ## Notes
 
