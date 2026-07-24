@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { api, errorMessage } from "../api";
+import { api, ApiError, errorMessage } from "../api";
 import type { Dress, DressDetail, DressInput } from "../api";
 import {
   agorotFromIlsInput,
@@ -31,6 +31,12 @@ const CREATE_HINT = "יש לשמור את השמלה לפני הוספת מיד�
 const CREATE_REASON = "יש לשמור את השמלה תחילה";
 const ARCHIVED_HINT = "השמלה בארכיון — לשחזור לחצי «שחזור».";
 const ARCHIVED_REASON = "השמלה בארכיון";
+
+// Archive and restore are both predicated UPDATEs, so a 404 from either means
+// the work is already done — never an error the owner needs to read.
+function isAlreadyDone(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
 
 interface DressDraft {
   name: string;
@@ -188,7 +194,14 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
       await api.archiveDress(detail.id);
       onArchived(detail.id);
     } catch (error) {
-      // A 404 means somebody already archived it — treat it as done.
+      // Archive is predicated on `deleted_at IS NULL`, so a 404 means somebody
+      // already archived it in another tab. That is the outcome she asked for —
+      // converge on it instead of surfacing the API's English "Resource not
+      // found." in an otherwise fully-Hebrew console.
+      if (isAlreadyDone(error)) {
+        onArchived(detail.id);
+        return;
+      }
       setFormError(errorMessage(error));
     }
   };
@@ -200,6 +213,18 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
     try {
       applyDetail(await api.restoreDress(detail.id));
     } catch (error) {
+      // Symmetrically: restore is predicated on `deleted_at IS NOT NULL`, so a
+      // 404 means it is already restored. Re-read rather than trust the local
+      // copy — the other tab may have changed more than the archive flag.
+      if (isAlreadyDone(error)) {
+        try {
+          applyDetail(await api.getDress(detail.id));
+          return;
+        } catch (refetchError) {
+          setFormError(errorMessage(refetchError));
+          return;
+        }
+      }
       setFormError(errorMessage(error));
     }
   };

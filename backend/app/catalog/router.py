@@ -36,11 +36,24 @@ from app.schemas import OkResponse
 from app.storage.base import MediaNotConfiguredError, MediaStorage
 from app.tenancy.middleware import get_current_tenant
 
-router = APIRouter(prefix="/manage")
-
 # Signed URLs (900 s) and POST-policy fields (300 s) are bearer material: they
 # must not land in a shared cache or a bfcache entry.
 NO_STORE = "no-store"
+
+
+def _no_store(response: Response) -> None:
+    """Set on the ROUTER, not per route. Nine of these eleven endpoints answer
+    with a DressResponse or a DressDetailResponse, whose `cover.url` and
+    `media[].url` are signed GETs valid for SIGNED_GET_TTL_SECONDS — and the
+    tenth returns the POST policy itself. Setting the header centrally is what
+    makes the invariant structural: a route added later cannot forget it, and
+    the one route with nothing to protect (archive → OkResponse) pays nothing
+    for carrying it.
+    """
+    response.headers["cache-control"] = NO_STORE
+
+
+router = APIRouter(prefix="/manage", dependencies=[Depends(_no_store)])
 
 Staff = Annotated[StaffContext, Depends(get_current_staff)]
 
@@ -121,7 +134,6 @@ async def list_dresses(
     request: Request,
     staff: Staff,
     service: Service,
-    response: Response,
     # Spelled out rather than reusing Feature 7's shortcut, which only works
     # where the default equals the maximum.
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -133,7 +145,6 @@ async def list_dresses(
     result = await service.list_dresses(
         tenant.id, archived=archived, search=search, offset=offset, limit=limit
     )
-    response.headers["cache-control"] = NO_STORE
     return DressListResponse(
         items=[_dress_response(view) for view in result.items],
         total=result.total,
@@ -161,12 +172,10 @@ async def create_dress(
 
 @router.get("/dresses/{dress_id}")
 async def get_dress(
-    request: Request, staff: Staff, service: Service, response: Response, dress_id: UUID
+    request: Request, staff: Staff, service: Service, dress_id: UUID
 ) -> DressDetailResponse:
     tenant = get_current_tenant(request)
-    view = await service.get_dress(tenant.id, dress_id)
-    response.headers["cache-control"] = NO_STORE
-    return _dress_detail_response(view)
+    return _dress_detail_response(await service.get_dress(tenant.id, dress_id))
 
 
 @router.patch("/dresses/{dress_id}")
@@ -240,7 +249,6 @@ async def presign_media(
     staff: Staff,
     service: Service,
     storage: Storage,
-    response: Response,
     dress_id: UUID,
     body: PresignRequest,
 ) -> PresignResponse:
@@ -249,7 +257,6 @@ async def presign_media(
     result = await service.presign_media(
         tenant.id, dress_id, content_type=body.content_type, byte_size=body.byte_size
     )
-    response.headers["cache-control"] = NO_STORE
     return PresignResponse(
         media_id=result.media_id,
         url=result.url,

@@ -22,6 +22,11 @@ interface QueueItem {
   // A client-side rejection is never retriable: the same file fails identically.
   retriable: boolean;
   file: File | null;
+  // Survives a transient storage 5xx at confirm: the object is already in the
+  // bucket and its row is still pending, so the retry re-confirms this id
+  // instead of re-posting 9 MB over cellular. Null everywhere else, because
+  // every other failure path deletes the row it minted.
+  mediaId: string | null;
 }
 
 export interface MediaGalleryProps {
@@ -131,25 +136,39 @@ export function MediaGallery({
   };
 
   const runOne = async (item: QueueItem): Promise<boolean> => {
-    if (dressId === null || item.file === null) {
+    if (dressId === null || (item.file === null && item.mediaId === null)) {
       return false;
     }
     setItem(item.key, { state: "uploading", reason: null });
-    let mediaId: string | null = null;
+    // Non-null only on a retry after a transient storage 5xx at confirm: the
+    // object is already up, so presign and POST are skipped entirely.
+    let mediaId: string | null = item.mediaId;
     try {
-      const presign = await api.presignMedia(dressId, {
-        content_type: item.file.type,
-        byte_size: item.file.size,
-      });
-      mediaId = presign.media_id;
-      await uploadToStorage(presign, item.file);
+      if (mediaId === null) {
+        if (item.file === null) {
+          return false;
+        }
+        const presign = await api.presignMedia(dressId, {
+          content_type: item.file.type,
+          byte_size: item.file.size,
+        });
+        mediaId = presign.media_id;
+        setItem(item.key, { mediaId });
+        await uploadToStorage(presign, item.file);
+      }
       setItem(item.key, { state: "verifying" });
-      const detail = await api.confirmMedia(dressId, presign.media_id);
+      const detail = await api.confirmMedia(dressId, mediaId);
       onDetail(detail);
-      setItem(item.key, { state: "done", reason: null, file: null });
+      setItem(item.key, { state: "done", reason: null, file: null, mediaId: null });
       return true;
     } catch (error) {
-      if (mediaId !== null) {
+      // MEDIA_STORAGE_UNAVAILABLE is the one failure the server promises left
+      // the pending row untouched and still confirmable. Deleting it here would
+      // destroy the only recovery state there is and force a full re-upload of
+      // an object that already reached the bucket.
+      const transient =
+        error instanceof ApiError && error.code === "MEDIA_STORAGE_UNAVAILABLE";
+      if (mediaId !== null && !transient) {
         // Release the pending row so the gallery slot is freed immediately —
         // this is why media DELETE accepts a pending row.
         try {
@@ -157,11 +176,13 @@ export function MediaGallery({
         } catch {
           // The row expires on its own after an hour; nothing to show here.
         }
+        mediaId = null;
       }
       setItem(item.key, {
         state: "failed",
         reason: uploadFailureMessage(error),
         retriable: true,
+        mediaId,
       });
       if (error instanceof ApiError && error.status === 503) {
         setStorageNotice(uploadFailureMessage(error));
@@ -215,6 +236,7 @@ export function MediaGallery({
         reason,
         retriable: false,
         file: reason === null ? file : null,
+        mediaId: null,
       };
       rows.push(row);
       if (reason === null) {
@@ -236,11 +258,12 @@ export function MediaGallery({
 
   const handleRetry = async (key: string) => {
     const item = queue.find((row) => row.key === key);
-    if (item === undefined || item.file === null) {
+    if (item === undefined || (item.file === null && item.mediaId === null)) {
       return;
     }
-    // A retry always takes a fresh presign — the previous policy dies with its
-    // 5-minute TTL.
+    // A retry that has to re-upload always takes a FRESH presign — the previous
+    // policy dies with its 5-minute TTL. The one exception is a pending row that
+    // survived a transient storage 5xx, where runOne re-confirms its id.
     await runQueue([item], 0);
   };
 

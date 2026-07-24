@@ -699,17 +699,20 @@ def test_reorder_media_rejects_more_ids_than_the_gallery_can_hold() -> None:
 
 @pytest.mark.parametrize(
     ("method", "path", "body"),
-    [
-        pytest.param("GET", LIST_PATH, None, id="list"),
-        pytest.param("GET", DETAIL_PATH, None, id="detail"),
-        pytest.param("POST", PRESIGN_PATH, PRESIGN_BODY, id="presign"),
-    ],
+    [pytest.param(*route, id=f"{route[0].lower()}-{route[1]}") for route in ROUTES],
 )
 def test_signed_url_carrying_responses_are_never_cached(
     method: str, path: str, body: dict[str, Any] | None
 ) -> None:
     """Signed URLs and POST-policy fields are bearer material for their whole
-    TTL — they must not reach a shared cache or a bfcache entry."""
+    TTL — they must not reach a shared cache or a bfcache entry.
+
+    Parametrized over the WHOLE route table rather than the three routes that
+    happened to set the header: nine of these answer with a DressResponse or a
+    DressDetailResponse carrying `cover.url` / `media[].url`, so enumerating
+    them by hand is how six of them were missed. Driving it from ROUTES means a
+    route added later cannot ship without the header.
+    """
     fake = FakeCatalogService()
     with _client(fake) as client:
         resp = client.request(method, path, json=body)

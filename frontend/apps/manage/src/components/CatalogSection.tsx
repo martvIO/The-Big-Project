@@ -89,6 +89,10 @@ export function CatalogSection() {
         // between the two views if the row is patched from the mutation
         // response.
         onDressChanged={(next) => {
+          // A create appends a row the paged count has never counted, so total
+          // has to move with it — otherwise "מציג 1–1 מתוך 0" and the «הבא»
+          // button both read off a count that is one behind the list.
+          const isNew = dresses !== null && !dresses.some((row) => row.id === next.id);
           setDresses((current) => {
             if (current === null) {
               return current;
@@ -97,6 +101,9 @@ export function CatalogSection() {
               ? current.map((row) => (row.id === next.id ? next : row))
               : [...current, next];
           });
+          if (isNew) {
+            setTotal((current) => current + 1);
+          }
           setSelectedId(next.id);
         }}
         onArchived={(id) => {

@@ -178,6 +178,53 @@ describe("MediaGallery upload orchestration", () => {
     expect(screen.getByText(/לא ניתן היה להעלות את הקובץ/)).toBeInTheDocument();
   });
 
+  it("leaves the pending row alone on a transient storage 5xx and re-confirms it on retry", async () => {
+    renderGallery();
+    confirmMedia.mockImplementationOnce(async (_dressId: string, mediaId: string) => {
+      calls.push(`confirm:${mediaId}:503`);
+      throw new ApiError(
+        503,
+        "MEDIA_STORAGE_UNAVAILABLE",
+        "Image storage is temporarily unavailable.",
+      );
+    });
+
+    selectFiles([photo("IMG_4821.jpg")]);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "נסי שוב — IMG_4821.jpg" })).toBeInTheDocument(),
+    );
+    // The server left the row pending and confirmable; destroying it would
+    // force a full re-upload of an object that already reached the bucket.
+    expect(deleteMedia).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "נסי שוב — IMG_4821.jpg" }));
+
+    // The retry re-confirms the SAME media id — no second presign, no re-POST.
+    await waitFor(() => expect(calls).toContain("confirm:m1"));
+    expect(calls).toEqual(["presign:m1", "upload:m1", "confirm:m1:503", "confirm:m1"]);
+    expect(presignMedia).toHaveBeenCalledTimes(1);
+    expect(upload).toHaveBeenCalledTimes(1);
+  });
+
+  it("still deletes the pending row when the confirm failure is not a storage outage", async () => {
+    renderGallery();
+    confirmMedia.mockImplementationOnce(async (_dressId: string, mediaId: string) => {
+      calls.push(`confirm:${mediaId}:mismatch`);
+      throw new ApiError(409, "MEDIA_MISMATCH", "Uploaded object does not match.");
+    });
+
+    selectFiles([photo("IMG_4821.jpg")]);
+
+    await waitFor(() => expect(deleteMedia).toHaveBeenCalledWith("d1", "m1"));
+    expect(screen.getByText("הקובץ אינו תמונה תקינה.")).toBeInTheDocument();
+
+    // With the row released, the retry has to start from a fresh presign.
+    fireEvent.click(screen.getByRole("button", { name: "נסי שוב — IMG_4821.jpg" }));
+    await waitFor(() => expect(presignMedia).toHaveBeenCalledTimes(2));
+    expect(calls).toContain("confirm:m2");
+  });
+
   it("blocks the selection against media_slots_remaining before any request", async () => {
     renderGallery({ slotsRemaining: 1 });
     selectFiles([photo("IMG_4821.jpg"), photo("IMG_4822.jpg")]);

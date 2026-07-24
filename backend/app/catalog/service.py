@@ -416,47 +416,60 @@ class CatalogService:
     async def presign_media(
         self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, content_type: str, byte_size: int
     ) -> PresignResult:
+        # Step 1, before any work: the throttle is the OUTERMOST guard, so a
+        # blocked tenant cannot spend a transaction discovering it is blocked.
+        throttle_key = f"presign:{tenant_id}"
+        if self._presign_limiter.is_blocked(throttle_key):
+            raise MediaPresignThrottledError
         validate_presign(content_type=content_type, byte_size=byte_size)
         # Checked before the row is written: an unconfigured storage would
         # otherwise leave a pending row nobody can ever upload against.
         if not self._storage.is_configured:
             raise MediaNotConfiguredError
-        throttle_key = f"presign:{tenant_id}"
-        if self._presign_limiter.is_blocked(throttle_key):
-            raise MediaPresignThrottledError
 
         media_id = uuid.uuid4()
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            await session.execute(_MEDIA_LOCK, {"dress_id": str(dress_id)})
-            dress = await self._dresses.by_id(session, tenant_id, dress_id)
-            if dress is None:
-                raise CatalogNotFoundError
-            swept = await self._media.sweep_stale_pendings(
-                session, tenant_id, dress_id, ttl_seconds=self._pending_ttl_seconds
-            )
-            active = await self._media.count_active(
-                session, tenant_id, dress_id, ttl_seconds=self._pending_ttl_seconds
-            )
-            if active >= MAX_MEDIA_PER_DRESS:
-                raise MediaLimitReachedError
-            # media_id is minted client-side so the key exists before the single,
-            # only statement that writes it — there is no post-insert UPDATE of
-            # storage_key. build_media_key runs only now that the dress resolved.
-            storage_key = build_media_key(
-                tenant_id=tenant_id,
-                dress_id=dress_id,
-                media_id=media_id,
-                content_type=content_type,
-            )
-            await self._media.insert_pending(
-                session,
-                tenant_id=tenant_id,
-                dress_id=dress_id,
-                media_id=media_id,
-                storage_key=storage_key,
-                content_type=content_type,
-                byte_size=byte_size,
-            )
+        try:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                await session.execute(_MEDIA_LOCK, {"dress_id": str(dress_id)})
+                dress = await self._dresses.by_id(session, tenant_id, dress_id)
+                if dress is None:
+                    raise CatalogNotFoundError
+                swept = await self._media.sweep_stale_pendings(
+                    session, tenant_id, dress_id, ttl_seconds=self._pending_ttl_seconds
+                )
+                active = await self._media.count_active(
+                    session, tenant_id, dress_id, ttl_seconds=self._pending_ttl_seconds
+                )
+                if active >= MAX_MEDIA_PER_DRESS:
+                    raise MediaLimitReachedError
+                # media_id is minted client-side so the key exists before the
+                # single, only statement that writes it — there is no post-insert
+                # UPDATE of storage_key. build_media_key runs only now that the
+                # dress resolved.
+                storage_key = build_media_key(
+                    tenant_id=tenant_id,
+                    dress_id=dress_id,
+                    media_id=media_id,
+                    content_type=content_type,
+                )
+                await self._media.insert_pending(
+                    session,
+                    tenant_id=tenant_id,
+                    dress_id=dress_id,
+                    media_id=media_id,
+                    storage_key=storage_key,
+                    content_type=content_type,
+                    byte_size=byte_size,
+                )
+        except (CatalogNotFoundError, MediaLimitReachedError):
+            # A REJECTED presign is not free: it has already opened a
+            # transaction, taken the per-dress media advisory lock and (for the
+            # limit case) run the sweep plus two counting queries. Leaving it
+            # unrecorded makes an unbounded loop against a full gallery — or
+            # against random dress ids — cost the throttle nothing, which is
+            # exactly what the bound exists to prevent.
+            self._presign_limiter.record_failure(throttle_key)
+            raise
 
         # Outside the transaction: the sweep is the only holder of those keys,
         # so deleting the objects here is what bounds the orphan window.
@@ -519,8 +532,15 @@ class CatalogService:
         prefix = await self._storage.read_prefix(key=storage_key, length=MAGIC_PREFIX_LENGTH)
         if not matches_magic_prefix(declared_type, prefix):
             # The content-type-honest polyglot: it passed the POST policy at
-            # exactly the declared size, and this is the only thing between an
-            # HTML payload and the gallery.
+            # exactly the declared size, and this check is what refuses it.
+            # Scope it honestly: this verifies the object AT CONFIRM TIME only.
+            # An S3 POST policy cannot be revoked, so within the remainder of
+            # PRESIGN_TTL_SECONDS the same policy can re-POST a different body
+            # of the identical size to the identical key, and this check has
+            # already run. The two layers that cover that window are
+            # signed_get_url pinning ResponseContentType + attachment
+            # disposition, and the media-origin-isolation invariant — neither is
+            # optional, and neither may be trimmed on the strength of this one.
             await self._reject_object(
                 tenant_id=tenant_id,
                 dress_id=dress_id,

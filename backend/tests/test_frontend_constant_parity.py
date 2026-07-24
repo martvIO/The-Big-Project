@@ -21,8 +21,12 @@ from app.catalog import validation
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VALIDATION_TS = REPO_ROOT / "frontend/apps/manage/src/validation.ts"
 
-# Exactly the constants the spec names as mirrored. Anything else in
-# validation.ts (EU_SIZE_QUICK_LIST, the Hebrew messages) is frontend-only.
+# The nine the spec names, plus the two validation.ts also declares AND enforces
+# (MIN_UPLOAD_BYTES in validateUploadFile, MAX_SORT_ORDER in validateDress) —
+# both are silent-drift cases of exactly the kind this test exists for: raise
+# MIN_UPLOAD_BYTES on the server only and the console queues a file the API then
+# refuses with a 400. Anything else in validation.ts (EU_SIZE_QUICK_LIST, the
+# Hebrew messages) is frontend-only.
 MIRRORED_CONSTANTS = (
     "MAX_DRESS_NAME_LENGTH",
     "MAX_DRESS_DESCRIPTION_LENGTH",
@@ -32,7 +36,9 @@ MIRRORED_CONSTANTS = (
     "MAX_VARIANT_QUANTITY",
     "MAX_MEDIA_PER_DRESS",
     "MAX_UPLOAD_BYTES",
+    "MIN_UPLOAD_BYTES",
     "MAX_SEARCH_LENGTH",
+    "MAX_SORT_ORDER",
 )
 
 _CONST_RE = re.compile(r"^export const (?P<name>[A-Z][A-Z0-9_]*)\s*=\s*(?P<value>[0-9_]+);", re.M)

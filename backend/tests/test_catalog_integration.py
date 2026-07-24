@@ -39,10 +39,14 @@ from app.catalog.service import (
     MediaMismatchError,
     MediaNotUploadedError,
     MediaOrderMismatchError,
+    MediaPresignThrottledError,
     PresignResult,
     StockSummary,
 )
 from app.catalog.validation import (
+    DB_MAX_BYTE_SIZE,
+    DB_MAX_PRICE_AGOROT,
+    DB_MAX_QUANTITY,
     MAX_MEDIA_PER_DRESS,
     VariantInput,
 )
@@ -138,7 +142,7 @@ async def test_app_user_holds_crud_on_every_catalog_table(app_role_url: str) -> 
         ),
         pytest.param(
             _MEDIA_INSERT,
-            _media_params(storage_key="oversize", byte_size=20971521),
+            _media_params(storage_key="oversize", byte_size=DB_MAX_BYTE_SIZE + 1),
             id="byte_size_above_the_2x_ceiling",
         ),
         pytest.param(
@@ -156,11 +160,27 @@ async def test_app_user_holds_crud_on_every_catalog_table(app_role_url: str) -> 
         ),
         pytest.param(
             """
+            INSERT INTO dress_variants (tenant_id, dress_id, size_label, quantity)
+            VALUES (:tenant_id, :dress_id, '40', :quantity)
+            """,
+            {"tenant_id": TENANT_ID, "dress_id": DRESS_ID, "quantity": DB_MAX_QUANTITY + 1},
+            id="quantity_above_the_10x_ceiling",
+        ),
+        pytest.param(
+            """
             INSERT INTO dresses (tenant_id, name, price_agorot)
             VALUES (:tenant_id, 'Free dress', 0)
             """,
             {"tenant_id": TENANT_ID},
             id="zero_price",
+        ),
+        pytest.param(
+            """
+            INSERT INTO dresses (tenant_id, name, price_agorot)
+            VALUES (:tenant_id, 'Absurd dress', :price_agorot)
+            """,
+            {"tenant_id": TENANT_ID, "price_agorot": DB_MAX_PRICE_AGOROT + 1},
+            id="price_above_the_10x_ceiling",
         ),
     ],
 )
@@ -170,7 +190,13 @@ async def test_check_constraints_reject_out_of_bound_writes(
     """An accepted content type and an accepted status are security boundaries,
     not duplication: an image/svg+xml object served from our bucket is stored
     XSS, and a status the confirm path never wrote would expose an unverified
-    object. Widening either must be a deliberate migration."""
+    object. Widening either must be a deliberate migration.
+
+    Every ceiling row is built from the DB_MAX_* constant, never a literal:
+    test_bounds_stay_inside_their_db_check_ceilings only compares two Python
+    names to each other, so without these rows a typo in the migration's CHECK
+    (100000000 for 1000000000) ships green and a legal 900,000 ILS dress fails
+    with an IntegrityError 500 at write time."""
     engine = create_async_engine(app_role_url)
     try:
         with pytest.raises(IntegrityError):
@@ -642,6 +668,47 @@ async def test_concurrent_presigns_respect_the_cap(app_role_url: str) -> None:
                 {"dress_id": dress_id},
             )
             assert int(rows.scalar_one()) == MAX_MEDIA_PER_DRESS
+    finally:
+        await engine.dispose()
+
+
+async def test_rejected_presigns_still_cost_throttle_budget(app_role_url: str) -> None:
+    """A refused presign is not free — it has already opened a transaction,
+    taken the per-dress media advisory lock and run the sweep plus two counting
+    queries. If only successes were recorded, a loop against a full gallery
+    would spin against that lock forever at zero throttle cost, which is exactly
+    what the 60-per-300 s bound exists to prevent.
+
+    Budget is MAX_MEDIA_PER_DRESS + 1: twelve presigns fill the gallery, the
+    thirteenth is refused with MEDIA_LIMIT_REACHED *and recorded*, and the
+    fourteenth must therefore hit the throttle instead of an endless stream of
+    MEDIA_LIMIT_REACHED.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    storage = InMemoryMediaStorage()
+    service = _service(factory, storage, max_presigns=MAX_MEDIA_PER_DRESS + 1)
+    tenant = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant)
+        for _ in range(MAX_MEDIA_PER_DRESS):
+            await service.presign_media(
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+            )
+
+        with pytest.raises(MediaLimitReachedError):
+            await service.presign_media(
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+            )
+        with pytest.raises(MediaPresignThrottledError):
+            await service.presign_media(
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+            )
+
+        # The throttle is per tenant, not global: a second tenant is untouched.
+        other = uuid.uuid4()
+        other_dress = await _dress(service, other)
+        await service.presign_media(other, other_dress, content_type=JPEG, byte_size=len(JPEG_BODY))
     finally:
         await engine.dispose()
 

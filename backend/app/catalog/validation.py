@@ -4,8 +4,8 @@ tested locally.
 Every bound here lives **once**. `Settings` carries deployment identity (bucket,
 region, endpoint) and never product policy: an operator raising a byte limit in
 env while `validation.ts` and the DB CHECK stayed put would turn a clean 400 into
-an IntegrityError 500 on confirm. The nine mirrored constants are re-asserted
-against `frontend/apps/manage/src/validation.ts` by test_frontend_constant_parity.
+an IntegrityError 500 on confirm. Every constant `validation.ts` restates is
+re-asserted against it by test_frontend_constant_parity.
 
 Each numeric bound names its DB counterpart below it. Migration 0006's CHECKs are
 absurdity ceilings at exactly 10x these caps — INT4 headroom, so tightening

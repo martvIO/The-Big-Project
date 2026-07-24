@@ -25,10 +25,13 @@ vi.mock("../api", async () => {
   };
 });
 
-const { api } = await import("../api");
+const { api, ApiError } = await import("../api");
 const listDresses = vi.mocked(api.listDresses);
 const getDress = vi.mocked(api.getDress);
+const createDress = vi.mocked(api.createDress);
 const updateDress = vi.mocked(api.updateDress);
+const archiveDress = vi.mocked(api.archiveDress);
+const restoreDress = vi.mocked(api.restoreDress);
 
 function dress(overrides: Partial<Dress> = {}): Dress {
   return {
@@ -251,5 +254,103 @@ describe("CatalogSection detail hand-off", () => {
       screen.getAllByText("יש לשמור את השמלה לפני הוספת מידות ותמונות"),
     ).toHaveLength(2);
     expect(getDress).not.toHaveBeenCalled();
+  });
+
+  it("counts a created dress into the pager instead of leaving total one behind", async () => {
+    const created = dress({ id: "d2", name: "רוני" });
+    listDresses.mockResolvedValue(page([dress()], 1, 0));
+    createDress.mockResolvedValue(created);
+    getDress.mockResolvedValue(detailOf(created));
+
+    render(<CatalogSection />);
+    await screen.findByText("עלמה");
+    expect(screen.getByTestId("catalog-count")).toHaveTextContent("מציג 1–1 מתוך 1");
+
+    fireEvent.click(screen.getByRole("button", { name: "שמלה חדשה" }));
+    fireEvent.change(await screen.findByLabelText("שם השמלה *"), {
+      target: { value: "רוני" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "יצירת שמלה" }));
+    await waitFor(() => expect(createDress).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "חזרה לרשימת השמלות" }));
+
+    // Two rows and a count that says two — the row was appended locally, so a
+    // total left at 1 would render "מציג 1–1 מתוך 1" above two rows and would
+    // re-enable «הבא» against a page that does not exist.
+    expect(await screen.findByText("רוני")).toBeInTheDocument();
+    expect(screen.getByTestId("catalog-count")).toHaveTextContent("מציג 1–2 מתוך 2");
+    expect(screen.getByRole("button", { name: "הבא" })).toBeDisabled();
+    // Still no refetch: the count moves with the patched list, not with a GET.
+    expect(listDresses).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not double-count when the same dress is saved twice", async () => {
+    const created = dress({ id: "d2", name: "רוני" });
+    listDresses.mockResolvedValue(page([dress()], 1, 0));
+    createDress.mockResolvedValue(created);
+    getDress.mockResolvedValue(detailOf(created));
+    updateDress.mockResolvedValue({ ...created, name: "רוני 2" });
+
+    render(<CatalogSection />);
+    await screen.findByText("עלמה");
+    fireEvent.click(screen.getByRole("button", { name: "שמלה חדשה" }));
+    fireEvent.change(await screen.findByLabelText("שם השמלה *"), {
+      target: { value: "רוני" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "יצירת שמלה" }));
+    await waitFor(() => expect(createDress).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: "שמירה" }));
+    await waitFor(() => expect(updateDress).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "חזרה לרשימת השמלות" }));
+
+    expect(await screen.findByText("רוני 2")).toBeInTheDocument();
+    expect(screen.getByTestId("catalog-count")).toHaveTextContent("מציג 1–2 מתוך 2");
+  });
+});
+
+describe("CatalogSection already-done races", () => {
+  it("treats a 404 from archive as done rather than surfacing the API's English body", async () => {
+    const row = dress();
+    listDresses.mockResolvedValue(page([row], 1, 0));
+    getDress.mockResolvedValue(detailOf(row));
+    // Somebody archived it in another tab: DELETE is predicated on
+    // `deleted_at IS NULL`, so the second one 404s.
+    archiveDress.mockRejectedValue(new ApiError(404, "NOT_FOUND", "Resource not found."));
+
+    render(<CatalogSection />);
+    fireEvent.click(await screen.findByRole("button", { name: /עלמה/ }));
+    await screen.findByLabelText("שם השמלה *");
+
+    // Once to open the confirmation, once to go through with it.
+    fireEvent.click(screen.getByRole("button", { name: "העברה לארכיון" }));
+    fireEvent.click(await screen.findByRole("button", { name: "העברה לארכיון" }));
+
+    // Back on the list, row gone, count decremented — and no English error.
+    expect(await screen.findByText("אין עדיין שמלות בקטלוג")).toBeInTheDocument();
+    expect(screen.getByTestId("catalog-count")).toHaveTextContent("מציג 0–0 מתוך 0");
+    expect(screen.queryByText("Resource not found.")).toBeNull();
+  });
+
+  it("treats a 404 from restore as done and re-reads the dress", async () => {
+    const archivedRow = dress({ archived: true });
+    const restored = detailOf(dress({ archived: false }));
+    listDresses.mockResolvedValue(page([archivedRow], 1, 0));
+    getDress.mockResolvedValueOnce(detailOf(archivedRow)).mockResolvedValueOnce(restored);
+    restoreDress.mockRejectedValue(new ApiError(404, "NOT_FOUND", "Resource not found."));
+
+    render(<CatalogSection />);
+    fireEvent.click(await screen.findByRole("button", { name: /עלמה/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "שחזור" }));
+
+    await waitFor(() => expect(getDress).toHaveBeenCalledTimes(2));
+    // The re-read is what converges: the restore button is gone because the
+    // dress is no longer archived.
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "שחזור" })).toBeNull(),
+    );
+    expect(screen.queryByText("Resource not found.")).toBeNull();
   });
 });
