@@ -53,6 +53,12 @@ from app.catalog.validation import (
 from app.db.repositories.dress_media import DressMediaRepository
 from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.tenant import tenant_connection, tenant_session
+from app.storage.base import (
+    MediaNotConfiguredError,
+    MediaStorageUnavailableError,
+    ObjectHead,
+    PresignedPost,
+)
 from app.storage.memory import InMemoryMediaStorage
 
 pytestmark = pytest.mark.db
@@ -485,6 +491,51 @@ async def test_confirm_without_an_upload_is_not_uploaded(app_role_url: str) -> N
         await engine.dispose()
 
 
+class _FlakyHeadStorage(InMemoryMediaStorage):
+    """head_object is confirm's first network call and the one that decides
+    "your upload never arrived". Its outage is switchable so the SAME object and
+    the SAME row can be confirmed again once storage recovers — which is the
+    property under test, not merely that the row still exists."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.head_fails = True
+
+    async def head_object(self, *, key: str) -> ObjectHead | None:
+        if self.head_fails:
+            raise MediaStorageUnavailableError
+        return await super().head_object(key=key)
+
+
+async def test_storage_outage_on_confirm_leaves_the_row_confirmable(app_role_url: str) -> None:
+    """The row must survive a 503 untouched: the object is already in the bucket,
+    the browser will not re-upload it, and MediaGallery's carve-out re-confirms
+    the same media_id rather than deleting it. A soft-delete added to this branch
+    by a later refactor would silently lose a 9 MB object the owner just sent."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    storage = _FlakyHeadStorage()
+    service = _service(factory, storage)
+    tenant = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant)
+        presigned = await _upload(service, storage, tenant, dress_id)
+
+        with pytest.raises(MediaStorageUnavailableError):
+            await service.confirm_media(tenant, dress_id, presigned.media_id)
+        assert await _pending_count(factory, tenant) == 1
+        # Read through the dict, not head_object: the outage is still armed.
+        assert presigned.fields["key"] in storage.objects
+
+        storage.head_fails = False
+        confirmed = await service.confirm_media(tenant, dress_id, presigned.media_id)
+        assert [item.row.id for item in confirmed.media] == [presigned.media_id]
+        assert confirmed.media[0].row.sort_order == 0
+        assert await _pending_count(factory, tenant) == 0
+    finally:
+        await engine.dispose()
+
+
 async def test_confirm_deletes_an_object_whose_magic_bytes_disagree(app_role_url: str) -> None:
     """The content-type-honest polyglot: declared and posted as image/jpeg at
     exactly the declared size, so the POST policy passes it. The 16-byte prefix
@@ -709,6 +760,56 @@ async def test_rejected_presigns_still_cost_throttle_budget(app_role_url: str) -
         other = uuid.uuid4()
         other_dress = await _dress(service, other)
         await service.presign_media(other, other_dress, content_type=JPEG, byte_size=len(JPEG_BODY))
+    finally:
+        await engine.dispose()
+
+
+class _UnsignableStorage(InMemoryMediaStorage):
+    """Configured, but the credentials behind it are gone — a rotated or expired
+    IAM key, which S3MediaStorage maps to MediaNotConfiguredError. `is_configured`
+    still answers True, so presign's early guard passes and the row is already
+    committed by the time signing fails."""
+
+    def presigned_post(
+        self, *, key: str, content_type: str, exact_bytes: int, expires_in: int
+    ) -> PresignedPost:
+        raise MediaNotConfiguredError
+
+
+async def test_a_presign_that_cannot_be_signed_releases_its_slot(app_role_url: str) -> None:
+    """The row commits before the policy is signed, so a signing failure would
+    otherwise leave a pending row occupying a gallery slot for a whole
+    PENDING_MEDIA_TTL_SECONDS: twelve failed clicks and the owner is told
+    409 MEDIA_LIMIT_REACHED on a dress with no photos, for up to an hour after
+    the credentials are fixed. It must still cost throttle budget — the
+    transaction and the lock were spent either way."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    broken = _service(factory, _UnsignableStorage(), max_presigns=1)
+    tenant = uuid.uuid4()
+    try:
+        dress_id = await _dress(broken, tenant)
+
+        with pytest.raises(MediaNotConfiguredError):
+            await broken.presign_media(
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+            )
+        assert await _pending_count(factory, tenant) == 0
+
+        # Budget of one: the failed attempt was recorded, so the next is throttled.
+        with pytest.raises(MediaPresignThrottledError):
+            await broken.presign_media(
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+            )
+
+        # And the slot is genuinely free once storage recovers.
+        healthy = _service(factory, InMemoryMediaStorage())
+        detail = await healthy.get_dress(tenant, dress_id)
+        assert detail.slots_remaining == MAX_MEDIA_PER_DRESS
+        await healthy.presign_media(tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY))
+        assert (await healthy.get_dress(tenant, dress_id)).slots_remaining == (
+            MAX_MEDIA_PER_DRESS - 1
+        )
     finally:
         await engine.dispose()
 

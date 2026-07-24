@@ -648,9 +648,17 @@ def test_confirm_is_idempotent_over_the_wire() -> None:
     assert fake.called("confirm_media") == 2
 
 
-def test_storage_outage_on_confirm_leaves_the_pending_row_alone() -> None:
-    """503 MEDIA_STORAGE_UNAVAILABLE, not 409: the row is untouched and stays
-    confirmable, so the browser can retry without re-uploading."""
+def test_storage_outage_on_confirm_is_503_not_409() -> None:
+    """503 MEDIA_STORAGE_UNAVAILABLE, not 409 — MediaGallery deliberately does
+    NOT call deleteMedia on a 503 and re-confirms the same media_id on retry.
+
+    Scope: this asserts the status and the house body only. That the ROW
+    survives the outage and stays confirmable is a service-level property the
+    route cannot observe — confirm_media is the only call this handler makes, so
+    an assertion here that delete_media was not called would hold no matter what
+    the service did. It is proven for real in test_catalog_integration.py's
+    test_storage_outage_on_confirm_leaves_the_row_confirmable.
+    """
     fake = FakeCatalogService()
     fake.raise_on["confirm_media"] = MediaStorageUnavailableError()
     with _client(fake) as client:
@@ -662,7 +670,6 @@ def test_storage_outage_on_confirm_leaves_the_pending_row_alone() -> None:
             "message": "Image storage is temporarily unavailable.",
         }
     }
-    assert fake.called("delete_media") == 0
 
 
 def test_delete_media_returns_the_detail_view() -> None:

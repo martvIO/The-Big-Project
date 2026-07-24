@@ -520,6 +520,45 @@ def test_unconfigured_storage_serialises_a_null_url_instead_of_raising() -> None
     assert view.url_expires_at is None
 
 
+class _UnsignableStorage(InMemoryMediaStorage):
+    """Configured, but signing raises — the credential-rotation state, where
+    `is_configured` still answers True and only the call fails."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self._error = error
+
+    def signed_get_url(self, *, key: str, content_type: str, filename: str, expires_in: int) -> str:
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(MediaNotConfiguredError(), id="credentials_gone"),
+        pytest.param(MediaStorageUnavailableError(), id="storage_down"),
+    ],
+)
+def test_a_read_degrades_to_a_null_url_when_signing_fails(error: Exception) -> None:
+    """Branching on `is_configured` alone is not enough: a bucket whose IAM key
+    rotated is still configured, and letting the failure propagate would turn a
+    plain GET /manage/dresses into a 503. The spec confines that 503 to presign,
+    confirm and media delete — reads degrade to `url: null`, like no bucket."""
+    row = DressMedia(
+        id=uuid.UUID(MEDIA_ID),
+        tenant_id=uuid.UUID(TENANT_ID),
+        dress_id=uuid.UUID(DRESS_ID),
+        storage_key=KEY,
+        content_type=JPEG,
+        byte_size=4096,
+        status="ready",
+        sort_order=0,
+    )
+    view = _catalog_service(_UnsignableStorage(error))._media_view(row)
+    assert view.url is None
+    assert view.url_expires_at is None
+
+
 # --- create_app() selection ---
 
 

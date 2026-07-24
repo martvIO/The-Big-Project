@@ -17,6 +17,7 @@ through the HTTP surface, where the tenant comes from the request host.
 """
 
 import asyncio
+import datetime
 import time
 import uuid
 from typing import Any
@@ -115,6 +116,9 @@ async def test_repositories_return_nothing_for_another_tenants_ids(app_role_url:
     media = DressMediaRepository()
     try:
         dress_id, media_id = await _dress_with_photo(service, storage, tenant_a, "Aurora")
+        # Any stamp will do: restore_archived_with must report zero rows touched
+        # on tenant B's behalf whatever it is asked to match.
+        archived_at = datetime.datetime.now(datetime.UTC)
 
         async with tenant_session(factory, tenant_b) as session:
             assert await dresses.by_id(session, tenant_b, dress_id) is None
@@ -129,9 +133,30 @@ async def test_repositories_return_nothing_for_another_tenants_ids(app_role_url:
             assert await dresses.soft_delete(session, tenant_b, dress_id) is False
             assert await dresses.restore(session, tenant_b, dress_id) is False
 
+            assert (
+                await dresses.update_fields(
+                    session,
+                    tenant_b,
+                    dress_id,
+                    name="Hijack",
+                    description=None,
+                    price_agorot=None,
+                    price_visible=False,
+                    reserved=True,
+                    sort_order=0,
+                )
+                is None
+            )
+
             assert await variants.list_active(session, tenant_b, dress_id) == []
             assert await variants.aggregate_by_dress(session, tenant_b, [dress_id]) == {}
             assert await variants.soft_delete_all(session, tenant_b, dress_id) == 0
+            # The two restore paths: an UPDATE matched on deleted_at alone would
+            # un-delete another tenant's children if RLS were ever relaxed, so
+            # the explicit tenant_id predicate is probed here like every other.
+            assert (
+                await variants.restore_archived_with(session, tenant_b, dress_id, archived_at) == 0
+            )
 
             assert await media.by_id(session, tenant_b, dress_id, media_id) is None
             assert await media.list_ready(session, tenant_b, dress_id) == []
@@ -148,6 +173,7 @@ async def test_repositories_return_nothing_for_another_tenants_ids(app_role_url:
             assert await media.set_sort_order(session, tenant_b, dress_id, media_id, 5) is False
             assert await media.soft_delete(session, tenant_b, dress_id, media_id) is False
             assert await media.soft_delete_all(session, tenant_b, dress_id) == 0
+            assert await media.restore_archived_with(session, tenant_b, dress_id, archived_at) == 0
 
         # A's rows survived every probe untouched.
         detail = await service.get_dress(tenant_a, dress_id)

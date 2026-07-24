@@ -119,8 +119,9 @@ class StockSummary:
 
 @dataclasses.dataclass(frozen=True)
 class MediaView:
-    """url is None when no bucket is configured — reads keep working with the
-    gallery unrendered, and only the media write endpoints answer 503."""
+    """url is None when no bucket is configured, or when signing that url fails —
+    reads keep working with the gallery unrendered, and only the media write
+    endpoints answer 503."""
 
     row: DressMedia
     url: str | None
@@ -470,6 +471,15 @@ class CatalogService:
             # exactly what the bound exists to prevent.
             self._presign_limiter.record_failure(throttle_key)
             raise
+        # FixedWindowRateLimiter counts only what is explicitly recorded — its
+        # docstring says "successes never count". A SUCCESSFUL presign authorises
+        # a 10 MiB write to our bucket, so it must be recorded by hand or the
+        # throttle is inert. This is the create_terms_version precedent; deleting
+        # this line because it reads like a bug is how the throttle dies. It sits
+        # above the signing call rather than below it because the committed
+        # transaction — not the signature — is what the bound exists to protect:
+        # a signing failure must still cost budget.
+        self._presign_limiter.record_failure(throttle_key)
 
         # Outside the transaction: the sweep is the only holder of those keys,
         # so deleting the objects here is what bounds the orphan window.
@@ -477,15 +487,19 @@ class CatalogService:
             await self._best_effort_delete(
                 tenant_id=tenant_id, dress_id=dress_id, media_id=swept_id, storage_key=swept_key
             )
-        presigned = self._sign_upload(
-            key=storage_key, content_type=content_type, byte_size=byte_size
-        )
-        # FixedWindowRateLimiter counts only what is explicitly recorded — its
-        # docstring says "successes never count". A SUCCESSFUL presign authorises
-        # a 10 MiB write to our bucket, so it must be recorded by hand or the
-        # throttle is inert. This is the create_terms_version precedent; deleting
-        # this line because it reads like a bug is how the throttle dies.
-        self._presign_limiter.record_failure(throttle_key)
+        try:
+            presigned = self._sign_upload(
+                key=storage_key, content_type=content_type, byte_size=byte_size
+            )
+        except (MediaNotConfiguredError, MediaStorageUnavailableError):
+            # is_configured passed the early guard, then signing failed anyway —
+            # a rotated or expired IAM key. The row is already committed and
+            # count_active counts young pendings, so leaving it would spend a
+            # gallery slot for a whole PENDING_MEDIA_TTL_SECONDS on an upload the
+            # browser never received a policy for, until the twelfth attempt
+            # answers 409 MEDIA_LIMIT_REACHED on a dress with no photos.
+            await self._release_pending(tenant_id, dress_id, media_id)
+            raise
         return PresignResult(
             media_id=media_id,
             url=presigned.url,
@@ -577,8 +591,25 @@ class CatalogService:
             if row is None:
                 raise CatalogNotFoundError
             storage_key = row.storage_key
+            was_pending = row.status == DressMediaStatus.PENDING
             await self._media.soft_delete(session, tenant_id, dress_id, media_id)
 
+        if was_pending:
+            # A pending row's POST policy is still redeemable for the rest of
+            # PRESIGN_TTL_SECONDS and an S3 POST policy cannot be revoked, so the
+            # object may land AFTER the delete_object below has already run
+            # against a key that does not exist yet — a silent 204 that logs
+            # nothing. The UI's abort path hits this on every timed-out upload,
+            # so the key is recorded here: without it this orphan class leaves no
+            # trace at all for the deferred reconcile job (spec Risk 4).
+            logger.info(
+                "pending media deleted, its upload policy may still be redeemed: "
+                "tenant_id=%s dress_id=%s media_id=%s storage_key=%s",
+                tenant_id,
+                dress_id,
+                media_id,
+                storage_key,
+            )
         # The row is already gone: the object delete is best-effort by design.
         await self._best_effort_delete(
             tenant_id=tenant_id, dress_id=dress_id, media_id=media_id, storage_key=storage_key
@@ -653,6 +684,16 @@ class CatalogService:
             ),
         )
 
+    async def _release_pending(
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, media_id: uuid.UUID
+    ) -> None:
+        """Hand back the gallery slot a presign minted but could never hand to
+        the browser. Takes the same lock as every other dress_media write, and —
+        like every write path here — makes no storage call inside the session."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await session.execute(_MEDIA_LOCK, {"dress_id": str(dress_id)})
+            await self._media.soft_delete(session, tenant_id, dress_id, media_id)
+
     def _sign_upload(self, *, key: str, content_type: str, byte_size: int) -> PresignedPost:
         """The one place the presign TTL is chosen. The length range is exact,
         not MIN..MAX: "declare 1 KiB, post 10 MiB" is the deliberate way to plant
@@ -670,12 +711,27 @@ class CatalogService:
         than failing the read — only the media WRITE endpoints answer 503."""
         if not self._storage.is_configured:
             return MediaView(row=row, url=None, url_expires_at=None)
-        url = self._storage.signed_get_url(
-            key=row.storage_key,
-            content_type=row.content_type,
-            filename=build_media_filename(media_id=row.id, content_type=row.content_type),
-            expires_in=SIGNED_GET_TTL_SECONDS,
-        )
+        try:
+            url = self._storage.signed_get_url(
+                key=row.storage_key,
+                content_type=row.content_type,
+                filename=build_media_filename(media_id=row.id, content_type=row.content_type),
+                expires_in=SIGNED_GET_TTL_SECONDS,
+            )
+        except (MediaNotConfiguredError, MediaStorageUnavailableError):
+            # A bucket whose credentials rotated is still `is_configured`, so
+            # branching on that alone would let a signing failure propagate out
+            # of a plain GET /manage/dresses as a 503 and take the whole catalog
+            # down with the gallery. Degrade exactly as an absent bucket does.
+            # The storage port already logged the operation and the key.
+            logger.warning(
+                "media url signing failed, serialising a null url: "
+                "tenant_id=%s dress_id=%s media_id=%s",
+                row.tenant_id,
+                row.dress_id,
+                row.id,
+            )
+            return MediaView(row=row, url=None, url_expires_at=None)
         expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
             seconds=SIGNED_GET_TTL_SECONDS
         )
