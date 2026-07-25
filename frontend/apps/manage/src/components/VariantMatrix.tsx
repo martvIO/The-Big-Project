@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Badge, Button, Card, EmptyState, Input } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { DressDetail, Variant, VariantInput } from "../api";
 import {
@@ -10,16 +11,6 @@ import {
   sizeKey,
   validateVariants,
 } from "../validation";
-import {
-  cardClass,
-  dangerButtonClass,
-  EmptyState,
-  ErrorNotice,
-  inputClass,
-  labelClass,
-  primaryButtonClass,
-  secondaryButtonClass,
-} from "./shared";
 
 interface Row {
   // Stable across re-renders and reorders; a saved row reuses its server id.
@@ -153,10 +144,10 @@ export function VariantMatrix({
   };
 
   return (
-    <section className={`${cardClass} space-y-4`}>
+    <Card className="space-y-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold">מידות ומלאי</h3>
-        <p className="text-sm text-stone-500">
+        <h3 className="text-sm font-semibold text-ink">מידות ומלאי</h3>
+        <p className="text-sm text-ink-muted">
           סה״כ במלאי: <bdi dir="ltr">{total}</bdi> יחידות
         </p>
       </div>
@@ -164,10 +155,10 @@ export function VariantMatrix({
       {/* Full contrast, never behind an opacity veil: this paragraph is the one
           thing explaining the state, and WCAG's inactive-control exemption does
           not cover it. */}
-      {disabledHint !== null && <p className="text-sm text-stone-600">{disabledHint}</p>}
+      {disabledHint !== null && <p className="text-sm text-ink-muted">{disabledHint}</p>}
 
       <div role="group" aria-labelledby="variant-quick-label" className="space-y-2">
-        <p id="variant-quick-label" className={labelClass}>
+        <p id="variant-quick-label" className="text-sm font-semibold text-ink">
           {`הוספה מהירה (מידות אירופאיות)${suffix}`}
         </p>
         <div className="flex flex-wrap gap-2">
@@ -182,7 +173,9 @@ export function VariantMatrix({
                 // focus to the existing row. The state lives in the name.
                 aria-label={alreadyListed ? `${label} — כבר ברשימה` : undefined}
                 className={`min-h-11 min-w-11 rounded-full border px-3 text-sm ${
-                  alreadyListed ? "border-amber-600 bg-white font-semibold" : "border-stone-300"
+                  alreadyListed
+                    ? "border-gold-strong bg-surface-raised font-semibold text-gold-strong"
+                    : "border-border text-ink-muted"
                 } disabled:opacity-50`}
                 disabled={addBlocked}
                 onClick={() => addSize(label)}
@@ -203,12 +196,8 @@ export function VariantMatrix({
 
       <div className="flex flex-wrap items-end gap-2">
         <div className="grow">
-          <label className={labelClass} htmlFor="variant-custom">
-            {`מידה מותאמת${blockedReason === null ? "" : ` (${blockedReason})`}`}
-          </label>
-          <input
-            id="variant-custom"
-            className={inputClass}
+          <Input
+            label={`מידה מותאמת${blockedReason === null ? "" : ` (${blockedReason})`}`}
             // Both "מידה מיוחדת" and "US 6 / EU 36" occur.
             dir="auto"
             maxLength={MAX_SIZE_LABEL_LENGTH}
@@ -223,23 +212,26 @@ export function VariantMatrix({
             }}
           />
         </div>
-        <button
-          type="button"
-          className={secondaryButtonClass}
+        <Button
+          variant="secondary"
           disabled={addBlocked}
           aria-label={capReason === null ? undefined : `הוספה — ${capReason}`}
           onClick={() => addSize(custom)}
         >
           הוספה
-        </button>
+        </Button>
       </div>
 
       {inlineError !== null && (
-        <p role="alert" className="text-xs text-red-700">
+        <p role="alert" className="text-xs text-danger">
           {inlineError}
         </p>
       )}
-      {saveError !== null && <ErrorNotice message={saveError} />}
+      {saveError !== null && (
+        <p role="alert" className="text-sm text-danger">
+          {saveError}
+        </p>
+      )}
 
       {rows.length === 0 ? (
         <EmptyState
@@ -247,27 +239,24 @@ export function VariantMatrix({
           body="בחרי מידה מהרשימה המהירה, או הוסיפי מידה מותאמת."
         />
       ) : (
-        <ul className="divide-y divide-stone-100">
+        <ul className="divide-y divide-border">
           {rows.map((row, index) => {
             const label = normalizeSizeLabel(row.size_label);
             const quantity = Number(row.quantity) || 0;
             return (
               <li key={row.key} className="flex flex-wrap items-center gap-3 py-3 text-sm">
-                <span
-                  id={`variant-size-${row.key}`}
-                  className="rounded-full border border-stone-300 px-3 py-0.5"
-                >
+                <Badge variant="muted" id={`variant-size-${row.key}`}>
                   <bdi>{label}</bdi>
-                </span>
-                <span id={`variant-qty-label-${row.key}`} className="text-stone-500">
+                </Badge>
+                <span id={`variant-qty-label-${row.key}`} className="text-ink-muted">
                   כמות
                 </span>
                 {/* LTR island: − value + reads left-to-right while "כמות" stays
                     in the RTL flow outside it. */}
                 <span dir="ltr" className="flex items-center gap-1" style={{ unicodeBidi: "isolate" }}>
-                  <button
-                    type="button"
-                    className={`${secondaryButtonClass} min-h-11 min-w-11`}
+                  <Button
+                    variant="secondary"
+                    className="min-w-11"
                     aria-label={`הפחתת כמות במידה ${label}`}
                     disabled={disabled || saving || quantity === 0}
                     onClick={() =>
@@ -281,13 +270,14 @@ export function VariantMatrix({
                     }
                   >
                     −
-                  </button>
+                  </Button>
                   <input
                     type="number"
                     dir="ltr"
                     min={0}
                     max={MAX_VARIANT_QUANTITY}
-                    className={`${inputClass} w-24`}
+                    // Numeric column: value sits at the end (right in this LTR island).
+                    className="w-24 rounded-sm border border-border-input bg-surface-raised px-3 py-2 text-base text-ink text-end focus:border-gold-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
                     // aria-labelledby, not aria-label: an aria-label would
                     // silently replace the visible "כמות" text.
                     aria-labelledby={`variant-qty-label-${row.key} variant-size-${row.key}`}
@@ -303,9 +293,9 @@ export function VariantMatrix({
                       )
                     }
                   />
-                  <button
-                    type="button"
-                    className={`${secondaryButtonClass} min-h-11 min-w-11`}
+                  <Button
+                    variant="secondary"
+                    className="min-w-11"
                     aria-label={`הגדלת כמות במידה ${label}`}
                     disabled={disabled || saving || quantity >= MAX_VARIANT_QUANTITY}
                     onClick={() =>
@@ -319,11 +309,11 @@ export function VariantMatrix({
                     }
                   >
                     +
-                  </button>
+                  </Button>
                 </span>
-                <button
-                  type="button"
-                  className={`${dangerButtonClass} ms-auto min-h-11`}
+                <Button
+                  variant="danger"
+                  className="ms-auto min-h-11"
                   // The accessible name BEGINS with the visible label verbatim.
                   aria-label={`הסרה — מידה ${label}`}
                   disabled={disabled || saving}
@@ -333,7 +323,7 @@ export function VariantMatrix({
                   }}
                 >
                   הסרה
-                </button>
+                </Button>
               </li>
             );
           })}
@@ -341,22 +331,20 @@ export function VariantMatrix({
       )}
 
       {allZero && (
-        <p role="status" className="text-sm text-amber-800">
+        <p role="status" className="text-sm text-warning-text">
           כל המידות במלאי 0 — השמלה תסומן «אזל מהמלאי» בקטלוג הניהול.
         </p>
       )}
 
       <div className="flex items-center justify-end gap-3">
-        {dirty && !disabled && <span className="text-xs text-amber-800">יש שינויים שלא נשמרו</span>}
-        <button
-          type="button"
-          className={primaryButtonClass}
+        {dirty && !disabled && <span className="text-xs text-warning-text">יש שינויים שלא נשמרו</span>}
+        <Button
           disabled={disabled || saving || dressId === null}
           onClick={() => void handleSave()}
         >
           שמירת מלאי
-        </button>
+        </Button>
       </div>
-    </section>
+    </Card>
   );
 }

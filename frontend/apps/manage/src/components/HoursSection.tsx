@@ -1,19 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { Badge, Button, Card, Input, Modal, Select, Skeleton, Toggle } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { AvailabilityException, WeeklyRuleInput } from "../api";
 import { validateExceptionTimes, validateWeeklyRules } from "../validation";
-import {
-  cardClass,
-  dangerButtonClass,
-  ErrorNotice,
-  inputClass,
-  labelClass,
-  Loading,
-  primaryButtonClass,
-  SavedNotice,
-  secondaryButtonClass,
-} from "./shared";
 
 // 0=Sunday … 6=Saturday (Israeli week).
 const DAY_NAMES = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
@@ -42,6 +32,7 @@ export function HoursSection() {
   const [exceptionNote, setExceptionNote] = useState("");
   const [exceptionError, setExceptionError] = useState<string | null>(null);
   const [addingException, setAddingException] = useState(false);
+  const [pendingRemoval, setPendingRemoval] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -66,10 +57,14 @@ export function HoursSection() {
   }, [load]);
 
   if (loadError !== null && rules === null) {
-    return <ErrorNotice message={loadError} />;
+    return (
+      <p role="alert" className="text-sm text-ink-muted">
+        {loadError}
+      </p>
+    );
   }
   if (rules === null) {
-    return <Loading />;
+    return <Skeleton variant="text" lines={4} />;
   }
 
   const updateRule = (index: number, patch: Partial<WeeklyRuleInput>) => {
@@ -153,89 +148,73 @@ export function HoursSection() {
     }
   };
 
+  const confirmRemoveException = () => {
+    const id = pendingRemoval;
+    setPendingRemoval(null);
+    if (id !== null) {
+      void handleRemoveException(id);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <section className={`${cardClass} space-y-4`}>
+      <Card className="space-y-4">
         <h3 className="text-sm font-semibold">שעות פעילות שבועיות</h3>
         {rules.length === 0 && (
-          <p className="text-sm text-stone-500">אין עדיין חלונות פעילות — הוסיפי חלון ראשון.</p>
+          <p className="text-sm text-ink-muted">אין עדיין חלונות פעילות — הוסיפי חלון ראשון.</p>
         )}
         <ul className="space-y-2">
           {rules.map((rule, index) => (
             // Index keys are fine here: rows are edited in place and only
             // appended/removed at known positions.
             <li key={index} className="flex flex-wrap items-end gap-3">
-              <div>
-                <label className={labelClass} htmlFor={`rule-day-${index}`}>
-                  יום
-                </label>
-                <select
-                  id={`rule-day-${index}`}
-                  className={inputClass}
-                  value={rule.day_of_week}
-                  onChange={(event) => updateRule(index, { day_of_week: Number(event.target.value) })}
-                >
-                  {DAY_NAMES.map((name, day) => (
-                    <option key={day} value={day}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className={labelClass} htmlFor={`rule-open-${index}`}>
-                  פתיחה
-                </label>
-                <input
-                  id={`rule-open-${index}`}
-                  type="time"
-                  className={inputClass}
-                  value={rule.open_time}
-                  onChange={(event) => updateRule(index, { open_time: event.target.value })}
-                />
-              </div>
-              <div>
-                <label className={labelClass} htmlFor={`rule-close-${index}`}>
-                  סגירה
-                </label>
-                <input
-                  id={`rule-close-${index}`}
-                  type="time"
-                  className={inputClass}
-                  value={rule.close_time}
-                  onChange={(event) => updateRule(index, { close_time: event.target.value })}
-                />
-              </div>
-              <div>
-                <label className={labelClass} htmlFor={`rule-capacity-${index}`}>
-                  קיבולת
-                </label>
-                <input
-                  id={`rule-capacity-${index}`}
-                  type="number"
-                  min={1}
-                  className={inputClass}
-                  value={rule.capacity}
-                  onChange={(event) => updateRule(index, { capacity: Number(event.target.value) })}
-                />
-              </div>
-              <button
+              <Select
+                label="יום"
+                value={rule.day_of_week}
+                onChange={(event) => updateRule(index, { day_of_week: Number(event.target.value) })}
+              >
+                {DAY_NAMES.map((name, day) => (
+                  <option key={day} value={day}>
+                    {name}
+                  </option>
+                ))}
+              </Select>
+              <Input
+                label="פתיחה"
+                type="time"
+                value={rule.open_time}
+                onChange={(event) => updateRule(index, { open_time: event.target.value })}
+              />
+              <Input
+                label="סגירה"
+                type="time"
+                value={rule.close_time}
+                onChange={(event) => updateRule(index, { close_time: event.target.value })}
+              />
+              <Input
+                label="קיבולת"
+                type="number"
+                min={1}
+                value={rule.capacity}
+                onChange={(event) => updateRule(index, { capacity: Number(event.target.value) })}
+              />
+              <Button
                 type="button"
-                className={dangerButtonClass}
+                variant="danger"
                 onClick={() => {
                   setRules(rules.filter((_, at) => at !== index));
                   setRulesSaved(false);
                 }}
               >
                 הסרה
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
-        <div className="flex gap-3">
-          <button
+        <div className="flex items-center gap-3">
+          <Button
             type="button"
-            className={secondaryButtonClass}
+            variant="secondary"
             onClick={() => {
               setRules([
                 ...rules,
@@ -245,124 +224,115 @@ export function HoursSection() {
             }}
           >
             הוספת חלון
-          </button>
-          <button
-            type="button"
-            className={primaryButtonClass}
-            disabled={savingRules}
-            onClick={() => void handleSaveRules()}
-          >
+          </Button>
+          <Button type="button" loading={savingRules} onClick={() => void handleSaveRules()}>
             שמירת שעות פעילות
-          </button>
+          </Button>
+          {rulesSaved && <span className="text-xs text-ink-muted">נשמר לפני רגע</span>}
         </div>
-        {rulesError !== null && <ErrorNotice message={rulesError} />}
-        {rulesSaved && <SavedNotice />}
-      </section>
+        {rulesError !== null && (
+          <p role="alert" className="text-sm text-danger">
+            {rulesError}
+          </p>
+        )}
+      </Card>
 
-      <section className={`${cardClass} space-y-4`}>
+      <Card className="space-y-4">
         <h3 className="text-sm font-semibold">תאריכים חריגים</h3>
         <form onSubmit={(event) => void handleAddException(event)} className="space-y-3">
           <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <label className={labelClass} htmlFor="exception-date">
-                תאריך
-              </label>
-              <input
-                id="exception-date"
-                type="date"
-                className={inputClass}
-                value={exceptionDate}
-                onChange={(event) => setExceptionDate(event.target.value)}
-              />
-            </div>
-            <label className="flex items-center gap-2 pb-2 text-sm">
-              <input
-                type="checkbox"
-                checked={closedAllDay}
-                onChange={(event) => setClosedAllDay(event.target.checked)}
-              />
-              סגור כל היום
-            </label>
+            <Input
+              label="תאריך"
+              type="date"
+              value={exceptionDate}
+              onChange={(event) => setExceptionDate(event.target.value)}
+            />
+            <Toggle label="סגור כל היום" checked={closedAllDay} onCheckedChange={setClosedAllDay} />
             {!closedAllDay && (
               <>
-                <div>
-                  <label className={labelClass} htmlFor="exception-open">
-                    פתיחה
-                  </label>
-                  <input
-                    id="exception-open"
-                    type="time"
-                    className={inputClass}
-                    value={exceptionOpen}
-                    onChange={(event) => setExceptionOpen(event.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className={labelClass} htmlFor="exception-close">
-                    סגירה
-                  </label>
-                  <input
-                    id="exception-close"
-                    type="time"
-                    className={inputClass}
-                    value={exceptionClose}
-                    onChange={(event) => setExceptionClose(event.target.value)}
-                  />
-                </div>
+                <Input
+                  label="פתיחה"
+                  type="time"
+                  value={exceptionOpen}
+                  onChange={(event) => setExceptionOpen(event.target.value)}
+                />
+                <Input
+                  label="סגירה"
+                  type="time"
+                  value={exceptionClose}
+                  onChange={(event) => setExceptionClose(event.target.value)}
+                />
               </>
             )}
             <div className="grow">
-              <label className={labelClass} htmlFor="exception-note">
-                הערה
-              </label>
-              <input
-                id="exception-note"
-                className={inputClass}
+              <Input
+                label="הערה"
                 value={exceptionNote}
                 onChange={(event) => setExceptionNote(event.target.value)}
               />
             </div>
-            <button type="submit" className={primaryButtonClass} disabled={addingException}>
+            <Button type="submit" loading={addingException}>
               הוספת חריגה
-            </button>
+            </Button>
           </div>
         </form>
-        {exceptionError !== null && <ErrorNotice message={exceptionError} />}
+        {exceptionError !== null && (
+          <p role="alert" className="text-sm text-danger">
+            {exceptionError}
+          </p>
+        )}
         {exceptions.length === 0 ? (
-          <p className="text-sm text-stone-500">אין תאריכים חריגים.</p>
+          <p className="text-sm text-ink-muted">אין תאריכים חריגים.</p>
         ) : (
           <ul className="space-y-2">
             {exceptions.map((exception) => (
               <li
                 key={exception.id}
-                className="flex flex-wrap items-center gap-3 border-b border-stone-100 pb-2 text-sm last:border-b-0"
+                className="flex flex-wrap items-center gap-3 border-b border-border pb-2 text-sm last:border-b-0"
               >
                 <span className="font-medium">{formatDate(exception.date)}</span>
                 {exception.open_time === null || exception.close_time === null ? (
-                  <span className="rounded bg-red-100 px-2 py-0.5 text-xs text-red-800">
-                    סגור כל היום
-                  </span>
+                  <Badge variant="danger">סגור כל היום</Badge>
                 ) : (
-                  <span className="rounded bg-stone-100 px-2 py-0.5 text-xs text-stone-700">
+                  <Badge variant="muted">
                     שעות מיוחדות {toInputTime(exception.open_time)}–
                     {toInputTime(exception.close_time)}
-                  </span>
+                  </Badge>
                 )}
                 {exception.note !== null && (
-                  <span className="text-stone-500">{exception.note}</span>
+                  <span className="text-ink-muted">{exception.note}</span>
                 )}
-                <button
+                <Button
                   type="button"
-                  className={`${dangerButtonClass} mr-auto`}
-                  onClick={() => void handleRemoveException(exception.id)}
+                  variant="danger"
+                  className="ms-auto"
+                  onClick={() => setPendingRemoval(exception.id)}
                 >
                   הסרה
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
         )}
-      </section>
+      </Card>
+
+      <Modal
+        open={pendingRemoval !== null}
+        onClose={() => setPendingRemoval(null)}
+        title="הסרת תאריך חריג"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setPendingRemoval(null)}>
+              ביטול
+            </Button>
+            <Button variant="danger" onClick={confirmRemoveException}>
+              הסרה
+            </Button>
+          </>
+        }
+      >
+        האם להסיר את התאריך החריג?
+      </Modal>
     </div>
   );
 }

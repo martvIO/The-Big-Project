@@ -1,16 +1,9 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { useTranslation } from "react-i18next";
+import { Button, Card, Input, SectionHeading, Skeleton, TextArea, Toggle, useToast } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { Settings } from "../api";
-import {
-  cardClass,
-  ErrorNotice,
-  inputClass,
-  labelClass,
-  Loading,
-  primaryButtonClass,
-  SavedNotice,
-} from "./shared";
 
 interface ProfileForm {
   phone: string;
@@ -40,12 +33,11 @@ function fromSettings(settings: Settings): { profile: ProfileForm; toggles: Togg
 }
 
 export function ProfileSection() {
+  const { t } = useTranslation();
+  const toast = useToast();
   const [profile, setProfile] = useState<ProfileForm | null>(null);
-  const [toggles, setToggles] = useState<TogglesForm>({
-    deposits_enabled: false,
-    brides_only: false,
-  });
-  const [error, setError] = useState<string | null>(null);
+  const [toggles, setToggles] = useState<TogglesForm>({ deposits_enabled: false, brides_only: false });
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -60,10 +52,8 @@ export function ProfileSection() {
           setToggles(loaded.toggles);
         }
       })
-      .catch((loadError: unknown) => {
-        if (!cancelled) {
-          setError(errorMessage(loadError));
-        }
+      .catch((error: unknown) => {
+        if (!cancelled) setLoadError(errorMessage(error));
       });
     return () => {
       cancelled = true;
@@ -71,7 +61,14 @@ export function ProfileSection() {
   }, []);
 
   if (profile === null) {
-    return error !== null ? <ErrorNotice message={error} /> : <Loading />;
+    if (loadError !== null) {
+      return (
+        <p role="alert" className="text-base text-ink-muted">
+          {loadError}
+        </p>
+      );
+    }
+    return <Skeleton variant="text" lines={4} />;
   }
 
   const setField = (field: keyof ProfileForm, value: string) => {
@@ -88,99 +85,72 @@ export function ProfileSection() {
       const synced = fromSettings(updated);
       setProfile(synced.profile);
       setToggles(synced.toggles);
-      setError(null);
       setSaved(true);
     } catch (saveError) {
-      setError(errorMessage(saveError));
+      toast({ message: errorMessage(saveError), variant: "error" });
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <form onSubmit={(event) => void handleSubmit(event)} className={`${cardClass} space-y-4`}>
-      <h3 className="text-sm font-semibold">פרופיל הבוטיק</h3>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div>
-          <label className={labelClass} htmlFor="profile-phone">
-            טלפון
-          </label>
-          <input
-            id="profile-phone"
+    <Card>
+      <form onSubmit={(event) => void handleSubmit(event)} className="flex flex-col gap-4">
+        <SectionHeading as="h2">{t("profile.heading")}</SectionHeading>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Input
+            label={t("profile.phone")}
             type="tel"
             dir="ltr"
-            className={inputClass}
             value={profile.phone}
             onChange={(event) => setField("phone", event.target.value)}
           />
-        </div>
-        <div>
-          <label className={labelClass} htmlFor="profile-address">
-            כתובת
-          </label>
-          <input
-            id="profile-address"
-            className={inputClass}
+          <Input
+            label={t("profile.address")}
             value={profile.address}
             onChange={(event) => setField("address", event.target.value)}
           />
         </div>
-      </div>
-      <div>
-        <label className={labelClass} htmlFor="profile-maps-url">
-          קישור למפות (http/https)
-        </label>
-        <input
-          id="profile-maps-url"
+        <Input
+          label={t("profile.mapsUrl")}
           type="url"
           dir="ltr"
-          className={inputClass}
           value={profile.maps_url}
           onChange={(event) => setField("maps_url", event.target.value)}
         />
-      </div>
-      <div>
-        <label className={labelClass} htmlFor="profile-description">
-          תיאור
-        </label>
-        <textarea
-          id="profile-description"
+        <TextArea
+          label={t("profile.description")}
           rows={4}
-          className={inputClass}
           value={profile.description}
           onChange={(event) => setField("description", event.target.value)}
         />
-      </div>
 
-      <h3 className="pt-2 text-sm font-semibold">הגדרות</h3>
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
+        <SectionHeading as="h2">{t("profile.settingsHeading")}</SectionHeading>
+        <Toggle
+          label={t("profile.depositsEnabled")}
           checked={toggles.deposits_enabled}
-          onChange={(event) => {
-            setToggles({ ...toggles, deposits_enabled: event.target.checked });
+          onCheckedChange={(value) => {
+            setToggles({ ...toggles, deposits_enabled: value });
             setSaved(false);
           }}
         />
-        גביית מקדמות מופעלת
-      </label>
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
+        <Toggle
+          label={t("profile.bridesOnly")}
+          description={t("profile.bridesOnlyHint")}
           checked={toggles.brides_only}
-          onChange={(event) => {
-            setToggles({ ...toggles, brides_only: event.target.checked });
+          onCheckedChange={(value) => {
+            setToggles({ ...toggles, brides_only: value });
             setSaved(false);
           }}
         />
-        בוטיק לכלות בלבד (כל סוגי התורים יוצגו לכלות בלבד)
-      </label>
 
-      {error !== null && <ErrorNotice message={error} />}
-      {saved && <SavedNotice />}
-      <button type="submit" className={primaryButtonClass} disabled={saving}>
-        שמירת פרופיל והגדרות
-      </button>
-    </form>
+        <div className="flex items-center gap-3">
+          <Button type="submit" loading={saving}>
+            {t("profile.save")}
+          </Button>
+          {saved && <span className="text-xs text-ink-muted">{t("common.saved")}</span>}
+        </div>
+      </form>
+    </Card>
   );
 }

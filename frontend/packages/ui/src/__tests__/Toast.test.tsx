@@ -47,7 +47,9 @@ describe("Toast", () => {
     await waitForElementToBeRemoved(() => screen.queryByRole("status"));
   });
 
-  it("throws when used outside a ToastProvider", () => {
-    expect(() => render(<Harness />)).toThrow(/ToastProvider/);
+  it("degrades to a no-op outside a ToastProvider (safe to unit-test in isolation)", () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "ok" }));
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });

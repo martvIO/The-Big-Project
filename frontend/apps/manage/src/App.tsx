@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ConsoleShell } from "@boutique/ui";
+import { ConsoleShell, ToastProvider } from "@boutique/ui";
 import { api } from "./api";
 import type { Staff } from "./api";
 import { CatalogSection } from "./components/CatalogSection";
@@ -56,21 +56,23 @@ export function App() {
   ];
 
   return (
-    <ConsoleShell
-      boutiqueName={staff.display_name}
-      title={t("console.title")}
-      logoutLabel={t("console.logout")}
-      onLogout={() => void handleLogout()}
-      skipLinkLabel={t("console.skipLink")}
-      nav={nav}
-      activeKey={section}
-      onNavigate={(key) => setSection(key as SectionKey)}
-    >
-      {section === "profile" && <ProfileSection />}
-      {section === "hours" && <HoursSection />}
-      {section === "types" && <TypesSection />}
-      {section === "terms" && <TermsSection />}
-      {section === "catalog" && <CatalogSection />}
-    </ConsoleShell>
+    <ToastProvider>
+      <ConsoleShell
+        boutiqueName={staff.display_name}
+        title={t("console.title")}
+        logoutLabel={t("console.logout")}
+        onLogout={() => void handleLogout()}
+        skipLinkLabel={t("console.skipLink")}
+        nav={nav}
+        activeKey={section}
+        onNavigate={(key) => setSection(key as SectionKey)}
+      >
+        {section === "profile" && <ProfileSection />}
+        {section === "hours" && <HoursSection />}
+        {section === "types" && <TypesSection />}
+        {section === "terms" && <TermsSection />}
+        {section === "catalog" && <CatalogSection />}
+      </ConsoleShell>
+    </ToastProvider>
   );
 }

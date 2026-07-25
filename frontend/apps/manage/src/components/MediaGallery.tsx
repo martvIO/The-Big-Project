@@ -1,15 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
+import { Button, Card, EmptyState, Input, Modal } from "@boutique/ui";
 import { api, ApiError, errorMessage, uploadToStorage } from "../api";
 import type { DressDetail, Media } from "../api";
 import { MAX_MEDIA_PER_DRESS, validateUploadFile } from "../validation";
-import {
-  cardClass,
-  dangerButtonClass,
-  EmptyState,
-  labelClass,
-  secondaryButtonClass,
-} from "./shared";
 
 type QueueState = "pending" | "uploading" | "verifying" | "done" | "failed";
 
@@ -332,6 +326,13 @@ export function MediaGallery({
     }
   };
 
+  // @boutique/ui Button is a plain function component whose props type carries no
+  // `ref`, so the reorder focus map is populated from a display:contents wrapper
+  // that reaches the real <button> — the effect still focuses a DOM button.
+  const registerButton = (key: string) => (node: HTMLSpanElement | null) => {
+    buttonRefs.current.set(key, node?.querySelector("button") ?? null);
+  };
+
   const handleImageError = (mediaId: string) => {
     setFailedImages((current) =>
       current.includes(mediaId) ? current : [...current, mediaId],
@@ -350,10 +351,10 @@ export function MediaGallery({
   };
 
   return (
-    <section className={`${cardClass} space-y-4`}>
+    <Card className="space-y-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 className="text-sm font-semibold">תמונות</h3>
-        <p className={media.length >= MAX_MEDIA_PER_DRESS ? "text-sm text-amber-800" : "text-sm text-stone-500"}>
+        <p className={media.length >= MAX_MEDIA_PER_DRESS ? "text-sm text-warning-text" : "text-sm text-ink-muted"}>
           {media.length >= MAX_MEDIA_PER_DRESS ? (
             "הגלריה מלאה"
           ) : (
@@ -364,66 +365,58 @@ export function MediaGallery({
         </p>
       </div>
 
-      {disabledHint !== null && <p className="text-sm text-stone-600">{disabledHint}</p>}
+      {disabledHint !== null && <p className="text-sm text-ink-muted">{disabledHint}</p>}
 
       {/* Exactly one polite region in this Card (the assertive batch-rejection
           alert below is the only other one): the storage notice, the reorder
           result and the queue summary — running AND terminal — share it. */}
       <div role="status" className="space-y-2">
         {(!uploadsEnabled || storageNotice !== null) && (
-          <div className="rounded border border-stone-400 bg-white px-3 py-2 text-sm">
+          <div className="rounded border border-border bg-surface px-3 py-2 text-sm">
             {storageNotice !== null ? (
               <p>{storageNotice}</p>
             ) : (
               <>
                 <p className="font-medium">העלאת תמונות עדיין לא זמינה</p>
-                <p className="text-stone-600">
+                <p className="text-ink-muted">
                   אפשר להמשיך למלא את פרטי השמלה ואת המידות — התמונות יתווספו מאוחר יותר.
                 </p>
               </>
             )}
           </div>
         )}
-        <p className="text-xs text-stone-600">{announcement}</p>
+        <p className="text-xs text-ink-muted">{announcement}</p>
       </div>
 
-      <div>
-        <label className={labelClass} htmlFor="media-file-input">
-          {inputLabel}
-        </label>
-        {/* A real, visible, focusable file input — display:none plus a label
-            shim breaks Safari/VoiceOver and hides the disabled reason. */}
-        <input
-          id="media-file-input"
-          type="file"
-          multiple
-          accept="image/jpeg,image/png,image/webp"
-          className="block w-full text-sm"
-          disabled={uploadsBlocked}
-          onChange={(event) => void handleFiles(event)}
-        />
-        <p className="mt-1 text-xs text-stone-500">
-          צלמי לאורך (פורטרט). עד 10MB לתמונה · JPG/PNG/WebP · 4–6 תמונות לשמלה מספיקות
-        </p>
-      </div>
+      {/* A real, visible, focusable file input — display:none plus a label shim
+          breaks Safari/VoiceOver and hides the disabled reason. */}
+      <Input
+        label={inputLabel}
+        help="צלמי לאורך (פורטרט). עד 10MB לתמונה · JPG/PNG/WebP · 4–6 תמונות לשמלה מספיקות"
+        type="file"
+        multiple
+        accept="image/jpeg,image/png,image/webp"
+        disabled={uploadsBlocked}
+        onChange={(event) => void handleFiles(event)}
+      />
 
       {batchAlert !== null && (
-        <p role="alert" className="text-xs text-red-700">
+        <p role="alert" className="text-xs text-danger">
           {batchAlert}
         </p>
       )}
 
       {queue.length > 0 && (
-        <ul className="divide-y divide-stone-100 text-sm">
+        <ul className="divide-y divide-border text-sm">
           {queue.map((item) => (
             <li key={item.key} className="flex flex-wrap items-center gap-3 py-2">
               <span dir="auto" className="font-medium">
                 {item.name}
               </span>
-              <bdi dir="ltr" className="text-stone-500">
+              <bdi dir="ltr" className="text-ink-muted">
                 {formatBytes(item.size)}
               </bdi>
-              <span className={item.state === "failed" ? "text-red-700" : "text-stone-600"}>
+              <span className={item.state === "failed" ? "text-danger" : "text-ink-muted"}>
                 {item.state === "pending" && "ממתין"}
                 {item.state === "uploading" && "מעלה…"}
                 {item.state === "verifying" && "מאמת…"}
@@ -436,14 +429,13 @@ export function MediaGallery({
                 )}
               </span>
               {item.state === "failed" && item.retriable && (
-                <button
-                  type="button"
-                  className={secondaryButtonClass}
+                <Button
+                  variant="secondary"
                   aria-label={`נסי שוב — ${item.name}`}
                   onClick={() => void handleRetry(item.key)}
                 >
                   נסי שוב
-                </button>
+                </Button>
               )}
             </li>
           ))}
@@ -459,8 +451,8 @@ export function MediaGallery({
         <ol className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           {items.map((item, index) => (
             <li key={item.id} className="space-y-2">
-              <div className="relative aspect-[3/4] overflow-hidden rounded bg-stone-100">
-                <span className="absolute top-1 start-1 rounded-full bg-white px-2 text-xs">
+              <div className="relative aspect-[3/4] overflow-hidden rounded-md bg-surface shadow-sm">
+                <span className="absolute top-1 start-1 rounded-full bg-surface-raised px-2 text-xs">
                   <bdi dir="ltr">{index + 1}</bdi>
                 </span>
                 {item.url !== null && !failedImages.includes(item.id) ? (
@@ -473,91 +465,88 @@ export function MediaGallery({
                     onError={() => handleImageError(item.id)}
                   />
                 ) : (
-                  <span aria-hidden="true" className="flex h-full w-full items-center justify-center text-stone-400">
+                  <span aria-hidden="true" className="flex h-full w-full items-center justify-center text-ink-muted">
                     ✦
                   </span>
                 )}
               </div>
               {index === 0 ? (
-                <p className="text-xs font-semibold text-amber-800">תמונה ראשית (מוצגת בקטלוג)</p>
+                <p className="text-xs font-semibold text-warning-text">תמונה ראשית (מוצגת בקטלוג)</p>
               ) : (
-                <button
-                  type="button"
-                  className={secondaryButtonClass}
+                <Button
+                  variant="secondary"
                   aria-label={`קבעי כתמונה ראשית — תמונה ${index + 1}`}
                   disabled={disabled}
                   onClick={() => makePrimary(index)}
                 >
                   קבעי כתמונה ראשית
-                </button>
+                </Button>
               )}
               <div className="flex flex-wrap items-center gap-1">
                 {/* ↑/↓ rather than ←/→: reorder is a list-position operation and
                     the arrows must not invert in RTL. */}
-                <button
-                  type="button"
-                  ref={(node) => {
-                    buttonRefs.current.set(`${item.id}:up`, node);
-                  }}
-                  className={`${secondaryButtonClass} min-h-11 min-w-11`}
-                  aria-label={`הזזת תמונה ${index + 1} אחורה`}
-                  disabled={disabled || index === 0}
-                  onClick={() => move(index, -1)}
-                >
-                  <span aria-hidden="true">↑</span>
-                </button>
-                <button
-                  type="button"
-                  ref={(node) => {
-                    buttonRefs.current.set(`${item.id}:down`, node);
-                  }}
-                  className={`${secondaryButtonClass} min-h-11 min-w-11`}
-                  aria-label={`הזזת תמונה ${index + 1} קדימה`}
-                  disabled={disabled || index === items.length - 1}
-                  onClick={() => move(index, 1)}
-                >
-                  <span aria-hidden="true">↓</span>
-                </button>
-                <button
-                  type="button"
-                  ref={(node) => {
-                    buttonRefs.current.set(`${item.id}:delete`, node);
-                  }}
-                  className={`${dangerButtonClass} min-h-11`}
-                  aria-label={`מחיקה — תמונה ${index + 1}`}
-                  disabled={disabled}
-                  onClick={() => setConfirmingDeleteId(item.id)}
-                >
-                  מחיקה
-                </button>
+                <span style={{ display: "contents" }} ref={registerButton(`${item.id}:up`)}>
+                  <Button
+                    variant="secondary"
+                    className="min-w-11"
+                    aria-label={`הזזת תמונה ${index + 1} אחורה`}
+                    disabled={disabled || index === 0}
+                    onClick={() => move(index, -1)}
+                  >
+                    <span aria-hidden="true">↑</span>
+                  </Button>
+                </span>
+                <span style={{ display: "contents" }} ref={registerButton(`${item.id}:down`)}>
+                  <Button
+                    variant="secondary"
+                    className="min-w-11"
+                    aria-label={`הזזת תמונה ${index + 1} קדימה`}
+                    disabled={disabled || index === items.length - 1}
+                    onClick={() => move(index, 1)}
+                  >
+                    <span aria-hidden="true">↓</span>
+                  </Button>
+                </span>
+                <span style={{ display: "contents" }} ref={registerButton(`${item.id}:delete`)}>
+                  <Button
+                    variant="danger"
+                    aria-label={`מחיקה — תמונה ${index + 1}`}
+                    disabled={disabled}
+                    onClick={() => setConfirmingDeleteId(item.id)}
+                  >
+                    מחיקה
+                  </Button>
+                </span>
               </div>
-              {confirmingDeleteId === item.id && (
-                <div className="space-y-2 rounded border border-red-300 p-2 text-xs">
-                  <p className="font-medium">למחוק את התמונה?</p>
-                  <p className="text-stone-600">לא ניתן לשחזר תמונה שנמחקה.</p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      className={secondaryButtonClass}
-                      onClick={() => setConfirmingDeleteId(null)}
-                    >
-                      ביטול
-                    </button>
-                    <button
-                      type="button"
-                      className={dangerButtonClass}
-                      onClick={() => void handleDelete(item.id)}
-                    >
-                      מחיקה
-                    </button>
-                  </div>
-                </div>
-              )}
             </li>
           ))}
         </ol>
       )}
 
-    </section>
+      <Modal
+        open={confirmingDeleteId !== null}
+        onClose={() => setConfirmingDeleteId(null)}
+        title="למחוק את התמונה?"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmingDeleteId(null)}>
+              ביטול
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                if (confirmingDeleteId !== null) {
+                  void handleDelete(confirmingDeleteId);
+                }
+              }}
+            >
+              מחיקה
+            </Button>
+          </>
+        }
+      >
+        לא ניתן לשחזר תמונה שנמחקה.
+      </Modal>
+    </Card>
   );
 }

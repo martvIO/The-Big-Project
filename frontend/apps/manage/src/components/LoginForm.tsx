@@ -1,11 +1,12 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { tokens } from "@boutique/ui";
+import { useTranslation } from "react-i18next";
+import { Button, Card, Input } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { Staff } from "../api";
-import { cardClass, ErrorNotice, inputClass, labelClass, primaryButtonClass } from "./shared";
 
 export function LoginForm({ onLogin }: { onLogin: (staff: Staff) => void }) {
+  const { t } = useTranslation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -17,6 +18,7 @@ export function LoginForm({ onLogin }: { onLogin: (staff: Staff) => void }) {
     try {
       onLogin(await api.login(email, password));
     } catch (loginError) {
+      // Generic message preserved verbatim from the API (F5 anti-enumeration).
       setError(errorMessage(loginError));
     } finally {
       setBusy(false);
@@ -24,49 +26,37 @@ export function LoginForm({ onLogin }: { onLogin: (staff: Staff) => void }) {
   };
 
   return (
-    <main
-      className="flex min-h-screen items-center justify-center px-4"
-      style={{ backgroundColor: tokens.color.bg, color: tokens.color.ink }}
-    >
-      <form
-        onSubmit={(event) => void handleSubmit(event)}
-        className={`${cardClass} w-full max-w-sm space-y-4`}
-      >
-        <h1 className="text-xl font-light tracking-wide">כניסה לניהול הבוטיק</h1>
-        <div>
-          <label className={labelClass} htmlFor="login-email">
-            אימייל
-          </label>
-          <input
-            id="login-email"
+    <main className="flex min-h-screen items-center justify-center bg-bg px-4 text-ink">
+      <form onSubmit={(event) => void handleSubmit(event)} className="w-full max-w-sm">
+        <Card className="flex flex-col gap-4">
+          <h1 className="font-display text-xl text-ink">{t("login.title")}</h1>
+          <Input
+            label={t("login.email")}
             type="email"
             dir="ltr"
             autoComplete="email"
             required
-            className={inputClass}
             value={email}
             onChange={(event) => setEmail(event.target.value)}
           />
-        </div>
-        <div>
-          <label className={labelClass} htmlFor="login-password">
-            סיסמה
-          </label>
-          <input
-            id="login-password"
+          <Input
+            label={t("login.password")}
             type="password"
             dir="ltr"
             autoComplete="current-password"
             required
-            className={inputClass}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
           />
-        </div>
-        {error !== null && <ErrorNotice message={error} />}
-        <button type="submit" className={`${primaryButtonClass} w-full`} disabled={busy}>
-          כניסה
-        </button>
+          {error !== null && (
+            <p role="alert" className="text-sm text-danger">
+              {error}
+            </p>
+          )}
+          <Button type="submit" className="w-full" loading={busy}>
+            {t("login.submit")}
+          </Button>
+        </Card>
       </form>
     </main>
   );

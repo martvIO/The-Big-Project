@@ -18,5 +18,27 @@ export const he = {
       terms: "מדיניות ביטולים",
       catalog: "שמלות",
     },
+    common: {
+      loading: "טוען…",
+      saved: "נשמר לפני רגע",
+    },
+    login: {
+      title: "כניסה לניהול הבוטיק",
+      email: "אימייל",
+      password: "סיסמה",
+      submit: "כניסה",
+    },
+    profile: {
+      heading: "פרופיל הבוטיק",
+      phone: "טלפון",
+      address: "כתובת",
+      mapsUrl: "קישור למפות (http/https)",
+      description: "תיאור",
+      settingsHeading: "הגדרות",
+      depositsEnabled: "גביית מקדמות מופעלת",
+      bridesOnly: "בוטיק לכלות בלבד",
+      bridesOnlyHint: "כל סוגי התורים יוצגו לכלות בלבד",
+      save: "שמירת פרופיל והגדרות",
+    },
   },
 } as const;
