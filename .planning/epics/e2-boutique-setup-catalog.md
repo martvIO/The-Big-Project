@@ -1,7 +1,7 @@
 # Epic: E2 — Boutique Setup & Catalog
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: building — F7 (PR #10) and F8 (PR #11) shipped 2026-07-24; F9 build **in progress** 2026-07-25 (interview gate waived by user directive; design-doc amendments landed — see Risks, both resolved); **F10 is gated on the AWS account**
+**Status**: building — F7 (PR #10) and F8 (PR #11) shipped 2026-07-24; **F9 PR #12 open 2026-07-25** (interview gate waived by directive; design gate re-passed, dual review + verification round done — clean-tree CI-equivalent green); **F10 is gated on the AWS account**
 **Owner**: team
 **PRD**: §2 (owner controls), §3 (inventory), storefront browse half of §4
 
