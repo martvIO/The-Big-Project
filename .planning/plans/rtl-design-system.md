@@ -7,6 +7,27 @@ Binding sources: `design/system/tokens.md` · `design/system/components.md` · `
 
 TDD red-before-green; one batch commit per phase; one fix commit per review round. Repo path has a space and `+` — quote everything; committed path literals use git-lowercase `frontend/`. Stack is React 19 / Vite 8 / Tailwind v4 / FastAPI — the `.claude/rules/` Kotlin/Micronaut conventions do NOT apply here.
 
+## Build progress (2026-07-25)
+
+Branch `feature/rtl-design-system`, all commits green (lint + typecheck + build + test).
+
+| Phase | State | Commit |
+|---|---|---|
+| Setup | done — worktree, rev-2 qa docs to main, green baseline (103 manage tests) | `e8fd318` |
+| 0 — design amendments | done — tokens/qa/components/manage-restyle amended; **design-critic re-run ACCEPT** | `2b21362`, `1be1b1a` |
+| 1 — foundation | done — theme.css (@theme, 7 paired leadings, ease-out override, color-scheme, PRE-1 tokens), tokens.ts mirror + parity test, @fontsource (Hebrew woff2 verified in build), i18n both apps, storefront App.tsx baseline fix | `0b82b97` |
+| 2 — primitives | done — 14 components (Button/Input/TextArea/Select/Toggle/Time+DateField/Badge/Card/Toast/Modal/Skeleton/EmptyState/SectionHeading/A11y) | `43359da` |
+| 3 — storefront composites | done — hours.ts (Asia/Jerusalem, grouping fixture, next-open), Price, HoursTable, BoutiqueHeader, DressCard, DressGrid, Gallery, BookingCTA, ContactPanel, A11yMenu — **61 ui tests** | `a909527` |
+| 4a — console composites | done — ConsoleShell, SetupProgress, PolicyBlockerBanner | `44d2ec4` |
+| 4b — manage integration | **partial** — App.tsx adopts ConsoleShell + i18n (App-level violations gone, 103 F7/F8 tests still green) | `d743e39` |
+
+**`packages/ui` is complete** — every component in components.md, 61 tests, RTL-clean (zero physical-direction props), zero motion literals in component code, no hardcoded Hebrew (strings via props).
+
+### Remaining
+- **4b (rest):** delete `apps/manage/src/components/shared.tsx`, swapping its class-string primitives (`inputClass`/`primaryButtonClass`/`cardClass`/…) and mini-components (`ErrorNotice`/`SavedNotice`/`Loading`/`Badge`/`EmptyState`) for `@boutique/ui` in ProfileSection/HoursSection/TypesSection/TermsSection/CatalogSection/DressEditor/VariantMatrix/MediaGallery/LoginForm — preserving each accessible name/text so the 103 frozen tests stay green (run `pnpm --filter manage test` after each). Add confirm `Modal` interstitials for the F7 type-archive + exception-remove and swap F8's inline dress-archive/photo-delete confirms to `Modal` (keep the exact confirm-button names). Wire `SetupProgress` (derived from the four F7 GETs — no new endpoint) + `PolicyBlockerBanner`. Inline "נשמר לפני רגע" save cue. Extract Hebrew to i18n per component. Only sanctioned test-side edit: the one-line `import "../i18n"` in `apps/manage/src/test/setup.ts`.
+- **5 — QA gate:** run the §11 grep block (scope the hex + motion greps to exclude theme.css/tokens.ts, the token home); add `@playwright/test` + `@axe-core/playwright` at `frontend/` root with `e2e/playwright.config.ts` (vite preview :4173/:4174) + a CI step; automate axe + Hebrew-woff2-fetched + color-scheme + no-h-scroll + Hebrew titles; manual `/spartan:qa` console keyboard/resize/PRE-1 passes (storefront page rows deferred to F10 QA — annotate); tick the checklist; re-measure `qa-browser-baseline.md`.
+- **6 — ship:** dual review (phase-reviewer + adversarial security — TELL both the stack is React/Vite/FastAPI, `.claude/rules/` Kotlin does not apply), one fix commit/round, PR, `gh pr checks --watch` (only Backend/Frontend gate; wiki-drift + dep-audit are continue-on-error), epic F9 building → done.
+
 ## Phase 0 — Design amendments + critic re-run (S) — DONE
 tokens.md §12 items 3a–3e (border-input `#B9A98F`→`#8A7A5E`; focus 4.86→5.57; gold-strong barred from rendered text; radius chips→`--radius-full`; added contrast pairs; PRE-1 `--cta-bar-height`/`--space-a11y-clearance` tokens); qa-checklist §8 figure; components.md Badge `muted`+`warning`; manage-restyle.md five-tab shell + F8 component rows + nav semantics + new states. design-critic re-run over amended docs (ACCEPT required for §9 PRE-1 ticks).
 
