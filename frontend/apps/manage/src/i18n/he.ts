@@ -5,5 +5,18 @@ export const he = {
     document: {
       title: "ניהול הבוטיק",
     },
+    console: {
+      title: "ניהול הבוטיק",
+      logout: "יציאה",
+      skipLink: "דלג לתוכן",
+      loading: "טוען…",
+    },
+    nav: {
+      profile: "פרופיל והגדרות",
+      hours: "שעות פעילות",
+      types: "סוגי תורים",
+      terms: "מדיניות ביטולים",
+      catalog: "שמלות",
+    },
   },
 } as const;
