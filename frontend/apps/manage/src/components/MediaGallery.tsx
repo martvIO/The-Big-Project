@@ -377,7 +377,7 @@ export function MediaGallery({
               <p>{storageNotice}</p>
             ) : (
               <>
-                <p className="font-medium">העלאת תמונות עדיין לא זמינה</p>
+                <p className="font-semibold">העלאת תמונות עדיין לא זמינה</p>
                 <p className="text-ink-muted">
                   אפשר להמשיך למלא את פרטי השמלה ואת המידות — התמונות יתווספו מאוחר יותר.
                 </p>
@@ -410,7 +410,7 @@ export function MediaGallery({
         <ul className="divide-y divide-border text-sm">
           {queue.map((item) => (
             <li key={item.key} className="flex flex-wrap items-center gap-3 py-2">
-              <span dir="auto" className="font-medium">
+              <span dir="auto" className="font-semibold">
                 {item.name}
               </span>
               <bdi dir="ltr" className="text-ink-muted">

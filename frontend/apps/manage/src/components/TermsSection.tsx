@@ -149,7 +149,7 @@ export function TermsSection() {
             {history.versions.map((termsVersion) => (
               <li key={termsVersion.id} className="border-b border-border pb-3 last:border-b-0">
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="font-medium">גרסה {termsVersion.version}</span>
+                  <span className="font-semibold">גרסה {termsVersion.version}</span>
                   {history.current?.id === termsVersion.id && (
                     <Badge variant="gold">נוכחית</Badge>
                   )}

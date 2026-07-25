@@ -4,7 +4,6 @@ import { api, ApiError, errorMessage } from "../api";
 import type { Dress, DressDetail, DressInput } from "../api";
 import {
   agorotFromIlsInput,
-  formatIlsAmount,
   ilsFromAgorot,
   MAX_DRESS_DESCRIPTION_LENGTH,
   MAX_DRESS_NAME_LENGTH,
@@ -12,7 +11,7 @@ import {
   validateDress,
 } from "../validation";
 import { MediaGallery } from "./MediaGallery";
-import { Badge, Button, Card, Input, Modal, Skeleton, TextArea, Toggle } from "@boutique/ui";
+import { Badge, Button, Card, Input, Modal, Price, Skeleton, TextArea, Toggle } from "@boutique/ui";
 import { VariantMatrix } from "./VariantMatrix";
 
 // The Card-level explanation, and the short form that each disabled control
@@ -227,10 +226,7 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
 
   const priceAgorot =
     draft.priceIls.trim() === "" ? null : agorotFromIlsInput(draft.priceIls);
-  const previewPrice =
-    draft.priceVisible && priceAgorot !== null && priceAgorot > 0
-      ? `${formatIlsAmount(priceAgorot)} ₪`
-      : null;
+  const priceShown = draft.priceVisible && priceAgorot !== null && priceAgorot > 0;
 
   return (
     <div className="space-y-6">
@@ -239,7 +235,7 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
       </Button>
 
       <div className="flex flex-wrap items-center gap-3">
-        <h2 ref={heading} tabIndex={-1} className="text-lg font-medium">
+        <h2 ref={heading} tabIndex={-1} className="text-lg font-semibold">
           {detail === null ? "שמלה חדשה" : detail.name}
         </h2>
         {archived && <Badge variant="muted">בארכיון</Badge>}
@@ -311,11 +307,7 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
               outcome, so neither field can be misunderstood alone. */}
           <p className="border-s-4 border-warning-text bg-surface-raised p-3 text-sm">
             <span className="text-ink-muted">בקטלוג יוצג: </span>
-            {previewPrice === null ? (
-              <span className="italic text-ink-muted">מחיר בתיאום</span>
-            ) : (
-              <bdi dir="ltr">{previewPrice}</bdi>
-            )}
+            <Price agorot={priceAgorot ?? 0} visible={priceShown} hiddenLabel="מחיר בתיאום" />
           </p>
 
           <Toggle

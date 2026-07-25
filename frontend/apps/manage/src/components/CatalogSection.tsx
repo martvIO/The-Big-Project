@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { Badge, Button, Card, EmptyState, Input, Skeleton, Toggle } from "@boutique/ui";
+import { Badge, Button, Card, EmptyState, Input, Price, Skeleton, Toggle } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { Dress } from "../api";
-import { formatIlsAmount, MAX_SEARCH_LENGTH } from "../validation";
+import { MAX_SEARCH_LENGTH } from "../validation";
 import { DressEditor } from "./DressEditor";
 
 // Mirrors DRESS_LIST_DEFAULT_LIMIT. Not parity-guarded: the server clamps the
@@ -113,7 +113,7 @@ export function CatalogSection() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-medium text-ink">שמלות</h2>
+      <h2 className="text-lg font-semibold text-ink">שמלות</h2>
 
       <Card className="space-y-3">
         <div className="flex flex-wrap items-end gap-3">
@@ -227,7 +227,7 @@ export function CatalogSection() {
                       )}
                     </span>
                     <span className="min-w-0 grow space-y-1">
-                      <span className="block font-medium text-ink">{row.name}</span>
+                      <span className="block font-semibold text-ink">{row.name}</span>
                       {/* Sibling of the name, never a child of it: a chip
                           nested in a clamped box is clipped out of the row on
                           exactly the long-name edge case. */}
@@ -237,11 +237,11 @@ export function CatalogSection() {
                         {stockBadge(row)}
                       </span>
                       <span className="flex flex-wrap items-center gap-2 text-sm text-ink-muted">
-                        {row.price_visible && row.price_agorot !== null ? (
-                          <bdi dir="ltr">{formatIlsAmount(row.price_agorot)} ₪</bdi>
-                        ) : (
-                          <span className="italic">מחיר בתיאום</span>
-                        )}
+                        <Price
+                          agorot={row.price_agorot ?? 0}
+                          visible={row.price_visible && row.price_agorot !== null}
+                          hiddenLabel="מחיר בתיאום"
+                        />
                         <span>
                           {row.media_count === 0 ? (
                             "אין תמונות"

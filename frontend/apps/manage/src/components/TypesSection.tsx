@@ -251,7 +251,7 @@ export function TypesSection() {
                   key={row.id}
                   className="flex flex-wrap items-center gap-3 border-b border-border pb-2 text-sm last:border-b-0"
                 >
-                  <span className="font-medium">{row.name}</span>
+                  <span className="font-semibold">{row.name}</span>
                   <span className="text-ink-muted">{row.duration_minutes} דקות</span>
                   <Badge variant="neutral">
                     {row.audience === "brides_only" ? "כלות בלבד" : "כולם"}

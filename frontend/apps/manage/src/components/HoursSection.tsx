@@ -290,7 +290,7 @@ export function HoursSection() {
                 key={exception.id}
                 className="flex flex-wrap items-center gap-3 border-b border-border pb-2 text-sm last:border-b-0"
               >
-                <span className="font-medium">{formatDate(exception.date)}</span>
+                <span className="font-semibold">{formatDate(exception.date)}</span>
                 {exception.open_time === null || exception.close_time === null ? (
                   <Badge variant="danger">סגור כל היום</Badge>
                 ) : (
