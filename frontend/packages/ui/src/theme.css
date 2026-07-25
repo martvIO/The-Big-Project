@@ -148,3 +148,24 @@ html {
     scroll-behavior: auto !important;
   }
 }
+
+/* First-party A11yMenu boosts — toggled via data attributes on <html>. */
+:root[data-a11y-contrast] {
+  --color-ink-muted: var(--color-ink);
+  --color-border: var(--color-border-input);
+}
+:root[data-a11y-text-size] {
+  font-size: 1.2rem;
+}
+:root[data-a11y-readable-font] {
+  --font-display: var(--font-body);
+}
+:root[data-a11y-underline-links] a {
+  text-decoration: underline;
+}
+:root[data-a11y-stop-motion] *,
+:root[data-a11y-stop-motion] *::before,
+:root[data-a11y-stop-motion] *::after {
+  animation: none !important;
+  transition: none !important;
+}

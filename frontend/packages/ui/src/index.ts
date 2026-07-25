@@ -32,3 +32,31 @@ export { useToast } from "./components/toast-context";
 export type { ToastOptions, ToastVariant, ShowToast } from "./components/toast-context";
 export { SkipLink, VisuallyHidden } from "./components/A11y";
 export type { SkipLinkProps } from "./components/A11y";
+
+// Storefront composites
+export {
+  groupWeeklyRules,
+  jerusalemDayIndex,
+  nextOpen,
+  todayHours,
+  JERusalem,
+} from "./lib/hours";
+export type { TimeWindow, WeeklyRule, HoursRow, DayHours, NextOpen, Exceptions } from "./lib/hours";
+export { Price } from "./components/Price";
+export type { PriceProps } from "./components/Price";
+export { HoursTable } from "./components/HoursTable";
+export type { HoursTableProps } from "./components/HoursTable";
+export { BoutiqueHeader } from "./components/BoutiqueHeader";
+export type { BoutiqueHeaderProps } from "./components/BoutiqueHeader";
+export { DressCard } from "./components/DressCard";
+export type { DressCardProps } from "./components/DressCard";
+export { DressGrid } from "./components/DressGrid";
+export type { DressGridProps } from "./components/DressGrid";
+export { Gallery } from "./components/Gallery";
+export type { GalleryProps, GalleryImage, GalleryLabels } from "./components/Gallery";
+export { BookingCTA } from "./components/BookingCTA";
+export type { BookingCTAProps } from "./components/BookingCTA";
+export { ContactPanel } from "./components/ContactPanel";
+export type { ContactPanelProps, ContactPanelLabels } from "./components/ContactPanel";
+export { A11yMenu, A11yStatementLink } from "./components/A11yMenu";
+export type { A11yMenuProps, A11yMenuControls, A11yStatementLinkProps } from "./components/A11yMenu";
