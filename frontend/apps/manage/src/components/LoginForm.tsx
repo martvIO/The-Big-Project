@@ -26,7 +26,7 @@ export function LoginForm({ onLogin }: { onLogin: (staff: Staff) => void }) {
   return (
     <main
       className="flex min-h-screen items-center justify-center px-4"
-      style={{ backgroundColor: tokens.color.cream, color: tokens.color.ink }}
+      style={{ backgroundColor: tokens.color.bg, color: tokens.color.ink }}
     >
       <form
         onSubmit={(event) => void handleSubmit(event)}

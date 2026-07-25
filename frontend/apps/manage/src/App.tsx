@@ -39,7 +39,7 @@ export function App() {
     return (
       <main
         className="flex min-h-screen items-center justify-center"
-        style={{ backgroundColor: tokens.color.cream, color: tokens.color.ink }}
+        style={{ backgroundColor: tokens.color.bg, color: tokens.color.ink }}
       >
         <p className="text-sm text-stone-500">טוען…</p>
       </main>
@@ -62,7 +62,7 @@ export function App() {
   return (
     <main
       className="min-h-screen"
-      style={{ backgroundColor: tokens.color.cream, color: tokens.color.ink }}
+      style={{ backgroundColor: tokens.color.bg, color: tokens.color.ink }}
     >
       <header className="border-b border-stone-200 bg-white">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-4">
