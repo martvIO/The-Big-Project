@@ -60,3 +60,11 @@ export { ContactPanel } from "./components/ContactPanel";
 export type { ContactPanelProps, ContactPanelLabels } from "./components/ContactPanel";
 export { A11yMenu, A11yStatementLink } from "./components/A11yMenu";
 export type { A11yMenuProps, A11yMenuControls, A11yStatementLinkProps } from "./components/A11yMenu";
+
+// Manage-console composites
+export { ConsoleShell } from "./components/ConsoleShell";
+export type { ConsoleShellProps, ConsoleNavItem } from "./components/ConsoleShell";
+export { SetupProgress } from "./components/SetupProgress";
+export type { SetupProgressProps, SetupProgressItem } from "./components/SetupProgress";
+export { PolicyBlockerBanner } from "./components/PolicyBlockerBanner";
+export type { PolicyBlockerBannerProps } from "./components/PolicyBlockerBanner";
