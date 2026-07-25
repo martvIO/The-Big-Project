@@ -68,8 +68,59 @@
   --motion-base: 200ms;
   --motion-slow: 300ms;
 
+  /* The one sanctioned literal-duration animation (qa §2 exemption): the
+     Skeleton pulse. Every other animation below resolves its duration + easing
+     to --motion-* + --ease-out (no literals). */
+  --animate-skeleton: skeleton-pulse 1.5s ease-in-out infinite;
+  --animate-toast: toast-in var(--motion-slow) var(--ease-out);
+  --animate-modal-panel: modal-panel var(--motion-base) var(--ease-out);
+  --animate-modal-backdrop: modal-backdrop var(--motion-fast) var(--ease-out);
+
   --cta-bar-height: calc(56px + 2 * var(--space-3));
   --space-a11y-clearance: calc(var(--cta-bar-height) + var(--space-3));
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Toast: block-axis entrance from block-start + fade (no inline translate, no scale). */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Modal panel: the only scale() in the system (0.97 -> 1) + fade. */
+@keyframes modal-panel {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes modal-backdrop {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 /* Single cream theme. `only light` (not bare `light`) opts out of Chrome-Android
@@ -92,9 +143,8 @@ html {
   *,
   *::before,
   *::after {
-    animation-duration: 1ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 1ms !important;
+    animation: none !important;
+    transition: none !important;
     scroll-behavior: auto !important;
   }
 }

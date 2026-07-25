@@ -60,6 +60,11 @@ export const themeTokens = {
   "--motion-base": "200ms",
   "--motion-slow": "300ms",
 
+  "--animate-skeleton": "skeleton-pulse 1.5s ease-in-out infinite",
+  "--animate-toast": "toast-in var(--motion-slow) var(--ease-out)",
+  "--animate-modal-panel": "modal-panel var(--motion-base) var(--ease-out)",
+  "--animate-modal-backdrop": "modal-backdrop var(--motion-fast) var(--ease-out)",
+
   "--cta-bar-height": "calc(56px + 2 * var(--space-3))",
   "--space-a11y-clearance": "calc(var(--cta-bar-height) + var(--space-3))",
 } as const;
