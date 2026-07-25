@@ -147,7 +147,7 @@ Every component ships default / hover / focus-visible / disabled + RTL layout + 
 
 ## 8. Accessibility — IS 5568 / WCAG 2.0 AA (legal floor)
 
-- [ ] Contrast measured in the **built** UI: ink 15.24:1 cream / 13.89 paper · ink-muted 6.15 / 5.61 · gold-text 5.57 · success 6.10 · danger 6.78 · warning-text 5.70 / 5.20. Non-text ≥3:1 — gold-strong 3.80, border-input 3.0+
+- [ ] Contrast measured in the **built** UI: ink 15.24:1 cream / 13.89 paper · ink-muted 6.15 / 5.61 · gold-text 5.57 · success 6.10 · danger 6.78 · warning-text 5.70 / 5.20. Non-text ≥3:1 — gold-strong 3.80, border-input `#8A7A5E` 3.69 paper · 4.18 white · 4.04 cream
 - [ ] **Document structure — re-run axe-core against the built routes** and clear the four findings the 2026-07-23 baseline left as build requirements: `landmark-one-main`, `page-has-heading-one`, `heading-order`, `region`. Exactly one `<main>` per route, `<nav>`/`<footer>` as real landmarks, one `h1` per route (dress name on detail, section name on console), no skipped levels
 - [ ] **The skip link actually moves focus** — its `href` resolves to that `<main>`, which carries `tabindex="-1"`, so the next Tab lands inside the content, not back in the header. Axe cannot catch this; keyboard-verify in Safari and Firefox, where a fragment jump to a non-focusable target silently does nothing
 - [ ] **Per-route document title** (WCAG 2.0 **Level A** 2.4.2) — distinct, Hebrew, i18n-keyed on `/`, `/dress/{id}` (dress name, same source as its alt), `/about`, `/accessibility`, and each console section. **Verify by client navigation with no reload** — a Vite SPA keeps `index.html`'s title forever by default, and both apps currently ship one hardcoded English title. axe's `document-title` rule passes while this defect is live

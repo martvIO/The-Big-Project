@@ -13,7 +13,7 @@ Every component ships with: default / hover / focus-visible / disabled states, R
 | `Select` | native `<select>` styled — no custom dropdown in v1 (a11y cost not worth it) | error, disabled |
 | `Toggle` | for boolean settings (deposits, brides-only); label + description | disabled |
 | `TimeField` / `DateField` | native inputs styled; Israeli week ordering handled at the composite level | error |
-| `Badge` | status chips: neutral (ink-tint), gold (accent — large-text-safe `gold-strong`), success, danger | — |
+| `Badge` | status chips: neutral (ink-tint), gold (accent — large-text-safe `gold-strong`), success, danger, muted (`ink-muted` text, `border` outline, no shadow — "במלאי (N)", "לא הוגדרו מידות", "בארכיון"), warning (`warning-text`/600, outline, no shadow — "אזל מהמלאי", at-cap counter). All variants pass AA as text; the outline is decorative, the word carries the meaning | — |
 | `Card` | surface `paper` bg, radius-md, shadow-sm; hover-elevate variant for interactive cards | — |
 | `Toast` | success/error; auto-dismiss; `role="status"` / `role="alert"` | — |
 | `Modal` | confirm dialogs (archive type, delete exception); focus-trapped, `Esc` closes, scale+fade motion | — |

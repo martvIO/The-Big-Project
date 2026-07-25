@@ -8,8 +8,10 @@
 +----------------------------------------------------+
 | שם הבוטיק (display serif sm)          [יציאה]       |
 +----------------------------------------------------+
-| [ פרופיל ] [ שעות ] [ סוגי תורים ] [ מדיניות ]       |   <- tabs @desktop (active: gold-strong underline)
-+----------------------------------------------------+     stacked accordion @mobile
+| [ פרופיל ] [ שעות ] [ סוגי תורים ] [ מדיניות ] [ שמלות ] |   <- 5 nav items @desktop (active: gold-strong underline
++----------------------------------------------------+        + aria-current="page"). stacked accordion @mobile.
+                                                          Fifth tab "שמלות" (route key `catalog`) is F8's catalog;
+                                                          it does NOT join SetupProgress (setup = booking prereqs).
 | אין עדיין מדיניות ביטולים — נדרשת לפני קבלת         |   <- PolicyBlockerBanner (warning-text on paper,
 |   הזמנות. [ליצירת מדיניות ←]                        |      gold-strong border-stripe + text, no icon —
 |                                                     |      intentional restraint; not red: cautionary)
@@ -35,7 +37,15 @@
 | `HoursSection` | weekly editor as a Sun-first grid; windows as rows with TimeFields; capacity as a small numeric field with "מקבילים" label; exceptions list — date + closed/special chips, danger-ghost remove buttons; validation errors inline per row (house error message under the row) |
 | `TypesSection` | type cards in a list (name display-serif sm, duration/audience/deposit as muted meta line); archive = ghost-danger with confirm Modal; agorot fields render ₪ presentation with `dir="ltr"` digits |
 | `TermsSection` | **immutable-ledger look**: create-form card on top (terms textarea + structured fields with explicit units "שעות לפני התור", "% חילוט"), history below as version rows — `Badge` "גרסה N" + created date + created-by, NO edit affordance anywhere; latest row marked "בתוקף" (gold-text) |
-| `shared.tsx` primitives | swap to `packages/ui` primitives (Button/Input/Card/Toast) during the F9 build |
+| `CatalogSection` (F8) | dress list: search `Input` (`dir` neutral), sort-order control, "הוספת שמלה" primary Button, dress rows as `Card`s with name (display-serif sm), `Price`, status `Badge` (`muted` "במלאי (N)" / `warning` "אזל מהמלאי" / `muted` "בארכיון"); archive = ghost-danger + confirm `Modal`. Restyle only — F8 API/behavior/tests frozen |
+| `DressEditor` (F8) | edit form in a `Card`: name/description/price `Input`s (price ₪ adornment + `dir="ltr"` digits), price-visibility `Toggle`, status controls, `VariantMatrix` + `MediaGallery` embedded; save Button loading + "נשמר לפני רגע" cue |
+| `VariantMatrix` (F8) | size × quantity grid; unlisted-size chips (`muted` Badge), quantity stepper `Input`s (`dir="ltr"`), at-cap counter (`warning` Badge); `text-align: end` on numeric columns |
+| `MediaGallery` (F8) | image thumbnails (3:4, cream matting, shadow-sm), presigned-upload file input, reorder + delete-per-photo behind a confirm `Modal`; storage-disabled 503 notice as a `muted`/info panel |
+| `shared.tsx` primitives | **deleted** (not retokened) — all sections import Button/Input/TextArea/Card/Toast from `packages/ui` during the F9 build |
+
+## Navigation semantics (ConsoleShell)
+
+Contract **(b) plain nav**, not ARIA tabs: the shell nav is a `<nav>` of links/buttons, the active one carries `aria-current="page"` (the `gold-strong` underline is never the *only* active signal). **No `role="tab"`** anywhere — a `role="tab"` without the full roving-tabindex/Arrow-key keyboard contract is a defect. At ≤767px the sections become an accordion whose headers are `<button aria-expanded aria-controls>` inside a heading element (one open at a time). Logout is a `<button>` with a text name. The console has a single `h1` (the console/boutique title); each section heading is a lower level, no skipped levels.
 
 ## States (console-wide)
 
@@ -44,7 +54,10 @@
 | First-run | SetupProgress card + PolicyBlockerBanner; sections show empty-form defaults |
 | Steady | no progress card; banner only while no terms version |
 | Saving | Button loading state (width locked), inputs disabled |
+| Save success | inline "נשמר לפני רגע" cue in the save row (`--text-xs`, `--color-ink-muted`), inline-start of the primary Button — **not** a Toast; Button returns from loading at unchanged width |
 | Save error | Toast danger with backend message (house error shape already extracted by F7 `api.ts`) + field-level inline errors |
+| Catalog empty | `שמלות` section with no dresses renders an `EmptyState` (headline + "הוספת שמלה" CTA), not a blank column |
+| Storage disabled | no S3 bucket configured → media write endpoints answer 503; `MediaGallery` shows a `muted`/info panel explaining uploads are unavailable, and the rest of the catalog stays fully usable |
 | Session expired | redirected by existing 401 handling to LoginForm — visual continuity (same shell header) |
 
 ## Responsive
