@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 import { cn, focusRing } from "../lib/styles";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
@@ -9,6 +9,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: ButtonSize;
   fullWidthMobile?: boolean;
   loading?: boolean;
+  ref?: Ref<HTMLButtonElement>;
   children: ReactNode;
 }
 
@@ -37,11 +38,13 @@ export function Button({
   disabled,
   children,
   className,
+  ref,
   ...rest
 }: ButtonProps) {
   return (
     <button
       type="button"
+      ref={ref}
       {...rest}
       disabled={disabled || loading}
       aria-busy={loading || undefined}

@@ -49,8 +49,12 @@ export function ConsoleShell({
             {logoutLabel}
           </button>
         </div>
+        {/* Contract (b) plain nav: it swaps the single #console-main panel, so it
+            uses aria-current + aria-controls (NOT aria-expanded disclosure links,
+            which would be an ARIA anti-pattern on nav). Stacks full-width at
+            ≤767, becomes a horizontal tab row at ≥768. */}
         <nav className="mx-auto max-w-[720px] px-4">
-          <ul className="flex flex-wrap gap-4">
+          <ul className="flex flex-col gap-1 md:flex-row md:flex-wrap md:gap-4">
             {nav.map((item) => {
               const active = item.key === activeKey;
               return (
@@ -58,10 +62,13 @@ export function ConsoleShell({
                   <button
                     type="button"
                     aria-current={active ? "page" : undefined}
+                    aria-controls="console-main"
                     onClick={() => onNavigate(item.key)}
                     className={cn(
-                      "border-b-2 py-2 text-base",
-                      active ? "border-gold-strong font-semibold text-ink" : "border-transparent text-ink-muted hover:text-ink",
+                      "w-full border-b-2 py-2 text-start text-base md:w-auto md:text-center",
+                      active
+                        ? "border-gold-strong font-semibold text-ink"
+                        : "border-transparent text-ink-muted hover:text-ink",
                       focusRing,
                     )}
                   >

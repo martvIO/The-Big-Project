@@ -9,7 +9,7 @@
 | שם הבוטיק (display serif sm)          [יציאה]       |
 +----------------------------------------------------+
 | [ פרופיל ] [ שעות ] [ סוגי תורים ] [ מדיניות ] [ שמלות ] |   <- 5 nav items @desktop (active: gold-strong underline
-+----------------------------------------------------+        + aria-current="page"). stacked accordion @mobile.
++----------------------------------------------------+        + aria-current="page"). stacked full-width nav @mobile.
                                                           Fifth tab "שמלות" (route key `catalog`) is F8's catalog;
                                                           it does NOT join SetupProgress (setup = booking prereqs).
 | אין עדיין מדיניות ביטולים — נדרשת לפני קבלת         |   <- PolicyBlockerBanner (warning-text on paper,
@@ -45,7 +45,7 @@
 
 ## Navigation semantics (ConsoleShell)
 
-Contract **(b) plain nav**, not ARIA tabs: the shell nav is a `<nav>` of links/buttons, the active one carries `aria-current="page"` (the `gold-strong` underline is never the *only* active signal). **No `role="tab"`** anywhere — a `role="tab"` without the full roving-tabindex/Arrow-key keyboard contract is a defect. At ≤767px the sections become an accordion whose headers are `<button aria-expanded aria-controls>` inside a heading element (one open at a time). Logout is a `<button>` with a text name. The console has a single `h1` (the console/boutique title); each section heading is a lower level, no skipped levels.
+Contract **(b) plain nav**, not ARIA tabs: the shell nav is a `<nav>` of buttons that swap the single `#console-main` content panel, so each carries `aria-current="page"` when active and `aria-controls="console-main"` (the `gold-strong` underline is never the *only* active signal — `aria-current` + `font-semibold` also mark it). **No `role="tab"`** anywhere — a `role="tab"` without the full roving-tabindex/Arrow-key keyboard contract is a defect. At ≤767px the nav **stacks full-width** and at ≥768px it is a horizontal tab row; one section's content shows at a time. It is a panel-swapping nav, **not a disclosure accordion** — such a nav correctly uses `aria-current`/`aria-controls`, not `aria-expanded` (putting `aria-expanded` on nav items is an ARIA anti-pattern). Logout is a `<button>` with a text name. The console has a single `h1` (the console/boutique title); each section heading is a lower level, no skipped levels.
 
 ## States (console-wide)
 
@@ -61,7 +61,7 @@ Contract **(b) plain nav**, not ARIA tabs: the shell nav is a `<nav>` of links/b
 | Session expired | redirected by existing 401 handling to LoginForm — visual continuity (same shell header) |
 
 ## Responsive
-375: tabs → stacked sections (accordion, one open), forms full-width, save buttons full-width · 768: tabs appear, content max 720px · 1440: identical (console never exceeds 720px content — form readability).
+375: nav stacks full-width (one section's content shown at a time), forms full-width, save buttons full-width · 768: horizontal tab row appears, content max 720px · 1440: identical (console never exceeds 720px content — form readability).
 
 ## Notes
 The console shares tokens with the storefront but drops the ornament level (no hairline flourishes on forms) — luxury restraint reads as calm competence here. Contrast/focus/labels identical to storefront laws. RTL logical properties throughout; the only LTR islands are phone/URL/money digit fields.

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { cn } from "../lib/styles";
 
 export interface ModalProps {
@@ -18,6 +18,9 @@ export interface ModalProps {
 // --motion-fast) — per the design.
 export function Modal({ open, onClose, title, children, footer }: ModalProps) {
   const ref = useRef<HTMLDialogElement>(null);
+  // useId, not a literal — a screen may mount two Modals at once (e.g. DressEditor
+  // + its embedded MediaGallery), and duplicate ids break aria-labelledby.
+  const titleId = useId();
 
   useEffect(() => {
     const dlg = ref.current;
@@ -38,13 +41,13 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
         onClose();
       }}
       onClose={onClose}
-      aria-labelledby="modal-title"
+      aria-labelledby={titleId}
       className={cn(
         "m-auto w-[min(28rem,calc(100vw-2rem))] rounded-md bg-surface-raised p-6 text-ink shadow-lg",
         "animate-modal-panel backdrop:bg-ink/40 backdrop:animate-modal-backdrop",
       )}
     >
-      <h2 id="modal-title" className="font-display text-xl text-ink">
+      <h2 id={titleId} className="font-display text-xl text-ink">
         {title}
       </h2>
       <div className="mt-3 text-base text-ink-muted">{children}</div>

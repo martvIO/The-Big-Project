@@ -98,6 +98,8 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
   const [savedCue, setSavedCue] = useState<string | null>(null);
   const [confirmingArchive, setConfirmingArchive] = useState(false);
   const heading = useRef<HTMLHeadingElement | null>(null);
+  const archiveTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const wasConfirming = useRef(false);
 
   useEffect(() => {
     if (dressId === null) {
@@ -126,6 +128,15 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
   useEffect(() => {
     heading.current?.focus();
   }, [detail?.id]);
+
+  // The archive trigger unmounts while its confirm modal is open, so native
+  // focus-return lands on <body>. Restore focus to the trigger on close.
+  useEffect(() => {
+    if (wasConfirming.current && !confirmingArchive) {
+      archiveTriggerRef.current?.focus();
+    }
+    wasConfirming.current = confirmingArchive;
+  }, [confirmingArchive]);
 
   const creating = dressId === null && detail === null;
   const archived = detail?.archived === true;
@@ -381,10 +392,13 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
             </Button>
           ) : (
             <>
-              {/* Trigger hidden while the modal is open so its confirm button is
-                  the only "העברה לארכיון" in the tree (it's occluded anyway). */}
+              {/* The trigger and the modal's confirm share the name "העברה
+                  לארכיון", so only one may be in the tree at a time — the trigger
+                  unmounts while the modal is open. Native focus-return then lands
+                  on <body>, so a focus-restore effect below sends it back to the
+                  trigger on close. */}
               {!confirmingArchive && (
-                <Button variant="danger" onClick={() => setConfirmingArchive(true)}>
+                <Button ref={archiveTriggerRef} variant="danger" onClick={() => setConfirmingArchive(true)}>
                   העברה לארכיון
                 </Button>
               )}

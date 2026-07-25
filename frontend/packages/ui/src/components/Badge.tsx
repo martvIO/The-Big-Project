@@ -1,19 +1,19 @@
 import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "../lib/styles";
 
-export type BadgeVariant = "neutral" | "gold" | "success" | "danger" | "muted" | "warning";
+export type BadgeVariant = "neutral" | "success" | "danger" | "muted" | "warning";
 
 export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
   variant?: BadgeVariant;
   children: ReactNode;
 }
 
-// All variants pass AA as text except `gold` (gold-strong, 3.80:1) which is
-// large-text-only by contract — the word carries the meaning, the outline is
-// decorative.
+// Every variant passes AA as text at the badge's text-xs size (the word carries
+// the meaning, the outline is decorative). There is deliberately no `gold`
+// variant: gold-strong is 3.80:1 — below the 4.5:1 text floor — and a Badge is
+// always small text, so a gold marker uses `text-gold-text` inline instead.
 const variants: Record<BadgeVariant, string> = {
   neutral: "border border-border text-ink",
-  gold: "border border-gold-strong text-gold-strong",
   success: "border border-success text-success",
   danger: "border border-danger text-danger",
   muted: "border border-border text-ink-muted",

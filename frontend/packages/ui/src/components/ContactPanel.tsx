@@ -1,4 +1,5 @@
 import { cn, focusRing } from "../lib/styles";
+import { safeHref } from "../lib/url";
 
 export interface ContactPanelLabels {
   call: string;
@@ -26,6 +27,10 @@ const linkClass = cn(
 // Tap-to-call, WhatsApp deep link, Waze + Google Maps, Instagram. Latin/URL runs
 // (the Instagram handle) are LTR-isolated inside the RTL panel.
 export function ContactPanel({ phone, whatsapp, wazeUrl, mapsUrl, instagram, labels, className }: ContactPanelProps) {
+  // Tenant-supplied URLs are scheme-checked so a stored `javascript:` maps_url
+  // can't execute — React does not neutralise a javascript: href.
+  const waze = safeHref(wazeUrl);
+  const maps = safeHref(mapsUrl);
   return (
     <div className={cn("flex flex-col gap-3", className)}>
       {phone && (
@@ -38,13 +43,13 @@ export function ContactPanel({ phone, whatsapp, wazeUrl, mapsUrl, instagram, lab
           {labels.whatsapp}
         </a>
       )}
-      {wazeUrl && (
-        <a href={wazeUrl} className={linkClass} rel="noopener noreferrer" target="_blank">
+      {waze && (
+        <a href={waze} className={linkClass} rel="noopener noreferrer" target="_blank">
           {labels.waze}
         </a>
       )}
-      {mapsUrl && (
-        <a href={mapsUrl} className={linkClass} rel="noopener noreferrer" target="_blank">
+      {maps && (
+        <a href={maps} className={linkClass} rel="noopener noreferrer" target="_blank">
           {labels.maps}
         </a>
       )}

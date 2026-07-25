@@ -2,6 +2,7 @@ export { tokens, themeTokens } from "./tokens";
 export type { Tokens, ThemeTokens } from "./tokens";
 
 export { cn, focusRing } from "./lib/styles";
+export { safeHref } from "./lib/url";
 
 export { Button } from "./components/Button";
 export type { ButtonProps, ButtonVariant, ButtonSize } from "./components/Button";

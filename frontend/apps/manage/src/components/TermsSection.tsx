@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { Badge, Button, Card, Input, Skeleton, TextArea } from "@boutique/ui";
+import { Button, Card, Input, Skeleton, TextArea } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { TermsHistory } from "../api";
 import { validateTerms } from "../validation";
@@ -151,7 +151,7 @@ export function TermsSection() {
                 <div className="flex items-center gap-2 text-sm">
                   <span className="font-semibold">גרסה {termsVersion.version}</span>
                   {history.current?.id === termsVersion.id && (
-                    <Badge variant="gold">נוכחית</Badge>
+                    <span className="text-sm font-semibold text-gold-text">בתוקף</span>
                   )}
                   <span className="text-xs text-ink-muted">
                     {formatDate(termsVersion.created_at)}
