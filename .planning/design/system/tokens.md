@@ -13,7 +13,7 @@ Raw brand gold `#C5A059` **fails text contrast on cream (2.38:1) — it never ca
 | `--color-gold-strong` | `#9E7B36` | Meaningful non-text UI: input borders on focus, active tab underline, large display accents (≥24px) | 3.80:1 (≥3:1 ✓) |
 | `--color-gold-text` | `#7F612B` | The only gold that touches text: links, small accents, price emphasis | 5.57 cream · 5.08 paper · 5.76 white (≥4.5:1 ✓) |
 
-`--color-gold-strong` is barred from rendered text of any kind — including CSS `content:` glyphs (a `•`, `↗`, `◆`). It is a **non-text** UI color only.
+`--color-gold-strong` is barred from carrying **text or a meaning-bearing glyph** — including a CSS `content:` bullet used as text (rev 1's 14px `•`). A purely **decorative** marker that is `aria-hidden` and always paired with adjacent visible text — the exceptions `◆` diamond, whose meaning is carried by the words beside it — is exempt, exactly like `--illus-*`. It is a **non-text** UI color; it never carries meaning alone.
 
 ## Colors
 
@@ -71,7 +71,9 @@ Weight law: display font never below 400; body UI text 400, emphasis 600, never 
 | Token | Value | Usage |
 |---|---|---|
 | `--cta-bar-height` | `calc(56px + 2 * var(--space-3))` = 80px | `BookingCTA` bar footprint; scroll containers reserve `padding-block-end: calc(var(--cta-bar-height) + env(safe-area-inset-bottom))` below 768 |
-| `--space-a11y-clearance` | `calc(var(--cta-bar-height) + var(--space-3))` = 92px | `A11yMenu` fixed button `inset-block-end` below 768 when a `BookingCTA` bar is present, so it clears the bar (was overlapping 60×44px of the CTA). Where no bar exists (`/about`, console) the button uses `--space-4` and the page reserves matching bottom padding (PRE-2). Removed / reset to `--space-4` at ≥768 where the CTA goes inline |
+| `--space-a11y-clearance` | `calc(var(--cta-bar-height) + var(--space-3))` = 92px | `A11yMenu` fixed button `inset-block-end` below 768 when a `BookingCTA` bar is present, so it clears the bar (was overlapping 60×44px of the CTA). Where no bar exists (`/about`, `/accessibility`) the button uses `--space-4` and the page reserves matching bottom padding (PRE-2). Removed / reset to `--space-4` at ≥768 where the CTA goes inline |
+
+`A11yMenu` and `A11yStatementLink` are **storefront-only** — the public storefront carries the IS 5568 accessibility obligation; the owner-only console does not ship them. So PRE-1 (the fixed-button-over-CTA collision) can only occur on storefront pages; the console collision seen in the all-screens demo prototype does not reproduce in `apps/manage`.
 
 ## Radius & shadows
 

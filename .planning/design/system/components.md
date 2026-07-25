@@ -46,6 +46,12 @@ Every component ships with: default / hover / focus-visible / disabled states, R
 | `PolicyBlockerBanner` | shown while no terms version exists — danger-adjacent but not alarmist; links to the policy section |
 | `LoginForm` | centered card on cream, display-serif heading, generic error (no enumeration — preserves F5 behavior) |
 | `ProfileSection` / `HoursSection` / `TypesSection` / `TermsSection` | retokened: Card surfaces, Input/Toggle primitives, section headings, save buttons → `Button primary`; TermsSection history list gets the immutable-ledger look (version chip + date, no edit affordances) |
+| `CatalogSection` (F8) | dress list under the fifth nav tab "שמלות": search `Input`, sort-order control, "הוספת שמלה" primary Button, dress rows as `Card`s (name display-serif, `Price`, status `Badge` muted/warning); archive behind a confirm `Modal`. Restyle only — API/behavior/tests frozen |
+| `DressEditor` (F8) | edit form Card: name/description/price `Input`s (price ₪ adornment + `dir="ltr"` digits), price-visibility `Toggle`, `VariantMatrix` + `MediaGallery` embedded; save Button loading + inline "נשמר לפני רגע" cue |
+| `VariantMatrix` (F8) | size × quantity grid; unlisted-size chips (`Badge` muted), quantity stepper `Input`s (`dir="ltr"`), at-cap counter (`Badge` warning); numeric columns `text-align: end` |
+| `MediaGallery` (F8) | 3:4 thumbnails (cream matting, shadow-sm), presigned-upload file input, reorder + delete-per-photo behind a confirm `Modal`; storage-disabled 503 as a muted info panel |
+
+**Scope note:** `A11yMenu` and `A11yStatementLink` (Storefront composites above) are **storefront-only** — the public storefront carries the IS 5568 obligation; the owner-only console ships neither. The manage composites here never mount a fixed accessibility button.
 
 ## Explicitly NOT in v1
 
