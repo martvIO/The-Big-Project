@@ -70,6 +70,16 @@ from app.storage.base import (
 
 logger = logging.getLogger("catalog")
 
+# DRESS_LIST_MAX_LIMIT's missing twin. `offset` reaches the driver as
+# `OFFSET $n::BIGINT` (SQLAlchemy's asyncpg dialect casts it explicitly), so a
+# value past int8 never becomes a 400 — it dies in asyncpg's `int8_encode` as a
+# DataError with no handler above it, i.e. a 500 on an anonymous endpoint.
+# 1_000_000 is ~41,000 pages of DRESS_LIST_DEFAULT_LIMIT for a catalog that holds
+# tens of dresses, and 9.2e12x inside int8, so nothing downstream can overflow.
+# ponytail: lives here rather than beside DRESS_LIST_MAX_LIMIT in validation.py
+# only to keep this branch's diff off a file other tracks are editing.
+MAX_LIST_OFFSET = 1_000_000
+
 # hashtext() keys an xact-scoped lock that releases with the transaction. The
 # prefix is a SQL literal and the dress id is bound — never interpolated.
 _MEDIA_LOCK = text("SELECT pg_advisory_xact_lock(hashtext('dress-media:' || :dress_id))")
@@ -229,8 +239,9 @@ class CatalogService:
         limit: int = DRESS_LIST_DEFAULT_LIMIT,
     ) -> DressListResult:
         # Clamped again below the router (Feature 7 precedent) so a non-router
-        # caller cannot request an unbounded page.
-        offset = max(offset, 0)
+        # caller cannot request an unbounded page — or, at the top end, one the
+        # int8 bind parameter cannot encode.
+        offset = min(max(offset, 0), MAX_LIST_OFFSET)
         limit = min(max(limit, 1), DRESS_LIST_MAX_LIMIT)
         validate_search(search)
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -302,8 +313,14 @@ class CatalogService:
             slots_remaining=MAX_MEDIA_PER_DRESS,
         )
 
-    async def get_dress(self, tenant_id: uuid.UUID, dress_id: uuid.UUID) -> DressView:
-        return await self._detail_view(tenant_id, dress_id, include_archived=True)
+    async def get_dress(
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, include_archived: bool = True
+    ) -> DressView:
+        # Defaults to True so the manage call site is unchanged: the owner must be
+        # able to open an archived dress to restore it. The storefront passes
+        # False, which routes an archived id through by_id → CatalogNotFoundError
+        # → the existing 404.
+        return await self._detail_view(tenant_id, dress_id, include_archived=include_archived)
 
     async def update_dress(
         self,

@@ -43,6 +43,7 @@ from app.storage.base import (
 )
 from app.storage.s3 import S3MediaStorage
 from app.storage.unconfigured import UnconfiguredMediaStorage
+from app.storefront.router import router as storefront_router
 from app.tenancy.middleware import (
     TENANT_NOT_FOUND_BODY,
     TenantNotResolvedError,
@@ -195,6 +196,14 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         ),
         pending_ttl_seconds=PENDING_MEDIA_TTL_SECONDS,
     )
+    # The anonymous surface has no session to key a limit on, so the storefront
+    # reads get their own per-(tenant, IP) bucket. Deliberately NOT per-tenant:
+    # see app/storefront/router.py._rate_limit.
+    app.state.storefront_rate_limiter = FixedWindowRateLimiter(
+        max_attempts=settings.storefront_read_max_per_window,
+        window_seconds=settings.storefront_read_window_seconds,
+        clock=time.monotonic,
+    )
 
     @app.exception_handler(TenantNotResolvedError)
     async def _tenant_not_resolved(request: Request, exc: TenantNotResolvedError) -> JSONResponse:
@@ -299,6 +308,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # path would silently shadow. The ROUTES table in test_catalog_api.py is
     # what keeps that honest.
     app.include_router(catalog_router)
+    # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
+    # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
+    app.include_router(storefront_router)
     return app
 
 

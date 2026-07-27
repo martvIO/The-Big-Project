@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     media_presign_max_per_window: int = 60
     media_presign_window_seconds: int = 300
 
+    # Per-(tenant, IP) budget on the anonymous storefront reads. Generous by
+    # design — a real visitor browsing a catalog issues one list plus a detail
+    # per card — and env-tunable like every other rate limit here so it can be
+    # adjusted during an incident without a code deploy. Only applied when
+    # trust_forwarded_for gives a real client IP (see app/storefront/router.py).
+    storefront_read_max_per_window: int = 300
+    storefront_read_window_seconds: int = 60
+
     @property
     def secure_cookies(self) -> bool:
         return self.app_env != "dev"

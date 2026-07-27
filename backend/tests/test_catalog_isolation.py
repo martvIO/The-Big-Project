@@ -373,8 +373,8 @@ def test_endpoints_are_404_for_another_tenants_ids(app_role_url: str) -> None:
     factory = _factory(engine)
     storage = InMemoryMediaStorage()
     service = _service(factory, storage)
-    tenant_a = TenantContext(id=uuid.uuid4(), slug=SLUG_A, settings={})
-    tenant_b = TenantContext(id=uuid.uuid4(), slug=SLUG_B, settings={})
+    tenant_a = TenantContext(id=uuid.uuid4(), slug=SLUG_A, name="Tenant A", settings={})
+    tenant_b = TenantContext(id=uuid.uuid4(), slug=SLUG_B, name="Tenant B", settings={})
     try:
         dress_b, media_b = asyncio.run(_dress_with_photo(service, storage, tenant_b.id, "Belle"))
         app = _isolation_app(factory, storage, {SLUG_A: tenant_a, SLUG_B: tenant_b})
@@ -420,7 +420,7 @@ def test_media_addressed_through_the_wrong_dress_url_is_refused(app_role_url: st
     factory = _factory(engine)
     storage = InMemoryMediaStorage()
     service = _service(factory, storage)
-    tenant_a = TenantContext(id=uuid.uuid4(), slug=SLUG_A, settings={})
+    tenant_a = TenantContext(id=uuid.uuid4(), slug=SLUG_A, name="Tenant A", settings={})
     try:
         dress_one, media_one = asyncio.run(
             _dress_with_photo(service, storage, tenant_a.id, "Aurora")
@@ -465,8 +465,8 @@ def test_presigned_key_over_http_carries_only_the_host_derived_tenant(
     factory = _factory(engine)
     storage = InMemoryMediaStorage()
     service = _service(factory, storage)
-    tenant_a = TenantContext(id=uuid.uuid4(), slug=SLUG_A, settings={})
-    tenant_b = TenantContext(id=uuid.uuid4(), slug=SLUG_B, settings={})
+    tenant_a = TenantContext(id=uuid.uuid4(), slug=SLUG_A, name="Tenant A", settings={})
+    tenant_b = TenantContext(id=uuid.uuid4(), slug=SLUG_B, name="Tenant B", settings={})
     try:
         dress_a, _ = asyncio.run(_dress_with_photo(service, storage, tenant_a.id, "Aurora"))
         app = _isolation_app(factory, storage, {SLUG_A: tenant_a, SLUG_B: tenant_b})
