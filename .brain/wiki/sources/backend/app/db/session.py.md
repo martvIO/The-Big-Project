@@ -2,11 +2,11 @@
 tags: [backend, db, python, security, config]
 sources: [backend/app/db/session.py]
 created: 2026-07-23
-updated: 2026-07-23
+updated: 2026-07-27
 # --- .brain extensions (see .brain/CLAUDE.md § Deviations) ---
 path: backend/app/db/session.py
-blob: 21b8583c1938a8a04ba9c6c4b65529a4fe79c829
-commit: d9d860b47f2c78acb9ce7304f18c1e18cc370851
+blob: 4bdce712fac8621f956cd84b75ad5441096b1359
+commit: e8fd318e17e17aefef55205facf914e60e3a0160
 kind: code
 applicability: active
 ---
@@ -21,14 +21,14 @@ applicability: active
 
 | Symbol | Kind | Purpose |
 |---|---|---|
-| `verify_database_role` | fn | Queries `pg_roles` for `current_user`; raises `RuntimeError` if the role is `rolsuper` or `rolbypassrls` |
+| `verify_database_role` | fn | Two-part startup guard: raises `RuntimeError` if `current_user` is `rolsuper`/`rolbypassrls` (from `pg_roles`), **and** if it owns any table in schema `public` (from `pg_tables`) |
 | `ensure_safe_database_role` | fn | The when-to-check policy: runs `verify_database_role` on the shared engine unless `app_env == "dev"` |
 | `get_engine` | fn | Lazily creates and memoises the singleton `AsyncEngine` (`pool_pre_ping=True`) |
 | `get_session_factory` | fn | Lazily creates and memoises the singleton `async_sessionmaker` with `expire_on_commit=False` |
 
 ## Behavior
 
-Both `_engine` and `_session_factory` are module-level globals created on first use, so importing this module does not open a connection — the engine URL comes from `Settings.effective_database_url` in [[backend/app/core/config.py]] at first call, and nothing is read from the environment until then. `verify_database_role` opens a plain connection and reads `rolsuper, rolbypassrls` for the connected role; either flag being true aborts startup, because Postgres RLS — including `FORCE` — is unconditionally bypassed by superusers and `BYPASSRLS` roles, so an over-privileged connection would void tenant isolation with **zero test failures**. `ensure_safe_database_role` centralises the exemption in one place so the web app and the CLI cannot drift: dev is skipped because local runs use the Postgres superuser, every other environment is checked. The `expire_on_commit=False` setting on the session factory is load-bearing, not cosmetic — [[backend/app/db/repositories/tenants.py]] returns ORM entities after their transaction commits and would otherwise raise `DetachedInstanceError`.
+Both `_engine` and `_session_factory` are module-level globals created on first use, so importing this module does not open a connection — the engine URL comes from `Settings.effective_database_url` in [[backend/app/core/config.py]] at first call, and nothing is read from the environment until then. `verify_database_role` opens a plain connection and runs two checks. First it reads `rolsuper, rolbypassrls` for the connected role; either flag being true aborts startup, because Postgres RLS — including `FORCE` — is unconditionally bypassed by superusers and `BYPASSRLS` roles, so an over-privileged connection would void tenant isolation with **zero test failures**. Second it counts tables in schema `public` where `tableowner = current_user`; any owned table also aborts startup. A table *owner* passes the flags check yet can disable `FORCE` RLS at will and holds implicit privileges that no `REVOKE` binds — which would silently void every REVOKE-based guarantee this codebase leans on, including `terms_versions` append-only immutability. The two checks together are why the app must connect as a non-owner, non-privileged role. `ensure_safe_database_role` centralises the exemption in one place so the web app and the CLI cannot drift: dev is skipped because local runs use the Postgres superuser, every other environment is checked. The `expire_on_commit=False` setting on the session factory is load-bearing, not cosmetic — [[backend/app/db/repositories/tenants.py]] returns ORM entities after their transaction commits and would otherwise raise `DetachedInstanceError`.
 
 ## Depends On
 

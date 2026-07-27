@@ -36,3 +36,13 @@ Verified this pass: drift detector (CURRENT → STALE → CURRENT, `touch` corre
 `kind: generated` excluded), SessionStart baseline + JSON context injection, SessionEnd queue
 writing and its degenerate cases, `make brain-check`, and `--lint` (0 broken links, 0 structural
 failures).
+
+## [2026-07-27] sync | 4 stale reconciled, 0 orphans removed
+Rewrote the 4 pages that drifted when F7 (boutique settings) and F8 (catalog + media)
+shipped (commits d05a2d4, 22234c4, 8c7aeb9, d9441d1, cbce979): backend/app/core/config.py
+(media-storage + terms-throttle settings, third boot validator), backend/app/db/session.py
+(role guard now also refuses table ownership), backend/app/main.py (boutique + catalog
+routers, CsrfOriginMiddleware, media-storage wiring, full domain/media exception-handler set,
+RequestValidationError→400 house shape), backend/tests/conftest.py (real-MinIO
+Testcontainers fixture). Stale 4→0. 417 files still have no page — all missing, none orphaned;
+resume documentation of the new boutique/catalog/storage code with /brain-ingest.
