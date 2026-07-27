@@ -13,7 +13,7 @@ export function BookingCTA({ children, className }: BookingCTAProps) {
   return (
     <div
       className={cn(
-        "fixed inset-inline-0 bottom-0 z-40 border-t border-border bg-bg p-3",
+        "fixed inset-x-0 bottom-0 z-40 border-t border-border bg-bg p-3",
         "md:static md:inset-auto md:border-0 md:bg-transparent md:p-0",
         className,
       )}

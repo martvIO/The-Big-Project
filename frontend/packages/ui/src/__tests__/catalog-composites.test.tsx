@@ -36,6 +36,42 @@ describe("DressCard", () => {
     expect(screen.getByRole("img").className).toContain("opacity-100");
     spy.mockRestore();
   });
+
+  it("reveals the photo once it loads", () => {
+    render(<DressCard name="שמלה ה" href="/dress/5" photoUrl="/e.jpg" price={<span>5</span>} />);
+    const img = screen.getByRole("img");
+    expect(img.className).toContain("opacity-0");
+    fireEvent.load(img);
+    expect(img.className).toContain("opacity-100");
+  });
+
+  // A load failure means the presigned URL expired, not that the dress has no
+  // photo — the page refetches rather than falling back to the monogram.
+  it("reports a photo load failure so the page can refetch", () => {
+    const onPhotoError = vi.fn();
+    render(<DressCard name="שמלה ו" href="/dress/6" photoUrl="/f.jpg" price={<span>6</span>} onPhotoError={onPhotoError} />);
+    fireEvent.error(screen.getByRole("img"));
+    expect(onPhotoError).toHaveBeenCalledTimes(1);
+  });
+
+  it("survives a load failure when no handler is supplied", () => {
+    render(<DressCard name="שמלה ז" href="/dress/7" photoUrl="/g.jpg" price={<span>7</span>} />);
+    expect(() => fireEvent.error(screen.getByRole("img"))).not.toThrow();
+  });
+
+  it("defers grid photos off-screen", () => {
+    render(<DressCard name="שמלה ח" href="/dress/8" photoUrl="/h.jpg" price={<span>8</span>} />);
+    const img = screen.getByRole("img");
+    expect(img).toHaveAttribute("loading", "lazy");
+    expect(img).toHaveAttribute("decoding", "async");
+  });
+
+  it("emits no <img> to fail when there is no photo", () => {
+    const onPhotoError = vi.fn();
+    render(<DressCard name="שמלה ט" href="/dress/9" photoUrl={null} price={<span>9</span>} onPhotoError={onPhotoError} />);
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(onPhotoError).not.toHaveBeenCalled();
+  });
 });
 
 describe("DressGrid", () => {
@@ -70,6 +106,46 @@ describe("Gallery", () => {
     const thumb3 = screen.getByRole("button", { name: "תמונה 3 מתוך 3" });
     fireEvent.click(thumb3);
     expect(thumb3).toHaveAttribute("aria-current", "true");
+  });
+
+  it("reports a main-image load failure so the page can refetch", () => {
+    const onImageError = vi.fn();
+    render(<Gallery images={images} labels={galleryLabels} onImageError={onImageError} />);
+    fireEvent.error(screen.getByRole("img", { name: "שמלה תמונה 1" }));
+    expect(onImageError).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a thumbnail load failure too — the whole set expires together", () => {
+    const onImageError = vi.fn();
+    const { container } = render(<Gallery images={images} labels={galleryLabels} onImageError={onImageError} />);
+    const thumb = container.querySelectorAll("button img")[1];
+    fireEvent.error(thumb);
+    expect(onImageError).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a load failure from the lone image of a single-image gallery", () => {
+    const onImageError = vi.fn();
+    render(<Gallery images={[images[0]]} labels={galleryLabels} onImageError={onImageError} />);
+    fireEvent.error(screen.getByRole("img", { name: "שמלה תמונה 1" }));
+    expect(onImageError).toHaveBeenCalledTimes(1);
+  });
+
+  it("survives a load failure when no handler is supplied", () => {
+    render(<Gallery images={images} labels={galleryLabels} />);
+    expect(() => fireEvent.error(screen.getByRole("img", { name: "שמלה תמונה 1" }))).not.toThrow();
+  });
+
+  it("keeps the main image eager and defers only the thumbnails", () => {
+    const { container } = render(<Gallery images={images} labels={galleryLabels} />);
+    expect(screen.getByRole("img", { name: "שמלה תמונה 1" })).not.toHaveAttribute("loading", "lazy");
+    for (const thumb of container.querySelectorAll("button img")) {
+      expect(thumb).toHaveAttribute("loading", "lazy");
+    }
+  });
+
+  it("keeps the single-image main image eager", () => {
+    render(<Gallery images={[images[0]]} labels={galleryLabels} />);
+    expect(screen.getByRole("img", { name: "שמלה תמונה 1" })).not.toHaveAttribute("loading", "lazy");
   });
 });
 

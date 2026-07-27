@@ -16,13 +16,16 @@ export interface GalleryLabels {
 export interface GalleryProps {
   images: GalleryImage[];
   labels: GalleryLabels;
+  // A failed load means the presigned URLs expired — the whole set signs and
+  // expires together, so any one failure asks the page to refetch.
+  onImageError?: () => void;
   className?: string;
 }
 
 // Keyboard + AT operable: focusable prev/next + thumbnail buttons, current
 // position exposed via aria-current. Advances on user input only — no timer,
 // no auto-advance. A single image hides the chrome entirely.
-export function Gallery({ images, labels, className }: GalleryProps) {
+export function Gallery({ images, labels, onImageError, className }: GalleryProps) {
   const [index, setIndex] = useState(0);
 
   if (images.length === 0) return null;
@@ -31,6 +34,7 @@ export function Gallery({ images, labels, className }: GalleryProps) {
       <img
         src={images[0].url}
         alt={images[0].alt}
+        onError={onImageError}
         className={cn("aspect-[3/4] w-full rounded-md object-cover", className)}
       />
     );
@@ -41,14 +45,21 @@ export function Gallery({ images, labels, className }: GalleryProps) {
   return (
     <div className={cn("flex flex-col gap-3", className)}>
       <div className="relative">
-        <img src={current.url} alt={current.alt} className="aspect-[3/4] w-full rounded-md object-cover" />
+        {/* Stays eager: this is the detail page's LCP element. Do not add
+            loading="lazy" here — it costs the largest paint. */}
+        <img
+          src={current.url}
+          alt={current.alt}
+          onError={onImageError}
+          className="aspect-[3/4] w-full rounded-md object-cover"
+        />
         <button
           type="button"
           aria-label={labels.previous}
           disabled={index === 0}
           onClick={() => setIndex((i) => Math.max(0, i - 1))}
           className={cn(
-            "absolute inset-inline-start-2 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center",
+            "absolute inset-s-2 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center",
             "rounded-full bg-surface-raised text-ink shadow-md disabled:opacity-40",
             focusRing,
           )}
@@ -61,7 +72,7 @@ export function Gallery({ images, labels, className }: GalleryProps) {
           disabled={index === images.length - 1}
           onClick={() => setIndex((i) => Math.min(images.length - 1, i + 1))}
           className={cn(
-            "absolute inset-inline-end-2 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center",
+            "absolute inset-e-2 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center",
             "rounded-full bg-surface-raised text-ink shadow-md disabled:opacity-40",
             focusRing,
           )}
@@ -83,7 +94,14 @@ export function Gallery({ images, labels, className }: GalleryProps) {
               focusRing,
             )}
           >
-            <img src={img.url} alt="" aria-hidden="true" className="h-full w-full object-cover" />
+            <img
+              src={img.url}
+              alt=""
+              aria-hidden="true"
+              loading="lazy"
+              onError={onImageError}
+              className="h-full w-full object-cover"
+            />
           </button>
         ))}
       </div>

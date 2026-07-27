@@ -19,7 +19,7 @@ export function SkipLink({ href, children }: SkipLinkProps) {
       href={href}
       className={cn(
         "sr-only rounded-sm bg-surface-raised px-4 py-2 text-base text-ink",
-        "focus:not-sr-only focus:absolute focus:inset-inline-start-2 focus:top-2 focus:z-50 focus:shadow-md",
+        "focus:not-sr-only focus:absolute focus:inset-s-2 focus:top-2 focus:z-50 focus:shadow-md",
         focusRing,
       )}
     >

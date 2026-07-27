@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { cn, focusRing } from "../lib/styles";
 
 export interface A11yStatementLinkProps {
@@ -46,6 +46,8 @@ const CONTROL_ATTRS = [
 export function A11yMenu({ triggerLabel, controls, hasBookingBar = false, className }: A11yMenuProps) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<Record<string, boolean>>({});
+  const menuId = useId();
+  const triggerId = useId();
 
   const items: { attr: (typeof CONTROL_ATTRS)[number]; label: string }[] = [
     { attr: "data-a11y-contrast", label: controls.contrast },
@@ -73,13 +75,23 @@ export function A11yMenu({ triggerLabel, controls, hasBookingBar = false, classN
       )}
     >
       {open && (
-        <div className="absolute bottom-full end-0 mb-2 w-60 rounded-md bg-surface-raised p-2 shadow-lg">
+        // A disclosure, deliberately NOT role="menu". These are five independent
+        // toggles, and role="menu" would promise the APG menu contract (arrow-key
+        // roving focus, Escape, focus return) that this component does not keep —
+        // worse, screen readers switch to application mode inside a menu and can
+        // swallow Tab, stranding the keyboard user. role="group" names the set
+        // without borrowing a contract; aria-pressed is what a toggle button is.
+        <div
+          id={menuId}
+          role="group"
+          aria-labelledby={triggerId}
+          className="absolute bottom-full end-0 mb-2 w-60 rounded-md bg-surface-raised p-2 shadow-lg"
+        >
           {items.map((item) => (
             <button
               key={item.attr}
               type="button"
-              role="menuitemcheckbox"
-              aria-checked={Boolean(active[item.attr])}
+              aria-pressed={Boolean(active[item.attr])}
               onClick={() => toggle(item.attr)}
               className={cn(
                 "flex w-full items-center justify-between rounded-sm px-3 py-2 text-start text-base text-ink hover:bg-surface",
@@ -93,8 +105,16 @@ export function A11yMenu({ triggerLabel, controls, hasBookingBar = false, classN
         </div>
       )}
       <button
+        id={triggerId}
         type="button"
         aria-expanded={open}
+        // No aria-haspopup: it is synonymous with aria-haspopup="menu", and this
+        // panel is a disclosure, not a menu. Dropping it also clears axe's
+        // controlsWithinPopup "incomplete", which it can never resolve.
+        //
+        // aria-controls only while open: the panel is unmounted when closed, and
+        // a dangling IDREF is what axe reports as aria-valid-attr-value.
+        aria-controls={open ? menuId : undefined}
         aria-label={triggerLabel}
         onClick={() => setOpen((o) => !o)}
         className={cn(

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { themeTokens, tokens } from "../tokens";
@@ -64,6 +64,40 @@ describe("token single-source parity", () => {
     const scheme = ["color", "scheme"].join("-");
     expect(themeCss).toMatch(new RegExp(`${scheme}:\\s*only light`));
     expect(themeCss).toMatch(/font-synthesis:\s*none/);
+  });
+
+  // Tailwind v4 never auto-scans node_modules, and both apps reach this package
+  // through the pnpm workspace symlink — so every class used only inside
+  // packages/ui compiles to nothing unless theme.css declares @source. A wrong
+  // relative path fails the same silent way, hence resolving it for real here.
+  it("declares an @source glob that actually covers the component sources", () => {
+    const match = /@source\s+"([^"]+)"/.exec(themeCss);
+    expect(match, "theme.css must declare @source").not.toBeNull();
+    const themeDir = resolve(process.cwd(), "src");
+    const scanned = resolve(themeDir, match?.[1] ?? "");
+    expect(existsSync(resolve(scanned, "components/BookingCTA.tsx"))).toBe(true);
+  });
+
+  // Four classes in this package were written as `inset-inline*`, which is the
+  // CSS *property*; Tailwind registers it under the *utility* names inset-x /
+  // inset-s / inset-e. The property name compiles to nothing at all, so the
+  // element silently falls back to its static position — how the CTA bar came to
+  // shrink-wrap and both gallery arrows came to stack on one rect. Nothing else
+  // in the suite can see a class that simply never existed.
+  it("never uses a CSS property name where Tailwind wants a utility name", () => {
+    const src = resolve(process.cwd(), "src");
+    const offenders: string[] = [];
+    for (const entry of readdirSync(src, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) continue;
+      const path = resolve(entry.parentPath, entry.name);
+      if (path.includes("__tests__")) continue;
+      for (const [i, line] of readFileSync(path, "utf8").split("\n").entries()) {
+        if (/\binset-inline/.test(line)) {
+          offenders.push(`${path.slice(src.length + 1)}:${String(i + 1)}`);
+        }
+      }
+    }
+    expect(offenders, "use inset-x / inset-s / inset-e — inset-inline* emits no CSS").toEqual([]);
   });
 
   it("nested tokens object never drifts from the flat mirror", () => {

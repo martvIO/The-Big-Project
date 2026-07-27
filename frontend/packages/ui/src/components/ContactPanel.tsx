@@ -6,7 +6,10 @@ export interface ContactPanelLabels {
   whatsapp: string;
   waze: string;
   maps: string;
-  instagram: string;
+  // Optional: no caller can supply an Instagram handle until the profile carries
+  // one, and a required-but-unusable label forces every call site to pass a dead
+  // string. The row renders only when both the handle and its label exist.
+  instagram?: string;
 }
 
 export interface ContactPanelProps {
@@ -53,7 +56,7 @@ export function ContactPanel({ phone, whatsapp, wazeUrl, mapsUrl, instagram, lab
           {labels.maps}
         </a>
       )}
-      {instagram && (
+      {instagram && labels.instagram && (
         <a
           href={`https://instagram.com/${instagram}`}
           className={linkClass}

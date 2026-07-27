@@ -10,10 +10,22 @@ export interface DressCardProps {
   photoUrl?: string | null;
   reserved?: boolean;
   reservedLabel?: string; // "הוזמן" via prop
+  // A failed load means the presigned URL expired, not that the dress has no
+  // photo — the page refetches instead of degrading to the monogram.
+  onPhotoError?: () => void;
   className?: string;
 }
 
-export function DressCard({ name, href, price, photoUrl, reserved = false, reservedLabel, className }: DressCardProps) {
+export function DressCard({
+  name,
+  href,
+  price,
+  photoUrl,
+  reserved = false,
+  reservedLabel,
+  onPhotoError,
+  className,
+}: DressCardProps) {
   const [loaded, setLoaded] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
@@ -33,7 +45,12 @@ export function DressCard({ name, href, price, photoUrl, reserved = false, reser
             ref={imgRef}
             src={photoUrl}
             alt={name}
+            // The grid renders up to 24 unprocessed originals — the heaviest
+            // egress path in v1. Only fetch what the visitor scrolls to.
+            loading="lazy"
+            decoding="async"
             onLoad={() => setLoaded(true)}
+            onError={onPhotoError}
             className={cn("h-full w-full object-cover transition-opacity", loaded ? "opacity-100" : "opacity-0")}
           />
         ) : (

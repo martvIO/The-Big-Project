@@ -9,6 +9,13 @@
 @import "@fontsource/assistant/600.css";
 @import "@fontsource/assistant/700.css";
 
+/* Tailwind v4 auto source-detection skips node_modules, and @boutique/ui is
+   reached only through the pnpm workspace symlink — so without this line NO
+   class used solely inside packages/ui ever gets compiled. Both apps import
+   this file, so declaring it here fixes storefront and manage at once.
+   Resolved relative to this file. */
+@source "../src";
+
 /* The single source of truth for every design token. tokens.ts mirrors this
    block and a Vitest asserts they never drift. */
 @theme {
