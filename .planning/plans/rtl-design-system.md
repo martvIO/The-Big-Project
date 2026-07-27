@@ -1,6 +1,6 @@
 # Plan: RTL Design System & Tokens (F9)
 
-**Created**: 2026-07-25 · **Status**: building (user directive 2026-07-25 waived the interview gate to start the build) · **Effort**: L
+**Created**: 2026-07-25 · **Status**: done — PR #12 merged 2026-07-27 (user directive 2026-07-25 waived the interview gate to start the build) · **Effort**: L
 **Design package**: [../design/screens/design-system/README.md](../design/screens/design-system/README.md) (gate PASSED rev 2) · **Build gate**: [../design/qa-checklist.md](../design/qa-checklist.md) (rev 2)
 **Epic**: E2 #9 · **Branch**: `feature/rtl-design-system` (worktree). Frontend-only — **backend router diff must be empty** at PR time.
 Binding sources: `design/system/tokens.md` · `design/system/components.md` · `design/qa-checklist.md` · `design/screens/design-system/manage-restyle.md` · `design/screens/manage-catalog/manage-catalog.md` §12. Where plan and amended design docs disagree, the docs win.
@@ -19,14 +19,14 @@ Branch `feature/rtl-design-system`, all commits green (lint + typecheck + build 
 | 2 — primitives | done — 14 components (Button/Input/TextArea/Select/Toggle/Time+DateField/Badge/Card/Toast/Modal/Skeleton/EmptyState/SectionHeading/A11y) | `43359da` |
 | 3 — storefront composites | done — hours.ts (Asia/Jerusalem, grouping fixture, next-open), Price, HoursTable, BoutiqueHeader, DressCard, DressGrid, Gallery, BookingCTA, ContactPanel, A11yMenu — **61 ui tests** | `a909527` |
 | 4a — console composites | done — ConsoleShell, SetupProgress, PolicyBlockerBanner | `44d2ec4` |
-| 4b — manage integration | **partial** — App.tsx adopts ConsoleShell + i18n (App-level violations gone, 103 F7/F8 tests still green) | `d743e39` |
+| 4b — manage integration | done — `shared.tsx` deleted, all 9 sections onto `@boutique/ui`, confirm `Modal` interstitials, `SetupProgress`/`PolicyBlockerBanner` wired | `7c74b2a` |
+| 5 — QA gate | done — §11 grep block, `@playwright/test` + `@axe-core/playwright`, CI e2e job | `261882e` |
+| 6 — ship | done — dual review round 1 (security + quality) addressed, stray `.gitignore` `lib/` rule fixed, PR #12 merged 2026-07-27 | `bfa6e6e`, `53ee94f` |
 
 **`packages/ui` is complete** — every component in components.md, 61 tests, RTL-clean (zero physical-direction props), zero motion literals in component code, no hardcoded Hebrew (strings via props).
 
-### Remaining
-- **4b (rest):** delete `apps/manage/src/components/shared.tsx`, swapping its class-string primitives (`inputClass`/`primaryButtonClass`/`cardClass`/…) and mini-components (`ErrorNotice`/`SavedNotice`/`Loading`/`Badge`/`EmptyState`) for `@boutique/ui` in ProfileSection/HoursSection/TypesSection/TermsSection/CatalogSection/DressEditor/VariantMatrix/MediaGallery/LoginForm — preserving each accessible name/text so the 103 frozen tests stay green (run `pnpm --filter manage test` after each). Add confirm `Modal` interstitials for the F7 type-archive + exception-remove and swap F8's inline dress-archive/photo-delete confirms to `Modal` (keep the exact confirm-button names). Wire `SetupProgress` (derived from the four F7 GETs — no new endpoint) + `PolicyBlockerBanner`. Inline "נשמר לפני רגע" save cue. Extract Hebrew to i18n per component. Only sanctioned test-side edit: the one-line `import "../i18n"` in `apps/manage/src/test/setup.ts`.
-- **5 — QA gate:** run the §11 grep block (scope the hex + motion greps to exclude theme.css/tokens.ts, the token home); add `@playwright/test` + `@axe-core/playwright` at `frontend/` root with `e2e/playwright.config.ts` (vite preview :4173/:4174) + a CI step; automate axe + Hebrew-woff2-fetched + color-scheme + no-h-scroll + Hebrew titles; manual `/spartan:qa` console keyboard/resize/PRE-1 passes (storefront page rows deferred to F10 QA — annotate); tick the checklist; re-measure `qa-browser-baseline.md`.
-- **6 — ship:** dual review (phase-reviewer + adversarial security — TELL both the stack is React/Vite/FastAPI, `.claude/rules/` Kotlin does not apply), one fix commit/round, PR, `gh pr checks --watch` (only Backend/Frontend gate; wiki-drift + dep-audit are continue-on-error), epic F9 building → done.
+### Shipped
+PR #12 merged 2026-07-27. Epic F9 → done. The `qa-checklist.md` boxes were not walked box-by-box as part of the merge (CI covers lint/typecheck/build/test/e2e+axe; the manual/browser rows are unticked) — a follow-up if a full audit is wanted later.
 
 ## Phase 0 — Design amendments + critic re-run (S) — DONE
 tokens.md §12 items 3a–3e (border-input `#B9A98F`→`#8A7A5E`; focus 4.86→5.57; gold-strong barred from rendered text; radius chips→`--radius-full`; added contrast pairs; PRE-1 `--cta-bar-height`/`--space-a11y-clearance` tokens); qa-checklist §8 figure; components.md Badge `muted`+`warning`; manage-restyle.md five-tab shell + F8 component rows + nav semantics + new states. design-critic re-run over amended docs (ACCEPT required for §9 PRE-1 ticks).

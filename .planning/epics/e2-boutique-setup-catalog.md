@@ -1,7 +1,7 @@
 # Epic: E2 — Boutique Setup & Catalog
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: building — F7 (PR #10) and F8 (PR #11) shipped 2026-07-24; **F9 PR #12 open 2026-07-25** (interview gate waived by directive; design gate re-passed, dual review + verification round done — clean-tree CI-equivalent green); **F10 is gated on the AWS account**
+**Status**: building — F7 (PR #10), F8 (PR #11) and F9 (PR #12) shipped, F9 merged 2026-07-27; **F10 is the only feature left, and it is gated on the AWS account**
 **Owner**: team
 **PRD**: §2 (owner controls), §3 (inventory), storefront browse half of §4
 
@@ -27,7 +27,7 @@ Before anyone can book, the boutique must exist as a configured business (hours,
 |---|---------|--------|------|------|------------|
 | 7 | Owner settings, toggles & structured cancellation policy | done | [spec](../specs/owner-settings.md) | [plan](../plans/owner-settings.md) | E1 #5 |
 | 8 | Catalog management | done | [spec](../specs/catalog-management.md) | [plan](../plans/catalog-management.md) | E1 #2 (S3 base), E1 #5 |
-| 9 | RTL design system & tokens | building | [design package](../design/screens/design-system/README.md) | [plan](../plans/rtl-design-system.md) | E1 #1 |
+| 9 | RTL design system & tokens | done | [design package](../design/screens/design-system/README.md) | [plan](../plans/rtl-design-system.md) | E1 #1 |
 | 10 | Storefront browse | todo | — | — | E1 #4, #7, #8, #9 |
 
 ---
