@@ -1,3 +1,6 @@
 packages:
   - apps/*
   - packages/*
+  # Not a glob: `e2e` is the only workspace member outside apps/ and packages/,
+  # and being a member is what puts its specs under `pnpm -r lint|typecheck`.
+  - e2e

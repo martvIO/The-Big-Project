@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // playwright.config.ts reads process.env.CI.
+    "types": ["node"]
+  },
+  "include": ["."]
+}
