@@ -329,3 +329,6 @@ config/local.*
 # Second brain — machine-local session state only; wiki/ scripts/ hooks/ are tracked
 .brain/queue/
 .brain/output/
+
+# Local installers, not part of the repo
+AWSCLIV2.pkg
