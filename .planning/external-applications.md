@@ -5,7 +5,7 @@ Created 2026-07-22 by E1 Feature 2. Lead times are multi-week — filing order i
 
 | # | Item | Status | Blocks | Notes |
 |---|------|--------|--------|-------|
-| 1 | AWS account + il-central-1 opt-in | not-started | E2 #8 (S3 upload), E4 skeleton, production | Create account, enable the il-central-1 opt-in region, billing alarm. Fastest item — do first. **Re-flagged 2026-07-24 — F8 has now MERGED (PR #11) without it, as designed.** The upload code shipped behind a storage port and is CI-verified against MinIO, so the bucket reduces to configuration. **This is now the critical path: it blocks F10, the last feature in E2.** **The binding gate is F10, not F8**: every approved storefront screen is photography-led, so the account must be `approved` and the staging presign → upload → confirm → signed-GET smoke green **before F10's spec is written**, or E2 closes on a monogram-only storefront. Pilot consequence: do not have the boutique enter catalog data before the bucket is live, or they revisit ~60 dresses to add photos. |
+| 1 | AWS account + il-central-1 opt-in | approved | E2 #8 (S3 upload), E4 skeleton, production | **Confirmed 2026-07-27 via `aws sts get-caller-identity`**: account `849279003056`, `il-central-1` region opt-status `ENABLED`. Both buckets exist and are correctly configured — `boutique-production-media` / `boutique-staging-media`, region `il-central-1`, versioning on, public access fully blocked, CORS scoped to `https://*.boutique-platform.invalid` / `https://*.staging.boutique-platform.invalid`. Scoped IAM user `boutique-media-staging` exists (created 2026-07-27) — **use its keys for Railway env, not root**; the CLI session that confirmed this was authenticated as the account root user, which should not be the credential wired into the app. **Still open before F10's spec is written**: (a) the staging presign → upload → confirm → signed-GET smoke test itself hasn't been run yet — bucket/CORS/IAM existing is necessary but not sufficient; (b) no CloudWatch billing alarm found in `us-east-1` — the original ask included one. Pilot consequence unchanged: do not have the boutique enter catalog data before the smoke test is green. |
 | 2 | Production domain | not-started | staging DNS naming, Route 53 zone, production | `.co.il` may require Israeli-entity eligibility — confirm registrar rules before committing. A separate cheap staging domain is an acceptable stopgap (buy now if the production domain will take time). |
 | 3 | Grow (Meshulam) merchant account | not-started | E4 #17–18 (payments), deposit flows | Needs Israeli business registration + bank account docs. Longest lead time — file ASAP. Per-tenant merchant accounts: the pilot boutique files its own; platform needs sandbox access for E4 development. |
 | 4 | SMS sender-ID / route registration | not-started | E3 #11 (OTP + booking SMS) | Provider decision (Twilio vs Inforu vs 019) is F2 Task 1 — comparison pending. Sender-ID registration is filed with the chosen provider/route after the decision. |
@@ -16,7 +16,7 @@ Created 2026-07-22 by E1 Feature 2. Lead times are multi-week — filing order i
 
 ## What the user needs to do now
 
-1. **AWS**: create the account, enable il-central-1, send confirmation. No credentials in the repo — **AWS keys go to Railway env only**; the only GitHub secret in this design is the project-scoped `RAILWAY_TOKEN`.
+1. **AWS**: done — account created, il-central-1 opted in, both buckets provisioned. Remaining: wire the `boutique-media-staging` IAM user's keys into Railway env (not root, not the repo), set a CloudWatch billing alarm, and run the staging presign → upload → confirm → signed-GET smoke test before F10's spec is written.
 2. **Domain**: decide production brand domain; check `.co.il` registrar eligibility; if slow, buy a staging domain immediately so F2 Tasks 3/5 can proceed.
 3. **Grow**: start the merchant application for the pilot boutique + request sandbox/developer access. This is the long pole for E4.
 4. **SMS**: wait for the F2 Task 1 comparison (days, not weeks), then file the sender-ID registration with the recommended provider.
@@ -25,4 +25,4 @@ Created 2026-07-22 by E1 Feature 2. Lead times are multi-week — filing order i
 
 - SMS provider: _pending F2 Task 1 comparison._
 - Staging wildcard TLS host: _pending Railway wildcard-domain support check (fallback: Cloudflare front)._
-- il-central-1 service availability: _pending AWS account._
+- il-central-1 service availability: confirmed 2026-07-27 — region opt-status `ENABLED`, S3 available and in use.
