@@ -29,7 +29,7 @@ from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.terms_version import TermsVersion
 from app.tenancy.middleware import TenantContext
 
-TENANT = TenantContext(id=uuid.uuid4(), slug="bella", settings={})
+TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="Bella Bridal", settings={})
 STAFF_ID = uuid.uuid4()
 TOKEN = "session-token-abc"
 

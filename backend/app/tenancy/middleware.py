@@ -26,6 +26,11 @@ TENANT_NOT_FOUND_BODY = {
 class TenantContext:
     id: UUID
     slug: str
+    # The boutique's display name (tenants.name), which the storefront renders as
+    # its <h1>. REQUIRED, not defaulted: a default of "" would let a future
+    # resolver that forgets to wire it ship an empty heading to the public page
+    # instead of failing at construction.
+    name: str
     settings: dict[str, Any]
 
 

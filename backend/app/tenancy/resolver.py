@@ -15,4 +15,6 @@ class RepositoryTenantResolver:
         tenant = await self._repository.by_slug(slug)
         if tenant is None:
             return None
-        return TenantContext(id=tenant.id, slug=tenant.slug, settings=tenant.settings)
+        return TenantContext(
+            id=tenant.id, slug=tenant.slug, name=tenant.name, settings=tenant.settings
+        )

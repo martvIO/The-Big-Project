@@ -21,7 +21,7 @@ class RecordingResolver:
     async def __call__(self, slug: str) -> TenantContext | None:
         self.calls.append(slug)
         if slug == "bella":
-            return TenantContext(id=BELLA_ID, slug="bella", settings={})
+            return TenantContext(id=BELLA_ID, slug="bella", name="Bella Bridal", settings={})
         return None
 
 
@@ -32,7 +32,10 @@ def _probe_app(resolver: RecordingResolver) -> FastAPI:
     async def whoami(
         tenant: Annotated[TenantContext, Depends(get_current_tenant)],
     ) -> dict[str, str]:
-        return {"tenant_id": str(tenant.id), "slug": tenant.slug}
+        # `name` is echoed because the storefront renders it as the page <h1>:
+        # this is the only test that proves the resolver wires it all the way to
+        # request.state.tenant rather than leaving an empty heading.
+        return {"tenant_id": str(tenant.id), "slug": tenant.slug, "name": tenant.name}
 
     return app
 
@@ -42,7 +45,11 @@ def test_known_slug_resolves_and_binds_tenant() -> None:
     with TestClient(_probe_app(resolver), base_url="http://bella.localtest.me") as client:
         resp = client.get("/whoami")
     assert resp.status_code == 200
-    assert resp.json() == {"tenant_id": str(BELLA_ID), "slug": "bella"}
+    assert resp.json() == {
+        "tenant_id": str(BELLA_ID),
+        "slug": "bella",
+        "name": "Bella Bridal",
+    }
     assert resolver.calls == ["bella"]
 
 
