@@ -1,19 +1,9 @@
 import { useEffect, useState } from "react";
+import { Badge, Button, Card, EmptyState, Input, Price, Skeleton, Toggle } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { Dress } from "../api";
-import { formatIlsAmount, MAX_SEARCH_LENGTH } from "../validation";
+import { MAX_SEARCH_LENGTH } from "../validation";
 import { DressEditor } from "./DressEditor";
-import {
-  Badge,
-  cardClass,
-  EmptyState,
-  ErrorNotice,
-  inputClass,
-  labelClass,
-  Loading,
-  primaryButtonClass,
-  secondaryButtonClass,
-} from "./shared";
 
 // Mirrors DRESS_LIST_DEFAULT_LIMIT. Not parity-guarded: the server clamps the
 // page itself, so a stale client can only ask for a smaller page, never a
@@ -123,17 +113,13 @@ export function CatalogSection() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-medium">שמלות</h2>
+      <h2 className="text-lg font-semibold text-ink">שמלות</h2>
 
-      <section className={`${cardClass} space-y-3`}>
+      <Card className="space-y-3">
         <div className="flex flex-wrap items-end gap-3">
           <div className="grow">
-            <label className={labelClass} htmlFor="catalog-search">
-              חיפוש שמלה
-            </label>
-            <input
-              id="catalog-search"
-              className={inputClass}
+            <Input
+              label="חיפוש שמלה"
               // Hebrew and Latin dress names both occur.
               dir="auto"
               maxLength={MAX_SEARCH_LENGTH}
@@ -141,30 +127,25 @@ export function CatalogSection() {
               onChange={(event) => setSearch(event.target.value)}
             />
           </div>
-          <button
+          <Button
             type="button"
-            className={primaryButtonClass}
             onClick={() => {
               setSelectedId(null);
               setEditing(true);
             }}
           >
             שמלה חדשה
-          </button>
+          </Button>
         </div>
-        <label className="flex min-h-11 items-center gap-3 text-sm">
-          <input
-            type="checkbox"
-            className="h-6 w-6"
-            checked={archived}
-            onChange={(event) => {
-              setArchived(event.target.checked);
-              setOffset(0);
-            }}
-          />
-          ארכיון
-        </label>
-      </section>
+        <Toggle
+          label="ארכיון"
+          checked={archived}
+          onCheckedChange={(checked) => {
+            setArchived(checked);
+            setOffset(0);
+          }}
+        />
+      </Card>
 
       {/* The list screen's single polite region, and the focus destination
           after a page change. */}
@@ -172,18 +153,18 @@ export function CatalogSection() {
         role="status"
         tabIndex={-1}
         data-testid="catalog-count"
-        className="text-sm text-stone-500"
+        className="text-sm text-ink-muted"
       >
         מציג <bdi dir="ltr">{firstIndex}</bdi>–<bdi dir="ltr">{lastIndex}</bdi> מתוך{" "}
         <bdi dir="ltr">{total}</bdi>
       </p>
 
-      {loadError !== null && <ErrorNotice message={loadError} />}
+      {loadError !== null && <p role="alert" className="text-sm text-ink-muted">{loadError}</p>}
 
       {dresses === null ? (
-        <Loading />
+        <Skeleton variant="text" lines={4} />
       ) : (
-        <section className={cardClass}>
+        <Card>
           {dresses.length === 0 ? (
             archived ? (
               <EmptyState title="אין שמלות בארכיון." />
@@ -191,13 +172,13 @@ export function CatalogSection() {
               <EmptyState
                 title="לא נמצאו שמלות התואמות לחיפוש."
                 action={
-                  <button
+                  <Button
                     type="button"
-                    className={secondaryButtonClass}
+                    variant="secondary"
                     onClick={() => setSearch("")}
                   >
                     ניקוי החיפוש
-                  </button>
+                  </Button>
                 }
               />
             ) : (
@@ -205,21 +186,20 @@ export function CatalogSection() {
                 title="אין עדיין שמלות בקטלוג"
                 body="השמלה הראשונה תופיע כאן ובאתר של הבוטיק."
                 action={
-                  <button
+                  <Button
                     type="button"
-                    className={primaryButtonClass}
                     onClick={() => {
                       setSelectedId(null);
                       setEditing(true);
                     }}
                   >
                     שמלה חדשה
-                  </button>
+                  </Button>
                 }
               />
             )
           ) : (
-            <ul className="divide-y divide-stone-100">
+            <ul className="divide-y divide-border">
               {dresses.map((row) => (
                 <li key={row.id}>
                   {/* One affordance per row: the whole row opens the editor.
@@ -233,7 +213,7 @@ export function CatalogSection() {
                       setEditing(true);
                     }}
                   >
-                    <span className="block w-18 shrink-0 overflow-hidden rounded bg-stone-100 aspect-[3/4]">
+                    <span className="block w-18 shrink-0 overflow-hidden rounded bg-surface aspect-[3/4]">
                       {row.cover?.url != null && (
                         <img
                           src={row.cover.url}
@@ -247,7 +227,7 @@ export function CatalogSection() {
                       )}
                     </span>
                     <span className="min-w-0 grow space-y-1">
-                      <span className="block font-medium">{row.name}</span>
+                      <span className="block font-semibold text-ink">{row.name}</span>
                       {/* Sibling of the name, never a child of it: a chip
                           nested in a clamped box is clipped out of the row on
                           exactly the long-name edge case. */}
@@ -256,12 +236,12 @@ export function CatalogSection() {
                         {row.archived && <Badge variant="muted">בארכיון</Badge>}
                         {stockBadge(row)}
                       </span>
-                      <span className="flex flex-wrap items-center gap-2 text-sm text-stone-500">
-                        {row.price_visible && row.price_agorot !== null ? (
-                          <bdi dir="ltr">{formatIlsAmount(row.price_agorot)} ₪</bdi>
-                        ) : (
-                          <span className="italic">מחיר בתיאום</span>
-                        )}
+                      <span className="flex flex-wrap items-center gap-2 text-sm text-ink-muted">
+                        <Price
+                          agorot={row.price_agorot ?? 0}
+                          visible={row.price_visible && row.price_agorot !== null}
+                          hiddenLabel="מחיר בתיאום"
+                        />
                         <span>
                           {row.media_count === 0 ? (
                             "אין תמונות"
@@ -278,26 +258,26 @@ export function CatalogSection() {
               ))}
             </ul>
           )}
-        </section>
+        </Card>
       )}
 
       <div className="flex justify-end gap-2">
-        <button
+        <Button
           type="button"
-          className={secondaryButtonClass}
+          variant="secondary"
           disabled={offset === 0}
           onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
         >
           הקודם
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className={secondaryButtonClass}
+          variant="secondary"
           disabled={offset + PAGE_SIZE >= total}
           onClick={() => setOffset(offset + PAGE_SIZE)}
         >
           הבא
-        </button>
+        </Button>
       </div>
     </div>
   );

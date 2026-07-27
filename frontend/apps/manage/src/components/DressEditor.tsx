@@ -4,7 +4,6 @@ import { api, ApiError, errorMessage } from "../api";
 import type { Dress, DressDetail, DressInput } from "../api";
 import {
   agorotFromIlsInput,
-  formatIlsAmount,
   ilsFromAgorot,
   MAX_DRESS_DESCRIPTION_LENGTH,
   MAX_DRESS_NAME_LENGTH,
@@ -12,17 +11,7 @@ import {
   validateDress,
 } from "../validation";
 import { MediaGallery } from "./MediaGallery";
-import {
-  Badge,
-  cardClass,
-  dangerButtonClass,
-  ErrorNotice,
-  inputClass,
-  labelClass,
-  Loading,
-  primaryButtonClass,
-  secondaryButtonClass,
-} from "./shared";
+import { Badge, Button, Card, Input, Modal, Price, Skeleton, TextArea, Toggle } from "@boutique/ui";
 import { VariantMatrix } from "./VariantMatrix";
 
 // The Card-level explanation, and the short form that each disabled control
@@ -109,6 +98,8 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
   const [savedCue, setSavedCue] = useState<string | null>(null);
   const [confirmingArchive, setConfirmingArchive] = useState(false);
   const heading = useRef<HTMLHeadingElement | null>(null);
+  const archiveTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const wasConfirming = useRef(false);
 
   useEffect(() => {
     if (dressId === null) {
@@ -138,11 +129,26 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
     heading.current?.focus();
   }, [detail?.id]);
 
+  // The archive trigger unmounts while its confirm modal is open, so native
+  // focus-return lands on <body>. Restore focus to the trigger on close.
+  useEffect(() => {
+    if (wasConfirming.current && !confirmingArchive) {
+      archiveTriggerRef.current?.focus();
+    }
+    wasConfirming.current = confirmingArchive;
+  }, [confirmingArchive]);
+
   const creating = dressId === null && detail === null;
   const archived = detail?.archived === true;
 
   if (dressId !== null && detail === null) {
-    return loadError !== null ? <ErrorNotice message={loadError} /> : <Loading />;
+    return loadError !== null ? (
+      <p role="alert" className="text-sm text-ink-muted">
+        {loadError}
+      </p>
+    ) : (
+      <Skeleton variant="text" lines={4} />
+    );
   }
 
   const applyDetail = (next: DressDetail) => {
@@ -231,159 +237,131 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
 
   const priceAgorot =
     draft.priceIls.trim() === "" ? null : agorotFromIlsInput(draft.priceIls);
-  const previewPrice =
-    draft.priceVisible && priceAgorot !== null && priceAgorot > 0
-      ? `${formatIlsAmount(priceAgorot)} ₪`
-      : null;
+  const priceShown = draft.priceVisible && priceAgorot !== null && priceAgorot > 0;
 
   return (
     <div className="space-y-6">
-      <button type="button" className={secondaryButtonClass} onClick={onBack}>
+      <Button variant="secondary" onClick={onBack}>
         חזרה לרשימת השמלות
-      </button>
+      </Button>
 
       <div className="flex flex-wrap items-center gap-3">
-        <h2 ref={heading} tabIndex={-1} className="text-lg font-medium">
+        <h2 ref={heading} tabIndex={-1} className="text-lg font-semibold">
           {detail === null ? "שמלה חדשה" : detail.name}
         </h2>
         {archived && <Badge variant="muted">בארכיון</Badge>}
         {detail?.reserved === true && <Badge>הוזמן</Badge>}
       </div>
 
-      {archived && <p className="text-sm text-stone-600">{ARCHIVED_HINT}</p>}
+      {archived && <p className="text-sm text-ink-muted">{ARCHIVED_HINT}</p>}
 
-      <form onSubmit={(event) => void handleSubmit(event)} className={`${cardClass} space-y-4`}>
-        <h3 className="text-sm font-semibold">פרטי השמלה</h3>
-        <p className="text-xs text-stone-500">שדות המסומנים ב-* הם חובה</p>
+      <Card>
+        <form onSubmit={(event) => void handleSubmit(event)} className="space-y-4">
+          <h3 className="text-sm font-semibold">פרטי השמלה</h3>
+          <p className="text-xs text-ink-muted">שדות המסומנים ב-* הם חובה</p>
 
-        <div>
-          <label className={labelClass} htmlFor="dress-name">
-            שם השמלה *
-          </label>
-          <input
-            id="dress-name"
-            className={inputClass}
-            dir="auto"
-            required
-            maxLength={MAX_DRESS_NAME_LENGTH}
-            value={draft.name}
-            disabled={saving || archived}
-            onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-          />
-          <p className="mt-1 text-xs text-stone-500">
-            <bdi dir="ltr">
-              {draft.name.length}/{MAX_DRESS_NAME_LENGTH}
-            </bdi>
-          </p>
-        </div>
+          <div>
+            <Input
+              label="שם השמלה *"
+              dir="auto"
+              required
+              maxLength={MAX_DRESS_NAME_LENGTH}
+              value={draft.name}
+              disabled={saving || archived}
+              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+            />
+            <p className="mt-1 text-xs text-ink-muted">
+              <bdi dir="ltr">
+                {draft.name.length}/{MAX_DRESS_NAME_LENGTH}
+              </bdi>
+            </p>
+          </div>
 
-        <div>
-          <label className={labelClass} htmlFor="dress-description">
-            תיאור
-          </label>
-          <textarea
-            id="dress-description"
-            className={`${inputClass} min-h-30`}
-            dir="auto"
-            maxLength={MAX_DRESS_DESCRIPTION_LENGTH}
-            value={draft.description}
-            disabled={saving || archived}
-            onChange={(event) => setDraft({ ...draft, description: event.target.value })}
-          />
-          <p className="mt-1 text-xs text-stone-500">
-            <bdi dir="ltr">
-              {draft.description.length}/{MAX_DRESS_DESCRIPTION_LENGTH}
-            </bdi>
-          </p>
-        </div>
+          <div>
+            <TextArea
+              label="תיאור"
+              className="min-h-30"
+              dir="auto"
+              maxLength={MAX_DRESS_DESCRIPTION_LENGTH}
+              value={draft.description}
+              disabled={saving || archived}
+              onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+            />
+            <p className="mt-1 text-xs text-ink-muted">
+              <bdi dir="ltr">
+                {draft.description.length}/{MAX_DRESS_DESCRIPTION_LENGTH}
+              </bdi>
+            </p>
+          </div>
 
-        <div>
-          <label className={labelClass} htmlFor="dress-price">
-            מחיר (₪)
-          </label>
           {/* An LTR island: the box keeps its RTL position, only its content
               direction flips. The ₪ lives in the label, never in the field. */}
-          <input
-            id="dress-price"
+          <Input
+            label="מחיר (₪)"
             inputMode="decimal"
             dir="ltr"
-            className={`${inputClass} max-w-40`}
+            className="max-w-40"
             value={draft.priceIls}
             disabled={saving || archived}
             onChange={(event) => setDraft({ ...draft, priceIls: event.target.value })}
           />
-        </div>
 
-        <label className="flex min-h-11 items-center gap-3 text-sm">
-          <input
-            type="checkbox"
-            className="h-6 w-6"
+          <Toggle
+            label="הצגת המחיר באתר"
+            description="כשהאפשרות כבויה, הלקוחות רואות «מחיר בתיאום» במקום הסכום."
             checked={draft.priceVisible}
             disabled={saving || archived}
-            onChange={(event) => setDraft({ ...draft, priceVisible: event.target.checked })}
+            onCheckedChange={(checked) => setDraft({ ...draft, priceVisible: checked })}
           />
-          הצגת המחיר באתר
-        </label>
-        <p className="ps-9 text-xs text-stone-500">
-          כשהאפשרות כבויה, הלקוחות רואות «מחיר בתיאום» במקום הסכום.
-        </p>
 
-        {/* The single place price and visibility resolve to one readable
-            outcome, so neither field can be misunderstood alone. */}
-        <p className="border-s-4 border-amber-400 bg-white p-3 text-sm">
-          <span className="text-stone-500">בקטלוג יוצג: </span>
-          {previewPrice === null ? (
-            <span className="italic text-stone-500">מחיר בתיאום</span>
-          ) : (
-            <bdi dir="ltr">{previewPrice}</bdi>
-          )}
-        </p>
+          {/* The single place price and visibility resolve to one readable
+              outcome, so neither field can be misunderstood alone. */}
+          <p className="border-s-4 border-warning-text bg-surface-raised p-3 text-sm">
+            <span className="text-ink-muted">בקטלוג יוצג: </span>
+            <Price agorot={priceAgorot ?? 0} visible={priceShown} hiddenLabel="מחיר בתיאום" />
+          </p>
 
-        <label className="flex min-h-11 items-center gap-3 text-sm">
-          <input
-            type="checkbox"
-            className="h-6 w-6"
+          <Toggle
+            label="הוזמן"
+            description="סימון ידני, ללא תאריך — יש להסיר ידנית כשהשמלה מתפנה"
             checked={draft.reserved}
             disabled={saving || archived}
-            onChange={(event) => setDraft({ ...draft, reserved: event.target.checked })}
+            onCheckedChange={(checked) => setDraft({ ...draft, reserved: checked })}
           />
-          הוזמן
-        </label>
-        <p className="ps-9 text-xs text-stone-500">
-          סימון ידני, ללא תאריך — יש להסיר ידנית כשהשמלה מתפנה
-        </p>
 
-        <div>
-          <label className={labelClass} htmlFor="dress-sort">
-            סדר בקטלוג
-          </label>
-          <input
-            id="dress-sort"
-            type="number"
-            dir="ltr"
-            className={`${inputClass} max-w-24`}
-            min={-MAX_SORT_ORDER}
-            max={MAX_SORT_ORDER}
-            value={draft.sortOrder}
-            disabled={saving || archived}
-            onChange={(event) => setDraft({ ...draft, sortOrder: event.target.value })}
-          />
-          <p className="mt-1 text-xs text-stone-500">מספר נמוך = מוצג ראשון</p>
-        </div>
+          <div>
+            <Input
+              label="סדר בקטלוג"
+              type="number"
+              dir="ltr"
+              className="max-w-24"
+              min={-MAX_SORT_ORDER}
+              max={MAX_SORT_ORDER}
+              value={draft.sortOrder}
+              disabled={saving || archived}
+              onChange={(event) => setDraft({ ...draft, sortOrder: event.target.value })}
+            />
+            <p className="mt-1 text-xs text-ink-muted">מספר נמוך = מוצג ראשון</p>
+          </div>
 
-        {formError !== null && <ErrorNotice message={formError} />}
-
-        <div className="flex items-center justify-end gap-3">
-          {savedCue !== null && (
-            <span role="status" className="text-xs text-stone-500">
-              {savedCue}
-            </span>
+          {formError !== null && (
+            <p role="alert" className="text-sm text-danger">
+              {formError}
+            </p>
           )}
-          <button type="submit" className={primaryButtonClass} disabled={saving || archived}>
-            {detail === null ? "יצירת שמלה" : "שמירה"}
-          </button>
-        </div>
-      </form>
+
+          <div className="flex items-center justify-end gap-3">
+            {savedCue !== null && (
+              <span role="status" className="text-xs text-ink-muted">
+                {savedCue}
+              </span>
+            )}
+            <Button type="submit" loading={saving} disabled={archived}>
+              {detail === null ? "יצירת שמלה" : "שמירה"}
+            </Button>
+          </div>
+        </form>
+      </Card>
 
       <VariantMatrix
         dressId={detail?.id ?? null}
@@ -407,46 +385,41 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
       />
 
       {detail !== null && (
-        <div className="border-t border-stone-200 pt-4">
+        <div className="border-t border-border pt-4">
           {archived ? (
-            <button
-              type="button"
-              className={secondaryButtonClass}
-              onClick={() => void handleRestore()}
-            >
+            <Button variant="secondary" onClick={() => void handleRestore()}>
               שחזור
-            </button>
-          ) : confirmingArchive ? (
-            <div className="space-y-2 rounded border border-red-300 p-3 text-sm">
-              <p className="font-medium">להעביר את «{detail.name}» לארכיון?</p>
-              <p className="text-stone-600">
-                השמלה תוסר מהאתר. אפשר לשחזר אותה מלשונית «ארכיון».
-              </p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  className={secondaryButtonClass}
-                  onClick={() => setConfirmingArchive(false)}
-                >
-                  ביטול
-                </button>
-                <button
-                  type="button"
-                  className={dangerButtonClass}
-                  onClick={() => void handleArchive()}
-                >
-                  העברה לארכיון
-                </button>
-              </div>
-            </div>
+            </Button>
           ) : (
-            <button
-              type="button"
-              className={dangerButtonClass}
-              onClick={() => setConfirmingArchive(true)}
-            >
-              העברה לארכיון
-            </button>
+            <>
+              {/* The trigger and the modal's confirm share the name "העברה
+                  לארכיון", so only one may be in the tree at a time — the trigger
+                  unmounts while the modal is open. Native focus-return then lands
+                  on <body>, so a focus-restore effect below sends it back to the
+                  trigger on close. */}
+              {!confirmingArchive && (
+                <Button ref={archiveTriggerRef} variant="danger" onClick={() => setConfirmingArchive(true)}>
+                  העברה לארכיון
+                </Button>
+              )}
+              <Modal
+                open={confirmingArchive}
+                onClose={() => setConfirmingArchive(false)}
+                title={`להעביר את «${detail.name}» לארכיון?`}
+                footer={
+                  <>
+                    <Button variant="ghost" onClick={() => setConfirmingArchive(false)}>
+                      ביטול
+                    </Button>
+                    <Button variant="danger" onClick={() => void handleArchive()}>
+                      העברה לארכיון
+                    </Button>
+                  </>
+                }
+              >
+                השמלה תוסר מהאתר. אפשר לשחזר אותה מלשונית «ארכיון».
+              </Modal>
+            </>
           )}
         </div>
       )}

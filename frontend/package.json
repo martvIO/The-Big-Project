@@ -1,5 +1,12 @@
 {
   "name": "boutique-frontend",
   "private": true,
-  "packageManager": "pnpm@10.34.5"
+  "packageManager": "pnpm@10.34.5",
+  "scripts": {
+    "e2e": "playwright test -c e2e/playwright.config.ts"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.62.0"
+  }
 }

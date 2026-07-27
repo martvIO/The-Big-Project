@@ -13,7 +13,7 @@ Every component ships with: default / hover / focus-visible / disabled states, R
 | `Select` | native `<select>` styled — no custom dropdown in v1 (a11y cost not worth it) | error, disabled |
 | `Toggle` | for boolean settings (deposits, brides-only); label + description | disabled |
 | `TimeField` / `DateField` | native inputs styled; Israeli week ordering handled at the composite level | error |
-| `Badge` | status chips: neutral (ink-tint), gold (accent — large-text-safe `gold-strong`), success, danger | — |
+| `Badge` | status chips: neutral (ink-tint), gold (accent — large-text-safe `gold-strong`), success, danger, muted (`ink-muted` text, `border` outline, no shadow — "במלאי (N)", "לא הוגדרו מידות", "בארכיון"), warning (`warning-text`/600, outline, no shadow — "אזל מהמלאי", at-cap counter). All variants pass AA as text; the outline is decorative, the word carries the meaning | — |
 | `Card` | surface `paper` bg, radius-md, shadow-sm; hover-elevate variant for interactive cards | — |
 | `Toast` | success/error; auto-dismiss; `role="status"` / `role="alert"` | — |
 | `Modal` | confirm dialogs (archive type, delete exception); focus-trapped, `Esc` closes, scale+fade motion | — |
@@ -46,6 +46,12 @@ Every component ships with: default / hover / focus-visible / disabled states, R
 | `PolicyBlockerBanner` | shown while no terms version exists — danger-adjacent but not alarmist; links to the policy section |
 | `LoginForm` | centered card on cream, display-serif heading, generic error (no enumeration — preserves F5 behavior) |
 | `ProfileSection` / `HoursSection` / `TypesSection` / `TermsSection` | retokened: Card surfaces, Input/Toggle primitives, section headings, save buttons → `Button primary`; TermsSection history list gets the immutable-ledger look (version chip + date, no edit affordances) |
+| `CatalogSection` (F8) | dress list under the fifth nav tab "שמלות": search `Input`, sort-order control, "הוספת שמלה" primary Button, dress rows as `Card`s (name display-serif, `Price`, status `Badge` muted/warning); archive behind a confirm `Modal`. Restyle only — API/behavior/tests frozen |
+| `DressEditor` (F8) | edit form Card: name/description/price `Input`s (price ₪ adornment + `dir="ltr"` digits), price-visibility `Toggle`, `VariantMatrix` + `MediaGallery` embedded; save Button loading + inline "נשמר לפני רגע" cue |
+| `VariantMatrix` (F8) | size × quantity grid; unlisted-size chips (`Badge` muted), quantity stepper `Input`s (`dir="ltr"`), at-cap counter (`Badge` warning); numeric columns `text-align: end` |
+| `MediaGallery` (F8) | 3:4 thumbnails (cream matting, shadow-sm), presigned-upload file input, reorder + delete-per-photo behind a confirm `Modal`; storage-disabled 503 as a muted info panel |
+
+**Scope note:** `A11yMenu` and `A11yStatementLink` (Storefront composites above) are **storefront-only** — the public storefront carries the IS 5568 obligation; the owner-only console ships neither. The manage composites here never mount a fixed accessibility button.
 
 ## Explicitly NOT in v1
 

@@ -63,6 +63,31 @@ jobs:
       - name: Build
         run: pnpm -r build
 
+  e2e:
+    name: Frontend E2E (Playwright + axe)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Build apps
+        run: pnpm -r build
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: E2E (Playwright + axe)
+        run: pnpm e2e
+
   brain:
     name: Code wiki drift (warn-only)
     # warn-only until waves 1-3 are complete and the stale count has held at zero.

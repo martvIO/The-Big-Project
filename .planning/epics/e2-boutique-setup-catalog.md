@@ -1,7 +1,7 @@
 # Epic: E2 — Boutique Setup & Catalog
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: building — F7 (PR #10) and F8 (PR #11) shipped 2026-07-24; F9 design gate PASSED (build pending, see Risks); **F10 is the only feature left, and it is gated on the AWS account**
+**Status**: building — F7 (PR #10) and F8 (PR #11) shipped 2026-07-24; **F9 PR #12 open 2026-07-25** (interview gate waived by directive; design gate re-passed, dual review + verification round done — clean-tree CI-equivalent green); **F10 is gated on the AWS account**
 **Owner**: team
 **PRD**: §2 (owner controls), §3 (inventory), storefront browse half of §4
 
@@ -27,7 +27,7 @@ Before anyone can book, the boutique must exist as a configured business (hours,
 |---|---------|--------|------|------|------------|
 | 7 | Owner settings, toggles & structured cancellation policy | done | [spec](../specs/owner-settings.md) | [plan](../plans/owner-settings.md) | E1 #5 |
 | 8 | Catalog management | done | [spec](../specs/catalog-management.md) | [plan](../plans/catalog-management.md) | E1 #2 (S3 base), E1 #5 |
-| 9 | RTL design system & tokens | spec | [design package](../design/screens/design-system/README.md) | — (build plan after interview-gated final approval) | E1 #1 |
+| 9 | RTL design system & tokens | building | [design package](../design/screens/design-system/README.md) | [plan](../plans/rtl-design-system.md) | E1 #1 |
 | 10 | Storefront browse | todo | — | — | E1 #4, #7, #8, #9 |
 
 ---
@@ -52,8 +52,8 @@ Dress CRUD (name, description, price, price-visibility flag, status), size/quant
 
 - Design gate (Feature 9) is a serialization point for Feature 10 — schedule it early; backend features 7–8 proceed in parallel.
 - Catalog photography quality is outside our control but defines the "luxury" perception — give the pilot upload guidelines.
-- **BLOCKING on the F9 build start (raised 2026-07-24 by F8's design gate):** `design/system/tokens.md` line 27 ships `--color-border-input: #B9A98F` and publishes "≥3:1 on surfaces ✓ (computed 3.0+)" — a figure that cannot be reproduced. Recomputed it is **2.03 paper / 2.30 white / 2.22 cream**. This token is the *only* visible boundary of every form field in the console (the fields have no fill contrast against the paper or white behind them either), so today a 2.03:1 hairline is the sole thing saying "this is a field". Remedy: darken to **`#8A7A5E`** → 3.69 / 4.18 / 4.04. Do **not** paper over it by reusing `--color-gold-strong` as the resting border — that makes every field gold and collides with the listed-chip signal. F8 deliberately did not edit `tokens.md` (F9 owns it and its gate already passed); full working in `design/screens/manage-catalog/manage-catalog.md` §12 item 3a.
-- **F9 `manage-restyle.md` amendment required:** F8 adds a fifth console tab ("קטלוג") to a design that passed its gate against four, and the per-component table has no rows for `CatalogSection`, `DressEditor`, `VariantMatrix` or `MediaGallery`. Ruled during F8's spec pass: Catalog does **not** join `SetupProgress` (setup means the prerequisites for accepting bookings; catalog is ongoing content), so that checklist stays 4-item.
+- **RESOLVED 2026-07-25 (was BLOCKING, raised 2026-07-24 by F8's design gate):** `--color-border-input` shipped `#B9A98F` (recomputed 2.03 paper / 2.30 white / 2.22 cream) with an unreproducible "3.0+" figure — the *only* visible boundary of every console form field. Fixed in `tokens.md` to **`#8A7A5E`** (3.69 / 4.18 / 4.04) with per-surface figures; the stale qa-checklist §8 figure was corrected to match. Full working: `design/screens/manage-catalog/manage-catalog.md` §12 item 3a.
+- **RESOLVED 2026-07-25:** `manage-restyle.md` absorbed the fifth console tab ("שמלות", route key `catalog`) and per-component restyle rows for `CatalogSection`, `DressEditor`, `VariantMatrix`, `MediaGallery`, plus the plain-nav/`aria-current` navigation-semantics ruling and the new console-wide states. Catalog does **not** join `SetupProgress` (setup = prerequisites for accepting bookings; catalog is ongoing content), so that checklist stays 4-item.
 
 ## Notes
 

@@ -11,7 +11,9 @@ Raw brand gold `#C5A059` **fails text contrast on cream (2.38:1) — it never ca
 |---|---|---|---|
 | `--color-gold` | `#C5A059` | **Decorative only**: hairlines, ornaments, monogram placeholder art, CTA button *background* | 2.38:1 (exempt — decorative / ink text sits on it) |
 | `--color-gold-strong` | `#9E7B36` | Meaningful non-text UI: input borders on focus, active tab underline, large display accents (≥24px) | 3.80:1 (≥3:1 ✓) |
-| `--color-gold-text` | `#7F612B` | The only gold that touches text: links, small accents, price emphasis | 5.57:1 (≥4.5:1 ✓) |
+| `--color-gold-text` | `#7F612B` | The only gold that touches text: links, small accents, price emphasis | 5.57 cream · 5.08 paper · 5.76 white (≥4.5:1 ✓) |
+
+`--color-gold-strong` is barred from carrying **text or a meaning-bearing glyph** — including a CSS `content:` bullet used as text (rev 1's 14px `•`). A purely **decorative** marker that is `aria-hidden` and always paired with adjacent visible text — the exceptions `◆` diamond, whose meaning is carried by the words beside it — is exempt, exactly like `--illus-*`. It is a **non-text** UI color; it never carries meaning alone.
 
 ## Colors
 
@@ -24,11 +26,11 @@ Raw brand gold `#C5A059` **fails text contrast on cream (2.38:1) — it never ca
 | `--color-ink-muted` | `#6B5D4F` | secondary text, labels, captions | 6.15 on cream · 5.61 on paper · 6.36 on white ✓ |
 | `--color-gold` / `-strong` / `-text` | above | above | above |
 | `--color-border` | `#E4DACA` | hairline borders, dividers (decorative) | non-text |
-| `--color-border-input` | `#B9A98F` | form control borders (meaningful boundary) | ≥3:1 on surfaces ✓ (computed 3.0+) |
+| `--color-border-input` | `#8A7A5E` | form control borders (meaningful boundary) | 3.69 paper · 4.18 white · 4.04 cream (≥3:1 ✓) |
 | `--color-success` | `#2E6B4F` | confirmations, saved states | 6.10 on cream · 5.56 on paper ✓ |
 | `--color-danger` | `#A03232` | errors, destructive actions | 6.78 on cream · 6.18 on paper ✓ |
-| `--color-warning-text` | `#8A5A1E` | cautionary text (e.g. policy blocker) | 5.70 on cream · 5.20 on paper ✓ |
-| `--color-focus` | `#7F612B` | focus rings (2px offset ring) | 4.86 on cream ✓ (>3:1) |
+| `--color-warning-text` | `#8A5A1E` | cautionary text (e.g. policy blocker) | 5.70 on cream · 5.20 on paper · 5.90 on white ✓ |
+| `--color-focus` | `#7F612B` | focus rings (2px offset ring) | 5.57 on cream ✓ (identical hex to `--color-gold-text`) |
 | `--illus-1/2/3` | `#EADFCB` `#E7D9C4` `#EFE4D0` | placeholder-illustration fills ONLY (decorative, aria-hidden art) — never UI surfaces or text backgrounds | exempt (decorative) |
 
 Single theme (cream). No dark mode in v1 — the brand is the light luxury paper; revisit only on demand.
@@ -64,13 +66,22 @@ Weight law: display font never below 400; body UI text 400, emphasis 600, never 
 
 `--space-1..16`: 4, 8, 12, 16, 24, 32, 48, 64 px (1,2,3,4,6,8,12,16). Component internals ≤ `--space-4`; section rhythm ≥ `--space-6`. Generosity is the luxury signal: cards pad `--space-6`, page gutters `--space-4` @mobile / `--space-12` @desktop.
 
+**Fixed-chrome clearance (PRE-1 resolution).** Below 768px the storefront `BookingCTA` renders a fixed bottom bar whose footprint is **80px** (56px button + `--space-3` top/bottom). The fixed `A11yMenu` button must not overlap it. Its resting offset is a token, never a magic number:
+
+| Token | Value | Usage |
+|---|---|---|
+| `--cta-bar-height` | `calc(56px + 2 * var(--space-3))` = 80px | `BookingCTA` bar footprint; scroll containers reserve `padding-block-end: calc(var(--cta-bar-height) + env(safe-area-inset-bottom))` below 768 |
+| `--space-a11y-clearance` | `calc(var(--cta-bar-height) + var(--space-3))` = 92px | `A11yMenu` fixed button `inset-block-end` below 768 when a `BookingCTA` bar is present, so it clears the bar (was overlapping 60×44px of the CTA). Where no bar exists (`/about`, `/accessibility`) the button uses `--space-4` and the page reserves matching bottom padding (PRE-2). Removed / reset to `--space-4` at ≥768 where the CTA goes inline |
+
+`A11yMenu` and `A11yStatementLink` are **storefront-only** — the public storefront carries the IS 5568 accessibility obligation; the owner-only console does not ship them. So PRE-1 (the fixed-button-over-CTA collision) can only occur on storefront pages; the console collision seen in the all-screens demo prototype does not reproduce in `apps/manage`.
+
 ## Radius & shadows
 
 | Token | Value | Usage |
 |---|---|---|
-| `--radius-sm` | 4px | inputs, chips |
+| `--radius-sm` | 4px | inputs |
 | `--radius-md` | 8px | cards, buttons, modals |
-| `--radius-full` | 9999px | badges/pills |
+| `--radius-full` | 9999px | chips, badges/pills |
 | `--shadow-sm` | `0 1px 2px rgb(43 33 24 / 0.06)` | cards |
 | `--shadow-md` | `0 4px 12px rgb(43 33 24 / 0.10)` | dropdown/raised |
 | `--shadow-lg` | `0 12px 32px rgb(43 33 24 / 0.14)` | modals |

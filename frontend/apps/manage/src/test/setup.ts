@@ -7,3 +7,21 @@ import { afterEach } from "vitest";
 afterEach(() => {
   cleanup();
 });
+
+// jsdom implements <dialog> only partially; stub the modal methods so the
+// @boutique/ui Modal (native <dialog>) used by the console's confirm dialogs
+// works in tests. Real focus-trap behavior is a browser-QA concern.
+const dialogProto = globalThis.HTMLDialogElement?.prototype;
+if (dialogProto && typeof dialogProto.showModal !== "function") {
+  dialogProto.showModal = function showModal(this: HTMLDialogElement) {
+    this.open = true;
+  };
+  dialogProto.show = function show(this: HTMLDialogElement) {
+    this.open = true;
+  };
+  dialogProto.close = function close(this: HTMLDialogElement, returnValue?: string) {
+    this.open = false;
+    if (returnValue !== undefined) this.returnValue = returnValue;
+    this.dispatchEvent(new Event("close"));
+  };
+}

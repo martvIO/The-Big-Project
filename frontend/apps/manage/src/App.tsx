@@ -1,28 +1,19 @@
 import { useEffect, useState } from "react";
-import { tokens } from "@boutique/ui";
+import { useTranslation } from "react-i18next";
+import { ConsoleShell, ToastProvider } from "@boutique/ui";
 import { api } from "./api";
 import type { Staff } from "./api";
 import { CatalogSection } from "./components/CatalogSection";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
 import { ProfileSection } from "./components/ProfileSection";
-import { secondaryButtonClass } from "./components/shared";
 import { TermsSection } from "./components/TermsSection";
 import { TypesSection } from "./components/TypesSection";
 
 type SectionKey = "profile" | "hours" | "types" | "terms" | "catalog";
 
-const SECTIONS: { key: SectionKey; label: string }[] = [
-  { key: "profile", label: "פרופיל והגדרות" },
-  { key: "hours", label: "שעות פעילות" },
-  { key: "types", label: "סוגי תורים" },
-  { key: "terms", label: "מדיניות ביטולים" },
-  // The console names the object the owner manages; "קטלוג" is the
-  // storefront's word for the public grid. The route key stays `catalog`.
-  { key: "catalog", label: "שמלות" },
-];
-
 export function App() {
+  const { t } = useTranslation();
   const [staff, setStaff] = useState<Staff | null>(null);
   const [bootstrapped, setBootstrapped] = useState(false);
   const [section, setSection] = useState<SectionKey>("profile");
@@ -37,11 +28,8 @@ export function App() {
 
   if (!bootstrapped) {
     return (
-      <main
-        className="flex min-h-screen items-center justify-center"
-        style={{ backgroundColor: tokens.color.cream, color: tokens.color.ink }}
-      >
-        <p className="text-sm text-stone-500">טוען…</p>
+      <main className="flex min-h-screen items-center justify-center bg-bg text-ink">
+        <p className="text-base text-ink-muted">{t("console.loading")}</p>
       </main>
     );
   }
@@ -59,53 +47,32 @@ export function App() {
     setStaff(null);
   };
 
+  const nav = [
+    { key: "profile", label: t("nav.profile") },
+    { key: "hours", label: t("nav.hours") },
+    { key: "types", label: t("nav.types") },
+    { key: "terms", label: t("nav.terms") },
+    { key: "catalog", label: t("nav.catalog") },
+  ];
+
   return (
-    <main
-      className="min-h-screen"
-      style={{ backgroundColor: tokens.color.cream, color: tokens.color.ink }}
-    >
-      <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-4">
-          <h1 className="text-xl font-light tracking-wide">ניהול הבוטיק</h1>
-          <div className="flex items-center gap-3 text-sm">
-            <span style={{ color: tokens.color.gold }}>{staff.display_name}</span>
-            <button
-              type="button"
-              className={secondaryButtonClass}
-              onClick={() => void handleLogout()}
-            >
-              יציאה
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <nav className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-4xl gap-1 px-4">
-          {SECTIONS.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => setSection(item.key)}
-              className={`border-b-2 px-3 py-2 text-sm ${
-                section === item.key
-                  ? "border-stone-800 font-medium"
-                  : "border-transparent text-stone-500"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      </nav>
-
-      <div className="mx-auto max-w-4xl px-4 py-6">
+    <ToastProvider>
+      <ConsoleShell
+        boutiqueName={staff.display_name}
+        title={t("console.title")}
+        logoutLabel={t("console.logout")}
+        onLogout={() => void handleLogout()}
+        skipLinkLabel={t("console.skipLink")}
+        nav={nav}
+        activeKey={section}
+        onNavigate={(key) => setSection(key as SectionKey)}
+      >
         {section === "profile" && <ProfileSection />}
         {section === "hours" && <HoursSection />}
         {section === "types" && <TypesSection />}
         {section === "terms" && <TermsSection />}
         {section === "catalog" && <CatalogSection />}
-      </div>
-    </main>
+      </ConsoleShell>
+    </ToastProvider>
   );
 }
