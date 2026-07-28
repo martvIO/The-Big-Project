@@ -1,7 +1,7 @@
 # Epic: E1 — Platform Foundation
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: in progress — features 1, 3–6 shipped (PRs #1–#5 merged to main 2026-07-22); only #2 (staging + external applications) remains
+**Status**: in progress — features 1, 3–6 shipped (PRs #1–#5 merged to main 2026-07-22); #2 (staging + external applications) is **in progress**: Tasks 0–2, 4 done 2026-07-27 (AWS account/S3/IAM/billing, Railway staging deploy), Tasks 3 (wildcard DNS/TLS) and 5 (full staging verification) blocked on a staging-domain purchase decision (`.planning/external-applications.md` item #2)
 **Owner**: team
 **PRD**: §1 (multi-tenancy, wildcard routing), §2 (admin access)
 
@@ -26,7 +26,7 @@ Everything in this product sits on three guarantees: a request on `{slug}.ourbra
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
 | 1 | Repo scaffolds & CI | done | [spec](../specs/repo-scaffolds-and-ci.md) | [plan](../plans/repo-scaffolds-and-ci.md) | — |
-| 2 | Staging env + external lead-time applications | planned | [spec](../specs/staging-and-external-apps.md) | [plan](../plans/staging-and-external-apps.md) | #1 |
+| 2 | Staging env + external lead-time applications | in progress (Tasks 0–2, 4 done; 3, 5 blocked on domain) | [spec](../specs/staging-and-external-apps.md) | [plan](../plans/staging-and-external-apps.md) | #1 |
 | 3 | Tenant core + RLS isolation harness | done | [spec](../specs/tenant-core-rls.md) | [plan](../plans/tenant-core-rls.md) | #1 |
 | 4 | Subdomain routing & tenant resolution | done | [spec](../specs/subdomain-routing.md) | [plan](../plans/subdomain-routing.md) | #3 |
 | 5 | Owner auth | done | [spec](../specs/owner-auth.md) | [plan](../plans/owner-auth.md) | #3, #4 |
@@ -41,6 +41,10 @@ Replace the empty scaffolds with real projects: FastAPI app (SQLAlchemy 2 + Alem
 
 ### Feature 2: Staging env + external lead-time applications (S)
 Staging environment (Postgres, S3 bucket, secrets), wildcard DNS + ACM/TLS for the staging domain, production skeleton in il-central-1. **Files both external applications that gate later features: the Grow merchant account AND Israeli SMS sender-ID/route registration** (provider chosen here by cost comparison: Twilio vs. Inforu/019). Both are tracked as standing risks until approved.
+
+**2026-07-27 update**: Tasks 0–2 and 4 done. Railway project `boutique-platform` live — `api`+`worker` services, managed Postgres, private networking (public TCP proxy explicitly disabled), `boutique_app` non-owner role bootstrapped, `preDeployCommand` runs Alembic on every deploy, `/health` green on the Railway-assigned domain, DB role guard verified (refuses the owner URL). AWS: il-central-1 confirmed opt-in, both media buckets live and configured, scoped IAM user, $50/mo billing budget. Real-AWS S3 smoke test (presign→upload→confirm→signed-GET) green — see `docs/infra-runbook.md`. Found and fixed a real S3-endpoint bug for opt-in regions along the way (`Backend/app/storage/s3.py`). `deploy-staging` CI job added to `ci.yml`, `RAILWAY_TOKEN` GitHub secret set. **Task 3 (wildcard DNS/TLS) and full Task 5 (staging tenant-subdomain verification) remain blocked** on the staging-domain purchase decision in `.planning/external-applications.md` item #2 — `BASE_DOMAIN` and bucket CORS origins are placeholders until then.
+
+**Two operator actions still open from the Task 2/4 security review** (both are live-infra changes, neither is fixable in the repo — full reasoning in `docs/infra-runbook.md`): the staging IAM policy also grants write/delete on the **production** media bucket and must be narrowed to the staging bucket; and `MIGRATIONS_DATABASE_URL` (owner role) is provisioned on the `worker` service, which has no `preDeployCommand` and never uses it — delete it there, keep it on `api` only. Fixed in-repo in the same pass: the deploy job could be cancelled mid-flight by CI's workflow-level `cancel-in-progress` (job-level concurrency grants no immunity), the Railway CLI was installed unpinned with `RAILWAY_TOKEN` in scope, and the S3 endpoint fix shipped without the regression test that now guards it.
 
 ### Feature 3: Tenant core + RLS isolation harness (M)
 `tenants` table (slug, status, settings JSONB), house DB conventions (UUID PKs, TEXT, TIMESTAMPTZ, soft delete, no FK constraints). Every request transaction runs `SET LOCAL app.tenant_id`; app connects as a non-owner role with `FORCE ROW LEVEL SECURITY` policies on all tenant tables; repository base injects the tenant filter. Delivers the **permanent CI cross-tenant isolation suite** — blocking from this feature onward.
