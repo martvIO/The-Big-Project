@@ -82,6 +82,34 @@ def test_production_with_path_style_addressing_fails_fast() -> None:
         _production(media_bucket="b", media_force_path_style=True)
 
 
+def test_missing_sms_provider_is_not_a_boot_failure() -> None:
+    """No provider is a supported deployment: bookings are structurally gated on
+    the sender-ID registration by OTP send answering 503, never by a crash."""
+    assert _production().sms_provider is None
+
+
+def test_production_with_fake_sms_provider_fails_fast() -> None:
+    with pytest.raises(ValidationError):
+        _production(sms_provider="fake")
+
+
+def test_production_with_otp_dev_code_fails_fast() -> None:
+    with pytest.raises(ValidationError):
+        _production(otp_dev_code="424242")
+
+
+def test_staging_may_use_fake_sender_and_dev_code() -> None:
+    settings = Settings(
+        app_env="staging",
+        database_url=PROD_DATABASE_URL,
+        base_domain="staging.ourbrand.co.il",
+        sms_provider="fake",
+        otp_dev_code="424242",
+    )
+    assert settings.sms_provider == "fake"
+    assert settings.otp_dev_code == "424242"
+
+
 def test_plaintext_media_endpoint_outside_dev_fails_fast() -> None:
     with pytest.raises(ValidationError):
         Settings(

@@ -486,6 +486,12 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         "/storefront/dresses",
         "/storefront/dresses/{dress_id}",
         "/storefront/boutique",
+        # F11's OTP mutations — a SIBLING router on the same prefix, because the
+        # read router is contractually GET-only. Their posture (anonymous,
+        # cookie-blind, no-store, POST-only) is asserted in
+        # test_notifications_api.py.
+        "/storefront/otp/send",
+        "/storefront/otp/verify",
     }
     # And no storefront path is reachable under the CSRF-protected prefix.
     assert not any(path.startswith("/manage/storefront") for _, path in registered)

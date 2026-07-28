@@ -26,6 +26,21 @@ class DressMediaStatus(StrEnum):
     READY = "ready"
 
 
+class MessageKind(StrEnum):
+    # The DB pins this exact set (0007); F16 consumes the lifecycle kinds.
+    OTP = "otp"
+    CONFIRMATION = "confirmation"
+    REMINDER = "reminder"
+    OWNER_CANCEL = "owner_cancel"
+    OWNER_RESCHEDULE = "owner_reschedule"
+
+
+class MessageStatus(StrEnum):
+    QUEUED = "queued"
+    SENT = "sent"
+    FAILED = "failed"
+
+
 class AuditAction(StrEnum):
     LOGIN = "login"
     LOGIN_FAILED = "login_failed"
