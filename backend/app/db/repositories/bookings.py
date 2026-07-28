@@ -32,7 +32,14 @@ class BookingsRepository:
         """Flush surfaces IntegrityError when the (tenant, starts_at, seat_index)
         partial unique index rejects a lost race. Deliberately NOT pre-checked
         here: the index is the truth and a pre-check would be a TOCTOU — the
-        service maps the error to SLOT_UNAVAILABLE."""
+        service maps the error to SLOT_UNAVAILABLE.
+
+        **Any caller that picks `seat_index` from `active_seats_at` must first
+        hold `pg_advisory_xact_lock(hashtext(tenant_id))`** — see
+        BookingService.create_booking. Oversell stays structurally impossible
+        without it (the index is the backstop), but a writer that skips the
+        lock races the read and hands honest customers a spurious 409. F15's
+        owner-side create and reschedule are the next callers."""
         row = Booking(
             tenant_id=tenant_id,
             customer_id=customer_id,

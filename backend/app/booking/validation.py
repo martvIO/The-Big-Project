@@ -7,6 +7,7 @@ restated — two zone constants is one zone constant too many.
 """
 
 import datetime
+import re
 import uuid
 
 from app.errors import DomainValidationError
@@ -48,6 +49,16 @@ MAX_BOOKING_NOTES_LENGTH = 500
 # already the bound and 0008's CHECK pins the same number.
 MAX_SEAT_INDEX = 1000
 
+# These are the FIRST customer-authored strings in the product — every earlier
+# free-text write sits behind manage auth. Postgres rejects U+0000 in `text`
+# outright, and an uncaught asyncpg DataError on an anonymous route is a 500,
+# so the NUL is a availability bug before it is anything else. The rest of the
+# C0 set is barred from a name for a different reason: a line break in a value
+# that F16 will template into an SMS is header-injection material. `notes` is
+# a paragraph, so it keeps newlines and tabs.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+_CONTROL_CHARS_EXCEPT_WS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
 
 def validate_booking_request(
     *,
@@ -64,8 +75,13 @@ def validate_booking_request(
         raise BookingValidationError("name must not be blank")
     if len(name) > MAX_CUSTOMER_NAME_LENGTH:
         raise BookingValidationError("name is too long")
-    if notes is not None and len(notes) > MAX_BOOKING_NOTES_LENGTH:
-        raise BookingValidationError("notes is too long")
+    if _CONTROL_CHARS.search(name):
+        raise BookingValidationError("name contains invalid characters")
+    if notes is not None:
+        if len(notes) > MAX_BOOKING_NOTES_LENGTH:
+            raise BookingValidationError("notes is too long")
+        if _CONTROL_CHARS_EXCEPT_WS.search(notes):
+            raise BookingValidationError("notes contains invalid characters")
     # The two-path model, enforced at the boundary: item-based carries BOTH
     # dress_id and dress_size, generic carries NEITHER. A size without a dress
     # is noise; a dress without a size books unfittable stock.

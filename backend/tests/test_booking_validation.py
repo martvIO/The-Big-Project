@@ -62,6 +62,25 @@ def test_size_without_dress_is_rejected() -> None:
         validate_booking_request(name="נועה", notes=None, dress_id=None, dress_size="38")
 
 
+@pytest.mark.parametrize("name", ["נועה\x00לוי", "נועה\nלוי", "נועה\tלוי", "נועה\x7f"])
+def test_control_characters_are_rejected_in_a_name(name: str) -> None:
+    """U+0000 is rejected by Postgres `text` itself — unguarded it is an
+    uncaught DataError, i.e. a 500 on an anonymous route. Line breaks are
+    barred too: F16 will template this value into an SMS."""
+    with pytest.raises(BookingValidationError, match="invalid characters"):
+        validate_booking_request(name=name, notes=None, dress_id=None, dress_size=None)
+
+
+def test_notes_keep_newlines_but_not_nulls() -> None:
+    """A note is a paragraph, so newlines and tabs are legitimate content —
+    the NUL that Postgres refuses is not."""
+    validate_booking_request(
+        name="נועה", notes="שורה ראשונה\nשורה שנייה\tעם טאב", dress_id=None, dress_size=None
+    )
+    with pytest.raises(BookingValidationError, match="invalid characters"):
+        validate_booking_request(name="נועה", notes="a\x00b", dress_id=None, dress_size=None)
+
+
 def test_seat_ceiling_matches_rule_capacity_ceiling() -> None:
     """A seat index above capacity can never be claimed, so the two bounds are
     ONE number by design — 0008's CHECK pins the same value. If someone raises

@@ -13,13 +13,24 @@ class FixedWindowRateLimiter:
     The storefront caller records on the SUCCESS path — it meters reads, not
     failures — so its key space is "principals who succeeded" rather than
     "principals who failed". It keys per TENANT ("storefront:{tenant_id}"), so
-    that space is bounded by the tenant count, not by visitor count. The sweep
-    below is retained anyway: it is cheap, it bounds memory for any future caller
-    whose key space is not bounded, and it is what keeps expired buckets from
-    accumulating across a long-lived process. Amortised, not per-write: the
-    high-water mark floats to 2x the surviving set so a busy instance does not
-    sweep on every insert. A size/TTL-capped shared store still lands with the
-    distributed limiter in Feature 21."""
+    that space is bounded by the tenant count, not by visitor count.
+
+    The booking caller (F13) records every attempt that got PAST phone
+    verification, success or not. Both halves of that are load-bearing:
+    metering BEFORE the proof would let an unauthenticated caller spend a
+    tenant's whole budget with garbage tokens and lock out every real customer,
+    while metering successes only would let one verification token — which
+    un-burns whenever a failed claim rolls back — retry forever.
+
+    `record_failure` is therefore the odd name out: this class counts events,
+    and each caller decides which events are worth counting.
+
+    The sweep below is retained anyway: it is cheap, it bounds memory for any
+    future caller whose key space is not bounded, and it is what keeps expired
+    buckets from accumulating across a long-lived process. Amortised, not
+    per-write: the high-water mark floats to 2x the surviving set so a busy
+    instance does not sweep on every insert. A size/TTL-capped shared store
+    still lands with the distributed limiter in Feature 21."""
 
     _SWEEP_FLOOR = 1024
 

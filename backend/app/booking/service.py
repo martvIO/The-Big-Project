@@ -17,7 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.booking.slots import Slot, materialize_slots
-from app.booking.validation import validate_booking_request
+from app.booking.validation import (
+    SLOT_WINDOW_MAX_DAYS,
+    BookingValidationError,
+    validate_booking_request,
+)
 from app.catalog.validation import normalize_size_label
 from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.availability import (
@@ -35,6 +39,11 @@ from app.models.booking import Booking
 from app.notifications.service import OtpService
 from app.notifications.validation import normalize_israeli_mobile
 from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock
+
+# One day past the grid's own publishable ceiling: anything beyond this the
+# engine could never offer, so rejecting it early costs no real booking. The
+# slack absorbs the boutique-date vs UTC-instant edge at the window's far end.
+BOOKABLE_HORIZON = datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS + 1)
 
 
 class BookingNotFoundError(DomainNotFoundError):
@@ -61,9 +70,13 @@ class TermsStaleError(Exception):
 
 
 class BookingThrottledError(Exception):
-    """The per-tenant create budget is spent; main.py maps it to the shared 429
-    body. A runaway brake, not a defence — the real cost gate is that every
-    booking needs an OTP that was itself rate-limited."""
+    """A create budget — per phone or per tenant — is spent; main.py maps it to
+    the shared 429 body.
+
+    Both budgets are spent only by callers who proved possession of the phone,
+    so the OTP send limits really are the outer cost gate. Meter an unproven
+    caller and that claim inverts: the cheapest way to close a boutique for an
+    hour becomes 60 requests carrying nothing but a hostname."""
 
 
 class BookingService:
@@ -110,17 +123,33 @@ class BookingService:
         Everything happens in one transaction, deliberately: a claim that fails
         at ANY step — including losing the race — rolls back the token burn
         too, so the customer's verification survives to retry another slot.
+        That rollback is why the create budget below is spent OUTSIDE the
+        transaction's rollback semantics: a reusable token must not also buy
+        unlimited attempts.
         """
         validate_booking_request(name=name, notes=notes, dress_id=dress_id, dress_size=dress_size)
         phone = normalize_israeli_mobile(raw_phone)
 
-        throttle_key = f"booking:create:{tenant_id}"
-        if self._create_limiter.is_blocked(throttle_key):
-            raise BookingThrottledError
-        self._create_limiter.record_failure(throttle_key)
-
         now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
         now = now.astimezone(datetime.UTC)
+        # BEFORE any arithmetic on starts_at. AwareDatetime accepts the entire
+        # datetime range, and `.astimezone()` on a year-9999 instant raises
+        # OverflowError — an unhandled 500 on an anonymous route. Comparison
+        # itself cannot overflow, so this guard is total. It is the same 409 as
+        # any other unoffered time, and leaks nothing.
+        if not now < starts_at <= now + BOOKABLE_HORIZON:
+            raise SlotUnavailableError
+
+        # Two budgets, CHECKED here and SPENT only once the phone is proven
+        # (below). Metering an unproven caller would let anyone exhaust a
+        # boutique's hourly budget with garbage tokens and lock every real
+        # bride out — a denial of service costing the attacker nothing.
+        tenant_key = f"booking:create:{tenant_id}"
+        phone_key = f"booking:create:{tenant_id}:{phone}"
+        if self._create_limiter.is_blocked(tenant_key) or self._create_limiter.is_blocked(
+            phone_key
+        ):
+            raise BookingThrottledError
 
         async with tenant_session(self._session_factory, tenant_id) as session:
             # 1. Prove the phone. First, so a caller who cannot gets no
@@ -130,6 +159,13 @@ class BookingService:
             )
             if not verified:
                 raise PhoneNotVerifiedError
+
+            # Proven — now spend both budgets. The limiter is in-memory, so
+            # this survives the rollback of a failed claim by design: one
+            # verified phone gets a bounded number of attempts, not unlimited
+            # ones off a single token that keeps un-burning itself.
+            self._create_limiter.record_failure(tenant_key)
+            self._create_limiter.record_failure(phone_key)
 
             # 2. The appointment type and the CURRENT terms version.
             type_row = await self._types.by_id(session, tenant_id, appointment_type_id)
@@ -144,14 +180,29 @@ class BookingService:
             snapshot_size: str | None = None
             if dress_id is not None:
                 if dress_size is None:  # unreachable: validate pinned the pair
-                    raise SlotUnavailableError
+                    raise BookingValidationError("dress_size is required when dress_id is given")
                 dress = await self._dresses.by_id(session, tenant_id, dress_id)
                 if dress is None:
                     raise BookingNotFoundError
                 snapshot_size = normalize_size_label(dress_size)
                 variants = await self._variants.list_active(session, tenant_id, dress_id)
-                if snapshot_size not in {variant.size_label for variant in variants}:
+                # Case-INSENSITIVE, matching the dress_variants uniqueness rule
+                # itself (0006's partial unique index is on lower(size_label))
+                # and CatalogService._reject_duplicate_sizes. "us 6" and "US 6"
+                # are one size everywhere else; they must not be two here.
+                # The customer's own spelling is never stored — the boutique's
+                # label is snapshotted, so the booking reads as the catalog does.
+                match = next(
+                    (
+                        variant.size_label
+                        for variant in variants
+                        if variant.size_label.lower() == snapshot_size.lower()
+                    ),
+                    None,
+                )
+                if match is None:
                     raise BookingNotFoundError
+                snapshot_size = match
                 dress_name = dress.name
 
             # 4. Serialize claims for this tenant — the replace_weekly_rules

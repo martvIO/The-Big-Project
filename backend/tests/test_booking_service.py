@@ -23,6 +23,7 @@ from sqlalchemy.pool import NullPool
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.tokens import hash_token
 from app.booking.service import (
+    BOOKABLE_HORIZON,
     BookingNotFoundError,
     BookingService,
     BookingThrottledError,
@@ -660,7 +661,70 @@ async def test_unknown_or_archived_type_dress_and_size_are_404(app_role_url: str
         await engine.dispose()
 
 
-async def test_create_throttle_trips_before_any_work(app_role_url: str) -> None:
+async def test_create_throttle_spends_only_on_verified_attempts(app_role_url: str) -> None:
+    """The budget is spent by proven callers, never by unproven ones.
+
+    Metering before verification is a free denial of service: anyone who knows
+    the boutique's hostname posts garbage tokens until the hourly ceiling is
+    spent, and every real bride gets a 429 for the rest of the window. So an
+    unverified attempt must cost NOTHING, and a verified one must cost a slot
+    even when the claim itself goes on to fail."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=2)
+        service = _service(
+            factory,
+            create_limiter=FixedWindowRateLimiter(
+                max_attempts=1, window_seconds=3600, clock=lambda: 0.0
+            ),
+        )
+
+        # Twenty unauthenticated attempts against a budget of one.
+        for _ in range(20):
+            with pytest.raises(PhoneNotVerifiedError):
+                await service.create_booking(
+                    tenant_id,
+                    raw_phone=phone,
+                    verification_token="garbage",
+                    name="תוקפת",
+                    appointment_type_id=type_id,
+                    starts_at=SLOT,
+                    terms_version=1,
+                )
+
+        # …and the real customer's booking still goes through.
+        booking = await service.create_booking(
+            tenant_id,
+            raw_phone=phone,
+            verification_token=await _mint_verified_token(factory, tenant_id, phone),
+            name="נועה",
+            appointment_type_id=type_id,
+            starts_at=SLOT,
+            terms_version=1,
+        )
+        assert booking.seat_index == 1
+
+        # That verified attempt DID spend the budget.
+        with pytest.raises(BookingThrottledError):
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="נועה",
+                appointment_type_id=type_id,
+                starts_at=_slot(10, 30),
+                terms_version=1,
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_a_rolled_back_claim_still_spends_the_budget(app_role_url: str) -> None:
+    """The token un-burns on rollback so a race loser can retry — that must not
+    also mean one SMS buys unlimited attempts. A FAILED verified attempt spends
+    a slot, because the meter lives in memory, not in the transaction."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     phone = _phone()
@@ -672,7 +736,205 @@ async def test_create_throttle_trips_before_any_work(app_role_url: str) -> None:
                 max_attempts=1, window_seconds=3600, clock=lambda: 0.0
             ),
         )
+        token = await _mint_verified_token(factory, tenant_id, phone)
+        # Verified, then fails on stale terms → the whole transaction rolls back.
+        with pytest.raises(TermsStaleError):
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=token,
+                name="נועה",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=99,
+            )
+        # The token survived (that is the retry affordance)…
+        # …but the attempt is paid for, so the retry loop is bounded.
+        with pytest.raises(BookingThrottledError):
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=token,
+                name="נועה",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_one_phone_cannot_spend_the_whole_tenant_budget(app_role_url: str) -> None:
+    """Per-phone AND per-tenant keys: a single verified number exhausts its own
+    budget long before the boutique's, so one compromised phone cannot close
+    the shop."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    noisy = _phone()
+    quiet = _phone()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=3)
+        service = _service(
+            factory,
+            create_limiter=FixedWindowRateLimiter(
+                max_attempts=1, window_seconds=3600, clock=lambda: 0.0
+            ),
+        )
         await service.create_booking(
+            tenant_id,
+            raw_phone=noisy,
+            verification_token=await _mint_verified_token(factory, tenant_id, noisy),
+            name="רועשת",
+            appointment_type_id=type_id,
+            starts_at=SLOT,
+            terms_version=1,
+        )
+        with pytest.raises(BookingThrottledError):
+            await service.create_booking(
+                tenant_id,
+                raw_phone=noisy,
+                verification_token=await _mint_verified_token(factory, tenant_id, noisy),
+                name="רועשת",
+                appointment_type_id=type_id,
+                starts_at=_slot(10, 30),
+                terms_version=1,
+            )
+        # A generous tenant ceiling with the same tight per-phone budget: the
+        # noisy number is capped, a different customer is not.
+        roomy = _service(
+            factory,
+            create_limiter=FixedWindowRateLimiter(
+                max_attempts=2, window_seconds=3600, clock=lambda: 0.0
+            ),
+        )
+        booking = await roomy.create_booking(
+            tenant_id,
+            raw_phone=quiet,
+            verification_token=await _mint_verified_token(factory, tenant_id, quiet),
+            name="שקטה",
+            appointment_type_id=type_id,
+            starts_at=SLOT,
+            terms_version=1,
+        )
+        assert booking.seat_index == 2
+    finally:
+        await engine.dispose()
+
+
+async def test_a_freed_middle_seat_is_reclaimed_not_appended(app_role_url: str) -> None:
+    """Seats are claimed lowest-free, NOT `count + 1`. At capacity 3 with seats
+    {1,2,3} taken, cancelling seat 2 must let the next claim take seat 2 — the
+    count-based shorthand would try seat 3, hit the still-live row and answer a
+    false SLOT_UNAVAILABLE on a slot that genuinely has room."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=3)
+        service = _service(factory)
+        booked = []
+        for _ in range(3):
+            phone = _phone()
+            booked.append(
+                await service.create_booking(
+                    tenant_id,
+                    raw_phone=phone,
+                    verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                    name="לקוחה",
+                    appointment_type_id=type_id,
+                    starts_at=SLOT,
+                    terms_version=1,
+                )
+            )
+        assert sorted(row.seat_index for row in booked) == [1, 2, 3]
+
+        middle = next(row for row in booked if row.seat_index == 2)
+        async with tenant_session(factory, tenant_id) as session:
+            row = await BookingsRepository().by_id(session, tenant_id, middle.id)
+            assert row is not None
+            row.status = BookingStatus.CANCELLED.value
+            await session.flush()
+
+        phone = _phone()
+        reclaimed = await service.create_booking(
+            tenant_id,
+            raw_phone=phone,
+            verification_token=await _mint_verified_token(factory, tenant_id, phone),
+            name="מחליפה",
+            appointment_type_id=type_id,
+            starts_at=SLOT,
+            terms_version=1,
+        )
+        assert reclaimed.seat_index == 2
+        async with tenant_session(factory, tenant_id) as session:
+            assert await BookingsRepository().active_seats_at(
+                session, tenant_id, starts_at=SLOT
+            ) == {1, 2, 3}
+    finally:
+        await engine.dispose()
+
+
+async def test_absurd_timestamps_are_refused_not_crashed(app_role_url: str) -> None:
+    """`AwareDatetime` accepts the whole datetime range, and `.astimezone()` on
+    a year-9999 instant raises OverflowError — a 500 on an anonymous route. The
+    horizon guard turns both ends into the ordinary 409."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id)
+        service = _service(factory)
+        for absurd in (
+            datetime.datetime(9999, 12, 31, 23, 0, tzinfo=datetime.UTC),
+            datetime.datetime(1, 1, 1, 0, 30, tzinfo=datetime.UTC),
+            NOW + BOOKABLE_HORIZON + datetime.timedelta(days=1),
+        ):
+            phone = _phone()
+            token = await _mint_verified_token(factory, tenant_id, phone)
+            with pytest.raises(SlotUnavailableError):
+                await service.create_booking(
+                    tenant_id,
+                    raw_phone=phone,
+                    verification_token=token,
+                    name="בדיקה",
+                    appointment_type_id=type_id,
+                    starts_at=absurd,
+                    terms_version=1,
+                )
+    finally:
+        await engine.dispose()
+
+
+async def test_dress_size_matching_is_case_insensitive_and_snapshots_the_catalog_label(
+    app_role_url: str,
+) -> None:
+    """0006's uniqueness index is on lower(size_label), so "us 6" and "US 6"
+    are ONE size everywhere else in the product — they must not be two here.
+    What gets stored is the boutique's own spelling, never the customer's."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id)
+        async with tenant_session(factory, tenant_id) as session:
+            dress = await DressesRepository().insert(
+                session,
+                tenant_id=tenant_id,
+                name="Aurora",
+                description=None,
+                price_agorot=None,
+                price_visible=True,
+                reserved=False,
+                sort_order=0,
+            )
+            dress_id = dress.id
+            await DressVariantsRepository().insert(
+                session,
+                tenant_id=tenant_id,
+                dress_id=dress_id,
+                size_label="US 6",
+                quantity=1,
+                sort_order=0,
+            )
+        booking = await _service(factory).create_booking(
             tenant_id,
             raw_phone=phone,
             verification_token=await _mint_verified_token(factory, tenant_id, phone),
@@ -680,29 +942,9 @@ async def test_create_throttle_trips_before_any_work(app_role_url: str) -> None:
             appointment_type_id=type_id,
             starts_at=SLOT,
             terms_version=1,
+            dress_id=dress_id,
+            dress_size="us 6",
         )
-        unused_token = await _mint_verified_token(factory, tenant_id, phone)
-        with pytest.raises(BookingThrottledError):
-            await service.create_booking(
-                tenant_id,
-                raw_phone=phone,
-                verification_token=unused_token,
-                name="נועה",
-                appointment_type_id=type_id,
-                starts_at=_slot(10, 30),
-                terms_version=1,
-            )
-        # The throttle answered before the transaction: the token was NOT burnt.
-        relaxed = _service(factory)
-        booking = await relaxed.create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=unused_token,
-            name="נועה",
-            appointment_type_id=type_id,
-            starts_at=_slot(10, 30),
-            terms_version=1,
-        )
-        assert booking.starts_at == _slot(10, 30)
+        assert booking.dress_size == "US 6"
     finally:
         await engine.dispose()

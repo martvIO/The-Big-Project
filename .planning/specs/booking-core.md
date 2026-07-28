@@ -54,7 +54,14 @@ CREATE UNIQUE INDEX idx_bookings_slot_seat_unique
     WHERE deleted_at IS NULL AND status <> 'cancelled';
 CREATE INDEX idx_bookings_tenant_starts
     ON bookings (tenant_id, starts_at) WHERE deleted_at IS NULL;
+CREATE INDEX idx_bookings_tenant_customer
+    ON bookings (tenant_id, customer_id) WHERE deleted_at IS NULL;
 ```
+
+> **Addendum (implementation, Gate 3.5):** `idx_bookings_tenant_customer` was
+> added ahead of its consumers — F15's owner list and F16's reminder sweep both
+> read a tenant's bookings by customer, and without it that is a full scan per
+> owner page. Recorded here so the migration and this document stay in sync.
 
 **`seat_index` is what makes the guard structural at any capacity.** A partial unique index on `(tenant, starts_at)` alone can only express capacity 1; adding the seat number expresses every capacity with the same one index. The `<= 1000` CHECK is the 0005 absurdity-ceiling convention against `MAX_RULE_CAPACITY`, not a policy.
 
