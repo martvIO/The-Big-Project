@@ -205,6 +205,12 @@ class OtpService:
         phones are indistinguishable. So it returns the same 204 as a real send
         and simply sends nothing."""
         phone = normalize_israeli_mobile(raw_phone)
+        # Before the budgets and before any write. "No provider" is known at
+        # boot and permanent, unlike a transient send failure — so it must not
+        # invalidate the customer's live code, spend their send budget, or leave
+        # an orphan row behind on the way to the same 503.
+        if not self._notifications.is_configured:
+            raise SmsNotConfiguredError
         phone_key = f"otp:phone:{tenant_id}:{phone}"
         tenant_key = f"otp:tenant:{tenant_id}"
         if self._tenant_limiter.is_blocked(tenant_key):

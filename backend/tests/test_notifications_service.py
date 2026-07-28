@@ -60,13 +60,18 @@ class ExplodingSmsSender:
 
 class EchoingSmsSender:
     """Models the real hazard: an SDK whose exception quotes the request it
-    failed to send, body and all."""
+    failed to send, body and all. Records the body so the assertion can name
+    the exact code that must not survive."""
+
+    def __init__(self) -> None:
+        self.last_body: str | None = None
 
     @property
     def is_configured(self) -> bool:
         return True
 
     async def send(self, *, phone: str, body: str) -> SendResult:
+        self.last_body = body
         raise RuntimeError(f"HTTP 400 from provider; request was To={phone} Body={body!r}")
 
 
@@ -370,6 +375,9 @@ async def test_resend_invalidates_the_previous_code(app_role_url: str) -> None:
 
 
 async def test_send_throttles_per_phone(app_role_url: str) -> None:
+    """The phone budget caps sends per number. It does NOT raise — see
+    test_exhausted_phone_budget_stays_silent for why 429 here would be an
+    oracle. What matters is that the third attempt never reaches the wire."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     tight = FixedWindowRateLimiter(max_attempts=2, window_seconds=3600, clock=time.monotonic)
@@ -378,9 +386,8 @@ async def test_send_throttles_per_phone(app_role_url: str) -> None:
     try:
         await otp.send(tenant_id, PHONE)
         await otp.send(tenant_id, PHONE)
-        with pytest.raises(OtpThrottledError):
-            await otp.send(tenant_id, PHONE)
-        assert len(sender.outbox) == 2  # the throttled attempt never reached the wire
+        await otp.send(tenant_id, PHONE)
+        assert len(sender.outbox) == 2
     finally:
         await engine.dispose()
 
@@ -435,16 +442,23 @@ async def test_provider_error_never_persists_the_live_code(app_role_url: str) ->
     table designed never to hold one."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
-    otp, _, _ = _service(factory, sender=EchoingSmsSender())
+    sender = EchoingSmsSender()
+    otp, _, _ = _service(factory, sender=sender)
     try:
         with pytest.raises(SmsSendError):
             await otp.send(tenant_id, PHONE)
+        assert sender.last_body is not None
+        code = _code_from(sender.last_body)
+
         async with tenant_session(factory, tenant_id) as session:
             rows = await MessageLogRepository().list_by_phone(session, tenant_id, phone=NORMALIZED)
         assert len(rows) == 1
         error = rows[0].error
         assert error is not None
-        assert not re.search(r"\d{6}", error), f"a live code reached message_log.error: {error!r}"
+        # The CODE, not "any six digits" — the phone number is six-plus digits
+        # and is legitimately part of an operator-facing error.
+        assert code not in error, f"a live code reached message_log.error: {error!r}"
+        assert "●" in error, "the echoed body should survive in masked form"
         assert len(error) <= MAX_PROVIDER_ERROR_LENGTH
     finally:
         await engine.dispose()
