@@ -52,14 +52,19 @@ pytestmark = pytest.mark.db
 
 NOW = datetime.datetime(2026, 7, 28, 12, 0, tzinfo=datetime.UTC)
 FUTURE = datetime.datetime(2099, 1, 1, tzinfo=datetime.UTC)
-# Outlives even the late-clock test below, whose "now" sits past SLOT in 2099.
+# Outlives even the late-clock test below, whose "now" is pushed past SLOT.
 FAR_FUTURE = datetime.datetime(2100, 1, 1, tzinfo=datetime.UTC)
 PAST = datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC)
 
-# A fixed far-future boutique day; the weekly rule is derived from ITS weekday
-# so the grid always opens it. Wall times go through BOUTIQUE_TIMEZONE, the
-# same zone the engine uses — never a hardcoded offset.
-TARGET_DATE = datetime.date(2099, 8, 2)
+# A fixed boutique day about a month after the frozen NOW: comfortably future
+# so the engine never drops it as past, and comfortably INSIDE the publishable
+# horizon, which is the window a real customer can ever be offered. (An earlier
+# revision used 2099 — the grid materializes any date it is handed, so those
+# bookings only ever succeeded because nothing checked that the requested day
+# was one the boutique actually publishes.) The weekly rule is derived from
+# THIS date's weekday, so the grid always opens it. Wall times go through
+# BOUTIQUE_TIMEZONE, the same zone the engine uses — never a hardcoded offset.
+TARGET_DATE = datetime.date(2026, 8, 23)
 
 
 def _slot(hour: int, minute: int = 0, *, date: datetime.date = TARGET_DATE) -> datetime.datetime:
@@ -865,6 +870,36 @@ async def test_a_freed_middle_seat_is_reclaimed_not_appended(app_role_url: str) 
             assert await BookingsRepository().active_seats_at(
                 session, tenant_id, starts_at=SLOT
             ) == {1, 2, 3}
+    finally:
+        await engine.dispose()
+
+
+async def test_beyond_the_publishable_window_is_refused(app_role_url: str) -> None:
+    """A day the boutique never publishes is not bookable, even though the
+    engine would happily materialize it.
+
+    `_offered_slot` re-materializes the requested date on demand, so without
+    the horizon guard a caller could post the SAME weekday 91 days out — the
+    weekly rule opens it, every other check passes — and claim an appointment
+    at a time `/storefront/slots` (clamped to SLOT_WINDOW_MAX_DAYS) would never
+    have offered.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id)
+        far = _slot(10, 0, date=TARGET_DATE + datetime.timedelta(days=91))
+        with pytest.raises(SlotUnavailableError):
+            await _service(factory).create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="מוקדם מדי",
+                appointment_type_id=type_id,
+                starts_at=far,
+                terms_version=1,
+            )
     finally:
         await engine.dispose()
 
