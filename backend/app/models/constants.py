@@ -41,6 +41,16 @@ class MessageStatus(StrEnum):
     FAILED = "failed"
 
 
+class BookingStatus(StrEnum):
+    # The DB pins this exact set (0008); E4 widens it with 'pending_payment'.
+    # Only CANCELLED frees a seat — the slot-seat unique index and every
+    # occupancy query exclude it and nothing else.
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+    NO_SHOW = "no_show"
+    COMPLETED = "completed"
+
+
 class AuditAction(StrEnum):
     LOGIN = "login"
     LOGIN_FAILED = "login_failed"

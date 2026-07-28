@@ -26,8 +26,8 @@ This is the product's transactional core: turn the browse-only storefront into a
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
 | 11 | SMS foundation | **done** (PR #16) | [spec](../specs/sms-foundation.md) | [plan](../plans/sms-foundation.md) | E1 #2, #3 |
-| 12 | Availability & slot engine | building | [spec](../specs/availability-slot-engine.md) | [plan](../plans/availability-slot-engine.md) | E2 #7 |
-| 13 | Booking core API | todo | — | — | E2 #7, #11, #12 |
+| 12 | Availability & slot engine | **done** (PR #17) | [spec](../specs/availability-slot-engine.md) | [plan](../plans/availability-slot-engine.md) | E2 #7 |
+| 13 | Booking core API | building | [spec](../specs/booking-core.md) | [plan](../plans/booking-core.md) | E2 #7, #11, #12 |
 | 14 | Storefront booking UI | todo | — | — | E2 #10, #13 |
 | 15 | Owner booking management | todo | — | — | #13 |
 | 16 | Booking comms lifecycle | todo | — | — | #13 |

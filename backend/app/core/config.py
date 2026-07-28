@@ -70,6 +70,24 @@ class Settings(BaseSettings):
     # attempts a real customer with a typo could need.
     otp_verify_max_per_phone_window: int = 10
     otp_verify_phone_window_seconds: int = 300
+    # Booking creation carries TWO budgets, and only the per-phone one is a
+    # defence. Both are spent only by callers who proved possession of the
+    # phone (see BookingService.create_booking).
+    #
+    # Per-PHONE is the real control. A claim that fails — lost race, stale
+    # terms — rolls its own token burn back so the customer can retry, which
+    # without this cap would mean one SMS buys unlimited attempts. 10/hour
+    # covers a bride who loses a couple of races and re-picks, and is 2x the
+    # OTP sends that same number can even obtain in the window.
+    booking_create_max_per_phone_window: int = 10
+    booking_create_phone_window_seconds: int = 3600
+    # Per-TENANT is the runaway brake, sized like storefront_read_max_per_window
+    # so it cannot fire on organic traffic: a pilot boutique books tens of
+    # appointments a DAY, and each unit here costs an attacker another real
+    # Israeli SIM that must receive an SMS. The earlier 60 was small enough
+    # that six phones could close a boutique for an hour.
+    booking_create_max_per_window: int = 300
+    booking_create_window_seconds: int = 3600
 
     # Per-TENANT budget on the anonymous storefront reads: a runaway brake, not
     # a defence (see app/storefront/router.py._throttle for the full argument).
