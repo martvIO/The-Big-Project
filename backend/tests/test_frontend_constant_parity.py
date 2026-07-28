@@ -13,9 +13,11 @@ The path is spelled lowercase (`frontend/...`) because git tracks it lowercase;
 macOS resolves it case-insensitively and Linux CI checks it out that way.
 """
 
+import datetime
 import re
 from pathlib import Path
 
+from app.booking.validation import jerusalem_day_index
 from app.catalog import validation
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -76,3 +78,45 @@ def test_accepted_content_type_keys_match_the_backend() -> None:
     assert match is not None, "validation.ts does not export ACCEPTED_CONTENT_TYPES"
     keys = set(re.findall(r'"([^"]+)"\s*:', match.group("body")))
     assert keys == set(validation.ACCEPTED_CONTENT_TYPES)
+
+
+# --- the Israeli week: backend conversion vs the UI's weekday map ---
+
+HOURS_TS = REPO_ROOT / "frontend/packages/ui/src/lib/hours.ts"
+_WEEKDAY_INDEX_RE = re.compile(
+    r"const WEEKDAY_INDEX: Record<string, number> = \{(?P<body>[^}]*)\}", re.S
+)
+_WEEKDAY_ENTRY_RE = re.compile(r"(?P<name>[A-Za-z]{3})\s*:\s*(?P<index>\d)")
+
+# datetime.weekday() order, Monday-first — the axis jerusalem_day_index converts
+# FROM. Sunday's 0 is the whole point: availability_rules.day_of_week is the
+# Israeli week, and a boutique whose Sunday rules render on Monday is a boutique
+# with the wrong opening hours on every screen.
+_ENGLISH_ABBREVIATIONS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def test_the_ui_weekday_map_matches_the_backend_israeli_week() -> None:
+    """`packages/ui/src/lib/hours.ts` maps Intl weekday names to indices; the
+    backend derives the same index arithmetically in
+    `app.booking.validation.jerusalem_day_index`. Nothing else forces the two to
+    agree, and disagreement is silent: the grid would render a boutique's Sunday
+    hours on the wrong day, and the slot engine would materialize them there."""
+    source = HOURS_TS.read_text(encoding="utf-8")
+    match = _WEEKDAY_INDEX_RE.search(source)
+    assert match is not None, f"WEEKDAY_INDEX not found in {HOURS_TS}"
+    frontend = {
+        entry.group("name"): int(entry.group("index"))
+        for entry in _WEEKDAY_ENTRY_RE.finditer(match.group("body"))
+    }
+    assert len(frontend) == 7, f"expected seven weekdays, got {frontend}"
+
+    # A real week, Monday-first, so the mapping is checked against dates rather
+    # than against a restatement of the same formula.
+    monday = datetime.date(2026, 1, 5)
+    backend = {
+        _ENGLISH_ABBREVIATIONS[offset]: jerusalem_day_index(
+            monday + datetime.timedelta(days=offset)
+        )
+        for offset in range(7)
+    }
+    assert frontend == backend
