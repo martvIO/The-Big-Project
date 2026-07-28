@@ -1,10 +1,11 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, getBoutiqueOnce } from "../api";
-import type { BoutiqueResponse } from "../api";
+import { ApiError, api, getBoutiqueOnce } from "../api";
+import type { BoutiqueResponse, StorefrontDetail } from "../api";
 import { StorefrontLayout } from "../components/StorefrontLayout";
 import i18n from "../i18n";
 import { AccessibilityPage } from "../routes/AccessibilityPage";
+import { DressPage } from "../routes/DressPage";
 
 // הצהרת נגישות is a legal obligation under IS 5568 §35, so these tests guard
 // what an auditor checks: real document semantics, the declared standard, the
@@ -148,6 +149,42 @@ describe("Accessibility statement — the required parts", () => {
     expect(within(main).getByText(i18n.t("statement.limitsNote"))).toBeInTheDocument();
   });
 
+  it("describes the alt text the dress page actually renders", async () => {
+    const dress: StorefrontDetail = {
+      id: "d1",
+      name: "ורד",
+      description: null,
+      price_agorot: null,
+      reserved: false,
+      sizes: [],
+      media: [
+        { url: "/1.jpg", url_expires_at: null },
+        { url: "/2.jpg", url_expires_at: null },
+        { url: "/3.jpg", url_expires_at: null },
+      ],
+    };
+    vi.mocked(api.getDress).mockResolvedValue(dress);
+    render(
+      <StorefrontLayout>
+        <DressPage dressId="d1" />
+      </StorefrontLayout>,
+    );
+
+    // What the gallery's main photo really announces, read off the render — not
+    // asserted from the statement's own wording.
+    const image = await screen.findByAltText(i18n.t("gallery.imageOf", { n: 1, total: 3 }));
+    const spokenAlt = image.getAttribute("alt") ?? "";
+    const limitsAlt = i18n.t("statement.limitsAlt");
+
+    // A statement that describes behaviour the site does not have is itself a
+    // compliance defect: F10 replaced the dress-name alt with the position, so
+    // the name is no longer announced twice.
+    expect(limitsAlt).toContain(spokenAlt);
+    expect(limitsAlt).not.toMatch(/פעמיים/);
+    // The honest half stays: the card's alt is still only the dress name.
+    expect(limitsAlt).toMatch(/שם השמלה/);
+  });
+
   it("carries a review date", async () => {
     const { main } = await renderStatement();
 
@@ -200,6 +237,42 @@ describe("Accessibility statement — the complaints contact", () => {
     expect(within(main).getByText(BOUTIQUE.name)).toBeInTheDocument();
   });
 
+  it("offers a phone-only boutique its phone, and no empty second row", async () => {
+    loadBoutique.mockResolvedValue({ ...BOUTIQUE, instagram: null });
+    const { main } = await renderStatement();
+
+    expect(within(main).getAllByRole("link", { name: BOUTIQUE.phone ?? "" })).toHaveLength(2);
+    // A <dt> with nothing behind it is a labelled dead end: the Instagram row
+    // must be absent, not present and empty.
+    expect(main.querySelectorAll("dt")).toHaveLength(1);
+    expect(
+      within(main).queryByText(i18n.t("statement.coordinatorInstagramLabel")),
+    ).toBeNull();
+    for (const term of main.querySelectorAll("dt")) {
+      expect(term.parentElement?.querySelector("dd")?.textContent?.trim()).toBeTruthy();
+    }
+  });
+
+  it("names a real channel when the boutique published none", async () => {
+    // A newly provisioned tenant: phone is str | None on the wire, and this
+    // page has no error state, so this is also every failed boutique fetch.
+    loadBoutique.mockResolvedValue({ ...BOUTIQUE, phone: null, instagram: null });
+    const { main } = await renderStatement();
+
+    // IS 5568 §35 wants a reachable contact. With nothing to link, the
+    // statement says so and points at the boutique — it never renders a
+    // statutory contact section that is empty, nor a <dt> with no value.
+    expect(
+      within(main).getByText(
+        i18n.t("statement.coordinatorNoChannel", { name: BOUTIQUE.name }),
+      ),
+    ).toBeInTheDocument();
+    expect(main.querySelectorAll("dt")).toHaveLength(0);
+    expect(main.querySelectorAll("dl")).toHaveLength(0);
+    expect(within(main).queryAllByRole("link", { name: BOUTIQUE.phone ?? "" })).toHaveLength(0);
+    expect(main.textContent).not.toMatch(PLACEHOLDER_TEXT);
+  });
+
   it("still renders the whole statement when the boutique fetch rejects", async () => {
     loadBoutique.mockRejectedValue(new ApiError(503, "UNKNOWN", "Service unavailable."));
     render(
@@ -222,9 +295,17 @@ describe("Accessibility statement — the complaints contact", () => {
     expect(within(main).getByText(i18n.t("statement.limitsAlt"))).toBeInTheDocument();
     expect(within(main).getByText(i18n.t("statement.updated"))).toBeInTheDocument();
 
-    // Twice: the site the statement covers, and — with no reachable number to
-    // name — the contact row falls back to the same generic name.
-    expect(within(main).getAllByText(i18n.t("catalog.essenceFallback"))).toHaveLength(2);
+    // Once: the site the statement covers. The contact block used to reuse the
+    // same generic name as if it were a phone value, which rendered a labelled
+    // phone row a visitor cannot ring — a dead statutory contact.
+    expect(within(main).getAllByText(i18n.t("catalog.essenceFallback"))).toHaveLength(1);
+    expect(main.querySelectorAll("dt")).toHaveLength(0);
+    // Instead the section names where to turn, in Hebrew, with no dangling label.
+    expect(
+      within(main).getByText(
+        i18n.t("statement.coordinatorNoChannel", { name: i18n.t("catalog.essenceFallback") }),
+      ),
+    ).toBeInTheDocument();
     // With no channel to offer, the reporting list is OMITTED rather than
     // rendered empty: an empty <ul> announces as "list, 0 items".
     expect(within(main).queryAllByRole("link", { name: BOUTIQUE.phone ?? "" })).toHaveLength(0);

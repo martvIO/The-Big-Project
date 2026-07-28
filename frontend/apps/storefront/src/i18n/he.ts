@@ -165,14 +165,24 @@ export const he = {
       limitsHeading: "מגבלות שאנחנו מודעות להן",
       limitsZoom:
         "בשלב זה אין באתר אפשרות להגדלת תצלומי שמלות. אפשר להיעזר בהגדלת התצוגה של הדפדפן.",
+      // Must keep describing what the site ACTUALLY does: the card alt is the
+      // dress name, and the dress page's main photo announces its position in
+      // the gallery, not the garment. A statement that misdescribes the site is
+      // itself a non-conformance.
       limitsAlt:
-        "הטקסט החלופי של תצלומי השמלות נגזר משם השמלה ואינו מתאר את פרטי הגזרה. בעמוד השמלה, שם השמלה מוקרא פעמיים ברצף — פעם מהכותרת ופעם מהתצלום. נשמח לתאר כל שמלה בטלפון.",
+        "בעמוד הקולקציה הטקסט החלופי של כל תצלום הוא שם השמלה בלבד, ואינו מתאר את הגזרה, הבד או הפרטים. בעמוד השמלה התצלומים מוקראים לפי מיקומם בגלריה, למשל: תמונה 1 מתוך 3, ושם השמלה מופיע בכותרת העמוד. נשמח לתאר כל שמלה בטלפון.",
       limitsNote: "אנחנו פועלות לתקן את המגבלות האלה בגרסאות הבאות של האתר.",
 
       coordinatorHeading: "פניות בנושא נגישות",
       coordinatorIntro: "לכל פנייה בנושא נגישות אפשר ליצור קשר ישירות עם הבוטיק:",
       coordinatorPhoneLabel: "טלפון",
       coordinatorInstagramLabel: "אינסטגרם",
+      // A tenant that published neither a phone nor an Instagram — and any
+      // tenant whose boutique fetch failed. §35 wants a reachable channel, so
+      // the statement says plainly that none is published here and sends the
+      // visitor to the boutique itself, instead of an empty contact list.
+      coordinatorNoChannel:
+        "בשלב זה לא פורסמו כאן מספר טלפון או חשבון אינסטגרם. אפשר לפנות בנושא נגישות ישירות אל {{name}}, בבוטיק עצמו, וכל פנייה תטופל.",
 
       reportHeading: "נתקלתם בבעיית נגישות?",
       reportBody:

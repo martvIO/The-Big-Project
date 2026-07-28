@@ -14,15 +14,7 @@ export function ShareButton({ title }: { title: string }) {
   const { t } = useTranslation();
   const toast = useToast();
 
-  const handleShare = () => {
-    const url = window.location.href;
-    if (typeof navigator.share === "function") {
-      void navigator.share({ title, url }).catch(() => {
-        // The user dismissed the sheet, or the browser refused. Either way the
-        // link is untouched — nothing to report.
-      });
-      return;
-    }
+  const copyLink = (url: string) => {
     // No share sheet and no clipboard means an insecure origin. Say so rather
     // than leaving the button inert with no explanation.
     const copied = navigator.clipboard?.writeText(url);
@@ -37,6 +29,23 @@ export function ShareButton({ title }: { title: string }) {
       .catch(() => {
         toast({ message: FALLBACK_ERROR_MESSAGE, variant: "error" });
       });
+  };
+
+  const handleShare = () => {
+    const url = window.location.href;
+    if (typeof navigator.share === "function") {
+      void navigator.share({ title, url }).catch((error: unknown) => {
+        // AbortError is the visitor closing the sheet — a deliberate no-op.
+        // Every other rejection means the share never happened (Chromium on
+        // desktop rejects with NotAllowedError when it does not count the
+        // click as transient activation), so fall through to the clipboard
+        // rather than leaving the visitor with silence and no link.
+        if (error instanceof Error && error.name === "AbortError") return;
+        copyLink(url);
+      });
+      return;
+    }
+    copyLink(url);
   };
 
   return (

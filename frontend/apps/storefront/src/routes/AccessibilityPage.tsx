@@ -18,31 +18,34 @@ const bodyClass = "text-base text-ink-muted";
 const listClass = "list-disc space-y-2 ps-6 text-base text-ink-muted";
 const rowClass = "flex flex-wrap gap-x-2";
 
+// Whole keys, not suffixes composed at render time: a key assembled from a
+// fragment is invisible to the static i18n-keys guard, and i18next answers a
+// miss with the bare key, so a renamed entry would print ASCII into the page.
 const DONE_KEYS = [
-  "doneFonts",
-  "doneKeyboard",
-  "doneContrast",
-  "doneRtl",
-  "doneImages",
-  "doneMenu",
+  "statement.doneFonts",
+  "statement.doneKeyboard",
+  "statement.doneContrast",
+  "statement.doneRtl",
+  "statement.doneImages",
+  "statement.doneMenu",
 ] as const;
 
 const MENU_KEYS = [
-  "menuContrast",
-  "menuTextSize",
-  "menuReadableFont",
-  "menuUnderlineLinks",
-  "menuStopMotion",
+  "statement.menuContrast",
+  "statement.menuTextSize",
+  "statement.menuReadableFont",
+  "statement.menuUnderlineLinks",
+  "statement.menuStopMotion",
 ] as const;
 
-const LIMIT_KEYS = ["limitsZoom", "limitsAlt"] as const;
+const LIMIT_KEYS = ["statement.limitsZoom", "statement.limitsAlt"] as const;
 
 function Bullets({ items }: { items: readonly string[] }) {
   const { t } = useTranslation();
   return (
     <ul className={listClass}>
       {items.map((key) => (
-        <li key={key}>{t(`statement.${key}`)}</li>
+        <li key={key}>{t(key)}</li>
       ))}
     </ul>
   );
@@ -96,42 +99,48 @@ export function AccessibilityPage() {
 
       <div className="flex flex-col gap-3">
         <SectionHeading as="h2">{t("statement.coordinatorHeading")}</SectionHeading>
-        <p className={bodyClass}>{t("statement.coordinatorIntro")}</p>
         {/* A description list, not paragraphs: the label/value pairing is what a
             screen reader announces, and it is the part an auditor looks for by
-            name. Rows with no value are omitted entirely rather than rendered
-            empty — an unanswered API must not produce a dangling <dt>. */}
-        <dl className="flex flex-col gap-2 text-base">
-          <div className={rowClass}>
-            <dt className="text-ink-muted">{t("statement.coordinatorPhoneLabel")}</dt>
-            {phone === null ? (
-              <dd className="text-ink">{siteName}</dd>
-            ) : (
-              <dd>
-                {/* A phone number is a strong-LTR digit run dropped into RTL
-                    prose; bdi isolates it so bidi cannot reorder it. */}
-                <a href={`tel:${phone}`} className={linkClass}>
-                  <bdi dir="ltr">{phone}</bdi>
-                </a>
-              </dd>
-            )}
-          </div>
-          {instagram !== null && (
-            <div className={rowClass}>
-              <dt className="text-ink-muted">{t("statement.coordinatorInstagramLabel")}</dt>
-              <dd>
-                <a
-                  href={`https://instagram.com/${instagram}`}
-                  target="_blank"
-                  rel="noopener noreferrer external"
-                  className={linkClass}
-                >
-                  <bdi dir="ltr">@{instagram}</bdi>
-                </a>
-              </dd>
-            </div>
-          )}
-        </dl>
+            name. A row with no value is never rendered — a <dt> with nothing
+            behind it is a dead statutory contact, which §35 does not allow. A
+            boutique that published no channel at all gets a plain sentence
+            saying so instead of an empty list. */}
+        {phone === null && instagram === null ? (
+          <p className={bodyClass}>{t("statement.coordinatorNoChannel", { name: siteName })}</p>
+        ) : (
+          <>
+            <p className={bodyClass}>{t("statement.coordinatorIntro")}</p>
+            <dl className="flex flex-col gap-2 text-base">
+              {phone !== null && (
+                <div className={rowClass}>
+                  <dt className="text-ink-muted">{t("statement.coordinatorPhoneLabel")}</dt>
+                  <dd>
+                    {/* A phone number is a strong-LTR digit run dropped into RTL
+                        prose; bdi isolates it so bidi cannot reorder it. */}
+                    <a href={`tel:${phone}`} className={linkClass}>
+                      <bdi dir="ltr">{phone}</bdi>
+                    </a>
+                  </dd>
+                </div>
+              )}
+              {instagram !== null && (
+                <div className={rowClass}>
+                  <dt className="text-ink-muted">{t("statement.coordinatorInstagramLabel")}</dt>
+                  <dd>
+                    <a
+                      href={`https://instagram.com/${instagram}`}
+                      target="_blank"
+                      rel="noopener noreferrer external"
+                      className={linkClass}
+                    >
+                      <bdi dir="ltr">@{instagram}</bdi>
+                    </a>
+                  </dd>
+                </div>
+              )}
+            </dl>
+          </>
+        )}
       </div>
 
       <div className="flex flex-col gap-3">

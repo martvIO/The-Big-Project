@@ -51,7 +51,10 @@ export function DressCard({
             decoding="async"
             onLoad={() => setLoaded(true)}
             onError={onImageError}
-            className={cn("h-full w-full object-cover transition-opacity", loaded ? "opacity-100" : "opacity-0")}
+            className={cn(
+              "h-full w-full object-cover transition-opacity duration-(--motion-base) ease-out",
+              loaded ? "opacity-100" : "opacity-0",
+            )}
           />
         ) : (
           // No photo -> monogram fills the slot, no <img> emitted at all.
@@ -74,7 +77,13 @@ export function DressCard({
       </div>
 
       <div className="mt-2 flex flex-col gap-1">
-        <span className="font-display text-lg text-ink">{name}</span>
+        {/* A Latin-only dress name ("Bella Rosa (Ivory)") inside an RTL card is
+            a bidi run whose trailing neutrals reorder — the closing bracket or
+            full stop jumps to the wrong end. bdi resolves each name's direction
+            on its own and isolates it from the card around it. */}
+        <span className="font-display text-lg text-ink">
+          <bdi>{name}</bdi>
+        </span>
         {price}
       </div>
     </a>

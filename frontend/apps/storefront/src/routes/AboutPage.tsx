@@ -82,10 +82,22 @@ export function AboutPage({ now = new Date() }: AboutPageProps) {
   const { t } = useTranslation();
   const { boutique, loading, error } = useBoutique();
 
+  // Carried by the degraded states as well as the loaded one. The <h1> is where
+  // the skip link lands, so a page whose only heading vanishes on an API error
+  // drops a screen-reader user into an untitled region — and axe cannot catch
+  // it, page-has-heading-one being best-practice rather than an A/AA rule.
+  // Same fallback as the catalog header and the accessibility statement.
+  const identity = (
+    <SectionHeading as="h1" ornament>
+      {boutique?.name ?? t("catalog.essenceFallback")}
+    </SectionHeading>
+  );
+
   if (loading) {
     return (
       <div className={pageClass}>
-        <Skeleton variant="text" lines={3} />
+        {identity}
+        <Skeleton variant="text" lines={3} className="mt-6" />
         <Skeleton variant="text" lines={6} className="mt-6" />
       </div>
     );
@@ -94,7 +106,13 @@ export function AboutPage({ now = new Date() }: AboutPageProps) {
   if (boutique === null) {
     return (
       <div className={pageClass}>
-        <p role="alert" className="text-base text-ink-muted">
+        {identity}
+        {/* No contact card here on purpose: the phone, the WhatsApp number and
+            the Instagram handle all come from the block that just failed, so
+            there is nothing left to offer. Rendering the panel anyway would
+            print empty rows — the catalog withholds its CTA for the same
+            reason, and the statement page omits its reporting list. */}
+        <p role="alert" className="mt-6 text-base text-ink-muted">
           {errorMessageOr(error, t, "about.error")}
         </p>
         <div className="mt-4">

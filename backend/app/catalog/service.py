@@ -354,14 +354,16 @@ class CatalogService:
             slots_remaining=MAX_MEDIA_PER_DRESS,
         )
 
-    async def get_dress(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, include_archived: bool = True
-    ) -> DressView:
-        # Defaults to True so the manage call site is unchanged: the owner must be
-        # able to open an archived dress to restore it. The storefront passes
-        # False, which routes an archived id through by_id → CatalogNotFoundError
-        # → the existing 404.
-        return await self._detail_view(tenant_id, dress_id, include_archived=include_archived)
+    async def get_dress(self, tenant_id: uuid.UUID, dress_id: uuid.UUID) -> DressView:
+        # Always resolves an archived dress: this is the OWNER's detail read, and
+        # the owner must be able to open an archived dress to restore it.
+        #
+        # There is no include_archived switch any more. The storefront used to
+        # pass False here; it now has its own StorefrontService.get_dress, which
+        # calls DressesRepository.by_id directly — that pins deleted_at IS NULL,
+        # so an archived id is an indistinguishable 404 by construction rather
+        # than by a caller remembering to flip a flag.
+        return await self._detail_view(tenant_id, dress_id, include_archived=True)
 
     async def update_dress(
         self,

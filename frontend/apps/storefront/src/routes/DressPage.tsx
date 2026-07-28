@@ -88,10 +88,25 @@ export function DressPage({ dressId }: DressPageProps) {
     setReloads((n) => n + 1);
   };
 
+  // Carried by the archived, failed and loading states as well as the loaded
+  // one, where the dress name takes over. The <h1> is where the skip link lands,
+  // so a page whose only heading vanishes on a miss or an outage drops a
+  // screen-reader user into an untitled region — and axe cannot catch it,
+  // page-has-heading-one being best-practice rather than an A/AA rule.
+  const identity = (
+    <h1 className="font-display text-2xl text-ink">
+      {boutique?.name ?? t("catalog.essenceFallback")}
+    </h1>
+  );
+
   if (loadError !== null) {
     return (
       <div className={pageClass}>
-        <p role="alert" className="font-display text-xl text-ink">
+        {identity}
+        {/* Muted body under the identity, matching the catalog's error block: a
+            dress that is gone is not the boutique's fault, and the name above
+            is what the page is now about. */}
+        <p role="alert" className="text-base text-ink-muted">
           {loadError === "notFound"
             ? t("dress.unavailableDress")
             : errorMessageOr(failure, t, "dress.error")}
@@ -123,6 +138,7 @@ export function DressPage({ dressId }: DressPageProps) {
         <Link to="/" className={backLinkClass}>
           {t("dress.back")}
         </Link>
+        {identity}
         <div className="grid gap-6 md:grid-cols-[55fr_45fr] xl:grid-cols-[60fr_40fr]">
           <Skeleton variant="image" className="rounded-md" />
           <Skeleton variant="text" lines={5} />

@@ -163,7 +163,8 @@ async def _hours(
 
 
 async def _seed(factory: async_sessionmaker[AsyncSession], identity: _Identity) -> Tenant:
-    tenant = await TenantsRepository(factory).insert(
+    tenants = TenantsRepository(factory)
+    tenant = await tenants.insert(
         slug=f"{identity.slug}-{uuid.uuid4().hex[:8]}", name=identity.name
     )
     await _boutique(factory).update_settings(
@@ -177,7 +178,18 @@ async def _seed(factory: async_sessionmaker[AsyncSession], identity: _Identity) 
         },
     )
     await _hours(factory, tenant.id, identity)
-    return tenant
+    # RE-READ, and this is load-bearing rather than tidiness. `insert()` returns
+    # the row as it was BEFORE update_settings merged the profile into the
+    # settings JSONB, so the object above still carries `settings == {}`.
+    # _context() copies that field straight onto the TenantContext, and
+    # GET /storefront/boutique reads the profile from the context rather than
+    # re-SELECTing — so seeding without this returns a blank identity and the
+    # both-directions assertion below would compare "" to "" and pass for the
+    # wrong reason.
+    seeded = await tenants.by_id(tenant.id)
+    assert seeded is not None, "the tenant we just inserted must be readable"
+    assert seeded.settings.get("profile"), "the seeded profile must reach the tenants row"
+    return seeded
 
 
 async def _dress(

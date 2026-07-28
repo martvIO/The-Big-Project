@@ -105,6 +105,40 @@ describe("AboutPage — load states", () => {
   });
 });
 
+// The <h1> is where the skip link lands and what orients a screen-reader user.
+// axe passes a heading-less page — page-has-heading-one is best-practice, not
+// A/AA — so every state is asserted by hand here.
+describe("AboutPage — one h1 in every state", () => {
+  function soleHeading(): HTMLElement {
+    const main = screen.getByRole("main");
+    expect(within(main).getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    return within(main).getByRole("heading", { level: 1 });
+  }
+
+  it("titles the skeleton with the brand fallback while the boutique is in flight", () => {
+    getBoutiqueOnce.mockReturnValue(new Promise<BoutiqueResponse>(() => undefined));
+    renderAbout(<AboutPage now={THURSDAY} />);
+
+    expect(soleHeading()).toHaveTextContent(i18n.t("catalog.essenceFallback"));
+  });
+
+  it("keeps the heading when the boutique fetch fails — not a bare alert and a button", async () => {
+    getBoutiqueOnce.mockRejectedValue(new ApiError(503, "UNKNOWN", "Service Unavailable"));
+    renderAbout(<AboutPage now={THURSDAY} />);
+    await screen.findByRole("alert");
+
+    expect(soleHeading()).toHaveTextContent(i18n.t("catalog.essenceFallback"));
+  });
+
+  it("hands the heading over to the boutique's own name once it loads", async () => {
+    getBoutiqueOnce.mockResolvedValue(boutique());
+    renderAbout(<AboutPage now={THURSDAY} />);
+    await screen.findByRole("heading", { level: 1, name: NAME });
+
+    expect(soleHeading()).toHaveTextContent(NAME);
+  });
+});
+
 describe("AboutPage — the week", () => {
   it("accounts for all seven days when the wire omits Saturday entirely", async () => {
     // Sun–Fri each carry a different closing time so nothing groups — this test

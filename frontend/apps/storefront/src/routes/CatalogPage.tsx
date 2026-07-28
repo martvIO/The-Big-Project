@@ -5,7 +5,6 @@ import {
   Button,
   DressCard,
   DressGrid,
-  EmptyState,
   Price,
   Skeleton,
 } from "@boutique/ui";
@@ -200,7 +199,15 @@ export function CatalogPage({ now = new Date() }: CatalogPageProps) {
         // the boutique still has to feel complete, so the identity, hours and
         // contact block come along rather than a bare "nothing here yet".
         <div className="flex flex-col gap-6">
-          <EmptyState title={t("catalog.empty")} body={t("catalog.emptyBody")} />
+          {/* Rendered here rather than through EmptyState: the design's empty
+              catalog is an identity moment whose headline is ink-MUTED — it
+              reports a temporary absence, it is not the page's voice — while
+              EmptyState pins its title to ink for the console's in-card
+              empties. */}
+          <div className="flex flex-col items-center gap-3 py-12 text-center">
+            <p className="font-display text-xl text-ink-muted">{t("catalog.empty")}</p>
+            <p className="max-w-prose text-base text-ink-muted">{t("catalog.emptyBody")}</p>
+          </div>
           {boutique !== null && (
             <>
               <HoursCard boutique={boutique} now={now} />

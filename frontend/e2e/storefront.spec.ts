@@ -295,6 +295,11 @@ async function gotoSettled(page: Page, path: string): Promise<void> {
     // soon as the fetch resolves, whether or not there are dresses.
     await expect(ctaBar(page)).toBeVisible();
   } else if (path.startsWith("/dress/")) {
+    // NOT `heading level 1`: the loading state now carries an h1 too (the
+    // boutique name, so a failed fetch never leaves the page untitled), which
+    // would let this resolve against the skeleton and make the axe scans
+    // vacuous — the exact thing this helper exists to prevent.
+    await expect(page.getByTestId("dress-detail-loading")).toHaveCount(0);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   } else if (path === "/about") {
     await expect(page.getByRole("heading", { name: "שעות פעילות" })).toBeVisible();

@@ -335,6 +335,42 @@ describe("CatalogPage empty state", () => {
     expect(callLinks).toHaveLength(1);
     expect(callLinks[0]).toHaveAttribute("href", "tel:052-1234567");
   });
+
+  // jsdom loads no stylesheet, so every class computes to the UA default and a
+  // colour assertion would pass whichever class the line carried. Painting the
+  // two real tokens is what gives it the power to fail.
+  it("renders «הקולקציה בדרך» muted — it reports an absence, it is not the page's voice", async () => {
+    listDresses.mockResolvedValue(listing([]));
+
+    const sheet = document.createElement("style");
+    sheet.textContent = `
+      .text-ink { color: ${themeTokens["--color-ink"]}; }
+      .text-ink-muted { color: ${themeTokens["--color-ink-muted"]}; }
+    `;
+    document.head.append(sheet);
+
+    try {
+      renderCatalog();
+      const line = await screen.findByText(i18n.t("catalog.empty"));
+
+      const probe = (className: string) => {
+        const span = document.createElement("span");
+        span.className = className;
+        document.body.append(span);
+        const { color } = getComputedStyle(span);
+        span.remove();
+        return color;
+      };
+      const ink = probe("text-ink");
+      const muted = probe("text-ink-muted");
+      // Guards the guard: an inert stylesheet would make both sides equal.
+      expect(ink).not.toBe(muted);
+
+      expect(getComputedStyle(line).color).toBe(muted);
+    } finally {
+      sheet.remove();
+    }
+  });
 });
 
 describe("CatalogPage hours line", () => {

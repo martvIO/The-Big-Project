@@ -37,8 +37,17 @@ export function DescriptionClamp({ text }: { text: string }) {
     };
     measure();
     window.addEventListener("resize", measure);
+    // The A11yMenu's boosts are data attributes on <html> — data-a11y-text-size
+    // moves the root font size and fires NO resize event, so without this the
+    // description silently truncates with no toggle to reveal it, for the very
+    // visitor who asked for larger text. Watching every attribute (rather than
+    // filtering to one name) also covers the readable-font boost, and costs one
+    // extra measure per menu toggle.
+    const rootAttributes = new MutationObserver(measure);
+    rootAttributes.observe(document.documentElement, { attributes: true });
     return () => {
       window.removeEventListener("resize", measure);
+      rootAttributes.disconnect();
     };
   }, [text, expanded]);
 

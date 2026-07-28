@@ -179,7 +179,14 @@ def public_boutique(view: StorefrontBoutiqueView) -> BoutiqueResponse:
 
     def field(key: str) -> str | None:
         value = profile.get(key)
-        return value or None if isinstance(value, str) else None
+        if not isinstance(value, str):
+            return None
+        # .strip() before the null collapse: an owner who clears a field by
+        # deleting its text often leaves a space behind, and " " is truthy. A
+        # space-only address would otherwise render a Waze link to nowhere and
+        # an <a> whose accessible name is whitespace — the same WCAG 2.4.4
+        # failure the ""-to-null collapse exists to prevent, one keystroke away.
+        return value.strip() or None
 
     return BoutiqueResponse(
         name=view.name,

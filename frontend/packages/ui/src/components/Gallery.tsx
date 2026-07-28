@@ -31,11 +31,16 @@ export function Gallery({ images, labels, onImageError, className }: GalleryProp
   if (images.length === 0) return null;
   if (images.length === 1) {
     return (
+      // min-w-0 + max-w-full for the same reason the multi-photo root carries
+      // min-w-0: this img IS the grid item on the dress page, and a grid item
+      // defaults to min-width:auto — which for a replaced element is its
+      // INTRINSIC width, so a wide photo pushes the document sideways at 200%
+      // text no matter what w-full says (WCAG 1.4.10).
       <img
         src={images[0].url}
         alt={images[0].alt}
         onError={onImageError}
-        className={cn("aspect-[3/4] w-full rounded-md object-cover", className)}
+        className={cn("aspect-[3/4] w-full min-w-0 max-w-full rounded-md object-cover", className)}
       />
     );
   }
@@ -90,8 +95,15 @@ export function Gallery({ images, labels, onImageError, className }: GalleryProp
           min-content width — 3 thumbs plus gaps. At 200% text-only zoom the
           thumbs are 112px each, so min-content is 368px and the strip pushes
           the whole document sideways on a 375px viewport (WCAG 1.4.10 reflow).
-          With min-w-0 it shrinks and scrolls internally instead. */}
-      <div className="flex min-w-0 gap-2 overflow-x-auto pb-2">
+          With min-w-0 it shrinks and scrolls internally instead.
+
+          p-2 on ALL four sides, not pb-2: a specified overflow-x:auto forces
+          overflow-y to auto too, and the focus ring + the aria-current outline
+          are painted 4px OUTSIDE the border box (2px wide, 2px offset), so with
+          no padding they are clipped on the block axis and — at the scroll
+          origin — on the inline-start edge as well. §8 requires padding here,
+          never outline-offset: 0. --space-2 = 8px leaves double the ring. */}
+      <div className="flex min-w-0 gap-2 overflow-x-auto p-2">
         {images.map((img, i) => (
           <button
             key={i}

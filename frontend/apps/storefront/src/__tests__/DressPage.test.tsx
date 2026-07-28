@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api, getBoutiqueOnce } from "../api";
 import type { BoutiqueResponse, StorefrontDetail, StorefrontMedia } from "../api";
@@ -326,6 +326,51 @@ describe("DressPage — states without a dress", () => {
     fireEvent.click(screen.getByRole("button", { name: i18n.t("catalog.retry") }));
 
     expect(await screen.findByRole("heading", { level: 1, name: "ורד" })).toBeInTheDocument();
+  });
+});
+
+// The <h1> is where the skip link lands and what orients a screen-reader user.
+// axe passes a heading-less page — page-has-heading-one is best-practice, not
+// A/AA — so every state is asserted by hand here.
+describe("DressPage — one h1 in every state", () => {
+  function soleHeading(): HTMLElement {
+    const main = screen.getByRole("main");
+    expect(within(main).getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    return within(main).getByRole("heading", { level: 1 });
+  }
+
+  it("titles the skeleton with the brand fallback while both fetches are in flight", () => {
+    getDress.mockReturnValue(pending<StorefrontDetail>());
+    loadBoutique.mockReturnValue(pending<BoutiqueResponse>());
+    renderDress();
+
+    expect(soleHeading()).toHaveTextContent(i18n.t("catalog.essenceFallback"));
+  });
+
+  it("names the boutique on an archived dress instead of dropping the only heading", async () => {
+    getDress.mockRejectedValue(new ApiError(404, "NOT_FOUND", "Resource not found."));
+    renderDress("gone");
+    await screen.findByText(i18n.t("dress.unavailableDress"));
+
+    await waitFor(() => {
+      expect(soleHeading()).toHaveTextContent(BOUTIQUE.name);
+    });
+  });
+
+  it("keeps the heading on a non-404 failure, above the alert", async () => {
+    getDress.mockRejectedValue(new ApiError(500, "INTERNAL", "Something exploded."));
+    renderDress();
+    await screen.findByRole("alert");
+
+    await waitFor(() => {
+      expect(soleHeading()).toHaveTextContent(BOUTIQUE.name);
+    });
+  });
+
+  it("hands the heading over to the dress once it loads", async () => {
+    await renderLoaded(dress({ name: "ורד" }));
+
+    expect(soleHeading()).toHaveTextContent("ורד");
   });
 });
 
