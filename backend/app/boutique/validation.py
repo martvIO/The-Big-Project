@@ -8,6 +8,7 @@ fails with a clean 400 instead of an IntegrityError."""
 import dataclasses
 import datetime
 import itertools
+import re
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit
@@ -28,6 +29,10 @@ MAX_PROFILE_PHONE_LENGTH = 32
 MAX_PROFILE_ADDRESS_LENGTH = 500
 MAX_PROFILE_DESCRIPTION_LENGTH = 2000
 MAX_PROFILE_MAPS_URL_LENGTH = 1000
+# One line under a --text-3xl display heading at 375px.
+MAX_PROFILE_ESSENCE_LENGTH = 120
+# Instagram's own handle ceiling.
+MAX_PROFILE_INSTAGRAM_LENGTH = 30
 MAX_APPOINTMENT_TYPE_NAME_LENGTH = 200
 MAX_DURATION_MINUTES = 24 * 60
 MAX_EXCEPTION_NOTE_LENGTH = 500
@@ -45,7 +50,11 @@ MAX_SORT_ORDER = 1_000_000
 
 ALLOWED_MAPS_URL_SCHEMES = frozenset({"http", "https"})
 _PHONE_SAFE_CHARS = frozenset("0123456789 ()-")
-_PROFILE_FIELDS = frozenset({"phone", "address", "description", "maps_url"})
+_PROFILE_FIELDS = frozenset({"phone", "address", "description", "maps_url", "essence", "instagram"})
+# Instagram's own rule: letters, digits, period, underscore. Anchored, so a
+# handle with a slash or an @ is rejected outright rather than stored as a dead
+# link — ContactPanel builds https://instagram.com/{handle} from this verbatim.
+_INSTAGRAM_HANDLE = re.compile(r"^[A-Za-z0-9._]{1,30}\Z")
 _TOGGLE_FIELDS = frozenset({"deposits_enabled", "brides_only"})
 _AUDIENCE_VALUES = frozenset(member.value for member in AppointmentAudience)
 
@@ -79,6 +88,18 @@ def validate_phone(phone: str) -> None:
         raise BoutiqueValidationError("phone contains invalid characters")
 
 
+def validate_instagram_handle(handle: str) -> None:
+    """Rejects a leading @ rather than stripping it. The stored value is
+    interpolated straight into https://instagram.com/{handle}, so silently
+    accepting "@bella" and normalising it would make the column's contract
+    depend on which write path wrote it; one canonical form, enforced at the
+    only gate, is what keeps the storefront's link builder a pure join."""
+    if _INSTAGRAM_HANDLE.match(handle) is None:
+        raise BoutiqueValidationError(
+            "instagram must be a handle without the @ — letters, digits, period and underscore only"
+        )
+
+
 def validate_profile(profile: dict[str, Any]) -> None:
     unknown = set(profile) - _PROFILE_FIELDS
     if unknown:
@@ -99,6 +120,12 @@ def validate_profile(profile: dict[str, Any]) -> None:
     description = profile.get("description")
     if description is not None and len(description) > MAX_PROFILE_DESCRIPTION_LENGTH:
         raise BoutiqueValidationError("description is too long")
+    essence = profile.get("essence")
+    if essence is not None and len(essence) > MAX_PROFILE_ESSENCE_LENGTH:
+        raise BoutiqueValidationError("essence is too long")
+    instagram = profile.get("instagram")
+    if instagram:
+        validate_instagram_handle(instagram)
 
 
 def validate_toggles(toggles: dict[str, Any]) -> None:

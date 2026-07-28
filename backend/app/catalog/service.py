@@ -70,6 +70,16 @@ from app.storage.base import (
 
 logger = logging.getLogger("catalog")
 
+# DRESS_LIST_MAX_LIMIT's missing twin. `offset` reaches the driver as
+# `OFFSET $n::BIGINT` (SQLAlchemy's asyncpg dialect casts it explicitly), so a
+# value past int8 never becomes a 400 — it dies in asyncpg's `int8_encode` as a
+# DataError with no handler above it, i.e. a 500 on an anonymous endpoint.
+# 1_000_000 is ~41,000 pages of DRESS_LIST_DEFAULT_LIMIT for a catalog that holds
+# tens of dresses, and 9.2e12x inside int8, so nothing downstream can overflow.
+# ponytail: lives here rather than beside DRESS_LIST_MAX_LIMIT in validation.py
+# only to keep this branch's diff off a file other tracks are editing.
+MAX_LIST_OFFSET = 1_000_000
+
 # hashtext() keys an xact-scoped lock that releases with the transaction. The
 # prefix is a SQL literal and the dress id is bound — never interpolated.
 _MEDIA_LOCK = text("SELECT pg_advisory_xact_lock(hashtext('dress-media:' || :dress_id))")
@@ -181,6 +191,47 @@ class _DetailRows:
     active_media: int
 
 
+def sign_media(storage: MediaStorage, row: DressMedia) -> MediaView:
+    """Mint a presigned GET for one media row, degrading to `url=None`.
+
+    Module-level and storage-injected so BOTH the owner console and the public
+    storefront sign through the same function. The degradation rule below is a
+    security-relevant invariant, and an invariant that exists in two places is
+    one that will eventually hold in only one of them.
+
+    Signing is local HMAC, so this is safe to call outside a session and would
+    be a lie to await. With no bucket the url serialises as null rather than
+    failing the read — only the media WRITE endpoints answer 503.
+    """
+    if not storage.is_configured:
+        return MediaView(row=row, url=None, url_expires_at=None)
+    try:
+        url = storage.signed_get_url(
+            key=row.storage_key,
+            content_type=row.content_type,
+            filename=build_media_filename(media_id=row.id, content_type=row.content_type),
+            expires_in=SIGNED_GET_TTL_SECONDS,
+        )
+    except (MediaNotConfiguredError, MediaStorageUnavailableError):
+        # A bucket whose credentials rotated is still `is_configured`, so
+        # branching on that alone would let a signing failure propagate out
+        # of a plain GET /manage/dresses as a 503 and take the whole catalog
+        # down with the gallery. Degrade exactly as an absent bucket does.
+        # The storage port already logged the operation and the key.
+        logger.warning(
+            "media url signing failed, serialising a null url: "
+            "tenant_id=%s dress_id=%s media_id=%s",
+            row.tenant_id,
+            row.dress_id,
+            row.id,
+        )
+        return MediaView(row=row, url=None, url_expires_at=None)
+    expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+        seconds=SIGNED_GET_TTL_SECONDS
+    )
+    return MediaView(row=row, url=url, url_expires_at=expires_at)
+
+
 def _stock_summary(aggregate: VariantAggregate) -> StockSummary:
     """The single out_of_stock formula. Nothing is stored: the only writer of
     stock is the variant replace, and a cached boolean would need either a
@@ -229,8 +280,9 @@ class CatalogService:
         limit: int = DRESS_LIST_DEFAULT_LIMIT,
     ) -> DressListResult:
         # Clamped again below the router (Feature 7 precedent) so a non-router
-        # caller cannot request an unbounded page.
-        offset = max(offset, 0)
+        # caller cannot request an unbounded page — or, at the top end, one the
+        # int8 bind parameter cannot encode.
+        offset = min(max(offset, 0), MAX_LIST_OFFSET)
         limit = min(max(limit, 1), DRESS_LIST_MAX_LIMIT)
         validate_search(search)
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -303,6 +355,14 @@ class CatalogService:
         )
 
     async def get_dress(self, tenant_id: uuid.UUID, dress_id: uuid.UUID) -> DressView:
+        # Always resolves an archived dress: this is the OWNER's detail read, and
+        # the owner must be able to open an archived dress to restore it.
+        #
+        # There is no include_archived switch any more. The storefront used to
+        # pass False here; it now has its own StorefrontService.get_dress, which
+        # calls DressesRepository.by_id directly — that pins deleted_at IS NULL,
+        # so an archived id is an indistinguishable 404 by construction rather
+        # than by a caller remembering to flip a flag.
         return await self._detail_view(tenant_id, dress_id, include_archived=True)
 
     async def update_dress(
@@ -706,36 +766,7 @@ class CatalogService:
         )
 
     def _media_view(self, row: DressMedia) -> MediaView:
-        """Signing is local HMAC, so this is safe to call outside a session and
-        would be a lie to await. With no bucket the url serialises as null rather
-        than failing the read — only the media WRITE endpoints answer 503."""
-        if not self._storage.is_configured:
-            return MediaView(row=row, url=None, url_expires_at=None)
-        try:
-            url = self._storage.signed_get_url(
-                key=row.storage_key,
-                content_type=row.content_type,
-                filename=build_media_filename(media_id=row.id, content_type=row.content_type),
-                expires_in=SIGNED_GET_TTL_SECONDS,
-            )
-        except (MediaNotConfiguredError, MediaStorageUnavailableError):
-            # A bucket whose credentials rotated is still `is_configured`, so
-            # branching on that alone would let a signing failure propagate out
-            # of a plain GET /manage/dresses as a 503 and take the whole catalog
-            # down with the gallery. Degrade exactly as an absent bucket does.
-            # The storage port already logged the operation and the key.
-            logger.warning(
-                "media url signing failed, serialising a null url: "
-                "tenant_id=%s dress_id=%s media_id=%s",
-                row.tenant_id,
-                row.dress_id,
-                row.id,
-            )
-            return MediaView(row=row, url=None, url_expires_at=None)
-        expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
-            seconds=SIGNED_GET_TTL_SECONDS
-        )
-        return MediaView(row=row, url=url, url_expires_at=expires_at)
+        return sign_media(self._storage, row)
 
     async def _reject_object(
         self,

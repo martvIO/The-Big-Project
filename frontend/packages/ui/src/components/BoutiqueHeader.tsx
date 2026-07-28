@@ -22,13 +22,22 @@ export function BoutiqueHeader({ name, essence, hoursText, address, mapsUrl, cla
       {hoursText && <p className="text-base text-ink-muted">{hoursText}</p>}
       {address &&
         (maps ? (
-          <a href={maps} dir="ltr" className={cn("text-base text-gold-text underline", focusRing)}>
-            {address} <span aria-hidden="true">↗</span>
+          // target/rel are what make the ↗ honest — and match ContactPanel,
+          // which opens the same maps_url. Without them, tapping the address on
+          // a phone replaces the storefront and the only way back is the browser
+          // control, on a site that deliberately ships no back affordance.
+          <a
+            href={maps}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn("text-base text-gold-text underline", focusRing)}
+          >
+            {/* bdi, not dir="ltr": the address is tenant-supplied and may be
+                Hebrew or Latin. Forcing LTR mangles a Hebrew address. */}
+            <bdi>{address}</bdi> <span aria-hidden="true">↗</span>
           </a>
         ) : (
-          <span dir="ltr" className="text-base text-ink-muted">
-            {address}
-          </span>
+          <bdi className="text-base text-ink-muted">{address}</bdi>
         ))}
     </header>
   );

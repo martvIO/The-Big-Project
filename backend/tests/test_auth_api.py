@@ -9,7 +9,7 @@ from app.auth.service import InvalidCredentialsError, StaffContext
 from app.main import create_app
 from app.tenancy.middleware import TenantContext
 
-TENANT = TenantContext(id=uuid.uuid4(), slug="bella", settings={})
+TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="Bella Bridal", settings={})
 
 
 class FakeAuthService:

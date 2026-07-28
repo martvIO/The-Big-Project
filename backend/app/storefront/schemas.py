@@ -1,0 +1,130 @@
+"""Wire models for the PUBLIC storefront API.
+
+**None of these subclass a manage schema, and none ever may.** Inheritance is
+exactly how the omissions the spec mandates get silently reverted: one field
+added to `DressResponse` for the owner's console and every storefront row would
+carry it, with no diff on this file and no failing test in this module.
+`test_storefront_api.py` asserts the non-inheritance and the exact field sets.
+
+There is no request model here — the only client-supplied values on this surface
+are `offset` and `limit`, both bounded by `Query(...)` on the route.
+
+Four deliberate absences, each a spec requirement rather than a formatting
+preference:
+
+* **`price_visible` does not ship at all.** Once the number is omitted
+  server-side, `price_agorot is None` covers both "the owner hid it" and "no
+  price recorded" — which the design renders identically ("מחיר בתיאום").
+  Dropping the flag makes the guarantee structural: there is no code path in
+  which the flag and the number can disagree, because the flag never leaves the
+  server. The key is serialised as `null` rather than dropped from the object —
+  same security property, far better client typing, and a client that could
+  tell the two cases apart could tell that *this* dress has a hidden price.
+* **`quantity` never appears.** The public size shape is
+  `{size_label, available}`; raw stock counts are boutique-confidential.
+* **`out_of_stock`, `total_quantity` and `variant_count` are never even
+  computed** — see the module docstring of `service.py`.
+* **`capacity` is not on the hours row.** It is fitting-room throughput, which
+  discloses how many parallel fittings the boutique runs.
+"""
+
+import datetime
+from uuid import UUID
+
+from pydantic import BaseModel
+
+
+class StorefrontMedia(BaseModel):
+    """A presigned GET valid for SIGNED_GET_TTL_SECONDS, plus its expiry so the
+    client can refetch before it goes stale. `url` is null when no bucket is
+    configured or signing failed — a read never fails over a missing photo.
+
+    Media ids, storage keys, content types, byte sizes and sort orders are all
+    absent: the storefront renders an <img>, and nothing else here is its
+    business.
+    """
+
+    url: str | None
+    url_expires_at: datetime.datetime | None
+
+
+class StorefrontDress(BaseModel):
+    """One catalog card. `description` is omitted on purpose — cards do not
+    render it, and carrying it would multiply the 24-row payload for nothing."""
+
+    id: UUID
+    name: str
+    price_agorot: int | None
+    reserved: bool
+    cover: StorefrontMedia | None
+
+
+class SizeChip(BaseModel):
+    size_label: str
+    available: bool
+
+
+class StorefrontDetail(BaseModel):
+    """NOT a subclass of StorefrontDress: the two shapes differ (cover vs. the
+    full gallery, description present vs. absent), and a shared base would make
+    one file's edit silently change the other surface."""
+
+    id: UUID
+    name: str
+    description: str | None
+    price_agorot: int | None
+    reserved: bool
+    sizes: list[SizeChip]
+    media: list[StorefrontMedia]
+
+
+class DressListResponse(BaseModel):
+    # `items` is the house envelope key for paginated collections. `total` is
+    # what the load-more button counts against.
+    items: list[StorefrontDress]
+    total: int
+    offset: int
+    limit: int
+
+
+class HoursRow(BaseModel):
+    """ONE ROW PER WINDOW, not per day: F7 allows a boutique a lunch break, and
+    the repository orders by (day_of_week, open_time). The wire stays a straight
+    projection and the client groups — a naive one-row-per-day map would keep
+    only the last window and render half the boutique's hours."""
+
+    day_of_week: int
+    open_time: datetime.time
+    close_time: datetime.time
+
+
+class ExceptionRow(BaseModel):
+    """Both times null = closed all day; both set = special hours."""
+
+    date: datetime.date
+    open_time: datetime.time | None
+    close_time: datetime.time | None
+    note: str | None
+
+
+class BoutiqueResponse(BaseModel):
+    """FLAT, not a nested `profile` object: every field here is public identity
+    that the design renders in one header block, and the flat shape is what the
+    spec binds.
+
+    The profile fields are read out of the settings JSONB by EXPLICIT KEY, so a
+    key a later feature adds to `profile` cannot reach the public page by
+    default. `toggles` is not read at all — browse-only F10 renders no
+    appointment type, and `brides_only`'s storefront semantics land with E3 #14.
+    """
+
+    # `name` is tenants.name — the display name, not the slug.
+    name: str
+    essence: str | None
+    description: str | None
+    phone: str | None
+    address: str | None
+    maps_url: str | None
+    instagram: str | None
+    hours: list[HoursRow]
+    exceptions: list[ExceptionRow]

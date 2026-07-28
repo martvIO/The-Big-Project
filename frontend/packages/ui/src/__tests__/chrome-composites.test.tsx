@@ -36,6 +36,20 @@ describe("BookingCTA", () => {
     expect(container.firstElementChild?.className).toContain("fixed");
     expect(screen.getByRole("button", { name: "קביעת תור" })).toBeInTheDocument();
   });
+
+  // `inset-inline-0` is the CSS property, not a Tailwind utility — it compiles to
+  // nothing and shrink-wraps the bar to its content at 375. `inset-x` is the
+  // utility that emits `inset-inline`.
+  it("spans the full inline axis with a utility Tailwind actually generates", () => {
+    const { container } = render(
+      <BookingCTA>
+        <button>קביעת תור</button>
+      </BookingCTA>,
+    );
+    const className = container.firstElementChild?.className ?? "";
+    expect(className).toContain("inset-x-0");
+    expect(className).not.toContain("inset-inline");
+  });
 });
 
 describe("ContactPanel", () => {
@@ -75,8 +89,42 @@ describe("A11yMenu", () => {
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
 
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "טקסט גדול" }));
+    const boost = screen.getByRole("button", { name: "טקסט גדול" });
+    expect(boost).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(boost);
+    expect(boost).toHaveAttribute("aria-pressed", "true");
     expect(document.documentElement).toHaveAttribute("data-a11y-text-size");
+  });
+
+  // The panel is a disclosure, not a menu. role="menuitemcheckbox" would need a
+  // menu/menubar parent (axe aria-required-parent, wcag2a — and a closed-state
+  // scan can never see it), and role="menu" would promise an APG keyboard
+  // contract this component does not keep. aria-pressed toggle buttons owe
+  // nothing beyond native button behaviour, which already works.
+  it("exposes its controls as toggle buttons in a labelled group, not a menu", () => {
+    render(<A11yMenu triggerLabel="נגישות" controls={a11yControls} />);
+    const trigger = screen.getByRole("button", { name: "נגישות" });
+    // aria-haspopup is synonymous with "menu" — it must not be here.
+    expect(trigger).not.toHaveAttribute("aria-haspopup");
+    fireEvent.click(trigger);
+
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryAllByRole("menuitemcheckbox")).toHaveLength(0);
+
+    const group = screen.getByRole("group");
+    expect(group).toHaveAttribute("aria-labelledby", trigger.id);
+    expect(trigger).toHaveAttribute("aria-controls", group.id);
+    // Every control must sit inside that group, not merely beside it.
+    for (const label of Object.values(a11yControls)) {
+      const control = screen.getByRole("button", { name: label });
+      expect(control).toHaveAttribute("aria-pressed");
+      expect(group).toContainElement(control);
+    }
+  });
+
+  it("drops aria-controls when closed so it never points at a missing element", () => {
+    render(<A11yMenu triggerLabel="נגישות" controls={a11yControls} />);
+    expect(screen.getByRole("button", { name: "נגישות" })).not.toHaveAttribute("aria-controls");
   });
 
   it("uses the PRE-1 clearance token when a booking bar is present", () => {

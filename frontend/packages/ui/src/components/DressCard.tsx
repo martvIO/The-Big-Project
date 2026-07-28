@@ -10,10 +10,22 @@ export interface DressCardProps {
   photoUrl?: string | null;
   reserved?: boolean;
   reservedLabel?: string; // "הוזמן" via prop
+  // A failed load means the presigned URL expired, not that the dress has no
+  // photo — the page refetches instead of degrading to the monogram.
+  onImageError?: () => void;
   className?: string;
 }
 
-export function DressCard({ name, href, price, photoUrl, reserved = false, reservedLabel, className }: DressCardProps) {
+export function DressCard({
+  name,
+  href,
+  price,
+  photoUrl,
+  reserved = false,
+  reservedLabel,
+  onImageError,
+  className,
+}: DressCardProps) {
   const [loaded, setLoaded] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
@@ -33,8 +45,16 @@ export function DressCard({ name, href, price, photoUrl, reserved = false, reser
             ref={imgRef}
             src={photoUrl}
             alt={name}
+            // The grid renders up to 24 unprocessed originals — the heaviest
+            // egress path in v1. Only fetch what the visitor scrolls to.
+            loading="lazy"
+            decoding="async"
             onLoad={() => setLoaded(true)}
-            className={cn("h-full w-full object-cover transition-opacity", loaded ? "opacity-100" : "opacity-0")}
+            onError={onImageError}
+            className={cn(
+              "h-full w-full object-cover transition-opacity duration-(--motion-base) ease-out",
+              loaded ? "opacity-100" : "opacity-0",
+            )}
           />
         ) : (
           // No photo -> monogram fills the slot, no <img> emitted at all.
@@ -57,7 +77,13 @@ export function DressCard({ name, href, price, photoUrl, reserved = false, reser
       </div>
 
       <div className="mt-2 flex flex-col gap-1">
-        <span className="font-display text-lg text-ink">{name}</span>
+        {/* A Latin-only dress name ("Bella Rosa (Ivory)") inside an RTL card is
+            a bidi run whose trailing neutrals reorder — the closing bracket or
+            full stop jumps to the wrong end. bdi resolves each name's direction
+            on its own and isolates it from the card around it. */}
+        <span className="font-display text-lg text-ink">
+          <bdi>{name}</bdi>
+        </span>
         {price}
       </div>
     </a>

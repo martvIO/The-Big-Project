@@ -10,6 +10,8 @@ interface ProfileForm {
   address: string;
   description: string;
   maps_url: string;
+  essence: string;
+  instagram: string;
 }
 
 interface TogglesForm {
@@ -24,6 +26,8 @@ function fromSettings(settings: Settings): { profile: ProfileForm; toggles: Togg
       address: settings.profile.address ?? "",
       description: settings.profile.description ?? "",
       maps_url: settings.profile.maps_url ?? "",
+      essence: settings.profile.essence ?? "",
+      instagram: settings.profile.instagram ?? "",
     },
     toggles: {
       deposits_enabled: settings.toggles.deposits_enabled ?? false,
@@ -97,6 +101,15 @@ export function ProfileSection() {
     <Card>
       <form onSubmit={(event) => void handleSubmit(event)} className="flex flex-col gap-4">
         <SectionHeading as="h2">{t("profile.heading")}</SectionHeading>
+        {/* Feature 10 turns these fields world-readable. The disclosure belongs
+            under THIS heading, which covers them — not under the toggles
+            heading, whose settings are never published. */}
+        <p className="text-xs text-ink-muted">{t("profile.publicNotice")}</p>
+        <Input
+          label={t("profile.essence")}
+          value={profile.essence}
+          onChange={(event) => setField("essence", event.target.value)}
+        />
         <div className="grid gap-4 sm:grid-cols-2">
           <Input
             label={t("profile.phone")}
@@ -117,6 +130,13 @@ export function ProfileSection() {
           dir="ltr"
           value={profile.maps_url}
           onChange={(event) => setField("maps_url", event.target.value)}
+        />
+        <Input
+          label={t("profile.instagram")}
+          help={t("profile.instagramHint")}
+          dir="ltr"
+          value={profile.instagram}
+          onChange={(event) => setField("instagram", event.target.value)}
         />
         <TextArea
           label={t("profile.description")}

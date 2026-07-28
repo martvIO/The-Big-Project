@@ -16,22 +16,31 @@ export interface GalleryLabels {
 export interface GalleryProps {
   images: GalleryImage[];
   labels: GalleryLabels;
+  // A failed load means the presigned URLs expired — the whole set signs and
+  // expires together, so any one failure asks the page to refetch.
+  onImageError?: () => void;
   className?: string;
 }
 
 // Keyboard + AT operable: focusable prev/next + thumbnail buttons, current
 // position exposed via aria-current. Advances on user input only — no timer,
 // no auto-advance. A single image hides the chrome entirely.
-export function Gallery({ images, labels, className }: GalleryProps) {
+export function Gallery({ images, labels, onImageError, className }: GalleryProps) {
   const [index, setIndex] = useState(0);
 
   if (images.length === 0) return null;
   if (images.length === 1) {
     return (
+      // min-w-0 + max-w-full for the same reason the multi-photo root carries
+      // min-w-0: this img IS the grid item on the dress page, and a grid item
+      // defaults to min-width:auto — which for a replaced element is its
+      // INTRINSIC width, so a wide photo pushes the document sideways at 200%
+      // text no matter what w-full says (WCAG 1.4.10).
       <img
         src={images[0].url}
         alt={images[0].alt}
-        className={cn("aspect-[3/4] w-full rounded-md object-cover", className)}
+        onError={onImageError}
+        className={cn("aspect-[3/4] w-full min-w-0 max-w-full rounded-md object-cover", className)}
       />
     );
   }
@@ -39,16 +48,28 @@ export function Gallery({ images, labels, className }: GalleryProps) {
   const current = images[Math.min(index, images.length - 1)];
 
   return (
-    <div className={cn("flex flex-col gap-3", className)}>
+    // min-w-0 on the ROOT is the load-bearing half: this element is a grid item
+    // on the dress page, and a grid item defaults to min-width:auto, so it
+    // refuses to shrink below the min-content width its thumbnail strip
+    // imposes. Without it the strip's own overflow-x-auto can never engage and
+    // the whole document scrolls sideways at 200% text (WCAG 1.4.10).
+    <div className={cn("flex min-w-0 flex-col gap-3", className)}>
       <div className="relative">
-        <img src={current.url} alt={current.alt} className="aspect-[3/4] w-full rounded-md object-cover" />
+        {/* Stays eager: this is the detail page's LCP element. Do not add
+            loading="lazy" here — it costs the largest paint. */}
+        <img
+          src={current.url}
+          alt={current.alt}
+          onError={onImageError}
+          className="aspect-[3/4] w-full rounded-md object-cover"
+        />
         <button
           type="button"
           aria-label={labels.previous}
           disabled={index === 0}
           onClick={() => setIndex((i) => Math.max(0, i - 1))}
           className={cn(
-            "absolute inset-inline-start-2 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center",
+            "absolute inset-s-2 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center",
             "rounded-full bg-surface-raised text-ink shadow-md disabled:opacity-40",
             focusRing,
           )}
@@ -61,7 +82,7 @@ export function Gallery({ images, labels, className }: GalleryProps) {
           disabled={index === images.length - 1}
           onClick={() => setIndex((i) => Math.min(images.length - 1, i + 1))}
           className={cn(
-            "absolute inset-inline-end-2 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center",
+            "absolute inset-e-2 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center",
             "rounded-full bg-surface-raised text-ink shadow-md disabled:opacity-40",
             focusRing,
           )}
@@ -69,7 +90,20 @@ export function Gallery({ images, labels, className }: GalleryProps) {
           ›
         </button>
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-2">
+      {/* min-w-0 is what makes overflow-x-auto actually engage. A flex item
+          defaults to min-width:auto, so this strip refuses to shrink below its
+          min-content width — 3 thumbs plus gaps. At 200% text-only zoom the
+          thumbs are 112px each, so min-content is 368px and the strip pushes
+          the whole document sideways on a 375px viewport (WCAG 1.4.10 reflow).
+          With min-w-0 it shrinks and scrolls internally instead.
+
+          p-2 on ALL four sides, not pb-2: a specified overflow-x:auto forces
+          overflow-y to auto too, and the focus ring + the aria-current outline
+          are painted 4px OUTSIDE the border box (2px wide, 2px offset), so with
+          no padding they are clipped on the block axis and — at the scroll
+          origin — on the inline-start edge as well. §8 requires padding here,
+          never outline-offset: 0. --space-2 = 8px leaves double the ring. */}
+      <div className="flex min-w-0 gap-2 overflow-x-auto p-2">
         {images.map((img, i) => (
           <button
             key={i}
@@ -83,7 +117,14 @@ export function Gallery({ images, labels, className }: GalleryProps) {
               focusRing,
             )}
           >
-            <img src={img.url} alt="" aria-hidden="true" className="h-full w-full object-cover" />
+            <img
+              src={img.url}
+              alt=""
+              aria-hidden="true"
+              loading="lazy"
+              onError={onImageError}
+              className="h-full w-full object-cover"
+            />
           </button>
         ))}
       </div>

@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.main import create_app
 from app.tenancy.middleware import (
     TenantContext,
@@ -21,7 +22,7 @@ class RecordingResolver:
     async def __call__(self, slug: str) -> TenantContext | None:
         self.calls.append(slug)
         if slug == "bella":
-            return TenantContext(id=BELLA_ID, slug="bella", settings={})
+            return TenantContext(id=BELLA_ID, slug="bella", name="Bella Bridal", settings={})
         return None
 
 
@@ -32,7 +33,10 @@ def _probe_app(resolver: RecordingResolver) -> FastAPI:
     async def whoami(
         tenant: Annotated[TenantContext, Depends(get_current_tenant)],
     ) -> dict[str, str]:
-        return {"tenant_id": str(tenant.id), "slug": tenant.slug}
+        # `name` is echoed because the storefront renders it as the page <h1>:
+        # this is the only test that proves the resolver wires it all the way to
+        # request.state.tenant rather than leaving an empty heading.
+        return {"tenant_id": str(tenant.id), "slug": tenant.slug, "name": tenant.name}
 
     return app
 
@@ -42,7 +46,11 @@ def test_known_slug_resolves_and_binds_tenant() -> None:
     with TestClient(_probe_app(resolver), base_url="http://bella.localtest.me") as client:
         resp = client.get("/whoami")
     assert resp.status_code == 200
-    assert resp.json() == {"tenant_id": str(BELLA_ID), "slug": "bella"}
+    assert resp.json() == {
+        "tenant_id": str(BELLA_ID),
+        "slug": "bella",
+        "name": "Bella Bridal",
+    }
     assert resolver.calls == ["bella"]
 
 
@@ -89,6 +97,12 @@ def test_exempt_paths_ignore_host() -> None:
     app = _probe_app(resolver)
     with TestClient(app, base_url="http://not-a-tenant-host.example") as client:
         assert client.get("/health").status_code == 200
+        # create_app() serves the schema only when app_env == "dev", so the 200
+        # below is a claim about tenancy exemption ONLY under that condition.
+        # Asserted rather than assumed: without this line a suite running with
+        # APP_ENV=staging would "pass" the exemption check on a 404 that the
+        # middleware never had a chance to produce.
+        assert get_settings().app_env == "dev"
         assert client.get("/openapi.json").status_code == 200
     assert resolver.calls == []
 

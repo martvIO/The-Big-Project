@@ -58,7 +58,7 @@ from app.storage.s3 import S3MediaStorage
 from app.storage.unconfigured import UnconfiguredMediaStorage
 from app.tenancy.middleware import TenantContext
 
-TENANT = TenantContext(id=uuid.uuid4(), slug="bella", settings={})
+TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="Bella Bridal", settings={})
 STAFF_ID = uuid.uuid4()
 TOKEN = "session-token-abc"
 

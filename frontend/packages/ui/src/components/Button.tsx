@@ -13,12 +13,20 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children: ReactNode;
 }
 
+// `transition` (not transition-colors) so the primary variant's elevation
+// affordance animates too; duration + easing resolve to motion tokens.
 const base =
   "relative inline-flex items-center justify-center rounded-md font-body font-semibold " +
-  "transition-colors disabled:cursor-not-allowed disabled:opacity-60";
+  "transition duration-(--motion-fast) ease-out disabled:cursor-not-allowed disabled:opacity-60";
 
 const variants: Record<ButtonVariant, string> = {
-  primary: "bg-gold text-ink hover:bg-gold-strong hover:text-surface-raised",
+  // Hover keeps ink on gold — 6.41:1, same as rest. The old hover (gold-strong
+  // background, white label) measured 3.93:1, under the 4.5 floor, and mobile
+  // browsers leave :hover stuck after a tap so a bride sat looking at it. Gold
+  // is an accent: gold-strong carries no text at any size (tokens.md), and no
+  // token is dark enough to darken under ink and still clear 4.5 — so the hover
+  // affordance is elevation, not a colour swap.
+  primary: "bg-gold text-ink hover:shadow-md",
   secondary: "border border-ink bg-transparent text-ink hover:bg-surface",
   ghost: "bg-transparent text-ink hover:bg-surface",
   danger: "bg-danger text-surface-raised hover:opacity-90",

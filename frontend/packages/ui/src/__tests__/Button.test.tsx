@@ -21,6 +21,16 @@ describe("Button", () => {
     expect(btn).toHaveTextContent("שמירה");
   });
 
+  // A bare `transition-*` utility falls back to Tailwind's own default duration
+  // and curve — neither is a project token (qa §2). Reduced motion still zeroes
+  // it: theme.css kills the transition property itself.
+  it("takes its transition duration and easing from the motion tokens", () => {
+    render(<Button>שמירה</Button>);
+    const className = screen.getByRole("button").className;
+    expect(className).toContain("duration-(--motion-fast)");
+    expect(className).toContain("ease-out");
+  });
+
   it("fires onClick when enabled and not while loading", () => {
     const onClick = vi.fn();
     const { rerender } = render(<Button onClick={onClick}>לחץ</Button>);

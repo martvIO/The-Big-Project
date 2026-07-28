@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { themeTokens, tokens } from "../tokens";
@@ -27,6 +27,19 @@ function parseThemeBlock(css: string): Record<string, string> {
 }
 
 const norm = (v: string) => v.replace(/\s+/g, " ").trim();
+
+// WCAG 2.0 relative luminance / contrast ratio, computed from the token hexes
+// rather than eyeballed. IS 5568 is the legal floor here, not a target.
+function luminance(hex: string): number {
+  const channels = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16) / 255);
+  const [r, g, b] = channels.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
 
 describe("token single-source parity", () => {
   const parsed = parseThemeBlock(themeCss);
@@ -64,6 +77,97 @@ describe("token single-source parity", () => {
     const scheme = ["color", "scheme"].join("-");
     expect(themeCss).toMatch(new RegExp(`${scheme}:\\s*only light`));
     expect(themeCss).toMatch(/font-synthesis:\s*none/);
+  });
+
+  // Tailwind v4 never auto-scans node_modules, and both apps reach this package
+  // through the pnpm workspace symlink — so every class used only inside
+  // packages/ui compiles to nothing unless theme.css declares @source. A wrong
+  // relative path fails the same silent way, hence resolving it for real here.
+  it("declares an @source glob that actually covers the component sources", () => {
+    const match = /@source\s+"([^"]+)"/.exec(themeCss);
+    expect(match, "theme.css must declare @source").not.toBeNull();
+    const themeDir = resolve(process.cwd(), "src");
+    const scanned = resolve(themeDir, match?.[1] ?? "");
+    expect(existsSync(resolve(scanned, "components/BookingCTA.tsx"))).toBe(true);
+  });
+
+  // Four classes in this package were written as `inset-inline*`, which is the
+  // CSS *property*; Tailwind registers it under the *utility* names inset-x /
+  // inset-s / inset-e. The property name compiles to nothing at all, so the
+  // element silently falls back to its static position — how the CTA bar came to
+  // shrink-wrap and both gallery arrows came to stack on one rect. Nothing else
+  // in the suite can see a class that simply never existed.
+  // Scans the whole workspace, not just this package: apps/manage and
+  // apps/storefront write raw utility strings too, and a guard that stops at the
+  // package boundary would miss the identical bug one directory over. The
+  // package's own suite is the only place with a natural home for it.
+  it("never uses a CSS property name where Tailwind wants a utility name", () => {
+    const workspace = resolve(process.cwd(), "..", "..");
+    const roots = [
+      resolve(workspace, "packages/ui/src"),
+      resolve(workspace, "apps/storefront/src"),
+      resolve(workspace, "apps/manage/src"),
+    ].filter((root) => existsSync(root));
+    expect(roots.length, "no source roots found — the relative path is wrong").toBe(3);
+
+    const offenders: string[] = [];
+    for (const root of roots) {
+      for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+        if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) continue;
+        const path = resolve(entry.parentPath, entry.name);
+        if (path.includes("__tests__")) continue;
+        for (const [i, line] of readFileSync(path, "utf8").split("\n").entries()) {
+          if (/\binset-inline/.test(line)) {
+            offenders.push(`${path.slice(workspace.length + 1)}:${String(i + 1)}`);
+          }
+        }
+      }
+    }
+    expect(offenders, "use inset-x / inset-s / inset-e — inset-inline* emits no CSS").toEqual([]);
+  });
+
+  // The storefront's only conversion control. Its hover state used to be
+  // gold-strong + white (3.93:1), and mobile browsers keep :hover latched after
+  // a tap — so the failing pair was what a bride ended up looking at. Reading
+  // the class string means a future "just darken it on hover" cannot regress it
+  // silently: nothing else in the suite can see a colour pair.
+  describe("primary CTA contrast (WCAG 1.4.3 AA, 4.5:1)", () => {
+    const buttonSrc = readFileSync(resolve(process.cwd(), "src/components/Button.tsx"), "utf8");
+    const primary = /primary:\s*"([^"]*)"/.exec(buttonSrc)?.[1] ?? "";
+    const classes = primary.split(/\s+/).filter(Boolean);
+
+    // Last wins, matching the cascade; hover falls back to the resting value.
+    const utility = (prefix: string, state: "" | "hover:") =>
+      classes.filter((c) => c.startsWith(`${state}${prefix}-`)).at(-1)?.slice(`${state}${prefix}-`.length);
+
+    const hex = (name: string | undefined) => {
+      const value = parsed[`--color-${name ?? ""}`];
+      expect(value, `--color-${name ?? "?"} must be a theme token`).toMatch(/^#[0-9A-Fa-f]{6}$/);
+      return value;
+    };
+
+    const restBg = utility("bg", "");
+    const restText = utility("text", "");
+
+    it("reproduces a ratio tokens.md already publishes (guards the guard)", () => {
+      expect(contrastRatio(parsed["--color-ink"], parsed["--color-bg"])).toBeCloseTo(15.24, 1);
+      expect(contrastRatio(parsed["--color-gold-strong"], parsed["--color-surface-raised"])).toBeCloseTo(3.93, 1);
+    });
+
+    it("clears 4.5:1 at rest", () => {
+      expect(contrastRatio(hex(restBg), hex(restText))).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it("clears 4.5:1 on hover — the state a tap leaves latched on mobile", () => {
+      expect(contrastRatio(hex(utility("bg", "hover:") ?? restBg), hex(utility("text", "hover:") ?? restText))) //
+        .toBeGreaterThanOrEqual(4.5);
+    });
+
+    // gold-strong is a non-text UI colour by token law. Barring it here catches
+    // the reuse a ratio check would miss when a variant ships large text.
+    it("never lets gold-strong carry the label", () => {
+      expect(classes.filter((c) => c.includes("text-gold-strong"))).toEqual([]);
+    });
   });
 
   it("nested tokens object never drifts from the flat mirror", () => {

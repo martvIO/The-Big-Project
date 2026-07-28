@@ -2,7 +2,7 @@
 BACKEND := $(CURDIR)/backend
 FRONTEND := $(CURDIR)/frontend
 
-.PHONY: bootstrap dev worker test test-db test-all lint fmt fe-dev fe-build fe-test \
+.PHONY: bootstrap dev worker test test-db test-all lint fmt fe-dev fe-build fe-test e2e qa-greps \
         brain-scan brain-index brain-check brain-lint
 
 bootstrap:
@@ -27,18 +27,29 @@ test-all:
 lint:
 	cd "$(BACKEND)" && uv run ruff check . && uv run ruff format --check . && uv run mypy app tests
 	cd "$(FRONTEND)" && pnpm -r lint && pnpm -r typecheck
+	bash "$(FRONTEND)/scripts/qa-greps.sh"
+
+# qa-checklist.md §11 mechanical checks. Nothing else runs these.
+qa-greps:
+	bash "$(FRONTEND)/scripts/qa-greps.sh"
 
 fmt:
 	cd "$(BACKEND)" && uv run ruff check --fix . && uv run ruff format .
 
+# 5174, not Vite's default: README documents 5173 as the manage console's, and
+# F10 is the first feature that needs both servers up at once.
 fe-dev:
-	cd "$(FRONTEND)" && pnpm --filter storefront dev
+	cd "$(FRONTEND)" && pnpm --filter storefront dev --port 5174
 
 fe-build:
 	cd "$(FRONTEND)" && pnpm -r build
 
 fe-test:
 	cd "$(FRONTEND)" && pnpm -r --if-present test
+
+# Builds both apps and serves them via `vite preview` (see e2e/playwright.config.ts).
+e2e:
+	cd "$(FRONTEND)" && pnpm -r build && pnpm exec playwright install --with-deps chromium && pnpm e2e
 
 # --- .brain code wiki ---------------------------------------------------------
 brain-scan:

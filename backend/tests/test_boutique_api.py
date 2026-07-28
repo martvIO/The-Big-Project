@@ -22,14 +22,14 @@ from app.boutique.service import (
     TermsThrottledError,
     TermsVersionConflictError,
 )
-from app.boutique.validation import BoutiqueValidationError, WeeklyRuleInput
+from app.boutique.validation import BoutiqueValidationError, WeeklyRuleInput, validate_profile
 from app.main import create_app
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.terms_version import TermsVersion
 from app.tenancy.middleware import TenantContext
 
-TENANT = TenantContext(id=uuid.uuid4(), slug="bella", settings={})
+TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="Bella Bridal", settings={})
 STAFF_ID = uuid.uuid4()
 TOKEN = "session-token-abc"
 
@@ -161,6 +161,12 @@ class FakeBoutiqueService:
         profile: dict[str, Any] | None = None,
         toggles: dict[str, Any] | None = None,
     ) -> SettingsResult:
+        # The real service gates on validate_profile before it touches storage,
+        # and the profile field rules (instagram handle shape, essence length)
+        # live only there — not in the schema. Running the real validator here
+        # is what makes a "@bella is a 400" test able to fail.
+        if profile is not None:
+            validate_profile(profile)
         self._record("update_settings", tenant_id=tenant_id, profile=profile, toggles=toggles)
         return self.settings_result
 
@@ -286,8 +292,34 @@ def test_put_settings_toggles_only_leaves_profile_none() -> None:
     assert call["toggles"] == {"deposits_enabled": False}
 
 
+def test_put_settings_round_trips_essence_and_instagram() -> None:
+    fake = FakeBoutiqueService()
+    profile = {"essence": "שמלות כלה בעבודת יד", "instagram": "bella.bridal"}
+    fake.settings_result = SettingsResult(profile=profile, toggles={})
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"profile": profile})
+    assert resp.status_code == 200
+    # Both directions matter: the schema forbids extras, so a dropped field
+    # would 400 on the way in, and the storefront reads these back out.
+    assert fake.call("update_settings")["profile"] == profile
+    assert resp.json()["profile"] == profile
+
+
+def test_put_settings_rejects_an_instagram_handle_with_an_at_sign() -> None:
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"profile": {"instagram": "@bella"}})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    # "@bella" is well under the 30-char schema cap, so only the domain regex
+    # can reject it — and it must reject before anything is written.
+    assert fake.calls == []
+
+
 def test_put_settings_rejects_unknown_profile_key() -> None:
     fake = FakeBoutiqueService()
+    # "evil" is still a genuinely unknown key now that essence and instagram
+    # are legal profile fields.
     with _client(fake) as client:
         resp = client.put("/manage/settings", json={"profile": {"evil": "x"}})
     assert resp.status_code == 400

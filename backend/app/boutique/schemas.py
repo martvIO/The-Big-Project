@@ -16,6 +16,8 @@ from app.boutique.validation import (
     MAX_EXCEPTION_NOTE_LENGTH,
     MAX_PROFILE_ADDRESS_LENGTH,
     MAX_PROFILE_DESCRIPTION_LENGTH,
+    MAX_PROFILE_ESSENCE_LENGTH,
+    MAX_PROFILE_INSTAGRAM_LENGTH,
     MAX_PROFILE_MAPS_URL_LENGTH,
     MAX_PROFILE_PHONE_LENGTH,
     MAX_REFUNDABLE_HOURS,
@@ -40,6 +42,8 @@ class ProfileUpdate(ForbidExtraModel):
     address: str | None = Field(default=None, max_length=MAX_PROFILE_ADDRESS_LENGTH)
     description: str | None = Field(default=None, max_length=MAX_PROFILE_DESCRIPTION_LENGTH)
     maps_url: str | None = Field(default=None, max_length=MAX_PROFILE_MAPS_URL_LENGTH)
+    essence: str | None = Field(default=None, max_length=MAX_PROFILE_ESSENCE_LENGTH)
+    instagram: str | None = Field(default=None, max_length=MAX_PROFILE_INSTAGRAM_LENGTH)
 
 
 class TogglesUpdate(ForbidExtraModel):

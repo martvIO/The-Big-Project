@@ -44,16 +44,21 @@ Backend env: copy `backend/.env.example` → `backend/.env` (never commit real `
 
 **DB tests run as a non-owner role on purpose.** The test harness provisions a `boutique_app` login role (member of the `app_user` group from migration 0002) and runs the isolation suite as it — not as the container superuser. Superusers and table owners bypass row-level security unconditionally, so testing as one would make every isolation assertion vacuously pass. The suite asserts this about its own role, and the app refuses to start outside dev if its role could bypass RLS.
 
-## Frontend dev workflow (manage app)
+## Frontend dev workflow
+
+The two apps share the origin `{slug}.localtest.me` in production (storefront at `/`, console at `/manage`) but are separate Vite servers in dev, so they need **separate ports**:
 
 ```bash
-make dev                                 # backend API on :8000 (terminal 1)
-cd frontend && pnpm --filter manage dev  # Vite dev server on :5173 (terminal 2)
+make dev                                 # backend API on :8000       (terminal 1)
+cd frontend && pnpm --filter manage dev  # manage console  on :5173   (terminal 2)
+make fe-dev                              # storefront      on :5174   (terminal 3)
 ```
 
-Browse **`http://{slug}.localtest.me:5173`** (e.g. `http://bella.localtest.me:5173` after provisioning slug `bella`) — not plain `localhost`. The Vite dev server proxies `/manage` and `/health` to `http://localhost:8000` with `changeOrigin: false`, so the original `{slug}.localtest.me` Host header reaches the backend: tenant resolution and the host-only session cookie work exactly as in production. `allowedHosts: [".localtest.me"]` in `apps/manage/vite.config.ts` is what lets Vite accept the subdomain Host at all — without it the proxy alone is not enough. The manage app is same-origin in production and proxied in dev; **CORS must never be added for it**.
+Browse **`http://{slug}.localtest.me:5173`** for the console and **`:5174`** for the storefront (e.g. `http://bella.localtest.me:5174` after provisioning slug `bella`) — not plain `localhost`. Each Vite dev server proxies its API prefix (`/manage` for the console, `/storefront` for the storefront) plus `/health` to `http://localhost:8000` with `changeOrigin: false`, so the original `{slug}.localtest.me` Host header reaches the backend: tenant resolution and the host-only session cookie work exactly as in production. `allowedHosts: [".localtest.me"]` in each app's `vite.config.ts` is what lets Vite accept the subdomain Host at all — without it the proxy alone is not enough. Both apps are same-origin in production and proxied in dev; **CORS must never be added for either**.
 
-Frontend unit tests: `make fe-test` (= `pnpm -r --if-present test`) — `apps/manage` runs Vitest + Testing Library under jsdom via a standalone `vitest.config.ts`, no backend or browser required. CI runs the same command.
+Frontend unit tests: `make fe-test` (= `pnpm -r --if-present test`) — `apps/manage` and `apps/storefront` each run Vitest + Testing Library under jsdom via a standalone `vitest.config.ts`, no backend or browser required. CI runs the same command.
+
+Browser end-to-end tests: `make e2e` (= build both apps, install Chromium, `pnpm e2e`) — Playwright + axe against `vite preview`, no backend required (the storefront specs stub `/storefront/*` with `page.route()`). CI runs this as a blocking job.
 
 ## Repo layout
 

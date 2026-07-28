@@ -61,6 +61,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Lint
         run: pnpm -r lint
+      # The qa-checklist §11 mechanical checks. `make lint` runs these too, but
+      # this job calls pnpm directly, so without this step nothing enforces them
+      # in CI and the gate is decorative.
+      - name: QA mechanical checks (qa-checklist §11)
+        run: bash scripts/qa-greps.sh
       - name: Typecheck
         run: pnpm -r typecheck
       - name: Test

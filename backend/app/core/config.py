@@ -49,6 +49,20 @@ class Settings(BaseSettings):
     media_presign_max_per_window: int = 60
     media_presign_window_seconds: int = 300
 
+    # Per-TENANT budget on the anonymous storefront reads: a runaway brake, not
+    # a defence (see app/storefront/router.py._throttle for the full argument).
+    # Env-tunable like every other rate limit here so it can be tightened during
+    # an incident without a code deploy.
+    #
+    # The arithmetic, because the analogy to login_max_attempts is wrong here: a
+    # first paint is 2 requests and a dress tap is 1 more, so 6000/60s is roughly
+    # 3000 first-paints per minute per tenant. The obvious number, 600, would 429
+    # real customers the minute a boutique's Instagram story lands — the exact
+    # traffic event this product exists for — while a scraper simply paces
+    # itself. Sized so it cannot fire on organic traffic.
+    storefront_read_max_per_window: int = 6000
+    storefront_read_window_seconds: int = 60
+
     @property
     def secure_cookies(self) -> bool:
         return self.app_env != "dev"
