@@ -1,6 +1,6 @@
 # Plan: Feature 10 — Storefront Browse (Epic E2)
 
-**Created**: 2026-07-28 · **Status**: built, awaiting Gate 3.5 · **Spec**: [storefront-browse.md](../specs/storefront-browse.md)
+**Created**: 2026-07-28 · **Status**: shipped — PR #15 merged 2026-07-28 (Gate 3.5 findings closed on-branch; first CI run green incl. the debuting db/s3 storefront suites; staging deploy verified) · **Spec**: [storefront-browse.md](../specs/storefront-browse.md)
 
 ## How this plan is unusual
 

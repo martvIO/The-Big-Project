@@ -1,7 +1,7 @@
 # Epic: E3 — Booking Engine & SMS Lifecycle
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: planning
+**Status**: ready to start — E1 and E2 are complete (E2 #10 merged PR #15, 2026-07-28), so every upstream dependency of #11–#16 is satisfied. External lead-time items that gate E3 features remain user-owned: Israeli SMS sender-ID registration (#11) and the Grow merchant account (E4 #17).
 **Owner**: team
 **PRD**: §4 (dual booking paths, terms acceptance), §6 (confirmation + 24h reminder; waitlist loop deferred to E5)
 

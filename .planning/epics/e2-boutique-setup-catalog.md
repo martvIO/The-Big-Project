@@ -1,7 +1,7 @@
 # Epic: E2 — Boutique Setup & Catalog
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: building — F7 (PR #10), F8 (PR #11) and F9 (PR #12) shipped, F9 merged 2026-07-27; **F10 is the only feature left. Its AWS gate cleared 2026-07-27 and its spec is written (`../specs/storefront-browse.md`) — awaiting Gate 1.** One Gate 1 deliverable is owned by the user, not the builder: the Hebrew הצהרת נגישות copy for `/accessibility`.
+**Status**: **done** — all four features merged: F7 (PR #10, 2026-07-24), F8 (PR #11, 2026-07-24), F9 (PR #12, 2026-07-27), F10 (PR #15, 2026-07-28). Gate 1 passed via the spec merge (PR #14), which included user sign-off of the builder-authored Hebrew הצהרת נגישות copy. E3 is unblocked.
 **Owner**: team
 **PRD**: §2 (owner controls), §3 (inventory), storefront browse half of §4
 
@@ -15,9 +15,9 @@ Before anyone can book, the boutique must exist as a configured business (hours,
 
 ## Success Criteria
 
-- [ ] Owner configures hours + exceptions, appointment types (duration, audience, deposit amount), and a **versioned cancellation policy combining terms text + structured refund-window fields**; v1 toggles work (deposit on/off, brides-only, price visibility per item)
+- [x] Owner configures hours + exceptions, appointment types (duration, audience, deposit amount), and a **versioned cancellation policy combining terms text + structured refund-window fields**; v1 toggles work (deposit on/off, brides-only, price visibility per item) — F7, merged PR #10 2026-07-24. F10 later amended the profile with `essence` + `instagram` (shipped by its consumer, PR #15).
 - [x] Owner manages dresses with size/qty variants, status (available / out-of-stock / manual reserved flag), and multi-image galleries via presigned S3 upload — F8, merged PR #11 2026-07-24. Out-of-stock is **derived** from the variant rows, never stored; "reserved" is the manual date-less flag. Upload runs behind a storage port, CI-verified against MinIO; with no bucket configured the catalog stays fully usable and only the three media write endpoints answer 503.
-- [ ] Customers browse the catalog and dress pages on the tenant subdomain in Hebrew RTL, luxury cream/gold design, WCAG 2.0 AA (IS 5568), price visibility respected
+- [x] Customers browse the catalog and dress pages on the tenant subdomain in Hebrew RTL, luxury cream/gold design, WCAG 2.0 AA (IS 5568), price visibility respected — F10, merged PR #15 2026-07-28. Public `/storefront` read API (field allowlist: hidden prices omitted server-side, raw stock never sent, archived → uniform 404) + full SPA (`/`, `/dress/{id}`, `/about`, `/accessibility`), e2e under axe. Staging verified post-deploy: `/health` ok, `/openapi.json` closed outside dev, uniform `TENANT_NOT_FOUND` on non-tenant hosts. Caveats: real-subdomain demo awaits the staging domain purchase (E1 #2 Task 3); the manual IS 5568 Safari/Firefox keyboard pass + one screen-reader pass are user-owned before pilot exposure (e2e is chromium-only).
 
 ---
 
@@ -28,7 +28,7 @@ Before anyone can book, the boutique must exist as a configured business (hours,
 | 7 | Owner settings, toggles & structured cancellation policy | done | [spec](../specs/owner-settings.md) | [plan](../plans/owner-settings.md) | E1 #5 |
 | 8 | Catalog management | done | [spec](../specs/catalog-management.md) | [plan](../plans/catalog-management.md) | E1 #2 (S3 base), E1 #5 |
 | 9 | RTL design system & tokens | done | [design package](../design/screens/design-system/README.md) | [plan](../plans/rtl-design-system.md) | E1 #1 |
-| 10 | Storefront browse | spec'd — awaiting Gate 1 | [spec](../specs/storefront-browse.md) | — | E1 #4, #7, #8, #9 |
+| 10 | Storefront browse | done | [spec](../specs/storefront-browse.md) | [plan](../plans/storefront-browse.md) | E1 #4, #7, #8, #9 |
 
 ---
 
