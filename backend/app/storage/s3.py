@@ -70,6 +70,11 @@ class S3MediaStorage:
             # botocore fall back to the legacy global `bucket.s3.amazonaws.com`
             # host, which AWS opt-in regions (il-central-1 included) reject with
             # IllegalLocationConstraintException. Always resolve a real endpoint.
+            # Side effect worth knowing: an explicit endpoint_url makes botocore
+            # address the bucket path-style regardless of _force_path_style, so on
+            # real AWS the URL is s3.<region>.amazonaws.com/<bucket> even with the
+            # flag off. Supported by AWS, and verified end-to-end against
+            # il-central-1 — but that flag no longer decides the URL shape here.
             endpoint_url = self._endpoint_url or f"https://s3.{self._region}.amazonaws.com"
             self._client = boto3.client(
                 "s3",

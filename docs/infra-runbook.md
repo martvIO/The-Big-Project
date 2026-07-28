@@ -67,6 +67,17 @@ Access key lives in `Backend/.env` locally and in the `api`/`worker` Railway
 services — nowhere else. Rotate via `aws iam create-access-key` +
 `aws iam delete-access-key` (old key) if it ever leaks.
 
+> **OPEN REMEDIATION — staging credential reaches the production bucket.**
+> Granting this policy `boutique-production-media/*` as well as the staging
+> bucket breaks environment isolation: staging is the less-hardened,
+> actively-deployed environment, so any compromise of the staging `api`/`worker`
+> process gets `PutObject`/`DeleteObject` on real production tenant media —
+> overwrite-defacement, or delete-markers causing an outage. Versioning makes
+> the deletes recoverable; the overwrite path is not mitigated.
+> **Fix**: narrow `boutique-media-staging-access` to the
+> `boutique-staging-media/*` ARN only, and give production its own user and
+> policy when it is provisioned. Raised by the F2 Task 2/4 security review.
+
 ### Billing
 
 AWS Budgets (not the legacy CloudWatch billing-alarm checkbox — that needs a
@@ -179,8 +190,21 @@ Going forward, `preDeployCommand` handles this on every deploy.
 
 ### Env vars (both `api` and `worker`)
 
+> **OPEN REMEDIATION — the owner-role URL is provisioned on `worker`, which
+> never uses it.** Only `api` has a `preDeployCommand`, so `worker` holds a
+> standing owner-role Postgres credential with no consumer. Table ownership
+> carries implicit privileges that no `REVOKE` binds — an owner connection can
+> `ALTER TABLE … NO FORCE ROW LEVEL SECURITY` and defeat tenant isolation
+> outright, and `verify_database_role()` only guards the app's own SQLAlchemy
+> engine, not a raw connection opened against a variable sitting in the
+> environment. The realistic trigger is mundane: a future worker feature
+> copy-pasting the wrong variable name when both are present.
+> **Fix**: delete `MIGRATIONS_DATABASE_URL` from the `worker` service; keep it
+> on `api` only. Raised by the F2 Task 2/4 security review.
+
 `APP_ENV=staging`, `DATABASE_URL` (boutique_app role, `postgresql+asyncpg://`),
-`MIGRATIONS_DATABASE_URL` (owner role, consumed only by `preDeployCommand`),
+`MIGRATIONS_DATABASE_URL` (owner role, consumed only by `preDeployCommand` on
+`api` — see the remediation note above; it should not be set on `worker`),
 `BASE_DOMAIN=staging.boutique-platform.invalid` (placeholder — swap for the
 real staging domain once Task 3 lands; nothing routes through it yet since
 no wildcard DNS exists), `TRUST_FORWARDED_FOR=true`,
@@ -207,12 +231,51 @@ subdomain routing (that needs the real domain + wildcard TLS).
 
 `.github/workflows/ci.yml` → `deploy-staging` job: `needs: [backend,
 frontend]`, only on `push` to `main` (never `pull_request`), own
-non-cancelling concurrency group `staging-deploy`. Installs the Railway CLI,
-runs `railway up --service api --ci` then `--service worker --ci` using the
+non-cancelling concurrency group `staging-deploy`. Installs the Railway CLI at
+a pinned version (bump by hand — Dependabot does not watch `npm install -g` in
+a run step), runs `railway up --service api --ci` then `--service worker --ci` using the
 `RAILWAY_TOKEN` secret (project-scoped — created in the Railway dashboard
 under Settings → Tokens, since `projectTokenCreate` over the GraphQL API
 returned "Not Authorized" for a personal login session; dashboard creation
-was the only path that worked), then curls the api service's `/health`.
+was the only path that worked), then curls the api service's `/health` and
+asserts on the body, not just the status — an app that booted with
+`MEDIA_BUCKET` unset still answers 200, just with `"media":"unconfigured"`.
+The health URL comes from the `STAGING_HEALTH_URL` repo variable when set,
+falling back to the generated Railway domain; point the variable at the real
+staging domain once Task 3 lands rather than editing the workflow.
+
+### Operator CLI against staging (plan Task 2 step 5)
+
+The operator CLI is `Backend/app/cli.py`, and it must run inside a service
+container — it needs `DATABASE_URL` and the Postgres private network, neither
+of which exists on a laptop. Shell into the `api` service and invoke it as a
+module:
+
+```
+railway ssh --service api
+python -m app.cli list
+python -m app.cli provision --slug <slug> --name "<Boutique Name>" --owner-email <email>
+python -m app.cli suspend --slug <slug>
+python -m app.cli reset-password --slug <slug> --owner-email <email>
+```
+
+Every subcommand takes `--operator <name>` for the audit trail. It defaults to
+`$USER`, which inside a container is whatever the image runs as — pass it
+explicitly for staging so `platform_audit_log` records a real person.
+`provision` and `reset-password` prompt for the password on stdin rather than
+taking it as an argument, so it stays out of shell history.
+
+This is the path Task 5's two-tenant staging verification will use.
+
+### If the worker deploy fails after api succeeded
+
+The two `railway up` steps are sequential and not atomic — Railway has no
+multi-service transaction. If `api` deploys and `worker` fails, the job stops
+before the smoke check and the services sit on different commits. Recovery is
+manual and safe to repeat: check what each service is actually running with
+`railway status`, then re-run `railway up --service worker` from `Backend/`.
+No rollback of `api` is needed — the two services share a database but not a
+release, and `worker` currently registers no jobs.
 
 ## Verified end-to-end
 
@@ -229,6 +292,36 @@ was the only path that worked), then curls the api service's `/health`.
   SSH tunnel, without touching the live service.
 - `worker` service: deployed, running, logs show a clean start
   (`worker started — no jobs registered yet`), not crash-looping.
+
+## Hardening backlog (raised by the F2 Task 2/4 security review)
+
+Two HIGH items are recorded inline above where the config they describe lives:
+narrowing the staging IAM policy off the production bucket (§IAM), and dropping
+`MIGRATIONS_DATABASE_URL` from `worker` (§Env vars). Both need console/CLI
+access and are the operator's to apply. The rest:
+
+- **Actions are tag-pinned, not SHA-pinned.** `deploy-staging` reuses
+  `actions/checkout@v4` in the same job that later exposes `RAILWAY_TOKEN`, so
+  a tag re-point executes with the token in scope for subsequent steps.
+  Deferred deliberately: four Dependabot PRs (#6–#9) are open against exactly
+  these actions, and SHA-pinning now would conflict with all of them. Do it in
+  one pass after they land.
+- **A failed deploy does not block the next one.** GitHub releases a
+  concurrency group on job completion regardless of outcome, so if `api`
+  succeeds and `worker` fails — or Alembic fails mid-`preDeployCommand` — the
+  next merge deploys straight on top of the partial state, with no alert.
+  Acceptable at staging volume; must be closed before this becomes the
+  production pattern under E4 #21.
+- **`RAILWAY_TOKEN` blast radius.** Project-scoped rather than account-scoped,
+  so damage is bounded to `boutique-platform` — but that project holds the
+  owner DB URL and the AWS media keys and accepts arbitrary code pushes to
+  `api`/`worker`. Treat a leak as a full staging compromise: rotate the token,
+  the `boutique_app` password, and the IAM key together.
+- **Topology disclosure.** The AWS account ID, Railway resource UUIDs, and the
+  generated `*.up.railway.app` hostname are committed in plaintext here and in
+  `.planning/external-applications.md`. None grants access on its own, but all
+  of it is reconnaissance material — redact before any decision to make this
+  repo public.
 
 ## Explicitly not done here
 
