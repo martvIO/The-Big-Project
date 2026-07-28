@@ -62,14 +62,16 @@ class AvailabilityExceptionsRepository:
         session: AsyncSession,
         tenant_id: UUID,
         on_or_after: datetime.date | None = None,
+        on_or_before: datetime.date | None = None,
     ) -> list[AvailabilityException]:
-        """`on_or_after` filters in SQL rather than in the caller: the storefront
-        wants upcoming exceptions only, and a boutique that has recorded every
-        holiday for three years should not ship three years of history to the
-        public page to have it discarded in Python.
+        """Both bounds filter in SQL rather than in the caller: the storefront
+        wants a bounded window, and a boutique that has recorded every holiday
+        for three years should not ship three years of rows to the public page
+        to have them discarded in Python. Bounding the query — not just the
+        response — is what keeps an anonymous request off a full scan.
 
-        Defaulting to None keeps the manage caller byte-identical — the owner's
-        console needs the full history, past dates included.
+        Both defaulting to None keeps the manage caller byte-identical — the
+        owner's console needs the full history, past dates included.
         """
         stmt = select(AvailabilityException).where(
             AvailabilityException.tenant_id == tenant_id,
@@ -77,6 +79,8 @@ class AvailabilityExceptionsRepository:
         )
         if on_or_after is not None:
             stmt = stmt.where(AvailabilityException.date >= on_or_after)
+        if on_or_before is not None:
+            stmt = stmt.where(AvailabilityException.date <= on_or_before)
         stmt = stmt.order_by(AvailabilityException.date)
         return list((await session.execute(stmt)).scalars().all())
 

@@ -25,8 +25,8 @@ This is the product's transactional core: turn the browse-only storefront into a
 
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
-| 11 | SMS foundation | building | [spec](../specs/sms-foundation.md) | [plan](../plans/sms-foundation.md) | E1 #2, #3 |
-| 12 | Availability & slot engine | todo | — | — | E2 #7 |
+| 11 | SMS foundation | **done** (PR #16) | [spec](../specs/sms-foundation.md) | [plan](../plans/sms-foundation.md) | E1 #2, #3 |
+| 12 | Availability & slot engine | building | [spec](../specs/availability-slot-engine.md) | [plan](../plans/availability-slot-engine.md) | E2 #7 |
 | 13 | Booking core API | todo | — | — | E2 #7, #11, #12 |
 | 14 | Storefront booking UI | todo | — | — | E2 #10, #13 |
 | 15 | Owner booking management | todo | — | — | #13 |
@@ -58,7 +58,7 @@ All lifecycle sends on top of Feature 11: immediate confirmation (date, time, ma
 
 ## Risks
 
-- The slot capacity model has open product questions (parallel appointments? fitting-room count?) — resolve with the pilot boutique **before** Feature 12's spec.
+- ~~The slot capacity model has open product questions~~ — **resolved 2026-07-28**: a slot is a START TIME (no duration, no end time, no overlap arithmetic), and `availability_rules.capacity` is how many bookings may share one. F12's spec records the model; F13 enforces it with a per-tenant advisory lock plus a `seat_index` unique index, structural at any capacity.
 - OTP adds SMS cost + a friction step to every booking — measured, it's the price of the tokenized-link security model; revisit only if pilot data shows abandonment.
 
 ## Notes

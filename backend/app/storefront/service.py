@@ -27,7 +27,10 @@ import uuid
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.booking.slots import Slot, materialize_slots
+from app.booking.validation import SLOT_WINDOW_DEFAULT_DAYS, SLOT_WINDOW_MAX_DAYS
 from app.catalog.service import CatalogNotFoundError, MediaView, sign_media
+from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.availability import (
     AvailabilityExceptionsRepository,
     AvailabilityRulesRepository,
@@ -36,6 +39,7 @@ from app.db.repositories.dress_media import DressMediaRepository
 from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
 from app.db.tenant import tenant_session
+from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.dress import Dress
 from app.storage.base import MediaStorage
@@ -44,6 +48,7 @@ from app.storefront.validation import (
     STOREFRONT_LIST_MAX_LIMIT,
     UPCOMING_EXCEPTIONS_LIMIT,
     Clock,
+    SlotWindowError,
     today_jerusalem,
 )
 
@@ -110,6 +115,7 @@ class StorefrontService:
         self._media = DressMediaRepository()
         self._rules = AvailabilityRulesRepository()
         self._exceptions = AvailabilityExceptionsRepository()
+        self._appointment_types = AppointmentTypesRepository()
 
     async def list_dresses(
         self,
@@ -165,6 +171,57 @@ class StorefrontService:
             media=[sign_media(self._storage, item) for item in media],
         )
 
+    async def list_slots(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        from_date: datetime.date | None = None,
+        to_date: datetime.date | None = None,
+    ) -> list[Slot]:
+        """Two statements: the active weekly set and the exceptions in the
+        window. The grid itself is computed by the pure engine.
+
+        **`booked` is `{}` and that is the F13 seam.** No `bookings` table
+        exists yet, so every slot currently reports full capacity — this
+        endpoint OVERSTATES availability until F13 replaces the literal below
+        with a per-instant count. Nothing links to it before F14, and F13 is the
+        next feature; the parameter exists precisely so that change is one line
+        here and zero lines in the engine.
+        """
+        today = today_jerusalem(self._clock)
+        window_start, window_end = slot_window(from_date, to_date, today)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rules = await self._rules.list_active(session, tenant_id)
+            # Bounded on BOTH sides in SQL: the window bounds the response
+            # either way, but an unbounded upper predicate would still scan
+            # every future exception the boutique has ever recorded, on every
+            # anonymous request.
+            exceptions = await self._exceptions.list_active(
+                session, tenant_id, on_or_after=window_start, on_or_before=window_end
+            )
+        now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
+        return materialize_slots(
+            rules=rules,
+            exceptions=exceptions,
+            booked={},
+            window_start=window_start,
+            window_end=window_end,
+            now=now.astimezone(datetime.UTC),
+        )
+
+    async def list_appointment_types(self, tenant_id: uuid.UUID) -> list[AppointmentType]:
+        """One statement. Active types only — `list_active` pins
+        `deleted_at IS NULL`, so an archived type leaves the public surface the
+        same way an archived dress does.
+
+        No audience filter: `brides_only` marks a type for brides and an
+        ANONYMOUS visitor cannot be classified as one, so a server-side filter
+        here would be theatre. The field ships so the UI can label the option;
+        real enforcement waits for a client identity (E5).
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            return await self._appointment_types.list_active(session, tenant_id)
+
     async def get_boutique(
         self, tenant_id: uuid.UUID, *, name: str, settings: dict[str, object]
     ) -> StorefrontBoutiqueView:
@@ -187,6 +244,45 @@ class StorefrontService:
             hours=rules,
             exceptions=exceptions[:UPCOMING_EXCEPTIONS_LIMIT],
         )
+
+
+def slot_window(
+    from_date: datetime.date | None, to_date: datetime.date | None, today: datetime.date
+) -> tuple[datetime.date, datetime.date]:
+    """Resolve and bound the requested window into the publishable band.
+
+    Pure and importable so the clamping rule is unit-testable and so the router
+    stays a parser. `to < from` is a caller error (400); a `to` beyond the
+    ceiling is silently clamped rather than rejected, because a picker asking
+    for more than it can render is a UI bug, not a user error, and 60 days of
+    grid is already a generous answer.
+
+    **Both bounds are clamped against `today`, never against the caller's own
+    value, and that is what makes the arithmetic here total.** `date + timedelta`
+    raises `OverflowError` within 60 days of `date.max`, and `?from=9999-12-31`
+    is among the first things anyone probes on a public endpoint — it would
+    escape as a bare 500 outside the house error shape. `today` comes from a
+    real clock and can never be near either end of the `date` range. Same
+    reasoning as `MAX_LIST_OFFSET` above: an unbounded caller-supplied value
+    reaches something that raises rather than validates.
+
+    Clamping the FLOOR to today costs nothing, because the engine already drops
+    everything at or before `now`. A window lying entirely in the past comes
+    back inverted and materializes to no slots — the same empty answer as
+    before, without a second rule that could disagree with the first.
+    """
+    requested_start = from_date if from_date is not None else today
+    ceiling = today + datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS)
+    # Checked against what the CALLER asked for, so a wholly-past window stays
+    # an empty answer rather than becoming a 400 once the floor clamp moves.
+    if to_date is not None and to_date < requested_start:
+        raise SlotWindowError("`to` must not precede `from`.")
+    start = min(max(requested_start, today), ceiling)
+    if to_date is None:
+        return start, min(start + datetime.timedelta(days=SLOT_WINDOW_DEFAULT_DAYS), ceiling)
+    # min() only: comparing against a date.max `to` is safe where adding to it
+    # is not.
+    return start, min(to_date, ceiling)
 
 
 def upcoming_exceptions(

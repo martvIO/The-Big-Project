@@ -40,10 +40,12 @@ from fastapi.testclient import TestClient
 from app.auth.dependencies import get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
+from app.booking.slots import Slot
 from app.catalog.schemas import DressResponse
 from app.catalog.service import CatalogNotFoundError, MediaView
 from app.core.config import Settings
 from app.main import create_app
+from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.dress import Dress
 from app.models.dress_media import DressMedia
@@ -70,11 +72,13 @@ from app.storefront.validation import (
     STOREFRONT_LIST_DEFAULT_LIMIT,
     STOREFRONT_LIST_MAX_LIMIT,
     UPCOMING_EXCEPTIONS_LIMIT,
+    SlotWindowError,
 )
 from app.tenancy.middleware import EXEMPT_PATHS, TenantContext
 
 DRESS_ID = uuid.uuid4()
 MEDIA_ID = uuid.uuid4()
+APPOINTMENT_TYPE_ID = uuid.uuid4()
 
 JPEG = "image/jpeg"
 
@@ -314,6 +318,30 @@ def _exception(date: datetime.date, *, note: str | None = "סגור") -> Availab
     )
 
 
+def _slot(hour: int, minute: int, *, remaining: int) -> Slot:
+    """capacity is derived from remaining so the fixture cannot accidentally
+    assert a capacity that the wire is supposed to never carry."""
+    return Slot(
+        starts_at=datetime.datetime(2026, 8, 3, hour, minute, tzinfo=datetime.UTC),
+        capacity=remaining,
+        booked=0,
+    )
+
+
+def _appointment_type() -> AppointmentType:
+    return AppointmentType(
+        id=APPOINTMENT_TYPE_ID,
+        tenant_id=TENANT.id,
+        name="מדידת כלה",
+        duration_minutes=60,
+        audience="brides_only",
+        deposit_required=True,
+        deposit_amount_agorot=15_000,
+        sort_order=0,
+        created_at=CREATED_AT,
+    )
+
+
 def _boutique_view(
     *,
     profile: dict[str, Any] | None = None,
@@ -333,7 +361,7 @@ def _boutique_view(
 
 
 class FakeStorefrontService:
-    """Duck-typed StorefrontService covering exactly the three read methods the
+    """Duck-typed StorefrontService covering exactly the five read methods the
     router calls, so a signature drift on any one of them fails here."""
 
     def __init__(self) -> None:
@@ -344,6 +372,8 @@ class FakeStorefrontService:
         )
         self.detail_view = _detail_view()
         self.boutique_view = _boutique_view()
+        self.slots = [_slot(10, 0, remaining=2), _slot(10, 30, remaining=1)]
+        self.appointment_types = [_appointment_type()]
 
     def _record(self, method: str, /, **kwargs: Any) -> None:
         self.calls.append((method, kwargs))
@@ -377,6 +407,20 @@ class FakeStorefrontService:
     ) -> StorefrontBoutiqueView:
         self._record("get_boutique", tenant_id=tenant_id, name=name, settings=settings)
         return self.boutique_view
+
+    async def list_slots(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        from_date: datetime.date | None = None,
+        to_date: datetime.date | None = None,
+    ) -> list[Slot]:
+        self._record("list_slots", tenant_id=tenant_id, from_date=from_date, to_date=to_date)
+        return self.slots
+
+    async def list_appointment_types(self, tenant_id: uuid.UUID) -> list[AppointmentType]:
+        self._record("list_appointment_types", tenant_id=tenant_id)
+        return self.appointment_types
 
 
 class FakeAuthService:
@@ -486,6 +530,9 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         "/storefront/dresses",
         "/storefront/dresses/{dress_id}",
         "/storefront/boutique",
+        # F12's booking-grid reads, on this same GET-only router.
+        "/storefront/slots",
+        "/storefront/appointment-types",
         # F11's OTP mutations — a SIBLING router on the same prefix, because the
         # read router is contractually GET-only. Their posture (anonymous,
         # cookie-blind, no-store, POST-only) is asserted in
@@ -1325,3 +1372,80 @@ class _RecordingMedia:
         self, session: Any, tenant_id: uuid.UUID, dress_ids: list[uuid.UUID]
     ) -> dict[uuid.UUID, Any]:
         return {}
+
+
+# --- F12: the booking grid reads ---
+
+
+def test_slots_ship_start_times_and_nothing_else() -> None:
+    """`capacity` is in FORBIDDEN_KEYS so the wire-absence walk arms itself.
+    This pins the harder half: `remaining` must not be here EITHER. With no
+    bookings it equals capacity exactly, so shipping it would republish the
+    fenced field under a key the absence walk does not know to forbid."""
+    with _client() as client:
+        resp = client.get("/storefront/slots")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "slots": [
+            {"starts_at": "2026-08-03T10:00:00Z"},
+            {"starts_at": "2026-08-03T10:30:00Z"},
+        ]
+    }
+    assert "remaining" not in resp.text
+    assert "capacity" not in resp.text
+
+
+def test_slots_pass_the_window_through_verbatim() -> None:
+    service = FakeStorefrontService()
+    with _client(service) as client:
+        resp = client.get("/storefront/slots?from=2026-08-02&to=2026-08-08")
+    assert resp.status_code == 200
+    call = service.call("list_slots")
+    assert call["from_date"] == datetime.date(2026, 8, 2)
+    assert call["to_date"] == datetime.date(2026, 8, 8)
+
+
+def test_slots_default_the_window_to_the_service() -> None:
+    """Both bounds are None on the wire; resolving them is the service's job
+    (it owns `today` in Jerusalem), not the router's."""
+    service = FakeStorefrontService()
+    with _client(service) as client:
+        client.get("/storefront/slots")
+    call = service.call("list_slots")
+    assert call["from_date"] is None
+    assert call["to_date"] is None
+
+
+def test_an_inverted_window_is_a_400_not_an_empty_list() -> None:
+    """Answering "no availability" to a caller bug would hide it."""
+    service = FakeStorefrontService()
+    service.raise_on["list_slots"] = SlotWindowError("`to` must not precede `from`.")
+    with _client(service) as client:
+        resp = client.get("/storefront/slots?from=2026-08-08&to=2026-08-02")
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_a_malformed_date_is_a_house_shape_400() -> None:
+    with _client() as client:
+        resp = client.get("/storefront/slots?from=not-a-date")
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_appointment_types_ship_the_booking_facts() -> None:
+    with _client() as client:
+        resp = client.get("/storefront/appointment-types")
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {
+            "id": str(APPOINTMENT_TYPE_ID),
+            "name": "מדידת כלה",
+            "duration_minutes": 60,
+            # Disclosed, not enforced: an anonymous visitor cannot be classified
+            # as a bride, so the UI labels the option and E5 owns enforcement.
+            "audience": "brides_only",
+            "deposit_required": True,
+            "deposit_amount_agorot": 15_000,
+        }
+    ]

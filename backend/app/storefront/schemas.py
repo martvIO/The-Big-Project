@@ -128,3 +128,46 @@ class BoutiqueResponse(BaseModel):
     instagram: str | None
     hours: list[HoursRow]
     exceptions: list[ExceptionRow]
+
+
+class SlotRow(BaseModel):
+    """A bookable start time, and NOTHING else.
+
+    An earlier draft also shipped `remaining`. It looked like the safe half of
+    `capacity` — but the engine drops full slots, so with no bookings yet
+    `remaining` equals `capacity` exactly, for every slot, on every response.
+    That republishes verbatim the one field F10's allowlist fences off this
+    surface ("discloses how many parallel fittings the boutique runs"), just
+    under a different key, and the wire-absence walk cannot see it because the
+    key it forbids is spelled differently.
+
+    The picker does not need it either: every slot the engine returns is by
+    construction bookable, so the time IS the whole message. A scarcity cue
+    ("last spot") is a real product idea, and the feature that adds it should
+    add a deliberately COARSE signal on top of a real booking count — not a
+    number that happens to equal capacity today.
+    """
+
+    starts_at: datetime.datetime
+
+
+class SlotListResponse(BaseModel):
+    slots: list[SlotRow]
+
+
+class AppointmentTypeRow(BaseModel):
+    """What a customer can book, and what it costs to hold.
+
+    `audience` is DISCLOSED, not enforced: an anonymous visitor cannot be
+    classified as a bride, so the field exists for the UI to label the option
+    and real enforcement waits for a client identity (E5). `deposit_*` ships now
+    because a customer is entitled to see a deposit before choosing a time, not
+    after — E4's payment step reads the same fields.
+    """
+
+    id: UUID
+    name: str
+    duration_minutes: int
+    audience: str
+    deposit_required: bool
+    deposit_amount_agorot: int | None
