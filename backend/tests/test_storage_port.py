@@ -259,6 +259,30 @@ def test_presigned_post_returns_the_fields_the_browser_must_post(
     assert post.fields["key"] == KEY
 
 
+def test_presigned_post_targets_the_regional_endpoint_not_the_legacy_global_one(
+    dummy_aws_credentials: None,
+) -> None:
+    """Regression: the POST form's action URL comes from the client's endpoint_url,
+    not from region_name. With endpoint_url unset botocore fell back to the legacy
+    global `<bucket>.s3.amazonaws.com`, which opt-in regions reject outright with
+    IllegalLocationConstraintException — so every upload to il-central-1 failed
+    while every MinIO test passed, because MinIO always sets an explicit endpoint."""
+    post = _presign(S3MediaStorage(_settings()))
+
+    assert post.url.startswith("https://s3.il-central-1.amazonaws.com")
+    assert f"{BUCKET}.s3.amazonaws.com" not in post.url
+
+
+def test_presigned_post_still_honours_an_explicit_endpoint(
+    dummy_aws_credentials: None,
+) -> None:
+    """The regional fallback must not override a configured endpoint, or local
+    dev and the MinIO suite would start signing against real AWS."""
+    minio = _settings(media_endpoint_url="http://localhost:9000", media_force_path_style=True)
+
+    assert _presign(S3MediaStorage(minio)).url.startswith("http://localhost:9000")
+
+
 # --- signed GET shape ---
 
 

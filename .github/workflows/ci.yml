@@ -10,7 +10,12 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Workflow-level cancellation kills the whole run, deploy-staging included —
+  # a job-level concurrency group grants no immunity from that. So main must
+  # not cancel, or a second merge can abort a mid-flight railway up or the
+  # Alembic preDeployCommand riding inside it. PR churn still cancels freely,
+  # which is the only place the saved runner minutes were ever coming from.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   backend:
@@ -103,6 +108,44 @@ jobs:
         run: make brain-check
       - name: Brain lint (structure and links)
         run: make brain-lint
+
+  deploy-staging:
+    name: Deploy staging (Railway)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: staging-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        # Pinned deliberately: the next steps run this binary with RAILWAY_TOKEN in
+        # scope, so an unpinned `latest` would auto-adopt a compromised publish on
+        # the next merge with no review gate. Dependabot does not watch `npm
+        # install -g` in a run step — bump this by hand.
+        run: npm install -g @railway/cli@5.30.1
+      - name: Deploy api
+        working-directory: backend
+        run: railway up --service api --ci
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Deploy worker
+        working-directory: backend
+        run: railway up --service worker --ci
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Smoke check
+        # Falls back to the generated Railway domain so this works today; set the
+        # STAGING_HEALTH_URL repo variable to override once Task 3's real staging
+        # domain lands, instead of editing this file. Asserting on the body (not
+        # just the status) is what catches a deploy that booted with MEDIA_BUCKET
+        # unset — that still answers 200, just with "media":"unconfigured".
+        run: |
+          url="${{ vars.STAGING_HEALTH_URL || 'https://api-production-2ecb.up.railway.app/health' }}"
+          curl -fsS --retry 5 --retry-delay 5 --retry-connrefused "$url" \
+            | tee /dev/stderr \
+            | jq -e '.status == "ok" and .media == "configured"' > /dev/null
 
   audit:
     name: Dependency audits (warn-only)
