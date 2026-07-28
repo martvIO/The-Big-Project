@@ -206,8 +206,11 @@ async function gotoSettled(page: Page, path: string): Promise<void> {
     await expect(page.getByRole("heading", { name: "שעות פעילות" })).toBeVisible();
   } else {
     // /accessibility has no loading state by design; the boutique name is what
-    // arrives late and swaps in over the brand fallback.
-    await expect(page.getByText(BOUTIQUE.name)).toBeVisible();
+    // arrives late and swaps in over the brand fallback. .first() because the
+    // name legitimately appears twice — once as the site the statement covers,
+    // once as the named accessibility contact while no platform coordinator is
+    // configured (src/lib/coordinator.ts).
+    await expect(page.getByText(BOUTIQUE.name).first()).toBeVisible();
   }
   await page.evaluate(() => document.fonts.ready);
 }

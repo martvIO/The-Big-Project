@@ -4,7 +4,6 @@ import {
   FALLBACK_ERROR_MESSAGE,
   api,
   apiFetch,
-  errorMessage,
   getBoutiqueOnce,
   isNotFound,
   resetBoutiqueCache,
@@ -58,11 +57,6 @@ describe("apiFetch error extraction", () => {
       code: "UNKNOWN",
       message: FALLBACK_ERROR_MESSAGE,
     });
-  });
-
-  it("surfaces a Hebrew message for a non-ApiError throw", () => {
-    expect(errorMessage(new TypeError("Failed to fetch"))).toBe(FALLBACK_ERROR_MESSAGE);
-    expect(errorMessage(new ApiError(429, "TOO_MANY_ATTEMPTS", "רגע."))).toBe("רגע.");
   });
 
   it("recognises the archived/unknown-dress 404 the detail page renders", () => {

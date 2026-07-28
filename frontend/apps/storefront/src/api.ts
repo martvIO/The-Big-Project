@@ -20,10 +20,6 @@ export class ApiError extends Error {
   }
 }
 
-export function errorMessage(error: unknown): string {
-  return error instanceof ApiError ? error.message : FALLBACK_ERROR_MESSAGE;
-}
-
 // An unknown id, an archived (soft-deleted) dress and another tenant's dress are
 // all indistinguishable 404s by design — every one of them renders
 // "השמלה כבר לא זמינה".

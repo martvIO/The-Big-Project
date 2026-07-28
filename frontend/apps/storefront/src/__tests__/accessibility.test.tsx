@@ -41,7 +41,10 @@ afterEach(() => {
 // body ends is a leak into the next test — so settle it before asserting.
 async function renderStatement() {
   const utils = render(<Accessibility />);
-  await screen.findByText(BOUTIQUE.name);
+  // findAll, not find: the boutique name is the site the statement covers AND —
+  // while no platform coordinator is configured — the named accessibility
+  // contact, so it legitimately appears more than once.
+  await screen.findAllByText(BOUTIQUE.name);
   return utils;
 }
 
@@ -76,41 +79,46 @@ describe("Accessibility statement page", () => {
     expect(screen.getByText(i18n.t("statement.limitsZoom")).tagName).toBe("LI");
   });
 
-  it("names an accessibility coordinator and links the address as a real mailto", async () => {
+  it("names a contact and reaches it, with the boutique standing in for an unset coordinator", async () => {
     await renderStatement();
-    const email = i18n.t("statement.coordinatorEmail");
+    const phone = BOUTIQUE.profile.phone ?? "";
 
     expect(
       screen.getByRole("heading", { name: i18n.t("statement.coordinatorHeading") }),
     ).toBeInTheDocument();
-    expect(screen.getByText(i18n.t("statement.coordinatorName"))).toBeInTheDocument();
-    expect(screen.getByText(i18n.t("statement.coordinatorRole"))).toBeInTheDocument();
+    // ACCESSIBILITY_COORDINATOR is null until the platform operator supplies it,
+    // so the boutique is named — a real service provider, not a placeholder.
+    expect(screen.getAllByText(BOUTIQUE.name).length).toBeGreaterThan(0);
 
-    const links = screen.getAllByRole("link", { name: email });
+    const links = screen.getAllByRole("link", { name: phone });
     expect(links.length).toBeGreaterThan(0);
     for (const link of links) {
-      expect(link).toHaveAttribute("href", `mailto:${email}`);
+      expect(link).toHaveAttribute("href", `tel:${phone}`);
+      // A phone is a strong-LTR digit run in RTL prose; dir isolates it.
+      expect(link).toHaveAttribute("dir", "ltr");
     }
   });
 
-  it("isolates the coordinator phone as LTR inside the RTL prose", async () => {
-    await renderStatement();
+  // The failure this guards is specific and was live: the statement shipped
+  // «שם רכז הנגישות — למילוי לפני העלייה לאוויר» in the <dl> AND inside two
+  // real mailto: hrefs. A page that declares WCAG conformance while showing an
+  // unfilled placeholder is itself the non-conformance it declares against, so
+  // this asserts on the guillemet marker rather than on any one key.
+  it("never renders an unfilled placeholder", async () => {
+    const { container } = await renderStatement();
 
-    expect(screen.getByText(i18n.t("statement.coordinatorPhone"))).toHaveAttribute("dir", "ltr");
-  });
-
-  it("offers the boutique's own phone as a reachable reporting channel", async () => {
-    await renderStatement();
-    const phone = BOUTIQUE.profile.phone ?? "";
-
-    const link = screen.getByRole("link", { name: phone });
-    expect(link).toHaveAttribute("href", `tel:${phone}`);
-    expect(link).toHaveAttribute("dir", "ltr");
+    expect(container.textContent).not.toMatch(/[«»]/);
+    for (const link of screen.getAllByRole("link")) {
+      const href = link.getAttribute("href") ?? "";
+      expect(href).not.toMatch(/[«»]/);
+      expect(href).not.toBe("mailto:");
+      expect(href).not.toBe("tel:");
+    }
   });
 
   it("renders the whole statement when the boutique fetch rejects", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
-    render(<Accessibility />);
+    const { container } = render(<Accessibility />);
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalled();
     });
@@ -119,13 +127,19 @@ describe("Accessibility statement page", () => {
     // itself the accessibility failure it exists to declare.
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(i18n.t("statement.title"));
-    expect(screen.getByText(i18n.t("brand.title"))).toBeInTheDocument();
+    // Twice: the site the statement covers, and — with no configured
+    // coordinator and no API — the named accessibility contact.
+    expect(screen.getAllByText(i18n.t("brand.title")).length).toBeGreaterThan(0);
     expect(screen.getByText(i18n.t("statement.conformanceBody"))).toBeInTheDocument();
     expect(screen.getByText(i18n.t("statement.limitsAlt"))).toBeInTheDocument();
     expect(screen.getByText(i18n.t("statement.updated"))).toBeInTheDocument();
 
-    // The coordinator stays contactable with no API at all — that is the point.
-    const links = screen.getAllByRole("link", { name: i18n.t("statement.coordinatorEmail") });
-    expect(links.length).toBeGreaterThan(0);
+    // With no API and no configured coordinator there is no reachable channel to
+    // invent, so the reporting list is OMITTED rather than rendered empty — an
+    // empty <ul> announces as "list, 0 items", which is worse than its absence.
+    // The content lists (what-was-done, limits) still render, so assert on the
+    // links instead of on list count.
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(container.textContent).not.toMatch(/[«»]/);
   });
 });

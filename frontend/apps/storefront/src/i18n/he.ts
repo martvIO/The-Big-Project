@@ -162,16 +162,16 @@ export const he = {
         "הטקסט החלופי של תצלומי השמלות נגזר משם השמלה ואינו מתאר את פרטי הגזרה. נשמח לתאר כל שמלה בטלפון.",
       limitsNote: "אנחנו פועלות לתקן את המגבלות האלה בגרסאות הבאות של האתר.",
 
-      coordinatorHeading: "רכז הנגישות",
+      coordinatorHeading: "פניות בנושא נגישות",
       coordinatorIntro: "לכל פנייה בנושא נגישות אפשר ליצור קשר עם רכז הנגישות של הפלטפורמה:",
+      // Used until the platform operator's coordinator details are configured —
+      // see src/lib/coordinator.ts. The boutique is the service provider, so its
+      // own line is a real, reachable accessibility channel, not a placeholder.
+      coordinatorIntroBoutique: "לכל פנייה בנושא נגישות אפשר ליצור קשר ישירות עם הבוטיק:",
       coordinatorNameLabel: "שם",
-      coordinatorName: "«שם רכז הנגישות — למילוי לפני העלייה לאוויר»",
       coordinatorRoleLabel: "תפקיד",
-      coordinatorRole: "«תפקיד — למילוי לפני העלייה לאוויר»",
       coordinatorPhoneLabel: "טלפון",
-      coordinatorPhone: "«מספר טלפון — למילוי לפני העלייה לאוויר»",
       coordinatorEmailLabel: "דוא״ל",
-      coordinatorEmail: "«כתובת דוא״ל — למילוי לפני העלייה לאוויר»",
 
       reportHeading: "נתקלתם בבעיית נגישות?",
       reportBody:

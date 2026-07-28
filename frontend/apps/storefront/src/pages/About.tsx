@@ -40,7 +40,12 @@ function AboutContent({ boutique }: { boutique: PublicBoutiqueResponse }) {
             // No maps_url: plain text, never a dead link.
             <bdi className="text-base text-ink-muted">{profile.address}</bdi>
           ) : (
-            <a href={maps} className={cn("text-base text-gold-text underline", focusRing)}>
+            <a
+              href={maps}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn("text-base text-gold-text underline", focusRing)}
+            >
               {/* bdi, not dir="ltr": the address is tenant-supplied and may be
                   Hebrew or Latin. Isolating it beats forcing a direction. */}
               <bdi>{profile.address}</bdi> <span aria-hidden="true">↗</span>

@@ -84,16 +84,29 @@ describe("token single-source parity", () => {
   // element silently falls back to its static position — how the CTA bar came to
   // shrink-wrap and both gallery arrows came to stack on one rect. Nothing else
   // in the suite can see a class that simply never existed.
+  // Scans the whole workspace, not just this package: apps/manage and
+  // apps/storefront write raw utility strings too, and a guard that stops at the
+  // package boundary would miss the identical bug one directory over. The
+  // package's own suite is the only place with a natural home for it.
   it("never uses a CSS property name where Tailwind wants a utility name", () => {
-    const src = resolve(process.cwd(), "src");
+    const workspace = resolve(process.cwd(), "..", "..");
+    const roots = [
+      resolve(workspace, "packages/ui/src"),
+      resolve(workspace, "apps/storefront/src"),
+      resolve(workspace, "apps/manage/src"),
+    ].filter((root) => existsSync(root));
+    expect(roots.length, "no source roots found — the relative path is wrong").toBe(3);
+
     const offenders: string[] = [];
-    for (const entry of readdirSync(src, { recursive: true, withFileTypes: true })) {
-      if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) continue;
-      const path = resolve(entry.parentPath, entry.name);
-      if (path.includes("__tests__")) continue;
-      for (const [i, line] of readFileSync(path, "utf8").split("\n").entries()) {
-        if (/\binset-inline/.test(line)) {
-          offenders.push(`${path.slice(src.length + 1)}:${String(i + 1)}`);
+    for (const root of roots) {
+      for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+        if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) continue;
+        const path = resolve(entry.parentPath, entry.name);
+        if (path.includes("__tests__")) continue;
+        for (const [i, line] of readFileSync(path, "utf8").split("\n").entries()) {
+          if (/\binset-inline/.test(line)) {
+            offenders.push(`${path.slice(workspace.length + 1)}:${String(i + 1)}`);
+          }
         }
       }
     }

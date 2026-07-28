@@ -3,17 +3,19 @@ import { useTranslation } from "react-i18next";
 import { SectionHeading, cn, focusRing } from "@boutique/ui";
 import { getBoutiqueOnce } from "../api";
 import type { PublicBoutiqueResponse } from "../api";
+import { ACCESSIBILITY_COORDINATOR } from "../lib/coordinator";
 
-// הצהרת נגישות. IS 5568 §35 makes this page — and the named coordinator inside
-// it — a legal obligation for a public Israeli site, so it is written to be read
-// by a screen reader and audited by a person: one h1, an h2 per section, real
-// lists, and no content that exists only as visual arrangement.
+// הצהרת נגישות. IS 5568 §35 makes this page — and a named, reachable contact
+// inside it — a legal obligation for a public Israeli site, so it is written to
+// be read by a screen reader and audited by a person: one h1, an h2 per section,
+// real lists, and no content that exists only as visual arrangement.
 //
-// TODO(launch blocker): statement.coordinator{Name,Role,Phone,Email} in
-// src/i18n/he.ts are still visible placeholders. They are the PLATFORM
-// OPERATOR's details — one constant across every tenant, not the boutique
-// owner's — and shipping them unfilled to the pilot is itself the compliance
-// failure this page declares against.
+// The contact block has two shapes. When the platform operator's coordinator is
+// configured (src/lib/coordinator.ts) it renders those details. Until then it
+// falls back to the boutique's own channels — the boutique is the service
+// provider, so that is a real contact, and it is the reason this page never
+// renders a placeholder: a statement declaring conformance while showing
+// «fill this in» is itself the non-conformance it declares against.
 
 const linkClass = cn("rounded-sm text-gold-text underline", focusRing);
 const bodyClass = "text-base text-ink-muted";
@@ -75,7 +77,7 @@ export function Accessibility() {
 
   const siteName = boutique?.name ?? t("brand.title");
   const boutiquePhone = boutique?.profile.phone ?? null;
-  const coordinatorEmail = t("statement.coordinatorEmail");
+  const coordinator = ACCESSIBILITY_COORDINATOR;
 
   return (
     // pb-16 (64px) clears the fixed A11yMenu button's 60px footprint — a 44px
@@ -114,35 +116,61 @@ export function Accessibility() {
 
       <div className="flex flex-col gap-3">
         <SectionHeading as="h2">{t("statement.coordinatorHeading")}</SectionHeading>
-        <p className={bodyClass}>{t("statement.coordinatorIntro")}</p>
-        {/* A description list, not four paragraphs: the label/value pairing is
-            what a screen reader announces, and it is the part an auditor looks
-            for by name. */}
+        <p className={bodyClass}>
+          {coordinator !== null
+            ? t("statement.coordinatorIntro")
+            : t("statement.coordinatorIntroBoutique")}
+        </p>
+        {/* A description list, not paragraphs: the label/value pairing is what a
+            screen reader announces, and it is the part an auditor looks for by
+            name. Rows with no value are omitted entirely rather than rendered
+            empty — an unanswered API must not produce a dangling <dt>. */}
         <dl className="flex flex-col gap-2 text-base">
-          <div className={rowClass}>
-            <dt className="text-ink-muted">{t("statement.coordinatorNameLabel")}</dt>
-            <dd className="text-ink">{t("statement.coordinatorName")}</dd>
-          </div>
-          <div className={rowClass}>
-            <dt className="text-ink-muted">{t("statement.coordinatorRoleLabel")}</dt>
-            <dd className="text-ink">{t("statement.coordinatorRole")}</dd>
-          </div>
-          <div className={rowClass}>
-            <dt className="text-ink-muted">{t("statement.coordinatorPhoneLabel")}</dt>
-            {/* A phone number is a strong-LTR digit run dropped into RTL prose;
-                dir isolates it so the bidi algorithm cannot reorder it. */}
-            <dd dir="ltr" className="text-ink">
-              {t("statement.coordinatorPhone")}
-            </dd>
-          </div>
-          <div className={rowClass}>
-            <dt className="text-ink-muted">{t("statement.coordinatorEmailLabel")}</dt>
-            <dd>
-              <a href={`mailto:${coordinatorEmail}`} dir="ltr" className={linkClass}>
-                {coordinatorEmail}
-              </a>
-            </dd>
-          </div>
+          {coordinator !== null ? (
+            <>
+              <div className={rowClass}>
+                <dt className="text-ink-muted">{t("statement.coordinatorNameLabel")}</dt>
+                <dd className="text-ink">{coordinator.name}</dd>
+              </div>
+              <div className={rowClass}>
+                <dt className="text-ink-muted">{t("statement.coordinatorRoleLabel")}</dt>
+                <dd className="text-ink">{coordinator.role}</dd>
+              </div>
+              <div className={rowClass}>
+                <dt className="text-ink-muted">{t("statement.coordinatorPhoneLabel")}</dt>
+                {/* A phone number is a strong-LTR digit run dropped into RTL
+                    prose; dir isolates it so bidi cannot reorder it. */}
+                <dd dir="ltr" className="text-ink">
+                  {coordinator.phone}
+                </dd>
+              </div>
+              <div className={rowClass}>
+                <dt className="text-ink-muted">{t("statement.coordinatorEmailLabel")}</dt>
+                <dd>
+                  <a href={`mailto:${coordinator.email}`} dir="ltr" className={linkClass}>
+                    {coordinator.email}
+                  </a>
+                </dd>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className={rowClass}>
+                <dt className="text-ink-muted">{t("statement.coordinatorNameLabel")}</dt>
+                <dd className="text-ink">{siteName}</dd>
+              </div>
+              {boutiquePhone !== null && (
+                <div className={rowClass}>
+                  <dt className="text-ink-muted">{t("statement.coordinatorPhoneLabel")}</dt>
+                  <dd>
+                    <a href={`tel:${boutiquePhone}`} dir="ltr" className={linkClass}>
+                      {boutiquePhone}
+                    </a>
+                  </dd>
+                </div>
+              )}
+            </>
+          )}
         </dl>
       </div>
 
@@ -150,25 +178,29 @@ export function Accessibility() {
         <SectionHeading as="h2">{t("statement.reportHeading")}</SectionHeading>
         <p className={bodyClass}>{t("statement.reportBody")}</p>
         {/* Channels, not prose — each one is a link a visitor can act on from
-            here. The boutique's phone appears only once the API has answered;
-            the coordinator's address is always present, so this list is never
-            empty. */}
-        <ul className={listClass}>
-          <li>
-            {t("statement.coordinatorEmailLabel")}:{" "}
-            <a href={`mailto:${coordinatorEmail}`} dir="ltr" className={linkClass}>
-              {coordinatorEmail}
-            </a>
-          </li>
-          {boutiquePhone !== null && (
-            <li>
-              {t("contact.call")}:{" "}
-              <a href={`tel:${boutiquePhone}`} dir="ltr" className={linkClass}>
-                {boutiquePhone}
-              </a>
-            </li>
-          )}
-        </ul>
+            here. Both entries are conditional, so the list is omitted rather
+            than rendered empty when neither a coordinator nor a boutique phone
+            is available (a bare <ul> announces as an empty list). */}
+        {(coordinator !== null || boutiquePhone !== null) && (
+          <ul className={listClass}>
+            {coordinator !== null && (
+              <li>
+                {t("statement.coordinatorEmailLabel")}:{" "}
+                <a href={`mailto:${coordinator.email}`} dir="ltr" className={linkClass}>
+                  {coordinator.email}
+                </a>
+              </li>
+            )}
+            {boutiquePhone !== null && (
+              <li>
+                {t("contact.call")}:{" "}
+                <a href={`tel:${boutiquePhone}`} dir="ltr" className={linkClass}>
+                  {boutiquePhone}
+                </a>
+              </li>
+            )}
+          </ul>
+        )}
       </div>
 
       <p className="text-sm text-ink-muted">{t("statement.updated")}</p>
