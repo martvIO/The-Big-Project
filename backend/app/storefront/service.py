@@ -192,13 +192,17 @@ class StorefrontService:
         window_start, window_end = slot_window(from_date, to_date, today)
         async with tenant_session(self._session_factory, tenant_id) as session:
             rules = await self._rules.list_active(session, tenant_id)
+            # Bounded on BOTH sides in SQL: the window bounds the response
+            # either way, but an unbounded upper predicate would still scan
+            # every future exception the boutique has ever recorded, on every
+            # anonymous request.
             exceptions = await self._exceptions.list_active(
-                session, tenant_id, on_or_after=window_start
+                session, tenant_id, on_or_after=window_start, on_or_before=window_end
             )
         now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
         return materialize_slots(
             rules=rules,
-            exceptions=[row for row in exceptions if row.date <= window_end],
+            exceptions=exceptions,
             booked={},
             window_start=window_start,
             window_end=window_end,
@@ -245,24 +249,40 @@ class StorefrontService:
 def slot_window(
     from_date: datetime.date | None, to_date: datetime.date | None, today: datetime.date
 ) -> tuple[datetime.date, datetime.date]:
-    """Resolve and bound the requested window.
+    """Resolve and bound the requested window into the publishable band.
 
     Pure and importable so the clamping rule is unit-testable and so the router
     stays a parser. `to < from` is a caller error (400); a `to` beyond the
     ceiling is silently clamped rather than rejected, because a picker asking
     for more than it can render is a UI bug, not a user error, and 60 days of
     grid is already a generous answer.
+
+    **Both bounds are clamped against `today`, never against the caller's own
+    value, and that is what makes the arithmetic here total.** `date + timedelta`
+    raises `OverflowError` within 60 days of `date.max`, and `?from=9999-12-31`
+    is among the first things anyone probes on a public endpoint — it would
+    escape as a bare 500 outside the house error shape. `today` comes from a
+    real clock and can never be near either end of the `date` range. Same
+    reasoning as `MAX_LIST_OFFSET` above: an unbounded caller-supplied value
+    reaches something that raises rather than validates.
+
+    Clamping the FLOOR to today costs nothing, because the engine already drops
+    everything at or before `now`. A window lying entirely in the past comes
+    back inverted and materializes to no slots — the same empty answer as
+    before, without a second rule that could disagree with the first.
     """
-    start = from_date if from_date is not None else today
-    end = (
-        to_date
-        if to_date is not None
-        else start + datetime.timedelta(days=SLOT_WINDOW_DEFAULT_DAYS)
-    )
-    if end < start:
+    requested_start = from_date if from_date is not None else today
+    ceiling = today + datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS)
+    # Checked against what the CALLER asked for, so a wholly-past window stays
+    # an empty answer rather than becoming a 400 once the floor clamp moves.
+    if to_date is not None and to_date < requested_start:
         raise SlotWindowError("`to` must not precede `from`.")
-    ceiling = start + datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS)
-    return start, min(end, ceiling)
+    start = min(max(requested_start, today), ceiling)
+    if to_date is None:
+        return start, min(start + datetime.timedelta(days=SLOT_WINDOW_DEFAULT_DAYS), ceiling)
+    # min() only: comparing against a date.max `to` is safe where adding to it
+    # is not.
+    return start, min(to_date, ceiling)
 
 
 def upcoming_exceptions(

@@ -67,9 +67,12 @@ def _windows_for(
     if exception.open_time is None or exception.close_time is None:
         return []
     # Capacity is staffing, and an exception changes the HOURS, not the staff —
-    # so it inherits the weekday's own capacity, most generous first when the
-    # day carries several windows. With no rule to inherit from, the DB default.
-    capacity = max((rule.capacity for rule in day_rules), default=DEFAULT_SLOT_CAPACITY)
+    # so it inherits the weekday's own capacity. When the day carries several
+    # windows with different capacities, the LEAST generous wins: an exception
+    # is characteristically a constrained day (a holiday opened for one bride),
+    # so erring high is erring toward overselling a boutique that is short-
+    # staffed. With no rule to inherit from at all, the DB default.
+    capacity = min((rule.capacity for rule in day_rules), default=DEFAULT_SLOT_CAPACITY)
     return [
         _Window(open_time=exception.open_time, close_time=exception.close_time, capacity=capacity)
     ]

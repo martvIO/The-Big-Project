@@ -1377,18 +1377,22 @@ class _RecordingMedia:
 # --- F12: the booking grid reads ---
 
 
-def test_slots_ship_remaining_and_never_capacity() -> None:
-    """`capacity` is already in FORBIDDEN_KEYS, so the wire-absence walk arms
-    itself — this pins the positive half: what a picker actually needs."""
+def test_slots_ship_start_times_and_nothing_else() -> None:
+    """`capacity` is in FORBIDDEN_KEYS so the wire-absence walk arms itself.
+    This pins the harder half: `remaining` must not be here EITHER. With no
+    bookings it equals capacity exactly, so shipping it would republish the
+    fenced field under a key the absence walk does not know to forbid."""
     with _client() as client:
         resp = client.get("/storefront/slots")
     assert resp.status_code == 200
     assert resp.json() == {
         "slots": [
-            {"starts_at": "2026-08-03T10:00:00Z", "remaining": 2},
-            {"starts_at": "2026-08-03T10:30:00Z", "remaining": 1},
+            {"starts_at": "2026-08-03T10:00:00Z"},
+            {"starts_at": "2026-08-03T10:30:00Z"},
         ]
     }
+    assert "remaining" not in resp.text
+    assert "capacity" not in resp.text
 
 
 def test_slots_pass_the_window_through_verbatim() -> None:

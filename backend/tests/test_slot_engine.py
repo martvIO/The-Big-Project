@@ -215,14 +215,17 @@ class TestExceptions:
         slots = _run(exceptions=[_exception(WINTER_MONDAY, (9, 0), (9, 30))])
         assert [slot.capacity for slot in slots] == [DEFAULT_SLOT_CAPACITY]
 
-    def test_multi_window_day_inherits_the_widest_capacity(self) -> None:
-        """Several rules can cover one weekday; an exception replaces the hours,
-        not the boutique's staffing, so the most generous applies."""
+    def test_multi_window_day_inherits_the_narrowest_capacity(self) -> None:
+        """Several rules can cover one weekday with different capacities. An
+        exception is characteristically a CONSTRAINED day — a holiday opened for
+        one bride — so the least generous wins: erring high here would oversell
+        a boutique that is short-staffed, and overselling is the failure this
+        whole feature exists to prevent."""
         slots = _run(
             rules=[_rule(1, (10, 0), (11, 0), capacity=2), _rule(1, (16, 0), (17, 0), capacity=5)],
             exceptions=[_exception(WINTER_MONDAY, (9, 0), (9, 30))],
         )
-        assert [slot.capacity for slot in slots] == [5]
+        assert [slot.capacity for slot in slots] == [2]
 
 
 class TestCapacity:

@@ -131,17 +131,24 @@ class BoutiqueResponse(BaseModel):
 
 
 class SlotRow(BaseModel):
-    """`remaining`, never `capacity`.
+    """A bookable start time, and NOTHING else.
 
-    F10's field allowlist fences `availability_rules.capacity` off this surface
-    because it discloses how many parallel fittings the boutique runs.
-    `remaining` is the operative fact for a picker and leaks strictly less: it
-    is bounded above by capacity, but a visitor cannot tell a quiet day at a big
-    boutique from a busy day at a small one.
+    An earlier draft also shipped `remaining`. It looked like the safe half of
+    `capacity` — but the engine drops full slots, so with no bookings yet
+    `remaining` equals `capacity` exactly, for every slot, on every response.
+    That republishes verbatim the one field F10's allowlist fences off this
+    surface ("discloses how many parallel fittings the boutique runs"), just
+    under a different key, and the wire-absence walk cannot see it because the
+    key it forbids is spelled differently.
+
+    The picker does not need it either: every slot the engine returns is by
+    construction bookable, so the time IS the whole message. A scarcity cue
+    ("last spot") is a real product idea, and the feature that adds it should
+    add a deliberately COARSE signal on top of a real booking count — not a
+    number that happens to equal capacity today.
     """
 
     starts_at: datetime.datetime
-    remaining: int
 
 
 class SlotListResponse(BaseModel):

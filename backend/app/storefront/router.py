@@ -231,12 +231,14 @@ def public_boutique(view: StorefrontBoutiqueView) -> BoutiqueResponse:
 
 
 def public_slots(slots: list[Slot]) -> SlotListResponse:
-    """`remaining`, never `capacity` — the projection is where that rule lives,
-    the same way _public_price is where the hidden-price rule lives. A slot the
-    engine returned is by construction not full, so `remaining` is always ≥ 1."""
-    return SlotListResponse(
-        slots=[SlotRow(starts_at=slot.starts_at, remaining=slot.remaining) for slot in slots]
-    )
+    """Start times only — neither `capacity` NOR `remaining` reaches the wire.
+
+    The projection is where that rule lives, the same way `_public_price` is
+    where the hidden-price rule lives. See `SlotRow` for why `remaining` was
+    dropped: it equals `capacity` exactly whenever nothing is booked, which
+    would smuggle a fenced field past the key-based absence walk.
+    """
+    return SlotListResponse(slots=[SlotRow(starts_at=slot.starts_at) for slot in slots])
 
 
 def public_appointment_type(row: AppointmentType) -> AppointmentTypeRow:

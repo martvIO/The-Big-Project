@@ -286,13 +286,45 @@ class TestSlotWindow:
     def test_a_single_day_window_is_legal(self) -> None:
         assert slot_window(self.TODAY, self.TODAY, self.TODAY) == (self.TODAY, self.TODAY)
 
-    def test_a_past_from_is_allowed_and_left_alone(self) -> None:
-        """The engine's `now` cutoff already drops past slots, so a backdated
-        window is simply empty — clamping it here would be a second rule saying
-        the same thing, in a place that could disagree."""
+    def test_a_past_from_is_clamped_to_today_not_rejected(self) -> None:
+        """The floor clamp is what makes the arithmetic total (see the
+        OverflowError cases below). It costs nothing: the engine's `now` cutoff
+        already drops every past slot, so the answer is unchanged."""
         past = self.TODAY - datetime.timedelta(days=30)
-        start, _ = slot_window(past, self.TODAY, self.TODAY)
-        assert start == past
+        start, end = slot_window(past, self.TODAY, self.TODAY)
+        assert start == self.TODAY
+        assert end == self.TODAY
+
+    def test_a_wholly_past_window_stays_an_empty_answer_not_an_error(self) -> None:
+        """It comes back inverted, and the engine materializes nothing from an
+        inverted window — the same empty list this returned before the clamp."""
+        start, end = slot_window(
+            self.TODAY - datetime.timedelta(days=30),
+            self.TODAY - datetime.timedelta(days=10),
+            self.TODAY,
+        )
+        assert end < start
+
+    def test_a_from_near_date_max_does_not_overflow(self) -> None:
+        """`date + timedelta` raises OverflowError within 60 days of date.max,
+        and there is no handler for it — this endpoint is anonymous, so that is
+        a free 500 outside the house error shape. Clamping against `today` (a
+        real clock date) rather than against the caller's value is the fix."""
+        start, end = slot_window(datetime.date.max, None, self.TODAY)
+        assert start <= end
+        assert end == self.TODAY + datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS)
+
+    def test_both_bounds_near_date_max_do_not_overflow(self) -> None:
+        start, end = slot_window(datetime.date.max, datetime.date.max, self.TODAY)
+        assert start <= end
+        assert end == self.TODAY + datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS)
+
+    def test_a_from_at_date_min_does_not_reach_the_engine(self) -> None:
+        """Year 1 in Asia/Jerusalem is LMT +02:20:54, so an early-morning wall
+        time there converts to year 0 and overflows inside the engine. The floor
+        clamp means the engine never sees it."""
+        start, _ = slot_window(datetime.date.min, self.TODAY, self.TODAY)
+        assert start == self.TODAY
 
     def test_an_over_long_window_is_clamped_not_rejected(self) -> None:
         """A picker asking for more than it can render is a UI bug, not a user

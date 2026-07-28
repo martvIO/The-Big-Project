@@ -11,7 +11,7 @@ That computation has to exist exactly once. F13 needs it to validate a claim ser
 
 ## Goal
 
-`GET /storefront/slots?from=2026-08-02&to=2026-08-08` returns every bookable start time in that window for the boutique the hostname resolves to, each with how many places remain, already excluding closed days, per-date exceptions, past times, and fully-taken slots. The engine behind it is a pure function with no I/O, so its hard parts — the Israeli week, Israel's DST transitions, an exception that closes a day the weekly grid says is open — are covered by unit tests that need no database and no clock.
+`GET /storefront/slots?from=2026-08-02&to=2026-08-08` returns every bookable start time in that window for the boutique the hostname resolves to — already excluding closed days, per-date exceptions, past times, and fully-taken slots, so every time it returns is one a customer can take. The engine behind it is a pure function with no I/O, so its hard parts — the Israeli week, Israel's DST transitions, an exception that closes a day the weekly grid says is open — are covered by unit tests that need no database and no clock.
 
 ## The slot model (decided 2026-07-28 with the pilot boutique)
 
@@ -57,7 +57,7 @@ Zero I/O, zero ORM writes, no `Settings`. It takes rows and returns values, whic
 
 1. **The Israeli week.** `availability_rules.day_of_week` is 0=Sunday…6=Saturday; Python's `date.weekday()` is 0=Monday. One conversion, `jerusalem_day_index(d) = (d.weekday() + 1) % 7`, lives here and is unit-tested against a hand-written table of real dates. `packages/ui/src/lib/hours.ts` already ships the same conversion for rendering — `test_frontend_constant_parity.py` gains a row so the two cannot drift.
 2. **Exceptions beat the weekly grid, in both directions.** For a date with an exception row: both times NULL → the day is **closed**, no slots, even if a weekly rule says otherwise; both times set → those hours **replace** the weekly windows for that date. (One window per exception date is F7's documented v1 limitation, inherited unchanged.)
-3. **Capacity for an exception day** comes from that weekday's weekly rule when one exists, else `DEFAULT_SLOT_CAPACITY` (1). Exceptions have no capacity column, and inventing one for a per-date override would be a schema change in service of a case the pilot has never asked for.
+3. **Capacity for an exception day** comes from that weekday's weekly rule when one exists, else `DEFAULT_SLOT_CAPACITY` (1). Where the weekday carries several windows at different capacities, the **least** generous wins: an exception is characteristically a constrained day (a holiday opened for one bride), so erring high would oversell a short-staffed boutique — the exact failure this feature exists to prevent. Exceptions have no capacity column, and inventing one for a per-date override would be a schema change in service of a case the pilot has never asked for.
 4. **Local wall clock → UTC instant.** Times are boutique-local by definition, so each start is built in `BOUTIQUE_TIMEZONE` and converted. Two DST cases are handled explicitly rather than left to `astimezone`'s defaults:
    - **Nonexistent** local time (spring forward, 02:00→03:00): the slot is **dropped**. It does not exist, so it cannot be booked.
    - **Ambiguous** local time (fall back, 01:00 twice): the **first** occurrence (`fold=0`) is kept and the second dropped, so a day never silently offers two slots that render identically and are different instants.
@@ -71,11 +71,12 @@ Output is sorted by `starts_at`.
 
 Both join the existing `app/storefront/router.py` (GET-only, `_no_store` + `_throttle`, anonymous, tenant-from-Host), inheriting its whole contract. The route-table guards in `test_storefront_api.py` pick them up automatically.
 
-**`GET /storefront/slots?from=&to=`** → `{"slots": [{"starts_at": "...Z", "remaining": 2}, ...]}`
+**`GET /storefront/slots?from=&to=`** → `{"slots": [{"starts_at": "...Z"}, ...]}`
 
 - `from`/`to` are boutique-calendar dates, inclusive; `from` defaults to today in Jerusalem, `to` to `from + SLOT_WINDOW_DEFAULT_DAYS` (14). The window is capped at `SLOT_WINDOW_MAX_DAYS` (60) — one anonymous request must not be able to ask for five years of grid.
 - `to < from` → 400 `VALIDATION_ERROR`.
-- **`capacity` is not on the wire, `remaining` is.** F10's field allowlist already fences `availability_rules.capacity` off the public surface with the reasoning that it "discloses how many parallel fittings the boutique runs". `remaining` is the operative fact for a picker and leaks strictly less: it is bounded above by capacity but a visitor cannot tell a quiet day from a small boutique.
+- **Both bounds are clamped against `today`, not against the caller's own value.** That is not cosmetic: `date + timedelta` raises `OverflowError` within 60 days of `date.max`, there is no handler for it, and `?from=9999-12-31` is among the first things anyone probes on a public endpoint — a free 500 outside the house error shape. `today` comes from a real clock and can never be near either end of the range. Clamping the floor costs nothing because the engine already drops everything at or before `now`; a wholly-past window comes back inverted and materializes to nothing, the same empty answer as before. (Same reasoning as `MAX_LIST_OFFSET`: an unbounded caller value reaching something that raises rather than validates.)
+- **Neither `capacity` NOR `remaining` reaches the wire — a start time is the whole message.** F10's allowlist fences `capacity` off this surface because it "discloses how many parallel fittings the boutique runs". An earlier draft shipped `remaining` as the safe half of it; that was wrong. The engine drops full slots, so with no bookings `remaining` equals `capacity` **exactly, for every slot, on every response** — the fenced field republished under a key the wire-absence walk does not know to forbid. The picker does not need it either: every slot returned is by construction bookable. A scarcity cue ("last spot") is a real product idea, and the feature that adds it should add a deliberately COARSE signal on top of a real booking count.
 - No `appointment_type_id` parameter. The grid is type-independent by the slot model above, so accepting one would imply a filter that does not exist.
 
 **`GET /storefront/appointment-types`** → `[{"id", "name", "duration_minutes", "audience", "deposit_required", "deposit_amount_agorot"}]`
@@ -88,7 +89,7 @@ The booking UI has to show what can be booked, and no public endpoint exposes ty
 
 ### Service — `StorefrontService` gains two reads
 
-`list_slots(tenant_id, *, window_start, window_end, now)` and `list_appointment_types(tenant_id)`. The first does one `tenant_session` with three repository reads (rules, exceptions in window, booked counts) then calls the pure engine.
+`list_slots(tenant_id, *, from_date, to_date)` and `list_appointment_types(tenant_id)`. The first does one `tenant_session` with two repository reads (rules, exceptions **bounded on both sides in SQL**) then calls the pure engine. The upper bound is not decoration: the window bounds the response either way, but an unbounded upper predicate would still scan every future exception the boutique has ever recorded, on every anonymous request.
 
 **`booked` is `{}` in F12 and is the seam.** No `bookings` table exists until F13, so the engine is fed an empty mapping and every slot shows full capacity. F13's change is one repository call replacing that literal — the engine, its tests, the response shape and the picker are all already correct at that point. This is the one place F12 knowingly ships an incomplete truth, and it is why the parameter exists at all rather than being read inside the engine.
 
@@ -130,4 +131,4 @@ The `bookings` table and any real `booked` count (F13), the picker UI (F14), own
 
 1. **`booked` is empty until F13**, so `/storefront/slots` overstates availability if it reaches a customer before F13 merges. Mitigated by ordering: F13 is the next PR and nothing links to the endpoint until F14. Flagged in the response's own service docstring so it cannot be forgotten.
 2. **The 30-minute interval is a guess about the pilot's rhythm.** It is one constant in one file with no schema behind it, so the cost of being wrong is a PR, not a migration.
-3. **Exception days inherit weekly capacity**, which is subtly wrong for a boutique that opens a normally-closed day with fewer staff. No pilot signal either way; revisit if one appears.
+3. **Exception days inherit weekly capacity**, which is still approximate for a boutique that opens a normally-closed day with fewer staff — the `min` rule above errs toward under-booking rather than overselling, but a real per-date capacity would need a column. No pilot signal either way; revisit if one appears.

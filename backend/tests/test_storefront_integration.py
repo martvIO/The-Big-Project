@@ -473,8 +473,9 @@ async def test_slots_materialize_from_rules_and_exceptions(app_role_url: str) ->
         ]
         assert local == ["2026-08-02 10:00", "2026-08-02 10:30"]
         # Capacity 2 with no bookings yet — the F13 seam, asserted so the day it
-        # changes is a visible diff rather than a silent one.
-        assert [slot.remaining for slot in slots] == [2, 2]
+        # changes is a visible diff rather than a silent one. Note that neither
+        # number reaches the wire: SlotRow carries only starts_at.
+        assert [slot.capacity for slot in slots] == [2, 2]
         assert all(slot.booked == 0 for slot in slots)
     finally:
         await engine.dispose()
