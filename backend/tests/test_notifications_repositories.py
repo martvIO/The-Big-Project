@@ -1,10 +1,15 @@
 """Round-trips for the two F11 repositories, as the non-owner app role. The
 isolation half lives in test_notifications_isolation.py."""
 
+import asyncio
 import datetime
 import uuid
+from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -19,6 +24,8 @@ from app.db.tenant import tenant_session
 from app.models.constants import MessageKind, MessageStatus
 
 pytestmark = pytest.mark.db
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 FUTURE = datetime.datetime(2099, 1, 1, tzinfo=datetime.UTC)
 PAST = datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC)
@@ -217,3 +224,37 @@ async def test_consume_verification_respects_expiry(app_role_url: str) -> None:
             assert expired is False
     finally:
         await engine.dispose()
+
+
+def _sms_table_count(url: str) -> int:
+    async def count() -> int:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                result = await conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_tables "
+                        "WHERE tablename IN ('message_log', 'otp_codes')"
+                    )
+                )
+                return int(result.scalar_one())
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(count())
+
+
+def test_migration_0007_round_trips(migrated_db: str) -> None:
+    """downgrade drops otp_codes then message_log; upgrade puts both back with
+    their indexes, grants and policies. Runs as the migration owner (the app
+    role cannot DROP), and destroys rows — so it owns no fixtures and shares no
+    state with the tests above."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+
+    assert _sms_table_count(migrated_db) == 2
+    command.downgrade(cfg, "0006")
+    assert _sms_table_count(migrated_db) == 0
+    command.upgrade(cfg, "head")
+    assert _sms_table_count(migrated_db) == 2

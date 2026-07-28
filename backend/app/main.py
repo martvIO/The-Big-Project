@@ -284,6 +284,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             window_seconds=settings.otp_send_tenant_window_seconds,
             clock=time.monotonic,
         ),
+        verify_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.otp_verify_max_per_phone_window,
+            window_seconds=settings.otp_verify_phone_window_seconds,
+            clock=time.monotonic,
+        ),
         dev_code=settings.otp_dev_code,
     )
 

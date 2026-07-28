@@ -50,7 +50,8 @@ CREATE INDEX idx_otp_codes_tenant_phone_active
 ```
 
 - **`attempts` CHECK at 50 = 10× the service cap of 5** — the absurdity-ceiling convention from 0005: the DB bound exists to stop a broken write path, not to encode policy.
-- **OTP hashing is hygiene, not a security boundary.** A 6-digit code has ~20 bits of entropy; sha256 does not make it uncrackable offline. The real controls are the attempt cap (5 per code), the 5-minute expiry, and the send rate limits. The hash's job is only that a DB read never shows a live code. Same reasoning applies to **masking the code in `message_log.body`** (`"קוד האימות שלך: ●●●●●●"`): the log is forever, the code is worthless in 5 minutes, and the Spam-Law evidence value is "an OTP was sent to this phone at this time", not the digits.
+- **OTP hashing is hygiene, not a security boundary.** A 6-digit code has ~20 bits of entropy; sha256 does not make it uncrackable offline. The real controls are the attempt cap (5 per code), the verify budget, the 5-minute expiry, and the send rate limits. The hash's job is only that a DB read never shows a live code. Same reasoning applies to **masking the code in `message_log.body`** (`"קוד האימות שלך: ●●●●●●"`): the log is forever, the code is worthless in 5 minutes, and the Spam-Law evidence value is "an OTP was sent to this phone at this time", not the digits.
+- **The masking has to hold on the failure path too.** Several SMS SDKs quote the failing request — body included — in their exception, so a raw `str(exc)` in `message_log.error` would write the unmasked code next to the masked one. Provider errors are truncated to 200 chars and any echo of the wire body is replaced with what the caller chose to retain. For the same reason the fake adapter does **not** log the body: staging runs it on a publicly reachable host whose log stream is widely readable, and an INFO line carrying the live code would hand verification to anyone with log access.
 - **`verification_token_hash` lives on the otp row, not a new table** — one verify mints one token; the row already carries the phone, tenant and audit timestamps. F13 marks `verification_consumed_at` when it creates the booking, so a token is single-use by column, not by convention. All three verification columns ship now so F13's migration (0008) never touches this table.
 - `message_log` gets full CRUD grants (status transitions update it), unlike `terms_versions` — it is operational telemetry with a compliance duty, not immutable financial evidence. Soft-delete discipline still applies; nothing ever hard-deletes.
 
@@ -86,13 +87,20 @@ POST /storefront/otp/verify {phone, code}  → 200 {verification_token, expires_
 
 ### Rate limits (all `Settings` fields, all `FixedWindowRateLimiter` on `app.state`)
 
-| Key | Default | What it protects |
-|---|---|---|
-| `otp:phone:{tenant}:{phone}` | 5 / 3600s | SMS cost + bombardment of one victim's phone |
-| `otp:tenant:{tenant_id}` | 100 / 3600s | the tenant's SMS bill — a runaway brake like the storefront read budget, sized ~10× expected pilot peak |
-| verify attempts | 5 per code (column-tracked, not limiter) | brute force on 6 digits |
+| Key | Default | What it protects | On exhaustion |
+|---|---|---|---|
+| `otp:phone:{tenant}:{phone}` | 5 / 3600s | SMS cost + bombardment of one victim's phone | **204, no SMS** (see below) |
+| `otp:tenant:{tenant_id}` | 100 / 3600s | the tenant's SMS bill — a runaway brake like the storefront read budget, sized ~10× expected pilot peak | 429 |
+| `otp:verify:{tenant}:{phone}` | 10 / 300s | brute force *across* codes, and the unauthenticated SELECT+locking-UPDATE per call | 429 |
+| verify attempts | 5 per code (column-tracked, not limiter) | brute force *within* one code | 400 `OTP_INVALID` |
 
-Per-IP keying is deliberately absent for the same documented reason as `_throttle` in `app/storefront/router.py`: behind an untrusted proxy the IP is the proxy, and `trust_forwarded_for` remains unresolved until F21. Per-phone is the control that matters — it is the resource being spent. Both limiter checks record on the **send-attempt** path (success or failure), because the resource is the send itself.
+**The two send budgets answer differently, deliberately.** A tripped tenant ceiling is an operational fact about the boutique and 429s. A tripped per-phone budget is a fact about one person: answering 429 would make this endpoint an oracle for "is this number mid-booking at this boutique", on a surface whose entire posture is that known and unknown phones are indistinguishable. It therefore returns the same 204 and sends nothing.
+
+**Verify needs its own budget, and the attempt cap is not a substitute.** The column cap burns one code; without a verify limiter an attacker simply requests a fresh code and keeps guessing — 10⁶ space, 300s TTL, no auth.
+
+Per-IP keying is deliberately absent for the same documented reason as `_throttle` in `app/storefront/router.py`: behind an untrusted proxy the IP is the proxy, and `trust_forwarded_for` remains unresolved until F21. Per-phone is the control that matters — it is the resource being spent. All limiter checks record on the **attempt** path (success or failure), because the resource is the attempt itself.
+
+**The attempt cap only works if the increment survives the failure.** `tenant_session` is `session.begin()`, so a `raise` inside the block rolls the transaction back — and would take the `attempts = attempts + 1` write with it, leaving the counter at 0 forever and the cap inert. `verify()` therefore **decides inside the transaction and raises outside it**. Once the cap is reached it also stops *writing*, not merely stops answering: the column's `CHECK (attempts <= 50)` is a defensive ceiling the service must keep unreachable, and incrementing forever would turn it into an `IntegrityError` 500 on an anonymous endpoint. Both properties have dedicated regression tests that read the persisted column, because a purely behavioural cap test passes either way.
 
 ### Router posture
 
@@ -174,4 +182,5 @@ Real provider adapter (lands as its own small commit once the account + sender I
 
 1. **Sender-ID registration lead time** — user-owned, multi-week, gates the pilot. Mitigated by filing immediately after Gate 1 approves the recommendation; tracked in `.planning/external-applications.md` row 4.
 2. **In-process rate limiters reset on deploy** and don't aggregate across replicas — accepted single-instance pilot posture, same as login and presign throttles; F21 owns the upgrade.
-3. **SMS cost abuse via the public send endpoint** — bounded by per-phone and per-tenant windows; until a real adapter exists the blast radius is zero (fake/unconfigured). Revisit the numbers at provider cutover with real per-SMS cost.
+3. **SMS cost abuse via the public send endpoint** — bounded by per-phone and per-tenant windows; until a real adapter exists the blast radius is zero (fake/unconfigured). **Re-derive both numbers at provider cutover against real per-SMS cost**: at the Twilio quote above, the current tenant ceiling is ~$25/hour of attacker-directed spend, and exhausting it also 429s real customers for the rest of the window. The mitigations that need a decision then, not now: metering *new* phones separately from resends, a proof-of-work/Turnstile on send, and per-IP keying once `trust_forwarded_for` is settled (F21).
+4. **`APP_ENV` defaults to `"dev"`**, so a production deployment that sets `DATABASE_URL` and `BASE_DOMAIN` but forgets `APP_ENV` would accept `OTP_DEV_CODE` and the fake sender (on top of the pre-existing insecure-cookie and open-docs consequences). Pre-existing platform shape, widened by F11; making `app_env` mandatory is a cross-cutting change owned by F21, flagged here because F11 is what raises the stakes.

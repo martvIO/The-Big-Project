@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     otp_send_phone_window_seconds: int = 3600
     otp_send_max_per_tenant_window: int = 100
     otp_send_tenant_window_seconds: int = 3600
+    # Verify is throttled SEPARATELY from send. The per-code attempt cap
+    # (5, column-tracked) burns one code; without a budget here an attacker
+    # simply requests a fresh code and keeps guessing, and each call is an
+    # unauthenticated SELECT + locking UPDATE. 10 per 5 minutes is ~2x the
+    # attempts a real customer with a typo could need.
+    otp_verify_max_per_phone_window: int = 10
+    otp_verify_phone_window_seconds: int = 300
 
     # Per-TENANT budget on the anonymous storefront reads: a runaway brake, not
     # a defence (see app/storefront/router.py._throttle for the full argument).

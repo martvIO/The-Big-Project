@@ -29,5 +29,10 @@ class FakeSmsSender:
     async def send(self, *, phone: str, body: str) -> SendResult:
         self.outbox.append(SentSms(phone=phone, body=body))
         message_id = f"fake-{next(self._counter)}"
-        logger.info("fake SMS %s to %s: %s", message_id, phone, body)
+        # The body is NOT logged. Staging runs this adapter on a publicly
+        # reachable host, and its log stream is widely readable — an INFO line
+        # carrying the live code (and the customer's number) would hand
+        # verification to anyone with log access, defeating the masking that
+        # message_log does two layers up. The outbox is how tests read bodies.
+        logger.info("fake SMS %s queued (%d chars)", message_id, len(body))
         return SendResult(provider_message_id=message_id)
