@@ -2,18 +2,18 @@
 tags: [backend, api, python, fastapi, entrypoint, media, csrf]
 sources: [backend/app/main.py]
 created: 2026-07-23
-updated: 2026-07-27
+updated: 2026-07-28
 # --- .brain extensions (see .brain/CLAUDE.md § Deviations) ---
 path: backend/app/main.py
-blob: 78cb50cb54531d8a25e4df78a930aeca3e3bde0e
-commit: e8fd318e17e17aefef55205facf914e60e3a0160
+blob: d2dfba2c0fdd45a14763dbbddfd3eefaee2f5042
+commit: 3bf3795889113127f3fae36eb18e91a29ebe7fda
 kind: code
 applicability: active
 ---
 
 # backend/app/main.py
 
-**Role.** The ASGI application factory: builds the `FastAPI` instance, installs the CSRF-origin and subdomain [[Tenant Resolution]] middleware, parks the shared `AuthService`, `BoutiqueSettingsService`, `CatalogService`, `MediaStorage`, and rate limiters on `app.state`, maps the platform's domain exceptions onto deliberately uninformative house-shaped JSON error bodies, and mounts the health, auth, boutique-settings, and catalog routers. `uvicorn app.main:app` is the process entrypoint used by the `Makefile`.
+**Role.** The ASGI application factory: builds the `FastAPI` instance (API docs/schema dark outside dev), installs the security-headers, CSRF-origin and subdomain [[Tenant Resolution]] middleware, parks the shared `AuthService`, `BoutiqueSettingsService`, `CatalogService`, `StorefrontService`, `MediaStorage`, and rate limiters on `app.state`, maps the platform's domain exceptions onto deliberately uninformative house-shaped JSON error bodies, and mounts the health, auth, boutique-settings, catalog, and public storefront routers. `uvicorn app.main:app` is the process entrypoint used by the `Makefile`.
 
 **Module.** [[backend/app/_index]] · **Layer.** api
 
@@ -33,9 +33,9 @@ applicability: active
 
 ## Behavior
 
-`create_app` reads the cached settings, constructs the app with `lifespan`, and — unless a resolver is injected — builds a `RepositoryTenantResolver` over the lazy session factory; because the engine is a lazy singleton, importing this module never opens a connection, which [[backend/tests/test_app_import.py]] enforces. Middleware order is load-bearing: `CsrfOriginMiddleware` is added *after* `TenantResolutionMiddleware` so that (Starlette runs middleware in reverse-add order) it runs *before* resolution — a cross-origin forgery is rejected without a database lookup. Four services now share `app.state`, each built over the lazy session factory: `AuthService`, `BoutiqueSettingsService` (with its own terms-creation `FixedWindowRateLimiter`), `CatalogService` (with a presign limiter and `PENDING_MEDIA_TTL_SECONDS`), and the `MediaStorage` chosen by `_build_media_storage`. `S3MediaStorage.__init__` does no network I/O and no credential resolution, which is what keeps `create_app()` callable in the fast suite.
+`create_app` reads the cached settings, constructs the app with `lifespan`, and — unless a resolver is injected — builds a `RepositoryTenantResolver` over the lazy session factory; because the engine is a lazy singleton, importing this module never opens a connection, which [[backend/tests/test_app_import.py]] enforces. Since F10 the constructor also passes `docs_url`/`redoc_url`/`openapi_url` as `None` unless `app_env == "dev"`: F10 made the origin publicly crawlable, and `/openapi.json` is a complete uncredentialed description of every `/manage` route and of exactly the fields the storefront allowlist fences off — pulled forward from the F21 hardening gate because F21 lands after the pilot is public. Middleware order is load-bearing: `CsrfOriginMiddleware` is added *after* `TenantResolutionMiddleware` so that (Starlette runs middleware in reverse-add order) it runs *before* resolution — a cross-origin forgery is rejected without a database lookup — and [[backend/app/security_headers.py]]'s `SecurityHeadersMiddleware` is added **last = outermost**, which is what puts the headers on the `TENANT_NOT_FOUND` 404 that `TenantResolutionMiddleware` returns from its own dispatch without reaching a handler. Five services now share `app.state`, each built over the lazy session factory: `AuthService`, `BoutiqueSettingsService` (with its own terms-creation `FixedWindowRateLimiter`), `CatalogService` (with a presign limiter and `PENDING_MEDIA_TTL_SECONDS`), `StorefrontService` (with its own per-tenant read limiter — deliberately its *own* service, never `CatalogService`, so `out_of_stock`/`total_quantity`/`variant_count` are never even computed for anonymous requests), and the `MediaStorage` chosen by `_build_media_storage`. `S3MediaStorage.__init__` does no network I/O and no credential resolution, which is what keeps `create_app()` callable in the fast suite.
 
-The exception handlers are the security surface and grew from four to a full set. The originals stand: `TenantNotResolvedError` → 404 with the *same* body as any other resolution failure (no 404 confirms a slug exists), `InvalidCredentialsError` → 401 shared across wrong-password and unknown-email (no account enumeration), `RateLimitedError` → 429, `NotAuthenticatedError` → 401. New ones: `RequestValidationError` → **400** house shape platform-wide (FastAPI's default 422 is normalized away everywhere, auth routes included); the domain handlers bind to the *base* classes `DomainValidationError` (→400) and `DomainNotFoundError` (→404) from [[backend/app/errors.py]], deliberately **not** to concrete subclasses — Starlette resolves a handler by walking `type(exc).__mro__`, so binding to a leaf class would turn every sibling into an unhandled 500. Concrete conflict handlers map `DuplicateName/Date/Size`, `TermsVersionConflict`, and the media `Limit/NotUploaded/Mismatch/OrderMismatch` errors to 409; `TermsThrottled` and `MediaPresignThrottled` reuse the 429 body. Storage-layer `MediaNotConfiguredError` and `MediaStorageUnavailableError` → **503** (never 500): a bucket with no usable credentials is operationally identical to no bucket. The boutique router is included before the catalog router; both mount `prefix="/manage"`, so a duplicated path would silently shadow — the `ROUTES` table in [[backend/tests/test_catalog_api.py]] is what keeps that honest. The startup hook still fails the process fast if the database role is a superuser, `BYPASSRLS`, or a table owner, since any of the three silently bypasses forced [[Row Level Security]].
+The exception handlers are the security surface and grew from four to a full set. The originals stand: `TenantNotResolvedError` → 404 with the *same* body as any other resolution failure (no 404 confirms a slug exists), `InvalidCredentialsError` → 401 shared across wrong-password and unknown-email (no account enumeration), `RateLimitedError` → 429, `NotAuthenticatedError` → 401. New ones: `RequestValidationError` → **400** house shape platform-wide (FastAPI's default 422 is normalized away everywhere, auth routes included); the domain handlers bind to the *base* classes `DomainValidationError` (→400) and `DomainNotFoundError` (→404) from [[backend/app/errors.py]], deliberately **not** to concrete subclasses — Starlette resolves a handler by walking `type(exc).__mro__`, so binding to a leaf class would turn every sibling into an unhandled 500. Concrete conflict handlers map `DuplicateName/Date/Size`, `TermsVersionConflict`, and the media `Limit/NotUploaded/Mismatch/OrderMismatch` errors to 409; `TermsThrottled`, `MediaPresignThrottled`, and `StorefrontThrottled` reuse the 429 body — the storefront one deliberately has its *own* exception class and handler rather than reusing auth's `RateLimitedError`, because the login form and the anonymous read surface have unrelated budgets (consolidating the four throttle errors onto one base is an F21 cleanup). Storage-layer `MediaNotConfiguredError` and `MediaStorageUnavailableError` → **503** (never 500): a bucket with no usable credentials is operationally identical to no bucket. The boutique router is included before the catalog router; both mount `prefix="/manage"`, so a duplicated path would silently shadow — the `ROUTES` table in [[backend/tests/test_catalog_api.py]] is what keeps that honest. The storefront router mounts last under its own `/storefront` prefix, never `/manage`: `CsrfOriginMiddleware` and any future edge rule keyed on `/manage` must not cover — or exempt — anonymous traffic. The startup hook still fails the process fast if the database role is a superuser, `BYPASSRLS`, or a table owner, since any of the three silently bypasses forced [[Row Level Security]].
 
 ## Depends On
 
@@ -54,6 +54,10 @@ The exception handlers are the security surface and grew from four to a full set
 - [[backend/app/catalog/router.py]] — `/manage` catalog routes
 - [[backend/app/catalog/service.py]] — `CatalogService` + its domain/media errors
 - [[backend/app/catalog/validation.py]] — `PENDING_MEDIA_TTL_SECONDS`
+- [[backend/app/storefront/router.py]] — public `/storefront` routes
+- [[backend/app/storefront/service.py]] — `StorefrontService`
+- [[backend/app/storefront/validation.py]] — `StorefrontThrottledError`
+- [[backend/app/security_headers.py]] — `SecurityHeadersMiddleware` (outermost)
 - [[backend/app/storage/base.py]] — `MediaStorage` protocol, `MediaNotConfiguredError`, `MediaStorageUnavailableError`
 - [[backend/app/storage/s3.py]] — `S3MediaStorage`
 - [[backend/app/storage/unconfigured.py]] — `UnconfiguredMediaStorage`
@@ -69,6 +73,7 @@ The exception handlers are the security surface and grew from four to a full set
 - [[backend/tests/test_tenancy_integration.py]]
 - [[backend/tests/test_boutique_api.py]]
 - [[backend/tests/test_catalog_api.py]]
+- [[backend/tests/test_storefront_api.py]]
 
 ## Concepts
 
@@ -88,6 +93,7 @@ The exception handlers are the security surface and grew from four to a full set
 - [[backend/tests/test_tenancy_integration.py]] — end-to-end resolution against Postgres
 - [[backend/tests/test_boutique_api.py]] — `/manage` boutique-settings endpoints and their error bodies
 - [[backend/tests/test_catalog_api.py]] — the `ROUTES` table guarding `/manage` catalog paths, media flows, and every catalog/media error body
+- [[backend/tests/test_storefront_api.py]] — public routes work with *no* cookie, throttle 429 body, security headers on every response incl. the middleware-emitted 404, OpenAPI/docs unreachable outside dev
 
 ## Notes
 

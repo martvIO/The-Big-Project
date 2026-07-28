@@ -46,3 +46,6 @@ routers, CsrfOriginMiddleware, media-storage wiring, full domain/media exception
 RequestValidationError→400 house shape), backend/tests/conftest.py (real-MinIO
 Testcontainers fixture). Stale 4→0. 417 files still have no page — all missing, none orphaned;
 resume documentation of the new boutique/catalog/storage code with /brain-ingest.
+
+## [2026-07-28] sync | 4 stale reconciled, 0 orphans
+Reconciled backend/app/core/config.py, backend/app/main.py (F10: storefront service/limiter on app.state, SecurityHeadersMiddleware outermost, docs/openapi dark outside dev, StorefrontThrottledError handler, /storefront router), and rewrote backend/app/storefront/{router,schemas}.py.md whose pages predated the F10 spec-conformance pass (per-tenant throttle, StorefrontService, renamed flat wire models). Queue at 123 entries — no rotation.
