@@ -49,6 +49,21 @@ class Settings(BaseSettings):
     media_presign_max_per_window: int = 60
     media_presign_window_seconds: int = 300
 
+    # SMS carries deployment identity only (which adapter); product policy (OTP
+    # length, TTLs, attempt cap) lives once in app/notifications/validation.py.
+    # None → UnconfiguredSmsSender: no provider is a supported deployment where
+    # OTP send answers 503, exactly like the missing media bucket. "fake" is the
+    # dev/staging adapter; the real provider literal is added with its adapter.
+    sms_provider: Literal["fake"] | None = None
+    # Staging-only escape hatch: verify() also accepts this exact code. The
+    # validator below makes it — and the fake sender — a BOOT FAILURE in
+    # production, which is what keeps staging convenience from becoming a hole.
+    otp_dev_code: str | None = None
+    otp_send_max_per_phone_window: int = 5
+    otp_send_phone_window_seconds: int = 3600
+    otp_send_max_per_tenant_window: int = 100
+    otp_send_tenant_window_seconds: int = 3600
+
     # Per-TENANT budget on the anonymous storefront reads: a runaway brake, not
     # a defence (see app/storefront/router.py._throttle for the full argument).
     # Env-tunable like every other rate limit here so it can be tightened during
@@ -102,6 +117,17 @@ class Settings(BaseSettings):
             raise ValueError("MEDIA_ENDPOINT_URL must be https when APP_ENV is not 'dev'")
         if self.app_env == "production" and self.media_force_path_style:
             raise ValueError("MEDIA_FORCE_PATH_STYLE must be false when APP_ENV is 'production'")
+        return self
+
+    @model_validator(mode="after")
+    def _forbid_sms_test_paths_in_production(self) -> Self:
+        # The fake sender "sends" nothing and the dev code bypasses the OTP
+        # comparison — either one in production silently voids the phone
+        # verification the whole booking flow rests on. Fail at boot, loudly.
+        if self.app_env == "production" and self.sms_provider == "fake":
+            raise ValueError("SMS_PROVIDER must not be 'fake' when APP_ENV is 'production'")
+        if self.app_env == "production" and self.otp_dev_code:
+            raise ValueError("OTP_DEV_CODE must not be set when APP_ENV is 'production'")
         return self
 
     @property

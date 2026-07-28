@@ -36,6 +36,17 @@ from app.core.config import Settings, get_settings
 from app.csrf import CsrfOriginMiddleware
 from app.db.session import ensure_safe_database_role, get_session_factory
 from app.errors import DomainNotFoundError, DomainValidationError
+from app.notifications.base import SmsNotConfiguredError, SmsSender, SmsSendError
+from app.notifications.fake import FakeSmsSender
+from app.notifications.router import router as otp_router
+from app.notifications.service import (
+    NotificationService,
+    OtpExpiredError,
+    OtpInvalidError,
+    OtpService,
+    OtpThrottledError,
+)
+from app.notifications.unconfigured import UnconfiguredSmsSender
 from app.security_headers import SecurityHeadersMiddleware
 from app.storage.base import (
     MediaNotConfiguredError,
@@ -117,6 +128,21 @@ MEDIA_STORAGE_UNAVAILABLE_BODY = {
         "message": "Image storage is temporarily unavailable.",
     }
 }
+# Fixed bodies: no provider name, account identifier or provider-supplied text
+# may ever reach a user-facing message (the media-error precedent).
+SMS_NOT_CONFIGURED_BODY = {
+    "error": {"code": "SMS_NOT_CONFIGURED", "message": "Phone verification is not available."}
+}
+SMS_UNAVAILABLE_BODY = {
+    "error": {
+        "code": "SMS_UNAVAILABLE",
+        "message": "Could not send the verification code. Try again.",
+    }
+}
+OTP_INVALID_BODY = {"error": {"code": "OTP_INVALID", "message": "The code is incorrect."}}
+OTP_EXPIRED_BODY = {
+    "error": {"code": "OTP_EXPIRED", "message": "The code expired. Request a new one."}
+}
 
 
 def _validation_summary(exc: RequestValidationError) -> str:
@@ -152,6 +178,17 @@ def _build_media_storage(settings: Settings) -> MediaStorage:
     # __init__ does no network I/O and no credential resolution, which is what
     # keeps create_app() safe to call in the fast suite.
     return S3MediaStorage(settings)
+
+
+def _build_sms_sender(settings: Settings) -> SmsSender:
+    """Mirrors _build_media_storage: absence is a supported deployment that
+    answers 503, and extra="ignore" makes a typo'd SMS_PROVDER silent — this
+    INFO line is what makes the degradation observable."""
+    if settings.sms_provider == "fake":
+        logger.info("SMS sender: FAKE (in-memory outbox) — no real SMS will be sent")
+        return FakeSmsSender()
+    logger.info("SMS sender NOT configured — OTP send will answer 503 SMS_NOT_CONFIGURED")
+    return UnconfiguredSmsSender()
 
 
 def create_app(resolver: TenantResolver | None = None) -> FastAPI:
@@ -229,6 +266,25 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     app.state.storefront_service = StorefrontService(
         get_session_factory(),
         media_storage=app.state.media_storage,
+    )
+    app.state.sms_sender = _build_sms_sender(settings)
+    app.state.notification_service = NotificationService(
+        get_session_factory(), sender=app.state.sms_sender
+    )
+    app.state.otp_service = OtpService(
+        get_session_factory(),
+        notifications=app.state.notification_service,
+        phone_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.otp_send_max_per_phone_window,
+            window_seconds=settings.otp_send_phone_window_seconds,
+            clock=time.monotonic,
+        ),
+        tenant_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.otp_send_max_per_tenant_window,
+            window_seconds=settings.otp_send_tenant_window_seconds,
+            clock=time.monotonic,
+        ),
+        dev_code=settings.otp_dev_code,
     )
 
     @app.exception_handler(TenantNotResolvedError)
@@ -337,6 +393,31 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     ) -> JSONResponse:
         return JSONResponse(MEDIA_STORAGE_UNAVAILABLE_BODY, status_code=503)
 
+    # Raised by app/notifications/, same containment as the media pair: a
+    # missing provider degrades to 503, and provider text never reaches a body.
+    @app.exception_handler(SmsNotConfiguredError)
+    async def _sms_not_configured(request: Request, exc: SmsNotConfiguredError) -> JSONResponse:
+        return JSONResponse(SMS_NOT_CONFIGURED_BODY, status_code=503)
+
+    @app.exception_handler(SmsSendError)
+    async def _sms_unavailable(request: Request, exc: SmsSendError) -> JSONResponse:
+        return JSONResponse(SMS_UNAVAILABLE_BODY, status_code=503)
+
+    @app.exception_handler(OtpInvalidError)
+    async def _otp_invalid(request: Request, exc: OtpInvalidError) -> JSONResponse:
+        return JSONResponse(OTP_INVALID_BODY, status_code=400)
+
+    @app.exception_handler(OtpExpiredError)
+    async def _otp_expired(request: Request, exc: OtpExpiredError) -> JSONResponse:
+        return JSONResponse(OTP_EXPIRED_BODY, status_code=400)
+
+    # Its own class for the same reason as StorefrontThrottledError: the OTP
+    # send budget and the login budget are unrelated keys with unrelated
+    # operational meanings. Reparenting onto one base stays owned by F21.
+    @app.exception_handler(OtpThrottledError)
+    async def _otp_throttled(request: Request, exc: OtpThrottledError) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(boutique_router)
@@ -347,6 +428,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
     app.include_router(storefront_router)
+    # Same /storefront prefix, sibling router: the read router is contractually
+    # GET-only, so the OTP mutations live in app/notifications/router.py. The
+    # cross-router shadowing guard in test_storefront_api.py covers the pair.
+    app.include_router(otp_router)
     return app
 
 
