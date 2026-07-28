@@ -35,6 +35,7 @@ from app.db.repositories.availability import (
     AvailabilityExceptionsRepository,
     AvailabilityRulesRepository,
 )
+from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.dress_media import DressMediaRepository
 from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
@@ -44,6 +45,7 @@ from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.dress import Dress
 from app.storage.base import MediaStorage
 from app.storefront.validation import (
+    BOUTIQUE_TIMEZONE,
     STOREFRONT_LIST_DEFAULT_LIMIT,
     STOREFRONT_LIST_MAX_LIMIT,
     UPCOMING_EXCEPTIONS_LIMIT,
@@ -116,6 +118,7 @@ class StorefrontService:
         self._rules = AvailabilityRulesRepository()
         self._exceptions = AvailabilityExceptionsRepository()
         self._appointment_types = AppointmentTypesRepository()
+        self._bookings = BookingsRepository()
 
     async def list_dresses(
         self,
@@ -178,18 +181,26 @@ class StorefrontService:
         from_date: datetime.date | None = None,
         to_date: datetime.date | None = None,
     ) -> list[Slot]:
-        """Two statements: the active weekly set and the exceptions in the
-        window. The grid itself is computed by the pure engine.
+        """Three statements: the active weekly set, the exceptions in the
+        window, and the per-instant booked counts. The grid itself is computed
+        by the pure engine.
 
-        **`booked` is `{}` and that is the F13 seam.** No `bookings` table
-        exists yet, so every slot currently reports full capacity — this
-        endpoint OVERSTATES availability until F13 replaces the literal below
-        with a per-instant count. Nothing links to it before F14, and F13 is the
-        next feature; the parameter exists precisely so that change is one line
-        here and zero lines in the engine.
+        F12 shipped this with `booked={}`; F13 closed the seam — this is the
+        one line the parameter existed for, and the engine did not change. Full
+        slots are DROPPED by the engine, never marked, so the response still
+        discloses nothing about the boutique's booking density.
         """
         today = today_jerusalem(self._clock)
         window_start, window_end = slot_window(from_date, to_date, today)
+        # The engine keys `booked` by UTC start instant; the window is boutique
+        # calendar dates, so its edges become boutique-midnight instants. The
+        # right edge is half-open — start of the day AFTER window_end.
+        window_first = datetime.datetime.combine(
+            window_start, datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
+        ).astimezone(datetime.UTC)
+        window_last = datetime.datetime.combine(
+            window_end + datetime.timedelta(days=1), datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
+        ).astimezone(datetime.UTC)
         async with tenant_session(self._session_factory, tenant_id) as session:
             rules = await self._rules.list_active(session, tenant_id)
             # Bounded on BOTH sides in SQL: the window bounds the response
@@ -199,11 +210,14 @@ class StorefrontService:
             exceptions = await self._exceptions.list_active(
                 session, tenant_id, on_or_after=window_start, on_or_before=window_end
             )
+            booked = await self._bookings.count_by_start(
+                session, tenant_id, from_instant=window_first, until_instant=window_last
+            )
         now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
         return materialize_slots(
             rules=rules,
             exceptions=exceptions,
-            booked={},
+            booked=booked,
             window_start=window_start,
             window_end=window_end,
             now=now.astimezone(datetime.UTC),

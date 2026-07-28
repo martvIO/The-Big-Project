@@ -39,7 +39,9 @@ from app.boutique.service import BoutiqueSettingsService
 from app.boutique.validation import WeeklyRuleInput
 from app.catalog.service import CatalogNotFoundError, CatalogService
 from app.catalog.validation import VariantInput
+from app.db.repositories.bookings import BookingsRepository
 from app.db.tenant import tenant_session
+from app.models.constants import BookingStatus
 from app.storage.memory import InMemoryMediaStorage
 from app.storefront.service import StorefrontService
 from app.storefront.validation import (
@@ -463,6 +465,12 @@ async def test_slots_materialize_from_rules_and_exceptions(app_role_url: str) ->
         await boutique.add_availability_exception(
             tenant_id, date=monday, open_time=None, close_time=None, note="חופשה"
         )
+        # One real booking at Sunday 10:00 — F13 closed the F12 seam, so the
+        # grid now reports counts from the bookings table, not a literal.
+        ten_utc = datetime.datetime.combine(
+            sunday, datetime.time(10, 0), tzinfo=BOUTIQUE_TIMEZONE
+        ).astimezone(datetime.UTC)
+        await _book(factory, tenant_id, starts_at=ten_utc, seat_index=1)
 
         storefront = _storefront(factory, InMemoryMediaStorage(), now=frozen)
         slots = await storefront.list_slots(tenant_id, from_date=sunday, to_date=monday)
@@ -472,11 +480,80 @@ async def test_slots_materialize_from_rules_and_exceptions(app_role_url: str) ->
             for slot in slots
         ]
         assert local == ["2026-08-02 10:00", "2026-08-02 10:30"]
-        # Capacity 2 with no bookings yet — the F13 seam, asserted so the day it
-        # changes is a visible diff rather than a silent one. Note that neither
-        # number reaches the wire: SlotRow carries only starts_at.
+        # Note that neither number reaches the wire: SlotRow carries only
+        # starts_at.
         assert [slot.capacity for slot in slots] == [2, 2]
-        assert all(slot.booked == 0 for slot in slots)
+        assert [slot.booked for slot in slots] == [1, 0]
+    finally:
+        await engine.dispose()
+
+
+async def _book(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    *,
+    starts_at: datetime.datetime,
+    seat_index: int,
+) -> uuid.UUID:
+    """Seed one confirmed booking row directly — the storefront read path only
+    cares that the row exists; the claim itself is test_booking_service.py's."""
+    async with tenant_session(factory, tenant_id) as session:
+        row = await BookingsRepository().insert(
+            session,
+            tenant_id=tenant_id,
+            customer_id=uuid.uuid4(),
+            appointment_type_id=uuid.uuid4(),
+            starts_at=starts_at,
+            seat_index=seat_index,
+            terms_version_accepted=1,
+            terms_accepted_at=starts_at - datetime.timedelta(days=1),
+            appointment_type_name="מדידה",
+        )
+        return row.id
+
+
+async def test_full_slots_disappear_and_cancellation_restores_them(app_role_url: str) -> None:
+    """The public grid never lists a full slot — and only a CANCELLED booking
+    gives the instant back."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    tenant_id = uuid.uuid4()
+    sunday = datetime.date(2026, 8, 2)
+    frozen = datetime.datetime(2026, 8, 1, 6, 0, tzinfo=datetime.UTC)
+    try:
+        boutique = _boutique(factory)
+        await boutique.replace_weekly_rules(
+            tenant_id,
+            [
+                WeeklyRuleInput(
+                    day_of_week=0,
+                    open_time=datetime.time(10, 0),
+                    close_time=datetime.time(11, 0),
+                    capacity=1,
+                )
+            ],
+        )
+        ten_utc = datetime.datetime.combine(
+            sunday, datetime.time(10, 0), tzinfo=BOUTIQUE_TIMEZONE
+        ).astimezone(datetime.UTC)
+        booking_id = await _book(factory, tenant_id, starts_at=ten_utc, seat_index=1)
+
+        storefront = _storefront(factory, InMemoryMediaStorage(), now=frozen)
+        slots = await storefront.list_slots(tenant_id, from_date=sunday, to_date=sunday)
+        assert [
+            slot.starts_at.astimezone(BOUTIQUE_TIMEZONE).strftime("%H:%M") for slot in slots
+        ] == ["10:30"]
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await BookingsRepository().by_id(session, tenant_id, booking_id)
+            assert row is not None
+            row.status = BookingStatus.CANCELLED.value
+            await session.flush()
+
+        restored = await storefront.list_slots(tenant_id, from_date=sunday, to_date=sunday)
+        assert [
+            slot.starts_at.astimezone(BOUTIQUE_TIMEZONE).strftime("%H:%M") for slot in restored
+        ] == ["10:00", "10:30"]
     finally:
         await engine.dispose()
 
