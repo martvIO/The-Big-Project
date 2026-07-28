@@ -12,6 +12,8 @@ import datetime
 from collections.abc import Callable
 from zoneinfo import ZoneInfo
 
+from app.errors import DomainValidationError
+
 # Same as DRESS_LIST_DEFAULT_LIMIT: the grid is 2/3/4-col, so 24 fills 6/8/12
 # rows and the worst case is 24 unprocessed covers.
 STOREFRONT_LIST_DEFAULT_LIMIT = 24
@@ -49,6 +51,12 @@ class StorefrontThrottledError(Exception):
     handler would be a semantic lie no test catches. Reparenting all four
     throttle errors onto one base is a behaviour-neutral cleanup owned by F21.
     """
+
+
+class SlotWindowError(DomainValidationError):
+    """`to` precedes `from`. A DomainValidationError subclass so the platform's
+    existing handler maps it to the house-shape 400 carrying this message —
+    no new handler, no new error code."""
 
 
 def today_jerusalem(clock: Clock | None = None) -> datetime.date:

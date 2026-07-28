@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.booking.validation import SLOT_WINDOW_DEFAULT_DAYS, SLOT_WINDOW_MAX_DAYS
 from app.boutique.validation import (
     MAX_PROFILE_INSTAGRAM_LENGTH,
     BoutiqueValidationError,
@@ -27,12 +28,14 @@ from app.boutique.validation import (
     validate_profile,
 )
 from app.db.repositories.dresses import DressesRepository
+from app.errors import DomainValidationError
 from app.models.availability import AvailabilityException
 from app.models.dress import Dress
 from app.storage.unconfigured import UnconfiguredMediaStorage
 from app.storefront.service import (
     MAX_LIST_OFFSET,
     StorefrontService,
+    slot_window,
     upcoming_exceptions,
 )
 from app.storefront.validation import (
@@ -40,6 +43,7 @@ from app.storefront.validation import (
     STOREFRONT_LIST_MAX_LIMIT,
     UPCOMING_EXCEPTIONS_LIMIT,
     Clock,
+    SlotWindowError,
     today_jerusalem,
 )
 
@@ -254,3 +258,53 @@ def test_but_an_empty_instagram_field_clears_the_profile() -> None:
     validate_profile({"instagram": "", "phone": "", "essence": ""})
     with pytest.raises(BoutiqueValidationError):
         validate_profile({"instagram": "@bella"})
+
+
+# --- F12: slot window resolution and clamping ---
+
+
+class TestSlotWindow:
+    TODAY = datetime.date(2026, 8, 2)
+
+    def test_defaults_to_today_plus_the_default_span(self) -> None:
+        start, end = slot_window(None, None, self.TODAY)
+        assert start == self.TODAY
+        assert end == self.TODAY + datetime.timedelta(days=SLOT_WINDOW_DEFAULT_DAYS)
+
+    def test_an_explicit_from_moves_the_default_end_with_it(self) -> None:
+        requested = datetime.date(2026, 9, 1)
+        start, end = slot_window(requested, None, self.TODAY)
+        assert start == requested
+        assert end == requested + datetime.timedelta(days=SLOT_WINDOW_DEFAULT_DAYS)
+
+    def test_an_explicit_window_is_honoured(self) -> None:
+        assert slot_window(self.TODAY, self.TODAY + datetime.timedelta(days=3), self.TODAY) == (
+            self.TODAY,
+            self.TODAY + datetime.timedelta(days=3),
+        )
+
+    def test_a_single_day_window_is_legal(self) -> None:
+        assert slot_window(self.TODAY, self.TODAY, self.TODAY) == (self.TODAY, self.TODAY)
+
+    def test_a_past_from_is_allowed_and_left_alone(self) -> None:
+        """The engine's `now` cutoff already drops past slots, so a backdated
+        window is simply empty — clamping it here would be a second rule saying
+        the same thing, in a place that could disagree."""
+        past = self.TODAY - datetime.timedelta(days=30)
+        start, _ = slot_window(past, self.TODAY, self.TODAY)
+        assert start == past
+
+    def test_an_over_long_window_is_clamped_not_rejected(self) -> None:
+        """A picker asking for more than it can render is a UI bug, not a user
+        error — but one anonymous request must not materialize years of grid."""
+        _, end = slot_window(self.TODAY, self.TODAY + datetime.timedelta(days=3650), self.TODAY)
+        assert end == self.TODAY + datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS)
+
+    def test_an_inverted_window_raises(self) -> None:
+        with pytest.raises(SlotWindowError):
+            slot_window(self.TODAY, self.TODAY - datetime.timedelta(days=1), self.TODAY)
+
+    def test_the_error_is_a_domain_validation_error(self) -> None:
+        """So the platform's existing handler maps it to the house-shape 400 —
+        no new handler, no new error code."""
+        assert issubclass(SlotWindowError, DomainValidationError)

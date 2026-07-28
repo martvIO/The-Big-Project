@@ -436,3 +436,49 @@ def test_an_archived_dress_leaves_the_public_surface_entirely(app_role_url: str)
         assert detail.json()["error"]["code"] == "NOT_FOUND"
     finally:
         asyncio.run(engine.dispose())
+
+
+async def test_slots_and_types_never_cross_the_tenant_boundary(app_role_url: str) -> None:
+    """F12's rows in the isolation suite. Hours and appointment types are
+    tenant-scoped tables behind RLS, and the slot grid is computed FROM them —
+    so a leak here would not merely show another boutique's opening hours, it
+    would let a visitor book against them."""
+    engine, factory = _factory(app_role_url)
+    tenant_a = uuid.uuid4()
+    tenant_b = uuid.uuid4()
+    sunday = datetime.date(2026, 8, 2)
+    frozen = datetime.datetime(2026, 8, 1, 6, 0, tzinfo=datetime.UTC)
+    try:
+        await _boutique(factory).replace_weekly_rules(
+            tenant_a,
+            [
+                WeeklyRuleInput(
+                    day_of_week=0,
+                    open_time=datetime.time(10, 0),
+                    close_time=datetime.time(11, 0),
+                    capacity=3,
+                )
+            ],
+        )
+        await _boutique(factory).create_appointment_type(
+            tenant_a,
+            name="A only",
+            duration_minutes=60,
+            audience="all",
+            deposit_required=False,
+            deposit_amount_agorot=None,
+            sort_order=0,
+        )
+
+        storefront = StorefrontService(
+            factory, media_storage=InMemoryMediaStorage(), clock=lambda: frozen
+        )
+        assert await storefront.list_slots(tenant_b, from_date=sunday, to_date=sunday) == []
+        assert await storefront.list_appointment_types(tenant_b) == []
+
+        # A's own reads are unaffected — the empties above are isolation, not a
+        # broken read path.
+        assert len(await storefront.list_slots(tenant_a, from_date=sunday, to_date=sunday)) == 2
+        assert [row.name for row in await storefront.list_appointment_types(tenant_a)] == ["A only"]
+    finally:
+        await engine.dispose()

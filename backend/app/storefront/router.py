@@ -1,4 +1,6 @@
-"""The public storefront read API: three anonymous, tenant-scoped GETs.
+"""The public storefront read API: five anonymous, tenant-scoped GETs — three
+catalog/identity reads from F10, plus F12's booking grid (`/slots`,
+`/appointment-types`).
 
 **Why prefix="/storefront" and not a public corner of /manage.**
 `CsrfOriginMiddleware.PROTECTED_PREFIX` is `/manage` and F10 has no mutating
@@ -31,22 +33,34 @@ is a public endpoint with a hidden second contract.
 — minting signed URLs and spending the same read budget — to return a body the
 client discards, and the things that HEAD a URL (link previewers, uptime probes)
 are pointed at HTML pages and `/health`, not at a JSON read API.
+
+**This router stays GET-only, and that is load-bearing.** E3's mutating public
+routes (OTP send/verify in F11, booking create in F13) live in SIBLING routers
+on the same `/storefront` prefix rather than here, so the contract above stays
+mechanically true instead of aspirational. The cross-router shadowing guard in
+`test_storefront_api.py` covers the whole prefix.
 """
 
+import datetime
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.auth.rate_limit import FixedWindowRateLimiter
+from app.booking.slots import Slot
 from app.catalog.service import MediaView
+from app.models.appointment_type import AppointmentType
 from app.models.dress import Dress
 from app.storefront.schemas import (
+    AppointmentTypeRow,
     BoutiqueResponse,
     DressListResponse,
     ExceptionRow,
     HoursRow,
     SizeChip,
+    SlotListResponse,
+    SlotRow,
     StorefrontDetail,
     StorefrontDress,
     StorefrontMedia,
@@ -216,6 +230,26 @@ def public_boutique(view: StorefrontBoutiqueView) -> BoutiqueResponse:
     )
 
 
+def public_slots(slots: list[Slot]) -> SlotListResponse:
+    """`remaining`, never `capacity` — the projection is where that rule lives,
+    the same way _public_price is where the hidden-price rule lives. A slot the
+    engine returned is by construction not full, so `remaining` is always ≥ 1."""
+    return SlotListResponse(
+        slots=[SlotRow(starts_at=slot.starts_at, remaining=slot.remaining) for slot in slots]
+    )
+
+
+def public_appointment_type(row: AppointmentType) -> AppointmentTypeRow:
+    return AppointmentTypeRow(
+        id=row.id,
+        name=row.name,
+        duration_minutes=row.duration_minutes,
+        audience=row.audience,
+        deposit_required=row.deposit_required,
+        deposit_amount_agorot=row.deposit_amount_agorot,
+    )
+
+
 def public_dress_list(view: StorefrontDressListView) -> DressListResponse:
     return DressListResponse(
         items=[public_dress(item) for item in view.items],
@@ -260,3 +294,28 @@ async def get_boutique(request: Request, service: Storefront) -> BoutiqueRespons
     return public_boutique(
         await service.get_boutique(tenant.id, name=tenant.name, settings=tenant.settings)
     )
+
+
+@router.get("/slots")
+async def list_slots(
+    request: Request,
+    service: Storefront,
+    from_date: Annotated[datetime.date | None, Query(alias="from")] = None,
+    to_date: Annotated[datetime.date | None, Query(alias="to")] = None,
+) -> SlotListResponse:
+    """Bookable start times, boutique-calendar dates, both bounds inclusive.
+
+    `from` defaults to today in Jerusalem and `to` to `from` +
+    SLOT_WINDOW_DEFAULT_DAYS; the service clamps the far end to
+    SLOT_WINDOW_MAX_DAYS so one anonymous request cannot materialize years of
+    grid. `to < from` is a 400 rather than an empty list — an inverted window is
+    a caller bug, and answering "no availability" would hide it.
+    """
+    tenant = get_current_tenant(request)
+    return public_slots(await service.list_slots(tenant.id, from_date=from_date, to_date=to_date))
+
+
+@router.get("/appointment-types")
+async def list_appointment_types(request: Request, service: Storefront) -> list[AppointmentTypeRow]:
+    tenant = get_current_tenant(request)
+    return [public_appointment_type(row) for row in await service.list_appointment_types(tenant.id)]

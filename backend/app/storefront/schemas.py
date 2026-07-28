@@ -128,3 +128,39 @@ class BoutiqueResponse(BaseModel):
     instagram: str | None
     hours: list[HoursRow]
     exceptions: list[ExceptionRow]
+
+
+class SlotRow(BaseModel):
+    """`remaining`, never `capacity`.
+
+    F10's field allowlist fences `availability_rules.capacity` off this surface
+    because it discloses how many parallel fittings the boutique runs.
+    `remaining` is the operative fact for a picker and leaks strictly less: it
+    is bounded above by capacity, but a visitor cannot tell a quiet day at a big
+    boutique from a busy day at a small one.
+    """
+
+    starts_at: datetime.datetime
+    remaining: int
+
+
+class SlotListResponse(BaseModel):
+    slots: list[SlotRow]
+
+
+class AppointmentTypeRow(BaseModel):
+    """What a customer can book, and what it costs to hold.
+
+    `audience` is DISCLOSED, not enforced: an anonymous visitor cannot be
+    classified as a bride, so the field exists for the UI to label the option
+    and real enforcement waits for a client identity (E5). `deposit_*` ships now
+    because a customer is entitled to see a deposit before choosing a time, not
+    after — E4's payment step reads the same fields.
+    """
+
+    id: UUID
+    name: str
+    duration_minutes: int
+    audience: str
+    deposit_required: bool
+    deposit_amount_agorot: int | None

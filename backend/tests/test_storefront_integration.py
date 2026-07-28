@@ -36,6 +36,7 @@ from sqlalchemy.pool import NullPool
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.boutique.service import BoutiqueSettingsService
+from app.boutique.validation import WeeklyRuleInput
 from app.catalog.service import CatalogNotFoundError, CatalogService
 from app.catalog.validation import VariantInput
 from app.db.tenant import tenant_session
@@ -422,5 +423,104 @@ async def test_upcoming_exceptions_filter(app_role_url: str) -> None:
         assert dates[-1] == today + (UPCOMING_EXCEPTIONS_LIMIT - 1) * day
         # The overflowing tail is dropped from the END, not the start.
         assert today + (UPCOMING_EXCEPTIONS_LIMIT + 1) * day not in dates
+    finally:
+        await engine.dispose()
+
+
+# --- F12: the booking grid, end to end against real Postgres ---
+
+
+async def test_slots_materialize_from_rules_and_exceptions(app_role_url: str) -> None:
+    """Two statements, then the pure engine. Proves the whole path — owner
+    writes hours in the console, an anonymous visitor gets bookable times."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    tenant_id = uuid.uuid4()
+    # A Sunday well in the future, so `now` never eats the window.
+    sunday = datetime.date(2026, 8, 2)
+    monday = sunday + datetime.timedelta(days=1)
+    frozen = datetime.datetime(2026, 8, 1, 6, 0, tzinfo=datetime.UTC)
+    try:
+        boutique = _boutique(factory)
+        await boutique.replace_weekly_rules(
+            tenant_id,
+            [
+                WeeklyRuleInput(
+                    day_of_week=0,  # Sunday, the Israeli week's first day
+                    open_time=datetime.time(10, 0),
+                    close_time=datetime.time(11, 0),
+                    capacity=2,
+                ),
+                WeeklyRuleInput(
+                    day_of_week=1,
+                    open_time=datetime.time(10, 0),
+                    close_time=datetime.time(11, 0),
+                    capacity=1,
+                ),
+            ],
+        )
+        # Monday is closed by exception even though the weekly grid opens it.
+        await boutique.add_availability_exception(
+            tenant_id, date=monday, open_time=None, close_time=None, note="חופשה"
+        )
+
+        storefront = _storefront(factory, InMemoryMediaStorage(), now=frozen)
+        slots = await storefront.list_slots(tenant_id, from_date=sunday, to_date=monday)
+
+        local = [
+            slot.starts_at.astimezone(BOUTIQUE_TIMEZONE).strftime("%Y-%m-%d %H:%M")
+            for slot in slots
+        ]
+        assert local == ["2026-08-02 10:00", "2026-08-02 10:30"]
+        # Capacity 2 with no bookings yet — the F13 seam, asserted so the day it
+        # changes is a visible diff rather than a silent one.
+        assert [slot.remaining for slot in slots] == [2, 2]
+        assert all(slot.booked == 0 for slot in slots)
+    finally:
+        await engine.dispose()
+
+
+async def test_slots_are_empty_for_a_boutique_with_no_hours(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    try:
+        storefront = _storefront(factory, InMemoryMediaStorage())
+        assert await storefront.list_slots(uuid.uuid4()) == []
+    finally:
+        await engine.dispose()
+
+
+async def test_appointment_types_exclude_archived(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        boutique = _boutique(factory)
+        kept = await boutique.create_appointment_type(
+            tenant_id,
+            name="מדידת כלה",
+            duration_minutes=60,
+            audience="brides_only",
+            deposit_required=True,
+            deposit_amount_agorot=15_000,
+            sort_order=0,
+        )
+        archived = await boutique.create_appointment_type(
+            tenant_id,
+            name="ייעוץ",
+            duration_minutes=30,
+            audience="all",
+            deposit_required=False,
+            deposit_amount_agorot=None,
+            sort_order=1,
+        )
+        await boutique.archive_appointment_type(tenant_id, archived.id)
+
+        storefront = _storefront(factory, InMemoryMediaStorage())
+        rows = await storefront.list_appointment_types(tenant_id)
+        assert [row.id for row in rows] == [kept.id]
+        # brides_only reaches the wire as a LABEL, not as a filter — an
+        # anonymous visitor cannot be classified, so E5 owns enforcement.
+        assert rows[0].audience == "brides_only"
     finally:
         await engine.dispose()
