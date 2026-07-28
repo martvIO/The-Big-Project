@@ -65,10 +65,16 @@ class S3MediaStorage:
 
     def _s3(self) -> Any:
         if self._client is None:
+            # generate_presigned_post() builds its form `url` from the client's
+            # endpoint_url, not from region_name — leaving endpoint_url unset lets
+            # botocore fall back to the legacy global `bucket.s3.amazonaws.com`
+            # host, which AWS opt-in regions (il-central-1 included) reject with
+            # IllegalLocationConstraintException. Always resolve a real endpoint.
+            endpoint_url = self._endpoint_url or f"https://s3.{self._region}.amazonaws.com"
             self._client = boto3.client(
                 "s3",
                 region_name=self._region,
-                endpoint_url=self._endpoint_url,
+                endpoint_url=endpoint_url,
                 config=Config(
                     signature_version="s3v4",
                     s3={"addressing_style": "path"} if self._force_path_style else {},
