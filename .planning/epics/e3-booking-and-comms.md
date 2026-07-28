@@ -1,7 +1,11 @@
 # Epic: E3 — Booking Engine & SMS Lifecycle
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: ready to start — E1 and E2 are complete (E2 #10 merged PR #15, 2026-07-28), so every upstream dependency of #11–#16 is satisfied. External lead-time items that gate E3 features remain user-owned: Israeli SMS sender-ID registration (#11) and the Grow merchant account (E4 #17).
+**Status**: in progress — #11, #12 and #13 are merged (PRs #16, #17, #18), so the backend half of the epic is done: a verified phone can claim a real slot, oversell-proof, and the public grid reports true availability. #14 (UI), #15 (owner management) and #16 (comms lifecycle) remain, and all three are now unblocked.
+
+**A booking currently sends nothing.** #13 shipped the row; every SMS lives in #16. That ordering is deliberate and recorded in the F13 spec — nothing links to the endpoint until #14 — but it is the standing reason #16 should not slip behind #15.
+
+External lead-time items that gate E3 remain user-owned: Israeli SMS sender-ID registration (#11) and the Grow merchant account (E4 #17).
 **Owner**: team
 **PRD**: §4 (dual booking paths, terms acceptance), §6 (confirmation + 24h reminder; waitlist loop deferred to E5)
 
@@ -27,7 +31,7 @@ This is the product's transactional core: turn the browse-only storefront into a
 |---|---------|--------|------|------|------------|
 | 11 | SMS foundation | **done** (PR #16) | [spec](../specs/sms-foundation.md) | [plan](../plans/sms-foundation.md) | E1 #2, #3 |
 | 12 | Availability & slot engine | **done** (PR #17) | [spec](../specs/availability-slot-engine.md) | [plan](../plans/availability-slot-engine.md) | E2 #7 |
-| 13 | Booking core API | building | [spec](../specs/booking-core.md) | [plan](../plans/booking-core.md) | E2 #7, #11, #12 |
+| 13 | Booking core API | **done** (PR #18) | [spec](../specs/booking-core.md) | [plan](../plans/booking-core.md) | E2 #7, #11, #12 |
 | 14 | Storefront booking UI | todo | — | — | E2 #10, #13 |
 | 15 | Owner booking management | todo | — | — | #13 |
 | 16 | Booking comms lifecycle | todo | — | — | #13 |
