@@ -164,13 +164,16 @@ TOGGLES = {"deposits_enabled": True, "brides_only": False}
 
 
 def _dress_row(
-    *, price_visible: bool = False, price_agorot: int | None = HIDDEN_PRICE_AGOROT
+    *,
+    price_visible: bool = False,
+    price_agorot: int | None = HIDDEN_PRICE_AGOROT,
+    description: str | None = "Silk A-line",
 ) -> Dress:
     return Dress(
         id=DRESS_ID,
         tenant_id=TENANT.id,
         name="Aurora",
-        description="Silk A-line",
+        description=description,
         price_agorot=price_agorot,
         price_visible=price_visible,
         reserved=True,
@@ -213,11 +216,16 @@ def _dress_view(
     url: str | None = SIGNED_URL,
     price_visible: bool = False,
     price_agorot: int | None = HIDDEN_PRICE_AGOROT,
+    description: str | None = "Silk A-line",
     detail: bool = True,
 ) -> DressView:
     media = [_media_view(url=url)]
     return DressView(
-        row=_dress_row(price_visible=price_visible, price_agorot=price_agorot),
+        row=_dress_row(
+            price_visible=price_visible,
+            price_agorot=price_agorot,
+            description=description,
+        ),
         summary=StockSummary(variant_count=2, total_quantity=3, out_of_stock=False),
         media_count=1,
         cover=media[0],
@@ -600,6 +608,42 @@ def test_boutique_survives_an_empty_profile() -> None:
     }
 
 
+def test_a_cleared_profile_field_is_null_on_the_wire_not_an_empty_string() -> None:
+    """Empty string is the CANONICAL cleared value (boutique/validation.py), and
+    the manage form seeds every blank field to "" before submitting — so any owner
+    who saves the profile once turns their blanks from null into "".
+
+    A "" reaching the storefront renders `<a href="tel:">` with no accessible
+    name: a WCAG 2.4.4 (A) failure, and it lands three times on the statutory
+    הצהרת נגישות page whose whole legal function is to publish a reachable
+    channel. Both values already mean "not set", so the wire must not distinguish
+    them — that is what lets every client guard be a plain null check.
+    """
+    boutique = FakeBoutiqueService()
+    boutique.settings = SettingsResult(
+        profile={"phone": "", "address": "", "description": "", "maps_url": ""},
+        toggles={},
+    )
+    with _client(boutique=boutique) as client:
+        resp = client.get(BOUTIQUE_PATH)
+    assert resp.status_code == 200
+    assert resp.json()["profile"] == {
+        "phone": None,
+        "address": None,
+        "description": None,
+        "maps_url": None,
+    }
+
+
+def test_a_cleared_dress_description_is_null_on_the_wire() -> None:
+    catalog = FakeCatalogService()
+    catalog.view = _dress_view(description="")
+    with _client(catalog=catalog) as client:
+        resp = client.get(DETAIL_PATH)
+    assert resp.status_code == 200
+    assert resp.json()["description"] is None
+
+
 # --- structural: the public schemas may never inherit from the manage ones ---
 
 
@@ -740,3 +784,38 @@ def test_a_trusted_client_ip_is_throttled_with_the_existing_429(
         "error": {"code": "TOO_MANY_ATTEMPTS", "message": "Too many attempts. Try again later."}
     }
     assert other.status_code == 200
+
+
+def test_the_detail_route_declares_exactly_one_parameter() -> None:
+    """`api.ts`'s isNotFound maps 400 VALIDATION_ERROR on this route to
+    "השמלה כבר לא זמינה" and suppresses the retry button, on the strength of one
+    invariant: the ONLY 400 reachable here is a malformed UUID. That holds today
+    — the route takes no query params and no body, the limiter answers 429, and
+    both tenant and dress misses answer 404.
+
+    But main.py maps EVERY DomainValidationError to VALIDATION_ERROR, so the day
+    this route gains a query parameter, a real validation failure silently
+    becomes "this dress does not exist" with no way to retry. This pins the
+    premise rather than the conclusion.
+    """
+    app = create_app(resolver=_null_resolver)
+    detail = [
+        route
+        for route in _iter_leaf_routes(app)
+        if getattr(route, "path", None) == "/storefront/dresses/{dress_id}"
+    ]
+    assert len(detail) == 1, "the detail route moved — revisit isNotFound in api.ts"
+    params = detail[0].dependant.query_params + detail[0].dependant.body_params
+    assert params == [], (
+        "the detail route gained a parameter, so 400 VALIDATION_ERROR no longer "
+        "means 'malformed id' — api.ts isNotFound must stop treating it as a miss"
+    )
+
+
+def _iter_leaf_routes(node: Any) -> Iterator[Any]:
+    for route in getattr(node, "routes", []):
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            yield from _iter_leaf_routes(inner)
+            continue
+        yield route

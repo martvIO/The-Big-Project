@@ -44,9 +44,17 @@ eggs/
 lib/
 lib64/
 # The unanchored Python `lib/` rule above matches ANY lib/ dir — it must not
-# swallow frontend source (packages/ui/src/lib holds cn/focusRing, hours, url).
+# swallow frontend source (packages/ui/src/lib holds cn/focusRing, hours, url;
+# apps/storefront/src/lib holds the contact/hours adapters and the a11y
+# coordinator constant). This has now bitten twice: the files exist on disk so
+# every local run passes, while a fresh checkout has nothing there and cannot
+# compile. Any NEW frontend src/lib directory must be escaped here too.
 !frontend/packages/ui/src/lib/
 !frontend/packages/ui/src/lib/**
+!frontend/apps/storefront/src/lib/
+!frontend/apps/storefront/src/lib/**
+!frontend/apps/manage/src/lib/
+!frontend/apps/manage/src/lib/**
 parts/
 sdist/
 var/

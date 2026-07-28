@@ -22,6 +22,18 @@ const BOUTIQUE: PublicBoutiqueResponse = {
   exceptions: [],
 };
 
+// The class of defect, not the one string that caused it: the removed
+// placeholders used guillemets, but "TODO-fill-me" is the same failure and
+// passed a guillemet-only guard.
+const PLACEHOLDER_TEXT = /[«»]|TODO|FIXME|למילוי|fill.me/i;
+
+const COORDINATOR = {
+  name: "דנה לוי",
+  role: "רכזת נגישות",
+  phone: "03-1234567",
+  email: "accessibility@example.co.il",
+};
+
 const fetchMock = vi.fn();
 
 beforeEach(() => {
@@ -88,10 +100,12 @@ describe("Accessibility statement page", () => {
     ).toBeInTheDocument();
     // ACCESSIBILITY_COORDINATOR is null until the platform operator supplies it,
     // so the boutique is named — a real service provider, not a placeholder.
-    expect(screen.getAllByText(BOUTIQUE.name).length).toBeGreaterThan(0);
+    // Exactly two: the site the statement covers, and the named contact.
+    expect(screen.getAllByText(BOUTIQUE.name)).toHaveLength(2);
 
+    // Exactly two: the <dl> contact row and the reporting-channels list.
     const links = screen.getAllByRole("link", { name: phone });
-    expect(links.length).toBeGreaterThan(0);
+    expect(links).toHaveLength(2);
     for (const link of links) {
       expect(link).toHaveAttribute("href", `tel:${phone}`);
       // A phone is a strong-LTR digit run in RTL prose; dir isolates it.
@@ -107,12 +121,15 @@ describe("Accessibility statement page", () => {
   it("never renders an unfilled placeholder", async () => {
     const { container } = await renderStatement();
 
-    expect(container.textContent).not.toMatch(/[«»]/);
+    expect(container.textContent).not.toMatch(PLACEHOLDER_TEXT);
     for (const link of screen.getAllByRole("link")) {
       const href = link.getAttribute("href") ?? "";
-      expect(href).not.toMatch(/[«»]/);
-      expect(href).not.toBe("mailto:");
-      expect(href).not.toBe("tel:");
+      expect(href).not.toMatch(PLACEHOLDER_TEXT);
+      // Shape, not just absence-of-marker: a placeholder written without
+      // guillemets ("TODO-fill-me") passed the old guard and still rendered a
+      // dead mailto:. Every contact href must be a real address or number.
+      if (href.startsWith("mailto:")) expect(href).toMatch(/^mailto:[^@\s]+@[^@\s]+\.[^@\s]+$/);
+      if (href.startsWith("tel:")) expect(href).toMatch(/^tel:[+\d][\d\-\s()]*\d$/);
     }
   });
 
@@ -129,7 +146,7 @@ describe("Accessibility statement page", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(i18n.t("statement.title"));
     // Twice: the site the statement covers, and — with no configured
     // coordinator and no API — the named accessibility contact.
-    expect(screen.getAllByText(i18n.t("brand.title")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(i18n.t("brand.title"))).toHaveLength(2);
     expect(screen.getByText(i18n.t("statement.conformanceBody"))).toBeInTheDocument();
     expect(screen.getByText(i18n.t("statement.limitsAlt"))).toBeInTheDocument();
     expect(screen.getByText(i18n.t("statement.updated"))).toBeInTheDocument();
@@ -139,7 +156,34 @@ describe("Accessibility statement page", () => {
     // empty <ul> announces as "list, 0 items", which is worse than its absence.
     // The content lists (what-was-done, limits) still render, so assert on the
     // links instead of on list count.
-    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryAllByRole("link", { name: BOUTIQUE.profile.phone ?? "" })).toHaveLength(
+      0,
+    );
     expect(container.textContent).not.toMatch(/[«»]/);
+  });
+
+  // The launch path. Until this round nothing rendered it, so the day the
+  // operator fills in the constant a green suite would have gone red on a test
+  // asserting "no links at all" — and the path of least resistance would have
+  // been to relax that assertion rather than cover this branch.
+  it("renders the configured platform coordinator when one is set", async () => {
+    const { container } = render(<Accessibility coordinator={COORDINATOR} />);
+    await screen.findByText(BOUTIQUE.name);
+
+    expect(screen.getByText(i18n.t("statement.coordinatorIntro"))).toBeInTheDocument();
+    expect(screen.getByText(COORDINATOR.name)).toBeInTheDocument();
+    expect(screen.getByText(COORDINATOR.role)).toBeInTheDocument();
+
+    // The phone is a strong-LTR digit run inside RTL prose.
+    expect(screen.getByText(COORDINATOR.phone)).toHaveAttribute("dir", "ltr");
+
+    const mailtos = screen.getAllByRole("link", { name: COORDINATOR.email });
+    expect(mailtos).toHaveLength(2); // the <dl> row and the reporting list
+    for (const link of mailtos) {
+      expect(link).toHaveAttribute("href", `mailto:${COORDINATOR.email}`);
+    }
+
+    // Same guarantee as the unset branch: real values, never a placeholder.
+    expect(container.textContent).not.toMatch(PLACEHOLDER_TEXT);
   });
 });

@@ -149,7 +149,9 @@ def public_dress_detail(view: DressView) -> PublicDressDetailResponse:
     return PublicDressDetailResponse(
         id=view.row.id,
         name=view.row.name,
-        description=view.row.description,
+        # `or None` for the same reason as the profile fields: a cleared
+        # description is "" in the column, and "" renders an empty <p>.
+        description=view.row.description or None,
         price_agorot=public_price(view.row),
         reserved=view.row.reserved,
         # availability, never stock: the count is boutique-confidential.
@@ -172,13 +174,22 @@ def public_boutique(
     # Only the four keys the design renders are read out of the JSONB blob, so a
     # key a later feature adds to `profile` cannot reach the public page by
     # default. `toggles` is not read at all.
+    #
+    # `or None` collapses "" to null. Empty string is the wire's *canonical
+    # cleared value* (see boutique/validation.py) and the manage form seeds every
+    # blank field to "" before submitting, so any owner who saves the profile
+    # once converts their blanks from null to "". Shipping "" to the storefront
+    # renders `<a href="tel:">` with no accessible name — a WCAG 2.4.4 (A)
+    # failure, worst of all on the statutory הצהרת נגישות contact block. Both
+    # values already MEAN "not set"; making them identical on the wire is what
+    # lets every client guard be a plain null check.
     return PublicBoutiqueResponse(
         name=name,
         profile=PublicProfileResponse(
-            phone=profile.get("phone"),
-            address=profile.get("address"),
-            description=profile.get("description"),
-            maps_url=profile.get("maps_url"),
+            phone=profile.get("phone") or None,
+            address=profile.get("address") or None,
+            description=profile.get("description") or None,
+            maps_url=profile.get("maps_url") or None,
         ),
         rules=[
             PublicHoursRuleResponse(

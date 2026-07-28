@@ -4,6 +4,7 @@ import { SectionHeading, cn, focusRing } from "@boutique/ui";
 import { getBoutiqueOnce } from "../api";
 import type { PublicBoutiqueResponse } from "../api";
 import { ACCESSIBILITY_COORDINATOR } from "../lib/coordinator";
+import type { AccessibilityCoordinator } from "../lib/coordinator";
 
 // הצהרת נגישות. IS 5568 §35 makes this page — and a named, reachable contact
 // inside it — a legal obligation for a public Israeli site, so it is written to
@@ -52,7 +53,14 @@ function Bullets({ items }: { items: readonly string[] }) {
   );
 }
 
-export function Accessibility() {
+export interface AccessibilityProps {
+  // Injectable for the same reason BoutiqueAbout takes `now`: the configured
+  // branch is the LAUNCH path, and a branch no test can reach is a branch that
+  // breaks on the day it is switched on.
+  coordinator?: AccessibilityCoordinator | null;
+}
+
+export function Accessibility({ coordinator = ACCESSIBILITY_COORDINATOR }: AccessibilityProps = {}) {
   const { t } = useTranslation();
   const [boutique, setBoutique] = useState<PublicBoutiqueResponse | null>(null);
 
@@ -77,7 +85,6 @@ export function Accessibility() {
 
   const siteName = boutique?.name ?? t("brand.title");
   const boutiquePhone = boutique?.profile.phone ?? null;
-  const coordinator = ACCESSIBILITY_COORDINATOR;
 
   return (
     // pb-16 (64px) clears the fixed A11yMenu button's 60px footprint — a 44px

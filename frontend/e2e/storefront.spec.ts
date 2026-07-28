@@ -133,7 +133,21 @@ const NOT_FOUND_BODY = { error: { code: "NOT_FOUND", message: "לא נמצא" } 
 
 type ListVariant = "populated" | "empty";
 
-async function installApi(page: Page, list: ListVariant = "populated"): Promise<void> {
+// Every profile field cleared. The backend collapses "" to null (the manage form
+// seeds blanks to "" and submits them verbatim, so this is what an owner who
+// saves the form once actually produces). Before that fix this fixture rendered
+// `<a href="tel:">` with no accessible name on every route — a WCAG 2.4.4 (A)
+// failure the fully-populated fixture could never see.
+const CLEARED_BOUTIQUE = {
+  ...BOUTIQUE,
+  profile: { phone: null, address: null, description: null, maps_url: null },
+};
+
+async function installApi(
+  page: Page,
+  list: ListVariant = "populated",
+  boutique: unknown = BOUTIQUE,
+): Promise<void> {
   await page.route("**/storefront/**", async (route) => {
     const { pathname } = new URL(route.request().url());
     const send = (body: unknown, status = 200) =>
@@ -146,7 +160,7 @@ async function installApi(page: Page, list: ListVariant = "populated"): Promise<
       });
 
     if (pathname === "/storefront/boutique") {
-      await send(BOUTIQUE);
+      await send(boutique);
       return;
     }
     if (pathname === "/storefront/dresses") {
@@ -284,7 +298,7 @@ async function tabTo(page: Page, label: string, max = 60): Promise<void> {
 
 // --- axe: zero A/AA violations on every public route -------------------------
 
-const AXE_ROUTES: [name: string, path: string, list: ListVariant][] = [
+const AXE_ROUTES: [name: string, path: string, list: ListVariant, boutique?: unknown][] = [
   ["catalog", "/", "populated"],
   // The >= 3-photo dress on purpose: a single-photo Gallery hides its chrome, so
   // a one-photo detail page passes the gallery half of the audit vacuously.
@@ -292,11 +306,15 @@ const AXE_ROUTES: [name: string, path: string, list: ListVariant][] = [
   ["about", "/about", "populated"],
   ["accessibility statement", "/accessibility", "populated"],
   ["catalog (empty state)", "/", "empty"],
+  // A boutique with every profile field cleared — the nameless-link case.
+  ["catalog (cleared profile)", "/", "populated", CLEARED_BOUTIQUE],
+  ["about (cleared profile)", "/about", "populated", CLEARED_BOUTIQUE],
+  ["accessibility statement (cleared profile)", "/accessibility", "populated", CLEARED_BOUTIQUE],
 ];
 
-for (const [name, path, list] of AXE_ROUTES) {
+for (const [name, path, list, boutique] of AXE_ROUTES) {
   test(`storefront: zero axe A/AA violations — ${name}`, async ({ page }) => {
-    await installApi(page, list);
+    await installApi(page, list, boutique ?? BOUTIQUE);
     await gotoSettled(page, path);
     const violations = await axeViolations(page);
     expect(violations).toEqual([]);
