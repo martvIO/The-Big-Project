@@ -40,10 +40,12 @@ from app.notifications.service import OtpService
 from app.notifications.validation import normalize_israeli_mobile
 from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock
 
-# One day past the grid's own publishable ceiling: anything beyond this the
-# engine could never offer, so rejecting it early costs no real booking. The
-# slack absorbs the boutique-date vs UTC-instant edge at the window's far end.
-BOOKABLE_HORIZON = datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS + 1)
+# Past the grid's own publishable ceiling, so rejecting anything beyond it can
+# never cost a real booking. TWO days of slack, not one: the ceiling is a
+# boutique DATE and this is a UTC INSTANT, and an Israeli DST fall-back between
+# now and the ceiling shifts every local wall time an hour later in UTC — which
+# at +1 day ate the last half-hour of the final day's grid.
+BOOKABLE_HORIZON = datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS + 2)
 
 
 class BookingNotFoundError(DomainNotFoundError):
@@ -86,11 +88,17 @@ class BookingService:
         *,
         otp: OtpService,
         create_limiter: FixedWindowRateLimiter,
+        phone_limiter: FixedWindowRateLimiter,
         clock: Clock | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._otp = otp
         self._create_limiter = create_limiter
+        # A SEPARATE instance, not a second key on create_limiter: max_attempts
+        # lives on the limiter, not per key, so two keys on one instance share
+        # one ceiling and the per-phone budget can never trip first. It would
+        # be decoration.
+        self._phone_limiter = phone_limiter
         self._clock = clock
         self._customers = CustomersRepository()
         self._bookings = BookingsRepository()
@@ -140,15 +148,19 @@ class BookingService:
         if not now < starts_at <= now + BOOKABLE_HORIZON:
             raise SlotUnavailableError
 
-        # Two budgets, CHECKED here and SPENT only once the phone is proven
-        # (below). Metering an unproven caller would let anyone exhaust a
-        # boutique's hourly budget with garbage tokens and lock every real
-        # bride out — a denial of service costing the attacker nothing.
+        # Two budgets on two limiters, CHECKED here and SPENT only once the
+        # phone is proven (below). Metering an unproven caller would let anyone
+        # exhaust a boutique's hourly budget with garbage tokens and lock every
+        # real bride out — a denial of service costing the attacker nothing.
+        #
+        # The per-PHONE budget is the real control: it is what stops one
+        # verified number from spending the whole boutique's allowance, which
+        # matters because a failed claim rolls its own token burn back and the
+        # number can retry. The per-TENANT budget above it is the runaway
+        # brake, sized so it cannot fire on organic traffic.
         tenant_key = f"booking:create:{tenant_id}"
         phone_key = f"booking:create:{tenant_id}:{phone}"
-        if self._create_limiter.is_blocked(tenant_key) or self._create_limiter.is_blocked(
-            phone_key
-        ):
+        if self._create_limiter.is_blocked(tenant_key) or self._phone_limiter.is_blocked(phone_key):
             raise BookingThrottledError
 
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -165,7 +177,7 @@ class BookingService:
             # verified phone gets a bounded number of attempts, not unlimited
             # ones off a single token that keeps un-burning itself.
             self._create_limiter.record_failure(tenant_key)
-            self._create_limiter.record_failure(phone_key)
+            self._phone_limiter.record_failure(phone_key)
 
             # 2. The appointment type and the CURRENT terms version.
             type_row = await self._types.by_id(session, tenant_id, appointment_type_id)

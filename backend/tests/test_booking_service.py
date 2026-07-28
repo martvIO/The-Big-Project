@@ -92,6 +92,7 @@ def _service(
     factory: async_sessionmaker[AsyncSession],
     *,
     create_limiter: FixedWindowRateLimiter | None = None,
+    phone_limiter: FixedWindowRateLimiter | None = None,
     clock: datetime.datetime | None = None,
 ) -> BookingService:
     fixed = clock if clock is not None else NOW
@@ -107,6 +108,7 @@ def _service(
         factory,
         otp=otp,
         create_limiter=create_limiter if create_limiter is not None else _loose_limiter(),
+        phone_limiter=phone_limiter if phone_limiter is not None else _loose_limiter(),
         clock=lambda: fixed,
     )
 
@@ -730,9 +732,10 @@ async def test_a_rolled_back_claim_still_spends_the_budget(app_role_url: str) ->
     phone = _phone()
     try:
         type_id = await _seed_boutique(factory, tenant_id)
+        # The PER-PHONE budget, because that is the one this property protects.
         service = _service(
             factory,
-            create_limiter=FixedWindowRateLimiter(
+            phone_limiter=FixedWindowRateLimiter(
                 max_attempts=1, window_seconds=3600, clock=lambda: 0.0
             ),
         )
@@ -765,58 +768,51 @@ async def test_a_rolled_back_claim_still_spends_the_budget(app_role_url: str) ->
 
 
 async def test_one_phone_cannot_spend_the_whole_tenant_budget(app_role_url: str) -> None:
-    """Per-phone AND per-tenant keys: a single verified number exhausts its own
-    budget long before the boutique's, so one compromised phone cannot close
-    the shop."""
+    """The per-phone budget must bite BEFORE the tenant's, so one verified
+    number cannot close the boutique.
+
+    ONE pair of limiters for the whole test, shared by both customers — the
+    only arrangement that can actually fail. Handing the second customer a
+    fresh limiter would prove nothing: she would book even if the per-phone
+    budget did not exist at all, which is exactly how a per-phone key that
+    shares the tenant's ceiling (and so can never trip first) passed for real
+    isolation once already.
+    """
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     noisy = _phone()
     quiet = _phone()
     try:
         type_id = await _seed_boutique(factory, tenant_id, capacity=3)
-        service = _service(
-            factory,
-            create_limiter=FixedWindowRateLimiter(
-                max_attempts=1, window_seconds=3600, clock=lambda: 0.0
-            ),
+        tenant_limiter = FixedWindowRateLimiter(
+            max_attempts=60, window_seconds=3600, clock=lambda: 0.0
         )
-        await service.create_booking(
-            tenant_id,
-            raw_phone=noisy,
-            verification_token=await _mint_verified_token(factory, tenant_id, noisy),
-            name="רועשת",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
+        phone_limiter = FixedWindowRateLimiter(
+            max_attempts=2, window_seconds=3600, clock=lambda: 0.0
         )
-        with pytest.raises(BookingThrottledError):
-            await service.create_booking(
+        service = _service(factory, create_limiter=tenant_limiter, phone_limiter=phone_limiter)
+
+        async def book(phone: str, name: str, starts_at: datetime.datetime) -> Booking:
+            return await service.create_booking(
                 tenant_id,
-                raw_phone=noisy,
-                verification_token=await _mint_verified_token(factory, tenant_id, noisy),
-                name="רועשת",
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name=name,
                 appointment_type_id=type_id,
-                starts_at=_slot(10, 30),
+                starts_at=starts_at,
                 terms_version=1,
             )
-        # A generous tenant ceiling with the same tight per-phone budget: the
-        # noisy number is capped, a different customer is not.
-        roomy = _service(
-            factory,
-            create_limiter=FixedWindowRateLimiter(
-                max_attempts=2, window_seconds=3600, clock=lambda: 0.0
-            ),
-        )
-        booking = await roomy.create_booking(
-            tenant_id,
-            raw_phone=quiet,
-            verification_token=await _mint_verified_token(factory, tenant_id, quiet),
-            name="שקטה",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-        )
-        assert booking.seat_index == 2
+
+        await book(noisy, "רועשת", SLOT)
+        await book(noisy, "רועשת", _slot(10, 30))
+        # Her own budget is spent while the tenant's 60 is barely touched.
+        with pytest.raises(BookingThrottledError):
+            await book(noisy, "רועשת", _slot(11, 0))
+        assert not tenant_limiter.is_blocked(f"booking:create:{tenant_id}")
+
+        # …and on the SAME limiters another customer is unaffected.
+        booking = await book(quiet, "שקטה", _slot(11, 0))
+        assert booking.seat_index == 1
     finally:
         await engine.dispose()
 

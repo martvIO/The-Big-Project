@@ -101,6 +101,27 @@ The advisory lock is the primary control and the unique index is the structural 
 
 **A per-tenant create throttle**, `Settings`-tunable like every other: `booking_create_max_per_window` (60) / `booking_create_window_seconds` (3600). Sized far above a pilot boutique's real volume — it is a runaway brake, not a defence, and the real cost gate is that every booking needs an OTP that was itself rate-limited.
 
+> **Addendum (implementation, adversarial review):** the paragraph above was
+> wrong twice, and the shipped code differs.
+>
+> 1. **The budget must be spent only by callers who proved the phone.** Metering
+>    before `consume_verification` inverts the "OTP is the cost gate" claim
+>    entirely: 60 requests carrying a syntactically valid phone and a garbage
+>    token — no OTP, no SMS spend — close a boutique's booking funnel for an
+>    hour. Both budgets are now checked before the transaction but recorded
+>    only after verification succeeds.
+> 2. **One budget is not enough.** A failed claim rolls its own token burn back
+>    (deliberately, so a race loser can retry), so a single verified number
+>    could spend the whole tenant allowance. There is now a separate per-phone
+>    limiter — `booking_create_max_per_phone_window` (10) /
+>    `booking_create_phone_window_seconds` (3600) — and it is a distinct
+>    `FixedWindowRateLimiter` instance, because `max_attempts` lives on the
+>    limiter rather than per key: two keys on one instance share one ceiling and
+>    the phone budget could never trip first.
+>
+> The per-tenant ceiling moved 60 → 300 to match: at 60, six verified phones
+> closed the shop. It is the runaway brake; the per-phone cap is the control.
+
 ### F12's seam closes here
 
 `StorefrontService.list_slots` stops passing `booked={}` and passes a real `{starts_at: count}` from `BookingsRepository.count_by_start(window)`. One repository method, one line changed at the call site, zero lines in the engine — which is what the seam existed for. The F12 tests asserting the empty literal are updated in the same commit, so the change is a visible diff.

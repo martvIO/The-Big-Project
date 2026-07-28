@@ -321,6 +321,14 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             window_seconds=settings.booking_create_window_seconds,
             clock=time.monotonic,
         ),
+        # Its own instance, not a second key on the one above: max_attempts is
+        # per LIMITER, so sharing would give the phone budget the tenant's
+        # ceiling and it could never trip first.
+        phone_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.booking_create_max_per_phone_window,
+            window_seconds=settings.booking_create_phone_window_seconds,
+            clock=time.monotonic,
+        ),
     )
 
     @app.exception_handler(TenantNotResolvedError)
