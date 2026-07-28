@@ -13,6 +13,14 @@ from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.router import RateLimitedError
 from app.auth.router import router as auth_router
 from app.auth.service import AuthService, InvalidCredentialsError
+from app.booking.router import router as booking_router
+from app.booking.service import (
+    BookingService,
+    BookingThrottledError,
+    PhoneNotVerifiedError,
+    SlotUnavailableError,
+    TermsStaleError,
+)
 from app.boutique.router import router as boutique_router
 from app.boutique.service import (
     BoutiqueSettingsService,
@@ -142,6 +150,20 @@ SMS_UNAVAILABLE_BODY = {
 OTP_INVALID_BODY = {"error": {"code": "OTP_INVALID", "message": "The code is incorrect."}}
 OTP_EXPIRED_BODY = {
     "error": {"code": "OTP_EXPIRED", "message": "The code expired. Request a new one."}
+}
+PHONE_NOT_VERIFIED_BODY = {
+    "error": {"code": "PHONE_NOT_VERIFIED", "message": "Verify your phone number and try again."}
+}
+# ONE body for taken, off-grid, past and closed — distinguishing them would
+# tell a prober the shape of the boutique's grid.
+SLOT_UNAVAILABLE_BODY = {
+    "error": {"code": "SLOT_UNAVAILABLE", "message": "That time was just taken. Choose another."}
+}
+TERMS_STALE_BODY = {
+    "error": {
+        "code": "TERMS_STALE",
+        "message": "The booking terms changed. Review and accept them again.",
+    }
 }
 
 
@@ -291,6 +313,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         ),
         dev_code=settings.otp_dev_code,
     )
+    app.state.booking_service = BookingService(
+        get_session_factory(),
+        otp=app.state.otp_service,
+        create_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.booking_create_max_per_window,
+            window_seconds=settings.booking_create_window_seconds,
+            clock=time.monotonic,
+        ),
+    )
 
     @app.exception_handler(TenantNotResolvedError)
     async def _tenant_not_resolved(request: Request, exc: TenantNotResolvedError) -> JSONResponse:
@@ -423,6 +454,26 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _otp_throttled(request: Request, exc: OtpThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
 
+    # 403, not 401: the caller is not asked to authenticate — the request is
+    # simply not accompanied by proof of the phone it names.
+    @app.exception_handler(PhoneNotVerifiedError)
+    async def _phone_not_verified(request: Request, exc: PhoneNotVerifiedError) -> JSONResponse:
+        return JSONResponse(PHONE_NOT_VERIFIED_BODY, status_code=403)
+
+    @app.exception_handler(SlotUnavailableError)
+    async def _slot_unavailable(request: Request, exc: SlotUnavailableError) -> JSONResponse:
+        return JSONResponse(SLOT_UNAVAILABLE_BODY, status_code=409)
+
+    @app.exception_handler(TermsStaleError)
+    async def _terms_stale(request: Request, exc: TermsStaleError) -> JSONResponse:
+        return JSONResponse(TERMS_STALE_BODY, status_code=409)
+
+    # Its own class like the other three throttles; the F21 reparenting note
+    # on StorefrontThrottledError covers this one too.
+    @app.exception_handler(BookingThrottledError)
+    async def _booking_throttled(request: Request, exc: BookingThrottledError) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(boutique_router)
@@ -437,6 +488,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # GET-only, so the OTP mutations live in app/notifications/router.py. The
     # cross-router shadowing guard in test_storefront_api.py covers the pair.
     app.include_router(otp_router)
+    # The third /storefront sibling: the one route that writes a booking. Same
+    # anonymous posture as the OTP pair; asserted in test_booking_api.py.
+    app.include_router(booking_router)
     return app
 
 

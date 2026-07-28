@@ -539,6 +539,9 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         # test_notifications_api.py.
         "/storefront/otp/send",
         "/storefront/otp/verify",
+        # F13's booking create — the third sibling, same posture, asserted in
+        # test_booking_api.py.
+        "/storefront/bookings",
     }
     # And no storefront path is reachable under the CSRF-protected prefix.
     assert not any(path.startswith("/manage/storefront") for _, path in registered)

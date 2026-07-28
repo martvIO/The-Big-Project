@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     # attempts a real customer with a typo could need.
     otp_verify_max_per_phone_window: int = 10
     otp_verify_phone_window_seconds: int = 300
+    # Per-tenant budget on booking creation — a runaway brake, not a defence:
+    # every create needs a single-use verification token whose OTP was itself
+    # rate-limited above, so the real cost gate sits there. 60/hour is far
+    # above a pilot boutique's real volume and far below a runaway loop's.
+    booking_create_max_per_window: int = 60
+    booking_create_window_seconds: int = 3600
 
     # Per-TENANT budget on the anonymous storefront reads: a runaway brake, not
     # a defence (see app/storefront/router.py._throttle for the full argument).
