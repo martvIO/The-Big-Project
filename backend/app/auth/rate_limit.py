@@ -11,13 +11,15 @@ class FixedWindowRateLimiter:
     read-only pre-check.
 
     The storefront caller records on the SUCCESS path — it meters reads, not
-    failures — which changes the key space from "principals who failed" to "every
-    anonymous visitor IP", the first unbounded one. Hence the sweep below: expired
-    buckets are dropped once the map outgrows its high-water mark, so memory
-    tracks the live window rather than every IP seen since boot. Amortised, not
-    per-write: the mark then floats to 2x the surviving set so a busy instance
-    does not sweep on every insert. A size/TTL-capped shared store still lands
-    with the distributed limiter in Feature 21."""
+    failures — so its key space is "principals who succeeded" rather than
+    "principals who failed". It keys per TENANT ("storefront:{tenant_id}"), so
+    that space is bounded by the tenant count, not by visitor count. The sweep
+    below is retained anyway: it is cheap, it bounds memory for any future caller
+    whose key space is not bounded, and it is what keeps expired buckets from
+    accumulating across a long-lived process. Amortised, not per-write: the
+    high-water mark floats to 2x the surviving set so a busy instance does not
+    sweep on every insert. A size/TTL-capped shared store still lands with the
+    distributed limiter in Feature 21."""
 
     _SWEEP_FLOOR = 1024
 

@@ -9,10 +9,22 @@ from starlette.types import ASGIApp
 
 from app.tenancy.slugs import extract_slug, is_valid_slug
 
-# Host-agnostic paths: infra probes hit /health by IP; the OpenAPI schema feeds
-# api-client generation. Docs exposure is revisited at the Feature 21 hardening gate.
+# Host-agnostic paths: infra probes hit /health by IP.
+#
+# The four docs paths stay listed but are now only REACHABLE in dev: F10 makes
+# this origin publicly crawlable, so create_app() passes docs_url/redoc_url/
+# openapi_url=None outside dev and FastAPI never registers the routes at all.
+# The old justification here — "the OpenAPI schema feeds api-client generation"
+# — is void: F10 declined the generated client and hand-wrote apps/storefront/
+# src/api.ts, and the generated wrapper is re-homed to E3 #14.
 # /docs/oauth2-redirect is auto-registered by FastAPI whenever docs are enabled —
 # it must stay in sync with this set or Swagger's Authorize flow silently breaks.
+#
+# STOREFRONT PATHS MUST NEVER BE ADDED HERE. This frozenset skips tenant
+# resolution entirely, and a storefront route reaching a handler without
+# request.state.tenant raises TenantNotResolvedError. Public is not the same as
+# host-agnostic. The set is exact-match rather than prefix, so this cannot
+# happen by accident; test_storefront_paths_are_not_exempt asserts it anyway.
 EXEMPT_PATHS = frozenset({"/health", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"})
 
 # One body for every failure kind (unknown, suspended, deleted, reserved, apex) —

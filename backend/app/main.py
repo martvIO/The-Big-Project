@@ -36,6 +36,7 @@ from app.core.config import Settings, get_settings
 from app.csrf import CsrfOriginMiddleware
 from app.db.session import ensure_safe_database_role, get_session_factory
 from app.errors import DomainNotFoundError, DomainValidationError
+from app.security_headers import SecurityHeadersMiddleware
 from app.storage.base import (
     MediaNotConfiguredError,
     MediaStorage,
@@ -44,6 +45,8 @@ from app.storage.base import (
 from app.storage.s3 import S3MediaStorage
 from app.storage.unconfigured import UnconfiguredMediaStorage
 from app.storefront.router import router as storefront_router
+from app.storefront.service import StorefrontService
+from app.storefront.validation import StorefrontThrottledError
 from app.tenancy.middleware import (
     TENANT_NOT_FOUND_BODY,
     TenantNotResolvedError,
@@ -153,10 +156,21 @@ def _build_media_storage(settings: Settings) -> MediaStorage:
 
 def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     settings = get_settings()
+    is_dev = settings.app_env == "dev"
     app = FastAPI(
         title="Boutique Platform API",
         version=settings.app_version,
         lifespan=lifespan,
+        # Dark outside dev. F10 makes this origin publicly reachable, and the
+        # first crawler that finds {slug}.{domain} also finds /openapi.json — a
+        # complete, uncredentialed description of every /manage route and of
+        # exactly the fields the storefront allowlist exists to fence off
+        # (quantity, price_visible, out_of_stock, capacity, terms_text, the
+        # presign shape). Pulled forward from the F21 hardening gate because
+        # F21 lands after the pilot is already public.
+        docs_url="/docs" if is_dev else None,
+        redoc_url="/redoc" if is_dev else None,
+        openapi_url="/openapi.json" if is_dev else None,
     )
     if resolver is None:
         resolver = RepositoryTenantResolver(get_session_factory())
@@ -168,6 +182,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # Added after (= runs before) tenant resolution: a cross-origin forgery is
     # rejected without touching the database.
     app.add_middleware(CsrfOriginMiddleware)
+    # Added LAST = OUTERMOST, and that is the whole point: it is what puts the
+    # headers on the TENANT_NOT_FOUND 404 that TenantResolutionMiddleware
+    # returns from its own dispatch without reaching a handler.
+    app.add_middleware(SecurityHeadersMiddleware)
 
     app.state.auth_service = AuthService(get_session_factory(), settings)
     app.state.login_rate_limiter = FixedWindowRateLimiter(
@@ -197,12 +215,20 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         pending_ttl_seconds=PENDING_MEDIA_TTL_SECONDS,
     )
     # The anonymous surface has no session to key a limit on, so the storefront
-    # reads get their own per-(tenant, IP) bucket. Deliberately NOT per-tenant:
-    # see app/storefront/router.py._rate_limit.
+    # reads get their own per-tenant bucket — see app/storefront/router.py._throttle
+    # for why per-tenant and not per-IP, and why the window is sized so wide.
     app.state.storefront_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.storefront_read_max_per_window,
         window_seconds=settings.storefront_read_window_seconds,
         clock=time.monotonic,
+    )
+    # Its own service, never CatalogService: routing public reads through the
+    # console's service would compute out_of_stock/total_quantity/variant_count
+    # on every anonymous request and keep them off the wire only by the response
+    # model remembering to omit them. See app/storefront/service.py.
+    app.state.storefront_service = StorefrontService(
+        get_session_factory(),
+        media_storage=app.state.media_storage,
     )
 
     @app.exception_handler(TenantNotResolvedError)
@@ -286,6 +312,16 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
 
     @app.exception_handler(MediaPresignThrottledError)
     async def _presign_throttled(request: Request, exc: MediaPresignThrottledError) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
+    # Its own handler rather than a reuse of RateLimitedError: the login form and
+    # the anonymous read surface have unrelated budgets, keys and operational
+    # meanings. Reparenting all four throttle errors onto one base is a
+    # behaviour-neutral cleanup owned by F21.
+    @app.exception_handler(StorefrontThrottledError)
+    async def _storefront_throttled(
+        request: Request, exc: StorefrontThrottledError
+    ) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
 
     # Raised by app/storage/, not app/catalog/: a bucket with no usable

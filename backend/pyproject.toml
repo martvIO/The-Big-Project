@@ -14,11 +14,12 @@ dependencies = [
   "pydantic[email]>=2.13.4",
   "boto3>=1.36",
   # zoneinfo reads the SYSTEM IANA database and falls back to this package only
-  # if it is installed. app/storefront/router.py builds ZoneInfo("Asia/Jerusalem")
-  # at module scope and main.py imports that module at module scope, so on an
-  # image without the system db (python:*-slim, alpine, distroless, Lambda) the
-  # API does not degrade — it fails to boot. macOS and the CI ubuntu runner both
-  # ship the db, which is exactly why no gate catches this.
+  # if it is installed. app/storefront/validation.py builds
+  # ZoneInfo("Asia/Jerusalem") at module scope, and main.py reaches it at module
+  # scope via storefront.router, so on an image without the system db
+  # (python:*-slim, alpine, distroless, Lambda) the API does not degrade — it
+  # fails to boot. macOS and the CI ubuntu runner both ship the db, which is
+  # exactly why no gate catches this.
   "tzdata>=2025.1",
 ]
 
