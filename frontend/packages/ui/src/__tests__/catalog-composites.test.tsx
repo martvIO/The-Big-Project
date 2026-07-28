@@ -48,10 +48,10 @@ describe("DressCard", () => {
   // A load failure means the presigned URL expired, not that the dress has no
   // photo — the page refetches rather than falling back to the monogram.
   it("reports a photo load failure so the page can refetch", () => {
-    const onPhotoError = vi.fn();
-    render(<DressCard name="שמלה ו" href="/dress/6" photoUrl="/f.jpg" price={<span>6</span>} onPhotoError={onPhotoError} />);
+    const onImageError = vi.fn();
+    render(<DressCard name="שמלה ו" href="/dress/6" photoUrl="/f.jpg" price={<span>6</span>} onImageError={onImageError} />);
     fireEvent.error(screen.getByRole("img"));
-    expect(onPhotoError).toHaveBeenCalledTimes(1);
+    expect(onImageError).toHaveBeenCalledTimes(1);
   });
 
   it("survives a load failure when no handler is supplied", () => {
@@ -67,10 +67,10 @@ describe("DressCard", () => {
   });
 
   it("emits no <img> to fail when there is no photo", () => {
-    const onPhotoError = vi.fn();
-    render(<DressCard name="שמלה ט" href="/dress/9" photoUrl={null} price={<span>9</span>} onPhotoError={onPhotoError} />);
+    const onImageError = vi.fn();
+    render(<DressCard name="שמלה ט" href="/dress/9" photoUrl={null} price={<span>9</span>} onImageError={onImageError} />);
     expect(screen.queryByRole("img")).toBeNull();
-    expect(onPhotoError).not.toHaveBeenCalled();
+    expect(onImageError).not.toHaveBeenCalled();
   });
 });
 

@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.main import create_app
 from app.tenancy.middleware import (
     TenantContext,
@@ -96,6 +97,12 @@ def test_exempt_paths_ignore_host() -> None:
     app = _probe_app(resolver)
     with TestClient(app, base_url="http://not-a-tenant-host.example") as client:
         assert client.get("/health").status_code == 200
+        # create_app() serves the schema only when app_env == "dev", so the 200
+        # below is a claim about tenancy exemption ONLY under that condition.
+        # Asserted rather than assumed: without this line a suite running with
+        # APP_ENV=staging would "pass" the exemption check on a 404 that the
+        # middleware never had a chance to produce.
+        assert get_settings().app_env == "dev"
         assert client.get("/openapi.json").status_code == 200
     assert resolver.calls == []
 

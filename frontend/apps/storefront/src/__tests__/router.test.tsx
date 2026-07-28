@@ -1,7 +1,18 @@
+import type { ReactNode } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../i18n";
 import { Link, MAIN_ID, Router, matchRoute, navigate, usePathname } from "../router";
+
+// The routes are stubbed on purpose: this file is about the router's own
+// contract (matching, interception, title, focus, scroll). Rendering the real
+// pages would drag their fetches in and test them a second time.
+vi.mock("../routes/CatalogPage", () => ({ CatalogPage: () => "קטלוג" }));
+vi.mock("../routes/DressPage", () => ({
+  DressPage: ({ dressId }: { dressId: string }) => `שמלה ${dressId}`,
+}));
+vi.mock("../routes/AboutPage", () => ({ AboutPage: () => "אודות" }));
+vi.mock("../routes/AccessibilityPage", () => ({ AccessibilityPage: () => "נגישות" }));
 
 function go(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -15,15 +26,37 @@ function navigateAndFlush(to: string) {
   });
 }
 
-// The <main tabindex="-1"> App.tsx wraps the router outlet in. The focus
-// assertions below depend on it existing, exactly as it does in the real tree.
-function renderRoute(pathname: string) {
+// StorefrontLayout owns the real <main id="content" tabindex="-1"> (asserted in
+// StorefrontLayout.test.tsx). Reproduced here so the focus target exists
+// without pulling the layout's boutique fetch into a router test.
+function renderRoute(pathname: string, extra?: ReactNode) {
   go(pathname);
   return render(
     <main id={MAIN_ID} tabIndex={-1}>
       <Router />
+      {extra}
     </main>,
   );
+}
+
+function mainElement(): HTMLElement {
+  const main = document.getElementById(MAIN_ID);
+  if (main === null) throw new Error("no #content in the tree");
+  return main;
+}
+
+// jsdom implements neither window.scrollTo nor a mutable scrollY, so scrollY is
+// 0 forever and "the viewport returned to the top" could never fail. Supply the
+// missing piece: prime a scrolled viewport and let the stub do what a browser
+// does, so only the router's own scrollTo(0, 0) can bring it back.
+function primeScroll(offset: number) {
+  const setScrollY = (value: number) => {
+    Object.defineProperty(window, "scrollY", { configurable: true, writable: true, value });
+  };
+  setScrollY(offset);
+  vi.stubGlobal("scrollTo", (_x: number, y: number) => {
+    setScrollY(y);
+  });
 }
 
 beforeEach(() => {
@@ -32,6 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   go("/");
 });
 
@@ -125,22 +159,85 @@ describe("Link", () => {
   });
 });
 
-describe("Router document title and focus", () => {
+// DressCard renders a raw <a href> and takes no onNavigate prop, so the grid can
+// only go client-side through the document-level listener. Every anchor below is
+// one the router never rendered.
+describe("root click delegation", () => {
+  it("upgrades a plain left click on any same-origin anchor to a client navigation", () => {
+    renderRoute("/", <a href="/dress/d1">שמלת ורד</a>);
+
+    const clicked = fireEvent.click(screen.getByRole("link", { name: "שמלת ורד" }), { button: 0 });
+
+    expect(clicked).toBe(false); // preventDefault() ran — no document reload
+    expect(window.location.pathname).toBe("/dress/d1");
+    expect(screen.getByText("שמלה d1")).toBeInTheDocument();
+  });
+
+  it("leaves a modified click to the browser", () => {
+    renderRoute("/", <a href="/about">אודות</a>);
+    const link = screen.getByRole("link", { name: "אודות" });
+
+    for (const modifier of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }]) {
+      expect(fireEvent.click(link, { button: 0, ...modifier })).toBe(true);
+      expect(window.location.pathname).toBe("/");
+    }
+  });
+
+  it("does NOT intercept a hash-only link — this is the skip link", () => {
+    // Load-bearing: preventDefault() here means the browser never performs the
+    // fragment navigation, focus never reaches #content, and the WCAG skip-link
+    // behaviour the e2e suite asserts breaks silently with a green unit suite.
+    renderRoute("/", <a href={`#${MAIN_ID}`}>דלג לתוכן</a>);
+
+    const clicked = fireEvent.click(screen.getByRole("link", { name: "דלג לתוכן" }), { button: 0 });
+
+    expect(clicked).toBe(true);
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("does NOT intercept a tel: link — the OS owns the dialer", () => {
+    renderRoute("/", <a href="tel:052-1234567">חיוג</a>);
+
+    expect(fireEvent.click(screen.getByRole("link", { name: "חיוג" }), { button: 0 })).toBe(true);
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("does NOT intercept target=_blank or rel=external", () => {
+    renderRoute(
+      "/",
+      <>
+        <a href="/about" target="_blank" rel="noopener noreferrer">
+          לשונית חדשה
+        </a>
+        <a href="/about" rel="external">
+          חיצוני
+        </a>
+      </>,
+    );
+
+    for (const name of ["לשונית חדשה", "חיצוני"]) {
+      expect(fireEvent.click(screen.getByRole("link", { name }), { button: 0 })).toBe(true);
+      expect(window.location.pathname).toBe("/");
+    }
+  });
+});
+
+describe("Router document title, focus and scroll", () => {
   it("titles each route from the i18n catalog", () => {
     renderRoute("/");
-    expect(document.title).toBe(i18n.t("doc.catalog"));
-    expect(document.title).not.toBe("doc.catalog");
+    expect(document.title).toBe(i18n.t("document.catalog"));
+    expect(document.title).not.toBe("document.catalog");
   });
 
   it("retitles on navigation", () => {
     renderRoute("/");
     navigateAndFlush("/about");
-    expect(document.title).toBe(i18n.t("doc.about"));
+    expect(document.title).toBe(i18n.t("document.about"));
   });
 
   it("replaces a dress name on the next navigation rather than letting it stick", () => {
     renderRoute("/dress/d1");
-    // DressDetail upgrades the title to the dress's own name once its fetch
+    // The dress page upgrades the title to the dress's own name once its fetch
     // lands (WCAG 2.4.2). The router owns every other route, so that name must
     // not survive the hop — a stale dress in the tab strip is the same defect
     // as a shared one.
@@ -148,17 +245,27 @@ describe("Router document title and focus", () => {
 
     navigateAndFlush("/about");
 
-    expect(document.title).toBe(i18n.t("doc.about"));
+    expect(document.title).toBe(i18n.t("document.about"));
   });
 
   it("does not steal focus on first paint — the skip link is the first stop", () => {
     renderRoute("/");
-    expect(document.activeElement).not.toBe(document.getElementById(MAIN_ID));
+    expect(document.activeElement).not.toBe(mainElement());
   });
 
-  it("moves focus into <main> after a client navigation (WCAG 2.4.2)", () => {
+  it("lands focus in #content, returns to the top and retitles on a client navigation", () => {
+    primeScroll(1200);
     renderRoute("/");
+    const titleBefore = document.title;
+
     navigateAndFlush("/about");
-    expect(document.activeElement).toBe(document.getElementById(MAIN_ID));
+
+    // WCAG 2.4.2 + focus management: new page, new title, focus at the top of
+    // the new content. The scroll reset is what stops a bride who tapped a card
+    // in grid row 5 from landing on the dress page still scrolled to row 5.
+    expect(document.activeElement).toBe(mainElement());
+    expect(window.scrollY).toBe(0);
+    expect(document.title).not.toBe(titleBefore);
+    expect(document.title).toBe(i18n.t("document.about"));
   });
 });

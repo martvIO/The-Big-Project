@@ -1,70 +1,108 @@
-"""Feature 10 fast API tests for the public storefront read surface: fake
-services + a hardcoded TenantContext, no database (test_catalog_api.py style).
+"""Feature 10 fast API tests for the public storefront read surface: a fake
+StorefrontService + a hardcoded TenantContext, no database (test_catalog_api.py
+style).
 
-Two things here are load-bearing and everything else is scaffolding around them.
+Three things here are load-bearing and everything else is scaffolding.
 
-**The inverse of F8's auth guard.** `test_every_public_route_answers_without_a_session`
-is `test_every_route_requires_authentication` read backwards: these three routes
+**The inverse of F8's auth guard.** `test_no_route_requires_authentication` is
+`test_every_route_requires_authentication` read backwards: these three routes
 must answer 200 with no cookie jar at all. A dependency copy-pasted from the
 manage router would break the whole storefront, and nothing else would notice.
 
-**The wire-absence walk.** `test_no_forbidden_key_appears_at_any_depth` parses
-every response and recursively asserts that no manage-only key exists anywhere in
-the tree. A `response_model` cannot give you that assertion — it constrains the
+**The wire-absence walk.** `test_no_manage_only_field_leaks` parses every
+response and recursively asserts that no manage-only key exists anywhere in the
+tree. A `response_model` cannot give you that assertion — it constrains the
 model the router names, not the model six months of edits later made it inherit
 from — and the omissions it guards (price when hidden, raw variant quantities,
 stock/archive/capacity signals) are the spec's security requirements, not
 formatting preferences.
+
+**The middleware ordering.** SecurityHeadersMiddleware is registered LAST in
+create_app(), which makes it OUTERMOST, which is the only reason the three
+headers land on the TENANT_NOT_FOUND 404 that TenantResolutionMiddleware
+returns from its own dispatch without ever calling a handler. On a public
+storefront that 404 is the single most-served response to anyone probing the
+domain, so it is asserted explicitly alongside the ordinary 200 and 401 cases.
 """
 
+import ast
+import dataclasses
 import datetime
 import time
 import uuid
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from typing import Any, Literal, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth.dependencies import get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
-from app.boutique.service import AvailabilityResult, SettingsResult
+from app.auth.service import StaffContext
 from app.catalog.schemas import DressResponse
-from app.catalog.service import (
-    MAX_LIST_OFFSET,
-    CatalogNotFoundError,
-    DressListResult,
-    DressView,
-    MediaView,
-    StockSummary,
-)
-from app.catalog.validation import DRESS_LIST_DEFAULT_LIMIT
+from app.catalog.service import CatalogNotFoundError, MediaView
 from app.core.config import Settings
 from app.main import create_app
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.dress import Dress
 from app.models.dress_media import DressMedia
-from app.models.dress_variant import DressVariant
+from app.security_headers import SECURITY_HEADERS
+from app.storage.unconfigured import UnconfiguredMediaStorage
 from app.storefront.router import (
+    _public_price,
     public_boutique,
     public_dress,
     public_dress_detail,
-    public_price,
+)
+from app.storefront.schemas import BoutiqueResponse, StorefrontDetail, StorefrontDress
+from app.storefront.service import (
+    MAX_LIST_OFFSET,
+    StorefrontBoutiqueView,
+    StorefrontDressDetailView,
+    StorefrontDressListView,
+    StorefrontDressView,
+    StorefrontService,
+    StorefrontSizeView,
     upcoming_exceptions,
 )
-from app.storefront.schemas import (
-    PublicBoutiqueResponse,
-    PublicDressDetailResponse,
-    PublicDressResponse,
+from app.storefront.validation import (
+    STOREFRONT_LIST_DEFAULT_LIMIT,
+    STOREFRONT_LIST_MAX_LIMIT,
+    UPCOMING_EXCEPTIONS_LIMIT,
 )
-from app.tenancy.middleware import TenantContext
-
-TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="בלה כלות", settings={})
+from app.tenancy.middleware import EXEMPT_PATHS, TenantContext
 
 DRESS_ID = uuid.uuid4()
-VARIANT_ID = uuid.uuid4()
 MEDIA_ID = uuid.uuid4()
 
 JPEG = "image/jpeg"
+
+PROFILE: dict[str, Any] = {
+    "essence": "שמלות כלה בעבודת יד",
+    "description": "בוטיק כלות",
+    "phone": "052-1234567",
+    "address": "רח׳ דיזנגוף 99, תל אביב",
+    "maps_url": "https://maps.example/bella",
+    "instagram": "bella.bridal",
+    # NOT one of the six keys public_boutique reads. The projection reads the
+    # JSONB blob by explicit key, so a field a later feature adds to `profile`
+    # must not reach the public page by default — `secret_note` is in
+    # FORBIDDEN_KEYS below and this row is what arms that assertion.
+    "secret_note": "owner-only",
+}
+TOGGLES = {"deposits_enabled": True, "brides_only": False}
+
+TENANT = TenantContext(
+    id=uuid.uuid4(),
+    slug="bella",
+    name="בלה כלות",
+    settings={"profile": dict(PROFILE), "toggles": dict(TOGGLES)},
+)
+
+STAFF_ID = uuid.uuid4()
+TOKEN = "session-token-abc"
+
 STORAGE_KEY = f"tenants/{TENANT.id}/dresses/{DRESS_ID}/media/{MEDIA_ID}.jpg"
 SIGNED_URL = f"https://media.test/{STORAGE_KEY}?X-Amz-Signature=abc"
 
@@ -80,6 +118,13 @@ LIST_PATH = "/storefront/dresses"
 DETAIL_PATH = f"/storefront/dresses/{DRESS_ID}"
 BOUTIQUE_PATH = "/storefront/boutique"
 
+# An authenticated /manage route, used only to prove the security headers are
+# app-wide rather than storefront-only. Unauthenticated on purpose — a 401 is a
+# response the handler never produced, so it also covers the exception path.
+MANAGE_PATH = "/manage/dresses"
+
+STOREFRONT_SOURCE_DIR = Path(__file__).resolve().parents[1] / "app" / "storefront"
+
 
 async def _null_resolver(slug: str) -> TenantContext | None:
     """No host resolves. Enough to build the app and read its route table."""
@@ -89,7 +134,7 @@ async def _null_resolver(slug: str) -> TenantContext | None:
 def _registered_routes(node: Any) -> Iterator[tuple[str, str]]:
     """(method, path) for every leaf route. FastAPI wraps an included router in a
     `_IncludedRouter` rather than flattening it, so this has to recurse through
-    `original_router` — reading `app.routes` alone silently sees four docs routes
+    `original_router` — reading `app.routes` alone silently sees the docs routes
     and nothing else, which would make the guards below pass vacuously."""
     for route in getattr(node, "routes", []):
         inner = getattr(route, "original_router", None)
@@ -103,6 +148,15 @@ def _registered_routes(node: Any) -> Iterator[tuple[str, str]]:
             yield method, path
 
 
+def _iter_leaf_routes(node: Any) -> Iterator[Any]:
+    for route in getattr(node, "routes", []):
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            yield from _iter_leaf_routes(inner)
+            continue
+        yield route
+
+
 # Anonymous GETs, DERIVED from the live route table rather than hand-written. The
 # inverse of F8's ROUTES table: there is no body column because nothing here
 # mutates, and no auth column because the whole point is that there is no auth.
@@ -114,7 +168,7 @@ def _registered_routes(node: Any) -> Iterator[tuple[str, str]]:
 # the new route. Now they all do. Adding a public route stays a DELIBERATE act
 # because test_no_route_is_registered_twice_across_routers still pins the
 # expected set explicitly; what is no longer possible is forgetting quietly.
-PUBLIC_ROUTES = sorted(
+ROUTES = sorted(
     {
         path.replace("{dress_id}", str(DRESS_ID))
         for method, path in _registered_routes(create_app(resolver=_null_resolver))
@@ -123,10 +177,14 @@ PUBLIC_ROUTES = sorted(
 )
 # An empty parametrize list is collected silently, which is the exact vacuum the
 # derivation exists to close.
-assert PUBLIC_ROUTES, "no /storefront route was discovered — the guards below would be vacuous"
+assert ROUTES, "no /storefront route was discovered — the guards below would be vacuous"
 
 # Manage-only keys, per the spec's two "Note for F10" blocks. Asserted at EVERY
 # depth of the parsed JSON, so a nested schema cannot smuggle one back.
+#
+# `id` is deliberately absent: it is a legitimate top-level key on both dress
+# shapes. Media-level id absence is asserted separately, by
+# test_media_carries_no_identifier_or_object_metadata.
 FORBIDDEN_KEYS = frozenset(
     {
         "price_visible",
@@ -143,6 +201,8 @@ FORBIDDEN_KEYS = frozenset(
         "deposits_enabled",
         "brides_only",
         "toggles",
+        "profile",
+        "secret_note",
         "storage_key",
         "status",
         "created_at",
@@ -151,16 +211,14 @@ FORBIDDEN_KEYS = frozenset(
         "content_type",
         "byte_size",
         "tenant_id",
+        "variants",
     }
 )
 
-PROFILE = {
-    "phone": "052-1234567",
-    "address": "רח׳ דיזנגוף 99, תל אביב",
-    "description": "בוטיק כלות",
-    "maps_url": "https://maps.example/bella",
-}
-TOGGLES = {"deposits_enabled": True, "brides_only": False}
+# The spec's error table for this surface, verbatim. Four codes, no new ones:
+# test_every_spec_error_code_is_asserted checks this set against what the module
+# actually exercises, so adding a row to the spec without a test here fails CI.
+SPEC_ERROR_CODES = {"TENANT_NOT_FOUND", "NOT_FOUND", "VALIDATION_ERROR", "TOO_MANY_ATTEMPTS"}
 
 
 def _dress_row(
@@ -184,18 +242,6 @@ def _dress_row(
     )
 
 
-def _variant_row(size_label: str, quantity: int) -> DressVariant:
-    return DressVariant(
-        id=VARIANT_ID,
-        tenant_id=TENANT.id,
-        dress_id=DRESS_ID,
-        size_label=size_label,
-        quantity=quantity,
-        sort_order=0,
-        created_at=CREATED_AT,
-    )
-
-
 def _media_view(*, url: str | None = SIGNED_URL) -> MediaView:
     row = DressMedia(
         id=MEDIA_ID,
@@ -216,25 +262,31 @@ def _dress_view(
     url: str | None = SIGNED_URL,
     price_visible: bool = False,
     price_agorot: int | None = HIDDEN_PRICE_AGOROT,
+) -> StorefrontDressView:
+    return StorefrontDressView(
+        row=_dress_row(price_visible=price_visible, price_agorot=price_agorot),
+        cover=_media_view(url=url),
+    )
+
+
+def _detail_view(
+    *,
+    url: str | None = SIGNED_URL,
+    price_visible: bool = False,
+    price_agorot: int | None = HIDDEN_PRICE_AGOROT,
     description: str | None = "Silk A-line",
-    detail: bool = True,
-) -> DressView:
-    media = [_media_view(url=url)]
-    return DressView(
+) -> StorefrontDressDetailView:
+    return StorefrontDressDetailView(
         row=_dress_row(
-            price_visible=price_visible,
-            price_agorot=price_agorot,
-            description=description,
+            price_visible=price_visible, price_agorot=price_agorot, description=description
         ),
-        summary=StockSummary(variant_count=2, total_quantity=3, out_of_stock=False),
-        media_count=1,
-        cover=media[0],
-        uploads_enabled=True,
-        slots_remaining=11,
         # 38 is sold out and 40 is in stock: the public shape must distinguish
         # them with a boolean and never with the count.
-        variants=[_variant_row("38", 0), _variant_row("40", 3)] if detail else [],
-        media=media if detail else [],
+        sizes=[
+            StorefrontSizeView(size_label="38", available=False),
+            StorefrontSizeView(size_label="40", available=True),
+        ],
+        media=[_media_view(url=url)],
     )
 
 
@@ -262,14 +314,36 @@ def _exception(date: datetime.date, *, note: str | None = "סגור") -> Availab
     )
 
 
-class FakeCatalogService:
-    """Duck-typed CatalogService covering only the two read methods the
-    storefront calls, so a signature drift on either one fails here."""
+def _boutique_view(
+    *,
+    profile: dict[str, Any] | None = None,
+    hours: list[AvailabilityRule] | None = None,
+    exceptions: list[AvailabilityException] | None = None,
+) -> StorefrontBoutiqueView:
+    return StorefrontBoutiqueView(
+        name=TENANT.name,
+        profile=dict(PROFILE) if profile is None else profile,
+        hours=[_rule(0)] if hours is None else hours,
+        exceptions=(
+            [_exception(datetime.date.today() + datetime.timedelta(days=7))]
+            if exceptions is None
+            else exceptions
+        ),
+    )
+
+
+class FakeStorefrontService:
+    """Duck-typed StorefrontService covering exactly the three read methods the
+    router calls, so a signature drift on any one of them fails here."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.raise_on: dict[str, Exception] = {}
-        self.view = _dress_view()
+        self.list_view = StorefrontDressListView(
+            items=[_dress_view()], total=1, offset=0, limit=STOREFRONT_LIST_DEFAULT_LIMIT
+        )
+        self.detail_view = _detail_view()
+        self.boutique_view = _boutique_view()
 
     def _record(self, method: str, /, **kwargs: Any) -> None:
         self.calls.append((method, kwargs))
@@ -286,50 +360,53 @@ class FakeCatalogService:
         self,
         tenant_id: uuid.UUID,
         *,
-        archived: bool = False,
-        search: str | None = None,
         offset: int = 0,
-        limit: int = DRESS_LIST_DEFAULT_LIMIT,
-    ) -> DressListResult:
-        self._record(
-            "list_dresses",
-            tenant_id=tenant_id,
-            archived=archived,
-            search=search,
-            offset=offset,
-            limit=limit,
-        )
-        return DressListResult(
-            items=[_dress_view(detail=False)], total=1, offset=offset, limit=limit
-        )
+        limit: int = STOREFRONT_LIST_DEFAULT_LIMIT,
+    ) -> StorefrontDressListView:
+        self._record("list_dresses", tenant_id=tenant_id, offset=offset, limit=limit)
+        return dataclasses.replace(self.list_view, offset=offset, limit=limit)
 
     async def get_dress(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, include_archived: bool = True
-    ) -> DressView:
-        self._record(
-            "get_dress", tenant_id=tenant_id, dress_id=dress_id, include_archived=include_archived
-        )
-        return self.view
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID
+    ) -> StorefrontDressDetailView:
+        self._record("get_dress", tenant_id=tenant_id, dress_id=dress_id)
+        return self.detail_view
+
+    async def get_boutique(
+        self, tenant_id: uuid.UUID, *, name: str, settings: dict[str, Any]
+    ) -> StorefrontBoutiqueView:
+        self._record("get_boutique", tenant_id=tenant_id, name=name, settings=settings)
+        return self.boutique_view
 
 
-class FakeBoutiqueService:
+class FakeAuthService:
+    """Only here so the owner cookie set in test_owner_cookie_changes_nothing is a
+    genuinely resolvable session rather than a random string — the point of
+    test_owner_cookie_changes_nothing is that a REAL owner sees no difference."""
+
     def __init__(self) -> None:
-        self.calls: list[tuple[str, uuid.UUID]] = []
-        self.settings = SettingsResult(profile=dict(PROFILE), toggles=dict(TOGGLES))
-        self.availability = AvailabilityResult(rules=[_rule(0)], exceptions=[])
+        self.staff = StaffContext(
+            id=STAFF_ID,
+            tenant_id=TENANT.id,
+            email="owner@bella.example",
+            display_name="Owner",
+            role="owner",
+        )
 
-    async def get_settings(self, tenant_id: uuid.UUID) -> SettingsResult:
-        self.calls.append(("get_settings", tenant_id))
-        return self.settings
+    async def login(
+        self, tenant_id: uuid.UUID, email: str, password: str
+    ) -> tuple[StaffContext, str]:
+        return self.staff, TOKEN
 
-    async def get_availability(self, tenant_id: uuid.UUID) -> AvailabilityResult:
-        self.calls.append(("get_availability", tenant_id))
-        return self.availability
+    async def resolve_session(self, tenant_id: uuid.UUID, token: str) -> StaffContext | None:
+        return self.staff if token == TOKEN else None
+
+    async def logout(self, tenant_id: uuid.UUID, token: str) -> None:
+        return None
 
 
 def _client(
-    catalog: FakeCatalogService | None = None,
-    boutique: FakeBoutiqueService | None = None,
+    service: FakeStorefrontService | None = None,
     *,
     host: str = "bella.localtest.me",
     limiter: FixedWindowRateLimiter | None = None,
@@ -338,8 +415,10 @@ def _client(
         return TENANT if slug == "bella" else None
 
     app = create_app(resolver=_resolver)
-    app.state.catalog_service = catalog if catalog is not None else FakeCatalogService()
-    app.state.boutique_service = boutique if boutique is not None else FakeBoutiqueService()
+    app.state.storefront_service = service if service is not None else FakeStorefrontService()
+    auth = FakeAuthService()
+    app.state.auth_service = auth
+    app.dependency_overrides[get_auth_service] = lambda: auth
     if limiter is not None:
         app.state.storefront_rate_limiter = limiter
     return TestClient(app, base_url=f"http://{host}")
@@ -348,8 +427,8 @@ def _client(
 # --- the public contract: no session, no cookie jar, no CSRF ---
 
 
-@pytest.mark.parametrize("path", PUBLIC_ROUTES)
-def test_every_public_route_answers_without_a_session(path: str) -> None:
+@pytest.mark.parametrize("path", ROUTES)
+def test_no_route_requires_authentication(path: str) -> None:
     """The inverse of F8's test_every_route_requires_authentication. No cookie is
     ever set on this client, so a manage dependency copied in by accident shows
     up as a 401 here rather than as a dead storefront in production.
@@ -365,17 +444,25 @@ def test_every_public_route_answers_without_a_session(path: str) -> None:
     assert "set-cookie" not in resp.headers, f"{path} issued {resp.headers.get('set-cookie')}"
 
 
-@pytest.mark.parametrize("path", PUBLIC_ROUTES)
-def test_every_public_route_still_requires_a_resolved_tenant(path: str) -> None:
-    """Public is not the same as host-agnostic: /storefront must never join
-    EXEMPT_PATHS, or an unresolvable host would reach a tenant-scoped handler."""
+def test_exempt_paths_contains_no_storefront_path() -> None:
+    """EXEMPT_PATHS skips tenant resolution entirely. The behavioural test below
+    proves today's routes 404 on an unknown host; this pins the mechanism, so a
+    future `/storefront/...` entry fails here even before a route exists to
+    exercise it."""
+    assert not [path for path in EXEMPT_PATHS if path.startswith("/storefront")]
+
+
+@pytest.mark.parametrize("path", ROUTES)
+def test_storefront_paths_are_not_exempt(path: str) -> None:
+    """Public is not the same as host-agnostic: an unresolvable host must 404
+    before a tenant-scoped handler ever runs."""
     with _client(host="nosuch.localtest.me") as client:
         resp = client.get(path)
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND"
 
 
-@pytest.mark.parametrize("path", PUBLIC_ROUTES)
+@pytest.mark.parametrize("path", ROUTES)
 def test_every_public_route_is_never_cached(path: str) -> None:
     """Image URLs are presigned GETs valid for SIGNED_GET_TTL_SECONDS — bearer
     material that must not reach a shared cache or a bfcache entry. Set on the
@@ -390,9 +477,9 @@ def test_no_route_is_registered_twice_across_routers() -> None:
     mounted on one app, and a duplicated (method, path) would silently win or
     lose depending on include order.
 
-    The expected set stays an explicit literal even though PUBLIC_ROUTES is now
-    derived from this same table: adding a public surface must fail one test on
-    purpose. What changed is that fixing it here also arms the four guards."""
+    The expected set stays an explicit literal even though ROUTES is now derived
+    from this same table: adding a public surface must fail one test on purpose.
+    What changed is that fixing it here also arms the four guards."""
     registered = list(_registered_routes(create_app(resolver=_null_resolver)))
     assert len(registered) == len(set(registered)), "a (method, path) pair is registered twice"
     assert {path for _, path in registered if path.startswith("/storefront")} == {
@@ -402,6 +489,38 @@ def test_no_route_is_registered_twice_across_routers() -> None:
     }
     # And no storefront path is reachable under the CSRF-protected prefix.
     assert not any(path.startswith("/manage/storefront") for _, path in registered)
+
+
+# --- security headers ---
+
+
+def test_security_headers_are_on_a_storefront_response() -> None:
+    with _client() as client:
+        resp = client.get(LIST_PATH)
+    assert resp.status_code == 200
+    assert {header: resp.headers.get(header) for header in SECURITY_HEADERS} == SECURITY_HEADERS
+
+
+def test_security_headers_are_on_a_manage_response() -> None:
+    """App-wide, not storefront-only. A 401 also proves the headers survive a
+    response produced by an exception handler rather than by a handler."""
+    with _client() as client:
+        resp = client.get(MANAGE_PATH)
+    assert resp.status_code == 401
+    assert {header: resp.headers.get(header) for header in SECURITY_HEADERS} == SECURITY_HEADERS
+
+
+def test_security_headers_are_on_the_tenant_not_found_404() -> None:
+    """The whole reason SecurityHeadersMiddleware is registered LAST (=
+    outermost). TenantResolutionMiddleware returns this 404 from its own
+    dispatch without ever calling call_next, so any middleware added after it —
+    i.e. registered EARLIER — never sees the response. On a public storefront
+    this is the most-served response to anyone probing the domain."""
+    with _client(host="nosuch.localtest.me") as client:
+        resp = client.get(LIST_PATH)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND"
+    assert {header: resp.headers.get(header) for header in SECURITY_HEADERS} == SECURITY_HEADERS
 
 
 # --- the wire-absence walk ---
@@ -417,72 +536,155 @@ def _all_keys(node: Any) -> Iterator[str]:
             yield from _all_keys(item)
 
 
-@pytest.mark.parametrize("path", PUBLIC_ROUTES)
-def test_no_forbidden_key_appears_at_any_depth(path: str) -> None:
+def _media_nodes(node: Any) -> Iterator[dict[str, Any]]:
+    """Every media object in a response: a list row's `cover` and each entry of
+    a detail's `media` array."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "cover" and isinstance(value, dict):
+                yield value
+            elif key == "media" and isinstance(value, list):
+                yield from (item for item in value if isinstance(item, dict))
+            else:
+                yield from _media_nodes(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _media_nodes(item)
+
+
+@pytest.mark.parametrize("path", ROUTES)
+def test_no_manage_only_field_leaks(path: str) -> None:
     """The single most important assertion in this feature. A response_model
     constrains the model the router names; it says nothing about what a future
-    edit makes that model inherit. This walks the actual parsed JSON."""
-    boutique = FakeBoutiqueService()
-    boutique.availability = AvailabilityResult(
-        rules=[_rule(0), _rule(5)],
+    edit makes that model inherit. This walks the actual parsed JSON, over a
+    fully-populated fake, at every nesting level."""
+    service = FakeStorefrontService()
+    service.boutique_view = _boutique_view(
+        hours=[_rule(0), _rule(5)],
         exceptions=[_exception(datetime.date.today() + datetime.timedelta(days=7))],
     )
-    with _client(boutique=boutique) as client:
+    with _client(service) as client:
         resp = client.get(path)
     assert resp.status_code == 200
     leaked = FORBIDDEN_KEYS & set(_all_keys(resp.json()))
     assert leaked == set(), f"{path} leaked {sorted(leaked)}"
 
 
+@pytest.mark.parametrize("path", [LIST_PATH, DETAIL_PATH])
+def test_media_carries_no_identifier_or_object_metadata(path: str) -> None:
+    """Key-set equality over the media subtrees only — `id` is legitimate at the
+    top level of both dress shapes, so it cannot go in FORBIDDEN_KEYS.
+
+    Deliberately NOT a substring check on the response text: the tenant, dress
+    and media UUIDs all appear legitimately inside the signed URL, so a
+    substring assertion would be wrong rather than strict, and the first person
+    to hit it would "fix" it by weakening it."""
+    with _client() as client:
+        resp = client.get(path)
+    assert resp.status_code == 200
+    nodes = list(_media_nodes(resp.json()))
+    assert nodes, f"{path} exposed no media node — the assertion below would be vacuous"
+    for node in nodes:
+        assert set(node) == {"url", "url_expires_at"}, node
+
+
 # --- dresses ---
 
 
-def test_list_pins_the_page_size_and_exposes_only_offset() -> None:
-    """No `limit` and no `search`: an anonymous caller can never make one request
-    mint more than DRESS_LIST_DEFAULT_LIMIT signed URLs."""
-    catalog = FakeCatalogService()
-    with _client(catalog) as client:
-        resp = client.get(LIST_PATH, params={"offset": 24, "limit": 100, "search": "aurora"})
+def test_list_applies_the_documented_page_defaults() -> None:
+    service = FakeStorefrontService()
+    with _client(service) as client:
+        resp = client.get(LIST_PATH)
     assert resp.status_code == 200
-    call = catalog.call("list_dresses")
-    assert call["offset"] == 24
-    assert call["limit"] == DRESS_LIST_DEFAULT_LIMIT
-    assert call["search"] is None
-    assert call["archived"] is False
-    # The envelope still carries limit so the client can page.
+    assert service.call("list_dresses") == {
+        "tenant_id": TENANT.id,
+        "offset": 0,
+        "limit": STOREFRONT_LIST_DEFAULT_LIMIT,
+    }
     body = resp.json()
-    assert body["limit"] == DRESS_LIST_DEFAULT_LIMIT
-    assert body["total"] == 1
     assert set(body) == {"items", "total", "offset", "limit"}
+    assert body["limit"] == STOREFRONT_LIST_DEFAULT_LIMIT
+    assert body["total"] == 1
+
+
+def test_list_accepts_limit_up_to_the_ceiling_and_rejects_one_past_it() -> None:
+    """`limit` is a real query parameter now, bounded by Query(le=...) — so the
+    ceiling is a 400 at the router rather than a silently ignored value. One
+    anonymous request can therefore never mint more than a page of signed URLs.
+    """
+    service = FakeStorefrontService()
+    with _client(service) as client:
+        at_bound = client.get(LIST_PATH, params={"limit": STOREFRONT_LIST_MAX_LIMIT})
+        beyond = client.get(LIST_PATH, params={"limit": STOREFRONT_LIST_MAX_LIMIT + 1})
+        zero = client.get(LIST_PATH, params={"limit": 0})
+    assert at_bound.status_code == 200
+    assert at_bound.json()["limit"] == STOREFRONT_LIST_MAX_LIMIT
+    for rejected in (beyond, zero):
+        assert rejected.status_code == 400
+        assert rejected.json()["error"]["code"] == "VALIDATION_ERROR"
+    # Exactly one recorded call proves neither rejected limit reached the query.
+    assert service.call("list_dresses")["limit"] == STOREFRONT_LIST_MAX_LIMIT
+
+
+def test_list_exposes_offset_and_limit_and_nothing_else() -> None:
+    """`archived` and `search` are pinned inside the service, not parameters: no
+    query string on this route can reach a repository predicate other than
+    paging. FastAPI drops undeclared query params silently, so the proof is the
+    kwargs the service was actually called with."""
+    service = FakeStorefrontService()
+    with _client(service) as client:
+        resp = client.get(
+            LIST_PATH, params={"offset": 24, "limit": 12, "search": "aurora", "archived": True}
+        )
+    assert resp.status_code == 200
+    assert service.call("list_dresses") == {"tenant_id": TENANT.id, "offset": 24, "limit": 12}
 
 
 def test_list_rejects_a_negative_offset() -> None:
-    catalog = FakeCatalogService()
-    with _client(catalog) as client:
+    service = FakeStorefrontService()
+    with _client(service) as client:
         resp = client.get(LIST_PATH, params={"offset": -1})
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
-    assert catalog.calls == []
+    assert service.calls == []
 
 
-def test_list_rejects_an_offset_past_the_ceiling() -> None:
+async def test_a_monstrous_offset_is_clamped_below_int8_before_it_reaches_sql() -> None:
     """`ge=0` alone is not a bound. Python ints are unbounded, and this value is
-    bound into `OFFSET $n::BIGINT` — so `?offset=2**63` was a 200 from the router
-    and then an unhandled 500 out of asyncpg's int8 encoder, on an anonymous,
-    trivially-scriptable endpoint. The int8 assertion is what stops a later
-    "let's allow deeper paging" from walking the ceiling back past the encoder."""
+    bound into `OFFSET $n::BIGINT` — so `?offset=2**63` reaches asyncpg's int8
+    encoder as an unhandled DataError, i.e. a 500 on an anonymous,
+    trivially-scriptable endpoint.
+
+    The router deliberately does NOT reject it (a caller paging past the end
+    wants an empty page, not an error); StorefrontService clamps instead. So the
+    guard has to be asserted against the REAL service with stubbed repositories —
+    asserting it against the fake would only assert the fake. The
+    `MAX_LIST_OFFSET < 2**63` line is what stops a later "let's allow deeper
+    paging" from walking the ceiling back past the encoder.
+
+    Same stub also pins `archived=False` / `search=None`: they are hardcoded
+    inside the service, so no query string can reach a repository predicate
+    other than paging.
+    """
     assert MAX_LIST_OFFSET < 2**63
-    catalog = FakeCatalogService()
-    with _client(catalog) as client:
-        at_bound = client.get(LIST_PATH, params={"offset": MAX_LIST_OFFSET})
-        beyond = client.get(LIST_PATH, params={"offset": MAX_LIST_OFFSET + 1})
-        overflow = client.get(LIST_PATH, params={"offset": 2**63})
-    assert at_bound.status_code == 200
-    assert beyond.status_code == 400
-    assert beyond.json()["error"]["code"] == "VALIDATION_ERROR"
-    assert overflow.status_code == 400
-    # Exactly one recorded call proves neither rejected offset reached the query.
-    assert catalog.call("list_dresses")["offset"] == MAX_LIST_OFFSET
+
+    dresses = _RecordingDresses()
+    # The class itself is the factory: tenant_session only ever calls it and
+    # enters the result.
+    factory = cast(Any, _StubSession)
+    service = StorefrontService(factory, media_storage=UnconfiguredMediaStorage())
+    service._dresses = dresses  # type: ignore[assignment]
+    service._media = _RecordingMedia()  # type: ignore[assignment]
+
+    view = await service.list_dresses(TENANT.id, offset=2**63, limit=STOREFRONT_LIST_MAX_LIMIT)
+
+    assert view.offset == MAX_LIST_OFFSET
+    assert dresses.page_kwargs == {
+        "archived": False,
+        "search": None,
+        "offset": MAX_LIST_OFFSET,
+        "limit": STOREFRONT_LIST_MAX_LIMIT,
+    }
 
 
 def test_list_row_omits_a_hidden_price_and_the_description() -> None:
@@ -499,10 +701,36 @@ def test_list_row_omits_a_hidden_price_and_the_description() -> None:
     ]
 
 
+def test_hidden_price_serialises_null() -> None:
+    """price_visible=False with a real number recorded: the number must not
+    reach the browser at all, and the key must still be present as null so the
+    client cannot tell this dress apart from one with no price."""
+    service = FakeStorefrontService()
+    service.detail_view = _detail_view(price_visible=False, price_agorot=HIDDEN_PRICE_AGOROT)
+    with _client(service) as client:
+        resp = client.get(DETAIL_PATH)
+    body = resp.json()
+    assert body["price_agorot"] is None
+    assert "price_agorot" in body
+
+
+def test_null_price_serialises_null() -> None:
+    """The other half: price_visible=True but nothing recorded. The two cases
+    are indistinguishable on the wire, which is exactly why price_visible never
+    ships — the flag and the number can never disagree."""
+    service = FakeStorefrontService()
+    service.detail_view = _detail_view(price_visible=True, price_agorot=None)
+    with _client(service) as client:
+        resp = client.get(DETAIL_PATH)
+    body = resp.json()
+    assert body["price_agorot"] is None
+    assert "price_agorot" in body
+
+
 def test_a_visible_price_still_ships() -> None:
-    catalog = FakeCatalogService()
-    catalog.view = _dress_view(price_visible=True, price_agorot=120_000)
-    with _client(catalog) as client:
+    service = FakeStorefrontService()
+    service.detail_view = _detail_view(price_visible=True, price_agorot=120_000)
+    with _client(service) as client:
         resp = client.get(DETAIL_PATH)
     assert resp.json()["price_agorot"] == 120_000
 
@@ -511,7 +739,7 @@ def test_detail_reports_availability_never_stock() -> None:
     with _client() as client:
         resp = client.get(DETAIL_PATH)
     body = resp.json()
-    assert body["variants"] == [
+    assert body["sizes"] == [
         {"size_label": "38", "available": False},
         {"size_label": "40", "available": True},
     ]
@@ -521,72 +749,120 @@ def test_detail_reports_availability_never_stock() -> None:
         "description",
         "price_agorot",
         "reserved",
-        "variants",
+        "sizes",
         "media",
     }
 
 
-def test_detail_asks_the_service_to_exclude_archived_dresses() -> None:
-    catalog = FakeCatalogService()
-    with _client(catalog) as client:
+def test_detail_passes_the_resolved_tenant_and_the_url_id() -> None:
+    service = FakeStorefrontService()
+    with _client(service) as client:
         client.get(DETAIL_PATH)
-    assert catalog.call("get_dress") == {
-        "tenant_id": TENANT.id,
-        "dress_id": DRESS_ID,
-        "include_archived": False,
-    }
+    assert service.call("get_dress") == {"tenant_id": TENANT.id, "dress_id": DRESS_ID}
 
 
-def test_an_archived_dress_is_a_404() -> None:
-    catalog = FakeCatalogService()
-    catalog.raise_on["get_dress"] = CatalogNotFoundError()
-    with _client(catalog) as client:
+def test_an_archived_or_unknown_dress_is_a_404() -> None:
+    service = FakeStorefrontService()
+    service.raise_on["get_dress"] = CatalogNotFoundError()
+    with _client(service) as client:
         resp = client.get(DETAIL_PATH)
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "NOT_FOUND"
 
 
+def test_a_non_uuid_dress_id_is_a_400() -> None:
+    """api.ts's isNotFound maps 400 VALIDATION_ERROR on this route to
+    "השמלה כבר לא זמינה" — see test_the_detail_route_declares_exactly_one_parameter
+    for the invariant that keeps that mapping honest. This is the one 400 the
+    route can actually produce."""
+    service = FakeStorefrontService()
+    with _client(service) as client:
+        resp = client.get("/storefront/dresses/not-a-uuid")
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert service.calls == []
+
+
 def test_reads_never_503_when_storage_is_unconfigured() -> None:
     """A read must never fail because there is no bucket — the page renders
-    without photos. `_media_view` already serialises a null url; this asserts the
+    without photos. `sign_media` already yields a null url; this asserts the
     route does not turn that into an error."""
-    catalog = FakeCatalogService()
-    catalog.view = _dress_view(url=None)
-    with _client(catalog) as client:
+    service = FakeStorefrontService()
+    service.detail_view = _detail_view(url=None)
+    with _client(service) as client:
         detail = client.get(DETAIL_PATH)
     assert detail.status_code == 200
     assert detail.json()["media"] == [{"url": None, "url_expires_at": None}]
 
 
+def test_a_cleared_dress_description_is_null_on_the_wire() -> None:
+    service = FakeStorefrontService()
+    service.detail_view = _detail_view(description="")
+    with _client(service) as client:
+        resp = client.get(DETAIL_PATH)
+    assert resp.status_code == 200
+    assert resp.json()["description"] is None
+
+
 # --- boutique profile + hours ---
 
 
-def test_boutique_returns_the_display_name_profile_and_hours() -> None:
-    boutique = FakeBoutiqueService()
-    with _client(boutique=boutique) as client:
+def test_boutique_is_flat_and_reads_name_and_settings_from_the_tenant_context() -> None:
+    """No nested `profile` object, and no second SELECT: the resolver already
+    read the whole tenants row to route the request, so `name` and `settings`
+    arrive from TenantContext."""
+    service = FakeStorefrontService()
+    service.boutique_view = _boutique_view(hours=[_rule(0)], exceptions=[])
+    with _client(service) as client:
         resp = client.get(BOUTIQUE_PATH)
-    body = resp.json()
-    assert body["name"] == TENANT.name
-    assert body["profile"] == PROFILE
-    assert body["rules"] == [{"day_of_week": 0, "open_time": "10:00:00", "close_time": "19:00:00"}]
-    assert [call[0] for call in boutique.calls] == ["get_settings", "get_availability"]
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "name": TENANT.name,
+        "essence": PROFILE["essence"],
+        "description": PROFILE["description"],
+        "phone": PROFILE["phone"],
+        "address": PROFILE["address"],
+        "maps_url": PROFILE["maps_url"],
+        "instagram": PROFILE["instagram"],
+        "hours": [{"day_of_week": 0, "open_time": "10:00:00", "close_time": "19:00:00"}],
+        "exceptions": [],
+    }
+    assert service.call("get_boutique") == {
+        "tenant_id": TENANT.id,
+        "name": TENANT.name,
+        "settings": TENANT.settings,
+    }
 
 
-def test_boutique_drops_past_exceptions() -> None:
-    today = datetime.date.today()
-    boutique = FakeBoutiqueService()
-    boutique.availability = AvailabilityResult(
-        rules=[],
-        exceptions=[
-            _exception(today - datetime.timedelta(days=30)),
-            _exception(today + datetime.timedelta(days=30), note="שעות מיוחדות"),
-        ],
+def test_boutique_projects_one_row_per_window_not_per_day() -> None:
+    """F7 allows a boutique a lunch break, so two windows can share a day. A
+    naive one-row-per-day map would keep only the last and render half the
+    boutique's hours."""
+    morning = _rule(0)
+    afternoon = _rule(0)
+    afternoon.open_time = datetime.time(16, 0)
+    afternoon.close_time = datetime.time(21, 0)
+    service = FakeStorefrontService()
+    service.boutique_view = _boutique_view(hours=[morning, afternoon], exceptions=[])
+    with _client(service) as client:
+        resp = client.get(BOUTIQUE_PATH)
+    assert resp.json()["hours"] == [
+        {"day_of_week": 0, "open_time": "10:00:00", "close_time": "19:00:00"},
+        {"day_of_week": 0, "open_time": "16:00:00", "close_time": "21:00:00"},
+    ]
+
+
+def test_boutique_projects_the_upcoming_exceptions_it_is_given() -> None:
+    future = datetime.date.today() + datetime.timedelta(days=30)
+    service = FakeStorefrontService()
+    service.boutique_view = _boutique_view(
+        hours=[], exceptions=[_exception(future, note="שעות מיוחדות")]
     )
-    with _client(boutique=boutique) as client:
+    with _client(service) as client:
         resp = client.get(BOUTIQUE_PATH)
     assert resp.json()["exceptions"] == [
         {
-            "date": (today + datetime.timedelta(days=30)).isoformat(),
+            "date": future.isoformat(),
             "open_time": None,
             "close_time": None,
             "note": "שעות מיוחדות",
@@ -595,16 +871,21 @@ def test_boutique_drops_past_exceptions() -> None:
 
 
 def test_boutique_survives_an_empty_profile() -> None:
-    boutique = FakeBoutiqueService()
-    boutique.settings = SettingsResult(profile={}, toggles={})
-    with _client(boutique=boutique) as client:
+    service = FakeStorefrontService()
+    service.boutique_view = _boutique_view(profile={}, hours=[], exceptions=[])
+    with _client(service) as client:
         resp = client.get(BOUTIQUE_PATH)
     assert resp.status_code == 200
-    assert resp.json()["profile"] == {
+    assert resp.json() == {
+        "name": TENANT.name,
+        "essence": None,
+        "description": None,
         "phone": None,
         "address": None,
-        "description": None,
         "maps_url": None,
+        "instagram": None,
+        "hours": [],
+        "exceptions": [],
     }
 
 
@@ -619,29 +900,47 @@ def test_a_cleared_profile_field_is_null_on_the_wire_not_an_empty_string() -> No
     channel. Both values already mean "not set", so the wire must not distinguish
     them — that is what lets every client guard be a plain null check.
     """
-    boutique = FakeBoutiqueService()
-    boutique.settings = SettingsResult(
-        profile={"phone": "", "address": "", "description": "", "maps_url": ""},
-        toggles={},
+    service = FakeStorefrontService()
+    service.boutique_view = _boutique_view(
+        profile=dict.fromkeys(
+            ["essence", "description", "phone", "address", "maps_url", "instagram"], ""
+        ),
+        hours=[],
+        exceptions=[],
     )
-    with _client(boutique=boutique) as client:
+    with _client(service) as client:
         resp = client.get(BOUTIQUE_PATH)
     assert resp.status_code == 200
-    assert resp.json()["profile"] == {
+    assert resp.json() == {
+        "name": TENANT.name,
+        "essence": None,
+        "description": None,
         "phone": None,
         "address": None,
-        "description": None,
         "maps_url": None,
+        "instagram": None,
+        "hours": [],
+        "exceptions": [],
     }
 
 
-def test_a_cleared_dress_description_is_null_on_the_wire() -> None:
-    catalog = FakeCatalogService()
-    catalog.view = _dress_view(description="")
-    with _client(catalog=catalog) as client:
-        resp = client.get(DETAIL_PATH)
-    assert resp.status_code == 200
-    assert resp.json()["description"] is None
+# --- the owner cookie is not a second contract ---
+
+
+def test_owner_cookie_changes_nothing() -> None:
+    """The storefront and the console share the origin {slug}.{domain}, so a
+    browser would attach `boutique_session` if the client asked it to. A public
+    endpoint that behaves differently for a logged-in owner is a public endpoint
+    with a hidden second contract — so the bytes must be identical, not merely
+    the status code.
+    """
+    with _client() as client:
+        anonymous = {path: client.get(path) for path in ROUTES}
+        client.cookies.set("boutique_session", TOKEN, domain="bella.localtest.me")
+        authenticated = {path: client.get(path) for path in ROUTES}
+    for path in ROUTES:
+        assert anonymous[path].status_code == authenticated[path].status_code == 200, path
+        assert anonymous[path].content == authenticated[path].content, path
 
 
 # --- structural: the public schemas may never inherit from the manage ones ---
@@ -650,15 +949,15 @@ def test_a_cleared_dress_description_is_null_on_the_wire() -> None:
 def test_public_schemas_share_no_inheritance_with_the_manage_schemas() -> None:
     """Inheritance is exactly how the mandated omissions get silently reverted:
     one field added to DressResponse and every storefront row carries it."""
-    assert not issubclass(PublicDressResponse, DressResponse)
-    assert not issubclass(PublicDressDetailResponse, PublicDressResponse)
-    assert not issubclass(PublicDressDetailResponse, DressResponse)
+    assert not issubclass(StorefrontDress, DressResponse)
+    assert not issubclass(StorefrontDetail, StorefrontDress)
+    assert not issubclass(StorefrontDetail, DressResponse)
 
 
-def test_public_dress_row_has_exactly_these_fields() -> None:
+def test_storefront_dress_row_has_exactly_these_fields() -> None:
     """The assertion that fails CI when someone adds a field "just for
     debugging"."""
-    assert set(PublicDressResponse.model_fields) == {
+    assert set(StorefrontDress.model_fields) == {
         "id",
         "name",
         "price_agorot",
@@ -667,28 +966,32 @@ def test_public_dress_row_has_exactly_these_fields() -> None:
     }
 
 
-def test_public_boutique_has_exactly_these_fields() -> None:
-    """The two dress schemas are pinned by set-equality; the boutique top level
-    was only spot-checked, so a new top-level field whose name is not in
-    FORBIDDEN_KEYS would ship with nothing red. The nested shapes are already
-    pinned by the exact-dict equality in the route tests above."""
-    assert set(PublicBoutiqueResponse.model_fields) == {
-        "name",
-        "profile",
-        "rules",
-        "exceptions",
-    }
-
-
-def test_public_dress_detail_has_exactly_these_fields() -> None:
-    assert set(PublicDressDetailResponse.model_fields) == {
+def test_storefront_detail_has_exactly_these_fields() -> None:
+    assert set(StorefrontDetail.model_fields) == {
         "id",
         "name",
         "description",
         "price_agorot",
         "reserved",
-        "variants",
+        "sizes",
         "media",
+    }
+
+
+def test_boutique_response_has_exactly_these_flat_fields() -> None:
+    """FLAT: the old nested `profile` object is gone, and `rules` is now `hours`.
+    Set-equality is what catches a new top-level field whose name happens not to
+    be in FORBIDDEN_KEYS."""
+    assert set(BoutiqueResponse.model_fields) == {
+        "name",
+        "essence",
+        "description",
+        "phone",
+        "address",
+        "maps_url",
+        "instagram",
+        "hours",
+        "exceptions",
     }
 
 
@@ -711,7 +1014,7 @@ def test_public_price_covers_every_combination(
     the spec renders identically — so the flag never ships and the two can never
     disagree."""
     row = _dress_row(price_visible=price_visible, price_agorot=price_agorot)
-    assert public_price(row) == expected
+    assert _public_price(row) == expected
 
 
 def test_upcoming_exceptions_keeps_today_and_the_future_in_order() -> None:
@@ -732,58 +1035,152 @@ def test_upcoming_exceptions_keeps_today_and_the_future_in_order() -> None:
     ]
 
 
+def test_upcoming_exceptions_truncates_a_three_year_holiday_log() -> None:
+    """A boutique that has recorded every holiday since it opened must not turn
+    /about into a calendar."""
+    today = datetime.date(2026, 7, 27)
+    rows = [_exception(today + datetime.timedelta(days=day)) for day in range(60)]
+    assert len(upcoming_exceptions(rows, today)) == UPCOMING_EXCEPTIONS_LIMIT
+
+
 def test_mappers_are_importable_pure_functions() -> None:
-    view = _dress_view()
-    assert public_dress(view).price_agorot is None
-    assert [variant.available for variant in public_dress_detail(view).variants] == [False, True]
-    assert (
-        public_boutique(
-            name="בלה",
-            settings=SettingsResult(profile=dict(PROFILE), toggles=dict(TOGGLES)),
-            availability=AvailabilityResult(rules=[], exceptions=[]),
-            today=datetime.date(2026, 7, 27),
-        ).name
-        == "בלה"
-    )
+    assert public_dress(_dress_view()).price_agorot is None
+    assert [size.available for size in public_dress_detail(_detail_view()).sizes] == [False, True]
+    assert public_boutique(_boutique_view()).name == TENANT.name
 
 
-# --- the per-IP read budget ---
+# --- the per-tenant read budget ---
 
 
-def test_the_limiter_is_skipped_when_there_is_no_trusted_client_ip() -> None:
-    """With TRUST_FORWARDED_FOR off, request.client.host is the proxy: a bucket
-    keyed on it is a per-tenant bucket, and one anonymous visitor could 429 a
-    boutique's whole storefront. A limiter that blocks everything proves the
-    check never runs."""
+def test_read_throttle_maps_to_429() -> None:
+    """Keyed "storefront:{tenant_id}" with NO IP component — so a second visitor
+    of the same boutique shares the budget, and a forged X-Forwarded-For buys
+    nothing. The old per-(tenant, IP) key was inert in production: _client_ip
+    returns None whenever trust_forwarded_for is False, which is the default.
+    """
+    limiter = FixedWindowRateLimiter(max_attempts=2, window_seconds=60, clock=time.monotonic)
+    with _client(limiter=limiter) as client:
+        assert client.get(LIST_PATH).status_code == 200
+        assert client.get(BOUTIQUE_PATH).status_code == 200
+        # A different claimed IP does NOT get a fresh bucket: this fails the day
+        # someone re-keys the limiter on the client address.
+        blocked = client.get(LIST_PATH, headers={"x-forwarded-for": "203.0.113.9"})
+    assert blocked.status_code == 429
+    # Zero new error codes: the shared TOO_MANY_ATTEMPTS body serves this.
+    assert blocked.json() == {
+        "error": {"code": "TOO_MANY_ATTEMPTS", "message": "Too many attempts. Try again later."}
+    }
+
+
+@pytest.mark.parametrize("path", ROUTES)
+def test_the_read_throttle_is_not_inert(path: str) -> None:
+    """FixedWindowRateLimiter counts only what is explicitly recorded, and its
+    docstring says "successes never count" — which is right for a login form and
+    wrong here. Without the record_failure call on the success path the limiter
+    never fires at all, and every route below would answer 200 against a limiter
+    configured to block everything."""
     blocks_everything = FixedWindowRateLimiter(
         max_attempts=0, window_seconds=60, clock=time.monotonic
     )
     with _client(limiter=blocks_everything) as client:
-        for path in PUBLIC_ROUTES:
-            assert client.get(path).status_code == 200
+        resp = client.get(path)
+    assert resp.status_code == 429
 
 
-def test_a_trusted_client_ip_is_throttled_with_the_existing_429(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "app.storefront.router.get_settings",
-        lambda: Settings(app_env="dev", trust_forwarded_for=True),
-    )
-    limiter = FixedWindowRateLimiter(max_attempts=2, window_seconds=60, clock=time.monotonic)
-    headers = {"x-forwarded-for": "203.0.113.9"}
-    with _client(limiter=limiter) as client:
-        assert client.get(LIST_PATH, headers=headers).status_code == 200
-        assert client.get(BOUTIQUE_PATH, headers=headers).status_code == 200
-        blocked = client.get(LIST_PATH, headers=headers)
-        # A different visitor of the same boutique is unaffected.
-        other = client.get(LIST_PATH, headers={"x-forwarded-for": "198.51.100.4"})
-    assert blocked.status_code == 429
-    # Zero new error codes: the existing TOO_MANY_ATTEMPTS handler serves this.
-    assert blocked.json() == {
-        "error": {"code": "TOO_MANY_ATTEMPTS", "message": "Too many attempts. Try again later."}
-    }
-    assert other.status_code == 200
+# --- the complete error-code table ---
+
+
+@dataclasses.dataclass(frozen=True)
+class ErrorCase:
+    """One row of the spec's error table for this surface: a probe that provokes
+    it, and the status + code the app must produce."""
+
+    code: str
+    status: int
+    probe: Callable[[], Any]
+
+
+def _probe_tenant_not_found() -> Any:
+    with _client(host="nosuch.localtest.me") as client:
+        return client.get(LIST_PATH)
+
+
+def _probe_not_found() -> Any:
+    service = FakeStorefrontService()
+    service.raise_on["get_dress"] = CatalogNotFoundError()
+    with _client(service) as client:
+        return client.get(DETAIL_PATH)
+
+
+def _probe_validation_error() -> Any:
+    with _client() as client:
+        return client.get(LIST_PATH, params={"limit": STOREFRONT_LIST_MAX_LIMIT + 1})
+
+
+def _probe_too_many_attempts() -> Any:
+    blocked = FixedWindowRateLimiter(max_attempts=0, window_seconds=60, clock=time.monotonic)
+    with _client(limiter=blocked) as client:
+        return client.get(LIST_PATH)
+
+
+ERROR_CASES: list[ErrorCase] = [
+    ErrorCase("TENANT_NOT_FOUND", 404, _probe_tenant_not_found),
+    ErrorCase("NOT_FOUND", 404, _probe_not_found),
+    ErrorCase("VALIDATION_ERROR", 400, _probe_validation_error),
+    ErrorCase("TOO_MANY_ATTEMPTS", 429, _probe_too_many_attempts),
+]
+
+
+@pytest.mark.parametrize("case", ERROR_CASES, ids=[case.code for case in ERROR_CASES])
+def test_every_error_maps_to_its_status_and_house_shape(case: ErrorCase) -> None:
+    """A forgotten handler registration returns 500, not the documented status —
+    and StorefrontThrottledError is a brand-new exception class whose handler is
+    the only thing between the read budget and an unhandled 500."""
+    resp = case.probe()
+    assert resp.status_code == case.status
+    body = resp.json()
+    assert set(body) == {"error"}
+    assert set(body["error"]) == {"code", "message"}
+    assert body["error"]["code"] == case.code
+    assert body["error"]["message"]
+
+
+def test_every_spec_error_code_is_asserted() -> None:
+    """Mechanical completeness: a row added to the spec's error table without a
+    test here fails immediately, rather than shipping as a 500."""
+    assert {case.code for case in ERROR_CASES} == SPEC_ERROR_CODES
+
+
+# --- source-level guards ---
+
+
+def _referenced_names(source: str) -> set[str]:
+    """Every attribute and bare name the module actually references. Parsed, not
+    grepped: `service.py`'s docstring says the forbidden symbol's name out loud
+    (to explain why it is forbidden), so a substring scan would fail on the very
+    prose that documents the rule."""
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.Name):
+            names.add(node.id)
+    return names
+
+
+def test_storefront_module_never_references_by_id_any_state() -> None:
+    """`by_id` pins `deleted_at IS NULL`, so an archived dress is an
+    indistinguishable 404 — precisely the design's "השמלה כבר לא זמינה" state.
+    `by_id_any_state` is the manage console's detail/restore escape hatch and
+    would turn an archived dress into a browsable public page."""
+    sources = sorted(STOREFRONT_SOURCE_DIR.glob("*.py"))
+    assert sources, f"no source under {STOREFRONT_SOURCE_DIR} — this guard would be vacuous"
+    offenders = [
+        path.name
+        for path in sources
+        if "by_id_any_state" in _referenced_names(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
 
 
 def test_the_detail_route_declares_exactly_one_parameter() -> None:
@@ -812,10 +1209,113 @@ def test_the_detail_route_declares_exactly_one_parameter() -> None:
     )
 
 
-def _iter_leaf_routes(node: Any) -> Iterator[Any]:
-    for route in getattr(node, "routes", []):
-        inner = getattr(route, "original_router", None)
-        if inner is not None:
-            yield from _iter_leaf_routes(inner)
-            continue
-        yield route
+# --- docs are dark outside dev ---
+
+
+DOCS_PATHS = ["/openapi.json", "/docs", "/redoc"]
+
+
+AppEnv = Literal["dev", "staging", "production"]
+
+
+def _settings(app_env: AppEnv) -> Settings:
+    # database_url and a non-localtest.me base_domain are both REQUIRED outside
+    # dev or the config validators raise; the media fields are pinned so a local
+    # .env cannot change what this test builds.
+    return Settings(
+        app_env=app_env,
+        database_url="postgresql+asyncpg://app:pw@db:5432/boutique",
+        base_domain="boutique.example" if app_env != "dev" else "localtest.me",
+        media_bucket=None,
+        media_endpoint_url=None,
+        media_force_path_style=False,
+    )
+
+
+def _app_with_settings(monkeypatch: pytest.MonkeyPatch, app_env: AppEnv) -> TestClient:
+    monkeypatch.setattr("app.main.get_settings", lambda: _settings(app_env))
+    return TestClient(create_app(resolver=_null_resolver))
+
+
+def test_openapi_is_unreachable_outside_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F10 makes this origin publicly crawlable, and the first crawler that finds
+    {slug}.{domain} also finds /openapi.json — a complete, uncredentialed
+    description of every /manage route and of exactly the fields the storefront
+    allowlist exists to fence off. create_app passes docs_url/redoc_url/
+    openapi_url=None outside dev, so FastAPI never registers the routes at all.
+
+    get_settings is @lru_cache-d AND Settings reads .env, so the only honest way
+    to drive this is a hand-built Settings patched over app.main.get_settings.
+    """
+    client = _app_with_settings(monkeypatch, "production")
+    for path in DOCS_PATHS:
+        assert client.get(path).status_code == 404, path
+
+    # The control: the same three paths ARE served in dev. Without it a typo in
+    # DOCS_PATHS would make every assertion above pass for the wrong reason.
+    dev_client = _app_with_settings(monkeypatch, "dev")
+    for path in DOCS_PATHS:
+        assert dev_client.get(path).status_code == 200, path
+
+
+# --- stubs for the offset-clamp unit test (no database, no event loop of its own) ---
+
+
+class _NullBegin:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+
+class _StubSession:
+    """Just enough of AsyncSession for tenant_session()'s set_config call. The
+    repositories are stubbed too, so no statement is ever built."""
+
+    async def execute(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def begin(self) -> _NullBegin:
+        return _NullBegin()
+
+    async def __aenter__(self) -> "_StubSession":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+
+class _RecordingDresses:
+    def __init__(self) -> None:
+        self.page_kwargs: dict[str, Any] | None = None
+
+    async def list_page(
+        self,
+        session: Any,
+        tenant_id: uuid.UUID,
+        *,
+        archived: bool,
+        search: str | None,
+        offset: int,
+        limit: int,
+    ) -> list[Dress]:
+        self.page_kwargs = {
+            "archived": archived,
+            "search": search,
+            "offset": offset,
+            "limit": limit,
+        }
+        return []
+
+    async def count(
+        self, session: Any, tenant_id: uuid.UUID, *, archived: bool, search: str | None
+    ) -> int:
+        return 0
+
+
+class _RecordingMedia:
+    async def covers_by_dress(
+        self, session: Any, tenant_id: uuid.UUID, dress_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, Any]:
+        return {}

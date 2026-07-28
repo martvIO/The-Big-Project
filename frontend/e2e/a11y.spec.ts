@@ -6,20 +6,40 @@ const STOREFRONT = "http://localhost:4173";
 const MANAGE = "http://localhost:4174";
 
 // Nothing here intercepts the API, and that is the point. `vite preview` proxies
-// /storefront/* to :8000 with no backend listening, so these are the API-is-down
-// pass: the storefront still has to be a valid, navigable, accessible document
-// when the boutique's data never arrives. storefront.spec.ts covers the same
-// routes with data behind them.
-async function gotoCatalogWithApiDown(page: Page) {
+// /storefront/* to :8000, where either nothing is listening or a backend that has
+// never heard of `localhost` answers 404 TENANT_NOT_FOUND. Both are the same
+// thing to the visitor: the boutique's data never arrives. These are the
+// no-data pass — the storefront still has to be a valid, navigable, accessible
+// document. storefront.spec.ts covers the same routes with data behind them.
+//
+// Which of the two failures happens depends on the machine, so nothing below
+// pins the exact sentence; the Hebrew-only assertion in its own test is what
+// pins the copy.
+async function gotoCatalogWithNoData(page: Page) {
   await page.goto(STOREFRONT);
   // Wait for the failure to land, so nothing below measures a skeleton.
-  await expect(page.getByRole("alert")).toContainText("לא הצלחנו לטעון את הקולקציה כרגע.");
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.getByRole("button", { name: "נסי שוב" })).toBeVisible();
 }
 
-test("storefront (API down): zero axe A/AA violations", async ({ page }) => {
-  await gotoCatalogWithApiDown(page);
+test("storefront (no data): zero axe A/AA violations", async ({ page }) => {
+  await gotoCatalogWithNoData(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   expect(results.violations).toEqual([]);
+});
+
+// Every message the backend can return is English — "No active boutique at this
+// address.", "Resource not found.", "Too many attempts. Try again later." — so
+// the failure copy is selected by the error CODE and rendered from the Hebrew
+// bundle. Painting the server's sentence onto a Hebrew-only page is the failure
+// mode, and it is invisible to axe and to every layout check in this file.
+test("storefront (no data): the failure is Hebrew, never the server's English message", async ({
+  page,
+}) => {
+  await gotoCatalogWithNoData(page);
+  const message = await page.getByRole("alert").innerText();
+  expect(message, "the alert is empty").toMatch(/[֐-׿]/);
+  expect(message, "an English server message reached the page").not.toMatch(/[A-Za-z]{4,}/);
 });
 
 test("storefront: Hebrew document title + cream color-scheme (no forced dark)", async ({ page }) => {
@@ -27,6 +47,23 @@ test("storefront: Hebrew document title + cream color-scheme (no forced dark)", 
   await expect(page).toHaveTitle(/[֐-׿]/); // contains Hebrew
   const scheme = await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme);
   expect(scheme.trim()).toContain("light");
+});
+
+// WCAG 1.4.4: pinch zoom is the resize mechanism on a phone, and a viewport meta
+// that disables it takes 200% text away from the visitor who most needs it. Both
+// apps, because the two index.html files are edited independently.
+test("neither app's index.html disables pinch zoom", async ({ page }) => {
+  for (const [name, url] of [
+    ["storefront", STOREFRONT],
+    ["manage", MANAGE],
+  ]) {
+    await page.goto(url);
+    const content = await page.locator('meta[name="viewport"]').getAttribute("content");
+    expect(content, `${name} has no viewport meta`).not.toBeNull();
+    expect(content, `${name} viewport meta blocks zoom`).not.toMatch(/user-scalable\s*=\s*(no|0)/i);
+    // maximum-scale=1 blocks it just as completely, and reads as harmless.
+    expect(content, `${name} viewport meta caps zoom`).not.toMatch(/maximum-scale\s*=\s*1(\.0)?\b/i);
+  }
 });
 
 test("storefront: the Hebrew woff2 subset is actually fetched (not only Latin)", async ({ page }) => {
@@ -42,10 +79,10 @@ test("storefront: the Hebrew woff2 subset is actually fetched (not only Latin)",
   expect(woff2.some((u) => /hebrew/i.test(u)), `woff2 requested: ${woff2.join(", ")}`).toBe(true);
 });
 
-test("storefront (API down): no horizontal scroll at 375 / 768 / 1440", async ({ page }) => {
+test("storefront (no data): no horizontal scroll at 375 / 768 / 1440", async ({ page }) => {
   for (const width of [375, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    await gotoCatalogWithApiDown(page);
+    await gotoCatalogWithNoData(page);
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
     );
@@ -53,14 +90,22 @@ test("storefront (API down): no horizontal scroll at 375 / 768 / 1440", async ({
   }
 });
 
-test("storefront (API down): keeps its h1 and honours reduced motion", async ({ page }) => {
+test("storefront (no data): keeps the skip link and honours reduced motion", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await gotoCatalogWithApiDown(page);
+  await gotoCatalogWithNoData(page);
 
-  // BoutiqueHeader renders unconditionally and falls back to the brand title, so
-  // an outage costs the page its dresses, never its h1 — which axe's
-  // page-has-heading-one wants and the skip link needs somewhere to land in.
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("חנות הכלות");
+  // The skip link is the first focusable element on every page including this
+  // one, and #content is still a real, focusable region — an outage costs the
+  // page its collection, never its keyboard entry point.
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("link", { name: "דלג לתוכן" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  expect(
+    await page.evaluate(() => ({
+      tag: document.activeElement?.tagName ?? "",
+      id: document.activeElement?.id ?? "",
+    })),
+  ).toEqual({ tag: "MAIN", id: "content" });
 
   // Measured on the retry Button, the only element in this state that declares a
   // transition at all. The previous assertion read

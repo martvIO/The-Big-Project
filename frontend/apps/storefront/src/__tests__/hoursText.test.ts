@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { PublicBoutiqueResponse, PublicHoursException } from "../api";
+import type { BoutiqueResponse, ExceptionRow, HoursRow } from "../api";
 import i18n from "../i18n";
-import { hhmm, shortDate, toExceptions, todayLine, toWeeklyRules } from "../lib/hours-adapter";
+import { hhmm, shortDate, toExceptions, todayLine, toWeeklyRules } from "../lib/hoursText";
 
 // For an appointment-only boutique the hours line is the highest-stakes string
 // on the page: "סגור היום" when it is open, or a reopen day one off, sends a
@@ -14,20 +14,22 @@ import { hhmm, shortDate, toExceptions, todayLine, toWeeklyRules } from "../lib/
 
 // The classic Israeli boutique week: Sun–Thu open, Friday and Saturday carry no
 // rule at all, which lib/hours reads as closed.
-const SUN_TO_THU = Array.from({ length: 5 }, (_, day) => ({
+const SUN_TO_THU: HoursRow[] = Array.from({ length: 5 }, (_, day) => ({
   day_of_week: day,
   open_time: "10:00:00",
   close_time: "19:00:00",
 }));
 
-function boutique(
-  rules = SUN_TO_THU,
-  exceptions: PublicHoursException[] = [],
-): PublicBoutiqueResponse {
+function boutique(hours: HoursRow[] = SUN_TO_THU, exceptions: ExceptionRow[] = []): BoutiqueResponse {
   return {
     name: "בוטיק אלמה",
-    profile: { phone: null, address: null, description: null, maps_url: null },
-    rules,
+    essence: null,
+    description: null,
+    phone: null,
+    address: null,
+    maps_url: null,
+    instagram: null,
+    hours,
     exceptions,
   };
 }
@@ -39,7 +41,8 @@ const FRIDAY = new Date("2026-12-25T10:00:00Z");
 // Jerusalem — the instant that tells the two clocks apart.
 const SATURDAY_IN_JERUSALEM_FRIDAY_IN_NEW_YORK = new Date("2026-12-25T22:30:00Z");
 
-const t = i18n.t.bind(i18n);
+const t = i18n.t;
+const dayLabels = i18n.t("hours.days", { returnObjects: true }) as string[];
 
 describe("shortDate", () => {
   it("is day.month, never month.day — the ambiguity that would ship silently", () => {
@@ -57,16 +60,18 @@ describe("hhmm", () => {
   });
 });
 
-describe("toWeeklyRules / toExceptions", () => {
-  it("groups several windows on one day into a single rule", () => {
+describe("toWeeklyRules", () => {
+  it("groups two windows on the same day into one rule — a lunch break survives", () => {
+    // day_of_week 0 twice: a naive one-to-one map keeps only 16:00–19:00 and
+    // silently hides the morning the boutique is actually open.
     expect(
       toWeeklyRules([
-        { day_of_week: 2, open_time: "10:00:00", close_time: "13:00:00" },
-        { day_of_week: 2, open_time: "16:00:00", close_time: "19:00:00" },
+        { day_of_week: 0, open_time: "10:00:00", close_time: "13:00:00" },
+        { day_of_week: 0, open_time: "16:00:00", close_time: "19:00:00" },
       ]),
     ).toEqual([
       {
-        dayOfWeek: 2,
+        dayOfWeek: 0,
         windows: [
           { open: "10:00", close: "13:00" },
           { open: "16:00", close: "19:00" },
@@ -75,6 +80,24 @@ describe("toWeeklyRules / toExceptions", () => {
     ]);
   });
 
+  it("keeps distinct days apart and trims every window's seconds", () => {
+    expect(
+      toWeeklyRules([
+        { day_of_week: 2, open_time: "10:00:00", close_time: "19:00:00" },
+        { day_of_week: 5, open_time: "09:00:00", close_time: "13:00:00" },
+      ]),
+    ).toEqual([
+      { dayOfWeek: 2, windows: [{ open: "10:00", close: "19:00" }] },
+      { dayOfWeek: 5, windows: [{ open: "09:00", close: "13:00" }] },
+    ]);
+  });
+
+  it("returns nothing for a boutique that has entered no hours at all", () => {
+    expect(toWeeklyRules([])).toEqual([]);
+  });
+});
+
+describe("toExceptions", () => {
   it("keeps a closed-all-day exception as a present key with no windows", () => {
     // The key has to exist even though nothing is pushed — an absent key means
     // "no exception" and falls back to the weekly rule.
@@ -82,31 +105,37 @@ describe("toWeeklyRules / toExceptions", () => {
       toExceptions([{ date: "2026-12-24", open_time: null, close_time: null, note: null }]),
     ).toEqual({ "2026-12-24": [] });
   });
+
+  it("turns a set open/close pair into one special-hours window", () => {
+    expect(
+      toExceptions([{ date: "2026-12-26", open_time: "09:00:00", close_time: "13:00:00", note: "ערב חג" }]),
+    ).toEqual({ "2026-12-26": [{ open: "09:00", close: "13:00" }] });
+  });
 });
 
 describe("todayLine", () => {
   it("reads the open window on a day with a rule", () => {
-    expect(todayLine(boutique(), THURSDAY, t)).toBe(
-      t("hours.today", { hours: "10:00–19:00" }),
-    );
+    expect(todayLine(boutique(), THURSDAY, t)).toBe(t("about.today", { hours: "10:00–19:00" }));
   });
 
   it("says closed today and names tomorrow when the next open day is literally tomorrow", () => {
     // Saturday in Jerusalem: closed, and Sunday opens the week.
     expect(todayLine(boutique(), SATURDAY_IN_JERUSALEM_FRIDAY_IN_NEW_YORK, t)).toBe(
-      `${t("hours.closedToday")} · ${t("hours.opensTomorrow", { time: "10:00" })}`,
+      `${t("about.closedToday")} · ${t("about.opensTomorrow", { time: "10:00" })}`,
     );
   });
 
   it("names the weekday instead when the next open day is further out", () => {
     // Friday: Saturday is closed too, so the reopen is Sunday — not tomorrow.
     expect(todayLine(boutique(), FRIDAY, t)).toBe(
-      `${t("hours.closedToday")} · ${t("hours.opensOn", { day: t("hours.day.sun"), time: "10:00" })}`,
+      `${t("about.closedToday")} · ${t("about.opensOn", { day: dayLabels[0], time: "10:00" })}`,
     );
   });
 
-  it("says only closed today when the boutique is never open", () => {
-    expect(todayLine(boutique([]), THURSDAY, t)).toBe(t("hours.closedToday"));
+  it("returns null — not closed-today — when the boutique has no weekly rules", () => {
+    // The state every newly provisioned tenant ships in. Rendering "סגור היום"
+    // here advertises a closure the owner never entered.
+    expect(todayLine(boutique([]), THURSDAY, t)).toBeNull();
   });
 
   it("lets a closed exception override an otherwise-open weekday", () => {
@@ -116,7 +145,7 @@ describe("todayLine", () => {
     // Thursday's tomorrow is Friday, which the weekly rules already close — so
     // the reopen walks on to Sunday rather than stopping at the next calendar day.
     expect(todayLine(closedThursday, THURSDAY, t)).toBe(
-      `${t("hours.closedToday")} · ${t("hours.opensOn", { day: t("hours.day.sun"), time: "10:00" })}`,
+      `${t("about.closedToday")} · ${t("about.opensOn", { day: dayLabels[0], time: "10:00" })}`,
     );
   });
 
@@ -124,7 +153,18 @@ describe("todayLine", () => {
     const openFriday = boutique(SUN_TO_THU, [
       { date: "2026-12-25", open_time: "09:00:00", close_time: "13:00:00", note: null },
     ]);
-    expect(todayLine(openFriday, FRIDAY, t)).toBe(t("hours.today", { hours: "09:00–13:00" }));
+    expect(todayLine(openFriday, FRIDAY, t)).toBe(t("about.today", { hours: "09:00–13:00" }));
+  });
+
+  it("reads tomorrow's exception hours as the reopen time, not the weekly rule's", () => {
+    // Saturday is closed by the weekly rules but opened by an exception, so the
+    // reopen is literally tomorrow and at 09:00, not Sunday's 10:00.
+    const openSaturday = boutique(SUN_TO_THU, [
+      { date: "2026-12-26", open_time: "09:00:00", close_time: "13:00:00", note: null },
+    ]);
+    expect(todayLine(openSaturday, FRIDAY, t)).toBe(
+      `${t("about.closedToday")} · ${t("about.opensTomorrow", { time: "09:00" })}`,
+    );
   });
 
   it("pushes the reopen past a closed exception rather than landing on it", () => {
@@ -134,7 +174,17 @@ describe("todayLine", () => {
       { date: "2026-12-27", open_time: null, close_time: null, note: null },
     ]);
     expect(todayLine(closedSunday, FRIDAY, t)).toBe(
-      `${t("hours.closedToday")} · ${t("hours.opensOn", { day: t("hours.day.mon"), time: "10:00" })}`,
+      `${t("about.closedToday")} · ${t("about.opensOn", { day: dayLabels[1], time: "10:00" })}`,
+    );
+  });
+
+  it("joins both windows of a lunch-break day into one today line", () => {
+    const lunchBreak = boutique([
+      { day_of_week: 4, open_time: "10:00:00", close_time: "13:00:00" },
+      { day_of_week: 4, open_time: "16:00:00", close_time: "19:00:00" },
+    ]);
+    expect(todayLine(lunchBreak, THURSDAY, t)).toBe(
+      t("about.today", { hours: "10:00–13:00, 16:00–19:00" }),
     );
   });
 });

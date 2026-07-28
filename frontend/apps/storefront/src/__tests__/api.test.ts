@@ -4,10 +4,20 @@ import {
   FALLBACK_ERROR_MESSAGE,
   api,
   apiFetch,
+  errorMessage,
+  errorMessageKey,
+  errorMessageOr,
   getBoutiqueOnce,
   isNotFound,
   resetBoutiqueCache,
 } from "../api";
+import i18n from "../i18n";
+
+// The real Hebrew catalogue, not a stub: the whole point of the mapping is that
+// a real translation comes back, so a stubbed t() would pass on a missing key.
+const t = (key: string): string => i18n.t(key);
+
+const LATIN = /[A-Za-z]/;
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -59,6 +69,24 @@ describe("apiFetch error extraction", () => {
     });
   });
 
+  it("turns a 200 that answers HTML into an ApiError, not a SyntaxError", async () => {
+    // Not hypothetical: under the SPA history fallback, with no backend behind
+    // the dev proxy, /storefront/dresses answers 200 text/html — exactly the
+    // state the blocking e2e job runs in. A raw SyntaxError escapes the page's
+    // catch and blanks the screen instead of rendering the error card.
+    stubFetch(
+      () =>
+        new Response("<!doctype html><title>storefront</title>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        }),
+    );
+    const error: unknown = await apiFetch("/storefront/dresses").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).not.toBeInstanceOf(SyntaxError);
+    expect(error).toMatchObject({ status: 200, code: "UNKNOWN", message: FALLBACK_ERROR_MESSAGE });
+  });
+
   it("recognises the archived/unknown-dress 404 the detail page renders", () => {
     expect(isNotFound(new ApiError(404, "NOT_FOUND", "x"))).toBe(true);
     expect(isNotFound(new ApiError(404, "TENANT_NOT_FOUND", "x"))).toBe(true);
@@ -90,6 +118,59 @@ describe("apiFetch request mechanics", () => {
     expect(init.method).toBe("GET");
     expect(init.body).toBeUndefined();
     expect(init.headers).toBeUndefined();
+  });
+});
+
+// Every backend message is English. Rendering ApiError.message would paint
+// English onto a Hebrew-only page for a suspended tenant, an unknown slug, an
+// archived dress or a throttle trip — so the CODE selects the key and the
+// message is never shown. The Latin-letter assertion is the actual guard: it
+// fails the moment anyone "helpfully" falls back to error.message.
+describe("errorMessage", () => {
+  it.each([
+    ["TENANT_NOT_FOUND", "No active boutique at this address.", "errors.tenantNotFound"],
+    ["NOT_FOUND", "Resource not found.", "errors.notFound"],
+    ["TOO_MANY_ATTEMPTS", "Too many attempts. Try again later.", "errors.tooManyAttempts"],
+    ["VALIDATION_ERROR", "Input failed validation.", "errors.validation"],
+  ])("renders Hebrew for %s and never the server's English", (code, english, key) => {
+    const rendered = errorMessage(new ApiError(400, code, english), t);
+
+    expect(errorMessageKey(new ApiError(400, code, english))).toBe(key);
+    expect(rendered).toBe(t(key));
+    expect(rendered).not.toBe(english);
+    expect(rendered).not.toMatch(LATIN);
+    // A missing resource makes i18next echo the key back, which is Latin — so
+    // the assertion above also catches a key that was renamed out from under us.
+    expect(rendered).not.toBe(key);
+  });
+
+  it("falls back to real Hebrew for an unmapped code and for a non-ApiError", () => {
+    expect(errorMessage(new ApiError(500, "KAFKA_EXPLODED", "boom"), t)).toBe(t("errors.unknown"));
+    expect(errorMessage(new TypeError("Failed to fetch"), t)).toBe(t("errors.unknown"));
+    expect(t("errors.unknown")).not.toMatch(LATIN);
+  });
+});
+
+describe("errorMessageOr", () => {
+  it("uses the surface's own copy when the code carries nothing useful", () => {
+    // A dropped connection on the catalog should say "we could not load the
+    // collection", not a generic apology.
+    expect(errorMessageOr(new TypeError("Failed to fetch"), t, "catalog.error")).toBe(
+      t("catalog.error"),
+    );
+    expect(errorMessageOr(new ApiError(500, "KAFKA_EXPLODED", "boom"), t, "dress.error")).toBe(
+      t("dress.error"),
+    );
+  });
+
+  it("keeps the mapped message when the code does say something", () => {
+    // A throttle trip must still say so — the surface fallback does not win.
+    expect(
+      errorMessageOr(new ApiError(429, "TOO_MANY_ATTEMPTS", "Too many attempts."), t, "catalog.error"),
+    ).toBe(t("errors.tooManyAttempts"));
+    expect(errorMessageOr(new ApiError(429, "TOO_MANY_ATTEMPTS", "x"), t, "catalog.error")).not.toBe(
+      t("catalog.error"),
+    );
   });
 });
 

@@ -1,24 +1,40 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetBoutiqueCache } from "../api";
-import type { PublicBoutiqueResponse } from "../api";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError, getBoutiqueOnce } from "../api";
+import type { BoutiqueResponse } from "../api";
+import { StorefrontLayout } from "../components/StorefrontLayout";
 import i18n from "../i18n";
-import { Accessibility } from "../pages/Accessibility";
+import { AccessibilityPage } from "../routes/AccessibilityPage";
 
-// הצהרת נגישות is a legal obligation under IS 5568 §35, so these tests guard the
-// three things an auditor checks first — real document semantics, a named
-// coordinator who can actually be contacted, and the failure mode that would
-// turn the compliance page into a compliance breach: the API being down.
+// הצהרת נגישות is a legal obligation under IS 5568 §35, so these tests guard
+// what an auditor checks: real document semantics, the declared standard, the
+// menu the statement claims to ship, the limitations it admits, a reachable
+// complaints contact, and a review date.
+//
+// THE RESPONSIBLE PARTY IS THE BOUTIQUE — there is no platform-operator
+// coordinator layer, and the contact block is the boutique's own phone and
+// Instagram off the layout-level fetch.
 
-const BOUTIQUE: PublicBoutiqueResponse = {
+vi.mock("../api", async () => {
+  const actual = await vi.importActual<typeof import("../api")>("../api");
+  return {
+    ...actual,
+    api: { listDresses: vi.fn(), getDress: vi.fn(), getBoutique: vi.fn() },
+    getBoutiqueOnce: vi.fn(),
+  };
+});
+
+const loadBoutique = vi.mocked(getBoutiqueOnce);
+
+const BOUTIQUE: BoutiqueResponse = {
   name: "בוטיק אנבל",
-  profile: {
-    phone: "052-1234567",
-    address: "הרצל 12, תל אביב",
-    description: null,
-    maps_url: null,
-  },
-  rules: [],
+  essence: null,
+  description: null,
+  phone: "052-1234567",
+  address: "הרצל 12, תל אביב",
+  maps_url: null,
+  instagram: "boutique_annabel",
+  hours: [],
   exceptions: [],
 };
 
@@ -27,51 +43,51 @@ const BOUTIQUE: PublicBoutiqueResponse = {
 // passed a guillemet-only guard.
 const PLACEHOLDER_TEXT = /[«»]|TODO|FIXME|למילוי|fill.me/i;
 
-const COORDINATOR = {
-  name: "דנה לוי",
-  role: "רכזת נגישות",
-  phone: "03-1234567",
-  email: "accessibility@example.co.il",
-};
-
-const fetchMock = vi.fn();
+const MENU_KEYS = [
+  "menuContrast",
+  "menuTextSize",
+  "menuReadableFont",
+  "menuUnderlineLinks",
+  "menuStopMotion",
+] as const;
 
 beforeEach(() => {
-  // The boutique promise is module-level and shared across the page load; without
-  // this every test after the first would replay the first one's response.
-  resetBoutiqueCache();
-  fetchMock.mockReset();
-  fetchMock.mockResolvedValue({ ok: true, json: () => Promise.resolve(BOUTIQUE) });
-  vi.stubGlobal("fetch", fetchMock);
+  vi.clearAllMocks();
+  loadBoutique.mockResolvedValue(BOUTIQUE);
+  window.history.replaceState(null, "", "/accessibility");
 });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-// The fetch only upgrades the copy, but a state update landing after the test
-// body ends is a leak into the next test — so settle it before asserting.
+// The statement is scoped to <main>: the layout's own footer and A11yMenu carry
+// the same phone and the same tool labels, and counting those as if the
+// statement rendered them would make every count assertion pass for free.
 async function renderStatement() {
-  const utils = render(<Accessibility />);
-  // findAll, not find: the boutique name is the site the statement covers AND —
-  // while no platform coordinator is configured — the named accessibility
-  // contact, so it legitimately appears more than once.
-  await screen.findAllByText(BOUTIQUE.name);
-  return utils;
+  const utils = render(
+    <StorefrontLayout>
+      <AccessibilityPage />
+    </StorefrontLayout>,
+  );
+  // The boutique fetch only UPGRADES this page, so wait for it explicitly
+  // rather than for anything the statement would render either way.
+  await screen.findByText(BOUTIQUE.name);
+  return { ...utils, main: screen.getByRole("main") };
 }
 
-describe("Accessibility statement page", () => {
+describe("Accessibility statement — document semantics", () => {
   it("has exactly one h1", async () => {
-    await renderStatement();
+    const { main } = await renderStatement();
 
-    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(i18n.t("statement.title"));
+    expect(within(main).getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    expect(within(main).getByRole("heading", { level: 1 })).toHaveTextContent(
+      i18n.t("statement.title"),
+    );
   });
 
   it("never skips a heading level", async () => {
-    await renderStatement();
+    const { main } = await renderStatement();
 
-    const levels = screen.getAllByRole("heading").map((heading) => Number(heading.tagName.slice(1)));
+    const levels = within(main)
+      .getAllByRole("heading")
+      .map((heading) => Number(heading.tagName.slice(1)));
 
     expect(levels[0]).toBe(1);
     levels.forEach((level, index) => {
@@ -83,46 +99,66 @@ describe("Accessibility statement page", () => {
   });
 
   it("structures the body as real lists, not a wall of paragraphs", async () => {
-    await renderStatement();
+    const { main } = await renderStatement();
 
-    expect(screen.getAllByRole("list").length).toBeGreaterThanOrEqual(3);
-    expect(screen.getByText(i18n.t("statement.doneKeyboard")).tagName).toBe("LI");
-    expect(screen.getByText(i18n.t("statement.menuStopMotion")).tagName).toBe("LI");
-    expect(screen.getByText(i18n.t("statement.limitsZoom")).tagName).toBe("LI");
+    expect(within(main).getAllByRole("list").length).toBeGreaterThanOrEqual(3);
+    expect(within(main).getByText(i18n.t("statement.doneKeyboard")).tagName).toBe("LI");
+    expect(within(main).getByText(i18n.t("statement.menuStopMotion")).tagName).toBe("LI");
+    expect(within(main).getByText(i18n.t("statement.limitsZoom")).tagName).toBe("LI");
   });
+});
 
-  it("names a contact and reaches it, with the boutique standing in for an unset coordinator", async () => {
-    await renderStatement();
-    const phone = BOUTIQUE.profile.phone ?? "";
+describe("Accessibility statement — the required parts", () => {
+  it("names the standard it conforms to", async () => {
+    const { main } = await renderStatement();
 
     expect(
-      screen.getByRole("heading", { name: i18n.t("statement.coordinatorHeading") }),
+      within(main).getByRole("heading", { name: i18n.t("statement.conformanceHeading") }),
     ).toBeInTheDocument();
-    // ACCESSIBILITY_COORDINATOR is null until the platform operator supplies it,
-    // so the boutique is named — a real service provider, not a placeholder.
-    // Exactly two: the site the statement covers, and the named contact.
-    expect(screen.getAllByText(BOUTIQUE.name)).toHaveLength(2);
-
-    // Exactly two: the <dl> contact row and the reporting-channels list.
-    const links = screen.getAllByRole("link", { name: phone });
-    expect(links).toHaveLength(2);
-    for (const link of links) {
-      expect(link).toHaveAttribute("href", `tel:${phone}`);
-      // A phone is a strong-LTR digit run in RTL prose; dir isolates it.
-      expect(link).toHaveAttribute("dir", "ltr");
-    }
+    // The standard has to be named, and named precisely: "accessible" is not a
+    // declaration, "ת״י 5568 ברמת AA / WCAG 2.0" is.
+    const conformance = within(main).getByText(i18n.t("statement.conformanceBody"));
+    expect(conformance).toHaveTextContent(/5568/);
+    expect(conformance).toHaveTextContent(/AA/);
+    expect(conformance).toHaveTextContent(/WCAG 2\.0/);
   });
 
-  // The failure this guards is specific and was live: the statement shipped
-  // «שם רכז הנגישות — למילוי לפני העלייה לאוויר» in the <dl> AND inside two
-  // real mailto: hrefs. A page that declares WCAG conformance while showing an
-  // unfilled placeholder is itself the non-conformance it declares against, so
-  // this asserts on the guillemet marker rather than on any one key.
-  it("never renders an unfilled placeholder", async () => {
-    const { container } = await renderStatement();
+  it("explains every tool in the accessibility menu", async () => {
+    const { main } = await renderStatement();
 
-    expect(container.textContent).not.toMatch(PLACEHOLDER_TEXT);
-    for (const link of screen.getAllByRole("link")) {
+    expect(
+      within(main).getByRole("heading", { name: i18n.t("statement.menuHeading") }),
+    ).toBeInTheDocument();
+    // One entry per A11yMenu control — a statement that claims a menu and then
+    // documents four of its five tools is a statement with a gap in it.
+    for (const key of MENU_KEYS) {
+      expect(within(main).getByText(i18n.t(`statement.${key}`)).tagName).toBe("LI");
+    }
+    expect(within(main).getByText(i18n.t("statement.menuNote"))).toBeInTheDocument();
+  });
+
+  it("admits the known limitations instead of claiming none", async () => {
+    const { main } = await renderStatement();
+
+    expect(
+      within(main).getByRole("heading", { name: i18n.t("statement.limitsHeading") }),
+    ).toBeInTheDocument();
+    expect(within(main).getByText(i18n.t("statement.limitsZoom"))).toBeInTheDocument();
+    expect(within(main).getByText(i18n.t("statement.limitsAlt"))).toBeInTheDocument();
+    expect(within(main).getByText(i18n.t("statement.limitsNote"))).toBeInTheDocument();
+  });
+
+  it("carries a review date", async () => {
+    const { main } = await renderStatement();
+
+    expect(within(main).getByText(i18n.t("statement.updated"))).toHaveTextContent(/\d{4}/);
+  });
+
+  it("never renders an unfilled placeholder", async () => {
+    const { main } = await renderStatement();
+
+    expect(main.textContent).not.toMatch(PLACEHOLDER_TEXT);
+    for (const link of within(main).getAllByRole("link")) {
       const href = link.getAttribute("href") ?? "";
       expect(href).not.toMatch(PLACEHOLDER_TEXT);
       // Shape, not just absence-of-marker: a placeholder written without
@@ -132,58 +168,66 @@ describe("Accessibility statement page", () => {
       if (href.startsWith("tel:")) expect(href).toMatch(/^tel:[+\d][\d\-\s()]*\d$/);
     }
   });
+});
 
-  it("renders the whole statement when the boutique fetch rejects", async () => {
-    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
-    const { container } = render(<Accessibility />);
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalled();
-    });
+describe("Accessibility statement — the complaints contact", () => {
+  it("reaches the BOUTIQUE on its own phone and Instagram", async () => {
+    const { main } = await renderStatement();
+    const phone = BOUTIQUE.phone ?? "";
+    const instagram = BOUTIQUE.instagram ?? "";
 
-    // Generic phrasing, never an error: a statement page that fails to render is
-    // itself the accessibility failure it exists to declare.
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(i18n.t("statement.title"));
-    // Twice: the site the statement covers, and — with no configured
-    // coordinator and no API — the named accessibility contact.
-    expect(screen.getAllByText(i18n.t("brand.title"))).toHaveLength(2);
-    expect(screen.getByText(i18n.t("statement.conformanceBody"))).toBeInTheDocument();
-    expect(screen.getByText(i18n.t("statement.limitsAlt"))).toBeInTheDocument();
-    expect(screen.getByText(i18n.t("statement.updated"))).toBeInTheDocument();
+    expect(
+      within(main).getByRole("heading", { name: i18n.t("statement.coordinatorHeading") }),
+    ).toBeInTheDocument();
+    expect(within(main).getByText(i18n.t("statement.coordinatorIntro"))).toBeInTheDocument();
 
-    // With no API and no configured coordinator there is no reachable channel to
-    // invent, so the reporting list is OMITTED rather than rendered empty — an
-    // empty <ul> announces as "list, 0 items", which is worse than its absence.
-    // The content lists (what-was-done, limits) still render, so assert on the
-    // links instead of on list count.
-    expect(screen.queryAllByRole("link", { name: BOUTIQUE.profile.phone ?? "" })).toHaveLength(
-      0,
-    );
-    expect(container.textContent).not.toMatch(/[«»]/);
-  });
-
-  // The launch path. Until this round nothing rendered it, so the day the
-  // operator fills in the constant a green suite would have gone red on a test
-  // asserting "no links at all" — and the path of least resistance would have
-  // been to relax that assertion rather than cover this branch.
-  it("renders the configured platform coordinator when one is set", async () => {
-    const { container } = render(<Accessibility coordinator={COORDINATOR} />);
-    await screen.findByText(BOUTIQUE.name);
-
-    expect(screen.getByText(i18n.t("statement.coordinatorIntro"))).toBeInTheDocument();
-    expect(screen.getByText(COORDINATOR.name)).toBeInTheDocument();
-    expect(screen.getByText(COORDINATOR.role)).toBeInTheDocument();
-
-    // The phone is a strong-LTR digit run inside RTL prose.
-    expect(screen.getByText(COORDINATOR.phone)).toHaveAttribute("dir", "ltr");
-
-    const mailtos = screen.getAllByRole("link", { name: COORDINATOR.email });
-    expect(mailtos).toHaveLength(2); // the <dl> row and the reporting list
-    for (const link of mailtos) {
-      expect(link).toHaveAttribute("href", `mailto:${COORDINATOR.email}`);
+    // Twice each: the <dl> contact row, and the reporting-channels list.
+    const phoneLinks = within(main).getAllByRole("link", { name: phone });
+    expect(phoneLinks).toHaveLength(2);
+    for (const link of phoneLinks) {
+      expect(link).toHaveAttribute("href", `tel:${phone}`);
+      // A phone number is a strong-LTR digit run in RTL prose; bdi isolates it.
+      expect(link.querySelector("bdi")).toHaveAttribute("dir", "ltr");
     }
 
-    // Same guarantee as the unset branch: real values, never a placeholder.
-    expect(container.textContent).not.toMatch(PLACEHOLDER_TEXT);
+    const instagramLinks = within(main).getAllByRole("link", { name: `@${instagram}` });
+    expect(instagramLinks).toHaveLength(2);
+    for (const link of instagramLinks) {
+      expect(link).toHaveAttribute("href", `https://instagram.com/${instagram}`);
+    }
+
+    // Which site the statement covers — the boutique's real name, not a generic one.
+    expect(within(main).getByText(BOUTIQUE.name)).toBeInTheDocument();
+  });
+
+  it("still renders the whole statement when the boutique fetch rejects", async () => {
+    loadBoutique.mockRejectedValue(new ApiError(503, "UNKNOWN", "Service unavailable."));
+    render(
+      <StorefrontLayout>
+        <AccessibilityPage />
+      </StorefrontLayout>,
+    );
+    await waitFor(() => {
+      expect(loadBoutique).toHaveBeenCalled();
+    });
+    const main = screen.getByRole("main");
+
+    // A statement page that renders a spinner or an error instead of the
+    // statement is itself the accessibility failure it exists to declare.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(within(main).getByRole("heading", { level: 1 })).toHaveTextContent(
+      i18n.t("statement.title"),
+    );
+    expect(within(main).getByText(i18n.t("statement.conformanceBody"))).toBeInTheDocument();
+    expect(within(main).getByText(i18n.t("statement.limitsAlt"))).toBeInTheDocument();
+    expect(within(main).getByText(i18n.t("statement.updated"))).toBeInTheDocument();
+
+    // Twice: the site the statement covers, and — with no reachable number to
+    // name — the contact row falls back to the same generic name.
+    expect(within(main).getAllByText(i18n.t("catalog.essenceFallback"))).toHaveLength(2);
+    // With no channel to offer, the reporting list is OMITTED rather than
+    // rendered empty: an empty <ul> announces as "list, 0 items".
+    expect(within(main).queryAllByRole("link", { name: BOUTIQUE.phone ?? "" })).toHaveLength(0);
+    expect(main.textContent).not.toMatch(PLACEHOLDER_TEXT);
   });
 });
