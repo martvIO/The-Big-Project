@@ -78,6 +78,8 @@ export interface ProfileSettings {
   address?: string;
   description?: string;
   maps_url?: string;
+  essence?: string;
+  instagram?: string;
 }
 
 export interface ToggleSettings {

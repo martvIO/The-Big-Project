@@ -64,7 +64,13 @@ export function ContactPanel({ phone, whatsapp, wazeUrl, mapsUrl, instagram, lab
           target="_blank"
         >
           <span>{labels.instagram}</span>
-          <bdi dir="ltr" className="text-ink-muted">
+          {/* min-w-0 + overflow-wrap:anywhere is WCAG 1.4.10 (reflow), not
+              cosmetics: a handle is a single unbreakable Latin token, so at
+              200% text on a 375px viewport "@some.long.handle" is wider than
+              its line and pushes the whole document sideways. `anywhere`
+              rather than `break-word` because only `anywhere` breaks a token
+              with no break opportunity at all. */}
+          <bdi dir="ltr" className="min-w-0 text-ink-muted [overflow-wrap:anywhere]">
             @{instagram}
           </bdi>
         </a>

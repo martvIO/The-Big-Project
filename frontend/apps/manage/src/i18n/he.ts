@@ -30,9 +30,13 @@ export const he = {
     },
     profile: {
       heading: "פרופיל הבוטיק",
+      publicNotice: "השדות האלה מופיעים בדף הפומבי של הבוטיק",
+      essence: "משפט פתיחה",
       phone: "טלפון",
       address: "כתובת",
       mapsUrl: "קישור למפות (http/https)",
+      instagram: "אינסטגרם",
+      instagramHint: "שם המשתמש בלבד, ללא @",
       description: "תיאור",
       settingsHeading: "הגדרות",
       depositsEnabled: "גביית מקדמות מופעלת",

@@ -43,7 +43,12 @@ export function Gallery({ images, labels, onImageError, className }: GalleryProp
   const current = images[Math.min(index, images.length - 1)];
 
   return (
-    <div className={cn("flex flex-col gap-3", className)}>
+    // min-w-0 on the ROOT is the load-bearing half: this element is a grid item
+    // on the dress page, and a grid item defaults to min-width:auto, so it
+    // refuses to shrink below the min-content width its thumbnail strip
+    // imposes. Without it the strip's own overflow-x-auto can never engage and
+    // the whole document scrolls sideways at 200% text (WCAG 1.4.10).
+    <div className={cn("flex min-w-0 flex-col gap-3", className)}>
       <div className="relative">
         {/* Stays eager: this is the detail page's LCP element. Do not add
             loading="lazy" here — it costs the largest paint. */}
@@ -80,7 +85,13 @@ export function Gallery({ images, labels, onImageError, className }: GalleryProp
           ›
         </button>
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-2">
+      {/* min-w-0 is what makes overflow-x-auto actually engage. A flex item
+          defaults to min-width:auto, so this strip refuses to shrink below its
+          min-content width — 3 thumbs plus gaps. At 200% text-only zoom the
+          thumbs are 112px each, so min-content is 368px and the strip pushes
+          the whole document sideways on a 375px viewport (WCAG 1.4.10 reflow).
+          With min-w-0 it shrinks and scrolls internally instead. */}
+      <div className="flex min-w-0 gap-2 overflow-x-auto pb-2">
         {images.map((img, i) => (
           <button
             key={i}

@@ -1,0 +1,8 @@
+# SEO is E10. The off switch is not.
+#
+# Absent this file the default is crawl-everything, which would index
+# /dress/{id} for a boutique that has not launched, cache 900s signed image
+# URLs that 403 fifteen minutes later, and put the owner's home address in
+# search results with no control until E10 ships real SEO.
+User-agent: *
+Disallow: /

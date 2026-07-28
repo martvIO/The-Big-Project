@@ -18,8 +18,12 @@ export function SkipLink({ href, children }: SkipLinkProps) {
     <a
       href={href}
       className={cn(
-        "sr-only rounded-sm bg-surface-raised px-4 py-2 text-base text-ink",
-        "focus:not-sr-only focus:absolute focus:inset-s-2 focus:top-2 focus:z-50 focus:shadow-md",
+        // The padding is focus-only. `sr-only` sets padding:0 to collapse the
+        // element to 1x1, and a plain px-4/py-2 overrides it — leaving a ~64px
+        // invisible box that still contributes to scrollWidth and trips the
+        // horizontal-overflow checks once the gutters grow.
+        "sr-only rounded-sm bg-surface-raised text-base text-ink",
+        "focus:not-sr-only focus:absolute focus:inset-s-2 focus:top-2 focus:z-50 focus:px-4 focus:py-2 focus:shadow-md",
         focusRing,
       )}
     >

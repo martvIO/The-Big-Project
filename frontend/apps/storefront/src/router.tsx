@@ -2,18 +2,18 @@
 // the two components are one unit; splitting them to buy fast refresh on a
 // four-route file is not a trade worth making.
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import type { AnchorHTMLAttributes, MouseEvent, ReactNode } from "react";
+import type { AnchorHTMLAttributes, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { About } from "./pages/About";
-import { Accessibility } from "./pages/Accessibility";
-import { Catalog } from "./pages/Catalog";
-import { DressDetail } from "./pages/DressDetail";
+import { AboutPage } from "./routes/AboutPage";
+import { AccessibilityPage } from "./routes/AccessibilityPage";
+import { CatalogPage } from "./routes/CatalogPage";
+import { DressPage } from "./routes/DressPage";
 
 // ponytail: hand-rolled router. The workspace carries no router dependency and
-// the storefront has four flat routes, so this is ~40 lines instead of one.
+// the storefront has four flat routes, so this is ~80 lines instead of one.
 // Ceiling: no nested routes, no scroll restoration, no code splitting, no
 // route-level data loaders — pages fetch their own. Swap in react-router when
-// E3's booking flow needs nested layouts; ROUTES below is the seam.
+// E3's booking flow needs nested layouts; matchRoute below is the seam.
 // Side effect worth keeping: with no back() to call, the qa-checklist ban on
 // history-based back navigation is structural rather than a grep.
 
@@ -25,19 +25,19 @@ export type RouteMatch =
   | { name: "about" }
   | { name: "accessibility" };
 
-// The id of App.tsx's <main tabindex="-1">. Focus lands here after every client
-// navigation, and the SkipLink targets it.
-export const MAIN_ID = "main";
+// The id of StorefrontLayout's <main tabindex="-1">. Focus lands here after
+// every client navigation, and the SkipLink targets it.
+export const MAIN_ID = "content";
 
 // pushState fires no event of its own — this is how the store learns about a
 // programmatic navigation. popstate covers the browser's own back/forward.
 const NAVIGATION_EVENT = "storefront:navigation";
 
 const DOC_TITLE_KEYS: Record<RouteName, string> = {
-  catalog: "doc.catalog",
-  dress: "doc.dress",
-  about: "doc.about",
-  accessibility: "doc.accessibility",
+  catalog: "document.catalog",
+  dress: "document.dress",
+  about: "document.about",
+  accessibility: "document.accessibility",
 };
 
 const DRESS_PATH = /^\/dress\/([^/]+)$/;
@@ -87,6 +87,64 @@ export function navigate(to: string): void {
   window.dispatchEvent(new Event(NAVIGATION_EVENT));
 }
 
+/**
+ * Whether a click on `anchor` should become a client navigation.
+ *
+ * The exclusion list is the contract, not an optimisation. Stated loosely as
+ * "same-origin left click without modifiers", this swallows SkipLink — a plain
+ * <a href="#content"> — so preventDefault() would fire, the browser would never
+ * perform the fragment navigation, focus would never move, and the WCAG item
+ * the e2e suite asserts would silently fail. ContactPanel's tel: links and its
+ * target="_blank" externals are the same class of problem.
+ *
+ * Shared by Link and by the root delegation below so the two can never drift:
+ * DressCard renders a raw <a href> and takes no onNavigate prop, so delegation
+ * is the only way to intercept the grid without reopening a gate-passed
+ * component.
+ */
+export function shouldIntercept(
+  event: Pick<MouseEvent, "defaultPrevented" | "button" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">,
+  anchor: HTMLAnchorElement,
+): boolean {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    // Modifier and non-primary clicks fall through to the browser so
+    // "open in new tab" keeps working — storefront links live in an Instagram
+    // bio and get opened that way constantly.
+    return false;
+  }
+  if (anchor.target !== "" && anchor.target !== "_self") return false;
+  if (anchor.hasAttribute("download")) return false;
+  if (
+    anchor.rel
+      .split(/\s+/)
+      .filter(Boolean)
+      .includes("external")
+  ) {
+    return false;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(anchor.href, window.location.href);
+  } catch {
+    return false;
+  }
+  // tel:, mailto:, whatsapp: — the browser owns every one of these.
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.origin !== window.location.origin) return false;
+  // Hash-only, or a hash on the page we are already on: this is the skip link
+  // and any in-page anchor. Let the browser do the fragment jump.
+  if (url.hash !== "" && url.pathname === window.location.pathname) return false;
+  return true;
+}
+
 export interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
   to: string;
   children: ReactNode;
@@ -94,21 +152,9 @@ export interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>,
 
 // A real <a href> that upgrades a plain left click to a client navigation.
 export function Link({ to, children, onClick, ...rest }: LinkProps) {
-  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+  const handleClick = (event: ReactMouseEvent<HTMLAnchorElement>) => {
     onClick?.(event);
-    // Modifier and non-primary clicks fall through to the browser so
-    // "open in new tab" keeps working — storefront links live in an Instagram
-    // bio and get opened that way constantly.
-    if (
-      event.defaultPrevented ||
-      event.button !== 0 ||
-      event.metaKey ||
-      event.ctrlKey ||
-      event.shiftKey ||
-      event.altKey
-    ) {
-      return;
-    }
+    if (!shouldIntercept(event, event.currentTarget)) return;
     event.preventDefault();
     navigate(to);
   };
@@ -128,6 +174,25 @@ export function Router() {
   // double-invoked effect doesn't read as a navigation and steal focus.
   const handledPath = useRef<string | null>(null);
 
+  // ONE delegated listener at the app root. This is what lets a raw <a href>
+  // rendered inside a gate-passed packages/ui component (DressCard) become a
+  // client navigation without that component taking an onNavigate prop.
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest("a");
+      if (anchor === null) return;
+      if (!shouldIntercept(event, anchor)) return;
+      event.preventDefault();
+      navigate(anchor.getAttribute("href") ?? "/");
+    };
+    document.addEventListener("click", onClick);
+    return () => {
+      document.removeEventListener("click", onClick);
+    };
+  }, []);
+
   useEffect(() => {
     document.title = t(DOC_TITLE_KEYS[match.name]);
     const previous = handledPath.current;
@@ -138,18 +203,21 @@ export function Router() {
       return;
     }
     // WCAG 2.4.2 (Level A) + focus management: a client navigation replaces the
-    // page, so the title changes and focus lands at the top of the new content.
+    // page, so the title changes, focus lands at the top of the new content and
+    // the viewport returns to the top. Without the scroll reset a bride who
+    // taps a card in grid row 5 lands on the dress page still scrolled to row 5.
+    window.scrollTo(0, 0);
     document.getElementById(MAIN_ID)?.focus();
   }, [pathname, match.name, t]);
 
   switch (match.name) {
     case "dress":
-      return <DressDetail dressId={match.dressId} />;
+      return <DressPage dressId={match.dressId} />;
     case "about":
-      return <About />;
+      return <AboutPage />;
     case "accessibility":
-      return <Accessibility />;
+      return <AccessibilityPage />;
     default:
-      return <Catalog />;
+      return <CatalogPage />;
   }
 }
