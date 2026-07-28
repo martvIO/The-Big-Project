@@ -206,6 +206,11 @@ describe("CatalogPage loading and error compositions", () => {
 });
 
 describe("CatalogPage load more", () => {
+  // 15s, not the 5s default: this is the heaviest test in the suite — three
+  // pages, 50 cards, and repeated role scans over the grown DOM. It runs in
+  // ~2s locally but has twice exceeded 5s on a loaded CI runner. The timeout
+  // buys headroom for a slow machine; it does not mask a slow assertion, since
+  // every wait here is a findBy/waitFor that resolves as soon as the DOM does.
   it("appends the next page and drops the button once the collection is complete", async () => {
     const all = catalogue(50);
     listDresses.mockImplementation((offset = 0) =>
@@ -230,7 +235,7 @@ describe("CatalogPage load more", () => {
       expect(screen.queryByRole("button", { name: i18n.t("catalog.more") })).toBeNull();
     });
     expect(screen.getAllByRole("link", { name: /שמלה/ })).toHaveLength(50);
-  });
+  }, 15000);
 
   it("keeps the dresses already on screen when the next page fails", async () => {
     const all = catalogue(50);
