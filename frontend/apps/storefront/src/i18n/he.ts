@@ -170,6 +170,12 @@ export const he = {
       notes: "משהו שנשמח לדעת מראש",
       notesHint: "לא חובה. למשל: מגיעה עם אמא, צריך שולחן נגיש, או דגם שראית ואהבת.",
       notesTooLong: "ההערה ארוכה מדי. עד 500 תווים.",
+      // Serves the name AND the notes field. The cause is almost always a paste
+      // out of a word processor, which carries invisible C0 characters the
+      // backend refuses — so the string names the paste rather than the byte,
+      // which is the only part of it she can see or act on.
+      invalidCharacters:
+        "יש כאן תו שאי אפשר לשמור. אם הדבקת את הטקסט, אפשר להקליד אותו מחדש.",
       // Rendered INSIDE the unavailable chip's own label, so it becomes part of
       // that radio's accessible name — which is why it is ≤24 characters and
       // why the longer invitation is a separate key under the group.

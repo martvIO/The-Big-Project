@@ -147,7 +147,7 @@ interface BookingFlow {
 // Why the submit sent her back, carried to the step that owns the fix. ONE slot
 // is enough: the backend raises one conflict at a time, checked in a fixed
 // order, so two of these can never be live together.
-type ReturnReason = "slot" | "type" | "size" | "terms" | "dress";
+type ReturnReason = "slot" | "type" | "size" | "terms" | "dress" | "details";
 
 type Binding = Pick<BookingCreateRequest, "dress_id" | "dress_size">;
 
@@ -446,18 +446,37 @@ export function BookPage({ step, dressId }: BookPageProps) {
   const normalizedPhone = normalizePhone(phone);
   const codeSent = codeSentFor !== null && codeSentFor === normalizedPhone;
 
-  // D8: a later step entered with no picked slot has nothing to book. `confirm`
-  // is exempt — the booking is already written, and there is no public endpoint
-  // to re-read it, so bouncing her to step one would lose the only record. And
-  // `verify` reached with a spent token but a written booking goes FORWARD.
+  // D8: a later step entered without everything the submit needs has nothing to
+  // book. `confirm` is exempt — the booking is already written, and there is no
+  // public endpoint to re-read it, so bouncing her to step one would lose the
+  // only record. And `verify` reached with a spent token but a written booking
+  // goes FORWARD.
+  //
+  // All three checks, not just the slot. The type is nulled by the NOT_FOUND
+  // probe and the consent by unticking the box, and browser-forward walks
+  // straight back into /book/verify with either of them missing — where
+  // submit()'s own `=== null` guard returned silently: no spinner, no alert, no
+  // navigation, after she had already spent an SMS (WCAG 3.3.1).
+  //
+  // `replace`, never push: pushing puts the step she was bounced off back under
+  // the Back button, which bounces again forever.
   useEffect(() => {
     if (step === "verify" && booked !== null) {
-      navigate(`/book/confirm${suffix}`);
+      navigate(`/book/confirm${suffix}`, { replace: true });
       return;
     }
-    if (step === "slot" || step === "confirm" || flow.startsAt !== null) return;
-    navigate(`/book/slot${suffix}`);
-  }, [step, flow.startsAt, suffix, booked]);
+    if (step === "slot" || step === "confirm") return;
+    if (flow.startsAt === null || flow.typeId === null) {
+      navigate(`/book/slot${suffix}`, { replace: true });
+      return;
+    }
+    // No returnReason: the terms step reads one as errors.termsStale ("the
+    // policy was republished"), and nothing was republished — she withdrew her
+    // own consent. The unticked box on the step she lands on says it already.
+    if (step === "verify" && acceptedVersion === null) {
+      navigate(`/book/terms${suffix}`, { replace: true });
+    }
+  }, [step, flow.startsAt, flow.typeId, acceptedVersion, suffix, booked]);
 
   const clearError = (field: keyof FieldErrors) => {
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
@@ -752,6 +771,14 @@ export function BookPage({ step, dressId }: BookPageProps) {
         await recoverTerms();
       } else if (key === "errors.notFound") {
         await probeNotFound(binding.dress_id, () => book(NO_BINDING));
+      } else if (key === "errors.validation") {
+        // A 400 here is a FORM problem — in practice a control character the
+        // client mirror missed. R13's catch-all is the wrong home for it: the
+        // body is rejected deterministically, so "try again" is a permanent
+        // dead end that spends her booking-create budget on every press. The
+        // step that owns the two free-text fields is where it can be fixed.
+        setReturnReason("details");
+        navigate(`/book/details${suffix}`);
       } else {
         // R13, and it stays the LAST branch: everything the design named has a
         // destination above, and everything else lands here. Retry is genuinely
@@ -909,6 +936,14 @@ export function BookPage({ step, dressId }: BookPageProps) {
 
       {step === "details" && (
         <>
+          {/* Above the Card, the same slot the terms step's return notice
+              takes. Cautionary, not danger: the field errors below it are what
+              point at the value, and the server did not say which one. */}
+          {returnReason === "details" && (
+            <p role="alert" className="max-w-[60ch] text-base text-warning-text">
+              {t("errors.validation")}
+            </p>
+          )}
           <Card className="flex flex-col gap-6">
             {dressId !== undefined && (
               <div className="flex flex-col gap-4">
@@ -974,6 +1009,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
               onChange={(event) => {
                 setName(event.target.value);
                 clearError("name");
+                clearReturn("details");
               }}
               ref={nameRef}
             />
@@ -1008,6 +1044,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
               onChange={(event) => {
                 setNotes(event.target.value);
                 clearError("notes");
+                clearReturn("details");
               }}
               // Logical: the default `resize: both` lets a drag widen the field
               // past the column and produce horizontal scroll at 375.
@@ -1133,11 +1170,18 @@ export function BookPage({ step, dressId }: BookPageProps) {
                     setPhone(next);
                     setPhoneError(undefined);
                     // Editing away from the number the code was minted for
-                    // collapses the field AND discards what it bought.
+                    // collapses the field. The TOKEN is deliberately left
+                    // alone: deleting one digit and retyping it is a round
+                    // trip through this branch, and discarding the token there
+                    // made the next submit re-call /otp/verify on a row whose
+                    // consumed_at is already set — telling her that her correct
+                    // code is wrong. It buys nothing either, because
+                    // consume_verification predicates on the phone, so a token
+                    // minted for A structurally cannot book B; and the genuine
+                    // re-send path clears it itself in send().
                     if (normalizePhone(next) !== codeSentFor) {
                       setCode("");
                       setCodeError(undefined);
-                      setToken(null);
                     }
                   }}
                   ref={phoneRef}

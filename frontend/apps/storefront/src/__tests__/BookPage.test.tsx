@@ -1185,6 +1185,66 @@ describe("BookPage — step guards and the back control", () => {
     expect(window.location.pathname).toBe("/book/confirm");
   });
 
+  it("returns verify to the terms step when the consent was withdrawn", async () => {
+    await walkToVerify();
+
+    // Untick on the way back, then browser-forward into /book/verify. The guard
+    // used to check only the slot, so submit() reached its own `=== null`
+    // return: no spinner, no alert, no navigation — after an SMS was spent.
+    fireEvent.click(screen.getByRole("link", { name: i18n.t("booking.backStep") }));
+    fireEvent.click(screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") }));
+    window.history.replaceState(null, "", "/book/verify");
+    fireEvent.popState(window);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/terms");
+    });
+    // No errors.termsStale: nothing was republished, she withdrew her own
+    // consent, and the unticked box she lands on says so.
+    expect(screen.queryByText(i18n.t("errors.termsStale"))).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") }),
+    ).not.toBeChecked();
+  });
+
+  it("returns verify to the slot step when the appointment type went", async () => {
+    await walkToVerify();
+    await sendCode();
+    enterCode();
+    createBooking.mockRejectedValueOnce(GONE);
+    listTypes.mockResolvedValue([appointmentType({ id: "t2", name: "מדידה שנייה" })]);
+
+    fireEvent.click(submitButton());
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/slot");
+    });
+
+    // The probe nulled typeId. Browser-forward back into verify must not park
+    // her on a submit that can never fire.
+    window.history.replaceState(null, "", "/book/verify");
+    fireEvent.popState(window);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/slot");
+    });
+  });
+
+  it("REPLACES on a guard redirect, so Back is not a loop back into the guard", async () => {
+    renderFlow("/book/slot");
+    const before = window.history.length;
+
+    window.history.pushState(null, "", "/book/terms");
+    fireEvent.popState(window);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/slot");
+    });
+    // R26 accepts a growing stack for mid-flow RECOVERY. A guard is the other
+    // case: pushed, /book/confirm → Back → /book/verify → guard → /book/confirm
+    // is an inescapable loop with the catalog behind it.
+    expect(window.history.length).toBe(before + 1);
+  });
+
   it("walks back one step at a time with a Link, never the history stack", async () => {
     await walkToDetails("d 1");
 
@@ -1568,6 +1628,32 @@ describe("BookPage verify step — submit", () => {
     expect(verifyOtp).toHaveBeenCalledTimes(1);
     expect(createBooking).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps the verification when a digit is deleted and retyped", async () => {
+    createBooking.mockRejectedValueOnce(BROKEN);
+
+    await walkToVerify();
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+    await screen.findByText(i18n.t("errors.unknown"));
+
+    // A transient touch of the field: same number out, same number back in.
+    const phone = screen.getByLabelText(i18n.t("booking.phone"));
+    fireEvent.change(phone, { target: { value: TYPED_PHONE.slice(0, -1) } });
+    fireEvent.change(phone, { target: { value: TYPED_PHONE } });
+    enterCode();
+    fireEvent.click(submitButton());
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/confirm");
+    });
+    // Discarding the token here bought nothing — consume_verification
+    // predicates on the phone, so a token minted for A cannot book B — and cost
+    // her the booking: the re-verify hits a row whose consumed_at is already
+    // set, answers OTP_INVALID, and tells her that her correct code is wrong.
+    expect(verifyOtp).toHaveBeenCalledTimes(1);
+  });
 });
 
 // State 14: every designed submit failure routed to the step that owns its
@@ -1796,6 +1882,26 @@ describe("BookPage — the error-recovery matrix", () => {
     expect(window.location.pathname).toBe("/book/verify");
     expect(getDress).not.toHaveBeenCalled();
     expect(createBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes a rejected body back to the details step, never into R13", async () => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(
+      new ApiError(400, "VALIDATION_ERROR", "name contains invalid characters"),
+    );
+
+    fireEvent.click(submitButton());
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/details");
+    });
+    // R13's "try again" is a permanent dead end for a deterministically
+    // rejected body: every press re-sends the same bytes and spends another
+    // slot of a 10-per-hour create budget.
+    expect(screen.getByRole("alert")).toHaveTextContent(i18n.t("errors.validation"));
+    expect(screen.queryByText(i18n.t("errors.unknown"))).toBeNull();
+    // Everything she typed survives the return — this is a fix, not a restart.
+    expect(screen.getByLabelText(i18n.t("booking.name"))).toHaveValue("נועה");
   });
 
   it.each([

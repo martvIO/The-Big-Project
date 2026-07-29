@@ -35,6 +35,27 @@ describe("validateName", () => {
       "השם ארוך מדי. עד 80 תווים.",
     );
   });
+
+  // _CONTROL_CHARS in app/booking/validation.py: the WHOLE C0 set plus DEL, so
+  // a line break too — a value F16 templates into an SMS may not carry one.
+  // Without this mirror the client blesses a name the API refuses with a 400
+  // that no retry can clear.
+  it("rejects every control character the backend rejects, newlines included", () => {
+    for (const raw of ["רות\u0000לוי", "רות\nלוי", "רות\tלוי", "רות\u000Blevi", "רות\u007F"]) {
+      expect(validateName(raw), JSON.stringify(raw)).toBe(
+        "יש כאן תו שאי אפשר לשמור. אם הדבקת את הטקסט, אפשר להקליד אותו מחדש.",
+      );
+    }
+  });
+
+  it("runs the control check AFTER blank and length, in the backend's order", () => {
+    // A lone tab is both blank-after-trim and a control character; the backend
+    // answers "name must not be blank", so the client must say the same thing.
+    expect(validateName("\t")).toBe("צריך למלא שם כדי שנוכל לרשום את התור.");
+    expect(validateName(`\u0000${"א".repeat(MAX_CUSTOMER_NAME_LENGTH)}`)).toBe(
+      "השם ארוך מדי. עד 80 תווים.",
+    );
+  });
 });
 
 describe("validateNotes", () => {
@@ -47,6 +68,18 @@ describe("validateNotes", () => {
     expect(validateNotes("א".repeat(MAX_BOOKING_NOTES_LENGTH + 1))).toBe(
       "ההערה ארוכה מדי. עד 500 תווים.",
     );
+  });
+
+  // _CONTROL_CHARS_EXCEPT_WS: notes is a paragraph, so it keeps \t \n \r and
+  // bars the rest. U+000B and U+000C are what a paste out of a word processor
+  // actually carries, and they were the whole undiagnosable 400.
+  it("keeps the three whitespace characters and rejects the rest of C0", () => {
+    expect(validateNotes("מגיעה עם אמא\nוצריך שולחן נגיש\r\n\tתודה")).toBeNull();
+    for (const raw of ["מגיעה\u000Bעם אמא", "מגיעה\u000Cעם אמא", "מגיעה\u0000", "\u007F"]) {
+      expect(validateNotes(raw), JSON.stringify(raw)).toBe(
+        "יש כאן תו שאי אפשר לשמור. אם הדבקת את הטקסט, אפשר להקליד אותו מחדש.",
+      );
+    }
   });
 });
 

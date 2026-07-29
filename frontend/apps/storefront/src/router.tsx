@@ -114,8 +114,21 @@ export function usePathname(): string {
   return useSyncExternalStore(subscribe, currentPathname, currentPathname);
 }
 
-export function navigate(to: string): void {
-  window.history.pushState(null, "", to);
+/**
+ * `replace` is for GUARD redirects only — a step bouncing her off itself
+ * because it has nothing to work with. Pushed, those trap the back button:
+ * from /book/confirm, Back lands on /book/verify, the guard pushes
+ * /book/confirm again, and the catalog is unreachable by Back forever.
+ *
+ * R26's accepted growing stack is the other case — a mid-flow recovery that
+ * takes her somewhere she can act — and stays a push.
+ */
+export function navigate(to: string, options: { replace?: boolean } = {}): void {
+  if (options.replace === true) {
+    window.history.replaceState(null, "", to);
+  } else {
+    window.history.pushState(null, "", to);
+  }
   window.dispatchEvent(new Event(NAVIGATION_EVENT));
 }
 
