@@ -69,6 +69,25 @@ class BookingsRepository:
         )
         return (await session.execute(stmt)).scalar_one_or_none()
 
+    async def active_at(
+        self, session: AsyncSession, tenant_id: UUID, *, customer_id: UUID, starts_at: datetime
+    ) -> Booking | None:
+        """This customer's live booking at one instant, or None.
+
+        The predicate mirrors 0009's partial unique index exactly, so a hit is
+        precisely a row that index would refuse to duplicate — which is what
+        lets `create_booking` answer a replayed create with the existing
+        booking instead of a second appointment. `scalar_one_or_none` is safe
+        for the same reason: the index permits at most one."""
+        stmt = select(Booking).where(
+            Booking.tenant_id == tenant_id,
+            Booking.customer_id == customer_id,
+            Booking.starts_at == starts_at,
+            Booking.status != BookingStatus.CANCELLED.value,
+            Booking.deleted_at.is_(None),
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
     async def active_seats_at(
         self, session: AsyncSession, tenant_id: UUID, *, starts_at: datetime
     ) -> set[int]:

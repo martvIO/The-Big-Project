@@ -161,11 +161,14 @@ async def test_occupancy_queries_ignore_cancelled_and_respect_window(app_role_ur
     try:
         async with tenant_session(factory, tenant_id) as session:
             customer = await customers.upsert(session, tenant_id, phone=_phone(), name="מאיה")
+            # Two seats at T0 are two DIFFERENT customers — 0009 forbids one
+            # customer holding two live bookings at one instant.
+            neighbour = await customers.upsert(session, tenant_id, phone=_phone(), name="רות")
             seat1 = await _insert_booking(
                 bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=1
             )
             await _insert_booking(
-                bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=2
+                bookings, session, tenant_id, neighbour.id, starts_at=T0, seat_index=2
             )
             await _insert_booking(
                 bookings, session, tenant_id, customer.id, starts_at=T1, seat_index=1
@@ -212,6 +215,10 @@ async def test_slot_seat_unique_index_rejects_double_claim_and_frees_on_cancel(
         async with tenant_session(factory, tenant_id) as session:
             customer = await customers.upsert(session, tenant_id, phone=_phone(), name="רות")
             customer_id = customer.id
+            # The double claimant is a SECOND customer, so it is the seat index
+            # under test here and not 0009's (tenant, customer, instant) one.
+            rival = await customers.upsert(session, tenant_id, phone=_phone(), name="שרה")
+            rival_id = rival.id
             first = await _insert_booking(
                 bookings, session, tenant_id, customer_id, starts_at=T0, seat_index=1
             )
@@ -220,7 +227,7 @@ async def test_slot_seat_unique_index_rejects_double_claim_and_frees_on_cancel(
         with pytest.raises(IntegrityError):
             async with tenant_session(factory, tenant_id) as session:
                 await _insert_booking(
-                    bookings, session, tenant_id, customer_id, starts_at=T0, seat_index=1
+                    bookings, session, tenant_id, rival_id, starts_at=T0, seat_index=1
                 )
 
         async with tenant_session(factory, tenant_id) as session:
@@ -234,6 +241,64 @@ async def test_slot_seat_unique_index_rejects_double_claim_and_frees_on_cancel(
                 bookings, session, tenant_id, customer_id, starts_at=T0, seat_index=1
             )
             assert reclaimed.id != first_id
+    finally:
+        await engine.dispose()
+
+
+async def test_customer_instant_unique_index_and_active_at(app_role_url: str) -> None:
+    """0009's structural idempotency guard, at the index: one LIVE booking per
+    (tenant, customer, instant) — a different SEAT is not an escape hatch, and
+    `active_at` reads exactly the rows the index counts, which is what makes
+    the service's pre-check under the advisory lock total."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="דנה")
+            customer_id = customer.id
+            first = await _insert_booking(
+                bookings, session, tenant_id, customer_id, starts_at=T0, seat_index=1
+            )
+            first_id = first.id
+            found = await bookings.active_at(
+                session, tenant_id, customer_id=customer_id, starts_at=T0
+            )
+            assert found is not None
+            assert found.id == first_id
+            # Another instant, and another customer, are both hers to book.
+            assert (
+                await bookings.active_at(session, tenant_id, customer_id=customer_id, starts_at=T1)
+                is None
+            )
+            assert (
+                await bookings.active_at(session, tenant_id, customer_id=uuid.uuid4(), starts_at=T0)
+                is None
+            )
+
+        with pytest.raises(IntegrityError):
+            async with tenant_session(factory, tenant_id) as session:
+                await _insert_booking(
+                    bookings, session, tenant_id, customer_id, starts_at=T0, seat_index=2
+                )
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await bookings.by_id(session, tenant_id, first_id)
+            assert row is not None
+            row.status = BookingStatus.CANCELLED.value
+            await session.flush()
+            assert (
+                await bookings.active_at(session, tenant_id, customer_id=customer_id, starts_at=T0)
+                is None
+            )
+
+        # …and with the cancelled row out of the predicate she rebooks it.
+        async with tenant_session(factory, tenant_id) as session:
+            rebooked = await _insert_booking(
+                bookings, session, tenant_id, customer_id, starts_at=T0, seat_index=1
+            )
+            assert rebooked.id != first_id
     finally:
         await engine.dispose()
 
