@@ -104,6 +104,30 @@ def test_mirrored_numeric_constants_match_the_backend(
     assert frontend == backend_values
 
 
+_TS_REGEX_RE = re.compile(r"^const (?P<name>[A-Z][A-Z0-9_]*)\s*=\s*/(?P<body>.+)/;", re.M)
+
+# The character classes are literals on both sides, so the pattern bodies compare
+# byte-for-byte. They earn a guard of their own because the failure they prevent is
+# the worst kind this file exists for: a control character (a U+000B soft break
+# pasted from Word) passes a client that only checks blank-and-length, so the bride
+# spends a real SMS, accepts the policy, submits, and receives a 400 she can neither
+# understand nor escape — every retry fails identically.
+_MIRRORED_PATTERNS = (
+    ("CONTROL_CHARS", "_CONTROL_CHARS"),
+    ("CONTROL_CHARS_EXCEPT_WS", "_CONTROL_CHARS_EXCEPT_WS"),
+)
+
+
+def test_control_character_classes_match_the_backend() -> None:
+    declared = {
+        match.group("name"): match.group("body")
+        for match in _TS_REGEX_RE.finditer(_source(STOREFRONT_VALIDATION_TS))
+    }
+    for ts_name, py_name in _MIRRORED_PATTERNS:
+        assert ts_name in declared, f"storefront validation.ts does not declare {ts_name}"
+        assert declared[ts_name] == getattr(booking_validation, py_name).pattern
+
+
 def test_accepted_content_type_keys_match_the_backend() -> None:
     match = _ACCEPTED_RE.search(_source(MANAGE_VALIDATION_TS))
     assert match is not None, "validation.ts does not export ACCEPTED_CONTENT_TYPES"
