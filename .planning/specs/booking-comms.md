@@ -1,6 +1,6 @@
 # Spec: Feature 16 — Booking comms lifecycle (Epic E3)
 
-**Created**: 2026-07-29 · **Status**: draft — awaiting Gate 1 · **Epic**: E3 · **Effort**: M
+**Created**: 2026-07-29 · **Status**: **Gate 1 approved 2026-07-29** (D1–D10 as proposed, including the D3 reminder bands the epic deferred here; approved by short directive) — design gate next · **Epic**: E3 · **Effort**: M
 **Depends on**: #11 (SMS foundation), #13 (booking core), #14 (storefront booking UI — shipped, opens the silence window) · **Feeds**: #15 (owner management calls this feature's send/reissue seams), E4 #19 (deposit flow schedules through the same table; consumes `cancelled_at`)
 
 ---
