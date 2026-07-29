@@ -74,20 +74,24 @@ Waitlist + auto-reallocation loop · client OTP dashboard + `.ics` links + clien
 ## Deferred epics — feature lists (spec'd when their phase starts)
 
 ### E5 — Growth: Waitlist, Client Dashboard, Self-Serve Signup & Console
-1. Waitlist join (storefront, full-day path) + entries model
-2. Auto-reallocation loop: sequential offers, expiry cascade, atomic claim (race-safe per approved plan)
-3. Client OTP login + "My Bookings" dashboard + `.ics` links + **client-side notification bell**
-4. Self-serve boutique signup (subdomain claiming, reserved slugs) + **web platform console** (replaces v1 CLI) + gateway-connect onboarding
-5. Full feature-toggle matrix UI (§2 grid)
-6. Refund-API automation + k6 load pass + Redis slug/config caching (pre-scale gate)
-7. **Date-bound dress reservation semantics** (מוזמן לתאריך מסוים) — owning feature for the pilot's purchase/rental/made-to-order decision
+
+> **Defined 2026-07-29** — detailed briefs in `e5-growth.md`. Renumbered from the local #1–#7 stub to the global scheme (**#22–#29**); the old #4 bundle is split into #25 (operator console) + #26 (self-serve signup).
+
+22. Waitlist join (storefront, full-day path) + entries model
+23. Auto-reallocation loop: sequential offers, expiry cascade, atomic claim (race-safe per approved plan)
+24. Client OTP login + "My Bookings" dashboard + `.ics` links + **client-side notification bell**
+25. **Web platform console** (replaces v1 CLI)
+26. Self-serve boutique signup (subdomain claiming, reserved slugs) + gateway-connect onboarding — public launch gated by #29
+27. Full feature-toggle matrix UI (§2 grid)
+28. **Date-bound dress reservation semantics** (מוזמן לתאריך מסוים) — owning feature for the pilot's purchase/rental/made-to-order decision
+29. Refund-API automation + k6 load pass + Redis slug/config caching (pre-scale gate)
 
 ### E6 — In-Store Real-Time: HR Core, QR Queue & Shift Board
 1. **HR directory core**: staff records, roles (reception/seamstress/sales), per-staff logins, manual "on shift now" marking (interim until E8 roster derives it)
 2. Realtime foundation: Pusher channels, server-side channel auth, versioned events, board-state refetch
 3. QR walk-in check-in (form, dedup by phone, queue position)
 4. Shift-manager live board: staff status with roles, queue view, dispatch action
-5. **Staff** in-app notification bell (client bell is E5 #3)
+5. **Staff** in-app notification bell (client bell is E5 #24)
 
 ### E7 — Staff Coordination: Fitting Rooms & SOS *(depends on E6 — staff identities/logins come from E6 #1)*
 1. Fitting-room registry + staff↔client↔room↔dress assignment model (rich staff cards)
@@ -98,7 +102,7 @@ Waitlist + auto-reallocation loop · client OTP dashboard + `.ics` links + clien
 2. Staff availability submission (3-tier shifts, weekly window)
 3. Roster builder: targets per shift/role, shortage validation, manual override; published roster **replaces E6's manual on-shift marking** as the "current shift" source
 
-### E9 — Alterations Workshop *(depends on E5 #3 for dashboard/.ics linkage, E7, E8)*
+### E9 — Alterations Workshop *(depends on E5 #24 for dashboard/.ics linkage, E7, E8)*
 1. Job intake + lifecycle pipeline (5 states, timestamped) — includes per-job **effort-estimate field** (PRD gap fix)
 2. Seamstress capacity model + deadline-aware overload alerts (bride-date hard priority) + **manual reallocation: reassign / split load / expedite from the matrix** (§11.2)
 3. Multi-fitting scheduling (fitting slots from E3 slot engine, linked to client dashboard + `.ics`)
@@ -117,7 +121,7 @@ Waitlist + auto-reallocation loop · client OTP dashboard + `.ics` links + clien
 
 - **Two external lead-time items start in Feature 2, week 1**: the Grow merchant-account application **and Israeli SMS sender-ID/route registration** — both can take weeks and both gate the v1 DoD.
 - **Cross-tenant leakage** is the existential risk — the CI isolation suite (Feature 3) is permanent and blocking from the first migration onward.
-- Open product questions to resolve with the pilot boutique **before E3 spec**: slot capacity model details (parallel appointments/fitting rooms), bride-priority in the walk-in queue. Before E5 #7: dress "Reserved" semantics (purchase/rental/made-to-order).
-- Tenant resolution does one DB lookup per request with no rate limit until Feature 21; E5 #6's caching work should include a bounded negative-result cache (Feature 4 security review). API docs paths stay tenant-exempt until the Feature 21 gate.
+- Open product questions to resolve with the pilot boutique **before E3 spec**: slot capacity model details (parallel appointments/fitting rooms), bride-priority in the walk-in queue. Before E5 #28: dress "Reserved" semantics (purchase/rental/made-to-order).
+- Tenant resolution does one DB lookup per request with no rate limit until Feature 21; E5 #29's caching work should include a bounded negative-result cache (Feature 4 security review). API docs paths stay tenant-exempt until the Feature 21 gate.
 - IS 5568 accessibility (WCAG 2.0 AA) is a legal requirement — enforced from Feature 9, audited in Feature 21. The gold-on-cream palette needs contrast resolution at the design gate.
 - Israeli receipt (קבלה/חשבונית) obligation for J4 charges — verified against Grow's auto-issuance in Feature 17; if absent, receipt issuance enters Feature 19 scope.

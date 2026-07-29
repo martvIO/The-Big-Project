@@ -51,13 +51,13 @@ Staging environment (Postgres, S3 bucket, secrets), wildcard DNS + ACM/TLS for t
 **Security-review advisories from Feature 1 (must be honored here):** (a) migrations must create a non-superuser, non-owner `app` role and dev/tests must connect through it — superusers bypass RLS unconditionally, so isolation tests running as the Testcontainers superuser would be vacuous; (b) make `DATABASE_URL` required (no localhost default) outside a dev environment flag so misconfigured deployments fail fast instead of silently targeting localhost as superuser.
 
 ### Feature 4: Subdomain routing & tenant resolution (S)
-Middleware extracts the leftmost host label → resolves `tenants.slug` via **direct indexed DB lookup** (Redis cache deferred to E5 #6 — premature at pilot traffic; middleware interface designed so the cache slots in later) → binds tenant to request context; tenant is never accepted from client input. Reserved-slug list (www, api, admin, app…). Unknown host → 404/marketing page. Local dev via `{slug}.localtest.me`.
+Middleware extracts the leftmost host label → resolves `tenants.slug` via **direct indexed DB lookup** (Redis cache deferred to E5 #29 — premature at pilot traffic; middleware interface designed so the cache slots in later) → binds tenant to request context; tenant is never accepted from client input. Reserved-slug list (www, api, admin, app…). Unknown host → 404/marketing page. Local dev via `{slug}.localtest.me`.
 
 ### Feature 5: Owner auth (M)
 **Owner-only accounts in v1** (role column defaults to `owner`; real role model lands with its first consumer in E6). Email+password login at `{slug}…/manage`, rate-limited, `HttpOnly/Secure/SameSite` cookies scoped to the exact subdomain (never the parent domain). Password reset in v1 is **operator-performed via the Feature 6 CLI** (no email infrastructure in v1). Audit log starts here (Data Security Regs requirement).
 
 ### Feature 6: Tenant provisioning CLI (S)
-Audited management command (SSH/CI-run): provision tenant (creates slug + first owner login), suspend, list, reset owner password. Every invocation writes to the audit log. **Replaces the web platform console for v1** — the console + self-serve signup arrive in E5 #4; the "50+ tenants" goal doesn't need a web UI to onboard pilot-cohort boutiques.
+Audited management command (SSH/CI-run): provision tenant (creates slug + first owner login), suspend, list, reset owner password. Every invocation writes to the audit log. **Replaces the web platform console for v1** — the console + self-serve signup arrive in E5 #25–26; the "50+ tenants" goal doesn't need a web UI to onboard pilot-cohort boutiques.
 
 ---
 

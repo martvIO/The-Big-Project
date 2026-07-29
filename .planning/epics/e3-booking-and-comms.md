@@ -71,4 +71,4 @@ All lifecycle sends on top of Feature 11: immediate confirmation (date, time, ma
 
 ## Notes
 
-- Waitlist join + auto-reallocation is deliberately **not** here (E5 #1–2): it needs the booking core live first; the race-safe offer/claim design is already spec'd in the pressure-test plan.
+- Waitlist join + auto-reallocation is deliberately **not** here (E5 #22–23): it needs the booking core live first; the race-safe offer/claim design is already spec'd in the pressure-test plan.
