@@ -1,5 +1,7 @@
-import type { ContactPanelLabels } from "@boutique/ui";
+import { safeHref } from "@boutique/ui";
+import type { ContactPanelLabels, ContactPanelProps } from "@boutique/ui";
 import type { TFunction } from "i18next";
+import type { BoutiqueResponse } from "../api";
 
 // Everything the four ContactPanel call sites used to copy between them.
 // Both derivations are pure functions of stored fields — neither whatsapp nor
@@ -26,6 +28,29 @@ export function waPhone(phone: string | null | undefined): string | undefined {
 export function wazeUrl(address: string | null | undefined): string | undefined {
   if (address === null || address === undefined || address === "") return undefined;
   return `https://waze.com/ul?q=${encodeURIComponent(address)}`;
+}
+
+/**
+ * The panel's channels, or NULL when the boutique publishes none.
+ *
+ * A freshly provisioned tenant has every profile field null, and ContactPanel
+ * then emits zero children — a literally empty flex box. Every call site has to
+ * branch on that rather than render it, so the branch lives here once.
+ *
+ * safeHref, not the raw fields: the panel drops an unsafe scheme, so a boutique
+ * whose only contact is a `javascript:` maps_url has nothing to show.
+ */
+export function contactChannels(
+  boutique: BoutiqueResponse,
+): Omit<ContactPanelProps, "labels"> | null {
+  const phone = boutique.phone ?? undefined;
+  const whatsapp = waPhone(boutique.phone);
+  const waze = safeHref(wazeUrl(boutique.address));
+  const maps = safeHref(boutique.maps_url);
+  const instagram = boutique.instagram ?? undefined;
+
+  if (!phone && !whatsapp && !waze && !maps && !instagram) return null;
+  return { phone, whatsapp, wazeUrl: waze, mapsUrl: maps, instagram };
 }
 
 export function contactLabels(t: TFunction): ContactPanelLabels {

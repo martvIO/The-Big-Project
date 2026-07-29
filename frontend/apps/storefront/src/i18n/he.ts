@@ -131,6 +131,10 @@ export const he = {
       backToCatalog: "חזרה לקולקציה",
 
       typeHeading: "סוג הפגישה",
+      // The forward button is never disabled (R7), so the two unfilled groups
+      // have to say so themselves. Same shape as sizeRequired.
+      typeRequired: "צריך לבחור סוג פגישה כדי להמשיך",
+      timeRequired: "צריך לבחור שעה כדי להמשיך",
       // The RLM keeps the leading numeral from reordering against the Hebrew
       // that follows it — the one interpolated string that opens with the value.
       typeDuration: "‏{{minutes}} דקות",

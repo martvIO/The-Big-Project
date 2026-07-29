@@ -316,11 +316,16 @@ export const api = {
   listAppointmentTypes(): Promise<AppointmentTypeRow[]> {
     return apiFetch("/storefront/appointment-types");
   },
-  // Boutique-calendar dates ("2026-08-01"), both bounds inclusive.
-  listSlots(from: string, to: string): Promise<SlotListResponse> {
-    return apiFetch(
-      `/storefront/slots?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-    );
+  // Boutique-calendar dates ("2026-08-01"), both bounds inclusive. Both are
+  // optional and the booking flow sends neither: the server defaults to
+  // today..+14d in Jerusalem, which is the window the date control is bounded
+  // to. A client-computed window would read the device clock.
+  listSlots(from?: string, to?: string): Promise<SlotListResponse> {
+    const query = new URLSearchParams();
+    if (from !== undefined) query.set("from", from);
+    if (to !== undefined) query.set("to", to);
+    const search = query.toString();
+    return apiFetch(`/storefront/slots${search === "" ? "" : `?${search}`}`);
   },
   sendOtp(phone: string): Promise<void> {
     return apiFetch("/storefront/otp/send", { method: "POST", body: { phone } });

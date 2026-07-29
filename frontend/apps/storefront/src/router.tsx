@@ -250,7 +250,7 @@ export function Router() {
     case "accessibility":
       return <AccessibilityPage />;
     case "book":
-      return <BookPage step={match.step} />;
+      return <BookPage step={match.step} dressId={match.dressId} />;
     default:
       return <CatalogPage />;
   }
