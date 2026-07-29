@@ -119,7 +119,7 @@ convention in `.claude/rules/` belongs to a different stack and does not apply h
 | `GET /storefront/terms` | **new, this feature** |
 | `POST /storefront/otp/send` | `{phone}` → `204`. Always 204 — never reveals whether a code went out |
 | `POST /storefront/otp/verify` | `{phone, code}` → `{verification_token, expires_at}` |
-| `POST /storefront/bookings` | `{phone, verification_token, name, appointment_type_id, starts_at, terms_version, dress_id?, dress_size?, notes?}` → `201 {id, starts_at, status, appointment_type_name, dress_name, dress_size}` |
+| `POST /storefront/bookings` | `{phone, verification_token, name, appointment_type_id, starts_at, terms_version, (dress_id + dress_size)?, notes?}` → `201 {id, starts_at, status, appointment_type_name, dress_name, dress_size}`. **`dress_id` and `dress_size` are a PAIRED optional, not two independent ones**: `backend/app/booking/validation.py` enforces the two-path model — item-based carries both, generic carries neither, and a `dress_id` whose `dress_size` is absent or blank (or a `dress_size` with no `dress_id`) is a `400 VALIDATION_ERROR`. Consequences the UI inherits: the size control is **required** on the item-based path, there can be no "not sure" option, and a bound dress with no pickable size must drop the binding rather than send half a pair |
 
 **Error codes the UI must map to Hebrew copy** (the house helper selects copy by
 `code`, never by the server's message — every backend message is English):

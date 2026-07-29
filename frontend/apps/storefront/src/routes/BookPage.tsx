@@ -1,15 +1,38 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button, Card, JERusalem, Skeleton, VisuallyHidden, cn, focusRing } from "@boutique/ui";
+import {
+  Button,
+  Card,
+  Checkbox,
+  Input,
+  JERusalem,
+  Skeleton,
+  TextArea,
+  VisuallyHidden,
+  cn,
+  focusRing,
+} from "@boutique/ui";
 import { ApiError, api, errorMessageOr } from "../api";
-import type { AppointmentTypeRow, SlotRow, StorefrontTerms } from "../api";
+import type {
+  AppointmentTypeRow,
+  SlotRow,
+  StorefrontDetail,
+  StorefrontTerms,
+} from "../api";
 import { ContactCard } from "../components/ContactCard";
+import { SizeChips } from "../components/booking/SizeChips";
 import { SlotPicker } from "../components/booking/SlotPicker";
 import type { SlotTime } from "../components/booking/SlotPicker";
 import { TypePicker } from "../components/booking/TypePicker";
 import { useBoutique } from "../components/StorefrontLayout";
 import { Link, navigate } from "../router";
 import type { BookStep } from "../router";
+import {
+  MAX_BOOKING_NOTES_LENGTH,
+  MAX_CUSTOMER_NAME_LENGTH,
+  validateName,
+  validateNotes,
+} from "../validation";
 
 // The /book flow's shell plus its first step.
 //
@@ -36,6 +59,16 @@ const STEP_LABEL_KEYS = {
 } as const;
 
 const STEPPER_STEPS = ["slot", "details", "terms", "verify"] as const;
+
+// The back control's target, one step at a time, as a real <Link> to a known
+// route. Never the browser's history stack: a step reached by a forward out of
+// an abandoned flow has no entry behind it that means "the step before".
+// `slot` takes booking.backToCatalog instead, and `confirm` is terminal.
+const PREVIOUS_STEP: Partial<Record<BookStep, BookStep>> = {
+  details: "slot",
+  terms: "details",
+  verify: "terms",
+};
 
 const dotClass = "flex size-6 items-center justify-center rounded-full text-xs";
 
@@ -146,6 +179,33 @@ function PhoneOnly({ messageKey }: { messageKey: string }) {
   );
 }
 
+// Alone on the last row, inline-end from 768. NEVER disabled and never carrying
+// aria-describedby — disabled drops a control from the tab order, which makes a
+// description from it unreadable. It submits, and it fails visibly.
+function ForwardRow({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation();
+
+  return (
+    <div className="flex md:justify-end">
+      <Button
+        variant="primary"
+        size="lg"
+        onClick={onClick}
+        className="w-full min-w-[140px] md:w-auto"
+      >
+        {t("booking.continue")}
+      </Button>
+    </div>
+  );
+}
+
+interface FieldErrors {
+  name?: string;
+  size?: string;
+  notes?: string;
+  accept?: string;
+}
+
 export interface BookPageProps {
   step: BookStep;
   dressId?: string;
@@ -163,8 +223,25 @@ export function BookPage({ step, dressId }: BookPageProps) {
     type: false,
     time: false,
   });
+  const [name, setName] = useState("");
+  const [notes, setNotes] = useState("");
+  const [size, setSize] = useState<string | null>(null);
+  // The version she accepted, not a boolean. TERMS_STALE replaces the version,
+  // and consent to superseded text is exactly what terms_version exists to
+  // prevent recording — so the reset is a consequence of the shape, not an
+  // effect somebody has to remember to write.
+  const [acceptedVersion, setAcceptedVersion] = useState<number | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  // Only ever a decoration on this flow: it names the binding and offers the
+  // sizes, and it can drop without stopping a booking.
+  const [dress, setDress] = useState<StorefrontDetail | null>(null);
+  const [dressGone, setDressGone] = useState(false);
   const typeRef = useRef<HTMLInputElement>(null);
   const timeRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const sizeRef = useRef<HTMLInputElement>(null);
+  const notesRef = useRef<HTMLTextAreaElement>(null);
+  const acceptRef = useRef<HTMLInputElement>(null);
 
   // All three fire on flow ENTRY, in parallel: a missing policy is an
   // entry-level decision (D5), and finding it out at the terms step would let
@@ -191,6 +268,28 @@ export function BookPage({ step, dressId }: BookPageProps) {
     };
   }, [attempt]);
 
+  // Fires on flow entry too, but in its own effect: §4.7 keeps the name and the
+  // notes typeable while this is in flight, so it may never join the Promise.all
+  // that gates the slot step.
+  useEffect(() => {
+    if (dressId === undefined) return;
+    let cancelled = false;
+    api
+      .getDress(dressId)
+      .then((detail) => {
+        if (!cancelled) setDress(detail);
+      })
+      // ONE rule for a read that only DECORATES: drop the binding and say so.
+      // A 404 and a 5xx are the same outcome here — no blocking alert, no
+      // retry, because a failed decoration must never stop a bride booking.
+      .catch(() => {
+        if (!cancelled) setDressGone(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dressId]);
+
   const retry = () => {
     setEntryError(null);
     setEntry(null);
@@ -212,6 +311,33 @@ export function BookPage({ step, dressId }: BookPageProps) {
   const selectedType = entry?.types.find((type) => type.id === flow.typeId) ?? null;
   const depositBlocked = selectedType?.deposit_required === true;
 
+  // Encoded exactly as api.getDress encodes it; router.tsx's decodeId is the
+  // matching decoder. The segment rides every step's URL, and F4 keeps it there
+  // even when the binding dies — navigate() is pushState-only, so rewriting it
+  // would push an entry the back button walks straight back into.
+  const suffix = dressId === undefined ? "" : `/${encodeURIComponent(dressId)}`;
+  const previousStep = PREVIOUS_STEP[step];
+
+  const terms = entry?.terms ?? null;
+  const accepted = terms !== null && acceptedVersion === terms.version;
+  // A bound dress with no active sizes cannot produce a valid payload — the
+  // backend takes dress_id and dress_size as a pair or not at all — so it drops
+  // the binding rather than sending half of one.
+  const sizes = dress !== null && dress.sizes.length > 0 ? dress.sizes : null;
+  const bindingLoading = dressId !== undefined && dress === null && !dressGone;
+
+  // D8: a later step entered with no picked slot has nothing to book. `confirm`
+  // is exempt — the booking is already written, and there is no public endpoint
+  // to re-read it, so bouncing her to step one would lose the only record.
+  useEffect(() => {
+    if (step === "slot" || step === "confirm" || flow.startsAt !== null) return;
+    navigate(`/book/slot${suffix}`);
+  }, [step, flow.startsAt, suffix]);
+
+  const clearError = (field: keyof FieldErrors) => {
+    setFieldErrors((current) => ({ ...current, [field]: undefined }));
+  };
+
   const forward = () => {
     if (selectedType === null) {
       setMissing({ type: true, time: flow.startsAt === null });
@@ -231,9 +357,46 @@ export function BookPage({ step, dressId }: BookPageProps) {
       return;
     }
     setMissing({ type: false, time: false });
-    // Encoded exactly as api.getDress encodes it; router.tsx's decodeId is the
-    // matching decoder.
-    navigate(`/book/details${dressId === undefined ? "" : `/${encodeURIComponent(dressId)}`}`);
+    navigate(`/book/details${suffix}`);
+  };
+
+  // Errors surface HERE and nowhere else — not on blur, which fires the moment
+  // she tabs out of a field she means to come back to, and not on input, which
+  // calls her name required before she has finished the first letter. Every
+  // validator runs, every failure renders, focus lands on the first one, and no
+  // request is issued.
+  const forwardDetails = () => {
+    const nameError = validateName(name);
+    const notesError = validateNotes(notes);
+    const sizeError = sizes !== null && size === null ? t("booking.sizeRequired") : null;
+    setFieldErrors({
+      name: nameError ?? undefined,
+      size: sizeError ?? undefined,
+      notes: notesError ?? undefined,
+    });
+    if (nameError !== null) {
+      nameRef.current?.focus();
+      return;
+    }
+    if (sizeError !== null) {
+      sizeRef.current?.focus();
+      return;
+    }
+    if (notesError !== null) {
+      notesRef.current?.focus();
+      return;
+    }
+    navigate(`/book/terms${suffix}`);
+  };
+
+  const forwardTerms = () => {
+    if (!accepted) {
+      setFieldErrors((current) => ({ ...current, accept: t("booking.acceptRequired") }));
+      acceptRef.current?.focus();
+      return;
+    }
+    clearError("accept");
+    navigate(`/book/verify${suffix}`);
   };
 
   // No terms and no types are the two exits that replace the whole step: there
@@ -252,11 +415,17 @@ export function BookPage({ step, dressId }: BookPageProps) {
       {/* Block-start on every step, so a control that reverses a step never
           relocates between screens (WCAG 3.2.3). Step 1's target is always the
           catalog, never the bound dress. */}
-      {step === "slot" && (
+      {step === "slot" ? (
         <Link to="/" className={backLinkClass}>
           {/* In RTL the way back points inline-start-to-end, i.e. rightwards. */}
           <span aria-hidden="true">→</span> {t("booking.backToCatalog")}
         </Link>
+      ) : (
+        previousStep !== undefined && (
+          <Link to={`/book/${previousStep}${suffix}`} className={backLinkClass}>
+            <span aria-hidden="true">→</span> {t("booking.backStep")}
+          </Link>
+        )
       )}
 
       {step !== "confirm" && exitKey === null && <Stepper step={step} />}
@@ -333,21 +502,168 @@ export function BookPage({ step, dressId }: BookPageProps) {
               />
             </Card>
 
-            {/* Alone on the last row, inline-end from 768. NEVER disabled, and
-                never carrying aria-describedby — disabled drops a control from
-                the tab order, which makes a description from it unreadable. */}
-            <div className="flex md:justify-end">
-              <Button
-                variant="primary"
-                size="lg"
-                onClick={forward}
-                className="w-full min-w-[140px] md:w-auto"
-              >
-                {t("booking.continue")}
-              </Button>
-            </div>
+            <ForwardRow onClick={forward} />
           </>
         ))}
+
+      {step === "details" && (
+        <>
+          <Card className="flex flex-col gap-6">
+            {dressId !== undefined && (
+              <div className="flex flex-col gap-4">
+                {bindingLoading ? (
+                  <div className="flex items-center gap-3">
+                    <Skeleton variant="image" className="w-16" />
+                    <Skeleton variant="text" lines={1} className="w-40" />
+                  </div>
+                ) : dressGone ? (
+                  // The whole binding block is gone with it — cover, name and
+                  // fieldset — and the line takes its place. Cautionary, never
+                  // danger: nothing she did failed.
+                  <p role="alert" className="text-sm text-warning-text">
+                    {t("booking.dressGoneGeneric")}
+                  </p>
+                ) : (
+                  dress !== null && (
+                    <>
+                      <div className="flex items-center gap-3">
+                        {/* alt="" — the dress name is the adjacent visible text.
+                            NOT a link: leaving the flow discards the draft, and
+                            there is no draft persistence to come back to. */}
+                        {dress.media[0]?.url != null && (
+                          <img
+                            src={dress.media[0].url}
+                            alt=""
+                            loading="lazy"
+                            decoding="async"
+                            className="w-16 shrink-0 rounded-md bg-surface object-cover shadow-sm aspect-[3/4]"
+                          />
+                        )}
+                        <p className="font-display text-lg text-ink">
+                          {t("booking.forDress", { dress: dress.name })}
+                        </p>
+                      </div>
+                      {sizes === null && (
+                        // Polite, not an alert: nothing failed and nothing
+                        // vanished — the dress simply has no bookable variants.
+                        <p role="status" className="text-sm text-warning-text">
+                          {t("booking.dressGoneGeneric")}
+                        </p>
+                      )}
+                    </>
+                  )
+                )}
+                <span aria-hidden="true" className="h-px bg-border" />
+              </div>
+            )}
+
+            <Input
+              label={t("booking.name")}
+              type="text"
+              // A Latin name is ordinary on a Hebrew form.
+              dir="auto"
+              autoComplete="name"
+              enterKeyHint="next"
+              required
+              maxLength={MAX_CUSTOMER_NAME_LENGTH}
+              value={name}
+              error={fieldErrors.name}
+              onChange={(event) => {
+                setName(event.target.value);
+                clearError("name");
+              }}
+              ref={nameRef}
+            />
+
+            {/* Between the two text fields on purpose: it is the only control
+                here a mid-flow answer can invalidate, and a returning bride
+                should not scroll past her own typed answers to reach it. */}
+            {sizes !== null && (
+              <SizeChips
+                sizes={sizes}
+                value={size}
+                error={fieldErrors.size}
+                onChange={(picked) => {
+                  setSize(picked);
+                  clearError("size");
+                }}
+                ref={sizeRef}
+              />
+            )}
+
+            <TextArea
+              label={t("booking.notes")}
+              help={t("booking.notesHint")}
+              dir="auto"
+              rows={4}
+              showCount
+              maxLength={MAX_BOOKING_NOTES_LENGTH}
+              value={notes}
+              error={fieldErrors.notes}
+              onChange={(event) => {
+                setNotes(event.target.value);
+                clearError("notes");
+              }}
+              // Logical: the default `resize: both` lets a drag widen the field
+              // past the column and produce horizontal scroll at 375.
+              className="[resize:block]"
+              ref={notesRef}
+            />
+          </Card>
+
+          <ForwardRow onClick={forwardDetails} />
+        </>
+      )}
+
+      {step === "terms" && terms !== null && (
+        <>
+          <Card className="flex flex-col gap-4">
+            {/* The two numbers sit ABOVE the prose because they are what she is
+                actually agreeing to, and a paragraph is where numbers hide.
+                Weight and a divider carry the distinction — never a tinted
+                callout, which would read as an alert two neutral facts are not. */}
+            <p className="text-base font-semibold text-ink">
+              {t("booking.refundWindow", { hours: terms.refundable_until_hours_before })}
+            </p>
+            <p className="text-base font-semibold text-ink">
+              {t("booking.forfeit", { percent: terms.forfeit_percent })}
+            </p>
+
+            <span aria-hidden="true" className="h-px bg-border" />
+
+            {/* A React text child, and only ever that: no dangerouslySetInnerHTML,
+                no markdown renderer, no sanitise-then-inject. The owner is
+                semi-trusted but this is a public, anonymous, multi-tenant
+                surface, so any HTML path is stored XSS for every visitor.
+                pre-line keeps her line breaks and collapses her stray spaces;
+                dir="auto" because owners paste English clauses; anywhere because
+                a pasted 200-character URL must not scroll the page sideways. No
+                inner scroller at any width — two scroll contexts on a phone is a
+                trap, and a scrollable box is a tab stop between the policy and
+                the consent. */}
+            <div dir="auto" className="whitespace-pre-line text-base text-ink [overflow-wrap:anywhere]">
+              {terms.terms_text}
+            </div>
+
+            <span aria-hidden="true" className="h-px bg-border" />
+
+            {/* Last in flow, below the prose: a consent control reachable before
+                the thing consented to is how unread consent happens. */}
+            <Checkbox
+              label={t("booking.acceptTerms")}
+              checked={accepted}
+              error={fieldErrors.accept}
+              onCheckedChange={(next) => {
+                setAcceptedVersion(next ? terms.version : null);
+                clearError("accept");
+              }}
+              ref={acceptRef}
+            />
+          </Card>
+
+          <ForwardRow onClick={forwardTerms} />
+        </>
+      )}
     </div>
   );
 }

@@ -1,12 +1,18 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { themeTokens } from "@boutique/ui";
-import type { AppointmentTypeRow, BoutiqueResponse, StorefrontTerms } from "../api";
+import type {
+  AppointmentTypeRow,
+  BoutiqueResponse,
+  StorefrontDetail,
+  StorefrontTerms,
+} from "../api";
 import i18n from "../i18n";
 import { StorefrontLayout } from "../components/StorefrontLayout";
 import { SlotPicker } from "../components/booking/SlotPicker";
 import { TypePicker } from "../components/booking/TypePicker";
 import { BookPage } from "../routes/BookPage";
+import { matchRoute, usePathname } from "../router";
 
 // Spread the real module so ApiError and errorMessage* keep their real
 // implementations — the load-failure copy under test is chosen by CODE mapping,
@@ -20,6 +26,8 @@ vi.mock("../api", async () => {
       getTerms: vi.fn(),
       listAppointmentTypes: vi.fn(),
       listSlots: vi.fn(),
+      getDress: vi.fn(),
+      createBooking: vi.fn(),
     },
     getBoutiqueOnce: vi.fn(),
   };
@@ -29,6 +37,8 @@ const { ApiError, api, getBoutiqueOnce } = await import("../api");
 const getTerms = vi.mocked(api.getTerms);
 const listTypes = vi.mocked(api.listAppointmentTypes);
 const listSlots = vi.mocked(api.listSlots);
+const getDress = vi.mocked(api.getDress);
+const createBooking = vi.mocked(api.createBooking);
 const loadBoutique = vi.mocked(getBoutiqueOnce);
 
 const TERMS: StorefrontTerms = {
@@ -53,6 +63,22 @@ function boutique(overrides: Partial<BoutiqueResponse> = {}): BoutiqueResponse {
     instagram: "alma.bridal",
     hours: [],
     exceptions: [],
+    ...overrides,
+  };
+}
+
+function dressDetail(overrides: Partial<StorefrontDetail> = {}): StorefrontDetail {
+  return {
+    id: "d1",
+    name: "שמלת אלמה",
+    description: null,
+    price_agorot: null,
+    reserved: false,
+    sizes: [
+      { size_label: "36", available: true },
+      { size_label: "38", available: false },
+    ],
+    media: [],
     ...overrides,
   };
 }
@@ -97,8 +123,51 @@ function renderBook(step: Parameters<typeof BookPage>[0]["step"] = "slot", dress
   );
 }
 
+// The steps are walked, never rendered cold: BookPage holds the whole flow in
+// memory, so a later step is only honest when the earlier ones put it there.
+// This is what the Router does — the same element in the same position — which
+// is why the picked slot, the typed name and the accepted version survive.
+function BookFlow() {
+  const match = matchRoute(usePathname());
+  return match.name === "book" ? <BookPage step={match.step} dressId={match.dressId} /> : null;
+}
+
+function renderFlow(path = "/book/slot") {
+  window.history.replaceState(null, "", path);
+  return render(
+    <StorefrontLayout>
+      <BookFlow />
+    </StorefrontLayout>,
+  );
+}
+
 async function pickFirstType() {
   fireEvent.click(await screen.findByRole("radio", { name: /מדידה ראשונה/ }));
+}
+
+function forward() {
+  return screen.getByRole("button", { name: i18n.t("booking.continue") });
+}
+
+async function walkToDetails(dressId?: string) {
+  const result = renderFlow(
+    dressId === undefined ? "/book/slot" : `/book/slot/${encodeURIComponent(dressId)}`,
+  );
+  await pickFirstType();
+  fireEvent.click(screen.getByRole("radio", { name: "10:00" }));
+  fireEvent.click(forward());
+  return result;
+}
+
+async function walkToTerms(dressId?: string) {
+  const result = await walkToDetails(dressId);
+  fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+  if (dressId !== undefined) {
+    const size = screen.queryByRole("radio", { name: /^36/ });
+    if (size !== null) fireEvent.click(size);
+  }
+  fireEvent.click(forward());
+  return result;
 }
 
 beforeEach(() => {
@@ -107,6 +176,7 @@ beforeEach(() => {
   getTerms.mockResolvedValue(TERMS);
   listTypes.mockResolvedValue([appointmentType()]);
   listSlots.mockResolvedValue({ slots: SLOTS.map((starts_at) => ({ starts_at })) });
+  getDress.mockResolvedValue(dressDetail());
   window.history.replaceState(null, "", "/book/slot");
 });
 
@@ -601,5 +671,376 @@ describe("BookPage slot step — the mid-flow returns", () => {
     expect(alert.compareDocumentPosition(screen.getByText(i18n.t("booking.typeHeading")))).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+});
+
+describe("BookPage details step", () => {
+  it("advances to the terms step with a name", async () => {
+    await walkToDetails();
+
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+    fireEvent.click(forward());
+
+    expect(window.location.pathname).toBe("/book/terms");
+  });
+
+  it("labels both fields visibly — a placeholder is never a label", async () => {
+    await walkToDetails();
+
+    const name = screen.getByLabelText(i18n.t("booking.name"));
+    expect(name).toHaveAttribute("maxLength", "80");
+    expect(name).not.toHaveAttribute("placeholder");
+    const notes = screen.getByLabelText(i18n.t("booking.notes"));
+    expect(notes).toHaveAttribute("maxLength", "500");
+    expect(notes).toHaveAccessibleDescription(new RegExp(i18n.t("booking.notesHint")));
+    // The counter is on notes only: 80 characters is not a budget anyone plans
+    // against, and a counter under a name reads as a rule about her name.
+    expect(screen.getByText("0 / 500")).toBeInTheDocument();
+  });
+
+  it("leaves the phone field to the verify step", async () => {
+    await walkToDetails();
+
+    expect(screen.queryByLabelText(i18n.t("booking.phone"))).toBeNull();
+    expect(screen.queryByText(i18n.t("booking.phoneHint"))).toBeNull();
+  });
+
+  it("raises nothing on input or on blur — only on the forward press", async () => {
+    await walkToDetails();
+
+    const name = screen.getByLabelText(i18n.t("booking.name"));
+    fireEvent.change(name, { target: { value: "" } });
+    fireEvent.blur(name);
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    fireEvent.click(forward());
+    expect(screen.getByText(i18n.t("booking.nameRequired"))).toHaveAttribute("role", "alert");
+    expect(document.activeElement).toBe(name);
+    expect(window.location.pathname).toBe("/book/details");
+  });
+
+  it("blank-checks the trimmed value and length-checks the raw one", async () => {
+    await walkToDetails();
+
+    const name = screen.getByLabelText(i18n.t("booking.name"));
+    // Whitespace only: blank on the TRIMMED value, exactly as validation.py.
+    fireEvent.change(name, { target: { value: "   " } });
+    fireEvent.click(forward());
+    expect(screen.getByText(i18n.t("booking.nameRequired"))).toBeInTheDocument();
+
+    // 79 real characters between two spaces: 81 RAW, 79 trimmed. Length runs on
+    // the raw value, so this is refused — a client that validated the trimmed
+    // string would send 81 characters the server rejects.
+    fireEvent.change(name, { target: { value: ` ${"א".repeat(79)} ` } });
+    fireEvent.click(forward());
+    expect(screen.getByText(i18n.t("booking.nameTooLong"))).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/book/details");
+  });
+
+  it("submits 80 characters of name and refuses 81 with no request issued", async () => {
+    await walkToDetails();
+
+    const name = screen.getByLabelText(i18n.t("booking.name"));
+    fireEvent.change(name, { target: { value: "א".repeat(81) } });
+    fireEvent.click(forward());
+
+    expect(screen.getByText(i18n.t("booking.nameTooLong"))).toBeInTheDocument();
+    // The anti-vacuous half: not merely that an error rendered, but that the
+    // flow issued nothing and went nowhere.
+    expect(createBooking).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/book/details");
+
+    fireEvent.change(name, { target: { value: "א".repeat(80) } });
+    fireEvent.click(forward());
+    expect(window.location.pathname).toBe("/book/terms");
+  });
+
+  it("submits 500 characters of notes and refuses 501 with no request issued", async () => {
+    await walkToDetails();
+
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+    const notes = screen.getByLabelText(i18n.t("booking.notes"));
+    fireEvent.change(notes, { target: { value: "א".repeat(501) } });
+    fireEvent.click(forward());
+
+    expect(screen.getByText(i18n.t("booking.notesTooLong"))).toBeInTheDocument();
+    expect(createBooking).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/book/details");
+
+    fireEvent.change(notes, { target: { value: "א".repeat(500) } });
+    fireEvent.click(forward());
+    expect(window.location.pathname).toBe("/book/terms");
+  });
+
+  it("never disables the forward control and moves focus to the first failure", async () => {
+    await walkToDetails();
+
+    const notes = screen.getByLabelText(i18n.t("booking.notes"));
+    fireEvent.change(notes, { target: { value: "א".repeat(501) } });
+    fireEvent.click(forward());
+
+    // R7: it submits and fails visibly rather than stating no reason.
+    expect(forward()).toBeEnabled();
+    expect(screen.getByText(i18n.t("booking.nameRequired"))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("booking.notesTooLong"))).toBeInTheDocument();
+    // Name is first in the form, so it is first in focus order.
+    expect(document.activeElement).toBe(screen.getByLabelText(i18n.t("booking.name")));
+
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+    fireEvent.click(forward());
+    expect(document.activeElement).toBe(notes);
+  });
+});
+
+describe("BookPage details step — the bound dress", () => {
+  it("names the binding and offers every size as a radio", async () => {
+    await walkToDetails("d1");
+
+    expect(
+      await screen.findByText(i18n.t("booking.forDress", { dress: "שמלת אלמה" })),
+    ).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("dress.sizes"))).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /^36/ })).toBeInTheDocument();
+    expect(getDress).toHaveBeenCalledWith("d1");
+  });
+
+  it("keeps an unavailable size selectable and names it inside that chip", async () => {
+    await walkToDetails("d1");
+
+    const unavailable = await screen.findByRole("radio", { name: /38/ });
+    // D4 + R15: the word is part of THIS radio's accessible name, not a
+    // group-level sentence a screen reader never ties to the chip.
+    expect(unavailable).toBeEnabled();
+    expect(unavailable).toHaveAccessibleName(
+      new RegExp(`38.*${i18n.t("booking.sizeUnavailable")}`, "s"),
+    );
+    fireEvent.click(unavailable);
+    expect(unavailable).toBeChecked();
+
+    // The longer invitation is one muted sentence under the group.
+    expect(screen.getByText(i18n.t("booking.sizeUnavailableNote"))).toBeInTheDocument();
+  });
+
+  it("drops the note when every size is in the boutique", async () => {
+    getDress.mockResolvedValue(
+      dressDetail({ sizes: [{ size_label: "36", available: true }] }),
+    );
+
+    await walkToDetails("d1");
+
+    await screen.findByRole("radio", { name: /^36/ });
+    expect(screen.queryByText(i18n.t("booking.sizeUnavailableNote"))).toBeNull();
+  });
+
+  it("refuses to advance without a size whenever a dress is bound", async () => {
+    await walkToDetails("d1");
+
+    const size = await screen.findByRole("radio", { name: /^36/ });
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+    fireEvent.click(forward());
+
+    // dress_id without dress_size is a 400 at the boundary — the two are a pair.
+    expect(screen.getByText(i18n.t("booking.sizeRequired"))).toHaveAttribute("role", "alert");
+    expect(document.activeElement).toBe(size);
+    expect(createBooking).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/book/details/d1");
+
+    fireEvent.click(size);
+    fireEvent.click(forward());
+    expect(window.location.pathname).toBe("/book/terms/d1");
+  });
+
+  it("marks every size radio required", async () => {
+    await walkToDetails("d1");
+
+    for (const radio of await screen.findAllByRole("radio")) {
+      expect(radio).toBeRequired();
+    }
+  });
+
+  it("lets her type her name while the dress read is still in flight", async () => {
+    getDress.mockReturnValue(pending());
+
+    const { container } = await walkToDetails("d1");
+
+    // The form is never blocked on a decoration.
+    const name = screen.getByLabelText(i18n.t("booking.name"));
+    fireEvent.change(name, { target: { value: "נועה" } });
+    expect(name).toHaveValue("נועה");
+    expect(container.querySelectorAll(".animate-skeleton").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("radio")).toBeNull();
+  });
+
+  it("drops the binding on a 404 and continues as a generic appointment", async () => {
+    getDress.mockRejectedValue(GONE);
+
+    await walkToDetails("d1");
+
+    expect(await screen.findByText(i18n.t("booking.dressGoneGeneric"))).toHaveAttribute(
+      "role",
+      "alert",
+    );
+    expect(screen.queryByText(i18n.t("dress.sizes"))).toBeNull();
+    expect(screen.queryByText(/שמלת אלמה/)).toBeNull();
+
+    // No size to pick, so no size is required: the generic path is a complete
+    // booking, never a dead end.
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+    fireEvent.click(forward());
+    expect(window.location.pathname).toBe("/book/terms/d1");
+  });
+
+  it("drops the binding when the dress has no active sizes, keeping it on screen", async () => {
+    getDress.mockResolvedValue(dressDetail({ sizes: [] }));
+
+    await walkToDetails("d1");
+
+    // Nothing failed and nothing vanished — polite, not an alert.
+    const note = await screen.findByText(i18n.t("booking.dressGoneGeneric"));
+    expect(note).toHaveAttribute("role", "status");
+    expect(
+      screen.getByText(i18n.t("booking.forDress", { dress: "שמלת אלמה" })),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(i18n.t("dress.sizes"))).toBeNull();
+
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+    fireEvent.click(forward());
+    expect(window.location.pathname).toBe("/book/terms/d1");
+  });
+
+  it("drops the binding on a non-404 failure with no retry and no error voice", async () => {
+    getDress.mockRejectedValue(DOWN);
+
+    await walkToDetails("d1");
+
+    expect(await screen.findByText(i18n.t("booking.dressGoneGeneric"))).toBeInTheDocument();
+    // A 5xx on a decoration must not stop a bride booking a fitting.
+    expect(screen.queryByRole("button", { name: i18n.t("catalog.retry") })).toBeNull();
+    expect(screen.queryByText(i18n.t("errors.unknown"))).toBeNull();
+    expect(forward()).toBeEnabled();
+  });
+});
+
+describe("BookPage terms step", () => {
+  it("states the two refund numbers above the policy, in plain Hebrew", async () => {
+    await walkToTerms();
+
+    const window_ = screen.getByText(i18n.t("booking.refundWindow", { hours: 48 }));
+    const forfeit = screen.getByText(i18n.t("booking.forfeit", { percent: 50 }));
+    const policy = screen.getByText(TERMS.terms_text);
+
+    // A paragraph is where numbers go to hide, so they sit above it.
+    expect(window_.compareDocumentPosition(policy)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(forfeit.compareDocumentPosition(policy)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("renders the policy as text, never as HTML", async () => {
+    getTerms.mockResolvedValue({ ...TERMS, terms_text: "שורה\n<b>לא תגית</b>" });
+
+    const { container } = await walkToTerms();
+
+    // A public, anonymous, multi-tenant surface: any HTML path here is stored
+    // XSS reachable by every visitor to that tenant's storefront.
+    expect(container.querySelector("b")).toBeNull();
+    expect(screen.getByText(/<b>לא תגית<\/b>/)).toBeInTheDocument();
+  });
+
+  it("grows the page instead of boxing the policy in its own scroller", async () => {
+    await walkToTerms();
+
+    const policy = screen.getByText(TERMS.terms_text);
+    // pre-line keeps the owner's line breaks; two scroll contexts on a 375
+    // phone is a trap, and a keyboard-scrollable box is a tab stop between the
+    // text and the consent.
+    expect(policy.className).toContain("whitespace-pre-line");
+    expect(policy).toHaveAttribute("dir", "auto");
+    expect(policy.className).not.toMatch(/overflow-(x|y|auto|scroll)|max-h-/);
+    expect(policy).not.toHaveAttribute("tabindex");
+  });
+
+  it("refuses to advance without consent and moves focus to the checkbox", async () => {
+    await walkToTerms();
+
+    fireEvent.click(forward());
+
+    expect(screen.getByText(i18n.t("booking.acceptRequired"))).toHaveAttribute("role", "alert");
+    const consent = screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") });
+    expect(document.activeElement).toBe(consent);
+    expect(consent).toHaveAttribute("aria-invalid", "true");
+    // A disabled forward button on a legal-consent screen states no reason.
+    expect(forward()).toBeEnabled();
+    expect(window.location.pathname).toBe("/book/terms");
+  });
+
+  it("advances to the verify step once consent is given", async () => {
+    await walkToTerms();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") }));
+    fireEvent.click(forward());
+
+    expect(window.location.pathname).toBe("/book/verify");
+  });
+
+  it("ties the consent to the version it was given for", async () => {
+    await walkToTerms();
+
+    const consent = screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") });
+    fireEvent.click(consent);
+    expect(consent).toBeChecked();
+
+    // Walking back and forward is the same version, so it survives — the reset
+    // is keyed on the version, which is what TERMS_STALE replaces.
+    fireEvent.click(screen.getByRole("link", { name: i18n.t("booking.backStep") }));
+    expect(window.location.pathname).toBe("/book/details");
+    fireEvent.click(forward());
+    expect(
+      screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") }),
+    ).toBeChecked();
+  });
+});
+
+describe("BookPage — step guards and the back control", () => {
+  it("returns a later step entered with no picked slot to the slot step", async () => {
+    renderFlow("/book/terms");
+
+    expect(window.location.pathname).toBe("/book/slot");
+    expect(await screen.findByRole("radio", { name: /מדידה ראשונה/ })).toBeInTheDocument();
+  });
+
+  it("keeps the bound dress on the way back to the slot step", () => {
+    renderFlow("/book/details/d1");
+
+    expect(window.location.pathname).toBe("/book/slot/d1");
+  });
+
+  it("exempts confirm from the guard — the booking is already written", () => {
+    renderFlow("/book/confirm");
+
+    expect(window.location.pathname).toBe("/book/confirm");
+  });
+
+  it("walks back one step at a time with a Link, never the history stack", async () => {
+    await walkToDetails("d 1");
+
+    const back = screen.getByRole("link", { name: i18n.t("booking.backStep") });
+    expect(back).toHaveAttribute("href", "/book/slot/d%201");
+
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+    fireEvent.click(await screen.findByRole("radio", { name: /^36/ }));
+    fireEvent.click(forward());
+
+    expect(screen.getByRole("link", { name: i18n.t("booking.backStep") })).toHaveAttribute(
+      "href",
+      "/book/details/d%201",
+    );
+  });
+
+  it("keeps the picked slot when she walks back to it", async () => {
+    await walkToDetails();
+
+    fireEvent.click(screen.getByRole("link", { name: i18n.t("booking.backStep") }));
+
+    expect(window.location.pathname).toBe("/book/slot");
+    expect(screen.getByRole("radio", { name: "10:00" })).toBeChecked();
   });
 });
