@@ -231,6 +231,20 @@ function resendControl() {
   });
 }
 
+// Advancing the clock is not enough on its own. The cooldown's setTimeout is
+// scheduled by an effect keyed on `cooling`, so a bare advanceTimersByTime can
+// run BEFORE that effect commits — advancing past nothing, after which the timer
+// is scheduled and never fires inside the test. Flushing pending effects first
+// makes the timer exist before the clock moves. Locally the effect usually won
+// the race anyway; on a loaded runner it does not, which is what turned this
+// into a CI-only failure.
+async function passCooldown() {
+  await act(async () => {});
+  act(() => {
+    vi.advanceTimersByTime(60_000);
+  });
+}
+
 function submitButton() {
   return screen.getByRole("button", { name: i18n.t("booking.submit") });
 }
@@ -1371,11 +1385,11 @@ describe("BookPage verify step — one screen that grows", () => {
       expect(waiting.textContent).not.toMatch(/\d/);
       expect(screen.queryByRole("timer")).toBeNull();
 
-      act(() => {
-        vi.advanceTimersByTime(60_000);
-      });
+      await passCooldown();
 
-      expect(resend()).toBeEnabled();
+      await waitFor(() => {
+        expect(resend()).toBeEnabled();
+      });
       // The one discrete event in the cooldown: the button becoming available.
       expect(screen.getByRole("status")).toHaveTextContent(i18n.t("booking.otpResend"));
     } finally {
@@ -1458,14 +1472,24 @@ describe("BookPage verify step — the dead ends", () => {
       // send and a spent budget with the SAME silent 204 — deliberately, so the
       // endpoint is not an oracle — so a sixth "code sent" would be false.
       for (let attempt = 0; attempt < 5; attempt++) {
+        // Wait for the cooldown to actually lift before clicking. A click on the
+        // still-disabled control is silently a no-op, so racing it here does not
+        // fail the loop — it just sends one fewer code and fails the count below,
+        // which is exactly how this read as "4 instead of 5" on CI.
+        await waitFor(() => {
+          expect(resendControl()).toBeEnabled();
+        });
         fireEvent.click(resendControl());
         await screen.findByLabelText(i18n.t("booking.otpCode"));
-        act(() => {
-          vi.advanceTimersByTime(60_000);
-        });
+        await passCooldown();
       }
-      expect(sendOtp).toHaveBeenCalledTimes(5);
+      await waitFor(() => {
+        expect(sendOtp).toHaveBeenCalledTimes(5);
+      });
 
+      await waitFor(() => {
+        expect(resendControl()).toBeEnabled();
+      });
       fireEvent.click(resendControl());
 
       const block = await screen.findByText(i18n.t("errors.otpSendBudget"));
