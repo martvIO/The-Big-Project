@@ -1,6 +1,6 @@
-"""The public storefront read API: five anonymous, tenant-scoped GETs — three
-catalog/identity reads from F10, plus F12's booking grid (`/slots`,
-`/appointment-types`).
+"""The public storefront read API: six anonymous, tenant-scoped GETs — three
+catalog/identity reads from F10, F12's booking grid (`/slots`,
+`/appointment-types`), and F14's cancellation-policy read (`/terms`).
 
 **Why prefix="/storefront" and not a public corner of /manage.**
 `CsrfOriginMiddleware.PROTECTED_PREFIX` is `/manage` and F10 has no mutating
@@ -52,6 +52,7 @@ from app.booking.slots import Slot
 from app.catalog.service import MediaView
 from app.models.appointment_type import AppointmentType
 from app.models.dress import Dress
+from app.models.terms_version import TermsVersion
 from app.storefront.schemas import (
     AppointmentTypeRow,
     BoutiqueResponse,
@@ -64,6 +65,7 @@ from app.storefront.schemas import (
     StorefrontDetail,
     StorefrontDress,
     StorefrontMedia,
+    StorefrontTerms,
 )
 from app.storefront.service import (
     StorefrontBoutiqueView,
@@ -241,6 +243,17 @@ def public_slots(slots: list[Slot]) -> SlotListResponse:
     return SlotListResponse(slots=[SlotRow(starts_at=slot.starts_at) for slot in slots])
 
 
+def public_terms(row: TermsVersion) -> StorefrontTerms:
+    """Field-by-field, never the row: `id`, `tenant_id`, `created_by` and the
+    timestamps are operator provenance and must not reach the wire."""
+    return StorefrontTerms(
+        version=row.version,
+        terms_text=row.terms_text,
+        refundable_until_hours_before=row.refundable_until_hours_before,
+        forfeit_percent=row.forfeit_percent,
+    )
+
+
 def public_appointment_type(row: AppointmentType) -> AppointmentTypeRow:
     return AppointmentTypeRow(
         id=row.id,
@@ -321,3 +334,9 @@ async def list_slots(
 async def list_appointment_types(request: Request, service: Storefront) -> list[AppointmentTypeRow]:
     tenant = get_current_tenant(request)
     return [public_appointment_type(row) for row in await service.list_appointment_types(tenant.id)]
+
+
+@router.get("/terms")
+async def get_terms(request: Request, service: Storefront) -> StorefrontTerms:
+    tenant = get_current_tenant(request)
+    return public_terms(await service.get_terms(tenant.id))

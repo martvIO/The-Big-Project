@@ -41,6 +41,7 @@ from app.auth.dependencies import get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.booking.slots import Slot
+from app.boutique.schemas import TermsVersionResponse
 from app.catalog.schemas import DressResponse
 from app.catalog.service import CatalogNotFoundError, MediaView
 from app.core.config import Settings
@@ -49,6 +50,7 @@ from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.dress import Dress
 from app.models.dress_media import DressMedia
+from app.models.terms_version import TermsVersion
 from app.security_headers import SECURITY_HEADERS
 from app.storage.unconfigured import UnconfiguredMediaStorage
 from app.storefront.router import (
@@ -56,8 +58,14 @@ from app.storefront.router import (
     public_boutique,
     public_dress,
     public_dress_detail,
+    public_terms,
 )
-from app.storefront.schemas import BoutiqueResponse, StorefrontDetail, StorefrontDress
+from app.storefront.schemas import (
+    BoutiqueResponse,
+    StorefrontDetail,
+    StorefrontDress,
+    StorefrontTerms,
+)
 from app.storefront.service import (
     MAX_LIST_OFFSET,
     StorefrontBoutiqueView,
@@ -121,6 +129,9 @@ HIDDEN_PRICE_AGOROT = 590_000
 LIST_PATH = "/storefront/dresses"
 DETAIL_PATH = f"/storefront/dresses/{DRESS_ID}"
 BOUTIQUE_PATH = "/storefront/boutique"
+TERMS_PATH = "/storefront/terms"
+
+TERMS_TEXT = "ביטול עד 48 שעות מראש — החזר מלא."
 
 # An authenticated /manage route, used only to prove the security headers are
 # app-wide rather than storefront-only. Unauthenticated on purpose — a 401 is a
@@ -216,6 +227,7 @@ FORBIDDEN_KEYS = frozenset(
         "byte_size",
         "tenant_id",
         "variants",
+        "created_by",
     }
 )
 
@@ -342,6 +354,26 @@ def _appointment_type() -> AppointmentType:
     )
 
 
+def _terms_row(
+    *,
+    tenant_id: uuid.UUID | None = None,
+    version: int = 3,
+    terms_text: str = TERMS_TEXT,
+) -> TermsVersion:
+    return TermsVersion(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id if tenant_id is not None else TENANT.id,
+        version=version,
+        terms_text=terms_text,
+        refundable_until_hours_before=48,
+        forfeit_percent=30,
+        created_by=STAFF_ID,
+        created_at=CREATED_AT,
+        updated_at=None,
+        deleted_at=None,
+    )
+
+
 def _boutique_view(
     *,
     profile: dict[str, Any] | None = None,
@@ -361,7 +393,7 @@ def _boutique_view(
 
 
 class FakeStorefrontService:
-    """Duck-typed StorefrontService covering exactly the five read methods the
+    """Duck-typed StorefrontService covering exactly the six read methods the
     router calls, so a signature drift on any one of them fails here."""
 
     def __init__(self) -> None:
@@ -374,6 +406,9 @@ class FakeStorefrontService:
         self.boutique_view = _boutique_view()
         self.slots = [_slot(10, 0, remaining=2), _slot(10, 30, remaining=1)]
         self.appointment_types = [_appointment_type()]
+        # Keyed by tenant so the cross-tenant test can prove host A's terms are
+        # unreachable under host B; a missing key raises like the real service.
+        self.terms_rows: dict[uuid.UUID, TermsVersion] = {TENANT.id: _terms_row()}
 
     def _record(self, method: str, /, **kwargs: Any) -> None:
         self.calls.append((method, kwargs))
@@ -422,6 +457,13 @@ class FakeStorefrontService:
         self._record("list_appointment_types", tenant_id=tenant_id)
         return self.appointment_types
 
+    async def get_terms(self, tenant_id: uuid.UUID) -> TermsVersion:
+        self._record("get_terms", tenant_id=tenant_id)
+        row = self.terms_rows.get(tenant_id)
+        if row is None:
+            raise CatalogNotFoundError
+        return row
+
 
 class FakeAuthService:
     """Only here so the owner cookie set in test_owner_cookie_changes_nothing is a
@@ -454,9 +496,12 @@ def _client(
     *,
     host: str = "bella.localtest.me",
     limiter: FixedWindowRateLimiter | None = None,
+    tenants: dict[str, TenantContext] | None = None,
 ) -> TestClient:
+    resolvable = {"bella": TENANT} if tenants is None else tenants
+
     async def _resolver(slug: str) -> TenantContext | None:
-        return TENANT if slug == "bella" else None
+        return resolvable.get(slug)
 
     app = create_app(resolver=_resolver)
     app.state.storefront_service = service if service is not None else FakeStorefrontService()
@@ -542,6 +587,8 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         # F13's booking create — the third sibling, same posture, asserted in
         # test_booking_api.py.
         "/storefront/bookings",
+        # F14's cancellation-policy read, back on this GET-only read router.
+        "/storefront/terms",
     }
     # And no storefront path is reachable under the CSRF-protected prefix.
     assert not any(path.startswith("/manage/storefront") for _, path in registered)
@@ -1008,6 +1055,7 @@ def test_public_schemas_share_no_inheritance_with_the_manage_schemas() -> None:
     assert not issubclass(StorefrontDress, DressResponse)
     assert not issubclass(StorefrontDetail, StorefrontDress)
     assert not issubclass(StorefrontDetail, DressResponse)
+    assert not issubclass(StorefrontTerms, TermsVersionResponse)
 
 
 def test_storefront_dress_row_has_exactly_these_fields() -> None:
@@ -1031,6 +1079,17 @@ def test_storefront_detail_has_exactly_these_fields() -> None:
         "reserved",
         "sizes",
         "media",
+    }
+
+
+def test_storefront_terms_has_exactly_these_fields() -> None:
+    """`id`, `tenant_id`, `created_by` and the timestamps are operator
+    provenance, not booking-page content."""
+    assert set(StorefrontTerms.model_fields) == {
+        "version",
+        "terms_text",
+        "refundable_until_hours_before",
+        "forfeit_percent",
     }
 
 
@@ -1103,6 +1162,7 @@ def test_mappers_are_importable_pure_functions() -> None:
     assert public_dress(_dress_view()).price_agorot is None
     assert [size.available for size in public_dress_detail(_detail_view()).sizes] == [False, True]
     assert public_boutique(_boutique_view()).name == TENANT.name
+    assert public_terms(_terms_row()).version == 3
 
 
 # --- the per-tenant read budget ---
@@ -1377,6 +1437,16 @@ class _RecordingMedia:
         return {}
 
 
+class _StubTerms:
+    def __init__(self, row: TermsVersion | None) -> None:
+        self.row = row
+        self.tenant_ids: list[uuid.UUID] = []
+
+    async def current(self, session: Any, tenant_id: uuid.UUID) -> TermsVersion | None:
+        self.tenant_ids.append(tenant_id)
+        return self.row
+
+
 # --- F12: the booking grid reads ---
 
 
@@ -1452,3 +1522,84 @@ def test_appointment_types_ship_the_booking_facts() -> None:
             "deposit_amount_agorot": 15_000,
         }
     ]
+
+
+# --- F14: the public terms read ---
+
+
+def test_terms_ship_exactly_the_four_policy_fields() -> None:
+    """Exact-equality is the allowlist: `id`, `tenant_id`, `created_by` and the
+    timestamps are absent because nothing else CAN be present."""
+    with _client() as client:
+        resp = client.get(TERMS_PATH)
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "version": 3,
+        "terms_text": TERMS_TEXT,
+        "refundable_until_hours_before": 48,
+        "forfeit_percent": 30,
+    }
+
+
+def test_no_published_terms_is_a_404() -> None:
+    """D5: a boutique that never published a policy has nothing for a customer
+    to accept, and the miss is the module's ordinary NOT_FOUND."""
+    service = FakeStorefrontService()
+    service.terms_rows.clear()
+    with _client(service) as client:
+        resp = client.get(TERMS_PATH)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_terms_are_tenant_isolated_by_host() -> None:
+    """Tenant identity derives from DNS: the same path under another boutique's
+    host serves THAT boutique's policy, never a neighbour's."""
+    tenant_b = TenantContext(id=uuid.uuid4(), slug="noya", name="נויה", settings={})
+    service = FakeStorefrontService()
+    service.terms_rows[tenant_b.id] = _terms_row(
+        tenant_id=tenant_b.id, version=9, terms_text="ללא החזר."
+    )
+    tenants = {"bella": TENANT, "noya": tenant_b}
+    with _client(service, tenants=tenants) as client:
+        body_a = client.get(TERMS_PATH).json()
+    with _client(service, host="noya.localtest.me", tenants=tenants) as client:
+        body_b = client.get(TERMS_PATH).json()
+    assert body_a["terms_text"] == TERMS_TEXT
+    assert body_b == {
+        "version": 9,
+        "terms_text": "ללא החזר.",
+        "refundable_until_hours_before": 48,
+        "forfeit_percent": 30,
+    }
+    assert [kwargs["tenant_id"] for called, kwargs in service.calls if called == "get_terms"] == [
+        TENANT.id,
+        tenant_b.id,
+    ]
+
+
+def test_terms_are_no_store_and_cookie_blind() -> None:
+    with _client() as client:
+        anonymous = client.get(TERMS_PATH)
+        client.cookies.set("boutique_session", TOKEN, domain="bella.localtest.me")
+        authenticated = client.get(TERMS_PATH)
+    assert anonymous.status_code == authenticated.status_code == 200
+    assert anonymous.headers["cache-control"] == "no-store"
+    assert anonymous.content == authenticated.content
+
+
+async def test_get_terms_reads_the_current_version_and_404s_when_none_exists() -> None:
+    """Against the REAL service with a stubbed repository, like the offset-clamp
+    test: the None→404 fold lives in the service, so asserting it against the
+    fake would only assert the fake."""
+    factory = cast(Any, _StubSession)
+    service = StorefrontService(factory, media_storage=UnconfiguredMediaStorage())
+    row = _terms_row()
+    stub = _StubTerms(row)
+    service._terms = stub  # type: ignore[assignment]
+    assert await service.get_terms(TENANT.id) is row
+    assert stub.tenant_ids == [TENANT.id]
+
+    service._terms = _StubTerms(None)  # type: ignore[assignment]
+    with pytest.raises(CatalogNotFoundError):
+        await service.get_terms(TENANT.id)

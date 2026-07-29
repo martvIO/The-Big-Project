@@ -39,10 +39,12 @@ from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.dress_media import DressMediaRepository
 from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
+from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.dress import Dress
+from app.models.terms_version import TermsVersion
 from app.storage.base import MediaStorage
 from app.storefront.validation import (
     BOUTIQUE_TIMEZONE,
@@ -119,6 +121,7 @@ class StorefrontService:
         self._exceptions = AvailabilityExceptionsRepository()
         self._appointment_types = AppointmentTypesRepository()
         self._bookings = BookingsRepository()
+        self._terms = TermsVersionsRepository()
 
     async def list_dresses(
         self,
@@ -235,6 +238,16 @@ class StorefrontService:
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
             return await self._appointment_types.list_active(session, tenant_id)
+
+    async def get_terms(self, tenant_id: uuid.UUID) -> TermsVersion:
+        """One statement. A boutique that never published a policy has nothing
+        for a customer to accept, so the miss is the module's ordinary 404
+        rather than an empty shape the client would have to special-case."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            row = await self._terms.current(session, tenant_id)
+        if row is None:
+            raise CatalogNotFoundError
+        return row
 
     async def get_boutique(
         self, tenant_id: uuid.UUID, *, name: str, settings: dict[str, object]
