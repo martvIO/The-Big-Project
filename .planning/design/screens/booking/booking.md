@@ -1,6 +1,6 @@
 # Screen: Storefront Booking Flow (F14 — `/book/*`, Epic E3)
 
-**Date**: 2026-07-29 · **Status**: **rev 2** — revised against round 1 of adversarial review (three reviewers: brand/tokens, accessibility, spec-coverage; verdict **NEEDS CHANGES**, all findings resolved below). **Awaiting the user's gate approval.** Two things are outstanding and both are the user's: the Hebrew in `copy.md` (every string is `DRAFT`), and the numbered proposals in §14.1. Nothing here may be built until both are signed off.
+**Date**: 2026-07-29 · **Status**: **rev 2** — revised against round 1 of adversarial review (three reviewers: brand/tokens, accessibility, spec-coverage; verdict **NEEDS CHANGES**, all findings resolved below). **GATE APPROVED 2026-07-29.** Both outstanding items were signed off in one session: P1–P8 confirmed (§14.1, all boxes checked) and `copy.md` signed off end to end (rev 3 — 61 of 61 rows APPROVED, §7 answered, two keys added at sign-off). The build is unblocked; see §14.1's gate outcome note for the deltas this design inherits from the copy walk.
 
 **Gate log**: drafted 2026-07-29 by five parallel authors (§2–§3, §4–§5, §6–§7, §8–§14, `copy.md`), assembled and reconciled the same day as **R1–R6**; reviewed the same day by three adversarial reviewers, whose findings are resolved as **R7–R31**. Round detail in §14.2.
 
@@ -2322,41 +2322,48 @@ The `A11yMenu` trigger is `fixed`, 44×44 (`size-11`), at `inset-block-end: var(
 
 ### 14.1 Gate proposals — the decisions the user confirms when approving this gate
 
-- [ ] **P1 — The storefront CTA becomes an `<a href="/book/slot[/{dressId}]">` styled as the primary button.**
+- [x] **P1 — The storefront CTA becomes an `<a href="/book/slot[/{dressId}]">` styled as the primary button.**
   *Argument*: the Router's root click delegation (`router.tsx:180-194`) intercepts any same-origin `<a>` into a client navigation while letting modifier-, middle- and target-clicks fall through to the browser (`shouldIntercept`, `:105-146`) — so an anchor preserves open-in-new-tab, which `onClick` + `navigate()` destroys. `DressCard` already relies on exactly this. Absolute `href` required: the delegated handler pushes the raw `getAttribute("href")`.
   *Declined*: `<button onClick={() => navigate(…)}>` — a booking link that cannot be opened in a new tab is a regression on a page a bride reaches from an Instagram deep link.
   *Cost, stated so it is not a surprise*: (a) `Button` cannot render an anchor today — §13.2's amendment; (b) the CTA's implicit role changes `button` → `link`, which breaks **four** test query sites, not the three Risk 3 names — `AboutPage.test.tsx:282-283` and `:295` and `CatalogPage.test.tsx:152` fail loudly (safe), while **`CatalogPage.test.tsx:183` passes vacuously** (`queryByRole("button", …)).toBeNull()` is trivially true once the CTA is a link — the D12 inversion would go silently unverified) and **`DressPage.test.tsx:254`'s `toBeEnabled()` on an `<a>` is also vacuous** (jest-dom's disabled matchers apply only to `button`/`input`/`select`/`textarea`/`optgroup`/`option`/`fieldset`). Those two must be rewritten to assert the `href`, not the role's enabled state.
 
-- [ ] **P2 — The size chips live on the details step (§4), not the slot step.**
+- [x] **P2 — The size chips live on the details step (§4), not the slot step.**
   *Argument*: the spec never places them, and D11 has already given the slot step the appointment-type picker plus the date control plus the grid. The size is a property of the *dress binding*, which is what the details step already collects around (`name`, `notes`).
   *Declined*: the slot step (three decisions on one screen at 375) and a step of their own (a fifth step that exists only on the item path, doubling the flow's shape).
 
-- [ ] **P3 — OTP resend cooldown = 60 seconds.**
+- [x] **P3 — OTP resend cooldown = 60 seconds.**
   *Argument*: long enough that a real SMS has time to arrive before she assumes failure, short enough that a lost message is not a dead end. `/otp/send` answers `204` unconditionally, so the client owns this number entirely.
   *Declined*: 30s (invites a second send before the first arrives, spending the per-phone budget) and 120s (reads as punishment on the one screen where she is already anxious).
   *Constraint*: it renders per §10 — muted text, no bar, no colour, no motion — and per §12 it is never itself a live region.
 
-- [ ] **P4 — `deposit_amount_agorot` is shown, rendered through `Price`.**
+- [x] **P4 — `deposit_amount_agorot` is shown, rendered through `Price`.**
   *Argument*: `research/insights.md:34` is explicit — "typed appointment menu w/ duration+deposit shown upfront (**never hide fees mid-flow**)". Showing the number is what makes D3's "book this one by phone" read as information rather than as a wall.
   *Declined*: naming the deposit requirement without the amount (she then has to phone to learn the price of phoning).
   *Constraint*: `Price` only — `qa-greps.sh:37` bans the `₪` glyph in `apps/storefront/src` outright, and `Price` requires a `hiddenLabel` even when `visible` is true.
 
-- [ ] **P5 — One new i18n key beyond the spec's inventory: `booking.contactUnavailable`.**
+- [x] **P5 — One new i18n key beyond the spec's inventory: `booking.contactUnavailable`.**
   *Argument*: D12's consequence — all three `ContactPanel` branches degrade to plain copy when `useBoutique()` has nothing — has no key in the spec's list, and `ContactPanel` renders an **empty flex box** when every channel is absent (every child is behind a truthiness guard), so the degrade must be a branch at the call site rendering a `<p>`, not a prop. `AboutPage.tsx:106-130` and `he.ts:184-185`'s `statement.coordinatorNoChannel` are the shipped precedents for both the shape and the string.
   *Constraint*: the string must be **name-free** — `coordinatorNoChannel` interpolates `{{name}}`, which is by definition unavailable here, and the fallback if a name is ever wanted is `catalog.essenceFallback`.
 
-- [ ] **P6 — One further new i18n key: `booking.continueStep`, the forward label on steps 1–3.**
+- [x] **P6 — One further new i18n key: `booking.continueStep`, the forward label on steps 1–3.**
   *Argument*: the inventory carries **one** forward label (`booking.submit` / `submitting`) for **four** forward actions. Steps 1–3 advance; step 4 commits an appointment. One string cannot honestly be both — a "שליחה" on the slot step promises a booking three screens early, and a "המשך" on the verify step under-states an irreversible commitment on the screen where a cancellation policy has just been accepted.
   *Declined*: reusing `booking.submit` on all four (as above) and adding four per-step labels (three of them would be identical).
   *Scope*: `booking.submit` / `booking.submitting` are then reserved for the verify step's commit. The gate's copy author owns both strings.
 
-- [ ] **P7 — The booking column is `max-inline-size: 640px`, gutters `--space-4` → `--space-6`, no third step.**
+- [x] **P7 — The booking column is `max-inline-size: 640px`, gutters `--space-4` → `--space-6`, no third step.**
   *Argument*: byte-identical to `/about`, the storefront's only other reading-and-forms surface. §8.1 has the reasoning and the Tailwind-`xl`-is-1280 trap.
   *Declined*: 1200px (the catalog's lookbook width; unreadable as a form measure) and 720px (the console's form width, borrowed into a customer screen for no reason).
 
-- [ ] **P8 — Add one row to the spec's State matrix: "Boutique fetch failed → no contact fallback".**
+- [x] **P8 — Add one row to the spec's State matrix: "Boutique fetch failed → no contact fallback".**
   *Argument*: ⚠ FINDING 2. D12 makes it a designed state with its own copy (P5), reachable independently of rows 4, 6 and 21. The matrix is declared the single source and the gate's obligation is defined against it, so a state that lives only in a decision-log entry is exactly the drift the table prevents elsewhere.
   *Scope*: one row, `Design: D`, `Test: unit`, in the same PR as this gate.
+
+**Gate outcome — 2026-07-29, all eight approved.** The copy sign-off walk (same session) added two decisions this design inherits:
+
+1. **`booking.confirmTitleNamed`** — S5's `h1` renders "התור נקבע ב{{name}}" when boutique data is in memory and falls back to `booking.confirmTitle` ("התור נקבע") otherwise (§7 Q4 answered "yes"; two keys because an i18next string cannot be conditional; `{{name}}` precedent: `statement.coordinatorNoChannel`). The cold confirmation (§7.7) uses the fallback only if the boutique fetch has also failed — the boutique read is independent of the lost `201` payload.
+2. **`booking.sizeUnavailableNote`** — S2's size-chip group gains one muted sentence below the group, rendered only when at least one chip is unavailable ("מידה שאינה כרגע בבוטיק אפשר להזמין במיוחד לקראת המדידה."). The ≤24-char in-chip phrase (R15) is unchanged and still mandatory; this is the longer warm form the chip cannot carry.
+
+Copy deltas recorded in `copy.md` rev 3 that change no layout: `booking.audienceBrides` → "פגישת כלה"; `booking.noTypes` drops its written phone clause (FINDING 4 approved — the `ContactPanel` below it does that job); `booking.otpSent` softened ("שלחנו קוד בן שש ספרות למספר שהזנת. הוא תקף לחמש דקות."); `booking.confirmCold` reduced to the honest short form. Q5 closed by evidence (forfeit = % of the deposit; `owner-settings.md:23`, `terms_version.py:23`, `TermsSection.tsx:99-100`). Q3 closed by evidence (backend `normalize_israeli_mobile` accepts flexible input and keys the OTP token on the normalized form; `validatePhone` mirrors it).
 
 **Housekeeping this design implies, carried by the build and needing no gate decision**: `booking.panelTitle` and `booking.close` become dead when D1 removes the modal — `i18n-keys.test.ts` checks used→defined and never defined→used, so nothing will fail if they are left behind; delete them in the same pass. And `errors` gains the six new keys of spec Risk 5 (seven `switch` cases, `SMS_NOT_CONFIGURED` and `SMS_UNAVAILABLE` sharing one).
 
@@ -2368,6 +2375,7 @@ The `A11yMenu` trigger is `fixed`, 44×44 (`size-11`), at `inset-block-end: var(
 | 1 | 2026-07-29 | `design-critic` (brand / tokens / the nine usage laws) | **NEEDS CHANGES**, AI-generic score 7/10. 6 HIGH, 2 MEDIUM. Verdict capped at 7 explicitly because parallel authorship left the five steps materially disagreeing on structure — "reads as *assembled*, not *designed*" | Structural disagreements resolved by R7–R31. The brand findings — that the gold-hairline identity, the phone-booking-as-legitimate-luxury-path framing, and size-unavailable-as-invitation all read as specific to this brand rather than generic — needed no change |
 | 1 | 2026-07-29 | accessibility + dead-end review | 9 HIGH, 11 MEDIUM, 3 LOW. Reviewed the **assembled** doc, so R1–R6 were not re-filed. Found the flow's real terminal dead end (submit failing outside the designed set), the cold confirmation asserting a booking it cannot verify, and an unavailable size chip with no per-chip signal | **R13, R14, R15** (the three real defects) plus R7, R16, R17, R18, R28, R29, R30. Six items it confirmed as correct are recorded above as not-to-be-re-litigated |
 | 1 | 2026-07-29 | spec-coverage + buildability | 10 HIGH, 13 MEDIUM. Verified every buildability claim against the shipped tree. Found four specs the shipped components **cannot execute**, seven strings needing bidi isolation that i18next cannot deliver, two rendered keys absent from the copy deck, and a proposal list whose numbers each meant two different things | **R9, R10, R19, R25** (⚙ verified against source), **R21, R22** (the sign-off instrument), plus R8, R11, R12, R20, R23, R24, R26, R27, R31 |
+| Gate | 2026-07-29 | the user (product owner), decision session backed by code research | P1–P8 all approved; `copy.md` signed off end to end (61 rows); FINDING 4 ruling approved; §7 Q1–Q6 answered — Q3 and Q5 closed by code evidence rather than judgement; two keys added at sign-off (`confirmTitleNamed`, `sizeUnavailableNote`); four Hebrew cells changed (`audienceBrides`, `noTypes`, `otpSent`, `confirmCold`) | `copy.md` rev 3; this doc's status flipped to GATE APPROVED; build unblocked |
 
 **What round 1 changed about the package's status.** Rev 1 was internally reconciled but not externally checked, and three of its rulings were specified against components that cannot execute them — a class of error no amount of internal consistency would have caught. The two findings that most justify the round are R13 and R14: both are states where a bride is left unable to determine whether she has an appointment, which is the precise failure this feature exists to eliminate, and neither was visible from inside any single section.
 
