@@ -6,6 +6,10 @@ re-materialization, customer upsert and the seat-indexed INSERT commit or roll
 back together. The per-tenant advisory lock is the primary control and 0008's
 partial unique index is the structural backstop — losing a race surfaces as
 either a full grid or an IntegrityError, and both are the same 409 to a caller.
+
+Exactly once in the other direction too: a create that replays an appointment
+this customer already holds at this instant returns that booking rather than a
+second one, guarded by 0009's index. See step 4b.
 """
 
 import datetime
@@ -225,6 +229,35 @@ class BookingService:
                 text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"),
                 {"tenant_id": str(tenant_id)},
             )
+
+            # 4b. Idempotency, and it must come BEFORE availability — that
+            #     order is the entire fix. When a claim commits but its 201 dies
+            #     on a flaky mobile network, the token is already spent, so the
+            #     retry is a 403 whose copy explicitly sends the customer back
+            #     with a fresh code to resubmit. At capacity 1 her own booking
+            #     now fills the slot, so checking availability first would 409
+            #     her and walk her to a second time she does not need; at higher
+            #     capacity it simply gave her two seats. A live booking for this
+            #     proven phone at this instant IS this request's outcome, so
+            #     return it — unchanged, because the first submission is the one
+            #     she agreed to, and there is no public read endpoint through
+            #     which she could ever discover the row this create replaced.
+            #
+            #     Read, not catch-the-IntegrityError: a failed flush aborts the
+            #     Postgres transaction, so recovering from it would need a
+            #     SAVEPOINT around the INSERT, and it would still be reached
+            #     only in the capacity>1 case — the 409 above would beat it
+            #     otherwise. The read cannot race: every claim for this tenant
+            #     takes the advisory lock above before running it, and 0009's
+            #     partial unique index is the backstop for a writer that does
+            #     not.
+            existing_customer = await self._customers.by_phone(session, tenant_id, phone=phone)
+            if existing_customer is not None:
+                replayed = await self._bookings.active_at(
+                    session, tenant_id, customer_id=existing_customer.id, starts_at=starts_at
+                )
+                if replayed is not None:
+                    return replayed
 
             # 5. Re-materialize the grid and assert the instant is offered —
             #    fed the REAL booked counts, so this also enforces capacity.

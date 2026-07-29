@@ -1,55 +1,80 @@
 """Drift guard for the client/server constant mirror.
 
-`frontend/apps/manage/src/validation.ts` restates a handful of bounds from
-`app/catalog/validation.py` so the owner sees an immediate Hebrew error instead
-of a round-trip 400. Nothing enforces that the two copies agree, and the failure
-mode is silent: raise a cap on one side only and the console either rejects a
-legal file or lets an illegal one reach S3 before the API refuses it.
+Two frontend files restate backend bounds so the user sees an immediate Hebrew
+error instead of a round-trip 400: `frontend/apps/manage/src/validation.ts`
+mirrors `app/catalog/validation.py`, and
+`frontend/apps/storefront/src/validation.ts` mirrors
+`app/booking/validation.py`. Nothing enforces that the copies agree, and the
+failure mode is silent: raise a cap on one side only and the client either
+rejects a legal value or lets an illegal one reach the API before it refuses.
 
-The file is read as **text** on purpose — this test must run in the fast,
+The files are read as **text** on purpose — this test must run in the fast,
 no-Docker, no-Node suite. A regex scrape is enough for literals.
 
-The path is spelled lowercase (`frontend/...`) because git tracks it lowercase;
-macOS resolves it case-insensitively and Linux CI checks it out that way.
+The paths are spelled lowercase (`frontend/...`) because git tracks them
+lowercase; macOS resolves them case-insensitively and Linux CI checks them out
+that way.
 """
 
 import datetime
 import re
 from pathlib import Path
+from types import ModuleType
 
+import pytest
+
+from app.booking import validation as booking_validation
 from app.booking.validation import jerusalem_day_index
-from app.catalog import validation
+from app.catalog import validation as catalog_validation
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-VALIDATION_TS = REPO_ROOT / "frontend/apps/manage/src/validation.ts"
+MANAGE_VALIDATION_TS = REPO_ROOT / "frontend/apps/manage/src/validation.ts"
+STOREFRONT_VALIDATION_TS = REPO_ROOT / "frontend/apps/storefront/src/validation.ts"
 
-# The nine the spec names, plus the two validation.ts also declares AND enforces
-# (MIN_UPLOAD_BYTES in validateUploadFile, MAX_SORT_ORDER in validateDress) —
-# both are silent-drift cases of exactly the kind this test exists for: raise
-# MIN_UPLOAD_BYTES on the server only and the console queues a file the API then
-# refuses with a 400. Anything else in validation.ts (EU_SIZE_QUICK_LIST, the
-# Hebrew messages) is frontend-only.
-MIRRORED_CONSTANTS = (
-    "MAX_DRESS_NAME_LENGTH",
-    "MAX_DRESS_DESCRIPTION_LENGTH",
-    "MAX_PRICE_AGOROT",
-    "MAX_VARIANTS_PER_DRESS",
-    "MAX_SIZE_LABEL_LENGTH",
-    "MAX_VARIANT_QUANTITY",
-    "MAX_MEDIA_PER_DRESS",
-    "MAX_UPLOAD_BYTES",
-    "MIN_UPLOAD_BYTES",
-    "MAX_SEARCH_LENGTH",
-    "MAX_SORT_ORDER",
+# manage: the nine the F8 spec names, plus the two validation.ts also declares
+# AND enforces (MIN_UPLOAD_BYTES in validateUploadFile, MAX_SORT_ORDER in
+# validateDress) — both are silent-drift cases of exactly the kind this test
+# exists for: raise MIN_UPLOAD_BYTES on the server only and the console queues
+# a file the API then refuses with a 400. storefront: the two bounds F14's
+# booking form enforces client-side (D7). Anything else in either file
+# (EU_SIZE_QUICK_LIST, normalizePhone, the Hebrew messages) is frontend-only.
+MIRRORS = (
+    pytest.param(
+        MANAGE_VALIDATION_TS,
+        catalog_validation,
+        (
+            "MAX_DRESS_NAME_LENGTH",
+            "MAX_DRESS_DESCRIPTION_LENGTH",
+            "MAX_PRICE_AGOROT",
+            "MAX_VARIANTS_PER_DRESS",
+            "MAX_SIZE_LABEL_LENGTH",
+            "MAX_VARIANT_QUANTITY",
+            "MAX_MEDIA_PER_DRESS",
+            "MAX_UPLOAD_BYTES",
+            "MIN_UPLOAD_BYTES",
+            "MAX_SEARCH_LENGTH",
+            "MAX_SORT_ORDER",
+        ),
+        id="manage",
+    ),
+    pytest.param(
+        STOREFRONT_VALIDATION_TS,
+        booking_validation,
+        (
+            "MAX_CUSTOMER_NAME_LENGTH",
+            "MAX_BOOKING_NOTES_LENGTH",
+        ),
+        id="storefront",
+    ),
 )
 
 _CONST_RE = re.compile(r"^export const (?P<name>[A-Z][A-Z0-9_]*)\s*=\s*(?P<value>[0-9_]+);", re.M)
 _ACCEPTED_RE = re.compile(r"export const ACCEPTED_CONTENT_TYPES[^{]*\{(?P<body>[^}]*)\}", re.S)
 
 
-def _source() -> str:
-    assert VALIDATION_TS.is_file(), f"missing mirrored constants file: {VALIDATION_TS}"
-    return VALIDATION_TS.read_text(encoding="utf-8")
+def _source(path: Path) -> str:
+    assert path.is_file(), f"missing mirrored constants file: {path}"
+    return path.read_text(encoding="utf-8")
 
 
 def _numeric_constants(source: str) -> dict[str, int]:
@@ -60,24 +85,54 @@ def _numeric_constants(source: str) -> dict[str, int]:
     }
 
 
-def test_every_mirrored_constant_is_declared_in_validation_ts() -> None:
-    declared = _numeric_constants(_source())
-    missing = [name for name in MIRRORED_CONSTANTS if name not in declared]
-    assert missing == [], f"validation.ts does not export: {missing}"
+@pytest.mark.parametrize(("path", "backend", "names"), MIRRORS)
+def test_every_mirrored_constant_is_declared_in_validation_ts(
+    path: Path, backend: ModuleType, names: tuple[str, ...]
+) -> None:
+    declared = _numeric_constants(_source(path))
+    missing = [name for name in names if name not in declared]
+    assert missing == [], f"{path} does not export: {missing}"
 
 
-def test_mirrored_numeric_constants_match_the_backend() -> None:
-    declared = _numeric_constants(_source())
-    frontend = {name: declared[name] for name in MIRRORED_CONSTANTS if name in declared}
-    backend = {name: getattr(validation, name) for name in MIRRORED_CONSTANTS}
-    assert frontend == backend
+@pytest.mark.parametrize(("path", "backend", "names"), MIRRORS)
+def test_mirrored_numeric_constants_match_the_backend(
+    path: Path, backend: ModuleType, names: tuple[str, ...]
+) -> None:
+    declared = _numeric_constants(_source(path))
+    frontend = {name: declared[name] for name in names if name in declared}
+    backend_values = {name: getattr(backend, name) for name in names}
+    assert frontend == backend_values
+
+
+_TS_REGEX_RE = re.compile(r"^const (?P<name>[A-Z][A-Z0-9_]*)\s*=\s*/(?P<body>.+)/;", re.M)
+
+# The character classes are literals on both sides, so the pattern bodies compare
+# byte-for-byte. They earn a guard of their own because the failure they prevent is
+# the worst kind this file exists for: a control character (a U+000B soft break
+# pasted from Word) passes a client that only checks blank-and-length, so the bride
+# spends a real SMS, accepts the policy, submits, and receives a 400 she can neither
+# understand nor escape — every retry fails identically.
+_MIRRORED_PATTERNS = (
+    ("CONTROL_CHARS", "_CONTROL_CHARS"),
+    ("CONTROL_CHARS_EXCEPT_WS", "_CONTROL_CHARS_EXCEPT_WS"),
+)
+
+
+def test_control_character_classes_match_the_backend() -> None:
+    declared = {
+        match.group("name"): match.group("body")
+        for match in _TS_REGEX_RE.finditer(_source(STOREFRONT_VALIDATION_TS))
+    }
+    for ts_name, py_name in _MIRRORED_PATTERNS:
+        assert ts_name in declared, f"storefront validation.ts does not declare {ts_name}"
+        assert declared[ts_name] == getattr(booking_validation, py_name).pattern
 
 
 def test_accepted_content_type_keys_match_the_backend() -> None:
-    match = _ACCEPTED_RE.search(_source())
+    match = _ACCEPTED_RE.search(_source(MANAGE_VALIDATION_TS))
     assert match is not None, "validation.ts does not export ACCEPTED_CONTENT_TYPES"
     keys = set(re.findall(r'"([^"]+)"\s*:', match.group("body")))
-    assert keys == set(validation.ACCEPTED_CONTENT_TYPES)
+    assert keys == set(catalog_validation.ACCEPTED_CONTENT_TYPES)
 
 
 # --- the Israeli week: backend conversion vs the UI's weekday map ---

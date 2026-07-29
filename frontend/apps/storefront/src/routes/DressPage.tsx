@@ -230,7 +230,7 @@ export function DressPage({ dressId }: DressPageProps) {
 
           {/* Inline in the FACTS COLUMN at >=768, a fixed bar below it — §7
               places the detail page's CTA here, not in the header. */}
-          <BookingCTAButton boutique={boutique} />
+          <BookingCTAButton dressId={dressId} />
         </div>
       </div>
     </div>

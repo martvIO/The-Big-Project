@@ -190,11 +190,135 @@ const CLEARED_BOUTIQUE = {
   instagram: null,
 };
 
+// --- booking fixture ---------------------------------------------------------
+//
+// The six endpoints the /book/* flow speaks to, none of which the catalog specs
+// touch. Each is a QUEUE of replies consumed in order, the last entry repeating
+// forever — one mechanism, because both mid-flow conflicts need exactly it: the
+// terms GET answers v3 and then v4 across a TERMS_STALE recovery, and the
+// booking POST answers 409 and then 201 across a SLOT_UNAVAILABLE one. A
+// separate "fail once" switch would have been a second thing to keep in step.
+
+interface Reply {
+  status: number;
+  body: unknown;
+}
+
+const ok = (body: unknown): Reply => ({ status: 200, body });
+
+// The message is English on purpose — every backend message is. The flow keys
+// off the CODE, so a fixture carrying Hebrew here would hide a UI that painted
+// the server's sentence onto the page.
+const conflict = (status: number, code: string): Reply => ({
+  status,
+  body: { error: { code, message: `${code} from the fixture.` } },
+});
+
+type BookingEndpoint =
+  | "terms"
+  | "appointment-types"
+  | "slots"
+  | "otp/send"
+  | "otp/verify"
+  | "bookings";
+
+const BOOKING_PATHS: Record<string, BookingEndpoint> = {
+  "/storefront/terms": "terms",
+  "/storefront/appointment-types": "appointment-types",
+  "/storefront/slots": "slots",
+  "/storefront/otp/send": "otp/send",
+  "/storefront/otp/verify": "otp/verify",
+  "/storefront/bookings": "bookings",
+};
+
+type BookingReplies = Record<BookingEndpoint, Reply[]>;
+
+const TYPE_PLAIN = {
+  id: "t-fitting",
+  name: "מדידה ראשונה",
+  duration_minutes: 45,
+  audience: "all",
+  deposit_required: false,
+  deposit_amount_agorot: null,
+};
+
+// D10's badge renders on the row unconditionally, so one brides-only sibling
+// puts it in front of every axe scan of the slot step at no cost.
+const TYPE_BRIDES = {
+  id: "t-inspiration",
+  name: "פגישת השראה",
+  duration_minutes: 30,
+  audience: "brides_only",
+  deposit_required: false,
+  deposit_amount_agorot: null,
+};
+
+// 2099 so nothing about these depends on today, on a TTL or on the machine's
+// clock. Jerusalem is UTC+2 in January, so 08:00Z reads 10:00 to the bride —
+// and the boutique's calendar day, never the device's, is what labels the grid.
+const SLOT_1000 = "2099-01-04T08:00:00Z";
+const SLOT_1045 = "2099-01-04T08:45:00Z";
+const SLOT_1130 = "2099-01-04T09:30:00Z";
+const SLOT_NEXT_DAY = "2099-01-05T08:00:00Z";
+
+const TERMS_V3 = {
+  version: 3,
+  terms_text: "ביטול עד 48 שעות לפני המועד ללא חיוב.",
+  refundable_until_hours_before: 48,
+  forfeit_percent: 50,
+};
+
+// Every number differs from v3's, so "she is looking at the new policy" is
+// measurable rather than assumed.
+const TERMS_V4 = {
+  version: 4,
+  terms_text: "ביטול עד 24 שעות לפני המועד ללא חיוב.",
+  refundable_until_hours_before: 24,
+  forfeit_percent: 70,
+};
+
+const VERIFICATION_TOKEN = "vt-e2e";
+
+const BOOKED = {
+  id: "bk-e2e",
+  starts_at: SLOT_1000,
+  status: "confirmed",
+  appointment_type_name: TYPE_PLAIN.name,
+  dress_name: null,
+  dress_size: null,
+};
+
+function slotBody(instants: string[]): unknown {
+  return { slots: instants.map((starts_at) => ({ starts_at })) };
+}
+
+const ALL_SLOTS = [SLOT_1000, SLOT_1045, SLOT_1130, SLOT_NEXT_DAY];
+
+function bookingFixture(): BookingReplies {
+  return {
+    terms: [ok(TERMS_V3)],
+    "appointment-types": [ok([TYPE_PLAIN, TYPE_BRIDES])],
+    slots: [ok(slotBody(ALL_SLOTS))],
+    // 204, no body — the endpoint reveals nothing either way, by design.
+    "otp/send": [{ status: 204, body: null }],
+    "otp/verify": [ok({ verification_token: VERIFICATION_TOKEN, expires_at: SLOT_1000 })],
+    bookings: [{ status: 201, body: BOOKED }],
+  };
+}
+
+// The last entry repeats: a one-element queue is a constant, and a two-element
+// one is "this happens once, then that".
+function take(queue: Reply[]): Reply {
+  return queue.length > 1 ? (queue.shift() as Reply) : queue[0];
+}
+
 async function installApi(
   page: Page,
   list: ListVariant = "populated",
   boutique: unknown = BOUTIQUE,
+  booking: Partial<BookingReplies> = {},
 ): Promise<void> {
+  const replies: BookingReplies = { ...bookingFixture(), ...booking };
   await page.route("**/storefront/**", async (route) => {
     const { pathname, searchParams } = new URL(route.request().url());
     const send = (body: unknown, status = 200) =>
@@ -208,6 +332,14 @@ async function installApi(
 
     if (pathname === "/storefront/boutique") {
       await send(boutique);
+      return;
+    }
+    const endpoint = BOOKING_PATHS[pathname];
+    if (endpoint !== undefined) {
+      const reply = take(replies[endpoint]);
+      await (reply.status === 204
+        ? route.fulfill({ status: 204, headers: { "cache-control": "no-store" } })
+        : send(reply.body, reply.status));
       return;
     }
     if (pathname === "/storefront/dresses") {
@@ -570,6 +702,20 @@ for (const path of ["/", "/about", "/accessibility"]) {
       `${describe("link", linkRect)} / ${describe("a11y trigger", trigger)}`,
     ).toBe(0);
 
+    // EVERY footer link, not only the statutory one. The footer wraps at 375
+    // and the trigger sits at the inline-end block-end corner, so whichever
+    // link lands last is the one under it — asserting only הצהרת נגישות passes
+    // while the row beneath it is still covered.
+    const footerLinks = page.locator("footer a");
+    for (let i = 0; i < (await footerLinks.count()); i += 1) {
+      const other = footerLinks.nth(i);
+      const box = await rect(other, `footer link ${String(i)}`);
+      expect(
+        intersectionArea(box, trigger),
+        `${describe(`footer link ${String(i)}`, box)} / ${describe("a11y trigger", trigger)}`,
+      ).toBe(0);
+    }
+
     // trial: true runs Playwright's actionability checks — including the
     // hit-target test — without following the link. A covered link fails here.
     await link.click({ trial: true });
@@ -589,7 +735,7 @@ for (const width of [375, 768]) {
       await gotoSettled(page, path);
       await expect(ctaBar(page), `${path} @${String(width)}`).toHaveCount(1);
       await expect(ctaBar(page)).toBeVisible();
-      await expect(page.getByRole("button", { name: CTA_LABEL })).toHaveCount(1);
+      await expect(page.getByRole("link", { name: CTA_LABEL })).toHaveCount(1);
       // One instance, two treatments: a fixed bottom bar below 768, inline from
       // 768 up. A bar that stays fixed at 768 leaves a dead gutter on desktop.
       const position = await ctaBar(page).evaluate((el) => getComputedStyle(el).position);
@@ -600,7 +746,7 @@ for (const width of [375, 768]) {
     // /about ships the booking button as a static inline element and no bar —
     // nothing moves at 768.
     await expect(ctaBar(page), `/about @${String(width)}`).toHaveCount(0);
-    await expect(page.getByRole("button", { name: CTA_LABEL })).toHaveCount(1);
+    await expect(page.getByRole("link", { name: CTA_LABEL })).toHaveCount(1);
   });
 }
 
@@ -954,13 +1100,13 @@ test("storefront: a failed boutique keeps its h1, and the retry actually recover
     await send({ items: LIST_ITEMS, total: LIST_ITEMS.length, offset: 0, limit: PAGE_LIMIT });
   });
 
-  // page.goto, not gotoSettled: gotoSettled waits for the booking CTA bar, and
-  // the whole point of this state is that the CTA is deliberately withheld.
   await page.goto(`${STOREFRONT}/`);
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
-  // No CTA: opening an empty contact panel is worse than not offering one.
-  await expect(page.getByRole("button", { name: "קביעת תור למדידה" })).toHaveCount(0);
+  // D12: the CTA only navigates, so a failed identity fetch has nothing to make
+  // it lie about and it must SURVIVE. Asserted on the href — a role check alone
+  // would pass on a CTA that had lost its destination.
+  await expect(page.getByRole("link", { name: CTA_LABEL })).toHaveAttribute("href", "/book/slot");
 
   // The retry must re-drive the BOUTIQUE fetch, not only the dress list. The
   // boutique block is fetched once by the layout, so a retry wired to the list
@@ -969,7 +1115,7 @@ test("storefront: a failed boutique keeps its h1, and the retry actually recover
   await page.getByRole("button", { name: "נסי שוב" }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("heading", { level: 1, name: BOUTIQUE.name })).toBeVisible();
-  await expect(page.getByRole("button", { name: "קביעת תור למדידה" })).toBeVisible();
+  await expect(page.getByRole("link", { name: CTA_LABEL })).toBeVisible();
 });
 
 test("storefront: renders reserved, never out-of-stock, and never a raw quantity", async ({
@@ -1253,4 +1399,569 @@ test("storefront: reduced motion zeroes transitions and leaves scroll-snap alone
   expect(snap, "the reduced-motion block is stripping scroll-snap along with motion").toBe(
     "x mandatory",
   );
+});
+
+// =============================================================================
+// F14 — the /book/* flow (spec §State matrix, design §11 / §12)
+// =============================================================================
+//
+// The five steps are a state machine, not five URLs: D8's guard sends any step
+// past `slot` with no picked time straight back to `slot`, so `details`,
+// `terms` and `verify` are unreachable by page.goto and every scan below has to
+// arrive there by WALKING. That is the reason for the one `walkBooking` helper
+// and its per-step hook — the axe passes, the overflow sweep, the CTA-bar count
+// and the Tab-order probe are all the same walk with a different hook.
+
+const BOOK_TYPE = TYPE_PLAIN.name;
+const SLOT_LABEL = "10:00";
+const REPLACEMENT_SLOT_LABEL = "10:45";
+const CONTINUE_LABEL = "המשך";
+const SUBMIT_LABEL = "אישור וקביעת התור";
+const SEND_CODE_LABEL = "שליחת קוד אימות";
+const NAME_LABEL = "שם מלא";
+const PHONE_LABEL = "טלפון נייד";
+const CODE_LABEL = "קוד האימות";
+const CUSTOMER_NAME = "נועה כהן";
+const TYPED_PHONE = "050-123 4567";
+const WIRE_PHONE = "+972501234567";
+const OTP_CODE = "123456";
+
+const SLOT_TAKEN_MESSAGE =
+  "המועד הזה נתפס בינתיים. אלה המועדים הפנויים המעודכנים — אפשר לבחור מועד אחר.";
+const TERMS_STALE_MESSAGE =
+  "מדיניות הביטולים התעדכנה בזמן שמילאת את הפרטים. זו הגרסה המעודכנת — נשמח שתקראי ותאשרי אותה שוב.";
+
+// R1: the h1 is the STEP, never the boutique — a static i18n string, so it
+// survives every degraded branch by construction. `confirm` is the one
+// exception and takes the boutique's name, which is what makes a screenshot
+// self-explanatory three weeks later.
+const STEP_TITLES: Record<string, string> = {
+  slot: "מועד",
+  details: "פרטים",
+  terms: "מדיניות ביטולים",
+  verify: "אימות טלפון",
+  confirm: `התור נקבע ב${BOUTIQUE.name}`,
+};
+
+// Which stepper item carries aria-current at each stop of the walk. `confirm`
+// is terminal and outside the stepper, so it carries none.
+const STEPPER_CURRENT: Record<string, string | null> = {
+  slot: STEP_TITLES.slot,
+  details: STEP_TITLES.details,
+  terms: STEP_TITLES.terms,
+  verify: STEP_TITLES.verify,
+  "verify-code": STEP_TITLES.verify,
+  confirm: null,
+};
+
+// Every chip in this flow is a native radio rendered sr-only inside the <label>
+// that carries its visible text — so the label is what a finger lands on and
+// what these click. Located by the radio it wraps rather than by its own text:
+// nested elements with identical text make a bare getByText ambiguous.
+function chip(page: Page, name: string): Locator {
+  return page.locator("label").filter({ has: page.getByRole("radio", { name, exact: true }) });
+}
+
+function forwardButton(page: Page): Locator {
+  return page.getByRole("button", { name: CONTINUE_LABEL });
+}
+
+// The three entry reads land together, and the slot step paints a skeleton Card
+// under a live h1 while they are in flight — so the heading is NOT the tell. A
+// scan against the skeleton would pass vacuously, which is the whole reason
+// gotoSettled exists for the other routes.
+async function gotoBooking(page: Page, path: string): Promise<void> {
+  await page.goto(`${STOREFRONT}${path}`);
+  await expect(page.getByRole("radio", { name: new RegExp(BOOK_TYPE) })).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+}
+
+async function expectStep(page: Page, step: string, suffix = ""): Promise<void> {
+  await expect(page).toHaveURL(`${STOREFRONT}/book/${step}${suffix}`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(STEP_TITLES[step]);
+}
+
+// The forward pass, with a hook fired on each stop AFTER the step has rendered
+// and BEFORE anything is typed into it. `verify` is visited twice — bare, and
+// again once the code field, the polite region and the cooling resend button
+// are all up, which is a materially different screen for axe and for layout.
+//
+// `landsOn` is where the submit is expected to arrive: `confirm` on the happy
+// path, and the step a mid-flow conflict routes back to on the other two.
+async function walkBooking(
+  page: Page,
+  options: {
+    dressId?: string;
+    size?: string;
+    landsOn?: string;
+    atStep?: (label: string) => Promise<void>;
+  } = {},
+): Promise<void> {
+  const { dressId, size, landsOn = "confirm", atStep } = options;
+  const suffix = dressId === undefined ? "" : `/${dressId}`;
+
+  await gotoBooking(page, `/book/slot${suffix}`);
+  await expectStep(page, "slot", suffix);
+  await atStep?.("slot");
+  await page.getByRole("radio", { name: new RegExp(BOOK_TYPE) }).check();
+  await chip(page, SLOT_LABEL).click();
+  await expect(page.getByRole("radio", { name: SLOT_LABEL, exact: true })).toBeChecked();
+  await forwardButton(page).click();
+
+  await expectStep(page, "details", suffix);
+  await atStep?.("details");
+  await page.getByLabel(NAME_LABEL).fill(CUSTOMER_NAME);
+  if (size !== undefined) {
+    await chip(page, size).click();
+    await expect(page.getByRole("radio", { name: size, exact: true })).toBeChecked();
+  }
+  await forwardButton(page).click();
+
+  await expectStep(page, "terms", suffix);
+  await atStep?.("terms");
+  await page.getByRole("checkbox").check();
+  await forwardButton(page).click();
+
+  await expectStep(page, "verify", suffix);
+  await atStep?.("verify");
+  await page.getByLabel(PHONE_LABEL).fill(TYPED_PHONE);
+  await page.getByRole("button", { name: SEND_CODE_LABEL }).click();
+  await page.getByLabel(CODE_LABEL).fill(OTP_CODE);
+  await atStep?.("verify-code");
+  await page.getByRole("button", { name: SUBMIT_LABEL }).click();
+
+  await expectStep(page, landsOn, suffix);
+  if (landsOn === "confirm") await atStep?.("confirm");
+}
+
+// Every POST body the flow put on the wire, in order. The payload is the only
+// place the whole flow's accumulated state is observable at once — the picked
+// type and instant, the accepted terms VERSION, the normalised phone, the token
+// and the dress binding — so it is what the two happy-path tests assert on.
+function captureBookings(page: Page): unknown[] {
+  const posted: unknown[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/storefront/bookings") {
+      posted.push(request.postDataJSON());
+    }
+  });
+  return posted;
+}
+
+// --- §11 rows 1 + 20: the generic happy path ---------------------------------
+
+test("storefront booking: the generic path walks all five steps to a confirmation", async ({
+  page,
+}) => {
+  await installApi(page);
+  const posted = captureBookings(page);
+  const visited: string[] = [];
+
+  await walkBooking(page, {
+    atStep: async (label) => {
+      visited.push(label);
+      const current = STEPPER_CURRENT[label];
+      const marked = page.locator('[aria-current="step"]');
+      if (current === null) {
+        // R2: the stepper is gone on the terminal screen, so nothing there is
+        // still claiming to be a step of a flow she has finished.
+        await expect(marked).toHaveCount(0);
+      } else {
+        await expect(marked).toHaveText(current);
+      }
+    },
+  });
+
+  expect(visited).toEqual(["slot", "details", "terms", "verify", "verify-code", "confirm"]);
+
+  // D6: the record states the appointment in full, in the BOUTIQUE's calendar
+  // (10:00 Jerusalem, from an 08:00Z instant), and promises no SMS.
+  await expect(page.getByText(TYPE_PLAIN.name)).toBeVisible();
+  await expect(page.getByText(SLOT_LABEL, { exact: true })).toBeVisible();
+  await expect(page.getByText("זה האישור היחיד שלך")).toBeVisible();
+  // F16 has not shipped: a booking sends NO message, so this screen is her only
+  // record and nothing on it may promise one.
+  const body = await page.locator("body").innerText();
+  for (const promised of ["SMS", "מסרון"]) {
+    expect(body, `the confirmation promises a message it will never send: ${promised}`).not.toContain(
+      promised,
+    );
+  }
+
+  expect(posted).toEqual([
+    {
+      phone: WIRE_PHONE,
+      verification_token: VERIFICATION_TOKEN,
+      name: CUSTOMER_NAME,
+      appointment_type_id: TYPE_PLAIN.id,
+      starts_at: SLOT_1000,
+      terms_version: TERMS_V3.version,
+      dress_id: null,
+      dress_size: null,
+      notes: null,
+    },
+  ]);
+});
+
+// --- §11 row 2: the item-based path ------------------------------------------
+
+test("storefront booking: the item path carries the dress id through every step and books the size", async ({
+  page,
+}) => {
+  await installApi(page, "populated", BOUTIQUE, {
+    bookings: [{ status: 201, body: { ...BOOKED, dress_name: GALLERY.name, dress_size: "36" } }],
+  });
+  const posted = captureBookings(page);
+  const paths: string[] = [];
+
+  await walkBooking(page, {
+    dressId: GALLERY.id,
+    size: "36",
+    atStep: async (label) => {
+      paths.push(`${label}: ${new URL(page.url()).pathname}`);
+      if (label === "details") {
+        // The binding names itself once, where she can still change her mind
+        // about the size — and it is NOT a link: leaving discards the draft.
+        await expect(page.getByText(`עבור ${GALLERY.name}`)).toBeVisible();
+        await expect(page.getByRole("link", { name: GALLERY.name })).toHaveCount(0);
+      }
+    },
+  });
+
+  // D9: the dress rides a path SEGMENT on every step, because the navigation
+  // store snapshots pathname only and cannot see a query string.
+  expect(paths).toEqual([
+    `slot: /book/slot/${GALLERY.id}`,
+    `details: /book/details/${GALLERY.id}`,
+    `terms: /book/terms/${GALLERY.id}`,
+    `verify: /book/verify/${GALLERY.id}`,
+    `verify-code: /book/verify/${GALLERY.id}`,
+    `confirm: /book/confirm/${GALLERY.id}`,
+  ]);
+
+  // dress_id and dress_size are a PAIR at the boundary or neither is sent.
+  expect(posted).toEqual([
+    expect.objectContaining({ dress_id: GALLERY.id, dress_size: "36" }),
+  ]);
+  await expect(page.getByText(`${GALLERY.name} · מידה 36`)).toBeVisible();
+});
+
+// --- §12.3: axe, per new route -----------------------------------------------
+
+test("storefront booking: zero axe A/AA violations on every step of the flow", async ({ page }) => {
+  await installApi(page);
+  const failures: string[] = [];
+
+  await walkBooking(page, {
+    atStep: async (label) => {
+      const violations = await axeViolations(page);
+      if (violations.length > 0) failures.push(`${label} — ${violations.join(" | ")}`);
+    },
+  });
+
+  expect(failures).toEqual([]);
+});
+
+// The item path's entry is the sixth pass §12.3 enumerates: it is the only URL
+// shape carrying a second segment, and the only slot step that also renders a
+// dress read. The cold confirmation is the other document-loadable /book URL —
+// guard-exempt by design, so it is reachable by a stale bookmark or by the
+// app-switch an iOS screenshot triggers.
+test("storefront booking: zero axe A/AA violations on the item entry and the cold confirmation", async ({
+  page,
+}) => {
+  await installApi(page);
+
+  await gotoBooking(page, `/book/slot/${GALLERY.id}`);
+  expect(await axeViolations(page), "the item path's entry").toEqual([]);
+
+  await page.goto(`${STOREFRONT}/book/confirm`);
+  // R14: no 201 and no way to fetch one, so it may not assert a booking it
+  // cannot show — and it must not bounce her to step one either.
+  await expect(page.getByText("אם השלמת את קביעת התור", { exact: false })).toBeVisible();
+  await expect(page).toHaveURL(`${STOREFRONT}/book/confirm`);
+  await page.evaluate(() => document.fonts.ready);
+  expect(await axeViolations(page), "the cold confirmation").toEqual([]);
+});
+
+// --- responsive ---------------------------------------------------------------
+
+test("storefront booking: no horizontal scroll at 375 / 768 / 1440 on every step", async ({
+  page,
+}) => {
+  await installApi(page);
+  const overflows: string[] = [];
+
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await walkBooking(page, {
+      atStep: async (label) => {
+        const overflow = await horizontalOverflow(page);
+        if (overflow > 0) {
+          overflows.push(`${label} @${String(width)} overflows by ${String(overflow)}px`);
+        }
+      },
+    });
+  }
+
+  expect(overflows).toEqual([]);
+});
+
+// --- skip link + the router's focus contract, on every step -------------------
+
+test("storefront booking: every step lands focus on #content and keeps the skip link first in the tab order", async ({
+  page,
+}) => {
+  await installApi(page);
+  const problems: string[] = [];
+
+  await walkBooking(page, {
+    atStep: async (label) => {
+      // Steps 2-5 are ENTERED by a client navigation, which is exactly when the
+      // Router owes the focus move — a step reached with focus still on the
+      // button that left the previous one drops a screen-reader user mid-form.
+      // `slot` is the document load (the browser owns focus, and the skip link
+      // is the first stop) and `verify-code` is a within-step state change that
+      // deliberately puts focus in the code field.
+      if (label !== "slot" && label !== "verify-code") {
+        const landed = await focusState(page);
+        if (landed.id !== MAIN_ID) {
+          problems.push(`${label}: focus is on "${landed.label}", not #${MAIN_ID}`);
+        }
+      }
+
+      if (label === "slot") {
+        // A real document load, so the plain claim is measurable exactly as it
+        // is on every other route: from the top, the first stop is the skip
+        // link.
+        await page.keyboard.press("Tab");
+        const first = await activeLabel(page);
+        if (first !== SKIP_LINK) problems.push(`${label}: the first Tab stop is "${first}"`);
+        return;
+      }
+
+      // The middle steps cannot be document-loaded at all — the D8 guard
+      // bounces a cold /book/details to /book/slot — and after a client
+      // navigation there is no way back to the top of the tab order: Chromium's
+      // sequential-focus starting point is <main>, and blur() does NOT reset it
+      // (measured: a forward Tab lands on the back link, not the skip link).
+      // So the falsifiable half of §12.3's claim here is the other one —
+      // "nothing in this flow renders above it" — and Shift+Tab out of the
+      // first content stop is what asks it.
+      await page.evaluate((mainId) => {
+        document.getElementById(mainId)?.focus();
+      }, MAIN_ID);
+      await page.keyboard.press("Tab");
+      const firstInside = await focusState(page);
+      if (!firstInside.inside) {
+        problems.push(`${label}: Tab out of <main> landed on "${firstInside.label}", outside it`);
+      }
+      await page.keyboard.press("Shift+Tab");
+      const above = await activeLabel(page);
+      if (above !== SKIP_LINK) {
+        problems.push(`${label}: "${above}" sits between the skip link and the content`);
+      }
+    },
+  });
+
+  expect(problems).toEqual([]);
+});
+
+// --- prefers-reduced-motion ---------------------------------------------------
+
+test("storefront booking: reduced motion zeroes the flow's transitions", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await installApi(page);
+  await gotoBooking(page, "/book/slot");
+
+  // The forward Button is the one element on this step that declares a
+  // transition at all, so it is the only place the media query is observable —
+  // the h1 has nothing to disable and would pass whatever the stylesheet said.
+  const motion = await forwardButton(page).evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { transitionDuration: style.transitionDuration, animationName: style.animationName };
+  });
+  expect(motion).toEqual({ transitionDuration: "0s", animationName: "none" });
+});
+
+// --- Risk 6: /book/* ships no BookingCTA bar ----------------------------------
+//
+// hasBookingBar() is false for the whole flow, and until now that was asserted
+// by reading the function rather than by looking at a rendered page. A bar here
+// would be a control offering to start a booking she is three steps into, and
+// it would lift the A11yMenu 92px over a page that reserved nothing for it.
+
+test("storefront booking: /book/* renders no BookingCTA bar and no booking CTA @375", async ({
+  page,
+}) => {
+  await page.setViewportSize(VIEWPORT_375);
+  await installApi(page);
+  const found: string[] = [];
+
+  const assertNoBar = async (label: string) => {
+    if ((await ctaBar(page).count()) > 0) found.push(`${label}: a z-40 bar`);
+    if ((await page.getByRole("link", { name: CTA_LABEL }).count()) > 0) {
+      found.push(`${label}: a booking CTA link`);
+    }
+  };
+
+  await walkBooking(page, { atStep: assertNoBar });
+
+  await gotoBooking(page, `/book/slot/${GALLERY.id}`);
+  await assertNoBar("item entry");
+
+  // The flow pays for the A11yMenu's footprint itself (BookPage's pb-16), since
+  // there is no bar under it doing the reserving. Measured scrolled to the end,
+  // which is where a too-small reservation shows up.
+  await page.evaluate(() => {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  });
+  const trigger = await rect(a11yTrigger(page), "A11yMenu trigger");
+  const forwardRect = await rect(forwardButton(page), "forward button");
+  expect(
+    intersectionArea(forwardRect, trigger),
+    `${describe("forward button", forwardRect)} / ${describe("a11y trigger", trigger)}`,
+  ).toBe(0);
+
+  expect(found).toEqual([]);
+});
+
+// --- D8: the browser back button walks the steps in reverse -------------------
+
+test("storefront booking: the browser back button walks the steps in reverse, then leaves the flow", async ({
+  page,
+}) => {
+  await installApi(page);
+  await gotoSettled(page, "/");
+
+  // Entered by the CTA rather than by goto, so the entry the back button
+  // eventually walks out to is the catalog she actually came from.
+  await page.getByRole("link", { name: CTA_LABEL }).click();
+  await expect(page.getByRole("radio", { name: new RegExp(BOOK_TYPE) })).toBeVisible();
+  await expectStep(page, "slot");
+
+  await page.getByRole("radio", { name: new RegExp(BOOK_TYPE) }).check();
+  await chip(page, SLOT_LABEL).click();
+  await forwardButton(page).click();
+  await expectStep(page, "details");
+  await page.getByLabel(NAME_LABEL).fill(CUSTOMER_NAME);
+  await forwardButton(page).click();
+  await expectStep(page, "terms");
+  await page.getByRole("checkbox").check();
+  await forwardButton(page).click();
+  await expectStep(page, "verify");
+
+  // R26's caveat, honoured deliberately: navigate() is pushState-only, so a
+  // mid-flow error RECOVERY grows the history stack and a clean back-out is not
+  // promised after one. This is the plain forward walk, where every step pushed
+  // exactly one entry — and that is the case D8 rules on.
+  for (const step of ["terms", "details", "slot"]) {
+    await page.goBack();
+    await expectStep(page, step);
+  }
+
+  // The guard did not fire on the way back: her picked slot, her name and her
+  // consent are all still held, so this was a walk and not three redirects to
+  // step one wearing the right URLs.
+  await expect(page.getByRole("radio", { name: SLOT_LABEL, exact: true })).toBeChecked();
+  await forwardButton(page).click();
+  await expectStep(page, "details");
+  await expect(page.getByLabel(NAME_LABEL)).toHaveValue(CUSTOMER_NAME);
+  await page.goBack();
+  await expectStep(page, "slot");
+
+  // Back out of the first step leaves the flow, and lands where she started.
+  await page.goBack();
+  await expect(page).toHaveURL(`${STOREFRONT}/`);
+  await expect(page.getByRole("heading", { level: 1, name: BOUTIQUE.name })).toBeVisible();
+});
+
+// --- §11 row 10: the slot was taken while she typed ---------------------------
+
+test("storefront booking: a slot taken mid-flow returns her to a fresh grid and books the replacement", async ({
+  page,
+}) => {
+  await installApi(page, "populated", BOUTIQUE, {
+    // The claim loses the race once; the second one wins.
+    bookings: [
+      conflict(409, "SLOT_UNAVAILABLE"),
+      { status: 201, body: { ...BOOKED, starts_at: SLOT_1045 } },
+    ],
+    // The recovery's re-read must be the one that DROPS the taken time. A
+    // fixture answering the same grid twice would pass against a UI that never
+    // re-fetched anything.
+    slots: [ok(slotBody(ALL_SLOTS)), ok(slotBody([SLOT_1045, SLOT_1130, SLOT_NEXT_DAY]))],
+  });
+  const posted = captureBookings(page);
+  let otpSends = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/storefront/otp/send") otpSends += 1;
+  });
+
+  // The submit does not reach the confirmation: the 409 routes her back to the
+  // step that owns the fix, which is the picker she came from.
+  await walkBooking(page, { landsOn: "slot" });
+
+  await expect(page.getByRole("alert")).toHaveText(SLOT_TAKEN_MESSAGE);
+  await expect(chip(page, SLOT_LABEL)).toHaveCount(0);
+  // A lost race is not a restart of intent: the type she chose survives.
+  await expect(page.getByRole("radio", { name: new RegExp(BOOK_TYPE) })).toBeChecked();
+
+  await chip(page, REPLACEMENT_SLOT_LABEL).click();
+  await forwardButton(page).click();
+  await expectStep(page, "details");
+  await expect(page.getByLabel(NAME_LABEL)).toHaveValue(CUSTOMER_NAME);
+  await forwardButton(page).click();
+  await expectStep(page, "terms");
+  // The version did not change, so the consent she already gave still stands.
+  await expect(page.getByRole("checkbox")).toBeChecked();
+  await forwardButton(page).click();
+  await expectStep(page, "verify");
+  await page.getByRole("button", { name: SUBMIT_LABEL }).click();
+  await expectStep(page, "confirm");
+
+  expect(posted).toEqual([
+    expect.objectContaining({ starts_at: SLOT_1000, verification_token: VERIFICATION_TOKEN }),
+    expect.objectContaining({ starts_at: SLOT_1045, verification_token: VERIFICATION_TOKEN }),
+  ]);
+  // The token survived the failed claim — create_booking runs in one
+  // transaction, so a claim that loses the race rolls its own token burn back
+  // with it. Re-verifying would burn one of five hourly sends to re-prove what
+  // the server never un-proved.
+  expect(otpSends, "the recovery spent a second OTP send").toBe(1);
+  await expect(page.getByText(REPLACEMENT_SLOT_LABEL, { exact: true })).toBeVisible();
+});
+
+// --- §11 row 11: the terms were republished mid-session -----------------------
+
+test("storefront booking: republished terms are re-shown and re-accepted before the booking lands", async ({
+  page,
+}) => {
+  await installApi(page, "populated", BOUTIQUE, {
+    bookings: [conflict(409, "TERMS_STALE"), { status: 201, body: BOOKED }],
+    terms: [ok(TERMS_V3), ok(TERMS_V4)],
+  });
+  const posted = captureBookings(page);
+
+  await walkBooking(page, { landsOn: "terms" });
+
+  await expect(page.getByRole("alert")).toHaveText(TERMS_STALE_MESSAGE);
+  // The NEW text and the NEW numbers, not the ones she agreed to.
+  await expect(page.getByText(TERMS_V4.terms_text)).toBeVisible();
+  await expect(page.getByText(TERMS_V3.terms_text)).toHaveCount(0);
+  // Unchecked by construction, not by an effect somebody remembered to write:
+  // `accepted` is acceptedVersion === terms.version, and the version moved.
+  // Carrying the tick forward would record agreement to text she never saw.
+  await expect(page.getByRole("checkbox")).not.toBeChecked();
+
+  await page.getByRole("checkbox").check();
+  await forwardButton(page).click();
+  await expectStep(page, "verify");
+  await page.getByRole("button", { name: SUBMIT_LABEL }).click();
+  await expectStep(page, "confirm");
+
+  expect(posted).toEqual([
+    expect.objectContaining({ terms_version: TERMS_V3.version }),
+    expect.objectContaining({ terms_version: TERMS_V4.version }),
+  ]);
 });

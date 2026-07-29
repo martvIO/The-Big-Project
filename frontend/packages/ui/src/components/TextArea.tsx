@@ -1,4 +1,4 @@
-import type { TextareaHTMLAttributes } from "react";
+import type { Ref, TextareaHTMLAttributes } from "react";
 import { useId } from "react";
 import { cn, focusRing } from "../lib/styles";
 
@@ -8,6 +8,7 @@ export interface TextAreaProps extends Omit<TextareaHTMLAttributes<HTMLTextAreaE
   help?: string;
   // When set with maxLength, renders a "used / max" counter tied to the field.
   showCount?: boolean;
+  ref?: Ref<HTMLTextAreaElement>;
 }
 
 export function TextArea({ label, error, help, showCount, className, value, maxLength, ...rest }: TextAreaProps) {
@@ -45,7 +46,11 @@ export function TextArea({ label, error, help, showCount, className, value, maxL
       />
       {countId && (
         <span id={countId} className="text-xs text-ink-muted text-end">
-          {used} / {maxLength}
+          {/* A bare numeric run inside an RTL document reorders against the
+              neighbouring Hebrew without an isolate of its own. */}
+          <bdi dir="ltr">
+            {used} / {maxLength}
+          </bdi>
         </span>
       )}
       {error && (

@@ -155,6 +155,19 @@ class SlotListResponse(BaseModel):
     slots: list[SlotRow]
 
 
+class StorefrontTerms(BaseModel):
+    """The current cancellation policy — what a customer must be shown before
+    accepting. NOT a subclass of the manage-side TermsVersionResponse: `id`,
+    `tenant_id`, `created_by` and the timestamps are operator provenance, not
+    booking-page content. `version` ships because the booking POST sends back
+    the version the customer accepted."""
+
+    version: int
+    terms_text: str
+    refundable_until_hours_before: int
+    forfeit_percent: int
+
+
 class AppointmentTypeRow(BaseModel):
     """What a customer can book, and what it costs to hold.
 

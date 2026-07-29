@@ -1,29 +1,38 @@
 // oxlint-disable react/only-export-components -- the route table, navigate() and
 // the two components are one unit; splitting them to buy fast refresh on a
-// four-route file is not a trade worth making.
+// one-screen file is not a trade worth making.
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import type { AnchorHTMLAttributes, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { AboutPage } from "./routes/AboutPage";
 import { AccessibilityPage } from "./routes/AccessibilityPage";
+import { BookPage } from "./routes/BookPage";
 import { CatalogPage } from "./routes/CatalogPage";
 import { DressPage } from "./routes/DressPage";
 
 // ponytail: hand-rolled router. The workspace carries no router dependency and
-// the storefront has four flat routes, so this is ~80 lines instead of one.
-// Ceiling: no nested routes, no scroll restoration, no code splitting, no
-// route-level data loaders — pages fetch their own. Swap in react-router when
-// E3's booking flow needs nested layouts; matchRoute below is the seam.
+// the storefront has a handful of flat routes, so this is ~90 lines instead of
+// one. Ceiling: no scroll restoration, no code splitting, no route-level data
+// loaders — pages fetch their own. The booking flow needed no nesting after
+// all: StorefrontLayout mounts ABOVE the Router in App.tsx, so /book/* already
+// renders inside the shell and no dependency was added for it.
 // Side effect worth keeping: with no back() to call, the qa-checklist ban on
 // history-based back navigation is structural rather than a grep.
 
-export type RouteName = "catalog" | "dress" | "about" | "accessibility";
+export type RouteName = "catalog" | "dress" | "about" | "accessibility" | "book";
+
+// A closed set, which is what lets /book/{step} and /book/{step}/{dressId}
+// share a shape: no dress id can ever be read as a step.
+export const BOOK_STEPS = ["slot", "details", "terms", "verify", "confirm"] as const;
+
+export type BookStep = (typeof BOOK_STEPS)[number];
 
 export type RouteMatch =
   | { name: "catalog" }
   | { name: "dress"; dressId: string }
   | { name: "about" }
-  | { name: "accessibility" };
+  | { name: "accessibility" }
+  | { name: "book"; step: BookStep; dressId?: string };
 
 // The id of StorefrontLayout's <main tabindex="-1">. Focus lands here after
 // every client navigation, and the SkipLink targets it.
@@ -38,9 +47,18 @@ const DOC_TITLE_KEYS: Record<RouteName, string> = {
   dress: "document.dress",
   about: "document.about",
   accessibility: "document.accessibility",
+  // One title for all five steps. BookPage must not write its own: React
+  // flushes a child's passive effects before its parent's, so the effect below
+  // would run last and clobber a per-step title.
+  book: "document.book",
 };
 
 const DRESS_PATH = /^\/dress\/([^/]+)$/;
+const BOOK_PATH = /^\/book(?:\/([^/]+)(?:\/([^/]+))?)?$/;
+
+function isBookStep(value: string): value is BookStep {
+  return (BOOK_STEPS as readonly string[]).includes(value);
+}
 
 function decodeId(raw: string): string {
   try {
@@ -59,6 +77,20 @@ export function matchRoute(pathname: string): RouteMatch {
 
   const dress = DRESS_PATH.exec(path);
   if (dress) return { name: "dress", dressId: decodeId(dress[1]) };
+
+  const book = BOOK_PATH.exec(path);
+  if (book !== null) {
+    // Bare /book opens the flow on its first step rather than 404ing a URL a
+    // bride can reasonably type. An unknown step is not a step, so it falls
+    // through to the catalog below with every other unmatched path.
+    const step = book[1] ?? "slot";
+    const dressId = book[2];
+    if (isBookStep(step)) {
+      return dressId === undefined
+        ? { name: "book", step }
+        : { name: "book", step, dressId: decodeId(dressId) };
+    }
+  }
 
   // Everything else is the collection. The design ships no 404 page, and a
   // stale link out of an Instagram bio should land on the dresses, not a wall.
@@ -82,8 +114,21 @@ export function usePathname(): string {
   return useSyncExternalStore(subscribe, currentPathname, currentPathname);
 }
 
-export function navigate(to: string): void {
-  window.history.pushState(null, "", to);
+/**
+ * `replace` is for GUARD redirects only — a step bouncing her off itself
+ * because it has nothing to work with. Pushed, those trap the back button:
+ * from /book/confirm, Back lands on /book/verify, the guard pushes
+ * /book/confirm again, and the catalog is unreachable by Back forever.
+ *
+ * R26's accepted growing stack is the other case — a mid-flow recovery that
+ * takes her somewhere she can act — and stays a push.
+ */
+export function navigate(to: string, options: { replace?: boolean } = {}): void {
+  if (options.replace === true) {
+    window.history.replaceState(null, "", to);
+  } else {
+    window.history.pushState(null, "", to);
+  }
   window.dispatchEvent(new Event(NAVIGATION_EVENT));
 }
 
@@ -217,6 +262,8 @@ export function Router() {
       return <AboutPage />;
     case "accessibility":
       return <AccessibilityPage />;
+    case "book":
+      return <BookPage step={match.step} dressId={match.dressId} />;
     default:
       return <CatalogPage />;
   }

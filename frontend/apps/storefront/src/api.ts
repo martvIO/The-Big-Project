@@ -1,5 +1,6 @@
-// Typed fetch helper for the public storefront. Three GETs, no mutations. Wire
-// format is the backend's snake_case verbatim; errors arrive in the house shape
+// Typed fetch helper for the public storefront: the catalog/identity GETs plus
+// the booking-flow mutations (OTP send/verify, booking create). Wire format is
+// the backend's snake_case verbatim; errors arrive in the house shape
 // {"error": {"code", "message"}} and are surfaced as ApiError.
 //
 // Deliberately a local copy of apps/manage's helper rather than a shared
@@ -28,8 +29,11 @@ export class ApiError extends Error {
 // link fails FastAPI's UUID coercion, which the platform normalises to
 // 400 VALIDATION_ERROR — semantically "no such dress", not "the server broke".
 // Without this it rendered dress.error plus a Retry button that re-issues the
-// same 400 forever. The dress detail is the storefront's only path-parameter
-// endpoint, so this is the only shape a VALIDATION_ERROR can take here.
+// same 400 forever.
+//
+// DRESS-DETAIL ONLY. On the booking POST a 400 VALIDATION_ERROR is a form
+// problem, not a vanished dress — the booking flow keys off errorMessageKey
+// and must never consult this helper (pinned in api.test.ts).
 export function isNotFound(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
   return error.status === 404 || (error.status === 400 && error.code === "VALIDATION_ERROR");
@@ -52,6 +56,21 @@ export function errorMessageKey(error: unknown): string {
       return "errors.tooManyAttempts";
     case "VALIDATION_ERROR":
       return "errors.validation";
+    case "SLOT_UNAVAILABLE":
+      return "errors.slotUnavailable";
+    case "TERMS_STALE":
+      return "errors.termsStale";
+    case "OTP_INVALID":
+      return "errors.otpInvalid";
+    case "OTP_EXPIRED":
+      return "errors.otpExpired";
+    case "PHONE_NOT_VERIFIED":
+      return "errors.phoneNotVerified";
+    // One string for both codes: to the visitor "misconfigured" and "provider
+    // down" are the same dead end, and the way out is the phone either way.
+    case "SMS_NOT_CONFIGURED":
+    case "SMS_UNAVAILABLE":
+      return "errors.smsUnavailable";
     default:
       return "errors.unknown";
   }
@@ -92,11 +111,20 @@ function extractError(body: unknown): { code: string; message: string } | null {
   return { code: typeof code === "string" ? code : "UNKNOWN", message };
 }
 
-export async function apiFetch<T>(path: string): Promise<T> {
-  // credentials: "omit" — this is a public surface. A session cookie sent to an
-  // unauthenticated endpoint is a cookie that ends up in an access log, and
-  // nothing here is per-visitor.
-  const response = await fetch(path, { method: "GET", credentials: "omit" });
+export async function apiFetch<T>(
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<T> {
+  // credentials: "omit" — on the mutations too, by contract. The booking
+  // surface is cookie-blind: the credential is the verification token in the
+  // body, and a backend test asserts an owner cookie changes nothing.
+  const { method = "GET", body } = init;
+  const response = await fetch(path, {
+    method,
+    credentials: "omit",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   if (!response.ok) {
     let extracted: { code: string; message: string } | null = null;
     try {
@@ -109,6 +137,10 @@ export async function apiFetch<T>(path: string): Promise<T> {
       extracted?.code ?? "UNKNOWN",
       extracted?.message ?? FALLBACK_ERROR_MESSAGE,
     );
+  }
+  // /otp/send answers 204 with no body, deliberately — nothing to parse.
+  if (response.status === 204) {
+    return undefined as T;
   }
   // A 200 whose body is not JSON must be an ApiError, not a raw SyntaxError.
   // This is not hypothetical: under the SPA history fallback a fetch to
@@ -206,6 +238,65 @@ export interface BoutiqueResponse {
   exceptions: ExceptionRow[];
 }
 
+// --- booking wire types (mirror backend/app/storefront/schemas.py,
+// app/notifications/schemas.py and app/booking/schemas.py) ---
+
+export interface StorefrontTerms {
+  // Echoed back as terms_version on the booking POST — the version she accepted.
+  version: number;
+  terms_text: string;
+  refundable_until_hours_before: number;
+  forfeit_percent: number;
+}
+
+export interface AppointmentTypeRow {
+  id: string;
+  name: string;
+  duration_minutes: number;
+  // "all" | "brides_only" — disclosed so the UI can label the option; nothing
+  // public enforces it (an anonymous visitor cannot be classified as a bride).
+  audience: string;
+  deposit_required: boolean;
+  deposit_amount_agorot: number | null;
+}
+
+export interface SlotRow {
+  starts_at: string;
+}
+
+export interface SlotListResponse {
+  // Start times only — no capacity, no remaining. Every slot returned is
+  // bookable by construction.
+  slots: SlotRow[];
+}
+
+export interface OtpVerifyResponse {
+  // Bearer material: single-use, phone-bound, 600s TTL. Held in memory only.
+  verification_token: string;
+  expires_at: string;
+}
+
+export interface BookingCreateRequest {
+  phone: string;
+  verification_token: string;
+  name: string;
+  appointment_type_id: string;
+  starts_at: string;
+  terms_version: number;
+  dress_id: string | null;
+  dress_size: string | null;
+  notes: string | null;
+}
+
+export interface BookingCreateResponse {
+  id: string;
+  starts_at: string;
+  status: string;
+  appointment_type_name: string;
+  dress_name: string | null;
+  dress_size: string | null;
+}
+
 // --- endpoints ---
 
 export const api = {
@@ -217,6 +308,33 @@ export const api = {
   },
   getBoutique(): Promise<BoutiqueResponse> {
     return apiFetch("/storefront/boutique");
+  },
+
+  getTerms(): Promise<StorefrontTerms> {
+    return apiFetch("/storefront/terms");
+  },
+  listAppointmentTypes(): Promise<AppointmentTypeRow[]> {
+    return apiFetch("/storefront/appointment-types");
+  },
+  // Boutique-calendar dates ("2026-08-01"), both bounds inclusive. Both are
+  // optional and the booking flow sends neither: the server defaults to
+  // today..+14d in Jerusalem, which is the window the date control is bounded
+  // to. A client-computed window would read the device clock.
+  listSlots(from?: string, to?: string): Promise<SlotListResponse> {
+    const query = new URLSearchParams();
+    if (from !== undefined) query.set("from", from);
+    if (to !== undefined) query.set("to", to);
+    const search = query.toString();
+    return apiFetch(`/storefront/slots${search === "" ? "" : `?${search}`}`);
+  },
+  sendOtp(phone: string): Promise<void> {
+    return apiFetch("/storefront/otp/send", { method: "POST", body: { phone } });
+  },
+  verifyOtp(phone: string, code: string): Promise<OtpVerifyResponse> {
+    return apiFetch("/storefront/otp/verify", { method: "POST", body: { phone, code } });
+  },
+  createBooking(body: BookingCreateRequest): Promise<BookingCreateResponse> {
+    return apiFetch("/storefront/bookings", { method: "POST", body });
   },
 };
 

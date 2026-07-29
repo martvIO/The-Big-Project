@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../i18n";
-import { Link, MAIN_ID, Router, matchRoute, navigate, usePathname } from "../router";
+import { BOOK_STEPS, Link, MAIN_ID, Router, matchRoute, navigate, usePathname } from "../router";
 
 // The routes are stubbed on purpose: this file is about the router's own
 // contract (matching, interception, title, focus, scroll). Rendering the real
@@ -13,6 +13,9 @@ vi.mock("../routes/DressPage", () => ({
 }));
 vi.mock("../routes/AboutPage", () => ({ AboutPage: () => "אודות" }));
 vi.mock("../routes/AccessibilityPage", () => ({ AccessibilityPage: () => "נגישות" }));
+vi.mock("../routes/BookPage", () => ({
+  BookPage: ({ step }: { step: string }) => `שלב ${step}`,
+}));
 
 function go(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -100,6 +103,47 @@ describe("matchRoute", () => {
     expect(matchRoute("/nope")).toEqual({ name: "catalog" });
     expect(matchRoute("/dress")).toEqual({ name: "catalog" });
     expect(matchRoute("/dress/a/b")).toEqual({ name: "catalog" });
+  });
+
+  it.each(BOOK_STEPS)("maps /book/%s to its step", (step) => {
+    expect(matchRoute(`/book/${step}`)).toEqual({ name: "book", step });
+  });
+
+  it("opens the flow on the slot step for a bare /book", () => {
+    expect(matchRoute("/book")).toEqual({ name: "book", step: "slot" });
+    expect(matchRoute("/book/")).toEqual({ name: "book", step: "slot" });
+  });
+
+  it("carries the dress id on /book/{step}/{dressId}", () => {
+    expect(matchRoute("/book/details/d1")).toEqual({
+      name: "book",
+      step: "details",
+      dressId: "d1",
+    });
+    expect(matchRoute("/book/confirm/d%201")).toEqual({
+      name: "book",
+      step: "confirm",
+      dressId: "d 1",
+    });
+  });
+
+  it("falls back to the catalog for an unknown step — the step set is closed", () => {
+    // The closed set is what stops a dress id being read as a step: there is no
+    // /book/{dressId} shape to be ambiguous with.
+    expect(matchRoute("/book/d1")).toEqual({ name: "catalog" });
+    expect(matchRoute("/book/slot/d1/more")).toEqual({ name: "catalog" });
+  });
+});
+
+describe("the booking flow's routes", () => {
+  it("renders the slot step for a bare /book", () => {
+    renderRoute("/book");
+    expect(screen.getByText("שלב slot")).toBeInTheDocument();
+  });
+
+  it("renders the step named in the path", () => {
+    renderRoute("/book/terms/d1");
+    expect(screen.getByText("שלב terms")).toBeInTheDocument();
   });
 });
 
@@ -247,6 +291,19 @@ describe("Router document title, focus and scroll", () => {
 
     expect(document.title).toBe(i18n.t("document.about"));
   });
+
+  // ONE title for the whole booking flow: the steps are not separate pages, and
+  // a per-step title written from inside BookPage would lose the race anyway —
+  // React flushes a child's passive effects before its parent's, so this effect
+  // would run last and overwrite it.
+  it.each(["/book", ...BOOK_STEPS.map((step) => `/book/${step}`), "/book/details/d1"])(
+    "titles %s with the flow's single title",
+    (pathname) => {
+      renderRoute(pathname);
+      expect(document.title).toBe(i18n.t("document.book"));
+      expect(document.title).not.toBe("document.book");
+    },
+  );
 
   it("does not steal focus on first paint — the skip link is the first stop", () => {
     renderRoute("/");

@@ -155,11 +155,11 @@ export function CatalogPage({ now = new Date() }: CatalogPageProps) {
           />
         )}
 
-        {/* Gated on the boutique, not on the dresses: booking is a phone call,
-            and it stays offerable when only the collection failed to load. The
-            CTA is withheld when identity failed rather than opening an empty
-            contact panel. */}
-        {boutique !== null && <BookingCTAButton boutique={boutique} />}
+        {/* Ungated (D12). The CTA opens no contact panel any more — it only
+            navigates to /book/slot — so it needs no boutique data and there is
+            nothing left for a failed identity fetch to make it lie about. The
+            flow itself owns the degrade when the boutique block is missing. */}
+        <BookingCTAButton />
       </div>
 
       <div aria-hidden="true" className="h-px bg-gold" />

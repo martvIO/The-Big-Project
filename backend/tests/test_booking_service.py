@@ -402,6 +402,137 @@ async def test_cancellation_frees_the_seat_for_a_new_claim(app_role_url: str) ->
         await engine.dispose()
 
 
+async def test_an_identical_recreate_returns_the_first_booking(app_role_url: str) -> None:
+    """The lost-201 retry, which is the common case on a flaky mobile network:
+    the claim COMMITTED, the response never arrived, and the spent token makes
+    the naive retry a 403 whose copy tells her to request a fresh code and
+    resubmit. She does — and the boutique must not end up holding two
+    appointments for her. Capacity 2, so a second seat was genuinely free:
+    this proves idempotency, not a full slot."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=2)
+        service = _service(factory)
+        first = await service.create_booking(
+            tenant_id,
+            raw_phone=phone,
+            verification_token=await _mint_verified_token(factory, tenant_id, phone),
+            name="נועה לוי",
+            appointment_type_id=type_id,
+            starts_at=SLOT,
+            terms_version=1,
+            notes="מגיעה עם אמא",
+        )
+        replay = await service.create_booking(
+            tenant_id,
+            raw_phone=phone,
+            verification_token=await _mint_verified_token(factory, tenant_id, phone),
+            name="נועה לוי",
+            appointment_type_id=type_id,
+            starts_at=SLOT,
+            terms_version=1,
+            notes="שלחתי שוב",
+        )
+        assert replay.id == first.id
+        assert replay.seat_index == first.seat_index
+        # The row is returned, never rewritten from the replay's payload: the
+        # first submission is the one she agreed to.
+        assert replay.notes == "מגיעה עם אמא"
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert await BookingsRepository().active_seats_at(
+                session, tenant_id, starts_at=SLOT
+            ) == {1}
+    finally:
+        await engine.dispose()
+
+
+async def test_two_simultaneous_identical_creates_yield_exactly_one_booking(
+    app_role_url: str,
+) -> None:
+    """The same retry, raced — a double-submit rather than a sequential one.
+    The per-tenant advisory lock serializes both claims, so the loser's
+    idempotency read runs against the winner's COMMITTED row and converges on
+    it. Both callers succeed, both hold the same appointment. Capacity 2, so
+    without the check this would be two seats rather than a 409."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=2)
+        service = _service(factory)
+
+        async def race(token: str) -> Booking:
+            return await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=token,
+                name="נועה לוי",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+
+        first_token = await _mint_verified_token(factory, tenant_id, phone)
+        second_token = await _mint_verified_token(factory, tenant_id, phone)
+        results = await asyncio.gather(
+            race(first_token), race(second_token), return_exceptions=True
+        )
+        winners = [r for r in results if not isinstance(r, BaseException)]
+        assert len(winners) == 2, f"expected both to succeed, got {results!r}"
+        assert len({w.id for w in winners}) == 1, f"expected one booking, got {results!r}"
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert await BookingsRepository().active_seats_at(
+                session, tenant_id, starts_at=SLOT
+            ) == {1}
+    finally:
+        await engine.dispose()
+
+
+async def test_her_own_cancellation_lets_her_rebook_the_same_instant(app_role_url: str) -> None:
+    """0009's predicate is 0008's: a cancelled row is not an active booking, so
+    a customer who cancels and changes her mind claims the very same instant
+    again — a fresh row, not the cancelled one handed back."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=1)
+        service = _service(factory)
+        first = await service.create_booking(
+            tenant_id,
+            raw_phone=phone,
+            verification_token=await _mint_verified_token(factory, tenant_id, phone),
+            name="נועה לוי",
+            appointment_type_id=type_id,
+            starts_at=SLOT,
+            terms_version=1,
+        )
+        async with tenant_session(factory, tenant_id) as session:
+            row = await BookingsRepository().by_id(session, tenant_id, first.id)
+            assert row is not None
+            row.status = BookingStatus.CANCELLED.value
+            await session.flush()
+
+        again = await service.create_booking(
+            tenant_id,
+            raw_phone=phone,
+            verification_token=await _mint_verified_token(factory, tenant_id, phone),
+            name="נועה לוי",
+            appointment_type_id=type_id,
+            starts_at=SLOT,
+            terms_version=1,
+        )
+        assert again.id != first.id
+        assert again.seat_index == 1
+        assert again.status == BookingStatus.CONFIRMED.value
+    finally:
+        await engine.dispose()
+
+
 async def test_off_grid_instants_are_slot_unavailable(app_role_url: str) -> None:
     """An arbitrary timestamp is not a slot: outside the window, off the
     30-minute grid, on a day without a rule, or in the past — all the same 409,
@@ -594,6 +725,10 @@ async def test_returning_customer_attaches_instead_of_duplicating(app_role_url: 
             terms_version=1,
         )
         assert second.customer_id == first.customer_id
+        # A DIFFERENT instant is a different appointment, not a replay: the
+        # idempotency guard is keyed on the instant, so two visits still book.
+        assert second.id != first.id
+        assert second.starts_at == _slot(10, 30)
         async with tenant_session(factory, tenant_id) as session:
             customer = await CustomersRepository().by_phone(session, tenant_id, phone=phone)
             assert customer is not None

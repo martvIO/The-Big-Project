@@ -119,7 +119,7 @@ convention in `.claude/rules/` belongs to a different stack and does not apply h
 | `GET /storefront/terms` | **new, this feature** |
 | `POST /storefront/otp/send` | `{phone}` → `204`. Always 204 — never reveals whether a code went out |
 | `POST /storefront/otp/verify` | `{phone, code}` → `{verification_token, expires_at}` |
-| `POST /storefront/bookings` | `{phone, verification_token, name, appointment_type_id, starts_at, terms_version, dress_id?, dress_size?, notes?}` → `201 {id, starts_at, status, appointment_type_name, dress_name, dress_size}` |
+| `POST /storefront/bookings` | `{phone, verification_token, name, appointment_type_id, starts_at, terms_version, (dress_id + dress_size)?, notes?}` → `201 {id, starts_at, status, appointment_type_name, dress_name, dress_size}`. **`dress_id` and `dress_size` are a PAIRED optional, not two independent ones**: `backend/app/booking/validation.py` enforces the two-path model — item-based carries both, generic carries neither, and a `dress_id` whose `dress_size` is absent or blank (or a `dress_size` with no `dress_id`) is a `400 VALIDATION_ERROR`. Consequences the UI inherits: the size control is **required** on the item-based path, there can be no "not sure" option, and a bound dress with no pickable size must drop the binding rather than send half a pair |
 
 **Error codes the UI must map to Hebrew copy** (the house helper selects copy by
 `code`, never by the server's message — every backend message is English):
@@ -374,6 +374,9 @@ D, the test suites cover every row, and nothing else in this spec re-enumerates 
 | Confirmation loaded cold | reload or app-switch after submit; no public read-by-id exists | D | unit |
 | Step entered without prerequisites | guard → `slot` (**D8**) | — | unit |
 | Browser back across steps | `popstate` (**D8**) | — | e2e |
+| Boutique fetch failed → no contact fallback | `useBoutique()` has nothing, so every `ContactPanel` branch would render an empty box (**D12**, gate proposal **P8**) → plain copy via `booking.contactUnavailable` | D | unit |
+| Submit failed outside the designed set | `429` / `5xx` / dropped connection on `POST /bookings` (**R13**) → re-enable submit, `errors.unknown`, contactable exit. **The flow's true terminal dead end before this row existed**: she verified, accepted the policy, pressed commit, and had no way to learn whether she was booked | D | unit |
+| Entry read failed | the step's own fetch (terms / types / slots / dress) fails rather than returning empty — distinct from every "empty list" row above, which are success responses | D | unit |
 
 **The submit-time `NOT_FOUND` needs a probe, because the server cannot tell you which
 thing went.** `POST /storefront/bookings` raises the same `BookingNotFoundError` — and

@@ -111,13 +111,29 @@ describe("apiFetch request mechanics", () => {
     expect(init.credentials).toBe("omit");
   });
 
-  it("sends no body and no content-type — the storefront is three GETs", async () => {
+  it("sends no body and no content-type on GETs", async () => {
     const fetchMock = stubFetch(() => jsonResponse(200, {}));
     await api.getBoutique();
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.method).toBe("GET");
     expect(init.body).toBeUndefined();
     expect(init.headers).toBeUndefined();
+  });
+
+  it("posts JSON with credentials still omitted — the token travels in the body, never a cookie", async () => {
+    const fetchMock = stubFetch(() => new Response(null, { status: 204 }));
+    await api.sendOtp("0501234567");
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/storefront/otp/send");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("omit");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(init.body as string)).toEqual({ phone: "0501234567" });
+  });
+
+  it("resolves a 204 without trying to parse a body", async () => {
+    stubFetch(() => new Response(null, { status: 204 }));
+    await expect(api.sendOtp("0501234567")).resolves.toBeUndefined();
   });
 });
 
@@ -132,6 +148,13 @@ describe("errorMessage", () => {
     ["NOT_FOUND", "Resource not found.", "errors.notFound"],
     ["TOO_MANY_ATTEMPTS", "Too many attempts. Try again later.", "errors.tooManyAttempts"],
     ["VALIDATION_ERROR", "Input failed validation.", "errors.validation"],
+    ["SLOT_UNAVAILABLE", "Slot is no longer available.", "errors.slotUnavailable"],
+    ["TERMS_STALE", "Terms version is stale.", "errors.termsStale"],
+    ["OTP_INVALID", "Invalid code.", "errors.otpInvalid"],
+    ["OTP_EXPIRED", "Code expired.", "errors.otpExpired"],
+    ["PHONE_NOT_VERIFIED", "Phone not verified.", "errors.phoneNotVerified"],
+    ["SMS_NOT_CONFIGURED", "SMS is not configured.", "errors.smsUnavailable"],
+    ["SMS_UNAVAILABLE", "SMS provider unavailable.", "errors.smsUnavailable"],
   ])("renders Hebrew for %s and never the server's English", (code, english, key) => {
     const rendered = errorMessage(new ApiError(400, code, english), t);
 
@@ -196,6 +219,119 @@ describe("storefront endpoints", () => {
     const fetchMock = stubFetch(() => jsonResponse(200, {}));
     await api.getBoutique();
     expect(fetchMock.mock.calls[0][0]).toBe("/storefront/boutique");
+  });
+
+  it("reads the current terms from /storefront/terms", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, {
+        version: 3,
+        terms_text: "טקסט",
+        refundable_until_hours_before: 48,
+        forfeit_percent: 100,
+      }),
+    );
+    const terms = await api.getTerms();
+    expect(fetchMock.mock.calls[0][0]).toBe("/storefront/terms");
+    expect(terms.version).toBe(3);
+    expect(terms.refundable_until_hours_before).toBe(48);
+  });
+
+  it("reads the appointment types from /storefront/appointment-types", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, []));
+    await api.listAppointmentTypes();
+    expect(fetchMock.mock.calls[0][0]).toBe("/storefront/appointment-types");
+  });
+
+  it("sends the slot window as from/to query dates", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { slots: [] }));
+    await api.listSlots("2026-08-01", "2026-08-14");
+    const [path] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const query = new URL(path, "https://bella.example.test").searchParams;
+    expect(query.get("from")).toBe("2026-08-01");
+    expect(query.get("to")).toBe("2026-08-14");
+  });
+
+  it("verifies the code with phone and code and hands back the bearer token", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, { verification_token: "tok", expires_at: "2026-08-01T10:00:00Z" }),
+    );
+    const result = await api.verifyOtp("0501234567", "123456");
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/storefront/otp/verify");
+    expect(JSON.parse(init.body as string)).toEqual({ phone: "0501234567", code: "123456" });
+    expect(result.verification_token).toBe("tok");
+  });
+
+  it("posts the booking with the backend's exact snake_case field names", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(201, {
+        id: "b-1",
+        starts_at: "2026-08-04T13:30:00+03:00",
+        status: "confirmed",
+        appointment_type_name: "מדידה",
+        dress_name: null,
+        dress_size: null,
+      }),
+    );
+    const created = await api.createBooking({
+      phone: "0501234567",
+      verification_token: "tok",
+      name: "דנה",
+      appointment_type_id: "a-1",
+      starts_at: "2026-08-04T13:30:00.000Z",
+      terms_version: 3,
+      dress_id: null,
+      dress_size: null,
+      notes: null,
+    });
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/storefront/bookings");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      phone: "0501234567",
+      verification_token: "tok",
+      name: "דנה",
+      appointment_type_id: "a-1",
+      starts_at: "2026-08-04T13:30:00.000Z",
+      terms_version: 3,
+      dress_id: null,
+      dress_size: null,
+      notes: null,
+    });
+    expect(created.appointment_type_name).toBe("מדידה");
+  });
+});
+
+// isNotFound folds 400 VALIDATION_ERROR into "dress gone" — correct on the
+// dress detail, where a malformed id is the only 400, and WRONG on the booking
+// POST, where a schema 400 is a form problem, not a vanished dress. This pins
+// that the mapping the booking flow actually uses disagrees with isNotFound on
+// exactly that error, so routing booking failures through isNotFound would
+// fail here, not in production.
+describe("booking-path VALIDATION_ERROR stays out of isNotFound", () => {
+  it("maps a booking 400 VALIDATION_ERROR to the validation copy, never the dress-gone rendering", async () => {
+    stubFetch(() =>
+      jsonResponse(400, { error: { code: "VALIDATION_ERROR", message: "Input failed validation." } }),
+    );
+    const error: unknown = await api
+      .createBooking({
+        phone: "0501234567",
+        verification_token: "tok",
+        name: "דנה",
+        appointment_type_id: "a-1",
+        starts_at: "2026-08-04T13:30:00.000Z",
+        terms_version: 3,
+        dress_id: null,
+        dress_size: null,
+        notes: null,
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    // The hazard is real: isNotFound WOULD misread this booking failure as a
+    // vanished dress. errorMessageKey — the booking flow's only renderer —
+    // does not.
+    expect(isNotFound(error)).toBe(true);
+    expect(errorMessageKey(error)).toBe("errors.validation");
   });
 });
 

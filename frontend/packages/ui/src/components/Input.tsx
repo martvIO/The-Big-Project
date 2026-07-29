@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes } from "react";
+import type { InputHTMLAttributes, Ref } from "react";
 import { useId } from "react";
 import { cn, focusRing } from "../lib/styles";
 
@@ -7,6 +7,7 @@ export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 
   label: string;
   error?: string;
   help?: string;
+  ref?: Ref<HTMLInputElement>;
 }
 
 export function Input({ label, error, help, className, ...rest }: InputProps) {

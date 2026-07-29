@@ -1,4 +1,4 @@
-import type { ReactNode, SelectHTMLAttributes } from "react";
+import type { ReactNode, Ref, SelectHTMLAttributes } from "react";
 import { useId } from "react";
 import { cn, focusRing } from "../lib/styles";
 
@@ -6,6 +6,7 @@ export interface SelectProps extends Omit<SelectHTMLAttributes<HTMLSelectElement
   label: string;
   error?: string;
   children: ReactNode;
+  ref?: Ref<HTMLSelectElement>;
 }
 
 // Native <select> — no custom dropdown in v1 (a11y cost not worth it).

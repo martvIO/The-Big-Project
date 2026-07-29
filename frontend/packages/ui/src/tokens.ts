@@ -67,6 +67,7 @@ export const themeTokens = {
 
   "--cta-bar-height": "calc(56px + 2 * var(--space-3))",
   "--space-a11y-clearance": "calc(var(--cta-bar-height) + var(--space-3))",
+  "--space-a11y-footprint": "calc(44px + var(--space-4) + var(--space-2))",
 } as const;
 
 // Ergonomic accessor for the colors non-CSS code reaches for (theme-color meta
