@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { createRef } from "react";
 import { describe, expect, it } from "vitest";
 import { Input } from "../components/Input";
 import { TextArea } from "../components/TextArea";
@@ -22,11 +23,23 @@ describe("Input", () => {
     render(<Input label="אתר" dir="ltr" defaultValue="example.com" />);
     expect(screen.getByLabelText("אתר")).toHaveAttribute("dir", "ltr");
   });
+
+  it("exposes the native input through ref", () => {
+    const ref = createRef<HTMLInputElement>();
+    render(<Input label="שם מלא" ref={ref} />);
+    expect(ref.current).toBeInstanceOf(HTMLInputElement);
+  });
 });
 
 describe("TextArea", () => {
   it("shows a used/max counter when showCount + maxLength are set", () => {
     render(<TextArea label="תנאים" showCount maxLength={100} value="שלום" onChange={() => {}} />);
     expect(screen.getByText("4 / 100")).toBeInTheDocument();
+  });
+
+  it("exposes the native textarea through ref", () => {
+    const ref = createRef<HTMLTextAreaElement>();
+    render(<TextArea label="הערות" ref={ref} />);
+    expect(ref.current).toBeInstanceOf(HTMLTextAreaElement);
   });
 });

@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
+import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode, Ref } from "react";
 import { cn, focusRing } from "../lib/styles";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
@@ -76,5 +76,43 @@ export function Button({
         </span>
       )}
     </button>
+  );
+}
+
+// A navigation styled as a button. Deliberately no `loading`, `disabled`,
+// `type` or `ref` — a link can be none of those, and a "disabled anchor" is
+// the commonest way a design system ships an unreachable control.
+export interface ButtonLinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href" | "type"> {
+  href: string;
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  fullWidthMobile?: boolean;
+  children: ReactNode;
+}
+
+export function ButtonLink({
+  variant = "primary",
+  size = "md",
+  fullWidthMobile = false,
+  href,
+  children,
+  className,
+  ...rest
+}: ButtonLinkProps) {
+  return (
+    <a
+      href={href}
+      {...rest}
+      className={cn(
+        base,
+        variants[variant],
+        sizes[size],
+        focusRing,
+        fullWidthMobile && "w-full sm:w-auto",
+        className,
+      )}
+    >
+      {children}
+    </a>
   );
 }

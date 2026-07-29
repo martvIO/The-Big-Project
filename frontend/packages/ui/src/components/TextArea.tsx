@@ -1,4 +1,4 @@
-import type { TextareaHTMLAttributes } from "react";
+import type { Ref, TextareaHTMLAttributes } from "react";
 import { useId } from "react";
 import { cn, focusRing } from "../lib/styles";
 
@@ -8,6 +8,7 @@ export interface TextAreaProps extends Omit<TextareaHTMLAttributes<HTMLTextAreaE
   help?: string;
   // When set with maxLength, renders a "used / max" counter tied to the field.
   showCount?: boolean;
+  ref?: Ref<HTMLTextAreaElement>;
 }
 
 export function TextArea({ label, error, help, showCount, className, value, maxLength, ...rest }: TextAreaProps) {
