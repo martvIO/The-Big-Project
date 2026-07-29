@@ -8,12 +8,28 @@
   ============================================================================
   F14 STOREFRONT BOOKING UI — design-gate prototype
   ============================================================================
+  STATUS: re-rendered 2026-07-29 against booking.md **rev 2 (GATE APPROVED)**
+  and copy.md **rev 3 (61/61 rows APPROVED)**. The five rev-2 divergences of
+  the previous render are RESOLVED in this file:
+    1. R3  — the resend cooldown is a fixed sentence, no ticking number
+    2. R10 — the slot grid rule is minmax(104px,1fr): 2 columns at 375
+    3. R15 — booking.sizeUnavailable is a ≤24-char phrase INSIDE the
+             unavailable chip's own <label>; plus the sign-off addition
+             booking.sizeUnavailableNote under the group
+    4. R7  — the forward button is never disabled, and carries no
+             aria-describedby to a deposit notice
+    5. R9  — Card padding is var(--space-6) at EVERY width, 375 included
+  Also applied: R1 (identity line above the step h1), R12 (document.book as
+  the h1 on the two no-step degrades), R18 (otpResend worded for the first
+  send), R30 (VisuallyHidden role="status" for the loading state), the two
+  sign-off additions (booking.confirmTitleNamed, booking.sizeUnavailableNote)
+  and copy.md rev 3's four changed cells (audienceBrides, noTypes, otpSent,
+  confirmCold). Every visible string is the APPROVED Hebrew, verbatim.
+
   Self-contained. NO external requests of any kind — no font CDN, no images,
-  no scripts, no fetches. This matches manage-catalog/prototype.html exactly:
-  production self-hosts Frank Ruhl Libre + Assistant via @fontsource, so a
-  Google Fonts <link> here would be the ONE thing this file does that the build
-  must not copy. The stacks below fall back to the system serif/sans, which is
-  expected and does not affect a single token.
+  no scripts, no fetches. Production self-hosts Frank Ruhl Libre + Assistant
+  via @fontsource; the stacks below fall back to the system serif/sans, which
+  is expected and does not affect a single token.
 
   Custom-property names and values in :root are copied verbatim from
   .planning/design/system/tokens.md so a reviewer can diff them line-for-line.
@@ -115,7 +131,6 @@
               color:var(--color-ink-muted);font-size:var(--text-xs);
               padding:var(--space-3) var(--space-4)}
   .proto-note b{color:var(--color-ink)}
-  .proto-note ul{margin-block-start:var(--space-2);padding-inline-start:var(--space-4)}
   /* JS-OFF SAFETY: screens are visible by default. Filtering only exists once the
      script stamps `js` on <body>. */
   body.js .screen{display:none}
@@ -127,7 +142,6 @@
   .cap{font-size:var(--text-xs);color:var(--color-ink-muted);font-weight:600;
        margin-block:var(--space-6) var(--space-2);padding-inline:var(--space-4);
        padding-block-end:var(--space-1);border-block-end:1px solid var(--color-border)}
-  .cap .flag{color:var(--color-warning-text)}
   .cap .route{font-family:var(--font-body);color:var(--color-gold-text)}
 
   /* Device frame. `container-type:inline-size` is what makes the two widths
@@ -156,14 +170,15 @@
         display:grid;gap:var(--space-6);align-content:start}
   @container (min-width:768px){ .page{padding-inline:var(--space-6)} }
 
-  /* back link — block-start of the column, inline-start (§9.4 tab order) */
+  /* back link — block-start of the column, inline-start (§9.4 tab order, R8) */
   .link{color:var(--color-gold-text);text-decoration:underline;font-size:var(--text-base)}
   .link-row{display:inline-flex;align-items:center;gap:var(--space-2);
             min-block-size:44px;justify-self:start}
-  .link-sm{font-size:var(--text-sm)}
 
-  /* stepper (§9.4): a non-interactive <ol>. NOT role=tablist, NOT progressbar,
-     items NOT links and NOT focusable. The list's own semantics carry "3 of 4". */
+  /* stepper (§9.4, R2): a fully inert <ol>. NOT role=tablist, NOT progressbar,
+     NO item is a link and none is focusable. The list's own semantics carry
+     "3 of 4"; completed = ✓ glyph, current = aria-current + weight, upcoming =
+     outline dot — three non-colour signals. */
   .stepper{display:flex;gap:var(--space-2);align-items:flex-start;
            list-style:none;padding:0;margin:0}
   .stepper li{flex:1 1 0;min-inline-size:0;text-align:center;position:relative;
@@ -182,21 +197,23 @@
   .stlbl{font-size:var(--text-xs);line-height:var(--leading-xs);color:var(--color-ink-muted)}
   li[aria-current="step"] .stlbl{color:var(--color-ink);font-weight:600}
 
-  /* headings — §9.1: h1 = the STEP, always a static i18n string, so it survives
-     D12/D5/empty-types by construction and needs no essenceFallback. */
+  /* headings — §9.1 / R1: h1 = the STEP, always a static i18n string, so it
+     survives D12/D5/empty-types by construction and needs no essenceFallback.
+     Above it: the boutique-identity line (R1) — BODY TEXT, never a heading,
+     omitted entirely when useBoutique() has nothing. */
   .head{display:grid;gap:var(--space-3);justify-items:start}
+  .ident{font-size:var(--text-sm);color:var(--color-ink-muted)}       /* 6.15:1 */
   h1.step{font-family:var(--font-display);font-size:var(--text-2xl);
           line-height:var(--leading-2xl);font-weight:500;color:var(--color-ink)}
+  /* R23: the ornament is the shipped SectionHeading geometry — 1px × 48px */
   .orn{display:block;block-size:1px;inline-size:var(--space-12);background:var(--color-gold)}
-  h2.sec{font-family:var(--font-display);font-size:var(--text-xl);
-         line-height:var(--leading-xl);font-weight:500;color:var(--color-ink)}
-  h2.plain{font-size:var(--text-sm);font-weight:600;color:var(--color-ink)}
 
-  /* Card — paper, radius-md, shadow-sm, NO hard border (matting + shadow only) */
+  /* Card — paper, radius-md, shadow-sm, NO hard border (matting + shadow only).
+     R9: padding --space-6 at EVERY width, 375 included — Card.tsx hardcodes p-6
+     and `cn` has no tailwind-merge, so a caller p-4 loses on stylesheet order. */
   .card{background:var(--color-surface);border-radius:var(--radius-md);
-        box-shadow:var(--shadow-sm);padding:var(--space-4);
+        box-shadow:var(--shadow-sm);padding:var(--space-6);
         display:grid;gap:var(--space-6)}
-  @container (min-width:768px){ .card{padding:var(--space-6)} }
   .hr{block-size:0;border:0;border-block-start:1px solid var(--color-border);
       margin-block:var(--space-4)}
 
@@ -254,8 +271,10 @@
          border:1px solid var(--color-border);border-radius:var(--radius-full);
          padding-block:2px;padding-inline:var(--space-3)}
 
-  /* slot grid (§3.6) — ONE auto-fill rule, no breakpoints. 3 cols @375, 5 @640. */
-  .slotgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+  /* slot grid (§3.6, R10) — ONE auto-fill rule, no breakpoints, minmax 104px.
+     At 375 the grid box is 375 − 2×--space-4 (gutter) − 2×--space-6 (Card, R9)
+     = 295px → 2 columns. In the wider column the same rule fills more. */
+  .slotgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));
             gap:var(--space-2)}
   .chip{position:relative;display:flex;align-items:center;justify-content:center;
         min-block-size:44px;padding-inline:var(--space-3);
@@ -264,12 +283,17 @@
         font-size:var(--text-base);cursor:pointer;
         transition:background-color var(--motion-fast) var(--ease-out),
                    border-color var(--motion-fast) var(--ease-out)}
+  /* R28: ONE selected treatment — gold fill + weight 600. The border hue is
+     NOT cited as a signal (gold-strong vs border-input is 1.06:1); the native
+     :checked announcement is the AT channel, and there is no ✓ glyph. */
   .chip:has(:checked){background:var(--color-gold);color:var(--color-ink);
         border-color:var(--color-gold-strong);font-weight:600}   /* 6.41:1 ✓ */
   .chip:has(:focus-visible){outline:2px solid var(--color-focus);outline-offset:2px}
 
-  /* size chips (§4.5) — selection is BORDER-WIDTH + WEIGHT, never hue. An
-     unavailable size is visually IDENTICAL to an available one (D4). */
+  /* size chips (§4.5, R15) — selection is BORDER-WIDTH + WEIGHT, never hue. An
+     unavailable size is visually IDENTICAL to an available one (D4); its ONLY
+     signal is booking.sizeUnavailable as a SECOND LINE inside the same <label>,
+     which makes the phrase part of that radio's accessible name by construction. */
   .sizes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
   .sizechip{display:flex;flex-direction:column;align-items:center;justify-content:center;
         min-block-size:44px;min-inline-size:44px;padding-inline:var(--space-3);
@@ -280,6 +304,12 @@
   .sizechip:has(:checked){border-width:2px;border-color:var(--color-gold-strong);
         font-weight:600;padding-inline:calc(var(--space-3) - 1px)}   /* 3.47 / 3.93 ✓ */
   .sizechip:has(:focus-visible){outline:2px solid var(--color-focus);outline-offset:2px}
+  .szsub{font-size:var(--text-xs);line-height:var(--leading-xs);
+         color:var(--color-ink-muted);font-weight:400;text-align:center}  /* 6.36:1 */
+  /* booking.sizeUnavailableNote (sign-off addition) — one muted sentence under
+     the group, rendered only when at least one chip is unavailable. */
+  .sizenote{font-size:var(--text-sm);color:var(--color-ink-muted);
+            margin-block-start:var(--space-2)}
 
   /* Checkbox (§5.4) — the one genuinely new packages/ui primitive. NOT Toggle:
      Toggle hardcodes role="switch" on a closed prop list and a consent is a
@@ -301,11 +331,13 @@
   .btn-secondary{background:transparent;color:var(--color-ink);
        border-color:var(--color-ink)}
   .btn-lg{min-block-size:48px}
+  /* only the resend button during cooldown is ever disabled (R7); disabled
+     controls are WCAG-1.4.3-exempt and the opacity recesses a CONTROL, not text */
   .btn[disabled]{opacity:.6;cursor:not-allowed}
   .fwd{display:grid;gap:var(--space-3);margin-block-start:var(--space-2)}
   .fwd .btn{inline-size:100%}
   @container (min-width:768px){
-    .fwd{justify-items:end}
+    .fwd{justify-items:end}                                          /* R27 */
     .fwd .btn{inline-size:auto}
   }
 
@@ -318,7 +350,6 @@
   .msg-muted{color:var(--color-ink-muted)}
   .msg-warn{color:var(--color-warning-text)}
   .msg-ink{color:var(--color-ink);max-inline-size:60ch}
-  .note-status{font-size:var(--text-sm);color:var(--color-ink-muted)}
   .empty{font-size:var(--text-base);color:var(--color-ink-muted);text-align:center;
          padding-block:var(--space-8);max-inline-size:40ch;margin-inline:auto}
 
@@ -331,7 +362,9 @@
   /* ContactPanel — shipped row order: phone, WhatsApp, Waze, Maps, Instagram */
   .contact{display:flex;flex-direction:column;gap:var(--space-3)}
 
-  /* confirmation */
+  /* confirmation — R19/F-C10: label + value pairs, never interpolated sentences.
+     The values carry their own <bdi dir="ltr"> islands at the call site. */
+  .fact{display:grid;gap:var(--space-1)}
   .factlbl{font-size:var(--text-sm);font-weight:600;color:var(--color-ink-muted)}
   .factval{font-size:var(--text-lg);line-height:var(--leading-lg);color:var(--color-ink)}
   .factsub{font-size:var(--text-base);color:var(--color-ink)}
@@ -348,7 +381,6 @@
   /* skeletons — 1.5s pulse, STATIC under reduced motion. Never a spinner. */
   .skel{background:var(--color-surface-raised);border-radius:var(--radius-sm);
         block-size:1em;animation:pulse 1.5s ease-in-out infinite}
-  .skel.on-page{background:var(--color-surface)}
   .skel.row{block-size:56px;border-radius:var(--radius-md)}
   .skel.chip{block-size:44px;border-radius:var(--radius-full);border:0}
   .w40{inline-size:40%} .w60{inline-size:60%} .w80{inline-size:80%} .w100{inline-size:100%}
@@ -380,10 +412,10 @@
   <span class="ltr">@fontsource</span>. העמודים מוצגים במסגרות ברוחב <span class="ltr">375</span> (ראשי)
   ובמסגרת אחת ברוחב <span class="ltr">900</span> להדגמת ‎≥768. הכול גלוי כברירת מחדל — הסינון למעלה הוא תוספת של JavaScript בלבד.
   <br><br>
-  <b>⚠ ארבע מחרוזות באב-הטיפוס אינן קיימות ב-<span class="ltr">copy.md</span> ונכתבו כמציין מקום של הבונה:</b>
-  <span class="ltr">booking.continueStep</span> · <span class="ltr">booking.pickTime</span> ·
-  <span class="ltr">booking.forDress</span> · <span class="ltr">booking.sizeRequired</span>.
-  כל היתר מועתק מילה במילה מטיוטת <span class="ltr">copy.md</span>, שכולה טרם אושרה.
+  <b>עודכן 2026-07-29 מול <span class="ltr">booking.md</span> גרסה 2 (שער מאושר) ו-<span class="ltr">copy.md</span> גרסה 3.</b>
+  כל מחרוזת גלויה מועתקת מילה במילה מהעמודה המאושרת (<span class="ltr">61/61</span> שורות), כולל שתי התוספות
+  מישיבת החתימה: <span class="ltr">booking.confirmTitleNamed</span> ו-<span class="ltr">booking.sizeUnavailableNote</span>.
+  חמש הסטיות שנרשמו מול גרסה 1 — תוקנו.
 </p>
 
 <!-- ═══════════════════════════════════════════════════════════ STEP 1 — SLOT -->
@@ -392,7 +424,8 @@
 <!-- ---------------------------------------------------------------- S1 default -->
 <section class="screen active" data-g="s1">
 <p class="cap"><span class="route">/book/slot/{dressId}</span> · ברירת מחדל, מסלול מבוסס-פריט (שמלה קשורה) · <span class="ltr">375</span>
-  — <span class="flag">⚠ שם השלב הוא ה-h1 (§9.1), לא שם הבוטיק (§2.7 של סעיף א' קבע אחרת — סתירה לשער)</span></p>
+  — ה-<span class="ltr">h1</span> הוא שם השלב (R1/§9.1); שם הבוטיק הוא שורת זהות בגוף הטקסט מעליו, לעולם לא כותרת.
+  רשת השעות: כלל <span class="ltr">auto-fill minmax(104px,1fr)</span> אחד → <b>2 עמודות ב-375</b> (R10).</p>
 <div class="frame">
   <div class="page">
     <!-- §9.5: an in-app <Link>, never history.back(). Step 1's exit is always `/`. -->
@@ -406,16 +439,18 @@
     </ol>
 
     <div class="head">
+      <p class="ident">בֶּלָה</p>
       <h1 class="step">מועד</h1>
       <span class="orn" aria-hidden="true"></span>
     </div>
 
     <form class="card">
-      <!-- binding chip — Badge muted, non-interactive, no unbind control -->
-      <p><span class="badge">עבור: עלמה</span></p>
+      <!-- binding chip — Badge muted, non-interactive, no unbind control.
+           booking.forDress = "עבור {{dress}}" -->
+      <p><span class="badge">עבור עלמה</span></p>
 
       <fieldset class="typegroup">
-        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <legend class="sec display" style="font-family:var(--font-display);font-size:var(--text-xl);line-height:var(--leading-xl);font-weight:500;color:var(--color-ink);margin-block-end:var(--space-3)">סוג הפגישה</legend>
         <div class="typelist">
           <label class="typerow">
             <input type="radio" name="t1" checked>
@@ -429,8 +464,9 @@
             <span class="typetext">
               <span class="typename">מדידה עם מלווים</span>
               <span class="typedur"><bdi class="ltr">90</bdi> דקות</span>
-              <!-- D10: a badge LABELS, it does not gate. The row stays selectable. -->
-              <span class="badgewrap"><span class="badge">לכלות בלבד</span></span>
+              <!-- D10: a badge LABELS, it does not gate. The row stays selectable.
+                   copy.md rev 3: booking.audienceBrides = "פגישת כלה" -->
+              <span class="badgewrap"><span class="badge">פגישת כלה</span></span>
             </span>
           </label>
           <label class="typerow">
@@ -451,7 +487,7 @@
       </div>
 
       <fieldset>
-        <!-- ⚠ booking.pickTime is NOT in copy.md — placeholder (F-A6 / new key) -->
+        <!-- booking.pickTime — APPROVED (F-A6 / R21) -->
         <legend class="lbl" style="margin-block-end:var(--space-2)">שעה</legend>
         <div class="slotgrid">
           <label class="chip"><input class="vh" type="radio" name="sl1"><bdi class="ltr">10:00</bdi></label>
@@ -466,8 +502,8 @@
       </fieldset>
 
       <div class="fwd">
-        <!-- ⚠ booking.continueStep is NOT in copy.md — placeholder (P6/P7) -->
-        <button class="btn btn-primary btn-lg" type="submit">להמשך</button>
+        <!-- booking.continue — APPROVED (R4/P6). Never disabled (R7). -->
+        <button class="btn btn-primary btn-lg" type="submit">המשך</button>
       </div>
     </form>
   </div>
@@ -478,8 +514,10 @@
 <!-- ------------------------------------------------- S1 deposit row selected -->
 <section class="screen active" data-g="s1">
 <p class="cap"><span class="route">/book/slot/{dressId}</span> · <b>D3 — שורה עם מקדמה נבחרה.</b>
-  הענף הוא <b>לכל שורה</b>: האחיות נשארות ניתנות לבחירה, התאריך והשעות נשארים פעילים, וכפתור ההמשך בלבד מושבת.
-  <span class="flag">⚠ §3.5 מציב את ‎&lt;Price&gt;‎ כסיומת הפסקה של booking.depositByPhone; טיוטת copy.md מסתיימת ב«זה לוקח רגע.» והמחיר נקרא כיתום — נדרשת הכרעה בשער</span></p>
+  הענף הוא <b>לכל שורה</b>: האחיות נשארות ניתנות לבחירה, התאריך והשעות נשארים פעילים.
+  <b>R7: כפתור ההמשך לעולם אינו מושבת</b> — לחיצה עליו מכריזה מחדש על בלוק המקדמה ולא עושה דבר מלבד זאת;
+  ה-<span class="ltr">aria-describedby</span> יושב על הרדיו, לא על הכפתור.
+  P4 מאושר: הסכום מוצג דרך <span class="ltr">&lt;Price&gt;</span> כסיומת הפסקה.</p>
 <div class="frame">
   <div class="page">
     <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
@@ -489,13 +527,13 @@
       <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
 
     <form class="card">
-      <p><span class="badge">עבור: עלמה</span></p>
+      <p><span class="badge">עבור עלמה</span></p>
 
       <fieldset>
-        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <legend class="sec display" style="font-family:var(--font-display);font-size:var(--text-xl);line-height:var(--leading-xl);font-weight:500;color:var(--color-ink);margin-block-end:var(--space-3)">סוג הפגישה</legend>
         <div class="typelist">
           <label class="typerow">
             <input type="radio" name="t2">
@@ -537,7 +575,7 @@
             <span class="typetext">
               <span class="typename">מדידה עם מלווים</span>
               <span class="typedur"><bdi class="ltr">90</bdi> דקות</span>
-              <span class="badgewrap"><span class="badge">לכלות בלבד</span></span>
+              <span class="badgewrap"><span class="badge">פגישת כלה</span></span>
             </span>
           </label>
         </div>
@@ -561,9 +599,9 @@
       </fieldset>
 
       <div class="fwd">
-        <!-- disabled, and the reason is ABOVE it in DOM and visual order; the
-             aria-describedby points at the revealed block. -->
-        <button class="btn btn-primary btn-lg" type="submit" disabled aria-describedby="dep-2">להמשך</button>
+        <!-- R7: enabled. Pressing it re-announces the deposit block above and
+             does nothing else. NO aria-describedby on the button. -->
+        <button class="btn btn-primary btn-lg" type="submit">המשך</button>
       </div>
     </form>
   </div>
@@ -574,7 +612,8 @@
 <!-- ------------------------------------------------------------ S1 no slots -->
 <section class="screen active" data-g="s1">
 <p class="cap"><span class="route">/book/slot</span> · אין מועדים פנויים (<span class="ltr">booking.noSlots</span>) —
-  <b>המצב שבו כל בוטיק חדש נכנס לאוויר</b>. עובדה, לא תקלה: בלי אייקון, בלי מסגרת, בלי צבע סכנה, ובלי כפתור «נסי שוב».</p>
+  <b>המצב שבו כל בוטיק חדש נכנס לאוויר</b>. עובדה, לא תקלה: בלי אייקון, בלי מסגרת, בלי צבע סכנה, ובלי כפתור «נסי שוב».
+  ההזמנה הטלפונית שבסוף המשפט נשארת (FINDING 4). R7: הכפתור פעיל — לחיצה בלי שעה מציגה שגיאת אימות במקום.</p>
 <div class="frame">
   <div class="page">
     <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
@@ -584,10 +623,10 @@
       <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
     <form class="card">
       <fieldset>
-        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <legend class="sec display" style="font-family:var(--font-display);font-size:var(--text-xl);line-height:var(--leading-xl);font-weight:500;color:var(--color-ink);margin-block-end:var(--space-3)">סוג הפגישה</legend>
         <div class="typelist">
           <label class="typerow"><input type="radio" name="t3" checked>
             <span class="typetext"><span class="typename">מדידה ראשונה</span>
@@ -606,7 +645,7 @@
         <!-- F-A5: whole-window-empty and this-date-empty are ONE block and ONE string. -->
         <p class="empty">אין מועדים פנויים בתאריך הזה. אפשר לבחור תאריך אחר, ואפשר גם להתקשר ונמצא לך מועד.</p>
       </fieldset>
-      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit" disabled>להמשך</button></div>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">המשך</button></div>
     </form>
   </div>
   <span class="a11yfab" aria-hidden="true">◑</span>
@@ -617,6 +656,8 @@
 <section class="screen active" data-g="s1">
 <p class="cap"><span class="route">/book/slot</span> · טעינה — שלד, לעולם לא ספינר.
   <b>המדרגות נטענות חיות</b> (תוכן ידוע מראש; שלד שם היה מתיימר לחוסר ודאות שאינו קיים).
+  R30: <span class="ltr">aria-busy</span> על <span class="ltr">&lt;div&gt;</span> אינו מוכרז ב-VoiceOver/NVDA,
+  ולכן אזור <span class="ltr">VisuallyHidden role="status"</span> נושא מחרוזת טעינה ומתרוקן כשהבקשות נפתרות.
   תחת <span class="ltr">prefers-reduced-motion</span> הפעימה סטטית.</p>
 <div class="frame">
   <div class="page">
@@ -627,8 +668,11 @@
       <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
-    <div class="card" aria-busy="true">
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <!-- R30: the vh status is what AT hears; the key is reused from catalog.*
+         if one exists, otherwise it is the eighth i18n addition. -->
+    <span class="vh" role="status">טוען</span>
+    <div class="card">
       <div style="display:grid;gap:var(--space-2)">
         <span class="skel w40"></span>
         <span class="skel row w100"></span>
@@ -642,8 +686,8 @@
       <div style="display:grid;gap:var(--space-2)">
         <span class="skel w40"></span>
         <div class="slotgrid">
-          <span class="skel chip"></span><span class="skel chip"></span><span class="skel chip"></span>
-          <span class="skel chip"></span><span class="skel chip"></span><span class="skel chip"></span>
+          <span class="skel chip"></span><span class="skel chip"></span>
+          <span class="skel chip"></span><span class="skel chip"></span>
         </div>
       </div>
     </div>
@@ -655,9 +699,9 @@
 <!-- ------------------------------------------------ S1 SLOT_UNAVAILABLE return -->
 <section class="screen active" data-g="s1">
 <p class="cap"><span class="route">/book/slot</span> · חזרה מהשליחה עם <span class="ltr">409 SLOT_UNAVAILABLE</span>.
-  הסוג והתאריך <b>שורדים</b>, השעות נטענות מחדש והבחירה מתאפסת.
-  ההודעה היא <span class="ltr">role="alert"</span> ב-<span class="ltr">--color-danger</span> — התנגשות שהיא צריכה לפעול לגביה, לא תקלה.
-  היא הגיעה עם ניווט, כך שה-Router כבר העביר מיקוד ל-<span class="ltr">&lt;main&gt;</span> מעליה; המסך אינו מוסיף מיקוד משלו.</p>
+  הסוג והתאריך <b>שורדים</b>, השעות נטענות מחדש והבחירה מתאפסת. אסימון האימות שלה שרד גם הוא (§6.12) —
+  ההחלמה לעולם אינה חוזרת דרך OTP. ההודעה היא <span class="ltr">role="alert"</span> ב-<span class="ltr">--color-danger</span> —
+  התנגשות שהיא צריכה לפעול לגביה, לא תקלה. R7: הכפתור פעיל.</p>
 <div class="frame">
   <div class="page">
     <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
@@ -667,10 +711,10 @@
       <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
     <form class="card">
       <fieldset>
-        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <legend class="sec display" style="font-family:var(--font-display);font-size:var(--text-xl);line-height:var(--leading-xl);font-weight:500;color:var(--color-ink);margin-block-end:var(--space-3)">סוג הפגישה</legend>
         <div class="typelist">
           <label class="typerow"><input type="radio" name="t5" checked>
             <span class="typetext"><span class="typename">מדידה ראשונה</span>
@@ -698,7 +742,7 @@
           <label class="chip"><input class="vh" type="radio" name="sl5"><bdi class="ltr">14:30</bdi></label>
         </div>
       </fieldset>
-      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit" disabled>להמשך</button></div>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">המשך</button></div>
     </form>
   </div>
   <span class="a11yfab" aria-hidden="true">◑</span>
@@ -721,7 +765,7 @@
       <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">פרטים</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">פרטים</h1><span class="orn" aria-hidden="true"></span></div>
 
     <form class="card">
       <div class="field">
@@ -735,7 +779,7 @@
                   aria-describedby="no6-h no6-c"></textarea>
         <span class="counter" id="no6-c"><bdi class="ltr">0 / 500</bdi></span>
       </div>
-      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">המשך</button></div>
     </form>
   </div>
   <span class="a11yfab" aria-hidden="true">◑</span>
@@ -744,9 +788,10 @@
 
 <!-- ------------------------------------------- S2 item-based, unavailable size -->
 <section class="screen active" data-g="s2">
-<p class="cap"><span class="route">/book/details/{dressId}</span> · מסלול מבוסס-פריט, <b>מידה שאינה במלאי נבחרה (D4)</b>.
-  השבב זהה בכל אסימון לשבב זמין — ללא עמעום, ללא קו חוצה, ללא תג מלאי. הסימון הוא <b>מילה בלבד</b>.
-  <span class="flag">⚠ סתירה לשער: סעיף ב' §4.5b/P9 דורש ביטוי של ‎≤24 תווים <b>בתוך</b> כל שבב; copy.md מציב את המשפט המלא <b>מתחת</b> לשבבים בעת בחירה. אב-הטיפוס מציג את נוסח copy.md כמצוין במשימה</span></p>
+<p class="cap"><span class="route">/book/details/{dressId}</span> · מסלול מבוסס-פריט, <b>מידה שאינה בבוטיק (D4)</b>.
+  R15: הסימון הוא <b>שורה שנייה בתוך תווית השבב עצמו</b> («אפשר להזמין במיוחד», ‎≤24 תווים) —
+  כך הביטוי הוא חלק מהשם הנגיש של אותו רדיו מעצם המבנה, והשבב נשאר זהה חזותית וניתן לבחירה.
+  מתחת לקבוצה: <span class="ltr">booking.sizeUnavailableNote</span> (תוספת חתימה) — המשפט החם והארוך שהשבב אינו יכול לשאת.</p>
 <div class="frame">
   <div class="page">
     <a class="link link-row" href="/book/slot/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
@@ -756,7 +801,7 @@
       <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">פרטים</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">פרטים</h1><span class="orn" aria-hidden="true"></span></div>
 
     <form class="card">
       <!-- binding block: cover + name. alt="" — the name is the adjacent visible text.
@@ -776,17 +821,22 @@
         <input class="inp" id="n7" type="text" dir="auto" autocomplete="name" maxlength="80" value="נועה כהן" required>
       </div>
 
-      <fieldset aria-describedby="sz7-msg">
+      <fieldset>
         <legend class="lbl" style="margin-block-end:var(--space-2)">מידות</legend>
         <div class="sizes">
-          <label class="sizechip"><input class="vh" type="radio" name="sz7"><bdi class="ltr">36</bdi></label>
-          <label class="sizechip"><input class="vh" type="radio" name="sz7"><bdi class="ltr">38</bdi></label>
-          <label class="sizechip"><input class="vh" type="radio" name="sz7"><bdi class="ltr">40</bdi></label>
-          <label class="sizechip"><input class="vh" type="radio" name="sz7" checked><bdi class="ltr">42</bdi></label>
-          <label class="sizechip"><input class="vh" type="radio" name="sz7"><bdi class="ltr">44</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz7" required><bdi class="ltr">36</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz7" required><bdi class="ltr">38</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz7" required checked><bdi class="ltr">40</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz7" required><bdi class="ltr">42</bdi></label>
+          <!-- R15: the ≤24-char phrase is a SECOND LINE inside this chip's own
+               <label> — part of the radio's accessible name by construction.
+               Visually the chip is IDENTICAL to its siblings (D4): no dimming,
+               no strikethrough, no stock badge. -->
+          <label class="sizechip"><input class="vh" type="radio" name="sz7" required><bdi class="ltr">44</bdi><span class="szsub">אפשר להזמין במיוחד</span></label>
         </div>
-        <!-- polite, not assertive: nothing failed. D4 — an invitation, not a warning. -->
-        <p class="note-status" role="status" id="sz7-msg" style="margin-block-start:var(--space-2)">אפשר לבחור את המידה הזאת גם עכשיו — היא לא נמצאת אצלנו כרגע, ואפשר להזמין אותה במיוחד למדידה.</p>
+        <!-- booking.sizeUnavailableNote — sign-off addition, rendered only when
+             at least one chip is unavailable. Muted, one sentence, no role. -->
+        <p class="sizenote">מידה שאינה כרגע בבוטיק אפשר להזמין במיוחד לקראת המדידה.</p>
       </fieldset>
 
       <div class="field">
@@ -796,7 +846,7 @@
         <span class="counter" id="no7-c"><bdi class="ltr">23 / 500</bdi></span>
       </div>
 
-      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">המשך</button></div>
     </form>
   </div>
   <span class="a11yfab" aria-hidden="true">◑</span>
@@ -807,7 +857,8 @@
 <section class="screen active" data-g="s2">
 <p class="cap"><span class="route">/book/details/{dressId}</span> · <b>שגיאות אימות לקוח.</b>
   השגיאות עולות <b>בשליחה בלבד</b> — לא ב-blur ולא בהקלדה. כפתור ההמשך <b>לעולם אינו מושבת</b> בגלל מצב אימות
-  (§4.4d): הוא נלחץ, נכשל בגלוי, והמיקוד עובר לשדה הפגום הראשון.</p>
+  (§4.4d): הוא נלחץ, נכשל בגלוי, והמיקוד עובר לשדה הפגום הראשון.
+  <span class="ltr">booking.sizeRequired</span> — מאושר (R21): הצד האחורי דוחה <span class="ltr">dress_id</span> ללא מידה.</p>
 <div class="frame">
   <div class="page">
     <a class="link link-row" href="/book/slot/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
@@ -817,7 +868,7 @@
       <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">פרטים</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">פרטים</h1><span class="orn" aria-hidden="true"></span></div>
 
     <form class="card">
       <div class="field">
@@ -830,13 +881,13 @@
       <fieldset aria-describedby="sz8-e">
         <legend class="lbl" style="margin-block-end:var(--space-2)">מידות</legend>
         <div class="sizes">
-          <label class="sizechip"><input class="vh" type="radio" name="sz8"><bdi class="ltr">36</bdi></label>
-          <label class="sizechip"><input class="vh" type="radio" name="sz8"><bdi class="ltr">38</bdi></label>
-          <label class="sizechip"><input class="vh" type="radio" name="sz8"><bdi class="ltr">40</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz8" required><bdi class="ltr">36</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz8" required><bdi class="ltr">38</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz8" required><bdi class="ltr">40</bdi></label>
         </div>
-        <!-- ⚠ booking.sizeRequired is NOT in copy.md — placeholder (P8, forced by
-             the backend's paired dress_id + dress_size rule) -->
-        <span class="err" id="sz8-e" role="alert" style="display:block;margin-block-start:var(--space-2)">צריך לבחור מידה כדי להמשיך.</span>
+        <!-- booking.sizeRequired — APPROVED (R21/P8). Focus moves to the first
+             radio in the group; no request is issued. -->
+        <span class="err" id="sz8-e" role="alert" style="display:block;margin-block-start:var(--space-2)">צריך לבחור מידה כדי להמשיך</span>
       </fieldset>
 
       <div class="field">
@@ -848,7 +899,7 @@
         <span class="err" id="no8-e" role="alert">ההערה ארוכה מדי. עד 500 תווים.</span>
       </div>
 
-      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">המשך</button></div>
     </form>
   </div>
   <span class="a11yfab" aria-hidden="true">◑</span>
@@ -862,7 +913,7 @@
 <section class="screen active" data-g="s3">
 <p class="cap"><span class="route">/book/terms/{dressId}</span> · ברירת מחדל, טקסט מדיניות ארוך ואמיתי שכתבה בעלת הבוטיק.
   <b>ללא תיבת גלילה פנימית, ללא clamp, ללא «קרא עוד», ללא כפתור צף.</b> העמוד גדל והתיבה נשארת השורה האחרונה בזרימה.
-  שני המספרים מעל הפרוזה, כי שם הם מתחבאים.</p>
+  שני המספרים מעל הפרוזה, כי שם הם מתחבאים. הבסיס לחילוט: <b>מהמקדמה</b> — נסגר בראיות (Q5/FINDING 2).</p>
 <div class="frame">
   <div class="page">
     <a class="link link-row" href="/book/details/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
@@ -872,7 +923,7 @@
       <li aria-current="step"><span class="dot cur" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">מדיניות ביטולים</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">מדיניות ביטולים</h1><span class="orn" aria-hidden="true"></span></div>
 
     <form class="card">
       <div class="numbers">
@@ -905,7 +956,7 @@
         <span class="cbtext">קראתי את מדיניות הביטולים ואני מסכימה לה.</span>
       </label>
 
-      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">המשך</button></div>
     </form>
   </div>
   <span class="a11yfab" aria-hidden="true">◑</span>
@@ -928,7 +979,7 @@
     </ol>
     <!-- rendered ABOVE the h1 so it is the first thing in the content region -->
     <p class="msg msg-warn" role="alert">מדיניות הביטולים התעדכנה בזמן שמילאת את הפרטים. זו הגרסה המעודכנת — נשמח שתקראי ותאשרי אותה שוב.</p>
-    <div class="head"><h1 class="step">מדיניות ביטולים</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">מדיניות ביטולים</h1><span class="orn" aria-hidden="true"></span></div>
 
     <form class="card">
       <div class="numbers">
@@ -946,7 +997,7 @@
         <input type="checkbox">
         <span class="cbtext">קראתי את מדיניות הביטולים ואני מסכימה לה.</span>
       </label>
-      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">המשך</button></div>
     </form>
   </div>
   <span class="a11yfab" aria-hidden="true">◑</span>
@@ -959,9 +1010,9 @@
 <!-- ---------------------------------------------------------- S4 phone entry -->
 <section class="screen active" data-g="s4">
 <p class="cap"><span class="route">/book/verify/{dressId}</span> · תת-מצב א' — הזנת טלפון.
-  שדה יחיד, אי-פעם לא שישה תאים. <span class="ltr">dir="ltr"</span> על ה-<span class="ltr">&lt;input&gt;</span> בלבד:
-  התווית נשארת בזרימת ה-RTL בקצה הפנימי, והערך רץ שמאלה-לימינה בקצה הפיזי השמאלי — מה שכל שדה טלפון ישראלי עושה.
-  <b>אין placeholder</b> (חוק שימוש 3).</p>
+  שדה יחיד, אי-פעם לא שישה תאים. <span class="ltr">dir="ltr"</span> על ה-<span class="ltr">&lt;input&gt;</span> בלבד.
+  <b>אין placeholder</b> (חוק שימוש 3). R18: תווית הכפתור «שליחת קוד אימות» — לעולם לא «קוד חדש»,
+  כי בתת-מצב א' עוד לא נשלח דבר; אותה תווית משרתת גם את השליחה הראשונה וגם את החוזרת.</p>
 <div class="frame">
   <div class="page">
     <a class="link link-row" href="/book/terms/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
@@ -971,7 +1022,7 @@
       <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li aria-current="step"><span class="dot cur" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
 
     <form class="card">
       <div class="field">
@@ -982,8 +1033,8 @@
       </div>
       <div class="fwd">
         <!-- in sub-state A the send IS the way forward, so it is `primary`.
-             booking.otpResend must be worded to serve the FIRST send too (F-C4). -->
-        <button class="btn btn-primary btn-lg" type="submit">שליחת קוד חדש</button>
+             booking.otpResend serves the FIRST send too (R18/F-C4). -->
+        <button class="btn btn-primary btn-lg" type="submit">שליחת קוד אימות</button>
       </div>
     </form>
   </div>
@@ -996,8 +1047,8 @@
 <p class="cap"><span class="route">/book/verify/{dressId}</span> · תת-מצב ב' — <b>הטופס גדל, לא מתחלף</b>:
   שדה הטלפון לעולם אינו עוזב את ה-DOM, כי הכשל הנפוץ ביותר הוא ספרה שגויה שאפשר לראות רק אם המספר עדיין על המסך.
   <span class="ltr">booking.otpSent</span> הוא ה-<span class="ltr">help</span> של שדה הקוד — נאמר בדיוק כשהמיקוד מגיע אליו.
-  כפתור השליחה יורד ל-<span class="ltr">secondary</span> כי תפקידו השתנה מ«הדרך קדימה» ל«תרופה».
-  <span class="flag">⚠ סתירה: סעיף ג' §6.9 קבע <b>ללא ספרות</b> בהמתנה; copy.md ו-§10 מציגים <span class="ltr">{{seconds}}</span>. כאן מוצג נוסח copy.md מילה במילה, ‎<span class="ltr">&lt;bdi dir="ltr"&gt;</span>‎ סביב המספר, ללא סרגל, ללא צבע, ללא תנועה</span></p>
+  <b>R3: הצינון הוא משפט קבוע ללא מספר מתקתק</b> — הכפתור המושבת נושא את סיבתו על התווית הגלויה שלו,
+  חוזר ל«שליחת קוד אימות» אחרי 60 שניות, והאזור המנומס מכריז פעם אחת על ההפעלה בלבד.</p>
 <div class="frame">
   <div class="page">
     <a class="link link-row" href="/book/terms/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
@@ -1007,7 +1058,7 @@
       <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li aria-current="step"><span class="dot cur" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
 
     <form class="card">
       <div class="field">
@@ -1019,22 +1070,24 @@
       <hr class="hr">
       <div class="field">
         <label class="lbl" for="c12">קוד האימות</label>
-        <p class="help" id="c12-h">שלחנו קוד בן שש ספרות למספר שמסרת.</p>
+        <!-- copy.md rev 3: conditional shape, no delivery claim, states the TTL -->
+        <p class="help" id="c12-h">שלחנו קוד בן שש ספרות למספר שהזנת. הוא תקף לחמש דקות.</p>
         <input class="inp code" id="c12" type="text" dir="ltr" inputmode="numeric"
                autocomplete="one-time-code" maxlength="6" pattern="[0-9]*"
                aria-describedby="c12-h" value="123456">
       </div>
       <div class="fwd">
         <button class="btn btn-primary btn-lg" type="submit">אישור וקביעת התור</button>
-        <!-- Disabled controls explain themselves ON THEIR OWN VISIBLE LABEL:
-             `disabled` removes the button from the tab order, so an
-             aria-describedby FROM it would be inert. No progress bar, no colour
-             change, no keyframe — there is nothing for reduced-motion to switch off. -->
-        <button class="btn btn-secondary" type="button" disabled>אפשר לבקש קוד חדש בעוד <bdi class="ltr">42</bdi> שניות</button>
+        <!-- R3: booking.otpResendWait — a FIXED sentence, no {{seconds}}, no
+             <bdi> numeral, no bar, no colour change, no keyframe: there is
+             nothing for reduced-motion to switch off. Disabled controls explain
+             themselves ON THEIR OWN VISIBLE LABEL — `disabled` removes the
+             button from the tab order, so an aria-describedby FROM it is inert. -->
+        <button class="btn btn-secondary" type="button" disabled>אפשר לבקש קוד חדש בעוד רגע</button>
       </div>
-      <!-- ONE polite region on this step, and it fires only on discrete events:
-           the send succeeding, and the cooldown ENDING. The ticking value is
-           never itself a live region. -->
+      <!-- ONE polite region on this step, written by exactly two discrete
+           events: the cooldown ENDING, and submit starting (R16). Nothing
+           ticks, so there is no live-region hazard to manage. -->
       <span class="vh" role="status"></span>
     </form>
   </div>
@@ -1045,7 +1098,7 @@
 <!-- -------------------------------------------------------- S4 OTP_INVALID -->
 <section class="screen active" data-g="s4">
 <p class="cap"><span class="route">/book/verify/{dressId}</span> · <span class="ltr">400 OTP_INVALID</span>, שגיאה בשדה.
-  <b>כפתור שליחת הקוד החדש נשאר גלוי ונגיש ישירות מתחת לשדה</b> (F-C3): אחרי חמישה ניסיונות כל אימות עונה
+  <b>כפתור שליחת הקוד נשאר גלוי ונגיש ישירות מתחת לשדה</b> (F-C3): אחרי חמישה ניסיונות כל אימות עונה
   <span class="ltr">OTP_INVALID</span> גם לקוד <b>הנכון</b>, כך שהקלדה חוזרת לבדה היא מבוי סתום.
   הערך נשאר ו<b>נבחר</b>, לא נמחק.</p>
 <div class="frame">
@@ -1057,7 +1110,7 @@
       <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li aria-current="step"><span class="dot cur" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
 
     <form class="card">
       <div class="field">
@@ -1069,7 +1122,7 @@
       <hr class="hr">
       <div class="field">
         <label class="lbl" for="c13">קוד האימות</label>
-        <p class="help" id="c13-h">שלחנו קוד בן שש ספרות למספר שמסרת.</p>
+        <p class="help" id="c13-h">שלחנו קוד בן שש ספרות למספר שהזנת. הוא תקף לחמש דקות.</p>
         <input class="inp code bad" id="c13" type="text" dir="ltr" inputmode="numeric"
                autocomplete="one-time-code" maxlength="6" pattern="[0-9]*"
                aria-invalid="true" aria-describedby="c13-h c13-e" value="123457">
@@ -1077,7 +1130,8 @@
       </div>
       <div class="fwd">
         <button class="btn btn-primary btn-lg" type="submit">אישור וקביעת התור</button>
-        <button class="btn btn-secondary" type="button">שליחת קוד חדש</button>
+        <!-- R18: one label for first send AND resend -->
+        <button class="btn btn-secondary" type="button">שליחת קוד אימות</button>
       </div>
     </form>
   </div>
@@ -1101,10 +1155,45 @@
       <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li aria-current="step"><span class="dot cur" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
 
     <div tabindex="-1">
       <p class="msg msg-muted">אימות הטלפון אינו זמין כרגע, ולכן אי אפשר להשלים כאן את קביעת התור. נשמח שתתקשרי אלינו ונקבע יחד מועד.</p>
+    </div>
+    <div class="card">
+      <div class="contact">
+        <a class="link link-row" href="tel:+97235551234">חיוג <bdi class="ltr">03-555-1234</bdi></a>
+        <a class="link link-row" href="https://wa.me/972501234567">וואטסאפ</a>
+        <a class="link link-row" href="https://waze.com/ul?q=בלה">ניווט ב-Waze</a>
+        <a class="link link-row" href="https://maps.google.com/?q=בלה">פתיחה ב-Google Maps</a>
+        <a class="link link-row" href="https://instagram.com/bella">אינסטגרם</a>
+      </div>
+    </div>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ------------------------------------------- S4 send-budget 429 dead end (R21) -->
+<section class="screen active" data-g="s4">
+<p class="cap"><span class="route">/book/verify/{dressId}</span> · <span class="ltr">429</span> על
+  <span class="ltr">/otp/send</span> — <b>תקציב השליחות (חמש בשעה) נגמר</b> (מצב 12, F-C2).
+  ההמתנה האמיתית היא כשעה, ולכן <span class="ltr">errors.otpSendBudget</span> (מאושר, R21) מציע את הטלפון
+  במקום להשאיר אותה לנחש מתי לנסות שוב. מבנה זהה למבוי הסתום של <span class="ltr">SMS_*</span>:
+  בלוק יעד-מיקוד, פאנל קשר, וקישור החזרה נשאר.</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/terms/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <div tabindex="-1">
+      <p class="msg msg-muted">ביקשת כמה קודים בזמן קצר. אפשר לנסות שוב עוד כשעה, ואפשר פשוט להתקשר אלינו ונקבע יחד מועד.</p>
     </div>
     <div class="card">
       <div class="contact">
@@ -1126,20 +1215,25 @@
 <!-- --------------------------------------------------------- S5 warm confirm -->
 <section class="screen active" data-g="s5">
 <p class="cap"><span class="route">/book/confirm/{dressId}</span> · אישור מלא (ה-<span class="ltr">201</span> בזיכרון).
-  <b>ללא מדרגות, ללא «חזרה לשלב הקודם», ללא <span class="ltr">--color-success</span> בשום מקום</b> — הסימן הוא המילים,
-  והעובדה שהמסך מסוגל להדפיס את היום, השעה וסוג הפגישה. <b>D6: שום מחרוזת כאן אינה מבטיחה מסרון.</b>
-  <span class="flag">⚠ סתירה: סעיף ג' F-C10 קבע ש-confirmWhen/confirmWhat הן <b>תוויות</b>; copy.md כותב אותן כמשפטים עם ‎{{date}}/{{type}}‎. כאן מוצג נוסח copy.md</span></p>
+  <b>ללא מדרגות, ללא «חזרה לשלב הקודם», ללא <span class="ltr">--color-success</span> בשום מקום</b>.
+  הכותרת: <span class="ltr">booking.confirmTitleNamed</span> — «התור נקבע ב{{name}}» כשנתוני הבוטיק בזיכרון (Q4: כן).
+  R19/F-C10: <span class="ltr">confirmWhen/confirmWhat</span> הן <b>תוויות</b> ליד ערכים — לא משפטים משורבבים —
+  כי אינטרפולציה של i18next אינה נושאת <span class="ltr">&lt;bdi&gt;</span> וצילום מסך חייב להיקרא נכון בעוד שלושה שבועות.
+  הערך של «מה» הוא שם הסוג בלבד — ה-<span class="ltr">201</span> אינו נושא משך. <b>D6: שום מחרוזת כאן אינה מבטיחה מסרון.</b></p>
 <div class="frame">
   <div class="page">
-    <div class="head"><h1 class="step">התור נקבע</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><h1 class="step">התור נקבע בבֶּלָה</h1><span class="orn" aria-hidden="true"></span></div>
     <div class="card">
-      <div>
-        <p class="factval">יום שלישי, <bdi class="ltr">4.8.2026</bdi> בשעה <bdi class="ltr">16:30</bdi></p>
+      <div class="fact">
+        <p class="factlbl">מתי</p>
+        <p class="factval">יום שלישי, <bdi class="ltr">4.8.2026</bdi> <span aria-hidden="true">·</span> <bdi class="ltr">16:30</bdi></p>
       </div>
       <hr class="hr">
-      <div style="display:grid;gap:var(--space-1)">
-        <p class="factval">מדידה ראשונה · <bdi class="ltr">45</bdi> דקות</p>
-        <!-- rendered ONLY when dress_name !== null; the generic path prints no empty row -->
+      <div class="fact">
+        <p class="factlbl">מה</p>
+        <p class="factval">מדידה ראשונה</p>
+        <!-- booking.confirmDress — rendered ONLY when dress_name !== null;
+             the generic path prints no empty row -->
         <p class="factsub">עלמה · מידה <bdi class="ltr">42</bdi></p>
       </div>
     </div>
@@ -1156,12 +1250,13 @@
 <section class="screen active" data-g="s5">
 <p class="cap"><span class="route">/book/confirm</span> · <b>אישור קר</b> — רענון, או סיבוב הצילום-והחזרה של iOS.
   אין נקודת קצה ציבורית לקריאת הזמנה לפי מזהה, ולכן אין דרך כנה להציג את הפרטים שוב.
-  <b>אין Card</b> (תפקידו להחזיק עובדות; בלעדיהן הוא ממסגר היעדר) ו<b>אין <span class="ltr">booking.confirmKeepScreen</span></b> —
-  «שמרי את המסך הזה» מעל מסך שאינו מחזיק את התור מורה לה לשמר היעדר. <b>לעולם לא מקפיץ אותה לשלב אחת.</b></p>
+  <span class="ltr">booking.confirmCold</span> (גרסה 3, הצורה הקצרה והכנה): קובע שהתור נקבע ומציע טלפון לווידוא —
+  בלי להפנות למסך שאולי אינה זוכרת. <b>אין Card של עובדות ואין <span class="ltr">confirmKeepScreen</span></b> (F-C8).
+  קריאת הבוטיק בלתי-תלויה ב-<span class="ltr">201</span> האבוד, ולכן הכותרת עדיין נושאת את השם.</p>
 <div class="frame">
   <div class="page">
-    <div class="head"><h1 class="step">התור נקבע</h1><span class="orn" aria-hidden="true"></span></div>
-    <p class="msg msg-muted">התור שלך נקבע. את הפרטים המלאים הצגנו במסך האישור, ואין לנו דרך להציג אותם כאן שוב — אם לא הספקת לשמור אותם, אפשר להתקשר ונאשר לך הכול.</p>
+    <div class="head"><h1 class="step">התור נקבע בבֶּלָה</h1><span class="orn" aria-hidden="true"></span></div>
+    <p class="msg msg-muted">התור שלך נקבע. אם תרצי לוודא את הפרטים — אפשר להתקשר ונאשר לך הכול.</p>
     <div class="card">
       <div class="contact">
         <a class="link link-row" href="tel:+97235551234">חיוג <bdi class="ltr">03-555-1234</bdi></a>
@@ -1178,19 +1273,45 @@
 </section>
 
 <!-- ══════════════════════════════════════════════ ENTRY + EDGE (S0 / D12) -->
-<div class="grp" data-g="s0">כניסה ומצבי קצה · <span class="ltr">D5</span> ו-<span class="ltr">D12</span></div>
+<div class="grp" data-g="s0">כניסה ומצבי קצה · <span class="ltr">D5</span>, <span class="ltr">E3</span> ו-<span class="ltr">D12</span></div>
 
 <!-- -------------------------------------------------- S0 no published terms -->
 <section class="screen active" data-g="s0">
 <p class="cap"><span class="route">/book/slot</span> · <b>D5 — לבוטיק אין מדיניות ביטולים מפורסמת.</b>
-  ה-<span class="ltr">terms</span> נטען ב<b>כניסה לזרימה</b>, במקביל לסוגי הפגישות ולמועדים, כי <span class="ltr">404</span> כאן
-  הוא החלטה ברמת הכניסה — לטעון אותו בשלב 3 היה מאפשר לה למלא שני שלבים לפני מבוי סתום.
+  ה-<span class="ltr">terms</span> נטען ב<b>כניסה לזרימה</b>, כי <span class="ltr">404</span> כאן הוא החלטה ברמת הכניסה.
   <b>אין מדרגות</b> (אין זרימה להיות שלב שלה), אין Card של פקדים, אין כפתור המשך.
-  זו <b>אינה</b> הודעת תקלה: ההודעה ב-<span class="ltr">--color-ink</span>, קול העמוד הרגיל.</p>
+  R12: ה-<span class="ltr">h1</span> הוא <span class="ltr">document.book</span> («קביעת תור») — לא «מועד»,
+  שהיה כותרת לשלב שאינו על המסך. זו <b>אינה</b> הודעת תקלה: ההודעה ב-<span class="ltr">--color-ink</span>, קול העמוד הרגיל.</p>
 <div class="frame">
   <div class="page">
-    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">קביעת תור</h1><span class="orn" aria-hidden="true"></span></div>
     <p class="msg msg-ink">קביעת תור מקוונת תיפתח כאן בקרוב. בינתיים נשמח שתתקשרי אלינו ונקבע יחד מועד.</p>
+    <div class="card">
+      <div class="contact">
+        <a class="link link-row" href="tel:+97235551234">חיוג <bdi class="ltr">03-555-1234</bdi></a>
+        <a class="link link-row" href="https://wa.me/972501234567">וואטסאפ</a>
+        <a class="link link-row" href="https://waze.com/ul?q=בלה">ניווט ב-Waze</a>
+        <a class="link link-row" href="https://maps.google.com/?q=בלה">פתיחה ב-Google Maps</a>
+        <a class="link link-row" href="https://instagram.com/bella">אינסטגרם</a>
+      </div>
+    </div>
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- --------------------------------------------------- E3 — no appointment types -->
+<section class="screen active" data-g="s0">
+<p class="cap"><span class="route">/book/slot</span> · <b>E3 — אין סוגי פגישות פעילים</b>
+  (<span class="ltr">GET /appointment-types → []</span>). הבוטיק אינו יכול לקבל שום הזמנה מקוונת —
+  אותו מבנה כמו D5, כולל הידרדרות D12 (F-A2). גרסה 3 של <span class="ltr">booking.noTypes</span>
+  <b>ללא</b> הזמנה טלפונית כתובה (FINDING 4): «התקשרי אלינו» כתוב מעל כפתור חיוג מתויג הוא אותה הוראה פעמיים —
+  הפאנל שמתחת עושה את העבודה. R12: ה-<span class="ltr">h1</span> הוא «קביעת תור».</p>
+<div class="frame">
+  <div class="page">
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">קביעת תור</h1><span class="orn" aria-hidden="true"></span></div>
+    <p class="msg msg-ink">בשלב זה אין כאן סוגי פגישות לקביעה מקוונת.</p>
     <div class="card">
       <div class="contact">
         <a class="link link-row" href="tel:+97235551234">חיוג <bdi class="ltr">03-555-1234</bdi></a>
@@ -1210,14 +1331,14 @@
 <section class="screen active" data-g="s0">
 <p class="cap"><span class="route">/book/confirm</span> · <b>הידרדרות D12 — אין נתוני בוטיק.</b>
   <span class="ltr">ContactPanel</span> מגן על כל שורה בבדיקת אמת, כך שכשכל חמשת הערוצים חסרים הוא מרנדר
-  <span class="ltr">&lt;div&gt;</span> <b>ריק לחלוטין</b> — ולכן ההידרדרות אינה יכולה להיות prop על הפאנל, אלא ענף באתר הקריאה.
-  התקדים שנשלח: <span class="ltr">AboutPage.tsx:106-130</span> משמיט את כרטיס הקשר לגמרי במקום להדפיס שורות ריקות.
-  <span class="ltr">booking.contactUnavailable</span> (P5) <b>חייבת להיות חסרת שם</b> — הבקשה שהייתה נושאת את השם היא זו שנכשלה.
-  ה-<span class="ltr">h1</span> שורד ללא צורך בנפילה חזרה, כי הוא מחרוזת i18n סטטית ולא נתון שנטען.</p>
+  <span class="ltr">&lt;div&gt;</span> <b>ריק לחלוטין</b> — ההידרדרות היא ענף באתר הקריאה.
+  <span class="ltr">booking.contactUnavailable</span> (P5) <b>חסרת שם</b> — הבקשה שהייתה נושאת את השם היא זו שנכשלה,
+  ולכן גם הכותרת היא הנפילה חסרת-השם <span class="ltr">booking.confirmTitle</span> («התור נקבע»),
+  לא הגרסה הנקובה. אין שורת זהות — אין שם להציג.</p>
 <div class="frame">
   <div class="page">
     <div class="head"><h1 class="step">התור נקבע</h1><span class="orn" aria-hidden="true"></span></div>
-    <p class="msg msg-muted">התור שלך נקבע. את הפרטים המלאים הצגנו במסך האישור, ואין לנו דרך להציג אותם כאן שוב — אם לא הספקת לשמור אותם, אפשר להתקשר ונאשר לך הכול.</p>
+    <p class="msg msg-muted">התור שלך נקבע. אם תרצי לוודא את הפרטים — אפשר להתקשר ונאשר לך הכול.</p>
     <p class="msg msg-muted">לא הצלחנו לטעון כאן את פרטי הקשר של הבוטיק. אפשר לנסות לרענן את העמוד בעוד רגע.</p>
     <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
   </div>
@@ -1230,9 +1351,9 @@
 
 <section class="screen active" data-g="dk">
 <p class="cap"><span class="route">/book/slot/{dressId}</span> · ‎≥768. ההפרשים היחידים:
-  שולי עמוד <span class="ltr">--space-4 → --space-6</span> · ריפוד ה-Card <span class="ltr">--space-4 → --space-6</span> ·
-  רשת המועדים עוברת מ-<span class="ltr">3</span> ל-<span class="ltr">5</span> עמודות בכלל <span class="ltr">auto-fill</span> <b>אחד</b>, ללא נקודת שבירה ייעודית ·
-  שם הסוג ומשך הזמן עולים לשורה אחת · כפתור ההמשך חוזר לרוחב טבעי ויושב בקצה הפנימי.
+  שולי עמוד <span class="ltr">--space-4 → --space-6</span> (ריפוד ה-Card <b>אינו</b> משתנה — R9: ‎<span class="ltr">--space-6</span>‎ בכל רוחב) ·
+  רשת המועדים מתמלאת ביותר עמודות מאותו כלל <span class="ltr">auto-fill</span> <b>אחד</b>, ללא נקודת שבירה ייעודית ·
+  שם הסוג ומשך הזמן עולים לשורה אחת · כפתור ההמשך חוזר לרוחב טבעי ויושב בקצה הפנימי (R27).
   <b>1440 זהה ל-768</b> — העמודה נעצרת ב-<span class="ltr">640</span> ורק השוליים גדלים. אין פס CTA בשום רוחב.</p>
 <div class="frame desk">
   <div class="page">
@@ -1243,11 +1364,11 @@
       <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
       <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
     </ol>
-    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><p class="ident">בֶּלָה</p><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
     <form class="card">
-      <p><span class="badge">עבור: עלמה</span></p>
+      <p><span class="badge">עבור עלמה</span></p>
       <fieldset>
-        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <legend class="sec display" style="font-family:var(--font-display);font-size:var(--text-xl);line-height:var(--leading-xl);font-weight:500;color:var(--color-ink);margin-block-end:var(--space-3)">סוג הפגישה</legend>
         <div class="typelist">
           <label class="typerow"><input type="radio" name="t19" checked>
             <span class="typetext"><span class="typename">מדידה ראשונה</span>
@@ -1255,7 +1376,7 @@
           <label class="typerow"><input type="radio" name="t19">
             <span class="typetext"><span class="typename">מדידה עם מלווים</span>
             <span class="typedur"><bdi class="ltr">90</bdi> דקות</span>
-            <span class="badgewrap"><span class="badge">לכלות בלבד</span></span></span></label>
+            <span class="badgewrap"><span class="badge">פגישת כלה</span></span></span></label>
           <label class="typerow"><input type="radio" name="t19">
             <span class="typetext"><span class="typename">חבילת כלה</span>
             <span class="typedur"><bdi class="ltr">120</bdi> דקות</span></span></label>
@@ -1280,7 +1401,7 @@
           <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">16:45</bdi></label>
         </div>
       </fieldset>
-      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">המשך</button></div>
     </form>
   </div>
   <span class="a11yfab" aria-hidden="true">◑</span>
@@ -1288,15 +1409,19 @@
 </section>
 
 <section class="screen active" data-g="dk">
-<p class="cap"><span class="route">/book/confirm/{dressId}</span> · ‎≥768. ריפוד ה-Card בלבד משתנה; העמודה אינה מתרחבת.</p>
+<p class="cap"><span class="route">/book/confirm/{dressId}</span> · ‎≥768. דבר אינו משתנה מלבד שולי העמוד (R9); העמודה אינה מתרחבת.</p>
 <div class="frame desk">
   <div class="page">
-    <div class="head"><h1 class="step">התור נקבע</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="head"><h1 class="step">התור נקבע בבֶּלָה</h1><span class="orn" aria-hidden="true"></span></div>
     <div class="card">
-      <div><p class="factval">יום שלישי, <bdi class="ltr">4.8.2026</bdi> בשעה <bdi class="ltr">16:30</bdi></p></div>
+      <div class="fact">
+        <p class="factlbl">מתי</p>
+        <p class="factval">יום שלישי, <bdi class="ltr">4.8.2026</bdi> <span aria-hidden="true">·</span> <bdi class="ltr">16:30</bdi></p>
+      </div>
       <hr class="hr">
-      <div style="display:grid;gap:var(--space-1)">
-        <p class="factval">מדידה ראשונה · <bdi class="ltr">45</bdi> דקות</p>
+      <div class="fact">
+        <p class="factlbl">מה</p>
+        <p class="factval">מדידה ראשונה</p>
         <p class="factsub">עלמה · מידה <bdi class="ltr">42</bdi></p>
       </div>
     </div>
