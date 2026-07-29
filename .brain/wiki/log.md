@@ -49,3 +49,15 @@ resume documentation of the new boutique/catalog/storage code with /brain-ingest
 
 ## [2026-07-28] sync | 4 stale reconciled, 0 orphans
 Reconciled backend/app/core/config.py, backend/app/main.py (F10: storefront service/limiter on app.state, SecurityHeadersMiddleware outermost, docs/openapi dark outside dev, StorefrontThrottledError handler, /storefront router), and rewrote backend/app/storefront/{router,schemas}.py.md whose pages predated the F10 spec-conformance pass (per-tenant throttle, StorefrontService, renamed flat wire models). Queue at 123 entries — no rotation.
+
+## [2026-07-29] sync | 4 stale reconciled, 0 orphans
+Reconciled the drift left by all four E3 features landing since 3bf3795. backend/app/core/config.py
+(F11/F13 SMS + OTP + booking knobs, and the fourth boot validator — fake sender and OTP_DEV_CODE are
+now production boot failures); backend/app/main.py (NotificationService/OtpService/BookingService on
+app.state, _build_sms_sender mirroring _build_media_storage, seven fixed error bodies, and the
+one-budget-one-limiter-instance constraint); backend/app/storefront/{router,schemas}.py (F12's slot
+grid and F14's GET /terms — three → six public GETs, eight → twelve wire models). Recorded three
+omissions worth keeping: why SlotRow drops `remaining` (it equals capacity whenever nothing is booked,
+smuggling a fenced field past a key-based absence walk), why StorefrontTerms cannot subclass the manage
+schema, and why verify is throttled separately from send. Stale 4→0. 577 files still have no page —
+all missing, none orphaned. Queue at 367 entries — no rotation (threshold 500).
