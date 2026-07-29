@@ -87,11 +87,13 @@ gh pr checks <n> --watch
 
 On a red gating job: `gh run view --log-failed`, dispatch a fix subagent into the worktree, one commit, re-watch. Bounded by `max_ci_fix_rounds`; exceeded → status `ci-fix`, park, continue.
 
-**Merge gate.** Parse `gh pr checks <n>` and merge only when all three gating jobs report pass:
+**Merge gate.** Never judge check output by eye — `gh pr checks` exits non-zero whenever *any* check fails, and the two warn-only jobs are red on almost every PR. Ask the script:
 
 ```bash
-gh pr merge <n> --merge
+bash .claude/scripts/merge-gate.sh <n> && gh pr merge <n> --merge
 ```
+
+`merge-gate.sh` exits 0 only when all three gating jobs report `pass`; missing, pending, skipped or failed all block. It fails closed. Its self-check is `bash .claude/scripts/merge-gate.test.sh` — run that if you ever edit it.
 
 Then, on the `main` side: pull, and commit the bookkeeping —
 
