@@ -30,6 +30,7 @@ Raw brand gold `#C5A059` **fails text contrast on cream (2.38:1) — it never ca
 | `--color-success` | `#2E6B4F` | confirmations, saved states | 6.10 on cream · 5.56 on paper ✓ |
 | `--color-danger` | `#A03232` | errors, destructive actions | 6.78 on cream · 6.18 on paper ✓ |
 | `--color-warning-text` | `#8A5A1E` | cautionary text (e.g. policy blocker) | 5.70 on cream · 5.20 on paper · 5.90 on white ✓ |
+| white on `--color-danger` | `#FFFFFF` on `#A03232` | the shipped `Button danger` pairing (first storefront use: F16 confirm-cancel) | ≈7.0:1 ✓ (added at the F16 design gate — previously unenumerated) |
 | `--color-focus` | `#7F612B` | focus rings (2px offset ring) | 5.57 on cream ✓ (identical hex to `--color-gold-text`) |
 | `--illus-1/2/3` | `#EADFCB` `#E7D9C4` `#EFE4D0` | placeholder-illustration fills ONLY (decorative, aria-hidden art) — never UI surfaces or text backgrounds | exempt (decorative) |
 
