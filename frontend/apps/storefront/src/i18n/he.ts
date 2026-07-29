@@ -134,7 +134,7 @@ export const he = {
       // The forward button is never disabled (R7), so the two unfilled groups
       // have to say so themselves. Same shape as sizeRequired.
       typeRequired: "צריך לבחור סוג פגישה כדי להמשיך",
-      timeRequired: "צריך לבחור שעה כדי להמשיך",
+      timeRequired: "צריך לבחור מועד כדי להמשיך",
       // The RLM keeps the leading numeral from reordering against the Hebrew
       // that follows it — the one interpolated string that opens with the value.
       typeDuration: "‏{{minutes}} דקות",
@@ -208,7 +208,10 @@ export const he = {
       confirmDress: "{{dress}} · מידה {{size}}",
       confirmKeepScreen:
         "זה האישור היחיד שלך — כדאי לצלם את המסך או לשמור אותו. אנחנו נחכה לך.",
-      confirmCold: "התור שלך נקבע. אם תרצי לוודא את הפרטים — אפשר להתקשר ונאשר לך הכול.",
+      // CONDITIONAL, per R14 and copy.md rev 4: /book/confirm is guard-exempt,
+      // so a hand-typed URL or a stale bookmark reaches this screen with no
+      // booking behind it. It may not assert one it has no evidence for.
+      confirmCold: "אם השלמת את קביעת התור, הוא קיים — ואפשר להתקשר ונאשר לך את הפרטים.",
 
       typeGoneRepick: "סוג הפגישה שבחרת כבר אינו זמין. אפשר לבחור סוג אחר מהרשימה המעודכנת.",
       dressGoneGeneric:

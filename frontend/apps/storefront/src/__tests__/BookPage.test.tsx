@@ -59,6 +59,9 @@ const GONE = new ApiError(404, "NOT_FOUND", "Resource not found.");
 const OTP_WRONG = new ApiError(400, "OTP_INVALID", "Invalid code.");
 const OTP_STALE = new ApiError(400, "OTP_EXPIRED", "Code expired.");
 const TOKEN_DEAD = new ApiError(403, "PHONE_NOT_VERIFIED", "Phone not verified.");
+const SLOT_TAKEN = new ApiError(409, "SLOT_UNAVAILABLE", "That time is no longer available.");
+const TERMS_MOVED = new ApiError(409, "TERMS_STALE", "Terms have been republished.");
+const BROKEN = new ApiError(500, "UNKNOWN", "boom");
 
 function boutique(overrides: Partial<BoutiqueResponse> = {}): BoutiqueResponse {
   return {
@@ -109,6 +112,7 @@ function appointmentType(overrides: Partial<AppointmentTypeRow> = {}): Appointme
 // New York — the instant that tells the boutique's calendar from the device's.
 const AUG4_1000 = "2026-08-04T07:00:00Z";
 const AUG4_1045 = "2026-08-04T07:45:00Z";
+const AUG4_1130 = "2026-08-04T08:30:00Z";
 const AUG5_1000 = "2026-08-05T07:00:00Z";
 const AUG5_0000 = "2026-08-04T21:00:00Z";
 
@@ -1482,6 +1486,270 @@ describe("BookPage verify step — submit", () => {
     });
     expect(verifyOtp).toHaveBeenCalledTimes(1);
     expect(createBooking).toHaveBeenCalledTimes(2);
+  });
+});
+
+// State 14: every designed submit failure routed to the step that owns its
+// recovery, AHEAD of the R13 catch-all — which must still catch everything
+// else. Her verification token survives all of them (§6.12), so none of these
+// paths re-mints one.
+describe("BookPage — the error-recovery matrix", () => {
+  async function readyToSubmit(dressId?: string) {
+    const result = await walkToVerify(dressId);
+    await sendCode();
+    enterCode();
+    return result;
+  }
+
+  it("re-fetches the grid and clears the taken time on SLOT_UNAVAILABLE", async () => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(SLOT_TAKEN);
+    listSlots.mockResolvedValue({ slots: [{ starts_at: AUG4_1045 }, { starts_at: AUG4_1130 }] });
+
+    fireEvent.click(submitButton());
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/slot");
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(i18n.t("errors.slotUnavailable"));
+    // "אלה המועדים הפנויים המעודכנים" is only true of a grid that was re-read.
+    expect(listSlots).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("radio", { name: "11:30" })).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "10:00" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "10:45" })).not.toBeChecked();
+    // A lost race is not a restart of intent: the type and the date survive.
+    expect(screen.getByRole("radio", { name: /מדידה ראשונה/ })).toBeChecked();
+    expect(screen.getByLabelText(i18n.t("booking.pickDate"))).toHaveValue("2026-08-04");
+    expect(verifyOtp).toHaveBeenCalledTimes(1);
+    expect(createBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-fetches the policy and resets the consent on TERMS_STALE", async () => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(TERMS_MOVED);
+    getTerms.mockResolvedValue({
+      version: 4,
+      terms_text: "מדיניות מעודכנת: ביטול עד 72 שעות.",
+      refundable_until_hours_before: 72,
+      forfeit_percent: 25,
+    });
+
+    fireEvent.click(submitButton());
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/terms");
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(i18n.t("errors.termsStale"));
+    expect(getTerms).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("מדיניות מעודכנת: ביטול עד 72 שעות.")).toBeInTheDocument();
+    expect(screen.queryByText(TERMS.terms_text)).toBeNull();
+    expect(
+      screen.getByText(i18n.t("booking.refundWindow", { hours: 72 })),
+    ).toBeInTheDocument();
+    // Consent is consent to a VERSION. Carrying it forward would record
+    // agreement to text she never saw — the whole reason terms_version is sent.
+    expect(
+      screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") }),
+    ).not.toBeChecked();
+  });
+
+  it("adopts the phone-only entry when the policy was deleted outright", async () => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(TERMS_MOVED);
+    getTerms.mockRejectedValue(GONE);
+
+    fireEvent.click(submitButton());
+
+    // F13 cannot accept a booking with no terms version, so the flow cannot
+    // complete: the same D5 state, reached from a second trigger point.
+    expect(await screen.findByText(i18n.t("booking.noTermsByPhone"))).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: i18n.t("booking.stepsLabel") })).toBeNull();
+  });
+
+  it("degrades that phone-only entry to plain copy when the boutique fetch failed", async () => {
+    loadBoutique.mockRejectedValue(DOWN);
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(TERMS_MOVED);
+    getTerms.mockRejectedValue(GONE);
+
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText(i18n.t("booking.noTermsByPhone"))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("booking.contactUnavailable"))).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: i18n.t("contact.call") })).toBeNull();
+  });
+
+  it("leaves her on verify when the policy re-fetch itself fails", async () => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(TERMS_MOVED);
+    getTerms.mockRejectedValue(DOWN);
+
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText(i18n.t("errors.unknown"))).toHaveAttribute("role", "alert");
+    expect(window.location.pathname).toBe("/book/verify");
+    expect(screen.getByLabelText(i18n.t("booking.otpCode"))).toHaveValue("123456");
+    await waitFor(() => {
+      expect(submitButton()).toBeEnabled();
+    });
+  });
+
+  it("probes NOT_FOUND back to the type picker when the type went", async () => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(GONE);
+    listTypes.mockResolvedValue([appointmentType({ id: "t2", name: "מדידה שנייה" })]);
+
+    fireEvent.click(submitButton());
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/slot");
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(i18n.t("booking.typeGoneRepick"));
+    expect(listTypes).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("radio", { name: /מדידה שנייה/ })).not.toBeChecked();
+    expect(screen.queryByRole("radio", { name: /מדידה ראשונה/ })).toBeNull();
+    // Only the two reads that can answer "which of the three vanished".
+    expect(listSlots).toHaveBeenCalledTimes(1);
+    expect(getDress).not.toHaveBeenCalled();
+    expect(screen.getByRole("radio", { name: "10:00" })).toBeChecked();
+  });
+
+  it("probes NOT_FOUND back to the size chips when the type and dress both stand", async () => {
+    await readyToSubmit("d1");
+    createBooking.mockRejectedValueOnce(GONE);
+    getDress.mockResolvedValue(dressDetail({ sizes: [{ size_label: "40", available: true }] }));
+
+    fireEvent.click(submitButton());
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/details/d1");
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(i18n.t("booking.sizeGoneRepick"));
+    expect(getDress).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("radio", { name: /^40/ })).not.toBeChecked();
+    expect(screen.queryByRole("radio", { name: /^36/ })).toBeNull();
+    // The boutique's stock moved, not her mind: her own answers are untouched.
+    expect(screen.getByLabelText(i18n.t("booking.name"))).toHaveValue("נועה");
+    expect(screen.getByLabelText(i18n.t("booking.notes"))).toHaveValue("מגיעה עם אמא");
+    expect(createBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the binding and re-issues the booking exactly once when the dress went", async () => {
+    await readyToSubmit("d1");
+    createBooking.mockRejectedValueOnce(GONE);
+    getDress.mockRejectedValueOnce(GONE);
+
+    fireEvent.click(submitButton());
+
+    // R20: the spec's words are "drop the binding and CONTINUE". Walking her
+    // back two steps for a decoration she did not choose costs three
+    // navigations against a 600-second token already partly spent.
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/confirm/d1");
+    });
+    expect(screen.getByText(i18n.t("booking.dressGoneGeneric"))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("booking.confirmKeepScreen"))).toBeInTheDocument();
+    expect(createBooking).toHaveBeenCalledTimes(2);
+    expect(createBooking).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        dress_id: null,
+        dress_size: null,
+        // The token survived the failed claim; re-minting one would burn a send.
+        verification_token: "vt-1",
+      }),
+    );
+    expect(verifyOtp).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the submit button loading while the probe reads", async () => {
+    const gate = deferred<AppointmentTypeRow[]>();
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(GONE);
+    listTypes.mockReturnValue(gate.promise);
+
+    const submit = submitButton();
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(listTypes).toHaveBeenCalledTimes(2);
+    });
+    // R20: the probe is part of the submit, not a second interaction.
+    expect(submit).toHaveAttribute("aria-busy", "true");
+    expect(window.location.pathname).toBe("/book/verify");
+
+    gate.settle([appointmentType({ id: "t2", name: "מדידה שנייה" })]);
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/slot");
+    });
+  });
+
+  it("leaves everything intact on verify when the probe itself is throttled", async () => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(GONE);
+    listTypes.mockRejectedValueOnce(THROTTLED);
+
+    fireEvent.click(submitButton());
+
+    // Realistic: every read shares the per-tenant throttle. R20 routes this to
+    // the R13 face rather than guessing which of the three vanished.
+    expect(await screen.findByText(i18n.t("errors.unknown"))).toHaveAttribute("role", "alert");
+    expect(window.location.pathname).toBe("/book/verify");
+    expect(screen.getByLabelText(i18n.t("booking.otpCode"))).toHaveValue("123456");
+    expect(screen.getByLabelText(i18n.t("booking.phone"))).toHaveValue(TYPED_PHONE);
+    expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+    expect(screen.queryByText(i18n.t("booking.typeGoneRepick"))).toBeNull();
+    await waitFor(() => {
+      expect(submitButton()).toBeEnabled();
+    });
+  });
+
+  it("falls back to R13 when the probe finds nothing missing", async () => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(GONE);
+
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText(i18n.t("errors.unknown"))).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/book/verify");
+    expect(getDress).not.toHaveBeenCalled();
+    expect(createBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a 500", BROKEN],
+    ["a spent create budget", THROTTLED],
+  ])("keeps R13 as the final fallback for %s on submit", async (_label, error) => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(error);
+
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText(i18n.t("errors.unknown"))).toHaveAttribute("role", "alert");
+    expect(window.location.pathname).toBe("/book/verify");
+    // None of the routed branches may claim a failure they cannot diagnose.
+    expect(screen.queryByText(i18n.t("errors.slotUnavailable"))).toBeNull();
+    expect(screen.queryByText(i18n.t("errors.termsStale"))).toBeNull();
+    expect(screen.queryByText(i18n.t("booking.typeGoneRepick"))).toBeNull();
+    expect(screen.queryByText(i18n.t("booking.sizeGoneRepick"))).toBeNull();
+    expect(screen.queryByText(i18n.t("booking.dressGoneGeneric"))).toBeNull();
+    // And no read is spent probing a code that carries no cause.
+    expect(listSlots).toHaveBeenCalledTimes(1);
+    expect(listTypes).toHaveBeenCalledTimes(1);
+    expect(getTerms).toHaveBeenCalledTimes(1);
+  });
+
+  it("degrades the R13 exit to plain copy when the boutique fetch failed", async () => {
+    loadBoutique.mockRejectedValue(DOWN);
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(BROKEN);
+
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText(i18n.t("errors.unknown"))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("booking.contactUnavailable"))).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: i18n.t("contact.call") })).toBeNull();
   });
 });
 

@@ -16,6 +16,7 @@ import {
 import { ApiError, api, errorMessageKey, errorMessageOr } from "../api";
 import type {
   AppointmentTypeRow,
+  BookingCreateRequest,
   BookingCreateResponse,
   SlotRow,
   StorefrontDetail,
@@ -142,6 +143,15 @@ interface BookingFlow {
   typeId: string | null;
   startsAt: string | null;
 }
+
+// Why the submit sent her back, carried to the step that owns the fix. ONE slot
+// is enough: the backend raises one conflict at a time, checked in a fixed
+// order, so two of these can never be live together.
+type ReturnReason = "slot" | "type" | "size" | "terms" | "dress";
+
+type Binding = Pick<BookingCreateRequest, "dress_id" | "dress_size">;
+
+const NO_BINDING: Binding = { dress_id: null, dress_size: null };
 
 // Inert by design: no item is a link and none is focusable. Completed, current
 // and upcoming are told apart by the ✓ glyph, by aria-current plus weight, and
@@ -298,6 +308,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
   const [stepAlert, setStepAlert] = useState<{ key: string; contact: boolean } | null>(null);
   // Replaces the whole form. The only two states with no way forward.
   const [deadEnd, setDeadEnd] = useState<string | null>(null);
+  const [returnReason, setReturnReason] = useState<ReturnReason | null>(null);
   // The step's one authored polite region, written by exactly two discrete
   // events: the cooldown ending and the submit starting.
   const [polite, setPolite] = useState<string | null>(null);
@@ -452,6 +463,12 @@ export function BookPage({ step, dressId }: BookPageProps) {
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
   };
 
+  // Answering the question the message asked retires it — otherwise a return
+  // reason outlives its step and greets her again on a later visit to it.
+  const clearReturn = (reason: ReturnReason) => {
+    setReturnReason((current) => (current === reason ? null : current));
+  };
+
   const forward = () => {
     if (selectedType === null) {
       setMissing({ type: true, time: flow.startsAt === null });
@@ -553,11 +570,119 @@ export function BookPage({ step, dressId }: BookPageProps) {
     setSending(false);
   };
 
+  // The three routed recoveries. Every one of them keeps her verification
+  // token: create_booking runs in one transaction, so a claim that loses a race
+  // rolls its own token burn back with it, and re-verifying would burn one of
+  // five hourly sends to re-prove what the server never un-proved.
+  const recoverSlot = async () => {
+    const fresh = await api.listSlots().catch(() => null);
+    if (fresh === null) {
+      unknownFailure();
+      return;
+    }
+    setEntry((current) => (current === null ? current : { ...current, slots: fresh.slots }));
+    // The type and the date survive: a lost race is not a restart of intent.
+    setFlow((current) => ({ ...current, startsAt: null }));
+    setReturnReason("slot");
+    navigate(`/book/slot${suffix}`);
+  };
+
+  const recoverTerms = async () => {
+    let fresh: StorefrontTerms | null;
+    try {
+      fresh = await api.getTerms();
+    } catch (error: unknown) {
+      if (errorMessageKey(error) !== "errors.notFound") {
+        unknownFailure();
+        return;
+      }
+      fresh = null;
+    }
+    // The held version is replaced, which unchecks the consent by construction:
+    // `accepted` is acceptedVersion === terms.version, and carrying it forward
+    // would record agreement to text she never saw.
+    setEntry((current) => (current === null ? current : { ...current, terms: fresh }));
+    if (fresh === null) {
+      // The boutique deleted its policy outright mid-session. F13 cannot accept
+      // a booking without a terms version, so there is no flow left to return
+      // her to: D5's phone-only entry, reached from a second trigger point.
+      navigate(`/book/slot${suffix}`);
+      return;
+    }
+    setReturnReason("terms");
+    navigate(`/book/terms${suffix}`);
+  };
+
+  // ONE code, three causes, and the wire carries no discriminator: a withdrawn
+  // type, an archived dress and a deleted size variant all answer 404. The two
+  // reads that can tell them apart run while the submit button is still
+  // `loading` — the probe is part of the submit, not a second interaction.
+  const probeNotFound = async (
+    bound: string | null,
+    reissue: () => Promise<BookingCreateResponse>,
+  ) => {
+    const probed = await Promise.all([
+      api.listAppointmentTypes(),
+      bound === null
+        ? Promise.resolve<StorefrontDetail | null>(null)
+        : api.getDress(bound).catch((error: unknown) => {
+            if (errorMessageKey(error) === "errors.notFound") return null;
+            throw error;
+          }),
+    ]).catch(() => null);
+    // Every read shares the per-tenant throttle, so the probe's own 429 is
+    // realistic — and it is evidence of nothing. R13's face, and she stays here
+    // with everything intact rather than being walked back on a guess.
+    if (probed === null) {
+      unknownFailure();
+      return;
+    }
+    const [types, detail] = probed;
+    setEntry((current) => (current === null ? current : { ...current, types }));
+
+    if (!types.some((type) => type.id === flow.typeId)) {
+      setFlow((current) => ({ ...current, typeId: null }));
+      setReturnReason("type");
+      navigate(`/book/slot${suffix}`);
+      return;
+    }
+    if (bound === null) {
+      unknownFailure();
+      return;
+    }
+    if (detail !== null) {
+      // The type and the dress both stand, so it was the size variant.
+      setDress(detail);
+      setSize(null);
+      setReturnReason("size");
+      navigate(`/book/details${suffix}`);
+      return;
+    }
+    // R20: drop the binding and CONTINUE. Walking her back two steps for a
+    // decoration she did not choose costs three navigations against a
+    // 600-second token that is already partly spent.
+    setDress(null);
+    setDressGone(true);
+    const created = await reissue().catch(() => null);
+    if (created === null) {
+      unknownFailure();
+      return;
+    }
+    setBooked(created);
+    setReturnReason("dress");
+    navigate(`/book/confirm${suffix}`);
+  };
+
   const submit = async () => {
     // Required, not decorative: React commits `disabled` asynchronously, and a
     // fast double-tap on iOS fires two clicks inside one frame.
     if (submitting) return;
-    if (flow.typeId === null || flow.startsAt === null || acceptedVersion === null) return;
+    // Read out before the closures below: TypeScript keeps a narrowing across a
+    // closure boundary for consts, and not for the state object's properties.
+    const typeId = flow.typeId;
+    const startsAt = flow.startsAt;
+    const termsVersion = acceptedVersion;
+    if (typeId === null || startsAt === null || termsVersion === null) return;
     setSubmitting(true);
     setStepAlert(null);
     setCodeError(undefined);
@@ -589,25 +714,29 @@ export function BookPage({ step, dressId }: BookPageProps) {
 
     // A dress and its size are a PAIR at the boundary or neither is sent, so a
     // dropped binding sends nothing rather than half of one.
-    const binding =
+    const binding: Binding =
       sizes !== null && size !== null && dressId !== undefined
         ? { dress_id: dressId, dress_size: size }
-        : { dress_id: null, dress_size: null };
-    try {
-      const created = await api.createBooking({
+        : NO_BINDING;
+    const verified = current;
+    const book = (bound: Binding) =>
+      api.createBooking({
         phone: normalizedPhone,
-        verification_token: current,
+        verification_token: verified,
         name,
-        appointment_type_id: flow.typeId,
-        starts_at: flow.startsAt,
-        terms_version: acceptedVersion,
-        ...binding,
+        appointment_type_id: typeId,
+        starts_at: startsAt,
+        terms_version: termsVersion,
+        ...bound,
         notes: notes === "" ? null : notes,
       });
+    try {
+      const created = await book(binding);
       setBooked(created);
       navigate(`/book/confirm${suffix}`);
     } catch (error: unknown) {
-      if (errorMessageKey(error) === "errors.phoneNotVerified") {
+      const key = errorMessageKey(error);
+      if (key === "errors.phoneNotVerified") {
         // Collapse to sub-state A. The token is gone, so the code it minted is
         // worthless — but nothing else she entered is touched, including the
         // consent: a consent is a consent to a VERSION, and the version did not
@@ -615,11 +744,19 @@ export function BookPage({ step, dressId }: BookPageProps) {
         setCodeSentFor(null);
         setCode("");
         setToken(null);
-        setStepAlert({ key: "errors.phoneNotVerified", contact: false });
+        setStepAlert({ key, contact: false });
         pendingFocus.current = "phone";
+      } else if (key === "errors.slotUnavailable") {
+        await recoverSlot();
+      } else if (key === "errors.termsStale") {
+        await recoverTerms();
+      } else if (key === "errors.notFound") {
+        await probeNotFound(binding.dress_id, () => book(NO_BINDING));
       } else {
-        // R13. Retry is genuinely safe — create_booking runs in one transaction
-        // and a failure at any step rolls the token burn back with it.
+        // R13, and it stays the LAST branch: everything the design named has a
+        // destination above, and everything else lands here. Retry is genuinely
+        // safe — create_booking runs in one transaction and a failure at any
+        // step rolls the token burn back with it.
         unknownFailure();
       }
       // Emptied so a second attempt is a change the region announces again.
@@ -721,10 +858,17 @@ export function BookPage({ step, dressId }: BookPageProps) {
                 types={entry.types}
                 value={flow.typeId}
                 boutique={boutique}
-                error={missing.type ? t("booking.typeRequired") : undefined}
+                error={
+                  missing.type
+                    ? t("booking.typeRequired")
+                    : returnReason === "type"
+                      ? t("booking.typeGoneRepick")
+                      : undefined
+                }
                 onChange={(typeId) => {
                   setFlow((current) => ({ ...current, typeId }));
                   setMissing((current) => ({ ...current, type: false }));
+                  clearReturn("type");
                 }}
                 ref={typeRef}
               />
@@ -734,7 +878,13 @@ export function BookPage({ step, dressId }: BookPageProps) {
                 max={max}
                 times={times}
                 value={flow.startsAt}
-                error={missing.time ? t("booking.timeRequired") : undefined}
+                error={
+                  missing.time
+                    ? t("booking.timeRequired")
+                    : returnReason === "slot"
+                      ? t("errors.slotUnavailable")
+                      : undefined
+                }
                 onDateChange={(next) => {
                   setPickedDate(next);
                   // A time picked on another date is not a time on this one.
@@ -743,6 +893,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
                 onChange={(startsAt) => {
                   setFlow((current) => ({ ...current, startsAt }));
                   setMissing((current) => ({ ...current, time: false }));
+                  clearReturn("slot");
                 }}
                 ref={timeRef}
               />
@@ -828,10 +979,14 @@ export function BookPage({ step, dressId }: BookPageProps) {
               <SizeChips
                 sizes={sizes}
                 value={size}
-                error={fieldErrors.size}
+                error={
+                  fieldErrors.size ??
+                  (returnReason === "size" ? t("booking.sizeGoneRepick") : undefined)
+                }
                 onChange={(picked) => {
                   setSize(picked);
                   clearError("size");
+                  clearReturn("size");
                 }}
                 ref={sizeRef}
               />
@@ -863,6 +1018,14 @@ export function BookPage({ step, dressId }: BookPageProps) {
 
       {step === "terms" && terms !== null && (
         <>
+          {/* Above the Card, so it is the first thing in the content region
+              after the h1 the Router's focus move lands on. Cautionary, never
+              danger: nothing she did failed — the boutique republished. */}
+          {returnReason === "terms" && (
+            <p role="alert" className="max-w-[60ch] text-base text-warning-text">
+              {t("errors.termsStale")}
+            </p>
+          )}
           <Card className="flex flex-col gap-4">
             {/* The two numbers sit ABOVE the prose because they are what she is
                 actually agreeing to, and a paragraph is where numbers hide.
@@ -902,6 +1065,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
               onCheckedChange={(next) => {
                 setAcceptedVersion(next ? terms.version : null);
                 clearError("accept");
+                clearReturn("terms");
               }}
               ref={acceptRef}
             />
@@ -1089,6 +1253,16 @@ export function BookPage({ step, dressId }: BookPageProps) {
                 )}
               </div>
             </Card>
+
+            {/* R20's landing: the binding was dropped and the booking went
+                through without it, so the record is honest and this line says
+                what is missing from it. Outside the Card — the dress is not a
+                fact of the appointment she got. */}
+            {returnReason === "dress" && (
+              <p role="alert" className="max-w-[60ch] text-base text-warning-text">
+                {t("booking.dressGoneGeneric")}
+              </p>
+            )}
 
             {/* Outside the Card: an instruction ABOUT the record, not a fact IN
                 it — a screenshot cropped to the Card should carry only facts. */}
