@@ -10,9 +10,18 @@ export interface TypePickerProps {
   value: string | null;
   onChange: (typeId: string) => void;
   boutique: BoutiqueResponse | null;
-  // The mid-flow return reason (booking.typeGoneRepick) and the R7 "nothing
-  // chosen" message share this slot — the screen never carries two of them.
+  // A real validation failure — booking.typeRequired. Danger register.
   error?: string;
+  /**
+   * The recoverable "the thing you picked is gone, pick another" message —
+   * booking.typeGoneRepick. Same slot shape and same warning register as
+   * SizeChips' `notice`, because it is the same semantic state: the boutique's
+   * catalogue moved under her, nothing she did failed. §5.8's measured contrast
+   * ledger publishes that register as --color-warning-text. `error` takes
+   * precedence when both are set — by then she has pressed forward and the
+   * notice is stale.
+   */
+  notice?: string;
   // Lands on the checked row, or the first when nothing is chosen: R7 moves
   // focus here, and on a deposit row that re-announces the row's description.
   ref?: Ref<HTMLInputElement>;
@@ -33,20 +42,32 @@ const rowClass = cn(
 //
 // No preselection — with a brides-only or deposit-required type first, choosing
 // for her would choose wrongly.
-export function TypePicker({ types, value, onChange, boutique, error, ref }: TypePickerProps) {
+export function TypePicker({
+  types,
+  value,
+  onChange,
+  boutique,
+  error,
+  notice,
+  ref,
+}: TypePickerProps) {
   const { t } = useTranslation();
   const groupId = useId();
   const channels = boutique === null ? null : contactChannels(boutique);
   const checkedIndex = types.findIndex((type) => type.id === value);
   const focusIndex = checkedIndex === -1 ? 0 : checkedIndex;
+  const message = error ?? notice;
 
   return (
     <>
       {/* Outside the fieldset by necessity: a <legend> that is not the first
           element child stops being the caption and stops naming the group. */}
-      {error !== undefined && (
-        <p role="alert" className="text-base text-danger">
-          {error}
+      {message !== undefined && (
+        <p
+          role="alert"
+          className={cn("text-base", error === undefined ? "text-warning-text" : "text-danger")}
+        >
+          {message}
         </p>
       )}
       <fieldset className="border-0 p-0">

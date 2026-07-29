@@ -739,13 +739,16 @@ describe("BookPage slot step — the mid-flow returns", () => {
     );
   });
 
-  it("puts booking.typeGoneRepick above the picker legend, in danger", () => {
+  // typeGoneRepick and sizeGoneRepick are ONE semantic state — "the thing you
+  // picked is gone, pick another" — so they share a register. Ruled with
+  // sizeGoneRepick below: warning, not danger. Nothing she did failed.
+  it("puts booking.typeGoneRepick above the picker legend, in the warning register", () => {
     render(
       <StorefrontLayout>
         <TypePicker
           types={[appointmentType()]}
           value={null}
-          error={i18n.t("booking.typeGoneRepick")}
+          notice={i18n.t("booking.typeGoneRepick")}
           boutique={boutique()}
           onChange={() => undefined}
         />
@@ -754,10 +757,27 @@ describe("BookPage slot step — the mid-flow returns", () => {
 
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent(i18n.t("booking.typeGoneRepick"));
-    expect(getComputedStyle(alert).color).toBe(colourOf("text-danger"));
+    expect(colourOf("text-warning-text")).not.toBe(colourOf("text-danger"));
+    expect(getComputedStyle(alert).color).toBe(colourOf("text-warning-text"));
     expect(alert.compareDocumentPosition(screen.getByText(i18n.t("booking.typeHeading")))).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+
+  it("keeps a real validation error on the type picker in danger", () => {
+    render(
+      <StorefrontLayout>
+        <TypePicker
+          types={[appointmentType()]}
+          value={null}
+          error={i18n.t("booking.typeRequired")}
+          boutique={boutique()}
+          onChange={() => undefined}
+        />
+      </StorefrontLayout>,
+    );
+
+    expect(getComputedStyle(screen.getByRole("alert")).color).toBe(colourOf("text-danger"));
   });
 
   // §3.8's register table files sizeGoneRepick under --color-danger; §4.7 and

@@ -858,13 +858,8 @@ export function BookPage({ step, dressId }: BookPageProps) {
                 types={entry.types}
                 value={flow.typeId}
                 boutique={boutique}
-                error={
-                  missing.type
-                    ? t("booking.typeRequired")
-                    : returnReason === "type"
-                      ? t("booking.typeGoneRepick")
-                      : undefined
-                }
+                error={missing.type ? t("booking.typeRequired") : undefined}
+                notice={returnReason === "type" ? t("booking.typeGoneRepick") : undefined}
                 onChange={(typeId) => {
                   setFlow((current) => ({ ...current, typeId }));
                   setMissing((current) => ({ ...current, type: false }));
