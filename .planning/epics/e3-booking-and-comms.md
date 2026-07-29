@@ -1,7 +1,9 @@
 # Epic: E3 — Booking Engine & SMS Lifecycle
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: in progress — #11, #12 and #13 are merged (PRs #16, #17, #18), so the booking *engine* is done: a verified phone can claim a real slot, oversell-proof, and the public grid reports true availability. One backend gap blocks **#14** and it carries it — `GET /storefront/terms`, the public read an anonymous customer needs before she can send a `terms_version` at all, which is what moved #14 from M to L. (#15 and #16 carry substantial backend work of their own — see their briefs.) #14 (UI), #15 (owner management) and #16 (comms lifecycle) remain, and all three are now unblocked. **#14 passed Gate 1 on 2026-07-29** — its seven open questions are answered as D1–D7 in the spec, plus D8–D9 confirmed with the user post-gate and D10–D12 recording choices the shipped code had already forced; a design gate (`.planning/design/screens/booking/`) and an implementation plan are the next two steps before build.
+**Status**: in progress — #11, #12 and #13 are merged (PRs #16, #17, #18), so the booking *engine* is done: a verified phone can claim a real slot, oversell-proof, and the public grid reports true availability. One backend gap blocks **#14** and it carries it — `GET /storefront/terms`, the public read an anonymous customer needs before she can send a `terms_version` at all, which is what moved #14 from M to L. (#15 and #16 carry substantial backend work of their own — see their briefs.) #14 (UI), #15 (owner management) and #16 (comms lifecycle) remain, and all three are now unblocked. **#14 passed Gate 1 on 2026-07-29** — its seven open questions are answered as D1–D7 in the spec, plus D8–D9 confirmed with the user post-gate and D10–D12 recording choices the shipped code had already forced.
+
+**#14's design gate and implementation plan were both drafted on 2026-07-29** (`.planning/design/screens/booking/` and `.planning/plans/storefront-booking-ui.md`). **The build is blocked on two user decisions, not on engineering**: the Hebrew in `copy.md` (every string is `DRAFT`, and the copy is the user's to author) and the eight gate proposals in `booking.md` §14.1. The gate also produced amendments this epic's other features inherit — see the design doc's ⚠ FINDINGs, which include one row the spec's State matrix is missing, four i18n keys its inventory lacks, a `packages/ui` gate condition (`Input`/`TextArea`/`Select` expose no `ref`, so focus-to-first-invalid is currently unbuildable), and a pre-existing `StorefrontLayout` defect that is escalated rather than fixed here.
 
 **A booking currently sends nothing.** #13 shipped the row; every SMS lives in #16. That ordering was harmless only while nothing linked to the endpoint — **#14 ends that**: the moment it merges, a real customer completes a booking and hears silence. It is why #14's D6 makes the confirmation screen carry the whole promise (and say nothing about a text that will not arrive), and why #16 must not slip behind #15. One string on that screen changes when #16 lands.
 
@@ -32,9 +34,11 @@ This is the product's transactional core: turn the browse-only storefront into a
 | 11 | SMS foundation | **done** (PR #16) | [spec](../specs/sms-foundation.md) | [plan](../plans/sms-foundation.md) | E1 #2, #3 |
 | 12 | Availability & slot engine | **done** (PR #17) | [spec](../specs/availability-slot-engine.md) | [plan](../plans/availability-slot-engine.md) | E2 #7 |
 | 13 | Booking core API | **done** (PR #18) | [spec](../specs/booking-core.md) | [plan](../plans/booking-core.md) | E2 #7, #11, #12 |
-| 14 | Storefront booking UI | Gate 1 approved — design gate + plan outstanding | [spec](../specs/storefront-booking-ui.md) | — | E2 #9, #10 · #11, #12, #13 |
-| 15 | Owner booking management | todo | — | — | #13 |
-| 16 | Booking comms lifecycle | todo | — | — | #13 |
+| 14 | Storefront booking UI | **design gate + plan drafted 2026-07-29 — awaiting the user's sign-off** on `copy.md`'s Hebrew and the §14.1 gate proposals; build blocked until both | [spec](../specs/storefront-booking-ui.md) · [design](../design/screens/booking/booking.md) · [copy](../design/screens/booking/copy.md) | [plan](../plans/storefront-booking-ui.md) | E2 #9, #10 · #11, #12, #13 |
+| 15 | Owner booking management | todo — **spec'd third**, after #16 | — | — | #13 |
+| 16 | Booking comms lifecycle | todo — **spec'd second**, immediately after #14 ships | — | — | #13 |
+
+**Remaining order is #14 → #16 → #15, and the ordering is deliberate.** #16 is sequenced ahead of #15 because the day #14 merges, a real customer completes a booking and hears silence — that is a customer-facing hole, where #15's absence is only an owner inconvenience the owner can work around by reading the database or phoning the bride back. #14's D6 makes the confirmation screen carry the whole promise in the meantime, and one string on it changes when #16 lands.
 
 ---
 

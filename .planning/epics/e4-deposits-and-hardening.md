@@ -1,7 +1,9 @@
 # Epic: E4 — Deposits, Compliance & Pilot Hardening
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: planning
+**Status**: planning — **roadmap only, by decision on 2026-07-29.** No E4 feature gets a spec until E3 is closer to done; each is spec'd feature-by-feature when its turn arrives, matching the per-feature `/spartan:spec` → `/spartan:plan` → `/spartan:build` pipeline every shipped feature has used. Writing all five specs now would mean guessing at Grow's integration details before the merchant account exists, and rewriting them afterwards.
+
+**Sequencing when E4 starts**: #17 → #18 → #19 are a chain and all three are gated on **Grow merchant-account approval**, which is external lead time filed in E1 #2 and still outstanding. **#20 (PPL compliance) depends only on E3 #13, which has shipped** — so it is the one E4 feature that is spec-able today, and it is the right place to start if Grow is still pending when E3 closes. #21 is last by definition: it is the ship gate.
 **Owner**: team
 **PRD**: §5 (Israeli billing, deposit דמי רצינות; client dashboard deferred to E5)
 

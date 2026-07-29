@@ -1,0 +1,1332 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>אב-טיפוס — קביעת תור בחזית החנות (F14 · /book/*)</title>
+<!--
+  ============================================================================
+  F14 STOREFRONT BOOKING UI — design-gate prototype
+  ============================================================================
+  Self-contained. NO external requests of any kind — no font CDN, no images,
+  no scripts, no fetches. This matches manage-catalog/prototype.html exactly:
+  production self-hosts Frank Ruhl Libre + Assistant via @fontsource, so a
+  Google Fonts <link> here would be the ONE thing this file does that the build
+  must not copy. The stacks below fall back to the system serif/sans, which is
+  expected and does not affect a single token.
+
+  Custom-property names and values in :root are copied verbatim from
+  .planning/design/system/tokens.md so a reviewer can diff them line-for-line.
+  A raw hex ANYWHERE below :root is a defect.
+
+  CSS LOGICAL PROPERTIES ONLY. The F14 build copies this file, so a physical
+  directional or sizing property here becomes a defect there. Media-query
+  FEATURES (`min-width`) are exempt — they are viewport/container queries, not
+  properties.
+
+  RESPONSIVE MECHANISM — read this before copying:
+    the build uses viewport media queries (Tailwind `md:`). This prototype uses
+    CSS **container queries** on `.frame` instead, and ONLY so that a 375 column
+    and a ≥768 column can both be shown on one desktop page. `@container
+    (min-width:768px)` here == `md:` in the build. Nothing else differs.
+
+  JS-OFF: every screen is rendered and visible by default. The script only ADDS
+  filtering (it stamps `js` on <body>). With JS disabled the whole deck reads
+  as one stacked document.
+-->
+<style>
+  :root{
+    /* ---- colors (tokens.md § Colors + the gold law) ---- */
+    --color-bg:#FDFBF7;
+    --color-surface:#F6F0E6;
+    --color-surface-raised:#FFFFFF;
+    --color-ink:#2B2118;
+    --color-ink-muted:#6B5D4F;
+    --color-gold:#C5A059;          /* decorative only — never carries text */
+    --color-gold-strong:#9E7B36;   /* meaningful NON-TEXT UI only (≥3:1) */
+    --color-gold-text:#7F612B;     /* the only gold that touches text */
+    --color-border:#E4DACA;
+    --color-border-input:#8A7A5E;  /* 4.04 cream / 3.69 paper / 4.18 white */
+    --color-success:#2E6B4F;       /* declared, and DELIBERATELY UNUSED — §7.5 */
+    --color-danger:#A03232;
+    --color-warning-text:#8A5A1E;
+    --color-focus:#7F612B;         /* byte-identical to --color-gold-text */
+    --illus-1:#EADFCB;
+    --illus-2:#E7D9C4;
+    --illus-3:#EFE4D0;
+    /* ---- typography (tokens.md § Typography — Hebrew-first) ---- */
+    --font-display:"Frank Ruhl Libre","David Libre",serif;
+    --font-body:"Assistant","Heebo",system-ui,sans-serif;
+    --text-xs:0.75rem;   --leading-xs:1.4;
+    --text-sm:0.875rem;  --leading-sm:1.5;
+    --text-base:1rem;    --leading-base:1.6;
+    --text-lg:1.1875rem; --leading-lg:1.5;
+    --text-xl:1.4375rem; --leading-xl:1.35;
+    --text-2xl:1.75rem;  --leading-2xl:1.25;
+    --text-3xl:2.25rem;  --leading-3xl:1.15;
+    /* ---- spacing (tokens.md § Spacing — 4px base) ---- */
+    --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+    --space-6:24px; --space-8:32px; --space-12:48px; --space-16:64px;
+    /* ---- fixed-chrome clearance (tokens.md PRE-1) ---- */
+    --cta-bar-height:calc(56px + 2 * var(--space-3));
+    --space-a11y-clearance:calc(var(--cta-bar-height) + var(--space-3));
+    /* ---- radius & shadows ---- */
+    --radius-sm:4px; --radius-md:8px; --radius-full:9999px;
+    --shadow-sm:0 1px 2px rgb(43 33 24 / 0.06);
+    --shadow-md:0 4px 12px rgb(43 33 24 / 0.10);
+    --shadow-lg:0 12px 32px rgb(43 33 24 / 0.14);
+    /* ---- motion ---- */
+    --motion-fast:150ms; --motion-base:200ms; --motion-slow:300ms;
+    --ease-out:cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--color-bg);color:var(--color-ink);font-family:var(--font-body);
+       font-size:var(--text-base);line-height:var(--leading-base)}
+  button,input,textarea,select{font:inherit;color:inherit}
+  button{cursor:pointer}
+  fieldset{border:0;padding:0;margin:0;min-inline-size:0}
+  legend{padding:0}
+  /* usage law 4 — outline + offset only. No radius on the ring: browsers already
+     trace the element's own radius, which matters because chips are --radius-full. */
+  :focus-visible{outline:2px solid var(--color-focus);outline-offset:2px}
+  .display{font-family:var(--font-display);letter-spacing:0}
+  /* Every Latin/numeric run inside Hebrew. `Price` does this by construction. */
+  .ltr{direction:ltr;unicode-bidi:isolate}
+  /* VisuallyHidden (components.md primitive) — logical sizing, no exceptions. */
+  .vh{position:absolute;inline-size:1px;block-size:1px;overflow:hidden;
+      clip-path:inset(50%);white-space:nowrap}
+
+  /* ================= prototype chrome (NOT part of the product) ================
+     Held to the same bars as the product: switcher buttons clear 44px (usage law
+     7), and because this bar is --color-ink the global --color-focus ring would
+     compute 2.74:1 against it — below the ≥3:1 non-text bar. Re-coloured to
+     --color-bg on this bar only (15.24:1). No overflow-x anywhere: the bar wraps. */
+  .proto-nav{position:sticky;inset-block-start:0;z-index:50;background:var(--color-ink);
+             color:var(--color-bg);display:flex;flex-wrap:wrap;gap:var(--space-2);
+             padding:var(--space-2) var(--space-4);font-size:var(--text-xs)}
+  .proto-nav button{background:transparent;border:1px solid rgb(253 251 247 / .3);
+                    color:inherit;border-radius:var(--radius-sm);
+                    padding:var(--space-1) var(--space-3);min-block-size:44px}
+  .proto-nav :focus-visible{outline-color:var(--color-bg)}
+  .proto-nav button[aria-pressed="true"]{background:var(--color-gold);color:var(--color-ink);
+                    border-color:var(--color-gold)}
+  .proto-note{background:var(--color-surface);border-block-end:1px solid var(--color-border);
+              color:var(--color-ink-muted);font-size:var(--text-xs);
+              padding:var(--space-3) var(--space-4)}
+  .proto-note b{color:var(--color-ink)}
+  .proto-note ul{margin-block-start:var(--space-2);padding-inline-start:var(--space-4)}
+  /* JS-OFF SAFETY: screens are visible by default. Filtering only exists once the
+     script stamps `js` on <body>. */
+  body.js .screen{display:none}
+  body.js .screen.active{display:block}
+  .screen{padding-block-end:var(--space-8)}
+  .grp{font-size:var(--text-sm);font-weight:700;color:var(--color-ink);
+       margin-block:var(--space-8) var(--space-2);padding:var(--space-2) var(--space-4);
+       background:var(--color-surface);border-block:1px solid var(--color-border)}
+  .cap{font-size:var(--text-xs);color:var(--color-ink-muted);font-weight:600;
+       margin-block:var(--space-6) var(--space-2);padding-inline:var(--space-4);
+       padding-block-end:var(--space-1);border-block-end:1px solid var(--color-border)}
+  .cap .flag{color:var(--color-warning-text)}
+  .cap .route{font-family:var(--font-body);color:var(--color-gold-text)}
+
+  /* Device frame. `container-type:inline-size` is what makes the two widths
+     renderable side by side; the build reads these as viewport breakpoints. */
+  .frame{container-type:inline-size;position:relative;inline-size:100%;
+         max-inline-size:375px;margin-inline:auto;background:var(--color-bg);
+         border:1px solid var(--color-border);border-radius:var(--radius-md);
+         overflow:hidden}
+  .frame.desk{max-inline-size:900px}
+  /* The A11yMenu trigger, drawn to scale so the --space-4 resting offset is
+     visible. In the app it is `fixed`; here it is absolute inside the frame so
+     each screen carries its own. Its footprint is 44px + 16px = 60px block-end. */
+  .a11yfab{position:absolute;inset-block-end:var(--space-4);inset-inline-end:var(--space-4);
+           inline-size:44px;block-size:44px;border-radius:var(--radius-full);
+           background:var(--color-surface-raised);border:1px solid var(--color-border-input);
+           box-shadow:var(--shadow-md);display:flex;align-items:center;
+           justify-content:center;color:var(--color-ink-muted);font-size:var(--text-sm)}
+
+  /* ================= the /book column (§8.1) =================
+     max-inline-size 640px, gutters --space-4 → --space-6, NO third step.
+     padding-block-end --space-16 because the shell reserves NONE for /book
+     (hasBookingBar is `catalog || dress`) and the A11yMenu footprint is 60px. */
+  .page{max-inline-size:640px;margin-inline:auto;
+        padding-inline:var(--space-4);
+        padding-block:var(--space-8) var(--space-16);
+        display:grid;gap:var(--space-6);align-content:start}
+  @container (min-width:768px){ .page{padding-inline:var(--space-6)} }
+
+  /* back link — block-start of the column, inline-start (§9.4 tab order) */
+  .link{color:var(--color-gold-text);text-decoration:underline;font-size:var(--text-base)}
+  .link-row{display:inline-flex;align-items:center;gap:var(--space-2);
+            min-block-size:44px;justify-self:start}
+  .link-sm{font-size:var(--text-sm)}
+
+  /* stepper (§9.4): a non-interactive <ol>. NOT role=tablist, NOT progressbar,
+     items NOT links and NOT focusable. The list's own semantics carry "3 of 4". */
+  .stepper{display:flex;gap:var(--space-2);align-items:flex-start;
+           list-style:none;padding:0;margin:0}
+  .stepper li{flex:1 1 0;min-inline-size:0;text-align:center;position:relative;
+              display:flex;flex-direction:column;align-items:center;gap:var(--space-1)}
+  .stepper li + li::before{content:"";position:absolute;inset-block-start:11px;
+              inset-inline-start:calc(-50% - var(--space-2));
+              inline-size:calc(100% + var(--space-2));block-size:1px;
+              background:var(--color-border)}
+  .dot{position:relative;z-index:1;inline-size:24px;block-size:24px;
+       border-radius:var(--radius-full);display:flex;align-items:center;
+       justify-content:center;font-size:var(--text-xs);font-weight:600}
+  .dot.done{background:var(--color-gold);color:var(--color-ink)}      /* 6.41:1 */
+  .dot.cur {background:var(--color-ink);color:var(--color-bg)}        /* 15.24:1 */
+  .dot.next{background:var(--color-surface-raised);color:var(--color-ink-muted);
+            border:1px solid var(--color-border-input)}               /* 6.36 / 4.18 */
+  .stlbl{font-size:var(--text-xs);line-height:var(--leading-xs);color:var(--color-ink-muted)}
+  li[aria-current="step"] .stlbl{color:var(--color-ink);font-weight:600}
+
+  /* headings — §9.1: h1 = the STEP, always a static i18n string, so it survives
+     D12/D5/empty-types by construction and needs no essenceFallback. */
+  .head{display:grid;gap:var(--space-3);justify-items:start}
+  h1.step{font-family:var(--font-display);font-size:var(--text-2xl);
+          line-height:var(--leading-2xl);font-weight:500;color:var(--color-ink)}
+  .orn{display:block;block-size:1px;inline-size:var(--space-12);background:var(--color-gold)}
+  h2.sec{font-family:var(--font-display);font-size:var(--text-xl);
+         line-height:var(--leading-xl);font-weight:500;color:var(--color-ink)}
+  h2.plain{font-size:var(--text-sm);font-weight:600;color:var(--color-ink)}
+
+  /* Card — paper, radius-md, shadow-sm, NO hard border (matting + shadow only) */
+  .card{background:var(--color-surface);border-radius:var(--radius-md);
+        box-shadow:var(--shadow-sm);padding:var(--space-4);
+        display:grid;gap:var(--space-6)}
+  @container (min-width:768px){ .card{padding:var(--space-6)} }
+  .hr{block-size:0;border:0;border-block-start:1px solid var(--color-border);
+      margin-block:var(--space-4)}
+
+  /* fields */
+  .field{display:grid;gap:var(--space-1)}
+  .lbl{font-size:var(--text-sm);font-weight:600;color:var(--color-ink)}
+  .help{font-size:var(--text-xs);line-height:var(--leading-xs);color:var(--color-ink-muted)}
+  .inp{inline-size:100%;min-block-size:44px;background:var(--color-surface-raised);
+       border:1px solid var(--color-border-input);border-radius:var(--radius-sm);
+       padding-block:var(--space-2);padding-inline:var(--space-3);
+       font-size:var(--text-base);color:var(--color-ink)}
+  textarea.inp{min-block-size:112px;resize:block}
+  .inp.bad{border-color:var(--color-danger)}
+  .inp.date{max-inline-size:200px}
+  .inp.code{max-inline-size:10ch}
+  .err{font-size:var(--text-sm);color:var(--color-danger)}      /* 6.18 on paper */
+  .counter{font-size:var(--text-xs);color:var(--color-ink-muted);text-align:end}
+
+  /* appointment-type picker (§3.5) — native fieldset/legend/radio, styled rows */
+  .typelist{display:grid}
+  .typerow{display:flex;align-items:flex-start;gap:var(--space-3);
+           min-block-size:44px;padding-block:var(--space-3);
+           border-block-end:1px solid var(--color-border);cursor:pointer}
+  /* a row that owns a revealed block wraps both in .typeitem, and the hairline
+     moves to the wrapper so the reveal sits INSIDE the row's own group */
+  .typeitem{border-block-end:1px solid var(--color-border)}
+  .typeitem > .typerow{border-block-end:0}
+  .typelist > .typerow:last-child,
+  .typelist > .typeitem:last-child{border-block-end:0}
+  .typerow input[type=radio]{inline-size:20px;block-size:20px;flex-shrink:0;
+           margin-block-start:var(--space-1);accent-color:var(--color-gold-strong)}
+  .typerow:has(:focus-visible){outline:2px solid var(--color-focus);outline-offset:2px;
+           border-radius:var(--radius-sm)}
+  .typetext{display:grid;gap:var(--space-1);flex:1 1 auto;min-inline-size:0}
+  .typename{font-size:var(--text-base);font-weight:600;color:var(--color-ink)}
+  .typedur{font-size:var(--text-sm);color:var(--color-ink-muted)}
+  @container (min-width:768px){
+    .typetext{grid-template-columns:1fr auto;align-items:baseline;gap:var(--space-3)}
+    .typetext .typename{grid-column:1}
+    .typetext .typedur{grid-column:2;text-align:end}
+    .typetext .badgewrap{grid-column:1 / -1}
+  }
+  /* The D3 reveal — inside the selected row's own GROUP and nowhere else.
+     It is a SIBLING of the <label>, never a child: <label>'s content model is
+     phrasing content, so a <p> + link list inside it is invalid markup AND
+     would be swallowed into the radio's accessible name. The radio points at
+     it with aria-describedby instead. */
+  .reveal{display:grid;gap:var(--space-3);
+          padding-block:0 var(--space-3);padding-inline-start:var(--space-8)}
+  .reveal p{font-size:var(--text-base);color:var(--color-ink);max-inline-size:60ch}
+
+  /* Badge — muted variant (components.md:16). Non-interactive <span>. */
+  .badge{display:inline-block;font-size:var(--text-xs);line-height:var(--leading-xs);
+         font-weight:600;color:var(--color-ink-muted);background:var(--color-surface-raised);
+         border:1px solid var(--color-border);border-radius:var(--radius-full);
+         padding-block:2px;padding-inline:var(--space-3)}
+
+  /* slot grid (§3.6) — ONE auto-fill rule, no breakpoints. 3 cols @375, 5 @640. */
+  .slotgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+            gap:var(--space-2)}
+  .chip{position:relative;display:flex;align-items:center;justify-content:center;
+        min-block-size:44px;padding-inline:var(--space-3);
+        border:1px solid var(--color-border-input);border-radius:var(--radius-full);
+        background:var(--color-surface-raised);color:var(--color-ink);
+        font-size:var(--text-base);cursor:pointer;
+        transition:background-color var(--motion-fast) var(--ease-out),
+                   border-color var(--motion-fast) var(--ease-out)}
+  .chip:has(:checked){background:var(--color-gold);color:var(--color-ink);
+        border-color:var(--color-gold-strong);font-weight:600}   /* 6.41:1 ✓ */
+  .chip:has(:focus-visible){outline:2px solid var(--color-focus);outline-offset:2px}
+
+  /* size chips (§4.5) — selection is BORDER-WIDTH + WEIGHT, never hue. An
+     unavailable size is visually IDENTICAL to an available one (D4). */
+  .sizes{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+  .sizechip{display:flex;flex-direction:column;align-items:center;justify-content:center;
+        min-block-size:44px;min-inline-size:44px;padding-inline:var(--space-3);
+        border:1px solid var(--color-border-input);border-radius:var(--radius-full);
+        background:var(--color-surface-raised);color:var(--color-ink);
+        font-size:var(--text-sm);cursor:pointer;
+        transition:border-color var(--motion-fast) var(--ease-out)}
+  .sizechip:has(:checked){border-width:2px;border-color:var(--color-gold-strong);
+        font-weight:600;padding-inline:calc(var(--space-3) - 1px)}   /* 3.47 / 3.93 ✓ */
+  .sizechip:has(:focus-visible){outline:2px solid var(--color-focus);outline-offset:2px}
+
+  /* Checkbox (§5.4) — the one genuinely new packages/ui primitive. NOT Toggle:
+     Toggle hardcodes role="switch" on a closed prop list and a consent is a
+     checkbox. Label wraps box + sentence; the whole row is the hit target. */
+  .cbrow{display:flex;align-items:flex-start;gap:var(--space-3);
+         min-block-size:44px;padding-block:var(--space-2);cursor:pointer}
+  .cbrow input[type=checkbox]{inline-size:24px;block-size:24px;flex-shrink:0;
+         margin-block-start:var(--space-1);accent-color:var(--color-gold-strong)}
+  .cbrow .cbtext{font-size:var(--text-base);color:var(--color-ink)}
+  .cbrow:has(:focus-visible){outline:2px solid var(--color-focus);outline-offset:2px;
+         border-radius:var(--radius-sm)}
+
+  /* buttons */
+  .btn{min-block-size:44px;border-radius:var(--radius-md);font-weight:700;
+       padding-inline:var(--space-6);border:1px solid transparent;
+       font-size:var(--text-base)}
+  .btn-primary{background:var(--color-gold);color:var(--color-ink);
+       border-color:var(--color-gold)}                              /* 6.41:1 ✓ */
+  .btn-secondary{background:transparent;color:var(--color-ink);
+       border-color:var(--color-ink)}
+  .btn-lg{min-block-size:48px}
+  .btn[disabled]{opacity:.6;cursor:not-allowed}
+  .fwd{display:grid;gap:var(--space-3);margin-block-start:var(--space-2)}
+  .fwd .btn{inline-size:100%}
+  @container (min-width:768px){
+    .fwd{justify-items:end}
+    .fwd .btn{inline-size:auto}
+  }
+
+  /* messages. TWO colour categories (§3.8):
+       a conflict she must act on  → --color-danger
+       an outage / limit, not hers → --color-ink-muted
+       a version change, nobody's fault → --color-warning-text  */
+  .msg{font-size:var(--text-base)}
+  .msg-danger{color:var(--color-danger)}
+  .msg-muted{color:var(--color-ink-muted)}
+  .msg-warn{color:var(--color-warning-text)}
+  .msg-ink{color:var(--color-ink);max-inline-size:60ch}
+  .note-status{font-size:var(--text-sm);color:var(--color-ink-muted)}
+  .empty{font-size:var(--text-base);color:var(--color-ink-muted);text-align:center;
+         padding-block:var(--space-8);max-inline-size:40ch;margin-inline:auto}
+
+  /* policy body (§5.3) — no scroll box, no clamp, no expander. */
+  .policy{white-space:pre-line;overflow-wrap:anywhere;font-size:var(--text-base);
+          line-height:var(--leading-base);color:var(--color-ink)}
+  .numbers{display:grid;gap:var(--space-2)}
+  .numbers p{font-size:var(--text-base);font-weight:600;color:var(--color-ink)}
+
+  /* ContactPanel — shipped row order: phone, WhatsApp, Waze, Maps, Instagram */
+  .contact{display:flex;flex-direction:column;gap:var(--space-3)}
+
+  /* confirmation */
+  .factlbl{font-size:var(--text-sm);font-weight:600;color:var(--color-ink-muted)}
+  .factval{font-size:var(--text-lg);line-height:var(--leading-lg);color:var(--color-ink)}
+  .factsub{font-size:var(--text-base);color:var(--color-ink)}
+
+  /* bound-dress binding block (§4.6) */
+  .bind{display:flex;align-items:center;gap:var(--space-3)}
+  .cover{inline-size:64px;aspect-ratio:3/4;background:var(--color-surface-raised);
+         border-radius:var(--radius-md);box-shadow:var(--shadow-sm);overflow:hidden;
+         flex-shrink:0;display:flex;align-items:center;justify-content:center;
+         color:var(--illus-1)}
+  .cover svg{inline-size:48px;block-size:67px}
+  .bindname{font-family:var(--font-display);font-size:var(--text-lg);color:var(--color-ink)}
+
+  /* skeletons — 1.5s pulse, STATIC under reduced motion. Never a spinner. */
+  .skel{background:var(--color-surface-raised);border-radius:var(--radius-sm);
+        block-size:1em;animation:pulse 1.5s ease-in-out infinite}
+  .skel.on-page{background:var(--color-surface)}
+  .skel.row{block-size:56px;border-radius:var(--radius-md)}
+  .skel.chip{block-size:44px;border-radius:var(--radius-full);border:0}
+  .w40{inline-size:40%} .w60{inline-size:60%} .w80{inline-size:80%} .w100{inline-size:100%}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+
+  /* reduced motion — theme.css:149-156 does this globally with !important.
+     Nothing in this flow carries meaning through motion, so it stays operable. */
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{transition:none !important;animation:none !important}
+    .skel{opacity:1 !important}
+  }
+</style>
+</head>
+<body>
+
+<nav class="proto-nav" aria-label="ניווט אב-טיפוס">
+  <button aria-pressed="true" data-s="all">הכול (מוצג כברירת מחדל)</button>
+  <button aria-pressed="false" data-s="s1">שלב 1 — מועד</button>
+  <button aria-pressed="false" data-s="s2">שלב 2 — פרטים</button>
+  <button aria-pressed="false" data-s="s3">שלב 3 — מדיניות</button>
+  <button aria-pressed="false" data-s="s4">שלב 4 — אימות</button>
+  <button aria-pressed="false" data-s="s5">אישור</button>
+  <button aria-pressed="false" data-s="s0">כניסה ומצבי קצה</button>
+  <button aria-pressed="false" data-s="dk">רוחב ‎≥768</button>
+</nav>
+
+<p class="proto-note">
+  <b>אב-טיפוס עצמאי, ללא בקשות רשת.</b> הגופנים נטענים מהמערכת המקומית — בייצור הם מוגשים עצמאית דרך
+  <span class="ltr">@fontsource</span>. העמודים מוצגים במסגרות ברוחב <span class="ltr">375</span> (ראשי)
+  ובמסגרת אחת ברוחב <span class="ltr">900</span> להדגמת ‎≥768. הכול גלוי כברירת מחדל — הסינון למעלה הוא תוספת של JavaScript בלבד.
+  <br><br>
+  <b>⚠ ארבע מחרוזות באב-הטיפוס אינן קיימות ב-<span class="ltr">copy.md</span> ונכתבו כמציין מקום של הבונה:</b>
+  <span class="ltr">booking.continueStep</span> · <span class="ltr">booking.pickTime</span> ·
+  <span class="ltr">booking.forDress</span> · <span class="ltr">booking.sizeRequired</span>.
+  כל היתר מועתק מילה במילה מטיוטת <span class="ltr">copy.md</span>, שכולה טרם אושרה.
+</p>
+
+<!-- ═══════════════════════════════════════════════════════════ STEP 1 — SLOT -->
+<div class="grp" data-g="s1">שלב 1 — מועד · <span class="ltr">/book/slot[/{dressId}]</span></div>
+
+<!-- ---------------------------------------------------------------- S1 default -->
+<section class="screen active" data-g="s1">
+<p class="cap"><span class="route">/book/slot/{dressId}</span> · ברירת מחדל, מסלול מבוסס-פריט (שמלה קשורה) · <span class="ltr">375</span>
+  — <span class="flag">⚠ שם השלב הוא ה-h1 (§9.1), לא שם הבוטיק (§2.7 של סעיף א' קבע אחרת — סתירה לשער)</span></p>
+<div class="frame">
+  <div class="page">
+    <!-- §9.5: an in-app <Link>, never history.back(). Step 1's exit is always `/`. -->
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">1</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot next" aria-hidden="true">2</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+
+    <div class="head">
+      <h1 class="step">מועד</h1>
+      <span class="orn" aria-hidden="true"></span>
+    </div>
+
+    <form class="card">
+      <!-- binding chip — Badge muted, non-interactive, no unbind control -->
+      <p><span class="badge">עבור: עלמה</span></p>
+
+      <fieldset class="typegroup">
+        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <div class="typelist">
+          <label class="typerow">
+            <input type="radio" name="t1" checked>
+            <span class="typetext">
+              <span class="typename">מדידה ראשונה</span>
+              <span class="typedur"><bdi class="ltr">45</bdi> דקות</span>
+            </span>
+          </label>
+          <label class="typerow">
+            <input type="radio" name="t1">
+            <span class="typetext">
+              <span class="typename">מדידה עם מלווים</span>
+              <span class="typedur"><bdi class="ltr">90</bdi> דקות</span>
+              <!-- D10: a badge LABELS, it does not gate. The row stays selectable. -->
+              <span class="badgewrap"><span class="badge">לכלות בלבד</span></span>
+            </span>
+          </label>
+          <label class="typerow">
+            <input type="radio" name="t1">
+            <span class="typetext">
+              <span class="typename">חבילת כלה</span>
+              <span class="typedur"><bdi class="ltr">120</bdi> דקות</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="field">
+        <label class="lbl" for="d1">תאריך</label>
+        <!-- native <input type="date"> — no calendar library (components.md) -->
+        <input class="inp date" id="d1" type="date" dir="ltr" value="2026-08-04"
+               min="2026-07-29" max="2026-08-12">
+      </div>
+
+      <fieldset>
+        <!-- ⚠ booking.pickTime is NOT in copy.md — placeholder (F-A6 / new key) -->
+        <legend class="lbl" style="margin-block-end:var(--space-2)">שעה</legend>
+        <div class="slotgrid">
+          <label class="chip"><input class="vh" type="radio" name="sl1"><bdi class="ltr">10:00</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl1"><bdi class="ltr">10:45</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl1" checked><bdi class="ltr">11:30</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl1"><bdi class="ltr">12:15</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl1"><bdi class="ltr">13:00</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl1"><bdi class="ltr">13:45</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl1"><bdi class="ltr">14:30</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl1"><bdi class="ltr">15:15</bdi></label>
+        </div>
+      </fieldset>
+
+      <div class="fwd">
+        <!-- ⚠ booking.continueStep is NOT in copy.md — placeholder (P6/P7) -->
+        <button class="btn btn-primary btn-lg" type="submit">להמשך</button>
+      </div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ------------------------------------------------- S1 deposit row selected -->
+<section class="screen active" data-g="s1">
+<p class="cap"><span class="route">/book/slot/{dressId}</span> · <b>D3 — שורה עם מקדמה נבחרה.</b>
+  הענף הוא <b>לכל שורה</b>: האחיות נשארות ניתנות לבחירה, התאריך והשעות נשארים פעילים, וכפתור ההמשך בלבד מושבת.
+  <span class="flag">⚠ §3.5 מציב את ‎&lt;Price&gt;‎ כסיומת הפסקה של booking.depositByPhone; טיוטת copy.md מסתיימת ב«זה לוקח רגע.» והמחיר נקרא כיתום — נדרשת הכרעה בשער</span></p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">1</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot next" aria-hidden="true">2</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <form class="card">
+      <p><span class="badge">עבור: עלמה</span></p>
+
+      <fieldset>
+        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <div class="typelist">
+          <label class="typerow">
+            <input type="radio" name="t2">
+            <span class="typetext">
+              <span class="typename">מדידה ראשונה</span>
+              <span class="typedur"><bdi class="ltr">45</bdi> דקות</span>
+            </span>
+          </label>
+
+          <div class="typeitem">
+            <label class="typerow">
+              <input type="radio" name="t2" checked aria-describedby="dep-2">
+              <span class="typetext">
+                <span class="typename">חבילת כלה</span>
+                <span class="typedur"><bdi class="ltr">120</bdi> דקות</span>
+              </span>
+            </label>
+            <!-- SIBLING of the label, not a child: <label> takes phrasing content
+                 only, and nesting this would fold the whole panel into the
+                 radio's accessible name. aria-describedby is the tie. -->
+            <div class="reveal" id="dep-2">
+              <p>את הפגישה הזאת אנחנו קובעות בטלפון, כדי לסגור יחד גם את המקדמה. נשמח שתתקשרי — זה לוקח רגע.
+                <!-- P4 — the deposit renders ONLY through <Price>. qa-greps.sh:37 bans
+                     the glyph in apps/storefront/src, so this is mechanically forced. -->
+                <bdi class="ltr">1,500 ₪</bdi></p>
+              <!-- ContactPanel inline, no Card — it is already on paper -->
+              <div class="contact">
+                <a class="link link-row" href="tel:+97235551234">חיוג <bdi class="ltr">03-555-1234</bdi></a>
+                <a class="link link-row" href="https://wa.me/972501234567">וואטסאפ</a>
+                <a class="link link-row" href="https://waze.com/ul?q=בלה">ניווט ב-Waze</a>
+                <a class="link link-row" href="https://maps.google.com/?q=בלה">פתיחה ב-Google Maps</a>
+                <a class="link link-row" href="https://instagram.com/bella">אינסטגרם</a>
+              </div>
+            </div>
+          </div>
+
+          <label class="typerow">
+            <input type="radio" name="t2">
+            <span class="typetext">
+              <span class="typename">מדידה עם מלווים</span>
+              <span class="typedur"><bdi class="ltr">90</bdi> דקות</span>
+              <span class="badgewrap"><span class="badge">לכלות בלבד</span></span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="field">
+        <label class="lbl" for="d2">תאריך</label>
+        <input class="inp date" id="d2" type="date" dir="ltr" value="2026-08-04" min="2026-07-29" max="2026-08-12">
+      </div>
+
+      <fieldset>
+        <legend class="lbl" style="margin-block-end:var(--space-2)">שעה</legend>
+        <div class="slotgrid">
+          <label class="chip"><input class="vh" type="radio" name="sl2"><bdi class="ltr">10:00</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl2" checked><bdi class="ltr">10:45</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl2"><bdi class="ltr">11:30</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl2"><bdi class="ltr">12:15</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl2"><bdi class="ltr">13:00</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl2"><bdi class="ltr">13:45</bdi></label>
+        </div>
+      </fieldset>
+
+      <div class="fwd">
+        <!-- disabled, and the reason is ABOVE it in DOM and visual order; the
+             aria-describedby points at the revealed block. -->
+        <button class="btn btn-primary btn-lg" type="submit" disabled aria-describedby="dep-2">להמשך</button>
+      </div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ------------------------------------------------------------ S1 no slots -->
+<section class="screen active" data-g="s1">
+<p class="cap"><span class="route">/book/slot</span> · אין מועדים פנויים (<span class="ltr">booking.noSlots</span>) —
+  <b>המצב שבו כל בוטיק חדש נכנס לאוויר</b>. עובדה, לא תקלה: בלי אייקון, בלי מסגרת, בלי צבע סכנה, ובלי כפתור «נסי שוב».</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">1</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot next" aria-hidden="true">2</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <form class="card">
+      <fieldset>
+        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <div class="typelist">
+          <label class="typerow"><input type="radio" name="t3" checked>
+            <span class="typetext"><span class="typename">מדידה ראשונה</span>
+            <span class="typedur"><bdi class="ltr">45</bdi> דקות</span></span></label>
+          <label class="typerow"><input type="radio" name="t3">
+            <span class="typetext"><span class="typename">חבילת כלה</span>
+            <span class="typedur"><bdi class="ltr">120</bdi> דקות</span></span></label>
+        </div>
+      </fieldset>
+      <div class="field">
+        <label class="lbl" for="d3">תאריך</label>
+        <input class="inp date" id="d3" type="date" dir="ltr" value="2026-08-06" min="2026-07-29" max="2026-08-12">
+      </div>
+      <fieldset>
+        <legend class="lbl" style="margin-block-end:var(--space-2)">שעה</legend>
+        <!-- F-A5: whole-window-empty and this-date-empty are ONE block and ONE string. -->
+        <p class="empty">אין מועדים פנויים בתאריך הזה. אפשר לבחור תאריך אחר, ואפשר גם להתקשר ונמצא לך מועד.</p>
+      </fieldset>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit" disabled>להמשך</button></div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ------------------------------------------------------------- S1 loading -->
+<section class="screen active" data-g="s1">
+<p class="cap"><span class="route">/book/slot</span> · טעינה — שלד, לעולם לא ספינר.
+  <b>המדרגות נטענות חיות</b> (תוכן ידוע מראש; שלד שם היה מתיימר לחוסר ודאות שאינו קיים).
+  תחת <span class="ltr">prefers-reduced-motion</span> הפעימה סטטית.</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">1</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot next" aria-hidden="true">2</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="card" aria-busy="true">
+      <div style="display:grid;gap:var(--space-2)">
+        <span class="skel w40"></span>
+        <span class="skel row w100"></span>
+        <span class="skel row w100"></span>
+        <span class="skel row w100"></span>
+      </div>
+      <div style="display:grid;gap:var(--space-2)">
+        <span class="skel w40"></span>
+        <span class="skel" style="block-size:44px;inline-size:200px"></span>
+      </div>
+      <div style="display:grid;gap:var(--space-2)">
+        <span class="skel w40"></span>
+        <div class="slotgrid">
+          <span class="skel chip"></span><span class="skel chip"></span><span class="skel chip"></span>
+          <span class="skel chip"></span><span class="skel chip"></span><span class="skel chip"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ------------------------------------------------ S1 SLOT_UNAVAILABLE return -->
+<section class="screen active" data-g="s1">
+<p class="cap"><span class="route">/book/slot</span> · חזרה מהשליחה עם <span class="ltr">409 SLOT_UNAVAILABLE</span>.
+  הסוג והתאריך <b>שורדים</b>, השעות נטענות מחדש והבחירה מתאפסת.
+  ההודעה היא <span class="ltr">role="alert"</span> ב-<span class="ltr">--color-danger</span> — התנגשות שהיא צריכה לפעול לגביה, לא תקלה.
+  היא הגיעה עם ניווט, כך שה-Router כבר העביר מיקוד ל-<span class="ltr">&lt;main&gt;</span> מעליה; המסך אינו מוסיף מיקוד משלו.</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">1</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot next" aria-hidden="true">2</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <form class="card">
+      <fieldset>
+        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <div class="typelist">
+          <label class="typerow"><input type="radio" name="t5" checked>
+            <span class="typetext"><span class="typename">מדידה ראשונה</span>
+            <span class="typedur"><bdi class="ltr">45</bdi> דקות</span></span></label>
+          <label class="typerow"><input type="radio" name="t5">
+            <span class="typetext"><span class="typename">חבילת כלה</span>
+            <span class="typedur"><bdi class="ltr">120</bdi> דקות</span></span></label>
+        </div>
+      </fieldset>
+      <div class="field">
+        <label class="lbl" for="d5">תאריך</label>
+        <input class="inp date" id="d5" type="date" dir="ltr" value="2026-08-04" min="2026-07-29" max="2026-08-12">
+      </div>
+      <!-- The alert sits DIRECTLY above the group it refers to, so
+           «אלה המועדים הפנויים המעודכנים» has the grid adjacent to it.
+           It is OUTSIDE the <fieldset>: <legend> must be the fieldset's first
+           child, and a paragraph before it is invalid. -->
+      <p class="msg msg-danger" role="alert">המועד הזה נתפס בינתיים. אלה המועדים הפנויים המעודכנים — אפשר לבחור מועד אחר.</p>
+      <fieldset>
+        <legend class="lbl" style="margin-block-end:var(--space-2)">שעה</legend>
+        <div class="slotgrid">
+          <label class="chip"><input class="vh" type="radio" name="sl5"><bdi class="ltr">10:00</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl5"><bdi class="ltr">11:30</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl5"><bdi class="ltr">13:00</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl5"><bdi class="ltr">14:30</bdi></label>
+        </div>
+      </fieldset>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit" disabled>להמשך</button></div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ STEP 2 — DETAILS -->
+<div class="grp" data-g="s2">שלב 2 — פרטים · <span class="ltr">/book/details[/{dressId}]</span></div>
+
+<!-- ----------------------------------------------------------- S2 generic -->
+<section class="screen active" data-g="s2">
+<p class="cap"><span class="route">/book/details</span> · מסלול כללי (ללא שמלה קשורה).
+  מונה התווים אינו אזור חי — הוא נאמר פעם אחת כשהמיקוד מגיע לשדה, ואף פעם לא לכל הקשה.</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/slot"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">2</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">פרטים</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <form class="card">
+      <div class="field">
+        <label class="lbl" for="n6">שם מלא</label>
+        <input class="inp" id="n6" type="text" dir="auto" autocomplete="name" maxlength="80" required>
+      </div>
+      <div class="field">
+        <label class="lbl" for="no6">משהו שנשמח לדעת מראש</label>
+        <p class="help" id="no6-h">לא חובה. למשל: מגיעה עם אמא, צריך שולחן נגיש, או דגם שראית ואהבת.</p>
+        <textarea class="inp" id="no6" rows="4" dir="auto" maxlength="500"
+                  aria-describedby="no6-h no6-c"></textarea>
+        <span class="counter" id="no6-c"><bdi class="ltr">0 / 500</bdi></span>
+      </div>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ------------------------------------------- S2 item-based, unavailable size -->
+<section class="screen active" data-g="s2">
+<p class="cap"><span class="route">/book/details/{dressId}</span> · מסלול מבוסס-פריט, <b>מידה שאינה במלאי נבחרה (D4)</b>.
+  השבב זהה בכל אסימון לשבב זמין — ללא עמעום, ללא קו חוצה, ללא תג מלאי. הסימון הוא <b>מילה בלבד</b>.
+  <span class="flag">⚠ סתירה לשער: סעיף ב' §4.5b/P9 דורש ביטוי של ‎≤24 תווים <b>בתוך</b> כל שבב; copy.md מציב את המשפט המלא <b>מתחת</b> לשבבים בעת בחירה. אב-הטיפוס מציג את נוסח copy.md כמצוין במשימה</span></p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/slot/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">2</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">פרטים</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <form class="card">
+      <!-- binding block: cover + name. alt="" — the name is the adjacent visible text.
+           NOT a link: leaving the flow discards the in-memory draft (P12). -->
+      <div class="bind">
+        <span class="cover" aria-hidden="true">
+          <svg viewBox="0 0 100 140" focusable="false">
+            <path d="M50 10 C47 20 41 24 43 34 L36 52 C32 78 30 100 32 124 C42 132 58 132 68 124 C70 100 68 78 64 52 L57 34 C59 24 53 20 50 10 Z" fill="currentColor"/>
+          </svg>
+        </span>
+        <span class="bindname">עלמה</span>
+      </div>
+      <hr class="hr">
+
+      <div class="field">
+        <label class="lbl" for="n7">שם מלא</label>
+        <input class="inp" id="n7" type="text" dir="auto" autocomplete="name" maxlength="80" value="נועה כהן" required>
+      </div>
+
+      <fieldset aria-describedby="sz7-msg">
+        <legend class="lbl" style="margin-block-end:var(--space-2)">מידות</legend>
+        <div class="sizes">
+          <label class="sizechip"><input class="vh" type="radio" name="sz7"><bdi class="ltr">36</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz7"><bdi class="ltr">38</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz7"><bdi class="ltr">40</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz7" checked><bdi class="ltr">42</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz7"><bdi class="ltr">44</bdi></label>
+        </div>
+        <!-- polite, not assertive: nothing failed. D4 — an invitation, not a warning. -->
+        <p class="note-status" role="status" id="sz7-msg" style="margin-block-start:var(--space-2)">אפשר לבחור את המידה הזאת גם עכשיו — היא לא נמצאת אצלנו כרגע, ואפשר להזמין אותה במיוחד למדידה.</p>
+      </fieldset>
+
+      <div class="field">
+        <label class="lbl" for="no7">משהו שנשמח לדעת מראש</label>
+        <p class="help" id="no7-h">לא חובה. למשל: מגיעה עם אמא, צריך שולחן נגיש, או דגם שראית ואהבת.</p>
+        <textarea class="inp" id="no7" rows="4" dir="auto" maxlength="500" aria-describedby="no7-h no7-c">מגיעה עם אמא ועם אחותי.</textarea>
+        <span class="counter" id="no7-c"><bdi class="ltr">23 / 500</bdi></span>
+      </div>
+
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ------------------------------------------------------ S2 validation errors -->
+<section class="screen active" data-g="s2">
+<p class="cap"><span class="route">/book/details/{dressId}</span> · <b>שגיאות אימות לקוח.</b>
+  השגיאות עולות <b>בשליחה בלבד</b> — לא ב-blur ולא בהקלדה. כפתור ההמשך <b>לעולם אינו מושבת</b> בגלל מצב אימות
+  (§4.4d): הוא נלחץ, נכשל בגלוי, והמיקוד עובר לשדה הפגום הראשון.</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/slot/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">2</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">פרטים</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <form class="card">
+      <div class="field">
+        <label class="lbl" for="n8">שם מלא</label>
+        <input class="inp bad" id="n8" type="text" dir="auto" autocomplete="name" maxlength="80"
+               aria-invalid="true" aria-describedby="n8-e" required>
+        <span class="err" id="n8-e" role="alert">צריך למלא שם כדי שנוכל לרשום את התור.</span>
+      </div>
+
+      <fieldset aria-describedby="sz8-e">
+        <legend class="lbl" style="margin-block-end:var(--space-2)">מידות</legend>
+        <div class="sizes">
+          <label class="sizechip"><input class="vh" type="radio" name="sz8"><bdi class="ltr">36</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz8"><bdi class="ltr">38</bdi></label>
+          <label class="sizechip"><input class="vh" type="radio" name="sz8"><bdi class="ltr">40</bdi></label>
+        </div>
+        <!-- ⚠ booking.sizeRequired is NOT in copy.md — placeholder (P8, forced by
+             the backend's paired dress_id + dress_size rule) -->
+        <span class="err" id="sz8-e" role="alert" style="display:block;margin-block-start:var(--space-2)">צריך לבחור מידה כדי להמשיך.</span>
+      </fieldset>
+
+      <div class="field">
+        <label class="lbl" for="no8">משהו שנשמח לדעת מראש</label>
+        <p class="help" id="no8-h">לא חובה. למשל: מגיעה עם אמא, צריך שולחן נגיש, או דגם שראית ואהבת.</p>
+        <textarea class="inp bad" id="no8" rows="4" dir="auto"
+                  aria-invalid="true" aria-describedby="no8-h no8-c no8-e">…</textarea>
+        <span class="counter" id="no8-c"><bdi class="ltr">500 / 500</bdi></span>
+        <span class="err" id="no8-e" role="alert">ההערה ארוכה מדי. עד 500 תווים.</span>
+      </div>
+
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ═════════════════════════════════════════════════════════ STEP 3 — TERMS -->
+<div class="grp" data-g="s3">שלב 3 — מדיניות ביטולים · <span class="ltr">/book/terms[/{dressId}]</span></div>
+
+<!-- -------------------------------------------------------------- S3 default -->
+<section class="screen active" data-g="s3">
+<p class="cap"><span class="route">/book/terms/{dressId}</span> · ברירת מחדל, טקסט מדיניות ארוך ואמיתי שכתבה בעלת הבוטיק.
+  <b>ללא תיבת גלילה פנימית, ללא clamp, ללא «קרא עוד», ללא כפתור צף.</b> העמוד גדל והתיבה נשארת השורה האחרונה בזרימה.
+  שני המספרים מעל הפרוזה, כי שם הם מתחבאים.</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/details/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">פרטים</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">מדיניות ביטולים</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <form class="card">
+      <div class="numbers">
+        <p>ביטול עד <bdi class="ltr">48</bdi> שעות לפני המועד — ללא חיוב.</p>
+        <p>ביטול מאוחר יותר, או אי-הגעה — חיוב של <bdi class="ltr">50</bdi>% מהמקדמה.</p>
+      </div>
+      <hr class="hr">
+      <!-- terms_text, verbatim, as a TEXT child. React escapes by construction:
+           no dangerouslySetInnerHTML, no markdown, no sanitise-then-inject.
+           white-space: pre-line keeps the owner's newlines; dir="auto" because
+           owners paste English clauses; overflow-wrap: anywhere because an
+           unbroken pasted URL must never produce horizontal scroll at 375. -->
+      <div class="policy" dir="auto">ביטול או שינוי מועד עד 48 שעות לפני הפגישה — ללא חיוב, ואפשר לקבוע מועד חדש בטלפון או דרך האתר.
+
+ביטול בתוך 48 השעות שלפני המועד, וכן אי-הגעה לפגישה ללא הודעה מראש, מחייבים בתשלום של 50% מן המקדמה ששולמה. הסכום נגבה מאמצעי התשלום שנמסר בעת קביעת התור.
+
+איחור של יותר מ-20 דקות עשוי לקצר את זמן המדידה, כדי שלא לפגוע בכלה שאחרייך. אם האיחור צפוי, נשמח לעדכון טלפוני מוקדם ככל האפשר, ונשתדל להתאים את הלוח.
+
+הפגישה מיועדת לכלה ולעד שני מלווים. אפשר להגיע עם מלווים נוספים בתיאום מראש ובכפוף למקום באולם המדידות.
+
+צילום בתוך אולם המדידות מותר לשימוש אישי בלבד. פרסום צילומים מן הבוטיק ברשתות חברתיות טעון אישור מראש.
+
+במקרה של כוח עליון, סגר, או מחלה עם אישור רפואי — המקדמה נשמרת לזכותך לשנים-עשר חודשים ואינה מתבטלת.</div>
+      <hr class="hr">
+
+      <!-- Checkbox, NOT Toggle: Toggle hardcodes role="switch" and a one-shot
+           legal consent must announce checked/unchecked. -->
+      <label class="cbrow">
+        <input type="checkbox">
+        <span class="cbtext">קראתי את מדיניות הביטולים ואני מסכימה לה.</span>
+      </label>
+
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ------------------------------------------------------ S3 TERMS_STALE re-show -->
+<section class="screen active" data-g="s3">
+<p class="cap"><span class="route">/book/terms/{dressId}</span> · חזרה מהשליחה עם <span class="ltr">409 TERMS_STALE</span>.
+  ההודעה ב-<span class="ltr">--color-warning-text</span> — <b>אזהרה, לא סכנה</b>: שום דבר שהיא עשתה לא נכשל.
+  הגרסה החדשה מוצגת, ו<b>תיבת הסימון מתאפסת ללא תנאי</b> — הסכמה היא הסכמה ל<i>גרסה</i>.</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/details/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">פרטים</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <!-- rendered ABOVE the h1 so it is the first thing in the content region -->
+    <p class="msg msg-warn" role="alert">מדיניות הביטולים התעדכנה בזמן שמילאת את הפרטים. זו הגרסה המעודכנת — נשמח שתקראי ותאשרי אותה שוב.</p>
+    <div class="head"><h1 class="step">מדיניות ביטולים</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <form class="card">
+      <div class="numbers">
+        <p>ביטול עד <bdi class="ltr">72</bdi> שעות לפני המועד — ללא חיוב.</p>
+        <p>ביטול מאוחר יותר, או אי-הגעה — חיוב של <bdi class="ltr">100</bdi>% מהמקדמה.</p>
+      </div>
+      <hr class="hr">
+      <div class="policy" dir="auto">ביטול או שינוי מועד עד 72 שעות לפני הפגישה — ללא חיוב.
+
+ביטול בתוך 72 השעות שלפני המועד, וכן אי-הגעה לפגישה ללא הודעה מראש, מחייבים בתשלום מלוא המקדמה ששולמה.
+
+הפגישה מיועדת לכלה ולעד שני מלווים, בתיאום מראש.</div>
+      <hr class="hr">
+      <label class="cbrow">
+        <input type="checkbox">
+        <span class="cbtext">קראתי את מדיניות הביטולים ואני מסכימה לה.</span>
+      </label>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════ STEP 4 — VERIFY -->
+<div class="grp" data-g="s4">שלב 4 — אימות טלפון · <span class="ltr">/book/verify[/{dressId}]</span></div>
+
+<!-- ---------------------------------------------------------- S4 phone entry -->
+<section class="screen active" data-g="s4">
+<p class="cap"><span class="route">/book/verify/{dressId}</span> · תת-מצב א' — הזנת טלפון.
+  שדה יחיד, אי-פעם לא שישה תאים. <span class="ltr">dir="ltr"</span> על ה-<span class="ltr">&lt;input&gt;</span> בלבד:
+  התווית נשארת בזרימת ה-RTL בקצה הפנימי, והערך רץ שמאלה-לימינה בקצה הפיזי השמאלי — מה שכל שדה טלפון ישראלי עושה.
+  <b>אין placeholder</b> (חוק שימוש 3).</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/terms/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <form class="card">
+      <div class="field">
+        <label class="lbl" for="p11">טלפון נייד</label>
+        <p class="help" id="p11-h">לשליחת קוד אימות חד-פעמי. אפשר להזין עשר ספרות, למשל <bdi class="ltr">0501234567</bdi>.</p>
+        <input class="inp" id="p11" type="tel" dir="ltr" inputmode="tel" autocomplete="tel"
+               aria-describedby="p11-h" value="050-1234567">
+      </div>
+      <div class="fwd">
+        <!-- in sub-state A the send IS the way forward, so it is `primary`.
+             booking.otpResend must be worded to serve the FIRST send too (F-C4). -->
+        <button class="btn btn-primary btn-lg" type="submit">שליחת קוד חדש</button>
+      </div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ----------------------------------------------- S4 code entry + cooldown -->
+<section class="screen active" data-g="s4">
+<p class="cap"><span class="route">/book/verify/{dressId}</span> · תת-מצב ב' — <b>הטופס גדל, לא מתחלף</b>:
+  שדה הטלפון לעולם אינו עוזב את ה-DOM, כי הכשל הנפוץ ביותר הוא ספרה שגויה שאפשר לראות רק אם המספר עדיין על המסך.
+  <span class="ltr">booking.otpSent</span> הוא ה-<span class="ltr">help</span> של שדה הקוד — נאמר בדיוק כשהמיקוד מגיע אליו.
+  כפתור השליחה יורד ל-<span class="ltr">secondary</span> כי תפקידו השתנה מ«הדרך קדימה» ל«תרופה».
+  <span class="flag">⚠ סתירה: סעיף ג' §6.9 קבע <b>ללא ספרות</b> בהמתנה; copy.md ו-§10 מציגים <span class="ltr">{{seconds}}</span>. כאן מוצג נוסח copy.md מילה במילה, ‎<span class="ltr">&lt;bdi dir="ltr"&gt;</span>‎ סביב המספר, ללא סרגל, ללא צבע, ללא תנועה</span></p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/terms/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <form class="card">
+      <div class="field">
+        <label class="lbl" for="p12">טלפון נייד</label>
+        <p class="help" id="p12-h">לשליחת קוד אימות חד-פעמי. אפשר להזין עשר ספרות, למשל <bdi class="ltr">0501234567</bdi>.</p>
+        <input class="inp" id="p12" type="tel" dir="ltr" inputmode="tel" autocomplete="tel"
+               aria-describedby="p12-h" value="050-1234567">
+      </div>
+      <hr class="hr">
+      <div class="field">
+        <label class="lbl" for="c12">קוד האימות</label>
+        <p class="help" id="c12-h">שלחנו קוד בן שש ספרות למספר שמסרת.</p>
+        <input class="inp code" id="c12" type="text" dir="ltr" inputmode="numeric"
+               autocomplete="one-time-code" maxlength="6" pattern="[0-9]*"
+               aria-describedby="c12-h" value="123456">
+      </div>
+      <div class="fwd">
+        <button class="btn btn-primary btn-lg" type="submit">אישור וקביעת התור</button>
+        <!-- Disabled controls explain themselves ON THEIR OWN VISIBLE LABEL:
+             `disabled` removes the button from the tab order, so an
+             aria-describedby FROM it would be inert. No progress bar, no colour
+             change, no keyframe — there is nothing for reduced-motion to switch off. -->
+        <button class="btn btn-secondary" type="button" disabled>אפשר לבקש קוד חדש בעוד <bdi class="ltr">42</bdi> שניות</button>
+      </div>
+      <!-- ONE polite region on this step, and it fires only on discrete events:
+           the send succeeding, and the cooldown ENDING. The ticking value is
+           never itself a live region. -->
+      <span class="vh" role="status"></span>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- -------------------------------------------------------- S4 OTP_INVALID -->
+<section class="screen active" data-g="s4">
+<p class="cap"><span class="route">/book/verify/{dressId}</span> · <span class="ltr">400 OTP_INVALID</span>, שגיאה בשדה.
+  <b>כפתור שליחת הקוד החדש נשאר גלוי ונגיש ישירות מתחת לשדה</b> (F-C3): אחרי חמישה ניסיונות כל אימות עונה
+  <span class="ltr">OTP_INVALID</span> גם לקוד <b>הנכון</b>, כך שהקלדה חוזרת לבדה היא מבוי סתום.
+  הערך נשאר ו<b>נבחר</b>, לא נמחק.</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/terms/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <form class="card">
+      <div class="field">
+        <label class="lbl" for="p13">טלפון נייד</label>
+        <p class="help" id="p13-h">לשליחת קוד אימות חד-פעמי. אפשר להזין עשר ספרות, למשל <bdi class="ltr">0501234567</bdi>.</p>
+        <input class="inp" id="p13" type="tel" dir="ltr" inputmode="tel" autocomplete="tel"
+               aria-describedby="p13-h" value="050-1234567">
+      </div>
+      <hr class="hr">
+      <div class="field">
+        <label class="lbl" for="c13">קוד האימות</label>
+        <p class="help" id="c13-h">שלחנו קוד בן שש ספרות למספר שמסרת.</p>
+        <input class="inp code bad" id="c13" type="text" dir="ltr" inputmode="numeric"
+               autocomplete="one-time-code" maxlength="6" pattern="[0-9]*"
+               aria-invalid="true" aria-describedby="c13-h c13-e" value="123457">
+        <span class="err" id="c13-e" role="alert">הקוד שהוזן אינו נכון. אפשר להקליד אותו שוב, או לבקש קוד חדש.</span>
+      </div>
+      <div class="fwd">
+        <button class="btn btn-primary btn-lg" type="submit">אישור וקביעת התור</button>
+        <button class="btn btn-secondary" type="button">שליחת קוד חדש</button>
+      </div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- -------------------------------------------------- S4 SMS_UNAVAILABLE dead end -->
+<section class="screen active" data-g="s4">
+<p class="cap"><span class="route">/book/verify/{dressId}</span> · <span class="ltr">503 SMS_NOT_CONFIGURED / SMS_UNAVAILABLE</span> —
+  <b>המצב היחיד בזרימה שאין ממנו דרך קדימה</b>. אין כפתור «נסי שוב» שייכשל שוב.
+  ה-<span class="ltr">h1</span>, המדרגות וקישור החזרה נשארים, כדי שלא תהיה לכודה.
+  הבלוק הוא <span class="ltr">&lt;div tabindex="-1"&gt;</span> ויעד מיקוד — ולכן <b>אינו</b> <span class="ltr">role="alert"</span>.
+  הצבע <span class="ltr">--color-ink-muted</span>, לא <span class="ltr">danger</span>: תשתית שנפלה אינה אשמת הבוטיק ובוודאי לא שלה.</p>
+<div class="frame">
+  <div class="page">
+    <a class="link link-row" href="/book/terms/almah"><span aria-hidden="true">→</span>חזרה לשלב הקודם</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot done" aria-hidden="true">✓</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">אימות טלפון</h1><span class="orn" aria-hidden="true"></span></div>
+
+    <div tabindex="-1">
+      <p class="msg msg-muted">אימות הטלפון אינו זמין כרגע, ולכן אי אפשר להשלים כאן את קביעת התור. נשמח שתתקשרי אלינו ונקבע יחד מועד.</p>
+    </div>
+    <div class="card">
+      <div class="contact">
+        <a class="link link-row" href="tel:+97235551234">חיוג <bdi class="ltr">03-555-1234</bdi></a>
+        <a class="link link-row" href="https://wa.me/972501234567">וואטסאפ</a>
+        <a class="link link-row" href="https://waze.com/ul?q=בלה">ניווט ב-Waze</a>
+        <a class="link link-row" href="https://maps.google.com/?q=בלה">פתיחה ב-Google Maps</a>
+        <a class="link link-row" href="https://instagram.com/bella">אינסטגרם</a>
+      </div>
+    </div>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ STEP 5 — CONFIRM -->
+<div class="grp" data-g="s5">אישור — מחוץ למדרגות · <span class="ltr">/book/confirm[/{dressId}]</span></div>
+
+<!-- --------------------------------------------------------- S5 warm confirm -->
+<section class="screen active" data-g="s5">
+<p class="cap"><span class="route">/book/confirm/{dressId}</span> · אישור מלא (ה-<span class="ltr">201</span> בזיכרון).
+  <b>ללא מדרגות, ללא «חזרה לשלב הקודם», ללא <span class="ltr">--color-success</span> בשום מקום</b> — הסימן הוא המילים,
+  והעובדה שהמסך מסוגל להדפיס את היום, השעה וסוג הפגישה. <b>D6: שום מחרוזת כאן אינה מבטיחה מסרון.</b>
+  <span class="flag">⚠ סתירה: סעיף ג' F-C10 קבע ש-confirmWhen/confirmWhat הן <b>תוויות</b>; copy.md כותב אותן כמשפטים עם ‎{{date}}/{{type}}‎. כאן מוצג נוסח copy.md</span></p>
+<div class="frame">
+  <div class="page">
+    <div class="head"><h1 class="step">התור נקבע</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="card">
+      <div>
+        <p class="factval">יום שלישי, <bdi class="ltr">4.8.2026</bdi> בשעה <bdi class="ltr">16:30</bdi></p>
+      </div>
+      <hr class="hr">
+      <div style="display:grid;gap:var(--space-1)">
+        <p class="factval">מדידה ראשונה · <bdi class="ltr">45</bdi> דקות</p>
+        <!-- rendered ONLY when dress_name !== null; the generic path prints no empty row -->
+        <p class="factsub">עלמה · מידה <bdi class="ltr">42</bdi></p>
+      </div>
+    </div>
+    <!-- OUTSIDE the Card: it is instruction ABOUT the card, and a screenshot
+         cropped to the Card should contain only facts. -->
+    <p class="msg msg-muted">זה האישור היחיד שלך — כדאי לצלם את המסך או לשמור אותו. אנחנו נחכה לך.</p>
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- --------------------------------------------------------- S5 cold confirm -->
+<section class="screen active" data-g="s5">
+<p class="cap"><span class="route">/book/confirm</span> · <b>אישור קר</b> — רענון, או סיבוב הצילום-והחזרה של iOS.
+  אין נקודת קצה ציבורית לקריאת הזמנה לפי מזהה, ולכן אין דרך כנה להציג את הפרטים שוב.
+  <b>אין Card</b> (תפקידו להחזיק עובדות; בלעדיהן הוא ממסגר היעדר) ו<b>אין <span class="ltr">booking.confirmKeepScreen</span></b> —
+  «שמרי את המסך הזה» מעל מסך שאינו מחזיק את התור מורה לה לשמר היעדר. <b>לעולם לא מקפיץ אותה לשלב אחת.</b></p>
+<div class="frame">
+  <div class="page">
+    <div class="head"><h1 class="step">התור נקבע</h1><span class="orn" aria-hidden="true"></span></div>
+    <p class="msg msg-muted">התור שלך נקבע. את הפרטים המלאים הצגנו במסך האישור, ואין לנו דרך להציג אותם כאן שוב — אם לא הספקת לשמור אותם, אפשר להתקשר ונאשר לך הכול.</p>
+    <div class="card">
+      <div class="contact">
+        <a class="link link-row" href="tel:+97235551234">חיוג <bdi class="ltr">03-555-1234</bdi></a>
+        <a class="link link-row" href="https://wa.me/972501234567">וואטסאפ</a>
+        <a class="link link-row" href="https://waze.com/ul?q=בלה">ניווט ב-Waze</a>
+        <a class="link link-row" href="https://maps.google.com/?q=בלה">פתיחה ב-Google Maps</a>
+        <a class="link link-row" href="https://instagram.com/bella">אינסטגרם</a>
+      </div>
+    </div>
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ══════════════════════════════════════════════ ENTRY + EDGE (S0 / D12) -->
+<div class="grp" data-g="s0">כניסה ומצבי קצה · <span class="ltr">D5</span> ו-<span class="ltr">D12</span></div>
+
+<!-- -------------------------------------------------- S0 no published terms -->
+<section class="screen active" data-g="s0">
+<p class="cap"><span class="route">/book/slot</span> · <b>D5 — לבוטיק אין מדיניות ביטולים מפורסמת.</b>
+  ה-<span class="ltr">terms</span> נטען ב<b>כניסה לזרימה</b>, במקביל לסוגי הפגישות ולמועדים, כי <span class="ltr">404</span> כאן
+  הוא החלטה ברמת הכניסה — לטעון אותו בשלב 3 היה מאפשר לה למלא שני שלבים לפני מבוי סתום.
+  <b>אין מדרגות</b> (אין זרימה להיות שלב שלה), אין Card של פקדים, אין כפתור המשך.
+  זו <b>אינה</b> הודעת תקלה: ההודעה ב-<span class="ltr">--color-ink</span>, קול העמוד הרגיל.</p>
+<div class="frame">
+  <div class="page">
+    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <p class="msg msg-ink">קביעת תור מקוונת תיפתח כאן בקרוב. בינתיים נשמח שתתקשרי אלינו ונקבע יחד מועד.</p>
+    <div class="card">
+      <div class="contact">
+        <a class="link link-row" href="tel:+97235551234">חיוג <bdi class="ltr">03-555-1234</bdi></a>
+        <a class="link link-row" href="https://wa.me/972501234567">וואטסאפ</a>
+        <a class="link link-row" href="https://waze.com/ul?q=בלה">ניווט ב-Waze</a>
+        <a class="link link-row" href="https://maps.google.com/?q=בלה">פתיחה ב-Google Maps</a>
+        <a class="link link-row" href="https://instagram.com/bella">אינסטגרם</a>
+      </div>
+    </div>
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ------------------------------------------------------- D12 plain degrade -->
+<section class="screen active" data-g="s0">
+<p class="cap"><span class="route">/book/confirm</span> · <b>הידרדרות D12 — אין נתוני בוטיק.</b>
+  <span class="ltr">ContactPanel</span> מגן על כל שורה בבדיקת אמת, כך שכשכל חמשת הערוצים חסרים הוא מרנדר
+  <span class="ltr">&lt;div&gt;</span> <b>ריק לחלוטין</b> — ולכן ההידרדרות אינה יכולה להיות prop על הפאנל, אלא ענף באתר הקריאה.
+  התקדים שנשלח: <span class="ltr">AboutPage.tsx:106-130</span> משמיט את כרטיס הקשר לגמרי במקום להדפיס שורות ריקות.
+  <span class="ltr">booking.contactUnavailable</span> (P5) <b>חייבת להיות חסרת שם</b> — הבקשה שהייתה נושאת את השם היא זו שנכשלה.
+  ה-<span class="ltr">h1</span> שורד ללא צורך בנפילה חזרה, כי הוא מחרוזת i18n סטטית ולא נתון שנטען.</p>
+<div class="frame">
+  <div class="page">
+    <div class="head"><h1 class="step">התור נקבע</h1><span class="orn" aria-hidden="true"></span></div>
+    <p class="msg msg-muted">התור שלך נקבע. את הפרטים המלאים הצגנו במסך האישור, ואין לנו דרך להציג אותם כאן שוב — אם לא הספקת לשמור אותם, אפשר להתקשר ונאשר לך הכול.</p>
+    <p class="msg msg-muted">לא הצלחנו לטעון כאן את פרטי הקשר של הבוטיק. אפשר לנסות לרענן את העמוד בעוד רגע.</p>
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ DESKTOP ≥768 -->
+<div class="grp" data-g="dk">רוחב ‎≥768 — מסגרת <span class="ltr">900</span>, עמודה נשארת <span class="ltr">640</span></div>
+
+<section class="screen active" data-g="dk">
+<p class="cap"><span class="route">/book/slot/{dressId}</span> · ‎≥768. ההפרשים היחידים:
+  שולי עמוד <span class="ltr">--space-4 → --space-6</span> · ריפוד ה-Card <span class="ltr">--space-4 → --space-6</span> ·
+  רשת המועדים עוברת מ-<span class="ltr">3</span> ל-<span class="ltr">5</span> עמודות בכלל <span class="ltr">auto-fill</span> <b>אחד</b>, ללא נקודת שבירה ייעודית ·
+  שם הסוג ומשך הזמן עולים לשורה אחת · כפתור ההמשך חוזר לרוחב טבעי ויושב בקצה הפנימי.
+  <b>1440 זהה ל-768</b> — העמודה נעצרת ב-<span class="ltr">640</span> ורק השוליים גדלים. אין פס CTA בשום רוחב.</p>
+<div class="frame desk">
+  <div class="page">
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+    <ol class="stepper" aria-label="שלבי קביעת התור">
+      <li aria-current="step"><span class="dot cur" aria-hidden="true">1</span><span class="stlbl">מועד</span></li>
+      <li><span class="dot next" aria-hidden="true">2</span><span class="stlbl">פרטים</span></li>
+      <li><span class="dot next" aria-hidden="true">3</span><span class="stlbl">מדיניות ביטולים</span></li>
+      <li><span class="dot next" aria-hidden="true">4</span><span class="stlbl">אימות טלפון</span></li>
+    </ol>
+    <div class="head"><h1 class="step">מועד</h1><span class="orn" aria-hidden="true"></span></div>
+    <form class="card">
+      <p><span class="badge">עבור: עלמה</span></p>
+      <fieldset>
+        <legend class="sec display" style="margin-block-end:var(--space-3)">סוג הפגישה</legend>
+        <div class="typelist">
+          <label class="typerow"><input type="radio" name="t19" checked>
+            <span class="typetext"><span class="typename">מדידה ראשונה</span>
+            <span class="typedur"><bdi class="ltr">45</bdi> דקות</span></span></label>
+          <label class="typerow"><input type="radio" name="t19">
+            <span class="typetext"><span class="typename">מדידה עם מלווים</span>
+            <span class="typedur"><bdi class="ltr">90</bdi> דקות</span>
+            <span class="badgewrap"><span class="badge">לכלות בלבד</span></span></span></label>
+          <label class="typerow"><input type="radio" name="t19">
+            <span class="typetext"><span class="typename">חבילת כלה</span>
+            <span class="typedur"><bdi class="ltr">120</bdi> דקות</span></span></label>
+        </div>
+      </fieldset>
+      <div class="field">
+        <label class="lbl" for="d19">תאריך</label>
+        <input class="inp date" id="d19" type="date" dir="ltr" value="2026-08-04" min="2026-07-29" max="2026-08-12">
+      </div>
+      <fieldset>
+        <legend class="lbl" style="margin-block-end:var(--space-2)">שעה</legend>
+        <div class="slotgrid">
+          <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">10:00</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">10:45</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl19" checked><bdi class="ltr">11:30</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">12:15</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">13:00</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">13:45</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">14:30</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">15:15</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">16:00</bdi></label>
+          <label class="chip"><input class="vh" type="radio" name="sl19"><bdi class="ltr">16:45</bdi></label>
+        </div>
+      </fieldset>
+      <div class="fwd"><button class="btn btn-primary btn-lg" type="submit">להמשך</button></div>
+    </form>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<section class="screen active" data-g="dk">
+<p class="cap"><span class="route">/book/confirm/{dressId}</span> · ‎≥768. ריפוד ה-Card בלבד משתנה; העמודה אינה מתרחבת.</p>
+<div class="frame desk">
+  <div class="page">
+    <div class="head"><h1 class="step">התור נקבע</h1><span class="orn" aria-hidden="true"></span></div>
+    <div class="card">
+      <div><p class="factval">יום שלישי, <bdi class="ltr">4.8.2026</bdi> בשעה <bdi class="ltr">16:30</bdi></p></div>
+      <hr class="hr">
+      <div style="display:grid;gap:var(--space-1)">
+        <p class="factval">מדידה ראשונה · <bdi class="ltr">45</bdi> דקות</p>
+        <p class="factsub">עלמה · מידה <bdi class="ltr">42</bdi></p>
+      </div>
+    </div>
+    <p class="msg msg-muted">זה האישור היחיד שלך — כדאי לצלם את המסך או לשמור אותו. אנחנו נחכה לך.</p>
+    <a class="link link-row" href="/"><span aria-hidden="true">→</span>חזרה לקולקציה</a>
+  </div>
+  <span class="a11yfab" aria-hidden="true">◑</span>
+</div>
+</section>
+
+<script>
+  // Progressive enhancement ONLY. Screens are visible by default; this stamps
+  // `js` on <body>, which is what turns filtering on. JS off => full stacked deck.
+  document.body.classList.add('js');
+  function show(key){
+    document.querySelectorAll('.screen, .grp').forEach(function(el){
+      var on = (key === 'all') || (el.dataset.g === key);
+      el.classList.toggle('active', on);
+      if (el.classList.contains('grp')) { el.style.display = on ? '' : 'none'; }
+    });
+  }
+  document.querySelectorAll('.proto-nav button').forEach(function(b){
+    b.addEventListener('click', function(){
+      document.querySelectorAll('.proto-nav button').forEach(function(x){ x.setAttribute('aria-pressed','false'); });
+      b.setAttribute('aria-pressed','true');
+      show(b.dataset.s);
+      window.scrollTo(0,0);
+    });
+  });
+  show('all');
+</script>
+</body>
+</html>
