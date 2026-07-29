@@ -43,6 +43,11 @@ const CONTROL_ATTRS = [
 // First-party accessibility menu (never a third-party overlay). Each control
 // toggles a data attribute on <html>; theme.css styles the boost. Positioned to
 // clear the BookingCTA bar below 768 using --space-a11y-clearance (PRE-1 fix).
+//
+// PRE-2 — this trigger being painted over the page's last content — is NOT
+// solved here and must not be: the trigger is `fixed`, so what it costs is a
+// reservation the SCROLLING document owes it. The consumer's footer pays it
+// with --space-a11y-footprint. Hiding or unfixing the trigger is not the fix.
 export function A11yMenu({ triggerLabel, controls, hasBookingBar = false, className }: A11yMenuProps) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<Record<string, boolean>>({});

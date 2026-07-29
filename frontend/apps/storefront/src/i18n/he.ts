@@ -114,8 +114,6 @@ export const he = {
     // The /book flow — copy.md rev 3, all 61 rows APPROVED 2026-07-29.
     booking: {
       cta: "קביעת תור למדידה",
-      panelTitle: "לקביעת תור, דברו איתנו",
-      close: "סגירה",
 
       // Step labels. Each is also its step's h1, so they are static strings by
       // design: an h1 built from fetched data has a state where it is missing.

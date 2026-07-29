@@ -72,7 +72,7 @@ function AboutContent({ boutique, now }: { boutique: BoutiqueResponse; now: Date
       {/* Static and inline at every width — /about is the one storefront screen
           with no fixed BookingCTA bar (§7). Nothing moves at 768. */}
       <div className="mt-8">
-        <BookingCTAButton boutique={boutique} inline />
+        <BookingCTAButton inline />
       </div>
     </>
   );

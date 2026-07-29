@@ -85,6 +85,12 @@
 
   --cta-bar-height: calc(56px + 2 * var(--space-3));
   --space-a11y-clearance: calc(var(--cta-bar-height) + var(--space-3));
+  /* What the FIXED A11yMenu trigger costs the document's last content: its own
+     44px box (size-11) + its --space-4 inset + one step of air. The footer
+     reserves this as padding-block-end so the statutory הצהרת נגישות link is
+     never painted over (PRE-2). Derived, never a literal: /about shipped pb-8
+     against a 60px footprint and was 28px short. */
+  --space-a11y-footprint: calc(44px + var(--space-4) + var(--space-2));
 }
 
 @keyframes skeleton-pulse {

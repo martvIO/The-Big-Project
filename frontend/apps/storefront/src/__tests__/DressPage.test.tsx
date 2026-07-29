@@ -247,11 +247,18 @@ describe("DressPage — the facts column", () => {
     expect(screen.getByText("36").closest("li")).toHaveTextContent(i18n.t("dress.available"));
   });
 
-  it("keeps the booking CTA usable on a reserved dress — a fitting is still a conversation", async () => {
+  it("keeps the booking CTA usable on a reserved dress, carrying the dress id", async () => {
     await renderLoaded(dress({ reserved: true }));
 
     expect(screen.getByText(i18n.t("dress.reserved"))).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: i18n.t("booking.cta") })).toBeEnabled();
+    // The href, not toBeEnabled(): jest-dom's disabled matchers apply only to
+    // button/input/select/textarea/optgroup/option/fieldset, so toBeEnabled()
+    // on an <a> asserts nothing at all. The dress id is D9's path SEGMENT — the
+    // navigation store snapshots pathname only and cannot see a query string.
+    expect(screen.getByRole("link", { name: i18n.t("booking.cta") })).toHaveAttribute(
+      "href",
+      "/book/slot/d1",
+    );
   });
 });
 

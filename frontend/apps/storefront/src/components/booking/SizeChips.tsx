@@ -8,8 +8,16 @@ export interface SizeChipsProps {
   sizes: SizeChip[];
   value: string | null;
   onChange: (size: string) => void;
-  // booking.sizeRequired, and later the sizeGoneRepick return.
+  // A real validation failure — booking.sizeRequired. Danger register.
   error?: string;
+  /**
+   * A recoverable "this went away, pick another" message — booking.sizeGoneRepick.
+   * Warning register, because nothing she did failed: the boutique's stock moved.
+   * (§3.8's table files it under danger; §4.7 and §5.8's measured contrast ledger
+   * both say --color-warning-text, and the ledger wins.) `error` takes precedence
+   * when both are set: by then she has pressed forward and the notice is stale.
+   */
+  notice?: string;
   ref?: Ref<HTMLInputElement>;
 }
 
@@ -31,16 +39,17 @@ const selectedClass = "border-2 border-gold-strong px-[11px] font-semibold";
 // where it joins the radio's accessible name by construction. A group-level
 // sentence would leave the chips reading 36 / 38 / 40 with nothing marking
 // which one it was about, and axe would see the text and pass.
-export function SizeChips({ sizes, value, onChange, error, ref }: SizeChipsProps) {
+export function SizeChips({ sizes, value, onChange, error, notice, ref }: SizeChipsProps) {
   const { t } = useTranslation();
   const groupId = useId();
   const errorId = `${groupId}-error`;
   const anyUnavailable = sizes.some((size) => !size.available);
+  const message = error ?? notice;
 
   return (
     <fieldset
       className="border-0 p-0"
-      aria-describedby={error === undefined ? undefined : errorId}
+      aria-describedby={message === undefined ? undefined : errorId}
     >
       <legend className="mb-2 text-sm font-semibold text-ink">{t("dress.sizes")}</legend>
       <div className="flex flex-wrap gap-2">
@@ -73,9 +82,13 @@ export function SizeChips({ sizes, value, onChange, error, ref }: SizeChipsProps
           );
         })}
       </div>
-      {error !== undefined && (
-        <p id={errorId} role="alert" className="mt-2 text-sm text-danger">
-          {error}
+      {message !== undefined && (
+        <p
+          id={errorId}
+          role="alert"
+          className={cn("mt-2 text-sm", error === undefined ? "text-warning-text" : "text-danger")}
+        >
+          {message}
         </p>
       )}
       {/* The invitation the chip phrase has no room for. Muted and stated once,

@@ -148,8 +148,11 @@ describe("CatalogPage loading and error compositions", () => {
     // passes even on the defect this guards.
     expect(screen.getByRole("heading", { level: 1, name: "בוטיק אלמה" })).toBeInTheDocument();
     expect(screen.getByText(i18n.t("about.today", { hours: "10:00–19:00" }))).toBeInTheDocument();
-    // Booking is a phone call — a dead collection must not take it down.
-    expect(screen.getByRole("button", { name: i18n.t("booking.cta") })).toBeInTheDocument();
+    // Booking is a navigation now — a dead collection must not take it down.
+    expect(screen.getByRole("link", { name: i18n.t("booking.cta") })).toHaveAttribute(
+      "href",
+      "/book/slot",
+    );
   });
 
   it("refetches the collection from the retry button", async () => {
@@ -163,7 +166,7 @@ describe("CatalogPage loading and error compositions", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("degrades to the error state with no booking CTA when identity itself fails", async () => {
+  it("keeps the booking CTA when identity itself fails — it needs no boutique data (D12)", async () => {
     loadBoutique.mockRejectedValue(DOWN);
     listDresses.mockResolvedValue(listing([dress()]));
 
@@ -179,8 +182,14 @@ describe("CatalogPage loading and error compositions", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
       i18n.t("catalog.essenceFallback"),
     );
-    // No phone, no address, nothing to put in the panel — the CTA would open empty.
-    expect(screen.queryByRole("button", { name: i18n.t("booking.cta") })).toBeNull();
+    // D12, and asserted as a LINK WITH ITS HREF on purpose: the assertion this
+    // replaces was queryByRole("button", …).toBeNull(), which is trivially true
+    // once the CTA is an anchor — it would have gone on passing while the
+    // inversion it exists to prove went unverified.
+    expect(screen.getByRole("link", { name: i18n.t("booking.cta") })).toHaveAttribute(
+      "href",
+      "/book/slot",
+    );
     expect(screen.getByRole("button", { name: i18n.t("catalog.retry") })).toBeInTheDocument();
   });
 

@@ -570,6 +570,20 @@ for (const path of ["/", "/about", "/accessibility"]) {
       `${describe("link", linkRect)} / ${describe("a11y trigger", trigger)}`,
     ).toBe(0);
 
+    // EVERY footer link, not only the statutory one. The footer wraps at 375
+    // and the trigger sits at the inline-end block-end corner, so whichever
+    // link lands last is the one under it — asserting only הצהרת נגישות passes
+    // while the row beneath it is still covered.
+    const footerLinks = page.locator("footer a");
+    for (let i = 0; i < (await footerLinks.count()); i += 1) {
+      const other = footerLinks.nth(i);
+      const box = await rect(other, `footer link ${String(i)}`);
+      expect(
+        intersectionArea(box, trigger),
+        `${describe(`footer link ${String(i)}`, box)} / ${describe("a11y trigger", trigger)}`,
+      ).toBe(0);
+    }
+
     // trial: true runs Playwright's actionability checks — including the
     // hit-target test — without following the link. A covered link fails here.
     await link.click({ trial: true });
@@ -589,7 +603,7 @@ for (const width of [375, 768]) {
       await gotoSettled(page, path);
       await expect(ctaBar(page), `${path} @${String(width)}`).toHaveCount(1);
       await expect(ctaBar(page)).toBeVisible();
-      await expect(page.getByRole("button", { name: CTA_LABEL })).toHaveCount(1);
+      await expect(page.getByRole("link", { name: CTA_LABEL })).toHaveCount(1);
       // One instance, two treatments: a fixed bottom bar below 768, inline from
       // 768 up. A bar that stays fixed at 768 leaves a dead gutter on desktop.
       const position = await ctaBar(page).evaluate((el) => getComputedStyle(el).position);
@@ -600,7 +614,7 @@ for (const width of [375, 768]) {
     // /about ships the booking button as a static inline element and no bar —
     // nothing moves at 768.
     await expect(ctaBar(page), `/about @${String(width)}`).toHaveCount(0);
-    await expect(page.getByRole("button", { name: CTA_LABEL })).toHaveCount(1);
+    await expect(page.getByRole("link", { name: CTA_LABEL })).toHaveCount(1);
   });
 }
 
@@ -954,13 +968,13 @@ test("storefront: a failed boutique keeps its h1, and the retry actually recover
     await send({ items: LIST_ITEMS, total: LIST_ITEMS.length, offset: 0, limit: PAGE_LIMIT });
   });
 
-  // page.goto, not gotoSettled: gotoSettled waits for the booking CTA bar, and
-  // the whole point of this state is that the CTA is deliberately withheld.
   await page.goto(`${STOREFRONT}/`);
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
-  // No CTA: opening an empty contact panel is worse than not offering one.
-  await expect(page.getByRole("button", { name: "קביעת תור למדידה" })).toHaveCount(0);
+  // D12: the CTA only navigates, so a failed identity fetch has nothing to make
+  // it lie about and it must SURVIVE. Asserted on the href — a role check alone
+  // would pass on a CTA that had lost its destination.
+  await expect(page.getByRole("link", { name: CTA_LABEL })).toHaveAttribute("href", "/book/slot");
 
   // The retry must re-drive the BOUTIQUE fetch, not only the dress list. The
   // boutique block is fetched once by the layout, so a retry wired to the list
@@ -969,7 +983,7 @@ test("storefront: a failed boutique keeps its h1, and the retry actually recover
   await page.getByRole("button", { name: "נסי שוב" }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("heading", { level: 1, name: BOUTIQUE.name })).toBeVisible();
-  await expect(page.getByRole("button", { name: "קביעת תור למדידה" })).toBeVisible();
+  await expect(page.getByRole("link", { name: CTA_LABEL })).toBeVisible();
 });
 
 test("storefront: renders reserved, never out-of-stock, and never a raw quantity", async ({

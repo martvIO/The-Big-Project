@@ -27,6 +27,7 @@ const BARE_BOUTIQUE: BoutiqueResponse = { ...BOUTIQUE, phone: null, instagram: n
 
 const CTA_RESERVATION = "--cta-bar-height";
 const A11Y_LIFT = "--space-a11y-clearance";
+const A11Y_FOOTPRINT = "--space-a11y-footprint";
 
 // Renders the layout's own load state as a heading, so every test can await a
 // settled fetch through the accessibility tree instead of a bare flush.
@@ -211,6 +212,31 @@ describe("fixed CTA bar footprint", () => {
     // desktop is its own defect.
     if (reserved) expect(pageShell().className).toContain("max-md:");
   });
+});
+
+describe("A11yMenu footprint over the footer (PRE-2)", () => {
+  it.each(["/", "/dress/d1", "/about", "/accessibility", "/book/slot"])(
+    "keeps הצהרת נגישות out from under the fixed trigger on %s",
+    async (pathname) => {
+      renderAt(pathname);
+      await settled();
+
+      // The trigger is `fixed` at the viewport's block-end inline-end corner on
+      // EVERY route and at every width, and the footer is the last thing in the
+      // document — so scrolled to the end it paints over the statutory link
+      // unless the footer reserves the trigger's own footprint. Page padding
+      // cannot do this job: <footer> is a SIBLING of <main>, outside every
+      // padded page div. jsdom has no layout, so the reservation is asserted
+      // here and measured for real in e2e's PRE-2 geometry test.
+      expect(footer().className).toContain(A11Y_FOOTPRINT);
+      // A literal is how /about shipped pb-8 against a 60px footprint; the
+      // reservation has to be derived from the trigger's own box.
+      expect(footer().className).not.toMatch(/\bpb-\d/);
+      expect(
+        within(footer()).getByRole("link", { name: i18n.t("a11y.statementLink") }),
+      ).toBeInTheDocument();
+    },
+  );
 });
 
 describe("A11yMenu lift", () => {

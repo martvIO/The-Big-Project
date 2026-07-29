@@ -979,10 +979,8 @@ export function BookPage({ step, dressId }: BookPageProps) {
               <SizeChips
                 sizes={sizes}
                 value={size}
-                error={
-                  fieldErrors.size ??
-                  (returnReason === "size" ? t("booking.sizeGoneRepick") : undefined)
-                }
+                error={fieldErrors.size}
+                notice={returnReason === "size" ? t("booking.sizeGoneRepick") : undefined}
                 onChange={(picked) => {
                   setSize(picked);
                   clearError("size");

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
 import type { BoutiqueResponse, ExceptionRow, HoursRow } from "../api";
@@ -275,11 +275,11 @@ describe("AboutPage — address", () => {
 });
 
 describe("AboutPage — booking CTA", () => {
-  it("ships one static inline button and no fixed bar at any width", async () => {
+  it("ships one static inline CTA and no fixed bar at any width", async () => {
     getBoutiqueOnce.mockResolvedValue(boutique());
     const { container } = renderAbout(<AboutPage now={THURSDAY} />);
 
-    const cta = await screen.findAllByRole("button", { name: i18n.t("booking.cta") });
+    const cta = await screen.findAllByRole("link", { name: i18n.t("booking.cta") });
     expect(cta).toHaveLength(1);
     // BookingCTA's bar is `fixed inset-x-0 bottom-0` below 768. /about renders
     // nothing of the sort (qa §7) — the A11yMenu is fixed but not full-width,
@@ -288,11 +288,16 @@ describe("AboutPage — booking CTA", () => {
     expect(cta[0].closest(".fixed")).toBeNull();
   });
 
-  it("opens the contact panel so the button is not decorative", async () => {
+  it("navigates into the booking flow rather than opening a panel", async () => {
     getBoutiqueOnce.mockResolvedValue(boutique());
     renderAbout(<AboutPage now={THURSDAY} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: i18n.t("booking.cta") }));
-    expect(screen.getByRole("heading", { name: i18n.t("booking.panelTitle") })).toBeInTheDocument();
+    // Absolute, and the raw attribute is what matters: the Router's delegated
+    // handler pushes anchor.getAttribute("href"), not the resolved .href, so a
+    // relative value would be pushed verbatim.
+    expect(await screen.findByRole("link", { name: i18n.t("booking.cta") })).toHaveAttribute(
+      "href",
+      "/book/slot",
+    );
   });
 });

@@ -130,8 +130,20 @@ export function StorefrontLayout({ children }: { children: ReactNode }) {
         </main>
 
         {/* Footer links only — the storefront ships no nav component. /about and
-            /accessibility are reachable from here and nowhere else. */}
-        <footer className="border-t border-border px-4 py-6">
+            /accessibility are reachable from here and nowhere else.
+
+            padding-block-end is the A11yMenu trigger's footprint, not py-6's 24
+            (PRE-2). The trigger is `fixed` at the viewport's block-end
+            inline-end corner on EVERY route and at every width, and the footer
+            is the last thing in the document — so scrolled to the end it
+            painted over the footer's inline-end content, הצהרת נגישות included.
+            The reservation belongs HERE and not on a page div: <footer> is a
+            sibling of <main>, outside every padded page shell. The shell's own
+            --cta-bar-height reservation covers the routes where the trigger is
+            lifted to --space-a11y-clearance instead (92 + 44 − 80 = 56 < 68).
+            Written as pt-6 + a logical property because cn has no
+            tailwind-merge: py-6 and a block-end override would both ship. */}
+        <footer className="border-t border-border px-4 pt-6 [padding-block-end:var(--space-a11y-footprint)]">
           <div className="mx-auto flex max-w-[1200px] flex-wrap items-center gap-x-3 gap-y-2">
             <Link to="/about" className={footerLinkClass}>
               {t("footer.about")}

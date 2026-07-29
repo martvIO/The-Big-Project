@@ -10,6 +10,7 @@ import type {
 } from "../api";
 import i18n from "../i18n";
 import { StorefrontLayout } from "../components/StorefrontLayout";
+import { SizeChips } from "../components/booking/SizeChips";
 import { SlotPicker } from "../components/booking/SlotPicker";
 import { TypePicker } from "../components/booking/TypePicker";
 import { BookPage } from "../routes/BookPage";
@@ -693,6 +694,7 @@ describe("BookPage slot step — the mid-flow returns", () => {
     sheet.textContent = `
       .text-danger { color: ${themeTokens["--color-danger"]}; }
       .text-ink-muted { color: ${themeTokens["--color-ink-muted"]}; }
+      .text-warning-text { color: ${themeTokens["--color-warning-text"]}; }
     `;
     document.head.append(sheet);
   });
@@ -756,6 +758,44 @@ describe("BookPage slot step — the mid-flow returns", () => {
     expect(alert.compareDocumentPosition(screen.getByText(i18n.t("booking.typeHeading")))).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+
+  // §3.8's register table files sizeGoneRepick under --color-danger; §4.7 and
+  // §5.8's measured contrast ledger both say --color-warning-text. Ruled for
+  // warning: two of three agree, and the ledger is the measured accessibility
+  // artifact rather than prose. Nothing she did failed — the boutique's stock
+  // moved — so the chips' true validation error keeps danger and this does not.
+  it("renders booking.sizeGoneRepick in the warning register, not danger", () => {
+    render(
+      <StorefrontLayout>
+        <SizeChips
+          sizes={[{ size_label: "40", available: true }]}
+          value={null}
+          notice={i18n.t("booking.sizeGoneRepick")}
+          onChange={() => undefined}
+        />
+      </StorefrontLayout>,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(i18n.t("booking.sizeGoneRepick"));
+    expect(colourOf("text-warning-text")).not.toBe(colourOf("text-danger"));
+    expect(getComputedStyle(alert).color).toBe(colourOf("text-warning-text"));
+  });
+
+  it("keeps a real validation error on the size chips in danger", () => {
+    render(
+      <StorefrontLayout>
+        <SizeChips
+          sizes={[{ size_label: "40", available: true }]}
+          value={null}
+          error={i18n.t("booking.sizeRequired")}
+          onChange={() => undefined}
+        />
+      </StorefrontLayout>,
+    );
+
+    expect(getComputedStyle(screen.getByRole("alert")).color).toBe(colourOf("text-danger"));
   });
 });
 
