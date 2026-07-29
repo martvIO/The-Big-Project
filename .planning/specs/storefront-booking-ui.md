@@ -374,6 +374,9 @@ D, the test suites cover every row, and nothing else in this spec re-enumerates 
 | Confirmation loaded cold | reload or app-switch after submit; no public read-by-id exists | D | unit |
 | Step entered without prerequisites | guard → `slot` (**D8**) | — | unit |
 | Browser back across steps | `popstate` (**D8**) | — | e2e |
+| Boutique fetch failed → no contact fallback | `useBoutique()` has nothing, so every `ContactPanel` branch would render an empty box (**D12**, gate proposal **P8**) → plain copy via `booking.contactUnavailable` | D | unit |
+| Submit failed outside the designed set | `429` / `5xx` / dropped connection on `POST /bookings` (**R13**) → re-enable submit, `errors.unknown`, contactable exit. **The flow's true terminal dead end before this row existed**: she verified, accepted the policy, pressed commit, and had no way to learn whether she was booked | D | unit |
+| Entry read failed | the step's own fetch (terms / types / slots / dress) fails rather than returning empty — distinct from every "empty list" row above, which are success responses | D | unit |
 
 **The submit-time `NOT_FOUND` needs a probe, because the server cannot tell you which
 thing went.** `POST /storefront/bookings` raises the same `BookingNotFoundError` — and
