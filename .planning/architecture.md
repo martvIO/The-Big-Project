@@ -8,7 +8,7 @@
 |---|---|
 | Stack | FastAPI (Python 3.13 via uv) + SQLAlchemy 2 + Alembic · React 19 + Vite + TypeScript + Tailwind 4 in a pnpm monorepo |
 | Tenancy | Shared DB + `tenant_id` + **Postgres RLS forced** (non-owner app role, `SET LOCAL app.tenant_id` per transaction); schema/DB-per-tenant rejected at 50+ tenants |
-| Routing | Wildcard `*.ourbrand.co.il`, host→tenant middleware (direct DB lookup in v1), reserved slugs, storefront on subdomain, staff app at `/manage`, cookies scoped to exact subdomain |
+| Routing | Wildcard `*.modryn.co.il`, host→tenant middleware (direct DB lookup in v1), reserved slugs, storefront on subdomain, staff app at `/manage`, cookies scoped to exact subdomain |
 | Real-time | Pusher (managed), from E6. Sockets are hints, server is truth: versioned events + full-state refetch on reconnect |
 | Payments | Grow (Meshulam) hosted payment page, per-tenant merchant accounts, **J4 charge not J5 hold**, PCI SAQ-A, webhook-authoritative |
 | Comms | SMS-first (provider chosen by cost; sender-ID registration filed week 1); WhatsApp in E10; scheduled_messages table + poller worker (`FOR UPDATE SKIP LOCKED`), never "cron exactly 24h" |
@@ -22,7 +22,7 @@
 ## System shape
 
 ```
-             *.ourbrand.co.il (wildcard DNS + cert)
+             *.modryn.co.il (wildcard DNS + cert)
                             │
         {slug}.…/ storefront   {slug}.…/manage staff app
                             │
