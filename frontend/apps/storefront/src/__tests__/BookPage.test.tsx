@@ -402,14 +402,18 @@ describe("BookPage slot step — the appointment-type picker", () => {
     expect(window.location.pathname).toBe("/book/details");
   });
 
-  it("states each duration in minutes", async () => {
+  it("states each duration as an isolated numeral beside its unit", async () => {
     listTypes.mockResolvedValue([appointmentType({ duration_minutes: 90 })]);
 
     renderBook();
 
-    expect(
-      await screen.findByText(i18n.t("booking.typeDuration", { minutes: 90 })),
-    ).toBeInTheDocument();
+    const row = (await screen.findByRole("radio", { name: /מדידה ראשונה/ })).closest("label");
+    // R19: the approved Hebrew is value-first, so the key is the bare unit and
+    // the numeral is isolated at the call site. Drop the bdi and this fails.
+    const bdi = row?.querySelector("bdi");
+    expect(bdi).toHaveAttribute("dir", "ltr");
+    expect(bdi).toHaveTextContent("90");
+    expect(row).toHaveTextContent(`90 ${i18n.t("booking.typeDuration")}`);
   });
 
   it("reveals the deposit branch under ITS OWN row while a sibling stays bookable", async () => {
@@ -941,9 +945,12 @@ describe("BookPage details step — the bound dress", () => {
   it("names the binding and offers every size as a radio", async () => {
     await walkToDetails("d1");
 
-    expect(
-      await screen.findByText(i18n.t("booking.forDress", { dress: "שמלת אלמה" })),
-    ).toBeInTheDocument();
+    // R19, and a BARE bdi: the dress name is owner text and may be Hebrew, so
+    // forcing dir="ltr" on it would be the bidi defect, not the fix.
+    const bdi = await screen.findByText("שמלת אלמה");
+    expect(bdi.tagName).toBe("BDI");
+    expect(bdi).not.toHaveAttribute("dir");
+    expect(bdi.parentElement).toHaveTextContent(`${i18n.t("booking.forDress")} שמלת אלמה`);
     expect(screen.getByText(i18n.t("dress.sizes"))).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /^36/ })).toBeInTheDocument();
     expect(getDress).toHaveBeenCalledWith("d1");
@@ -1070,9 +1077,23 @@ describe("BookPage terms step", () => {
   it("states the two refund numbers above the policy, in plain Hebrew", async () => {
     await walkToTerms();
 
-    const window_ = screen.getByText(i18n.t("booking.refundWindow", { hours: 48 }));
-    const forfeit = screen.getByText(i18n.t("booking.forfeit", { percent: 50 }));
+    // R19: both numbers are mid-sentence, so each string is a lead and a tail
+    // with the value isolated between them. The % is part of the LTR run, and
+    // each numeral is its own element — remove the bdi and these two vanish.
+    const hours = screen.getByText("48");
+    const percent = screen.getByText("50%");
+    expect(hours).toHaveAttribute("dir", "ltr");
+    expect(percent).toHaveAttribute("dir", "ltr");
+
+    const window_ = hours.parentElement as HTMLElement;
+    const forfeit = percent.parentElement as HTMLElement;
     const policy = screen.getByText(TERMS.terms_text);
+    expect(window_).toHaveTextContent(
+      `${i18n.t("booking.refundWindow")} 48 ${i18n.t("booking.refundWindowSuffix")}`,
+    );
+    expect(forfeit).toHaveTextContent(
+      `${i18n.t("booking.forfeit")} 50% ${i18n.t("booking.forfeitSuffix")}`,
+    );
 
     // A paragraph is where numbers go to hide, so they sit above it.
     expect(window_.compareDocumentPosition(policy)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -1603,9 +1624,9 @@ describe("BookPage — the error-recovery matrix", () => {
     expect(getTerms).toHaveBeenCalledTimes(2);
     expect(screen.getByText("מדיניות מעודכנת: ביטול עד 72 שעות.")).toBeInTheDocument();
     expect(screen.queryByText(TERMS.terms_text)).toBeNull();
-    expect(
-      screen.getByText(i18n.t("booking.refundWindow", { hours: 72 })),
-    ).toBeInTheDocument();
+    expect(screen.getByText("72").parentElement).toHaveTextContent(
+      `${i18n.t("booking.refundWindow")} 72 ${i18n.t("booking.refundWindowSuffix")}`,
+    );
     // Consent is consent to a VERSION. Carrying it forward would record
     // agreement to text she never saw — the whole reason terms_version is sent.
     expect(
@@ -1846,12 +1867,16 @@ describe("BookPage confirmation", () => {
     expect(document.querySelector(".text-success, .bg-success")).toBeNull();
   });
 
-  it("names the boutique in the title, falling back to the nameless one", async () => {
+  it("names the boutique in the title, isolated, falling back to the nameless one", async () => {
     await book();
 
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
-      i18n.t("booking.confirmTitleNamed", { name: "בוטיק אלמה" }),
-    );
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading).toHaveTextContent(`${i18n.t("booking.confirmTitleNamed")}בוטיק אלמה`);
+    // R19's highest-risk instance: a free-text tenant name inside the h1 of her
+    // only record. Bare bdi — the name may be Hebrew or Latin.
+    const bdi = heading.querySelector("bdi");
+    expect(bdi).not.toHaveAttribute("dir");
+    expect(bdi).toHaveTextContent("בוטיק אלמה");
   });
 
   it("drops the name rather than printing the generic fallback on her only record", async () => {
@@ -1867,9 +1892,14 @@ describe("BookPage confirmation", () => {
   it("prints the dress line on the item path and no empty row on the generic one", async () => {
     await book({ dress_name: "שמלת אלמה", dress_size: "36" }, "d1");
 
-    expect(
-      screen.getByText(i18n.t("booking.confirmDress", { dress: "שמלת אלמה", size: "36" })),
-    ).toBeInTheDocument();
+    // R19: two owner-authored values on one line, each in its own bare bdi.
+    const line = screen.getByText("36").parentElement as HTMLElement;
+    expect(line).toHaveTextContent(`שמלת אלמה · ${i18n.t("booking.confirmDress")} 36`);
+    const [dressBdi, sizeBdi] = line.querySelectorAll("bdi");
+    expect(dressBdi).toHaveTextContent("שמלת אלמה");
+    expect(dressBdi).not.toHaveAttribute("dir");
+    expect(sizeBdi).toHaveTextContent("36");
+    expect(sizeBdi).not.toHaveAttribute("dir");
   });
 
   it("omits the dress line entirely when nothing is bound", async () => {

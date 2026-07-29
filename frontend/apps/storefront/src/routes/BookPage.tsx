@@ -775,12 +775,21 @@ export function BookPage({ step, dressId }: BookPageProps) {
   // precedent, and zero new keys. Warm, the boutique's name makes a screenshot
   // self-explanatory three weeks later; without it the nameless title, never
   // the generic "חנות הכלות" on her only record.
+  //
+  // R19 applies hardest here: the boutique's free-text name goes into the h1 of
+  // the bride's only record, so it is isolated at the call site with a bare
+  // <bdi>. No space before it — the lead ends in the "ב" prefix.
   const confirmHeading =
-    booked === null
-      ? t("document.book")
-      : boutique === null
-        ? t("booking.confirmTitle")
-        : t("booking.confirmTitleNamed", { name: boutique.name });
+    booked === null ? (
+      t("document.book")
+    ) : boutique === null ? (
+      t("booking.confirmTitle")
+    ) : (
+      <>
+        {t("booking.confirmTitleNamed")}
+        <bdi>{boutique.name}</bdi>
+      </>
+    );
 
   // No terms and no types are the two exits that replace the whole step: there
   // is no flow to be a step of, so no stepper and no forward control.
@@ -931,8 +940,10 @@ export function BookPage({ step, dressId }: BookPageProps) {
                             className="w-16 shrink-0 rounded-md bg-surface object-cover shadow-sm aspect-[3/4]"
                           />
                         )}
+                        {/* R19. Owner-authored, so a bare <bdi> — dir="ltr" on
+                            a Hebrew dress name is itself a bidi defect. */}
                         <p className="font-display text-lg text-ink">
-                          {t("booking.forDress", { dress: dress.name })}
+                          {t("booking.forDress")} <bdi>{dress.name}</bdi>
                         </p>
                       </div>
                       {sizes === null && (
@@ -1024,11 +1035,18 @@ export function BookPage({ step, dressId }: BookPageProps) {
                 actually agreeing to, and a paragraph is where numbers hide.
                 Weight and a divider carry the distinction — never a tinted
                 callout, which would read as an alert two neutral facts are not. */}
+            {/* R19: both numbers are isolated here, mid-sentence, which is why
+                each string is a lead and a tail rather than one interpolation.
+                The % rides inside the bdi — "50%" is one LTR run, not a digit
+                run and a stray neutral. */}
             <p className="text-base font-semibold text-ink">
-              {t("booking.refundWindow", { hours: terms.refundable_until_hours_before })}
+              {t("booking.refundWindow")}{" "}
+              <bdi dir="ltr">{terms.refundable_until_hours_before}</bdi>{" "}
+              {t("booking.refundWindowSuffix")}
             </p>
             <p className="text-base font-semibold text-ink">
-              {t("booking.forfeit", { percent: terms.forfeit_percent })}
+              {t("booking.forfeit")} <bdi dir="ltr">{terms.forfeit_percent}%</bdi>{" "}
+              {t("booking.forfeitSuffix")}
             </p>
 
             <span aria-hidden="true" className="h-px bg-border" />
@@ -1237,11 +1255,11 @@ export function BookPage({ step, dressId }: BookPageProps) {
                   <bdi>{booked.appointment_type_name}</bdi>
                 </p>
                 {booked.dress_name !== null && booked.dress_size !== null && (
+                  // R19, twice: both values are owner text, so both take a bare
+                  // <bdi>. The separator is aria-hidden, matching confirmWhen.
                   <p className="text-base text-ink">
-                    {t("booking.confirmDress", {
-                      dress: booked.dress_name,
-                      size: booked.dress_size,
-                    })}
+                    <bdi>{booked.dress_name}</bdi> <span aria-hidden="true">·</span>{" "}
+                    {t("booking.confirmDress")} <bdi>{booked.dress_size}</bdi>
                   </p>
                 )}
               </div>

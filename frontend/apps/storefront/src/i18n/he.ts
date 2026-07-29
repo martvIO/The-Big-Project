@@ -133,9 +133,10 @@ export const he = {
       // have to say so themselves. Same shape as sizeRequired.
       typeRequired: "צריך לבחור סוג פגישה כדי להמשיך",
       timeRequired: "צריך לבחור מועד כדי להמשיך",
-      // The RLM keeps the leading numeral from reordering against the Hebrew
-      // that follows it — the one interpolated string that opens with the value.
-      typeDuration: "‏{{minutes}} דקות",
+      // R19: the value leads here, so this key is the lead-less UNIT and the
+      // call site renders <bdi dir="ltr">{minutes}</bdi> before it. The RLM the
+      // interpolated form carried was an ad-hoc stand-in for that isolation.
+      typeDuration: "דקות",
       // A label on a brides-only type, not a lock: the type stays selectable.
       audienceBrides: "פגישת כלה",
       // Sits above a ContactPanel, which is why it carries no phone invitation
@@ -143,7 +144,10 @@ export const he = {
       noTypes: "בשלב זה אין כאן סוגי פגישות לקביעה מקוונת.",
       pickDate: "תאריך",
       pickTime: "שעה",
-      forDress: "עבור {{dress}}",
+      // R19 lead; the call site follows it with <bdi>{dress name}</bdi>. A bare
+      // bdi, not dir="ltr" — forcing LTR on a Hebrew dress name is itself a
+      // bidi defect.
+      forDress: "עבור",
       // The VisuallyHidden role="status" while a step's reads are in flight.
       // catalog.loading says "the collection" on a screen that loads times.
       loading: "טוענות את המועדים",
@@ -174,9 +178,15 @@ export const he = {
       sizeUnavailableNote: "מידה שאינה כרגע בבוטיק אפשר להזמין במיוחד לקראת המדידה.",
 
       termsHeading: "מדיניות ביטולים",
-      refundWindow: "ביטול עד {{hours}} שעות לפני המועד — ללא חיוב.",
+      // R19 splits both policy numbers mid-sentence: lead + <bdi dir="ltr">
+      // value + tail. Same words in the same order as the approved sentences —
+      // only the seam moved, because interpolation cannot carry the isolation.
+      refundWindow: "ביטול עד",
+      refundWindowSuffix: "שעות לפני המועד — ללא חיוב.",
       // Percent OF THE DEPOSIT — the base the manage console already states.
-      forfeit: "ביטול מאוחר יותר, או אי-הגעה — חיוב של {{percent}}% מהמקדמה.",
+      // The % rides inside the bdi with its number: "50%" is one LTR run.
+      forfeit: "ביטול מאוחר יותר, או אי-הגעה — חיוב של",
+      forfeitSuffix: "מהמקדמה.",
       acceptTerms: "קראתי את מדיניות הביטולים ואני מסכימה לה.",
       acceptRequired: "כדי להמשיך צריך לאשר את מדיניות הביטולים.",
       noTermsByPhone:
@@ -197,13 +207,18 @@ export const he = {
       // F16 has not shipped: a booking sends NO message, so this screen is her
       // only record and nothing here may promise one.
       confirmTitle: "התור נקבע",
-      confirmTitleNamed: "התור נקבע ב{{name}}",
+      // R19 lead, and the highest-risk one in the flow: the boutique's own
+      // free-text name lands in the h1 of her only record. Bare <bdi> at the
+      // call site, and NO trailing space — the "ב" prefix attaches to the name.
+      confirmTitleNamed: "התור נקבע ב",
       // Bare labels, not sentences: the date, time and type beside them are
       // wrapped in <bdi dir="ltr"> at the call site, which interpolation cannot
       // do.
       confirmWhen: "מתי",
       confirmWhat: "מה",
-      confirmDress: "{{dress}} · מידה {{size}}",
+      // R19: value-first and two-valued, so this is the lead-less unit between
+      // them. Both values are owner text and take a bare <bdi>.
+      confirmDress: "מידה",
       confirmKeepScreen:
         "זה האישור היחיד שלך — כדאי לצלם את המסך או לשמור אותו. אנחנו נחכה לך.",
       // CONDITIONAL, per R14 and copy.md rev 4: /book/confirm is guard-exempt,

@@ -101,8 +101,12 @@ export function TypePicker({
                   <span className="flex min-w-0 flex-1 flex-col gap-1 md:flex-row md:items-center md:justify-between md:gap-3">
                     <span className="text-base font-semibold text-ink">{type.name}</span>
                     <span className="flex items-center gap-2">
+                      {/* R19: the numeral is isolated at the call site, which
+                          is the only place that can wrap it — i18next
+                          interpolation cannot carry markup. The approved
+                          Hebrew is value-first, so the key is the bare unit. */}
                       <span className="text-sm text-ink-muted">
-                        {t("booking.typeDuration", { minutes: type.duration_minutes })}
+                        <bdi dir="ltr">{type.duration_minutes}</bdi> {t("booking.typeDuration")}
                       </span>
                       {/* D10 — it labels, it does not gate: the row stays
                           selectable. Words, not a dimmed chip. */}
