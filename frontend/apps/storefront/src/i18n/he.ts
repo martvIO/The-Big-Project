@@ -84,6 +84,18 @@ export const he = {
       tooManyAttempts: "יותר מדי בקשות. נסי שוב בעוד רגע.",
       validation: "הבקשה לא תקינה.",
       unknown: "אירעה שגיאה בלתי צפויה. נסי שוב.",
+      // Booking mid-flow conflicts and dead ends — copy.md §3.7, all APPROVED.
+      slotUnavailable:
+        "המועד הזה נתפס בינתיים. אלה המועדים הפנויים המעודכנים — אפשר לבחור מועד אחר.",
+      termsStale:
+        "מדיניות הביטולים התעדכנה בזמן שמילאת את הפרטים. זו הגרסה המעודכנת — נשמח שתקראי ותאשרי אותה שוב.",
+      otpInvalid: "הקוד שהוזן אינו נכון. אפשר להקליד אותו שוב, או לבקש קוד חדש.",
+      otpExpired: "תוקף הקוד פג. אפשר לבקש קוד חדש.",
+      phoneNotVerified:
+        "האימות פג תוקף. אפשר לבקש קוד חדש ולהמשיך מכאן — הפרטים שמילאת נשמרו.",
+      // One string for both 503 codes — SMS_NOT_CONFIGURED and SMS_UNAVAILABLE.
+      smsUnavailable:
+        "אימות הטלפון אינו זמין כרגע, ולכן אי אפשר להשלים כאן את קביעת התור. נשמח שתתקשרי אלינו ונקבע יחד מועד.",
     },
 
     gallery: {
