@@ -14,6 +14,9 @@ export const he = {
       dress: "פרטי השמלה",
       about: "על הבוטיק",
       accessibility: "הצהרת נגישות",
+      // ONE title for all five booking steps — the flow is one page to the tab
+      // strip, and it is the h1 of the two no-step degrade screens as well.
+      book: "קביעת תור",
     },
 
     catalog: {
@@ -96,6 +99,10 @@ export const he = {
       // One string for both 503 codes — SMS_NOT_CONFIGURED and SMS_UNAVAILABLE.
       smsUnavailable:
         "אימות הטלפון אינו זמין כרגע, ולכן אי אפשר להשלים כאן את קביעת התור. נשמח שתתקשרי אלינו ונקבע יחד מועד.",
+      // A 429 on /otp/send only. The wait is about an hour, so it offers the
+      // phone rather than a retry — which is what tooManyAttempts would say.
+      otpSendBudget:
+        "ביקשת כמה קודים בזמן קצר. אפשר לנסות שוב עוד כשעה, ואפשר פשוט להתקשר אלינו ונקבע יחד מועד.",
     },
 
     gallery: {
@@ -104,10 +111,106 @@ export const he = {
       imageOf: "תמונה {{n}} מתוך {{total}}",
     },
 
+    // The /book flow — copy.md rev 3, all 61 rows APPROVED 2026-07-29.
     booking: {
       cta: "קביעת תור למדידה",
       panelTitle: "לקביעת תור, דברו איתנו",
       close: "סגירה",
+
+      // Step labels. Each is also its step's h1, so they are static strings by
+      // design: an h1 built from fetched data has a state where it is missing.
+      // stepOtp is named for what the step asks for, not for its /verify slug.
+      stepsLabel: "שלבי קביעת התור",
+      stepSlot: "מועד",
+      stepDetails: "פרטים",
+      stepTerms: "מדיניות ביטולים",
+      stepOtp: "אימות טלפון",
+      // Steps 1–3 advance; step 4 commits, and uses booking.submit.
+      continue: "המשך",
+      backStep: "חזרה לשלב הקודם",
+      backToCatalog: "חזרה לקולקציה",
+
+      typeHeading: "סוג הפגישה",
+      // The RLM keeps the leading numeral from reordering against the Hebrew
+      // that follows it — the one interpolated string that opens with the value.
+      typeDuration: "‏{{minutes}} דקות",
+      // A label on a brides-only type, not a lock: the type stays selectable.
+      audienceBrides: "פגישת כלה",
+      // Sits above a ContactPanel, which is why it carries no phone invitation
+      // of its own.
+      noTypes: "בשלב זה אין כאן סוגי פגישות לקביעה מקוונת.",
+      pickDate: "תאריך",
+      pickTime: "שעה",
+      forDress: "עבור {{dress}}",
+      noSlots:
+        "אין מועדים פנויים בתאריך הזה. אפשר לבחור תאריך אחר, ואפשר גם להתקשר ונמצא לך מועד.",
+      slotsError: "לא הצלחנו לטעון את המועדים כרגע.",
+      // Not an error and not an apology: a deposit appointment is arranged by
+      // phone by design.
+      depositByPhone:
+        "את הפגישה הזאת אנחנו קובעות בטלפון, כדי לסגור יחד גם את המקדמה. נשמח שתתקשרי — זה לוקח רגע.",
+
+      name: "שם מלא",
+      nameRequired: "צריך למלא שם כדי שנוכל לרשום את התור.",
+      // 80 and 500 mirror MAX_CUSTOMER_NAME_LENGTH and MAX_BOOKING_NOTES_LENGTH.
+      nameTooLong: "השם ארוך מדי. עד 80 תווים.",
+      phone: "טלפון נייד",
+      // The only place the format is taught, so it must match validatePhone.
+      phoneHint: "לשליחת קוד אימות חד-פעמי. אפשר להזין עשר ספרות, למשל 0501234567.",
+      phoneInvalid: "המספר לא נראה כמו מספר נייד ישראלי. אפשר להזין עשר ספרות שמתחילות ב-05.",
+      notes: "משהו שנשמח לדעת מראש",
+      notesHint: "לא חובה. למשל: מגיעה עם אמא, צריך שולחן נגיש, או דגם שראית ואהבת.",
+      notesTooLong: "ההערה ארוכה מדי. עד 500 תווים.",
+      // Rendered INSIDE the unavailable chip's own label, so it becomes part of
+      // that radio's accessible name — which is why it is ≤24 characters and
+      // why the longer invitation is a separate key under the group.
+      sizeUnavailable: "אפשר להזמין במיוחד",
+      sizeRequired: "צריך לבחור מידה כדי להמשיך",
+      sizeUnavailableNote: "מידה שאינה כרגע בבוטיק אפשר להזמין במיוחד לקראת המדידה.",
+
+      termsHeading: "מדיניות ביטולים",
+      refundWindow: "ביטול עד {{hours}} שעות לפני המועד — ללא חיוב.",
+      // Percent OF THE DEPOSIT — the base the manage console already states.
+      forfeit: "ביטול מאוחר יותר, או אי-הגעה — חיוב של {{percent}}% מהמקדמה.",
+      acceptTerms: "קראתי את מדיניות הביטולים ואני מסכימה לה.",
+      acceptRequired: "כדי להמשיך צריך לאשר את מדיניות הביטולים.",
+      noTermsByPhone:
+        "קביעת תור מקוונת תיפתח כאן בקרוב. בינתיים נשמח שתתקשרי אלינו ונקבע יחד מועד.",
+
+      // Conditional, never a delivery claim: /storefront/otp/send always answers
+      // 204 and reveals nothing.
+      otpSent: "שלחנו קוד בן שש ספרות למספר שהזנת. הוא תקף לחמש דקות.",
+      otpCode: "קוד האימות",
+      // One label for the first send AND the resend — it may not say "again".
+      otpResend: "שליחת קוד אימות",
+      // No interpolated countdown: Hebrew has no correct singular/dual here
+      // without plural resources, and a ticking number reads as urgency.
+      otpResendWait: "אפשר לבקש קוד חדש בעוד רגע",
+      submit: "אישור וקביעת התור",
+      submitting: "קובעות את התור",
+
+      // F16 has not shipped: a booking sends NO message, so this screen is her
+      // only record and nothing here may promise one.
+      confirmTitle: "התור נקבע",
+      confirmTitleNamed: "התור נקבע ב{{name}}",
+      // Bare labels, not sentences: the date, time and type beside them are
+      // wrapped in <bdi dir="ltr"> at the call site, which interpolation cannot
+      // do.
+      confirmWhen: "מתי",
+      confirmWhat: "מה",
+      confirmDress: "{{dress}} · מידה {{size}}",
+      confirmKeepScreen:
+        "זה האישור היחיד שלך — כדאי לצלם את המסך או לשמור אותו. אנחנו נחכה לך.",
+      confirmCold: "התור שלך נקבע. אם תרצי לוודא את הפרטים — אפשר להתקשר ונאשר לך הכול.",
+
+      typeGoneRepick: "סוג הפגישה שבחרת כבר אינו זמין. אפשר לבחור סוג אחר מהרשימה המעודכנת.",
+      dressGoneGeneric:
+        "השמלה שבחרת כבר אינה זמינה. אפשר להמשיך ולקבוע פגישת מדידה רגילה — נשמח למצוא איתך דגמים דומים.",
+      sizeGoneRepick: "המידה שבחרת כבר אינה מופיעה ברשימה. אפשר לבחור מידה אחרת מהרשימה המעודכנת.",
+      // Replaces the ContactPanel in all four of its branches when the boutique
+      // fetch failed. Name-free by construction: that fetch carried the name.
+      contactUnavailable:
+        "לא הצלחנו לטעון כאן את פרטי הקשר של הבוטיק. אפשר לנסות לרענן את העמוד בעוד רגע.",
     },
 
     contact: {

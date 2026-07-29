@@ -194,6 +194,10 @@ describe("fixed CTA bar footprint", () => {
     ["/dress/d1", true],
     ["/about", false],
     ["/accessibility", false],
+    // The booking flow carries no "book a fitting" CTA — putting one inside the
+    // flow it leads to is the inverse mistake (spec Risk 6).
+    ["/book/slot", false],
+    ["/book/verify/d1", false],
   ])("reserves the bar's footprint on %s: %s", async (pathname, reserved) => {
     renderAt(pathname);
     await settled();
@@ -215,6 +219,8 @@ describe("A11yMenu lift", () => {
     ["/dress/d1", true],
     ["/about", false],
     ["/accessibility", false],
+    ["/book/slot", false],
+    ["/book/verify/d1", false],
   ])("lifts the menu above a booking bar on %s: %s", async (pathname, lifted) => {
     renderAt(pathname);
     await settled();
