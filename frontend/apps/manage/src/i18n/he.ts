@@ -3,10 +3,10 @@
 export const he = {
   translation: {
     document: {
-      title: "ניהול הבוטיק",
+      title: "MODRYN — ניהול הבוטיק",
     },
     console: {
-      title: "ניהול הבוטיק",
+      title: "MODRYN — ניהול הבוטיק",
       logout: "יציאה",
       skipLink: "דלג לתוכן",
       loading: "טוען…",
@@ -23,7 +23,7 @@ export const he = {
       saved: "נשמר לפני רגע",
     },
     login: {
-      title: "כניסה לניהול הבוטיק",
+      title: "MODRYN — כניסה לניהול הבוטיק",
       email: "אימייל",
       password: "סיסמה",
       submit: "כניסה",
