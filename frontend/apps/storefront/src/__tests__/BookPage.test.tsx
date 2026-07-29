@@ -1408,23 +1408,74 @@ describe("BookPage verify step — the dead ends", () => {
     expect(screen.getByRole("link", { name: i18n.t("booking.backStep") })).toBeInTheDocument();
   });
 
-  it.each(["SMS_NOT_CONFIGURED", "SMS_UNAVAILABLE"])(
-    "replaces the form with the phone-only exit on %s",
-    async (code) => {
-      sendOtp.mockRejectedValue(new ApiError(503, code, "sms down"));
+  it("replaces the form with the phone-only exit on SMS_NOT_CONFIGURED", async () => {
+    sendOtp.mockRejectedValue(new ApiError(503, "SMS_NOT_CONFIGURED", "no provider"));
 
+    await walkToVerify();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: TYPED_PHONE },
+    });
+    fireEvent.click(resend());
+
+    // Known at boot and permanent — this is the one that really has no way back.
+    expect(await screen.findByText(i18n.t("errors.smsUnavailable"))).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+    expect(screen.queryByLabelText(i18n.t("booking.phone"))).toBeNull();
+  });
+
+  it("keeps the form alive on SMS_UNAVAILABLE — a failed send is transient", async () => {
+    sendOtp.mockRejectedValueOnce(new ApiError(503, "SMS_UNAVAILABLE", "provider blip"));
+
+    await walkToVerify();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: TYPED_PHONE },
+    });
+    fireEvent.click(resend());
+
+    // Rule 10 holds — the same STRING as SMS_NOT_CONFIGURED, because which of
+    // the two fired is the boutique's problem and not hers. What changes is the
+    // shape: the dead end is never cleared while BookPage stays mounted, so
+    // routing one failed provider send there ended the session permanently.
+    const alert = await screen.findByText(i18n.t("errors.smsUnavailable"));
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+    expect(screen.getByLabelText(i18n.t("booking.phone"))).toHaveValue(TYPED_PHONE);
+
+    fireEvent.click(resend());
+    expect(await screen.findByLabelText(i18n.t("booking.otpCode"))).toBeInTheDocument();
+    expect(screen.queryByText(i18n.t("errors.smsUnavailable"))).toBeNull();
+  });
+
+  it("stops lying after the send budget and offers the phone instead", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
       await walkToVerify();
       fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
         target: { value: TYPED_PHONE },
       });
-      fireEvent.click(resend());
 
-      // To the visitor "misconfigured" and "provider down" are the same dead end.
-      expect(await screen.findByText(i18n.t("errors.smsUnavailable"))).toBeInTheDocument();
+      // Five is the per-phone hourly budget. Past it the server answers a real
+      // send and a spent budget with the SAME silent 204 — deliberately, so the
+      // endpoint is not an oracle — so a sixth "code sent" would be false.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        fireEvent.click(resendControl());
+        await screen.findByLabelText(i18n.t("booking.otpCode"));
+        act(() => {
+          vi.advanceTimersByTime(60_000);
+        });
+      }
+      expect(sendOtp).toHaveBeenCalledTimes(5);
+
+      fireEvent.click(resendControl());
+
+      const block = await screen.findByText(i18n.t("errors.otpSendBudget"));
+      expect(sendOtp).toHaveBeenCalledTimes(5);
       expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
-      expect(screen.queryByLabelText(i18n.t("booking.phone"))).toBeNull();
-    },
-  );
+      expect(document.activeElement).toBe(block.closest("[tabindex]"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("degrades the dead end to plain copy when the boutique fetch failed", async () => {
     loadBoutique.mockRejectedValue(DOWN);
@@ -1904,12 +1955,25 @@ describe("BookPage — the error-recovery matrix", () => {
     expect(screen.getByLabelText(i18n.t("booking.name"))).toHaveValue("נועה");
   });
 
-  it.each([
-    ["a 500", BROKEN],
-    ["a spent create budget", THROTTLED],
-  ])("keeps R13 as the final fallback for %s on submit", async (_label, error) => {
+  it("names a spent create budget instead of telling her to try again", async () => {
     await readyToSubmit();
-    createBooking.mockRejectedValueOnce(error);
+    createBooking.mockRejectedValueOnce(THROTTLED);
+
+    fireEvent.click(submitButton());
+
+    // The window is about an hour, so R13's "נסי שוב" would put her on a button
+    // that cannot work for that long. Its own key, with a phone number under it.
+    const alert = await screen.findByText(i18n.t("errors.bookingBudget"));
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(screen.queryByText(i18n.t("errors.unknown"))).toBeNull();
+    expect(screen.queryByText(i18n.t("errors.tooManyAttempts"))).toBeNull();
+    expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/book/verify");
+  });
+
+  it("keeps R13 as the final fallback for an undiagnosable failure", async () => {
+    await readyToSubmit();
+    createBooking.mockRejectedValueOnce(BROKEN);
 
     fireEvent.click(submitButton());
 

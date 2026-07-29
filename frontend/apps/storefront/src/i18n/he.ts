@@ -99,10 +99,20 @@ export const he = {
       // One string for both 503 codes — SMS_NOT_CONFIGURED and SMS_UNAVAILABLE.
       smsUnavailable:
         "אימות הטלפון אינו זמין כרגע, ולכן אי אפשר להשלים כאן את קביעת התור. נשמח שתתקשרי אלינו ונקבע יחד מועד.",
-      // A 429 on /otp/send only. The wait is about an hour, so it offers the
-      // phone rather than a retry — which is what tooManyAttempts would say.
+      // A spent /otp/send budget. The wait is real, so it offers the phone
+      // rather than a retry — which is what tooManyAttempts would say.
+      //
+      // Attributes NOTHING. OtpService raises OtpThrottledError only on the
+      // per-TENANT ceiling and answers a spent personal budget with a silent
+      // 204, so "you asked for several codes" accused a bride who asked for one
+      // on a busy boutique — while the bride who really spent hers saw "code
+      // sent" four more times, falsely. One string covers both faces honestly.
       otpSendBudget:
-        "ביקשת כמה קודים בזמן קצר. אפשר לנסות שוב עוד כשעה, ואפשר פשוט להתקשר אלינו ונקבע יחד מועד.",
+        "אימות הטלפון עמוס כרגע. אפשר לנסות שוב בעוד זמן מה, ואפשר פשוט להתקשר אלינו ונקבע יחד מועד.",
+      // A 429 on POST /bookings. Its own key, not tooManyAttempts: the window
+      // is about an hour, so "try again in a moment" would be a lie.
+      bookingBudget:
+        "ניסית לקבוע כמה תורים בזמן קצר. אפשר לנסות שוב עוד כשעה, ואפשר פשוט להתקשר אלינו ונקבע יחד מועד.",
     },
 
     gallery: {

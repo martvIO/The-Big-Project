@@ -112,6 +112,18 @@ function jerusalemTime(instant: string): string {
 // code's own 300-second life. Renders as a label swap, never as a ticking value.
 const OTP_RESEND_COOLDOWN_MS = 60_000;
 
+// Mirrors otp_send_max_per_phone_window (Backend/app/core/config.py). The server
+// answers a spent PERSONAL budget with the same silent 204 as a real send —
+// deliberately, so the endpoint cannot be used as an oracle for "is this number
+// mid-booking here" — which means past this count every press would be a "code
+// sent" that is simply false. Counted here so the exit is honest instead.
+//
+// ponytail: one counter for the session, not one per number. A bride who
+// mistypes four different numbers before getting it right is over-counted; the
+// only cost is that her sixth send offers the phone, which is never a wrong
+// answer. Per-phone counting is a Record away if it ever bites.
+const OTP_SEND_BUDGET = 5;
+
 // The confirmation renders the instant in the BOUTIQUE's zone: a bride whose
 // phone clock the airline changed must still read the boutique's time.
 // hoursText.ts's ban on locale formatting does not reach this — its stated
@@ -297,6 +309,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
   // Bearer material, single-use, 600s TTL — memory only. Device storage is
   // banned outright here, and the TTL could not survive a reload anyway.
   const [token, setToken] = useState<string | null>(null);
+  const [sends, setSends] = useState(0);
   const [cooling, setCooling] = useState(false);
   const [sending, setSending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -564,10 +577,19 @@ export function BookPage({ step, dressId }: BookPageProps) {
       return;
     }
     setPhoneError(undefined);
+    // Her own budget is spent, and the server would say so by saying nothing.
+    // The same exit the tenant ceiling takes, for the same reason: the wait is
+    // long enough that a retry is not an answer.
+    if (sends >= OTP_SEND_BUDGET) {
+      setDeadEnd("errors.otpSendBudget");
+      pendingFocus.current = "deadEnd";
+      return;
+    }
     setStepAlert(null);
     setSending(true);
     try {
       await api.sendOtp(normalizedPhone);
+      setSends((n) => n + 1);
       setCodeSentFor(normalizedPhone);
       setCode("");
       setCodeError(undefined);
@@ -576,12 +598,25 @@ export function BookPage({ step, dressId }: BookPageProps) {
       pendingFocus.current = "code";
     } catch (error: unknown) {
       const key = errorMessageKey(error);
-      // The discriminator is the CALL SITE, never the code: this budget is 5 per
+      // The discriminator is the CALL SITE, never the code: this budget is per
       // HOUR, so errors.tooManyAttempts ("try again in a moment") would be a lie
       // that makes her hammer the same 429.
-      if (key === "errors.tooManyAttempts" || key === "errors.smsUnavailable") {
-        setDeadEnd(key === "errors.tooManyAttempts" ? "errors.otpSendBudget" : key);
+      if (key === "errors.tooManyAttempts") {
+        setDeadEnd("errors.otpSendBudget");
         pendingFocus.current = "deadEnd";
+      } else if (key === "errors.smsUnavailable") {
+        // One STRING for both 503 codes (rule 10 — which of the two fired is
+        // the boutique's problem, not hers), two SHAPES. SMS_UNAVAILABLE is a
+        // single failed provider send and transient by nature, and the dead end
+        // is never cleared while BookPage stays mounted — so one blip used to
+        // end the session permanently. SMS_NOT_CONFIGURED is known at boot and
+        // really is permanent, and keeps the dead end.
+        if (error instanceof ApiError && error.code === "SMS_UNAVAILABLE") {
+          setStepAlert({ key, contact: true });
+        } else {
+          setDeadEnd(key);
+          pendingFocus.current = "deadEnd";
+        }
       } else {
         unknownFailure();
       }
@@ -771,6 +806,12 @@ export function BookPage({ step, dressId }: BookPageProps) {
         await recoverTerms();
       } else if (key === "errors.notFound") {
         await probeNotFound(binding.dress_id, () => book(NO_BINDING));
+      } else if (key === "errors.tooManyAttempts") {
+        // The create budget's window is about an hour, so R13's "try again"
+        // would put her on a button that cannot work for that long. Its own
+        // key, with a phone number under it — the same shape send() gives its
+        // own 429, and for the same reason.
+        setStepAlert({ key: "errors.bookingBudget", contact: true });
       } else if (key === "errors.validation") {
         // A 400 here is a FORM problem — in practice a control character the
         // client mirror missed. R13's catch-all is the wrong home for it: the
