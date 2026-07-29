@@ -1,9 +1,9 @@
 # Epic: E3 — Booking Engine & SMS Lifecycle
 
 **Created**: 2026-07-21 (rev 2 — post verification pass)
-**Status**: in progress — #11, #12 and #13 are merged (PRs #16, #17, #18), so the backend half of the epic is done: a verified phone can claim a real slot, oversell-proof, and the public grid reports true availability. #14 (UI), #15 (owner management) and #16 (comms lifecycle) remain, and all three are now unblocked.
+**Status**: in progress — #11, #12 and #13 are merged (PRs #16, #17, #18), so the booking *engine* is done: a verified phone can claim a real slot, oversell-proof, and the public grid reports true availability. One backend gap blocks **#14** and it carries it — `GET /storefront/terms`, the public read an anonymous customer needs before she can send a `terms_version` at all, which is what moved #14 from M to L. (#15 and #16 carry substantial backend work of their own — see their briefs.) #14 (UI), #15 (owner management) and #16 (comms lifecycle) remain, and all three are now unblocked. **#14 passed Gate 1 on 2026-07-29** — its seven open questions are answered as D1–D7 in the spec, plus D8–D9 confirmed with the user post-gate and D10–D12 recording choices the shipped code had already forced; a design gate (`.planning/design/screens/booking/`) and an implementation plan are the next two steps before build.
 
-**A booking currently sends nothing.** #13 shipped the row; every SMS lives in #16. That ordering is deliberate and recorded in the F13 spec — nothing links to the endpoint until #14 — but it is the standing reason #16 should not slip behind #15.
+**A booking currently sends nothing.** #13 shipped the row; every SMS lives in #16. That ordering was harmless only while nothing linked to the endpoint — **#14 ends that**: the moment it merges, a real customer completes a booking and hears silence. It is why #14's D6 makes the confirmation screen carry the whole promise (and say nothing about a text that will not arrive), and why #16 must not slip behind #15. One string on that screen changes when #16 lands.
 
 External lead-time items that gate E3 remain user-owned: Israeli SMS sender-ID registration (#11) and the Grow merchant account (E4 #17).
 **Owner**: team
@@ -32,7 +32,7 @@ This is the product's transactional core: turn the browse-only storefront into a
 | 11 | SMS foundation | **done** (PR #16) | [spec](../specs/sms-foundation.md) | [plan](../plans/sms-foundation.md) | E1 #2, #3 |
 | 12 | Availability & slot engine | **done** (PR #17) | [spec](../specs/availability-slot-engine.md) | [plan](../plans/availability-slot-engine.md) | E2 #7 |
 | 13 | Booking core API | **done** (PR #18) | [spec](../specs/booking-core.md) | [plan](../plans/booking-core.md) | E2 #7, #11, #12 |
-| 14 | Storefront booking UI | todo | — | — | E2 #10, #13 |
+| 14 | Storefront booking UI | Gate 1 approved — design gate + plan outstanding | [spec](../specs/storefront-booking-ui.md) | — | E2 #9, #10 · #11, #12, #13 |
 | 15 | Owner booking management | todo | — | — | #13 |
 | 16 | Booking comms lifecycle | todo | — | — | #13 |
 
@@ -49,8 +49,8 @@ Materialize bookable slots from `availability_rules` + exceptions + appointment-
 ### Feature 13: Booking core API (L)
 Backend only (UI is Feature 14). Both PRD paths: item-based (binds dress ID/name/size/image snapshot) and generic. **Customer record created/attached by (tenant, phone) only after OTP verification proves possession of the number.** Forced terms acceptance captures `terms_version_accepted` + timestamp. Concurrency safety: conditional slot update + partial unique index on active bookings per slot. Statuses: confirmed/cancelled/no_show/completed plus `attendance_confirmed_at` (set by the reminder link's confirm action); `pending_payment` added by E4.
 
-### Feature 14: Storefront booking UI (M)
-The customer-facing flow for both paths on the storefront: slot picker, details + OTP verification step, terms checkbox, confirmation screen. Luxury RTL per the Feature 9 system. When E4 lands, the deposit redirect inserts between OTP and confirmation without UI restructuring.
+### Feature 14: Storefront booking UI (L — revised up from M at Gate 1)
+The customer-facing flow for both paths on the storefront. **Gate 1 (2026-07-29) settled its shape**: a `/book` **route** (not a modal behind the shipped CTA), stepped slot → details → terms → **OTP last** so the 600-second verification token cannot expire mid-policy, then the confirmation screen. It also carries a backend amendment — `GET /storefront/terms`, because `POST /storefront/bookings` requires a `terms_version` an anonymous bride has no public way to learn — which is what moved the estimate M → L. Luxury RTL per the Feature 9 system. Deposit-required appointment types show but book by phone until E4; when E4 lands, the deposit redirect inserts between OTP and confirmation without UI restructuring.
 
 ### Feature 15: Owner booking management (M)
 `apps/manage` booking list + day filter (calendar visualization deferred to E10 — the list covers the operational need at pilot volume). Status transitions with audit log; booking detail incl. dress snapshot and accepted-terms version. **Owner reschedule: move a booking to a new slot — deposit (once E4 exists) carries over, no re-payment round-trip.** Remedy path: edit customer phone (re-verify or owner-attested) + resend confirmation/token SMS. No real-time board — refresh/poll acceptable until E6.

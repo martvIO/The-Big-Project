@@ -44,7 +44,7 @@ Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutiq
 | 11 | SMS foundation (provider, NotificationService, message_log, OTP send/verify primitive) | E3 | 2, 3 | M |
 | 12 | Availability & slot engine (rules → materialized slots, Israeli week) | E3 | 7 | M |
 | 13 | Booking core API (dual-path model, **OTP-verified customer phone**, terms acceptance, concurrency-safe claiming, attendance-confirmed field) | E3 | 7, 11, 12 | L |
-| 14 | Storefront booking UI (both paths, incl. OTP step) | E3 | 10, 13 | M |
+| 14 | Storefront booking UI (both paths, incl. OTP step; **carries `GET /storefront/terms`** — the public read an anonymous customer needs before she can send a `terms_version`) | E3 | 9, 10, 11, 12, 13 | L |
 | 15 | Owner booking management (list + day filter, status transitions, **owner reschedule**, edit-phone + resend-link remedy) | E3 | 13 | M |
 | 16 | Booking comms lifecycle (confirmation SMS **with manage/cancel link**, owner-change/reschedule notifications, 24h reminder worker, tokenized confirm/cancel page) | E3 | 13 | M |
 | 17 | Gateway credential management (per-tenant Grow creds, KMS-encrypted, validation ping, **receipt auto-issuance verified**) | E4 | 2, 7 | S |
