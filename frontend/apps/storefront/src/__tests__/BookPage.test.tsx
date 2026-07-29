@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { themeTokens } from "@boutique/ui";
 import type {
   AppointmentTypeRow,
+  BookingCreateResponse,
   BoutiqueResponse,
   StorefrontDetail,
   StorefrontTerms,
@@ -27,6 +28,8 @@ vi.mock("../api", async () => {
       listAppointmentTypes: vi.fn(),
       listSlots: vi.fn(),
       getDress: vi.fn(),
+      sendOtp: vi.fn(),
+      verifyOtp: vi.fn(),
       createBooking: vi.fn(),
     },
     getBoutiqueOnce: vi.fn(),
@@ -38,6 +41,8 @@ const getTerms = vi.mocked(api.getTerms);
 const listTypes = vi.mocked(api.listAppointmentTypes);
 const listSlots = vi.mocked(api.listSlots);
 const getDress = vi.mocked(api.getDress);
+const sendOtp = vi.mocked(api.sendOtp);
+const verifyOtp = vi.mocked(api.verifyOtp);
 const createBooking = vi.mocked(api.createBooking);
 const loadBoutique = vi.mocked(getBoutiqueOnce);
 
@@ -51,6 +56,9 @@ const TERMS: StorefrontTerms = {
 const DOWN = new ApiError(503, "UNKNOWN", "backend down");
 const THROTTLED = new ApiError(429, "TOO_MANY_ATTEMPTS", "Too many attempts. Try again later.");
 const GONE = new ApiError(404, "NOT_FOUND", "Resource not found.");
+const OTP_WRONG = new ApiError(400, "OTP_INVALID", "Invalid code.");
+const OTP_STALE = new ApiError(400, "OTP_EXPIRED", "Code expired.");
+const TOKEN_DEAD = new ApiError(403, "PHONE_NOT_VERIFIED", "Phone not verified.");
 
 function boutique(overrides: Partial<BoutiqueResponse> = {}): BoutiqueResponse {
   return {
@@ -106,10 +114,36 @@ const AUG5_0000 = "2026-08-04T21:00:00Z";
 
 const SLOTS = [AUG4_1000, AUG4_1045, AUG5_1000];
 
+// The number she types, and the one shape all three phone-carrying calls must
+// agree on. A client that normalised differently across /otp/send, /otp/verify
+// and /bookings answers PHONE_NOT_VERIFIED for a correct code.
+const TYPED_PHONE = "050-123 4567";
+const WIRE_PHONE = "+972501234567";
+
+function booking(overrides: Partial<BookingCreateResponse> = {}): BookingCreateResponse {
+  return {
+    id: "b1",
+    starts_at: AUG4_1000,
+    status: "confirmed",
+    appointment_type_name: "מדידה ראשונה",
+    dress_name: null,
+    dress_size: null,
+    ...overrides,
+  };
+}
+
 function pending<T>(): Promise<T> {
   return new Promise<T>(() => {
     // never settles — holds the step in its loading state
   });
+}
+
+function deferred<T>(): { promise: Promise<T>; settle: (value: T) => void } {
+  let settle!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    settle = resolve;
+  });
+  return { promise, settle };
 }
 
 function renderBook(step: Parameters<typeof BookPage>[0]["step"] = "slot", dressId?: string) {
@@ -162,12 +196,48 @@ async function walkToDetails(dressId?: string) {
 async function walkToTerms(dressId?: string) {
   const result = await walkToDetails(dressId);
   fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+  fireEvent.change(screen.getByLabelText(i18n.t("booking.notes")), {
+    target: { value: "מגיעה עם אמא" },
+  });
   if (dressId !== undefined) {
     const size = screen.queryByRole("radio", { name: /^36/ });
     if (size !== null) fireEvent.click(size);
   }
   fireEvent.click(forward());
   return result;
+}
+
+async function walkToVerify(dressId?: string) {
+  const result = await walkToTerms(dressId);
+  fireEvent.click(screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") }));
+  fireEvent.click(forward());
+  return result;
+}
+
+function resend() {
+  return screen.getByRole("button", { name: i18n.t("booking.otpResend") });
+}
+
+// The same control under either of its two labels — after a send it is cooling,
+// and the wait sentence has replaced the send one.
+function resendControl() {
+  return screen.getByRole("button", {
+    name: new RegExp(`${i18n.t("booking.otpResend")}|${i18n.t("booking.otpResendWait")}`),
+  });
+}
+
+function submitButton() {
+  return screen.getByRole("button", { name: i18n.t("booking.submit") });
+}
+
+async function sendCode(phone = TYPED_PHONE) {
+  fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), { target: { value: phone } });
+  fireEvent.click(resend());
+  return screen.findByLabelText(i18n.t("booking.otpCode"));
+}
+
+function enterCode(value = "123456") {
+  fireEvent.change(screen.getByLabelText(i18n.t("booking.otpCode")), { target: { value } });
 }
 
 beforeEach(() => {
@@ -177,6 +247,12 @@ beforeEach(() => {
   listTypes.mockResolvedValue([appointmentType()]);
   listSlots.mockResolvedValue({ slots: SLOTS.map((starts_at) => ({ starts_at })) });
   getDress.mockResolvedValue(dressDetail());
+  sendOtp.mockResolvedValue(undefined);
+  verifyOtp.mockResolvedValue({
+    verification_token: "vt-1",
+    expires_at: "2026-08-04T07:10:00Z",
+  });
+  createBooking.mockResolvedValue(booking());
   window.history.replaceState(null, "", "/book/slot");
 });
 
@@ -190,7 +266,9 @@ describe("BookPage shell", () => {
     ["details", "booking.stepDetails"],
     ["terms", "booking.stepTerms"],
     ["verify", "booking.stepOtp"],
-    ["confirm", "booking.confirmTitle"],
+    // R14: rendered cold, confirm has no 201 to show and may not claim one, so
+    // its heading is the flow's own name rather than "the appointment is booked".
+    ["confirm", "document.book"],
   ] as const)("titles the %s step with its own h1", (step, key) => {
     renderBook(step);
 
@@ -443,7 +521,10 @@ describe("BookPage slot step — states", () => {
     // R30: aria-busy on a plain div is announced by neither VoiceOver nor NVDA,
     // so a bride on a slow connection heard the h1, then silence.
     const status = screen.getByRole("status");
-    expect(status).toHaveTextContent(i18n.t("catalog.loading"));
+    // …and it names what is loading: catalog.loading says "the collection" on a
+    // screen that loads times.
+    expect(status).toHaveTextContent(i18n.t("booking.loading"));
+    expect(status).not.toHaveTextContent(i18n.t("catalog.loading"));
     expect(status.closest(".sr-only")).not.toBeNull();
     expect(container.querySelectorAll(".animate-skeleton").length).toBeGreaterThan(0);
     // Nothing to advance to yet.
@@ -1042,5 +1123,473 @@ describe("BookPage — step guards and the back control", () => {
 
     expect(window.location.pathname).toBe("/book/slot");
     expect(screen.getByRole("radio", { name: "10:00" })).toBeChecked();
+  });
+});
+
+describe("BookPage verify step — one screen that grows", () => {
+  it("opens on the phone alone, as an LTR island with no placeholder", async () => {
+    await walkToVerify();
+
+    const phone = screen.getByLabelText(i18n.t("booking.phone"));
+    // The label stays in the RTL flow; only the field's CONTENT direction flips,
+    // so the caret rests at the physical left of the box and the value grows
+    // rightwards. A Hebrew placeholder inside it would read backwards.
+    expect(phone).toHaveAttribute("dir", "ltr");
+    expect(phone).toHaveAttribute("inputMode", "tel");
+    expect(phone).toHaveAttribute("autoComplete", "tel");
+    expect(phone).not.toHaveAttribute("placeholder");
+    expect(phone).toHaveAccessibleDescription(new RegExp(i18n.t("booking.phoneHint")));
+    expect(screen.queryByLabelText(i18n.t("booking.otpCode"))).toBeNull();
+    expect(resend()).toBeEnabled();
+  });
+
+  it("refuses a number that is not an Israeli mobile, with no request issued", async () => {
+    await walkToVerify();
+
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: "0212345" },
+    });
+    fireEvent.click(resend());
+
+    expect(screen.getByText(i18n.t("booking.phoneInvalid"))).toHaveAttribute("role", "alert");
+    expect(sendOtp).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(screen.getByLabelText(i18n.t("booking.phone")));
+  });
+
+  it("appends the code field below the phone, which never leaves the screen", async () => {
+    await walkToVerify();
+
+    const code = await sendCode();
+
+    expect(sendOtp).toHaveBeenCalledWith(WIRE_PHONE);
+    // A mistyped number is the commonest OTP failure, and she can only SEE it if
+    // the number is still on screen — so the form grows, it never swaps.
+    expect(screen.getByLabelText(i18n.t("booking.phone"))).toHaveValue(TYPED_PHONE);
+    expect(document.activeElement).toBe(code);
+    // R16: otpSent is the field's help text, spoken once by aria-describedby as
+    // focus arrives. A live region here would double-announce it.
+    expect(code).toHaveAccessibleDescription(new RegExp(i18n.t("booking.otpSent")));
+    expect(screen.queryByText(i18n.t("booking.otpSent"))).not.toHaveAttribute("role", "status");
+  });
+
+  it("keeps the code in ONE field — no six-box widget at any width", async () => {
+    await walkToVerify();
+
+    const code = await sendCode();
+
+    expect(code).toHaveAttribute("dir", "ltr");
+    expect(code).toHaveAttribute("inputMode", "numeric");
+    expect(code).toHaveAttribute("autoComplete", "one-time-code");
+    expect(code).toHaveAttribute("maxLength", "6");
+    // autocomplete="one-time-code" fills a SINGLE field; against split fields
+    // several browsers drop the whole code into box 1 and stop.
+    expect(screen.getAllByRole("textbox")).toHaveLength(2);
+  });
+
+  it("filters the code to six digits", async () => {
+    await walkToVerify();
+
+    const code = await sendCode();
+    fireEvent.change(code, { target: { value: "12 34-56789" } });
+
+    expect(code).toHaveValue("123456");
+  });
+
+  it("collapses the code field when she edits the number it was minted for", async () => {
+    await walkToVerify();
+
+    await sendCode();
+    enterCode();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: "0509999999" },
+    });
+
+    // A code minted for number A cannot verify number B, and submitting it would
+    // spend a verify budget to learn nothing.
+    expect(screen.queryByLabelText(i18n.t("booking.otpCode"))).toBeNull();
+    // The cooldown survives the collapse: it is a property of the last send, not
+    // of the sub-state.
+    expect(resendControl()).toBeDisabled();
+  });
+
+  it("swaps the resend label for a wait sentence that carries no number", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await walkToVerify();
+      await sendCode();
+
+      const waiting = screen.getByRole("button", { name: i18n.t("booking.otpResendWait") });
+      // R3: no ticking value, so the label itself has to be the explanation —
+      // `disabled` drops the control from the tab order, which makes any
+      // aria-describedby on it inert.
+      expect(waiting).toBeDisabled();
+      expect(waiting.textContent).not.toMatch(/\d/);
+      expect(screen.queryByRole("timer")).toBeNull();
+
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+
+      expect(resend()).toBeEnabled();
+      // The one discrete event in the cooldown: the button becoming available.
+      expect(screen.getByRole("status")).toHaveTextContent(i18n.t("booking.otpResend"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("BookPage verify step — the dead ends", () => {
+  it("replaces the form with the send-budget block on a 429", async () => {
+    sendOtp.mockRejectedValue(THROTTLED);
+
+    await walkToVerify();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: TYPED_PHONE },
+    });
+    fireEvent.click(resend());
+
+    const block = await screen.findByText(i18n.t("errors.otpSendBudget"));
+    // The /otp/send budget is 5 per HOUR, so errors.tooManyAttempts ("try again
+    // in a moment") would be a lie that makes her hammer the same 429.
+    expect(screen.queryByText(i18n.t("errors.tooManyAttempts"))).toBeNull();
+    expect(screen.queryByLabelText(i18n.t("booking.phone"))).toBeNull();
+    expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+    // Reached BY a focus move, so it is deliberately not an assertive region.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(document.activeElement).toBe(block.closest("[tabindex]"));
+    // The h1 and the way back both stay: she is not trapped.
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(i18n.t("booking.stepOtp"));
+    expect(screen.getByRole("link", { name: i18n.t("booking.backStep") })).toBeInTheDocument();
+  });
+
+  it.each(["SMS_NOT_CONFIGURED", "SMS_UNAVAILABLE"])(
+    "replaces the form with the phone-only exit on %s",
+    async (code) => {
+      sendOtp.mockRejectedValue(new ApiError(503, code, "sms down"));
+
+      await walkToVerify();
+      fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+        target: { value: TYPED_PHONE },
+      });
+      fireEvent.click(resend());
+
+      // To the visitor "misconfigured" and "provider down" are the same dead end.
+      expect(await screen.findByText(i18n.t("errors.smsUnavailable"))).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+      expect(screen.queryByLabelText(i18n.t("booking.phone"))).toBeNull();
+    },
+  );
+
+  it("degrades the dead end to plain copy when the boutique fetch failed", async () => {
+    loadBoutique.mockRejectedValue(DOWN);
+    sendOtp.mockRejectedValue(new ApiError(503, "SMS_UNAVAILABLE", "sms down"));
+
+    await walkToVerify();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: TYPED_PHONE },
+    });
+    fireEvent.click(resend());
+
+    // The worst cell in the flow: no way forward AND no contactable exit. It at
+    // least says so rather than rendering an empty panel.
+    expect(await screen.findByText(i18n.t("errors.smsUnavailable"))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("booking.contactUnavailable"))).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: i18n.t("contact.call") })).toBeNull();
+  });
+});
+
+describe("BookPage verify step — submit", () => {
+  it("verifies, books and lands on the confirmation", async () => {
+    await walkToVerify();
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/confirm");
+    });
+    // ONE normalisation, three calls. Any divergence between them answers
+    // PHONE_NOT_VERIFIED for a correct code.
+    expect(verifyOtp).toHaveBeenCalledWith(WIRE_PHONE, "123456");
+    expect(createBooking).toHaveBeenCalledWith({
+      phone: WIRE_PHONE,
+      verification_token: "vt-1",
+      name: "נועה",
+      appointment_type_id: "t1",
+      starts_at: AUG4_1000,
+      terms_version: 3,
+      dress_id: null,
+      dress_size: null,
+      notes: "מגיעה עם אמא",
+    });
+  });
+
+  it("sends the bound dress and its size as the pair the backend requires", async () => {
+    createBooking.mockResolvedValue(booking({ dress_name: "שמלת אלמה", dress_size: "36" }));
+
+    await walkToVerify("d1");
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/confirm/d1");
+    });
+    expect(createBooking).toHaveBeenCalledWith(
+      expect.objectContaining({ dress_id: "d1", dress_size: "36" }),
+    );
+  });
+
+  it("submits once for a double tap and keeps the button's own label", async () => {
+    const gate = deferred<BookingCreateResponse>();
+    createBooking.mockReturnValue(gate.promise);
+
+    await walkToVerify();
+    await sendCode();
+    enterCode();
+    const submit = submitButton();
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(submit).toHaveAttribute("aria-busy", "true");
+    });
+    // React commits `disabled` asynchronously, so the handler's own guard is the
+    // layer that catches a fast double tap on iOS.
+    expect(verifyOtp).toHaveBeenCalledTimes(1);
+    expect(createBooking).toHaveBeenCalledTimes(1);
+    // F-C6: swapping children to booking.submitting re-sizes the invisible label
+    // and the width jumps — the one thing the loading variant exists to prevent.
+    expect(submit).toHaveTextContent(i18n.t("booking.submit"));
+    expect(screen.getByRole("status")).toHaveTextContent(i18n.t("booking.submitting"));
+    // The fields stay typeable: the payload was captured at submit time.
+    expect(screen.getByLabelText(i18n.t("booking.phone"))).toBeEnabled();
+
+    gate.settle(booking());
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/confirm");
+    });
+  });
+
+  it("keeps a wrong code on screen, selected, with resend still reachable", async () => {
+    verifyOtp.mockRejectedValue(OTP_WRONG);
+
+    await walkToVerify();
+    await sendCode();
+    enterCode("111111");
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText(i18n.t("errors.otpInvalid"))).toHaveAttribute("role", "alert");
+    const code = screen.getByLabelText(i18n.t("booking.otpCode"));
+    // Clearing it destroys the evidence of what she typed.
+    expect(code).toHaveValue("111111");
+    expect(document.activeElement).toBe(code);
+    // A burnt code is indistinguishable from a wrong one, so the only working
+    // remedy must stay visible directly below the field.
+    expect(resendControl()).toBeInTheDocument();
+    expect(createBooking).not.toHaveBeenCalled();
+  });
+
+  it("names resend as the remedy for an expired code", async () => {
+    verifyOtp.mockRejectedValue(OTP_STALE);
+
+    await walkToVerify();
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+
+    // OTP_TTL_SECONDS is 300 and starts ticking at /otp/send — a bride who took
+    // six minutes to find her phone needs a resend, not a retype.
+    expect(await screen.findByText(i18n.t("errors.otpExpired"))).toBeInTheDocument();
+    expect(screen.getByLabelText(i18n.t("booking.otpCode"))).toHaveValue("123456");
+    expect(resendControl()).toBeInTheDocument();
+  });
+
+  it("leaves the whole form intact on a verify-face 429", async () => {
+    verifyOtp.mockRejectedValue(THROTTLED);
+
+    await walkToVerify();
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+
+    // 10 per 5 minutes — the window is short and self-clearing, so "try again in
+    // a moment" is true here and both controls stay enabled.
+    const alert = await screen.findByText(i18n.t("errors.tooManyAttempts"));
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(alert.className).toContain("text-ink-muted");
+    expect(screen.getByLabelText(i18n.t("booking.otpCode"))).toBeInTheDocument();
+    await waitFor(() => {
+      expect(submitButton()).toBeEnabled();
+    });
+    expect(screen.queryByRole("link", { name: i18n.t("contact.call") })).toBeNull();
+  });
+
+  it("collapses to the phone on PHONE_NOT_VERIFIED and keeps every answer", async () => {
+    createBooking.mockRejectedValue(TOKEN_DEAD);
+
+    await walkToVerify();
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+
+    const alert = await screen.findByText(i18n.t("errors.phoneNotVerified"));
+    expect(alert).toHaveAttribute("role", "alert");
+    // The token died; the code it minted is worthless, so it goes.
+    expect(screen.queryByLabelText(i18n.t("booking.otpCode"))).toBeNull();
+    const phone = screen.getByLabelText(i18n.t("booking.phone"));
+    expect(phone).toHaveValue(TYPED_PHONE);
+    await waitFor(() => {
+      expect(document.activeElement).toBe(phone);
+    });
+
+    // A restart of IDENTITY is not a restart of INTENT: re-typing 500 characters
+    // of "coming with my mother" to fix an OTP is the dead end this feature
+    // exists to remove. Consent included — the version did not change.
+    fireEvent.click(screen.getByRole("link", { name: i18n.t("booking.backStep") }));
+    expect(screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") })).toBeChecked();
+    fireEvent.click(screen.getByRole("link", { name: i18n.t("booking.backStep") }));
+    expect(screen.getByLabelText(i18n.t("booking.name"))).toHaveValue("נועה");
+    expect(screen.getByLabelText(i18n.t("booking.notes"))).toHaveValue("מגיעה עם אמא");
+    fireEvent.click(screen.getByRole("link", { name: i18n.t("booking.backStep") }));
+    expect(screen.getByRole("radio", { name: "10:00" })).toBeChecked();
+  });
+
+  it("R13 — re-enables submit over a contactable exit and retries on the live token", async () => {
+    createBooking.mockRejectedValueOnce(new ApiError(500, "UNKNOWN", "boom"));
+
+    await walkToVerify();
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+
+    // Without this row a bride who verified, accepted the policy and pressed
+    // commit gets a spinner that stops and no way to learn whether she is booked.
+    const alert = await screen.findByText(i18n.t("errors.unknown"));
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(alert.className).toContain("text-ink-muted");
+    expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(submitButton()).toBeEnabled();
+    });
+
+    // Retry is safe: create_booking rolls the whole transaction back, so the
+    // verification token survives and must NOT be re-minted.
+    fireEvent.click(submitButton());
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/confirm");
+    });
+    expect(verifyOtp).toHaveBeenCalledTimes(1);
+    expect(createBooking).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("BookPage confirmation", () => {
+  async function book(overrides: Partial<BookingCreateResponse> = {}, dressId?: string) {
+    createBooking.mockResolvedValue(booking(overrides));
+    const result = await walkToVerify(dressId);
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+    await screen.findByText(i18n.t("booking.confirmKeepScreen"));
+    return result;
+  }
+
+  it("states the appointment in full, in the boutique's zone", async () => {
+    await book();
+
+    expect(screen.getByText(i18n.t("booking.confirmWhen"))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("booking.confirmWhat"))).toBeInTheDocument();
+    // The suite's clock is America/New_York; 07:00Z is 03:00 there and 10:00 in
+    // Jerusalem. She must read the boutique's time, not her device's.
+    expect(screen.getByText(/יום שלישי/)).toBeInTheDocument();
+    const islands = screen.getAllByText(/^(4\.8\.2026|10:00)$/);
+    expect(islands).toHaveLength(2);
+    for (const island of islands) {
+      expect(island.tagName).toBe("BDI");
+      expect(island).toHaveAttribute("dir", "ltr");
+    }
+    expect(screen.getByText("מדידה ראשונה")).toBeInTheDocument();
+    // §7.3: status is server-constant on this path, so printing it invites the
+    // reader to wonder what the other values are.
+    expect(screen.queryByText(/confirmed/)).toBeNull();
+    // §7.5: the words and the stated facts are the success signal, not a colour.
+    expect(document.querySelector(".text-success, .bg-success")).toBeNull();
+  });
+
+  it("names the boutique in the title, falling back to the nameless one", async () => {
+    await book();
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      i18n.t("booking.confirmTitleNamed", { name: "בוטיק אלמה" }),
+    );
+  });
+
+  it("drops the name rather than printing the generic fallback on her only record", async () => {
+    loadBoutique.mockRejectedValue(DOWN);
+
+    await book();
+
+    const heading = screen.getByRole("heading", { level: 1 });
+    expect(heading).toHaveTextContent(i18n.t("booking.confirmTitle"));
+    expect(heading).not.toHaveTextContent(i18n.t("catalog.essenceFallback"));
+  });
+
+  it("prints the dress line on the item path and no empty row on the generic one", async () => {
+    await book({ dress_name: "שמלת אלמה", dress_size: "36" }, "d1");
+
+    expect(
+      screen.getByText(i18n.t("booking.confirmDress", { dress: "שמלת אלמה", size: "36" })),
+    ).toBeInTheDocument();
+  });
+
+  it("omits the dress line entirely when nothing is bound", async () => {
+    await book();
+
+    expect(screen.queryByText(/מידה/)).toBeNull();
+  });
+
+  it("renders the cold load as a short true statement, never a claim it cannot back", async () => {
+    renderFlow("/book/confirm");
+
+    // D6 tells her to screenshot, and on iOS a screenshot is an app-switch that
+    // can reload the tab — this branch is the one that instruction causes.
+    expect(await screen.findByText(i18n.t("booking.confirmCold"))).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/book/confirm");
+    // R14: no warm title over a booking it has no evidence for.
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(i18n.t("document.book"));
+    expect(screen.queryByText(i18n.t("booking.confirmTitle"))).toBeNull();
+    // F-C8: "keep this screen" above a screen holding no appointment instructs
+    // her to preserve an absence.
+    expect(screen.queryByText(i18n.t("booking.confirmKeepScreen"))).toBeNull();
+    expect(screen.queryByText(i18n.t("booking.confirmWhen"))).toBeNull();
+    expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: i18n.t("booking.backToCatalog") })).toHaveAttribute(
+      "href",
+      "/",
+    );
+  });
+
+  it("replaces the cold panel with plain copy when the boutique fetch failed", async () => {
+    loadBoutique.mockRejectedValue(DOWN);
+
+    renderFlow("/book/confirm");
+
+    expect(await screen.findByText(i18n.t("booking.confirmCold"))).toBeInTheDocument();
+    expect(screen.getByText(i18n.t("booking.contactUnavailable"))).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: i18n.t("contact.call") })).toBeNull();
+  });
+
+  it("forwards verify to confirm once the booking is written, never to slot", async () => {
+    await book();
+
+    window.history.replaceState(null, "", "/book/verify");
+    fireEvent.popState(window);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/confirm");
+    });
+    expect(screen.getByText(i18n.t("booking.confirmKeepScreen"))).toBeInTheDocument();
   });
 });

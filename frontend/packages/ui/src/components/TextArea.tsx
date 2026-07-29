@@ -46,7 +46,11 @@ export function TextArea({ label, error, help, showCount, className, value, maxL
       />
       {countId && (
         <span id={countId} className="text-xs text-ink-muted text-end">
-          {used} / {maxLength}
+          {/* A bare numeric run inside an RTL document reorders against the
+              neighbouring Hebrew without an isolate of its own. */}
+          <bdi dir="ltr">
+            {used} / {maxLength}
+          </bdi>
         </span>
       )}
       {error && (

@@ -37,6 +37,13 @@ describe("TextArea", () => {
     expect(screen.getByText("4 / 100")).toBeInTheDocument();
   });
 
+  it("isolates the counter as an LTR run — it is bare numerals in an RTL page", () => {
+    render(<TextArea label="תנאים" showCount maxLength={100} value="שלום" onChange={() => {}} />);
+    const counter = screen.getByText("4 / 100");
+    expect(counter.tagName).toBe("BDI");
+    expect(counter).toHaveAttribute("dir", "ltr");
+  });
+
   it("exposes the native textarea through ref", () => {
     const ref = createRef<HTMLTextAreaElement>();
     render(<TextArea label="הערות" ref={ref} />);

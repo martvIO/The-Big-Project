@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { FormEvent, Ref } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -12,9 +13,10 @@ import {
   cn,
   focusRing,
 } from "@boutique/ui";
-import { ApiError, api, errorMessageOr } from "../api";
+import { ApiError, api, errorMessageKey, errorMessageOr } from "../api";
 import type {
   AppointmentTypeRow,
+  BookingCreateResponse,
   SlotRow,
   StorefrontDetail,
   StorefrontTerms,
@@ -30,8 +32,10 @@ import type { BookStep } from "../router";
 import {
   MAX_BOOKING_NOTES_LENGTH,
   MAX_CUSTOMER_NAME_LENGTH,
+  normalizePhone,
   validateName,
   validateNotes,
+  validatePhone,
 } from "../validation";
 
 // The /book flow's shell plus its first step.
@@ -103,6 +107,26 @@ function jerusalemTime(instant: string): string {
   return `${parts.hour}:${parts.minute}`;
 }
 
+// Past the p95 of Israeli SMS delivery, and four resends still fit inside one
+// code's own 300-second life. Renders as a label swap, never as a ticking value.
+const OTP_RESEND_COOLDOWN_MS = 60_000;
+
+// The confirmation renders the instant in the BOUTIQUE's zone: a bride whose
+// phone clock the airline changed must still read the boutique's time.
+// hoursText.ts's ban on locale formatting does not reach this — its stated
+// reason is an implicit timezone, and this one is explicit and converts a UTC
+// instant that hand-rolling would get wrong.
+const CONFIRM_WEEKDAY = new Intl.DateTimeFormat("he-IL", {
+  timeZone: JERusalem,
+  weekday: "long",
+});
+const CONFIRM_DATE = new Intl.DateTimeFormat("he-IL", {
+  timeZone: JERusalem,
+  day: "numeric",
+  month: "numeric",
+  year: "numeric",
+});
+
 interface EntryData {
   // null = the boutique has published no policy — D5, the phone-only entry.
   terms: StorefrontTerms | null;
@@ -161,16 +185,33 @@ function Stepper({ step }: { step: BookStep }) {
 // takes. Under D12 the Card and panel are not rendered at all: ContactPanel
 // with no channels is a literally empty <div>, so the degrade has to be a
 // branch at the call site (AboutPage.tsx is the shipped precedent).
-function PhoneOnly({ messageKey }: { messageKey: string }) {
+//
+// `muted` is the split between the two voices: the entry degrades tell her to
+// do something, and the verify dead ends and the cold confirmation report a
+// state that is nobody's fault. Deliberately NO role="alert" in either: these
+// blocks are reached by a focus move, and the assertive region is reserved for
+// errors that appear without one.
+function PhoneOnly({
+  messageKey,
+  muted = false,
+  ref,
+}: {
+  messageKey: string;
+  muted?: boolean;
+  ref?: Ref<HTMLDivElement>;
+}) {
   const { t } = useTranslation();
-  const { boutique } = useBoutique();
+  const { boutique, loading } = useBoutique();
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* Ink, not ink-muted: this is an instruction she must act on, not an
-          outage report. */}
-      <p className="max-w-[60ch] text-base text-ink">{t(messageKey)}</p>
-      {boutique === null ? (
+    <div ref={ref} tabIndex={-1} className="flex flex-col gap-6">
+      <p className={cn("max-w-[60ch] text-base", muted ? "text-ink-muted" : "text-ink")}>
+        {t(messageKey)}
+      </p>
+      {/* Nothing while the boutique read is in flight: flashing "we could not
+          load the contact details" at a panel that is about to arrive is worse
+          than the small delay. */}
+      {loading ? null : boutique === null ? (
         <p className="max-w-[60ch] text-base text-ink-muted">{t("booking.contactUnavailable")}</p>
       ) : (
         <ContactCard boutique={boutique} />
@@ -236,12 +277,45 @@ export function BookPage({ step, dressId }: BookPageProps) {
   // sizes, and it can drop without stopping a booking.
   const [dress, setDress] = useState<StorefrontDetail | null>(null);
   const [dressGone, setDressGone] = useState(false);
+  const [phone, setPhone] = useState("");
+  const [code, setCode] = useState("");
+  // The normalized number the last code was minted for. The sub-state is
+  // DERIVED from it rather than stored, which buys the right behaviour for
+  // free: editing the number collapses the code field, because a code minted
+  // for number A cannot verify number B.
+  const [codeSentFor, setCodeSentFor] = useState<string | null>(null);
+  // Bearer material, single-use, 600s TTL — memory only. Device storage is
+  // banned outright here, and the TTL could not survive a reload anyway.
+  const [token, setToken] = useState<string | null>(null);
+  const [cooling, setCooling] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [phoneError, setPhoneError] = useState<string | undefined>(undefined);
+  const [codeError, setCodeError] = useState<string | undefined>(undefined);
+  // Above the Card, muted: a spent budget, a dead token and a carrier that lost
+  // an SMS are none of them her mistake. `contact` is R13's addition — a failure
+  // whose face can last an hour needs a phone number under it.
+  const [stepAlert, setStepAlert] = useState<{ key: string; contact: boolean } | null>(null);
+  // Replaces the whole form. The only two states with no way forward.
+  const [deadEnd, setDeadEnd] = useState<string | null>(null);
+  // The step's one authored polite region, written by exactly two discrete
+  // events: the cooldown ending and the submit starting.
+  const [polite, setPolite] = useState<string | null>(null);
+  const [booked, setBooked] = useState<BookingCreateResponse | null>(null);
   const typeRef = useRef<HTMLInputElement>(null);
   const timeRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const sizeRef = useRef<HTMLInputElement>(null);
   const notesRef = useRef<HTMLTextAreaElement>(null);
   const acceptRef = useRef<HTMLInputElement>(null);
+  const phoneRef = useRef<HTMLInputElement>(null);
+  const codeRef = useRef<HTMLInputElement>(null);
+  const deadEndRef = useRef<HTMLDivElement>(null);
+  // The three verify-step destinations name themselves before the render that
+  // creates them: the code field, the phone field after a collapse and the dead
+  // -end block are all mounted BY the state change that decides to focus them,
+  // so the move has to wait for the commit.
+  const pendingFocus = useRef<"phone" | "code" | "deadEnd" | null>(null);
 
   // All three fire on flow ENTRY, in parallel: a missing policy is an
   // entry-level decision (D5), and finding it out at the terms step would let
@@ -290,6 +364,35 @@ export function BookPage({ step, dressId }: BookPageProps) {
     };
   }, [dressId]);
 
+  useEffect(() => {
+    const target = pendingFocus.current;
+    if (target === null) return;
+    pendingFocus.current = null;
+    const node =
+      target === "phone"
+        ? phoneRef.current
+        : target === "code"
+          ? codeRef.current
+          : deadEndRef.current;
+    node?.focus();
+    // Selected, never cleared: clearing destroys the evidence of what she typed,
+    // and on OTP_EXPIRED the digits were probably right.
+    if (node instanceof HTMLInputElement) node.select();
+  });
+
+  useEffect(() => {
+    if (!cooling) return;
+    const timer = setTimeout(() => {
+      setCooling(false);
+      // Nothing announces on ENTRY into the cooldown — entry is a direct
+      // consequence of a button she just pressed.
+      setPolite("booking.otpResend");
+    }, OTP_RESEND_COOLDOWN_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [cooling]);
+
   const retry = () => {
     setEntryError(null);
     setEntry(null);
@@ -326,13 +429,24 @@ export function BookPage({ step, dressId }: BookPageProps) {
   const sizes = dress !== null && dress.sizes.length > 0 ? dress.sizes : null;
   const bindingLoading = dressId !== undefined && dress === null && !dressGone;
 
+  // Normalized ONCE, here, and this exact string is what /otp/send, /otp/verify
+  // and /bookings all carry. A client that normalises differently across the
+  // three answers PHONE_NOT_VERIFIED for a correct code.
+  const normalizedPhone = normalizePhone(phone);
+  const codeSent = codeSentFor !== null && codeSentFor === normalizedPhone;
+
   // D8: a later step entered with no picked slot has nothing to book. `confirm`
   // is exempt — the booking is already written, and there is no public endpoint
-  // to re-read it, so bouncing her to step one would lose the only record.
+  // to re-read it, so bouncing her to step one would lose the only record. And
+  // `verify` reached with a spent token but a written booking goes FORWARD.
   useEffect(() => {
+    if (step === "verify" && booked !== null) {
+      navigate(`/book/confirm${suffix}`);
+      return;
+    }
     if (step === "slot" || step === "confirm" || flow.startsAt !== null) return;
     navigate(`/book/slot${suffix}`);
-  }, [step, flow.startsAt, suffix]);
+  }, [step, flow.startsAt, suffix, booked]);
 
   const clearError = (field: keyof FieldErrors) => {
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
@@ -399,6 +513,138 @@ export function BookPage({ step, dressId }: BookPageProps) {
     navigate(`/book/verify${suffix}`);
   };
 
+  // Every failure that leaves her on this step with no way to learn whether she
+  // is booked ends here: the controls come back, and a phone number appears.
+  const unknownFailure = () => {
+    setStepAlert({ key: "errors.unknown", contact: true });
+  };
+
+  const send = async () => {
+    if (sending) return;
+    const invalid = validatePhone(phone);
+    if (invalid !== null) {
+      setPhoneError(invalid);
+      pendingFocus.current = "phone";
+      return;
+    }
+    setPhoneError(undefined);
+    setStepAlert(null);
+    setSending(true);
+    try {
+      await api.sendOtp(normalizedPhone);
+      setCodeSentFor(normalizedPhone);
+      setCode("");
+      setCodeError(undefined);
+      setToken(null);
+      setCooling(true);
+      pendingFocus.current = "code";
+    } catch (error: unknown) {
+      const key = errorMessageKey(error);
+      // The discriminator is the CALL SITE, never the code: this budget is 5 per
+      // HOUR, so errors.tooManyAttempts ("try again in a moment") would be a lie
+      // that makes her hammer the same 429.
+      if (key === "errors.tooManyAttempts" || key === "errors.smsUnavailable") {
+        setDeadEnd(key === "errors.tooManyAttempts" ? "errors.otpSendBudget" : key);
+        pendingFocus.current = "deadEnd";
+      } else {
+        unknownFailure();
+      }
+    }
+    setSending(false);
+  };
+
+  const submit = async () => {
+    // Required, not decorative: React commits `disabled` asynchronously, and a
+    // fast double-tap on iOS fires two clicks inside one frame.
+    if (submitting) return;
+    if (flow.typeId === null || flow.startsAt === null || acceptedVersion === null) return;
+    setSubmitting(true);
+    setStepAlert(null);
+    setCodeError(undefined);
+    setPolite("booking.submitting");
+
+    let current = token;
+    if (current === null) {
+      try {
+        const session = await api.verifyOtp(normalizedPhone, code);
+        current = session.verification_token;
+        setToken(current);
+      } catch (error: unknown) {
+        const key = errorMessageKey(error);
+        if (key === "errors.otpInvalid" || key === "errors.otpExpired") {
+          setCodeError(t(key));
+          pendingFocus.current = "code";
+        } else if (key === "errors.tooManyAttempts") {
+          // 10 per 5 minutes — short and self-clearing, so the form survives
+          // whole and both controls stay live.
+          setStepAlert({ key, contact: false });
+        } else {
+          unknownFailure();
+        }
+        setPolite(null);
+        setSubmitting(false);
+        return;
+      }
+    }
+
+    // A dress and its size are a PAIR at the boundary or neither is sent, so a
+    // dropped binding sends nothing rather than half of one.
+    const binding =
+      sizes !== null && size !== null && dressId !== undefined
+        ? { dress_id: dressId, dress_size: size }
+        : { dress_id: null, dress_size: null };
+    try {
+      const created = await api.createBooking({
+        phone: normalizedPhone,
+        verification_token: current,
+        name,
+        appointment_type_id: flow.typeId,
+        starts_at: flow.startsAt,
+        terms_version: acceptedVersion,
+        ...binding,
+        notes: notes === "" ? null : notes,
+      });
+      setBooked(created);
+      navigate(`/book/confirm${suffix}`);
+    } catch (error: unknown) {
+      if (errorMessageKey(error) === "errors.phoneNotVerified") {
+        // Collapse to sub-state A. The token is gone, so the code it minted is
+        // worthless — but nothing else she entered is touched, including the
+        // consent: a consent is a consent to a VERSION, and the version did not
+        // change.
+        setCodeSentFor(null);
+        setCode("");
+        setToken(null);
+        setStepAlert({ key: "errors.phoneNotVerified", contact: false });
+        pendingFocus.current = "phone";
+      } else {
+        // R13. Retry is genuinely safe — create_booking runs in one transaction
+        // and a failure at any step rolls the token burn back with it.
+        unknownFailure();
+      }
+      // Emptied so a second attempt is a change the region announces again.
+      setPolite(null);
+    }
+    setSubmitting(false);
+  };
+
+  const onVerifySubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void (codeSent ? submit() : send());
+  };
+
+  // R14: the cold branch has no 201 and no way to fetch one, so it may not
+  // assert a booking it cannot show. It takes the flow's own name — the R12
+  // precedent, and zero new keys. Warm, the boutique's name makes a screenshot
+  // self-explanatory three weeks later; without it the nameless title, never
+  // the generic "חנות הכלות" on her only record.
+  const confirmHeading =
+    booked === null
+      ? t("document.book")
+      : boutique === null
+        ? t("booking.confirmTitle")
+        : t("booking.confirmTitleNamed", { name: boutique.name });
+
   // No terms and no types are the two exits that replace the whole step: there
   // is no flow to be a step of, so no stepper and no forward control.
   const exitKey =
@@ -435,7 +681,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
           {exitKey !== null
             ? t("document.book")
             : step === "confirm"
-              ? t("booking.confirmTitle")
+              ? confirmHeading
               : t(STEP_LABEL_KEYS[step])}
         </h1>
         <span aria-hidden="true" className="h-px w-12 bg-gold" />
@@ -462,7 +708,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
             {/* aria-busy on a plain div is announced by neither VoiceOver nor
                 NVDA, so a slow connection was the h1, then silence. */}
             <VisuallyHidden>
-              <span role="status">{t("catalog.loading")}</span>
+              <span role="status">{t("booking.loading")}</span>
             </VisuallyHidden>
             <Skeleton variant="text" lines={1} />
             <Skeleton variant="text" lines={3} className="h-11" />
@@ -663,6 +909,199 @@ export function BookPage({ step, dressId }: BookPageProps) {
 
           <ForwardRow onClick={forwardTerms} />
         </>
+      )}
+
+      {step === "verify" &&
+        (deadEnd !== null ? (
+          <PhoneOnly messageKey={deadEnd} muted ref={deadEndRef} />
+        ) : (
+          <>
+            {stepAlert !== null && (
+              <div className="flex flex-col gap-4">
+                {/* Muted, not danger. The field-level errors are danger because
+                    the phone is the only thing here she can type wrong; a token
+                    that expired and a spent budget are not her mistake. */}
+                <p role="alert" className="max-w-[60ch] text-base text-ink-muted">
+                  {t(stepAlert.key)}
+                </p>
+                {stepAlert.contact &&
+                  (boutique === null ? (
+                    <p className="max-w-[60ch] text-base text-ink-muted">
+                      {t("booking.contactUnavailable")}
+                    </p>
+                  ) : (
+                    <ContactCard boutique={boutique} />
+                  ))}
+              </div>
+            )}
+
+            {/* A real form, so Enter in either field does the step's one forward
+                action once — and the handler's own guard covers key repeat. */}
+            <form onSubmit={onVerifySubmit}>
+              <Card className="flex flex-col gap-6">
+                <Input
+                  label={t("booking.phone")}
+                  help={t("booking.phoneHint")}
+                  type="tel"
+                  // The label and the box stay in the RTL flow; only the field's
+                  // CONTENT direction flips, so the caret rests at the physical
+                  // left of an empty box and the value grows rightwards.
+                  // text-align is left unset on purpose — `end` would park the
+                  // caret against the label and read deletion backwards.
+                  dir="ltr"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  value={phone}
+                  error={phoneError}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setPhone(next);
+                    setPhoneError(undefined);
+                    // Editing away from the number the code was minted for
+                    // collapses the field AND discards what it bought.
+                    if (normalizePhone(next) !== codeSentFor) {
+                      setCode("");
+                      setCodeError(undefined);
+                      setToken(null);
+                    }
+                  }}
+                  ref={phoneRef}
+                />
+
+                {codeSent && (
+                  <>
+                    <span aria-hidden="true" className="h-px bg-border" />
+                    {/* ONE field. Six boxes are six tab stops and six labels for
+                        one value, they need bespoke split-on-paste logic Safari
+                        breaks, autocomplete="one-time-code" fills a SINGLE
+                        field, and forwarding focus per keystroke steals it six
+                        times from a bride who is still typing. */}
+                    <Input
+                      label={t("booking.otpCode")}
+                      help={t("booking.otpSent")}
+                      dir="ltr"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      pattern="[0-9]*"
+                      className="max-w-[10ch]"
+                      value={code}
+                      error={codeError}
+                      onChange={(event) => {
+                        // Digits-only makes a short submit a deliberate act
+                        // rather than a stray space, in two lines instead of a
+                        // validator. No auto-submit on the sixth digit: it fires
+                        // on a paste of a WRONG code and spends a verify budget.
+                        setCode(event.target.value.replace(/\D/g, "").slice(0, 6));
+                        setCodeError(undefined);
+                      }}
+                      ref={codeRef}
+                    />
+                  </>
+                )}
+
+                {/* R27 puts the forward control at the inline-end from 768;
+                    row-reverse gets it there while the DOM keeps the primary
+                    action first, which is the order §6.3 stacks them in at 375. */}
+                <div className="flex flex-col gap-3 md:flex-row-reverse md:justify-start">
+                  {codeSent && (
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      size="lg"
+                      fullWidthMobile
+                      loading={submitting}
+                    >
+                      {t("booking.submit")}
+                    </Button>
+                  )}
+                  {/* One label for the first send and the resend: a screen
+                      reader arriving at an empty form must not hear a button
+                      offering to resend something that never happened. While
+                      cooling the label IS the explanation — `disabled` drops the
+                      control from the tab order, which makes any description on
+                      it inert. */}
+                  <Button
+                    type="button"
+                    variant={codeSent ? "secondary" : "primary"}
+                    size="md"
+                    fullWidthMobile
+                    loading={sending}
+                    disabled={cooling || submitting}
+                    onClick={() => {
+                      void send();
+                    }}
+                  >
+                    {t(cooling ? "booking.otpResendWait" : "booking.otpResend")}
+                  </Button>
+                </div>
+
+                <VisuallyHidden>
+                  <span role="status">{polite === null ? "" : t(polite)}</span>
+                </VisuallyHidden>
+              </Card>
+            </form>
+          </>
+        ))}
+
+      {step === "confirm" &&
+        (booked === null ? (
+          // Cold: a reload, or the app-switch a screenshot triggers on iOS.
+          // There is no public read-a-booking-by-id endpoint, so this states
+          // what it can and offers the phone — no Card, because the Card's job
+          // is to hold facts and with none it would frame an absence, and no
+          // confirmKeepScreen, because keeping a record this branch does not
+          // have is an instruction to preserve nothing.
+          <PhoneOnly messageKey="booking.confirmCold" muted />
+        ) : (
+          <>
+            <Card className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                {/* Labels, not sentences: interpolation cannot carry the <bdi>
+                    the numerals need, and a label/value pair survives being read
+                    back off a screenshot at 200% zoom. */}
+                <p className="text-sm font-semibold text-ink-muted">{t("booking.confirmWhen")}</p>
+                <p className="text-lg text-ink">
+                  {CONFIRM_WEEKDAY.format(new Date(booked.starts_at))},{" "}
+                  <bdi dir="ltr">{CONFIRM_DATE.format(new Date(booked.starts_at))}</bdi>{" "}
+                  <span aria-hidden="true">·</span>{" "}
+                  <bdi dir="ltr">{jerusalemTime(booked.starts_at)}</bdi>
+                </p>
+              </div>
+
+              <span aria-hidden="true" className="h-px bg-border" />
+
+              <div className="flex flex-col gap-1">
+                <p className="text-sm font-semibold text-ink-muted">{t("booking.confirmWhat")}</p>
+                {/* Owner-authored, so it may be Hebrew or Latin — a bare <bdi>
+                    isolates it either way. `status` is deliberately not printed:
+                    it is server-constant on this path. */}
+                <p className="text-lg text-ink">
+                  <bdi>{booked.appointment_type_name}</bdi>
+                </p>
+                {booked.dress_name !== null && booked.dress_size !== null && (
+                  <p className="text-base text-ink">
+                    {t("booking.confirmDress", {
+                      dress: booked.dress_name,
+                      size: booked.dress_size,
+                    })}
+                  </p>
+                )}
+              </div>
+            </Card>
+
+            {/* Outside the Card: an instruction ABOUT the record, not a fact IN
+                it — a screenshot cropped to the Card should carry only facts. */}
+            <p className="max-w-[60ch] text-base text-ink-muted">
+              {t("booking.confirmKeepScreen")}
+            </p>
+          </>
+        ))}
+
+      {step === "confirm" && (
+        <Link to="/" className={backLinkClass}>
+          <span aria-hidden="true">→</span> {t("booking.backToCatalog")}
+        </Link>
       )}
     </div>
   );

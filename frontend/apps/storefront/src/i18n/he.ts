@@ -146,6 +146,9 @@ export const he = {
       pickDate: "תאריך",
       pickTime: "שעה",
       forDress: "עבור {{dress}}",
+      // The VisuallyHidden role="status" while a step's reads are in flight.
+      // catalog.loading says "the collection" on a screen that loads times.
+      loading: "טוענות את המועדים",
       noSlots:
         "אין מועדים פנויים בתאריך הזה. אפשר לבחור תאריך אחר, ואפשר גם להתקשר ונמצא לך מועד.",
       slotsError: "לא הצלחנו לטעון את המועדים כרגע.",
