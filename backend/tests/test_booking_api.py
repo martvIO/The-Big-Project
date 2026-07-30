@@ -2,12 +2,19 @@
 hardcoded TenantContext, no database (test_notifications_api.py style). The
 db-marked service suite proves the claim; this file proves the HTTP contract —
 route posture (anonymous, tenant-required, cookie-blind, no-store, POST-only)
-and the exact error table from the F13 spec."""
+and the exact error table from the F13 spec.
+
+F16 adds one behaviour to this router that the wire cannot see: the confirmation
+SMS fires post-commit, exactly once, and ONLY when the claim actually created a
+booking. The 0009 replay path carries no raw token, so `test_a_replayed_create_*`
+below is what keeps "a replay must not resend" from silently regressing into a
+second text for the same appointment.
+"""
 
 import dataclasses
 import datetime
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +22,7 @@ from fastapi.testclient import TestClient
 from app.auth.dependencies import get_auth_service
 from app.auth.service import StaffContext
 from app.booking.service import (
+    BookingClaim,
     BookingNotFoundError,
     BookingThrottledError,
     PhoneNotVerifiedError,
@@ -23,6 +31,7 @@ from app.booking.service import (
 )
 from app.booking.validation import BookingValidationError
 from app.main import create_app
+from app.models.booking import Booking
 from app.models.constants import BookingStatus
 from app.security_headers import SECURITY_HEADERS
 from app.tenancy.middleware import TenantContext
@@ -62,19 +71,26 @@ class _Row:
     dress_size: str | None
 
 
+MANAGE_TOKEN = "manage-token-abc"
+
+
 class StubBookingService:
     """The router is a thin delegate, so the stub is programmable outcomes and
-    a call log — nothing else."""
+    a call log — nothing else.
 
-    def __init__(self) -> None:
+    `created` is programmable because the router branches on it: True is a fresh
+    claim (confirmation SMS), False is the 0009 replay (no token, no SMS)."""
+
+    def __init__(self, *, created: bool = True) -> None:
         self.error: Exception | None = None
+        self.created = created
         self.calls: list[dict[str, Any]] = []
 
-    async def create_booking(self, tenant_id: uuid.UUID, **kwargs: Any) -> _Row:
+    async def create_booking(self, tenant_id: uuid.UUID, **kwargs: Any) -> BookingClaim:
         if self.error is not None:
             raise self.error
         self.calls.append({"tenant_id": tenant_id, **kwargs})
-        return _Row(
+        row = _Row(
             id=BOOKING_ID,
             starts_at=kwargs["starts_at"],
             status=BookingStatus.CONFIRMED.value,
@@ -82,6 +98,24 @@ class StubBookingService:
             dress_name=None,
             dress_size=None,
         )
+        return BookingClaim(
+            booking=cast(Booking, row),
+            created=self.created,
+            manage_token=MANAGE_TOKEN if self.created else None,
+        )
+
+
+class StubCommsService:
+    """Records the confirmation sends the router fires post-commit. Never raises:
+    the real service swallows both provider exceptions after their evidence rows
+    exist, because a committed booking must stay a 201 (D4)."""
+
+    def __init__(self) -> None:
+        self.confirmations: list[tuple[uuid.UUID, str]] = []
+
+    async def send_confirmation(self, tenant: Any, *, booking: Any, manage_token: str) -> bool:
+        self.confirmations.append((booking.id, manage_token))
+        return True
 
 
 class FakeAuthService:
@@ -112,16 +146,25 @@ class FakeAuthService:
 def _client(
     stub: StubBookingService | None = None, *, host: str = "bella.localtest.me"
 ) -> tuple[TestClient, StubBookingService]:
+    client, service, _ = _client_with_comms(stub, host=host)
+    return client, service
+
+
+def _client_with_comms(
+    stub: StubBookingService | None = None, *, host: str = "bella.localtest.me"
+) -> tuple[TestClient, StubBookingService, StubCommsService]:
     async def _resolver(slug: str) -> TenantContext | None:
         return TENANT if slug == "bella" else None
 
     app = create_app(resolver=_resolver)
     service = stub if stub is not None else StubBookingService()
+    comms = StubCommsService()
     app.state.booking_service = service
+    app.state.booking_comms_service = comms
     auth = FakeAuthService()
     app.state.auth_service = auth
     app.dependency_overrides[get_auth_service] = lambda: auth
-    return TestClient(app, base_url=f"http://{host}"), service
+    return TestClient(app, base_url=f"http://{host}"), service, comms
 
 
 # --- the public contract: anonymous, tenant-required, cookie-blind, POST-only ---
@@ -247,3 +290,37 @@ def test_missing_body_is_a_schema_400() -> None:
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
     assert stub.calls == []
+
+
+# --- F16: the confirmation SMS is post-commit, once, and never on a replay ---
+
+
+def test_a_fresh_claim_fires_exactly_one_confirmation_with_the_raw_token() -> None:
+    client, _, comms = _client_with_comms()
+    with client:
+        resp = client.post(PATH, json=_body())
+    assert resp.status_code == 201
+    assert comms.confirmations == [(BOOKING_ID, MANAGE_TOKEN)]
+
+
+def test_a_replayed_create_sends_no_second_confirmation() -> None:
+    """0009's idempotency path returns the EXISTING booking, and the spent
+    verification token means a bride on a flaky network really does resubmit. A
+    second "your appointment is confirmed" for one appointment is the regression
+    this pins — and the router cannot cause it by accident, because a replay
+    carries no raw token to put in a link."""
+    client, _, comms = _client_with_comms(StubBookingService(created=False))
+    with client:
+        resp = client.post(PATH, json=_body())
+    assert resp.status_code == 201
+    assert comms.confirmations == []
+
+
+def test_a_rejected_claim_sends_nothing() -> None:
+    stub = StubBookingService()
+    stub.error = SlotUnavailableError()
+    client, _, comms = _client_with_comms(stub)
+    with client:
+        resp = client.post(PATH, json=_body())
+    assert resp.status_code == 409
+    assert comms.confirmations == []

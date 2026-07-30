@@ -194,15 +194,17 @@ async def test_generic_booking_happy_path(app_role_url: str) -> None:
     try:
         type_id = await _seed_boutique(factory, tenant_id)
         token = await _mint_verified_token(factory, tenant_id, phone)
-        booking = await _service(factory).create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=token,
-            name="  נועה לוי ",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-        )
+        booking = (
+            await _service(factory).create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=token,
+                name="  נועה לוי ",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+        ).booking
         assert booking.starts_at == SLOT
         assert booking.seat_index == 1
         assert booking.status == BookingStatus.CONFIRMED.value
@@ -247,18 +249,20 @@ async def test_item_booking_snapshots_survive_renames(app_role_url: str) -> None
                 sort_order=0,
             )
         token = await _mint_verified_token(factory, tenant_id, phone)
-        booking = await _service(factory).create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=token,
-            name="שירה",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-            dress_id=dress_id,
-            dress_size="  38 ",  # normalized before matching and snapshotting
-            notes="מגיעה עם אמא",
-        )
+        booking = (
+            await _service(factory).create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=token,
+                name="שירה",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+                dress_id=dress_id,
+                dress_size="  38 ",  # normalized before matching and snapshotting
+                notes="מגיעה עם אמא",
+            )
+        ).booking
         assert (booking.dress_id, booking.dress_name, booking.dress_size) == (
             dress_id,
             "Aurora",
@@ -293,15 +297,17 @@ async def test_two_racers_capacity_one_yield_exactly_one_booking(app_role_url: s
         async def race() -> Booking:
             phone = _phone()
             token = await _mint_verified_token(factory, tenant_id, phone)
-            return await service.create_booking(
-                tenant_id,
-                raw_phone=phone,
-                verification_token=token,
-                name="רייסר",
-                appointment_type_id=type_id,
-                starts_at=SLOT,
-                terms_version=1,
-            )
+            return (
+                await service.create_booking(
+                    tenant_id,
+                    raw_phone=phone,
+                    verification_token=token,
+                    name="רייסר",
+                    appointment_type_id=type_id,
+                    starts_at=SLOT,
+                    terms_version=1,
+                )
+            ).booking
 
         results = await asyncio.gather(race(), race(), return_exceptions=True)
         winners = [r for r in results if not isinstance(r, BaseException)]
@@ -322,15 +328,17 @@ async def test_five_racers_capacity_three_yield_three_distinct_seats(app_role_ur
         async def race() -> Booking:
             phone = _phone()
             token = await _mint_verified_token(factory, tenant_id, phone)
-            return await service.create_booking(
-                tenant_id,
-                raw_phone=phone,
-                verification_token=token,
-                name="רייסרית",
-                appointment_type_id=type_id,
-                starts_at=SLOT,
-                terms_version=1,
-            )
+            return (
+                await service.create_booking(
+                    tenant_id,
+                    raw_phone=phone,
+                    verification_token=token,
+                    name="רייסרית",
+                    appointment_type_id=type_id,
+                    starts_at=SLOT,
+                    terms_version=1,
+                )
+            ).booking
 
         results = await asyncio.gather(*(race() for _ in range(5)), return_exceptions=True)
         winners = [r for r in results if not isinstance(r, BaseException)]
@@ -355,15 +363,17 @@ async def test_cancellation_frees_the_seat_for_a_new_claim(app_role_url: str) ->
         service = _service(factory)
         first_phone = _phone()
         first_token = await _mint_verified_token(factory, tenant_id, first_phone)
-        first = await service.create_booking(
-            tenant_id,
-            raw_phone=first_phone,
-            verification_token=first_token,
-            name="ראשונה",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-        )
+        first = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=first_phone,
+                verification_token=first_token,
+                name="ראשונה",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+        ).booking
 
         # Full → a third party is refused.
         blocked_phone = _phone()
@@ -387,15 +397,17 @@ async def test_cancellation_frees_the_seat_for_a_new_claim(app_role_url: str) ->
 
         # …and the LOSER's token survived its lost claim (the burn rolled
         # back with the transaction), so the same token claims the freed seat.
-        reclaimed = await service.create_booking(
-            tenant_id,
-            raw_phone=blocked_phone,
-            verification_token=blocked_token,
-            name="חסומה",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-        )
+        reclaimed = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=blocked_phone,
+                verification_token=blocked_token,
+                name="חסומה",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+        ).booking
         assert reclaimed.seat_index == 1
         assert reclaimed.id != first.id
     finally:
@@ -415,26 +427,30 @@ async def test_an_identical_recreate_returns_the_first_booking(app_role_url: str
     try:
         type_id = await _seed_boutique(factory, tenant_id, capacity=2)
         service = _service(factory)
-        first = await service.create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=await _mint_verified_token(factory, tenant_id, phone),
-            name="נועה לוי",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-            notes="מגיעה עם אמא",
-        )
-        replay = await service.create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=await _mint_verified_token(factory, tenant_id, phone),
-            name="נועה לוי",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-            notes="שלחתי שוב",
-        )
+        first = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="נועה לוי",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+                notes="מגיעה עם אמא",
+            )
+        ).booking
+        replay = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="נועה לוי",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+                notes="שלחתי שוב",
+            )
+        ).booking
         assert replay.id == first.id
         assert replay.seat_index == first.seat_index
         # The row is returned, never rewritten from the replay's payload: the
@@ -465,15 +481,17 @@ async def test_two_simultaneous_identical_creates_yield_exactly_one_booking(
         service = _service(factory)
 
         async def race(token: str) -> Booking:
-            return await service.create_booking(
-                tenant_id,
-                raw_phone=phone,
-                verification_token=token,
-                name="נועה לוי",
-                appointment_type_id=type_id,
-                starts_at=SLOT,
-                terms_version=1,
-            )
+            return (
+                await service.create_booking(
+                    tenant_id,
+                    raw_phone=phone,
+                    verification_token=token,
+                    name="נועה לוי",
+                    appointment_type_id=type_id,
+                    starts_at=SLOT,
+                    terms_version=1,
+                )
+            ).booking
 
         first_token = await _mint_verified_token(factory, tenant_id, phone)
         second_token = await _mint_verified_token(factory, tenant_id, phone)
@@ -502,30 +520,34 @@ async def test_her_own_cancellation_lets_her_rebook_the_same_instant(app_role_ur
     try:
         type_id = await _seed_boutique(factory, tenant_id, capacity=1)
         service = _service(factory)
-        first = await service.create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=await _mint_verified_token(factory, tenant_id, phone),
-            name="נועה לוי",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-        )
+        first = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="נועה לוי",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+        ).booking
         async with tenant_session(factory, tenant_id) as session:
             row = await BookingsRepository().by_id(session, tenant_id, first.id)
             assert row is not None
             row.status = BookingStatus.CANCELLED.value
             await session.flush()
 
-        again = await service.create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=await _mint_verified_token(factory, tenant_id, phone),
-            name="נועה לוי",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-        )
+        again = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="נועה לוי",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+        ).booking
         assert again.id != first.id
         assert again.seat_index == 1
         assert again.status == BookingStatus.CONFIRMED.value
@@ -706,24 +728,28 @@ async def test_returning_customer_attaches_instead_of_duplicating(app_role_url: 
     try:
         type_id = await _seed_boutique(factory, tenant_id, capacity=2)
         service = _service(factory)
-        first = await service.create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=await _mint_verified_token(factory, tenant_id, phone),
-            name="נועה לוי",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-        )
-        second = await service.create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=await _mint_verified_token(factory, tenant_id, phone),
-            name="נועה לוי-כהן",
-            appointment_type_id=type_id,
-            starts_at=_slot(10, 30),
-            terms_version=1,
-        )
+        first = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="נועה לוי",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+        ).booking
+        second = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="נועה לוי-כהן",
+                appointment_type_id=type_id,
+                starts_at=_slot(10, 30),
+                terms_version=1,
+            )
+        ).booking
         assert second.customer_id == first.customer_id
         # A DIFFERENT instant is a different appointment, not a replay: the
         # idempotency guard is keyed on the instant, so two visits still book.
@@ -837,15 +863,17 @@ async def test_create_throttle_spends_only_on_verified_attempts(app_role_url: st
                 )
 
         # …and the real customer's booking still goes through.
-        booking = await service.create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=await _mint_verified_token(factory, tenant_id, phone),
-            name="נועה",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-        )
+        booking = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="נועה",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+        ).booking
         assert booking.seat_index == 1
 
         # That verified attempt DID spend the budget.
@@ -933,15 +961,17 @@ async def test_one_phone_cannot_spend_the_whole_tenant_budget(app_role_url: str)
         service = _service(factory, create_limiter=tenant_limiter, phone_limiter=phone_limiter)
 
         async def book(phone: str, name: str, starts_at: datetime.datetime) -> Booking:
-            return await service.create_booking(
-                tenant_id,
-                raw_phone=phone,
-                verification_token=await _mint_verified_token(factory, tenant_id, phone),
-                name=name,
-                appointment_type_id=type_id,
-                starts_at=starts_at,
-                terms_version=1,
-            )
+            return (
+                await service.create_booking(
+                    tenant_id,
+                    raw_phone=phone,
+                    verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                    name=name,
+                    appointment_type_id=type_id,
+                    starts_at=starts_at,
+                    terms_version=1,
+                )
+            ).booking
 
         await book(noisy, "רועשת", SLOT)
         await book(noisy, "רועשת", _slot(10, 30))
@@ -971,15 +1001,17 @@ async def test_a_freed_middle_seat_is_reclaimed_not_appended(app_role_url: str) 
         for _ in range(3):
             phone = _phone()
             booked.append(
-                await service.create_booking(
-                    tenant_id,
-                    raw_phone=phone,
-                    verification_token=await _mint_verified_token(factory, tenant_id, phone),
-                    name="לקוחה",
-                    appointment_type_id=type_id,
-                    starts_at=SLOT,
-                    terms_version=1,
-                )
+                (
+                    await service.create_booking(
+                        tenant_id,
+                        raw_phone=phone,
+                        verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                        name="לקוחה",
+                        appointment_type_id=type_id,
+                        starts_at=SLOT,
+                        terms_version=1,
+                    )
+                ).booking
             )
         assert sorted(row.seat_index for row in booked) == [1, 2, 3]
 
@@ -991,15 +1023,17 @@ async def test_a_freed_middle_seat_is_reclaimed_not_appended(app_role_url: str) 
             await session.flush()
 
         phone = _phone()
-        reclaimed = await service.create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=await _mint_verified_token(factory, tenant_id, phone),
-            name="מחליפה",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-        )
+        reclaimed = (
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="מחליפה",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+            )
+        ).booking
         assert reclaimed.seat_index == 2
         async with tenant_session(factory, tenant_id) as session:
             assert await BookingsRepository().active_seats_at(
@@ -1100,17 +1134,19 @@ async def test_dress_size_matching_is_case_insensitive_and_snapshots_the_catalog
                 quantity=1,
                 sort_order=0,
             )
-        booking = await _service(factory).create_booking(
-            tenant_id,
-            raw_phone=phone,
-            verification_token=await _mint_verified_token(factory, tenant_id, phone),
-            name="נועה",
-            appointment_type_id=type_id,
-            starts_at=SLOT,
-            terms_version=1,
-            dress_id=dress_id,
-            dress_size="us 6",
-        )
+        booking = (
+            await _service(factory).create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _mint_verified_token(factory, tenant_id, phone),
+                name="נועה",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+                dress_id=dress_id,
+                dress_size="us 6",
+            )
+        ).booking
         assert booking.dress_size == "US 6"
     finally:
         await engine.dispose()

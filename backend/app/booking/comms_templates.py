@@ -158,10 +158,7 @@ def owner_cancel_sms_body(
     freshly provisioned tenant has every profile field null, and «לשאלות:»
     followed by nothing is worse than a shorter sentence."""
     date = jerusalem_date(starts_at)
-    body = (
-        f"{truncate_boutique_name(boutique_name)}: "
-        f"התור שלך בתאריך {date} בוטל על ידי הבוטיק."
-    )
+    body = f"{truncate_boutique_name(boutique_name)}: התור שלך בתאריך {date} בוטל על ידי הבוטיק."
     if boutique_phone is None:
         return body
     return f"{body} לשאלות ולתיאום מחדש: {boutique_phone}"

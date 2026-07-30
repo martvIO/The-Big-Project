@@ -27,6 +27,10 @@ class FakeService:
         self.calls.append(("list_tenants", {}))
         return []
 
+    async def backfill_booking_links(self, **kwargs: object) -> CommandResult:
+        self.calls.append(("backfill_booking_links", kwargs))
+        return self._result
+
 
 def _dispatch(argv: list[str], service: FakeService, password: str = "pw") -> int:
     args = build_parser().parse_args(argv)
@@ -139,3 +143,31 @@ def test_list_output_strips_control_chars(capsys: object) -> None:
     assert line.count("\t") == 3
     assert "\x1b" not in line
     assert "EVIL" in line
+
+
+def test_backfill_booking_links_maps_through_and_reads_no_password() -> None:
+    """F16's one-time deploy step (Interview pre-decided #9). It touches every
+    tenant's bookings, so it takes an operator for the audit row — and, like
+    `list`, it must never prompt for a password: a command run from a deploy hook
+    that blocks on getpass hangs the deploy."""
+    service = FakeService(CommandResult(ok=True, message="backfilled 3 manage link(s)"))
+
+    def _no_password() -> str:
+        raise AssertionError("backfill-booking-links must not read a password")
+
+    args = build_parser().parse_args(["backfill-booking-links", "--operator", "ops"])
+    assert run(args, service, _no_password) == 0
+    assert service.calls == [("backfill_booking_links", {"operator": "ops"})]
+
+
+def test_backfill_failure_is_a_nonzero_exit() -> None:
+    """A deploy hook has to be able to see it failed."""
+    service = FakeService(CommandResult(ok=False, message="boom"))
+    assert _dispatch(["backfill-booking-links"], service) == 1
+
+
+def test_backfill_takes_no_slug() -> None:
+    """It is platform-wide by design: every active tenant has pre-F16 bookings,
+    and a per-tenant flag would make the one-time run a checklist."""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["backfill-booking-links", "--slug", "bella"])

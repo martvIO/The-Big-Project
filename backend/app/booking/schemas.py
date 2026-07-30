@@ -46,3 +46,58 @@ class BookingCreateResponse(BaseModel):
     appointment_type_name: str
     dress_name: str | None
     dress_size: str | None
+
+
+class ManageTokenRequest(BaseModel):
+    """The one request body all three manage endpoints take.
+
+    The token is in the BODY and never a path or query parameter, so no access
+    log, referrer or proxy trace carries the credential (D7). `max_length` is the
+    same generous ceiling as `verification_token` — the real check is the hash
+    comparison, this only stops a megabyte from reaching the service.
+    """
+
+    token: str = Field(min_length=1, max_length=MAX_TOKEN_INPUT_LENGTH)
+
+
+class ManageBookingFacts(BaseModel):
+    """The snapshots the page renders. No customer name, no phone, no id, no
+    seat index, no notes — the link is possession-auth, so the payload carries
+    the appointment's facts and no PII beyond them (spec Risk 4)."""
+
+    starts_at: datetime.datetime
+    status: str
+    attendance_confirmed_at: datetime.datetime | None
+    appointment_type_name: str
+    dress_name: str | None
+    dress_size: str | None
+
+
+class ManagePolicy(BaseModel):
+    """From the ACCEPTED terms version, never the current one. `terms_text` is
+    deliberately absent: the page states the window and the consequence, and the
+    full policy she already accepted is not what this screen is for."""
+
+    refundable_until_hours_before: int
+    forfeit_percent: int
+
+
+class ManageBoutique(BaseModel):
+    """The ContactPanel subset of BoutiqueResponse — four fields, not the whole
+    profile, so a key a later feature adds to `profile` cannot reach this page by
+    default."""
+
+    name: str
+    phone: str | None
+    address: str | None
+    maps_url: str | None
+
+
+class ManageBookingResponse(BaseModel):
+    """Lookup, confirm-attendance and cancel all answer THIS shape, post-action,
+    so the page re-renders every state from one response type instead of
+    branching on which call it made."""
+
+    booking: ManageBookingFacts
+    policy: ManagePolicy | None
+    boutique: ManageBoutique
