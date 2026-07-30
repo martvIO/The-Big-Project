@@ -187,7 +187,196 @@ queue:
       cache; k6 targets derived from staging metrics at the 50-tenant horizon.
       The caching and load halves could be split out early if F18 stays blocked.
 
-  # ---- E6..E10: appended from the epic files (F31-F49); E7 precedes E8 per Interview Q12 ----
+  # ---- E6..E10 (F31-F49). E7 precedes E8 per Interview Q12.
+  # Slugs are placeholders until each spec names its own.
+  # ---- E6 in-store real-time ----
+  - id: F31
+    slug: f31-placeholder
+    epic: E6
+    title: "Staff records, roles & phone-OTP staff login"
+    status: queued
+    deps: [F3, F5, F9, F11]
+    note: >-
+      Q11 (against recommendation): staff sign in by phone + SMS OTP, reusing F11. No work
+      emails, no passwords. Costs an SMS per login and depends on sender-ID registration
+      in production. Reuses staff_users.role.
+  - id: F32
+    slug: f32-placeholder
+    epic: E6
+    title: "Live-update substrate (versioned board state + polling)"
+    status: queued
+    deps: [F31]
+    note: >-
+      Pre-decided #23: NO realtime vendor. ~5s refresh; Pusher only if the pilot proves it
+      too slow. #25: events are versioned hints, server is truth.
+  - id: F33
+    slug: f33-placeholder
+    epic: E6
+    title: "QR walk-in check-in"
+    status: queued
+    deps: [F5, F9, F10, F13, F20]
+    note: >-
+      Pre-decided #26: queue ticket by default, auto-deleted days after the visit, one
+      opt-in marketing checkbox. #30: one static printed QR per boutique. Soft handoff
+      with F20 on the consent column.
+  - id: F34
+    slug: f34-placeholder
+    epic: E6
+    title: "Shift-manager live board + dispatch"
+    status: queued
+    deps: [F31, F32, F33]
+    note: >-
+      Q2: NOVEL pattern — design gate requires a user-reviewed clickable prototype; does
+      NOT self-approve. Pre-decided #28: E6 is done at queue + dispatch, no waiting-time
+      analytics.
+  - id: F35
+    slug: f35-placeholder
+    epic: E6
+    title: "Staff in-app notification bell"
+    status: queued
+    deps: [F31, F32, F34]
+    note: >-
+      Pre-decided #32: in-app only. No browser push, no APNs/FCM.
+
+  # ---- E7 fitting rooms & SOS (before E8, per Interview Q12) ----
+  - id: F36
+    slug: f36-placeholder
+    epic: E7
+    title: "Fitting-room registry + staff/client/room/dress assignment"
+    status: queued
+    deps: [F8, F13, F31, F32, F34]
+    note: >-
+      Pre-decided #31: one active assignment per room via a partial unique index — same
+      concurrency discipline as the F13 slot claim.
+  - id: F37
+    slug: f37-placeholder
+    epic: E7
+    title: "SOS paging: role-targeted page, live alert, resolution"
+    status: queued
+    deps: [F31, F32, F35, F36]
+    note: >-
+      Pre-decided #29: she picks a ROLE; every on-shift staffer with it is paged; first to
+      accept owns it. Rides F32's poll — the latency tradeoff is recorded in the epic's
+      Risks.
+
+  # ---- E8 weekly scheduler & full HR ----
+  - id: F38
+    slug: f38-placeholder
+    epic: E8
+    title: "HR directory full: photos, eligibility, offboarding"
+    status: queued
+    deps: [F8, F9, F20, F31]
+    note: >-
+      Pre-decided #34/#35: soft-delete, retain operational history, scrub PII 7 years
+      after last day via F20's retention job.
+  - id: F39
+    slug: f39-placeholder
+    epic: E8
+    title: "Staff availability submission (templates + weekly window)"
+    status: queued
+    deps: [F7, F9, F11, F12, F31, F38]
+    note: >-
+      Pre-decided #33: owner-defined shift templates per weekday, pre-filled from opening
+      hours. #36: weekly, Sunday-start, deadline is a tenant setting.
+  - id: F40
+    slug: f40-placeholder
+    epic: E8
+    title: "Roster builder + published roster as current-shift source"
+    status: queued
+    deps: [F9, F34, F37, F38, F39]
+    note: >-
+      The published roster supersedes F31's manual on-shift marking; the epic specifies
+      the cutover and the no-roster-published week.
+
+  # ---- E9 alterations workshop ----
+  - id: F41
+    slug: f41-placeholder
+    epic: E9
+    title: "Job intake + 5-state lifecycle + effort estimate"
+    status: queued
+    deps: [F8, F13, F31, F34]
+    note: >-
+      Q13: effort stored as minutes from five preset bands. Pre-decided #39: five states
+      as nullable timestamp columns, not a status enum.
+  - id: F42
+    slug: f42-placeholder
+    epic: E9
+    title: "Seamstress capacity model + overload alerts + reallocation"
+    status: queued
+    deps: [F31, F40, F41]
+    note: >-
+      Q2: NOVEL pattern — design gate requires a user-reviewed clickable prototype; does
+      NOT self-approve. Q13: hourly capacity walked back from wedding_date. Pre-decided
+      #40: advisory only, every reallocation stays a human action.
+  - id: F43
+    slug: f43-placeholder
+    epic: E9
+    title: "Multi-fitting scheduling on the E3 slot engine"
+    status: queued
+    deps: [F12, F13, F16, F24, F41]
+    note: >-
+      Reuses the F12 slot engine and links to the F24 client portal for dashboard + .ics.
+  - id: F44
+    slug: f44-placeholder
+    epic: E9
+    title: "Live workshop board + owner throughput analytics"
+    status: queued
+    deps: [F32, F41, F42]
+    note: >-
+      The one place pre-decided #23 authorises assuming a realtime vendor exists; the
+      no-vendor fallback is recorded.
+
+  # ---- E10 scale & polish ----
+  - id: F45
+    slug: f45-placeholder
+    epic: E10
+    title: "Arabic strings + comms templates (go-live)"
+    status: queued
+    deps: [F9, F10, F14, F15, F16, F20, F24, F44, F46, F49]
+    note: >-
+      Q3: every prior feature ships untranslated ar keys, so this is translation +
+      go-live, not a retrofit. Pre-decided #47: ar bundles on existing i18next, RTL reused
+      wholesale. Needs a human Arabic reviewer for legal copy — user action.
+  - id: F46
+    slug: f46-placeholder
+    epic: E10
+    title: "WhatsApp as a per-boutique channel"
+    status: queued
+    deps: [F11, F16, F27]
+    note: >-
+      Q14 (against recommendation): SMS stays DEFAULT and authoritative; WhatsApp is
+      opt-in per boutique. NOT a migration. Pre-decided #43: via Twilio, not Meta Cloud
+      API. Meta verification is a user action with long lead time.
+  - id: F47
+    slug: f47-placeholder
+    epic: E10
+    title: "Dress-page video + media pipeline"
+    status: queued
+    deps: [F8, F9, F10]
+    note: >-
+      Q16: short clips on dress pages only, no storefront reels feed. Pre-decided #44:
+      Cloudflare Stream.
+  - id: F48
+    slug: f48-placeholder
+    epic: E10
+    title: "Automated platform billing"
+    status: queued
+    deps: [F3, F11, F25, F46]
+    spec_gate: user
+    note: >-
+      Q15: flat base + metered messaging from the existing per-tenant message log.
+      Pre-decided #45: 18% VAT, no tax-authority allocation-number API — caps invoice
+      amounts; recorded as a risk. Money surface, so Gate 1 stops (Q1).
+  - id: F49
+    slug: f49-placeholder
+    epic: E10
+    title: "Storefront SEO/prerender + owner calendar"
+    status: queued
+    deps: [F4, F8, F9, F10, F12, F15]
+    note: >-
+      Q17: the storefront sits ALONGSIDE her existing site — no custom domains, no certs.
+      Pre-decided #46: build-time prerender + sitemap + per-tenant robots.txt, not SSR.
+      #48: calendar layered over the existing bookings list API.
 
 user_actions:                   # only the human can clear these; every report re-nags
   - "Buy the modryn.co.il domain (external-applications.md #2) — unblocks F2 staging and the F21 rows that need it"

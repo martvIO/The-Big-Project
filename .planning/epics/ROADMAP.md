@@ -18,10 +18,10 @@ Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutiq
 | **E4** | Deposits, Compliance & Pilot Hardening | 5 (partial) | E3 | ✅ |
 | E5 | Growth: Waitlist, Client Dashboard, Self-Serve Signup & Console | 5, 6 (rest), 2 | E4 | — |
 | E6 | In-Store Real-Time: HR Core, QR Queue & Shift Board | 7, 8, 11.3 (core) | E4 | — |
-| E7 | Staff Coordination: Fitting Rooms & SOS Paging | 9 | E6 | — |
+| E7 | Staff Coordination: Fitting Rooms & SOS Paging | 9 | E6 | — |  <!-- before E8 per Q12 -->
 | E8 | Workforce: Weekly Scheduler & HR Directory (full) | 10, 11.3 (full) | E6 | — |
 | E9 | Alterations Workshop & Capacity | 11.1, 11.2, 11.4 | E5, E7, E8 | — |
-| E10 | Scale & Polish: Arabic, WhatsApp, Video, Billing | cross-cutting | E5+ | — |
+| E10 | Scale & Polish: Arabic, WhatsApp channel, Video, Billing | cross-cutting | E5+ | — |
 
 ---
 
@@ -65,7 +65,7 @@ Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutiq
 
 ### Explicitly deferred out of v1
 
-Waitlist + auto-reallocation loop · client OTP dashboard + `.ics` links + client bell (v1 customers use the tokenized SMS link) · self-serve boutique signup + web platform console (v1 = CLI) · refund-API automation + k6 load pass (before multi-tenant onboarding) · all in-store real-time (QR queue, shift board, SOS, staff bell) · weekly scheduler + full HR directory · entire alterations module · Arabic strings, WhatsApp, video reels, analytics · calendar-view UI for owner bookings · automated platform billing (manual invoices meanwhile).
+Waitlist + auto-reallocation loop · client OTP dashboard + `.ics` links + client bell (v1 customers use the tokenized SMS link) · invite-code boutique signup + web platform console (v1 = CLI) · refund-API automation + k6 load pass (before multi-tenant onboarding) · all in-store real-time (QR queue, shift board, SOS, staff bell) · weekly scheduler + full HR directory · entire alterations module · Arabic strings, WhatsApp, video reels, analytics · calendar-view UI for owner bookings · automated platform billing (manual invoices meanwhile).
 
 **Dropped by stakeholder decision (recorded):** email-verification client login (PRD §5 offered "SMS OTP *or* email") — the platform is OTP-only. Two-way Google/Apple calendar sync — replaced by `.ics` links (E5).
 
@@ -81,40 +81,54 @@ Waitlist + auto-reallocation loop · client OTP dashboard + `.ics` links + clien
 23. Auto-reallocation loop: sequential offers, expiry cascade, atomic claim (race-safe per approved plan)
 24. Client OTP login + "My Bookings" dashboard + `.ics` links + **client-side notification bell**
 25. **Web platform console** (replaces v1 CLI)
-26. Self-serve boutique signup (subdomain claiming, reserved slugs) + gateway-connect onboarding — public launch gated by #29
+26. **Invite-code** boutique signup + gateway-connect onboarding (Q10 — no public funnel, no subdomain claiming, no longer gated by #29)
 27. Full feature-toggle matrix UI (§2 grid)
 28. **Date-bound dress reservation semantics** (מוזמן לתאריך מסוים) — owning feature for the pilot's purchase/rental/made-to-order decision
 29. Refund-API automation + k6 load pass + Redis slug/config caching (pre-scale gate)
 
 ### E6 — In-Store Real-Time: HR Core, QR Queue & Shift Board
-1. **HR directory core**: staff records, roles (reception/seamstress/sales), per-staff logins, manual "on shift now" marking (interim until E8 roster derives it)
-2. Realtime foundation: Pusher channels, server-side channel auth, versioned events, board-state refetch
-3. QR walk-in check-in (form, dedup by phone, queue position)
-4. Shift-manager live board: staff status with roles, queue view, dispatch action
-5. **Staff** in-app notification bell (client bell is E5 #24)
 
-### E7 — Staff Coordination: Fitting Rooms & SOS *(depends on E6 — staff identities/logins come from E6 #1)*
-1. Fitting-room registry + staff↔client↔room↔dress assignment model (rich staff cards)
-2. SOS paging: targeted page to on-shift colleague or shift manager, live alert, resolution flow
+> **Defined 2026-07-30** — detailed briefs in `e6-instore-realtime.md`. Promoted from the local #1–#5 stub to the global scheme (**F31–F35**). Decisions from `interview-2026-07-30.md`.
+
+31. **HR directory core**: staff records, roles (reception/seamstress/sales), **staff login by phone + SMS OTP** (Q11 — not email/password), manual "on shift now" marking (interim until F40's roster derives it)
+32. Live-update substrate: versioned board state, tenant-private channels, full refetch on version gap — **~5s polling, no realtime vendor** (pre-decided #23; Pusher only if the pilot proves polling too slow)
+33. QR walk-in check-in (form, dedup by phone, queue position) — one static printed QR per boutique
+34. Shift-manager live board: staff status with roles, queue view, dispatch action — **novel pattern, prototype to the user at its design gate** (Q2)
+35. **Staff** in-app notification bell, no push (client bell is F24)
+
+### E7 — Staff Coordination: Fitting Rooms & SOS *(ships BEFORE E8 per Q12; staff identities come from F31)*
+
+> **Defined 2026-07-30** — detailed briefs in `e7-fitting-rooms-sos.md`. Global scheme **F36–F37**.
+
+36. Fitting-room registry + staff↔client↔room↔dress assignment model — one active assignment per room via a **partial unique index**, same concurrency discipline as the F13 slot claim
+37. SOS paging: she picks a **role**, every on-shift staffer with it is paged, first to accept owns it; live alert + resolution flow
 
 ### E8 — Workforce: Weekly Scheduler & HR Directory (full)
-1. HR directory full: photos, shift-manager eligibility, offboarding (operational history **retained** per §11.3; PII scrub only after legal retention window, via E4 #20 retention jobs)
-2. Staff availability submission (3-tier shifts, weekly window)
-3. Roster builder: targets per shift/role, shortage validation, manual override; published roster **replaces E6's manual on-shift marking** as the "current shift" source
 
-### E9 — Alterations Workshop *(depends on E5 #24 for dashboard/.ics linkage, E7, E8)*
-1. Job intake + lifecycle pipeline (5 states, timestamped) — includes per-job **effort-estimate field** (PRD gap fix)
-2. Seamstress capacity model + deadline-aware overload alerts (bride-date hard priority) + **manual reallocation: reassign / split load / expedite from the matrix** (§11.2)
-3. Multi-fitting scheduling (fitting slots from E3 slot engine, linked to client dashboard + `.ics`)
-4. Live workshop board + owner throughput analytics
+> **Defined 2026-07-30** — detailed briefs in `e8-scheduler-hr.md`. Global scheme **F38–F40**. Sequenced after E7 (Q12).
+
+38. HR directory full: photos, shift-manager eligibility, offboarding (operational history **retained** per §11.3; PII scrub 7 years after last day via F20's retention job)
+39. Staff availability submission — owner-defined shift **templates** per weekday pre-filled from opening hours, weekly Sunday-start window, deadline as a tenant setting
+40. Roster builder: targets per shift/role, shortage validation, manual override; published roster **supersedes F31's manual on-shift marking** as the current-shift source
+
+### E9 — Alterations Workshop *(depends on F24 for dashboard/.ics linkage, E7, E8)*
+
+> **Defined 2026-07-30** — detailed briefs in `e9-alterations.md`. Global scheme **F41–F44**.
+
+41. Job intake + lifecycle pipeline (5 states as nullable timestamps) — per-job **effort estimate in minutes from five preset bands** (Q13)
+42. Seamstress capacity model (**hourly**, walked back from the wedding date) + deadline-aware overload alerts + manual reassign / split / expedite — **advisory only**, and a **novel pattern needing a prototype at its design gate** (Q2, Q13, pre-decided #40)
+43. Multi-fitting scheduling (fitting slots from the F12 slot engine, linked to the F24 client dashboard + `.ics`)
+44. Live workshop board + owner throughput analytics
 
 ### E10 — Scale & Polish
-1. Arabic storefront strings + comms templates
-2. WhatsApp Business API migration (Meta verification started during v1)
-3. Video reels + media pipeline (transcode, CDN)
-4. Automated platform billing for tenants
-5. Storefront SEO/prerendering · owner calendar-view polish
 
+> **Defined 2026-07-30** — detailed briefs in `e10-scale-polish.md`. Global scheme **F45–F49**. Largely independent features; F45 runs last.
+
+45. Arabic storefront strings + comms templates — **translation and go-live**, not a retrofit: every feature from F30 onward ships untranslated `ar` keys as it lands (Q3). Needs a human Arabic reviewer for legal copy.
+46. **WhatsApp as a per-boutique channel via Twilio** — SMS stays the default and authoritative channel (Q14; this supersedes the old "WhatsApp Business API migration" framing). Meta verification is a long-lead user action to file now.
+47. Dress-page video + media pipeline (Cloudflare Stream) — clips on dress pages only, no storefront reels feed
+48. Automated platform billing: flat base + metered messaging, 18% VAT, no tax-authority allocation-number API
+49. Storefront SEO via **build-time prerender** + sitemap + per-tenant robots.txt (the storefront sits *alongside* her existing site — no custom domains) · owner calendar-view polish over the existing bookings API
 ---
 
 ## Standing risks (tracked across all epics)
