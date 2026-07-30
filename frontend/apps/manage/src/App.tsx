@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ConsoleShell, ToastProvider } from "@boutique/ui";
 import { api } from "./api";
 import type { Staff } from "./api";
+import { BookingsSection } from "./components/BookingsSection";
 import { CatalogSection } from "./components/CatalogSection";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
@@ -73,8 +74,7 @@ export function App() {
         {section === "types" && <TypesSection />}
         {section === "terms" && <TermsSection />}
         {section === "catalog" && <CatalogSection />}
-        {/* Placeholder panel — the next task swaps it for <BookingsSection />. */}
-        {section === "bookings" && <h2 className="text-lg font-semibold text-ink">{t("booking.heading")}</h2>}
+        {section === "bookings" && <BookingsSection />}
       </ConsoleShell>
     </ToastProvider>
   );
