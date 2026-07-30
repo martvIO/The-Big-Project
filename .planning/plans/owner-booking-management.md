@@ -1,6 +1,6 @@
 # Plan: Feature 15 — Owner booking management (Epic E3, last feature)
 
-**Status**: Gate 2 self-approved 2026-07-30 under Interview Q1.
+**Status**: Gate 2 self-approved 2026-07-30 under Interview Q1. The four contradictions below (C1–C4) are amended into the spec as of Task 0; the spec text is the binding statement of each resolution, this file the reasoning.
 
 **Spec**: `.planning/specs/owner-booking-management.md` (Gate 1 self-approved 2026-07-30, D1–D20, 33 review findings folded in) · **Design**: `.planning/design/screens/owner-bookings/owner-bookings.md` (`design-critic` rev 1 REVISE → 3 accepted → ACCEPT) · **Copy**: `.planning/design/screens/owner-bookings/copy.md` (77 rows, DRAFTED, flagged for the user's one-line edit) · **Branch**: `feature/owner-booking-management` · **Created**: 2026-07-30
 
