@@ -116,20 +116,29 @@ queue:
     slug: ppl-compliance
     epic: E4
     title: PPL compliance build
-    status: queued
+    status: parked
     deps: [F13]
     spec_gate: user
+    blocker: "Gate 1 — spec written 2026-07-30 and awaiting USER approval (legal surface, Interview Q1). 5 questions listed at the spec's head."
+    spec: .planning/specs/ppl-compliance.md
     note: >-
       Q8: ship a platform-written Hebrew default for the collection notice and
       DPA, overridable per boutique from settings. Not lawyer-reviewed.
-      Retention periods per pre-decided #10. Also owns the retention job F40 depends on.
+      Retention periods per pre-decided #10. Also owns the reusable retention job
+      that F38 depends on — corrected 2026-07-30 from "F40", which was wrong: F40 is
+      the E8 roster builder and has nothing to do with retention. The dependant is
+      F38 (HR offboarding), whose pre-decided #34/#35 scrub of ex-staff PII 7 years
+      after last day runs on this job. F33's walk-in queue-ticket auto-delete is a
+      second consumer. Design the job as per-data-class machinery, not a booking sweeper.
   - id: F17
     slug: gateway-port
     epic: E4
     title: Payment gateway port + credential management
-    status: queued
+    status: parked
     deps: [F7]
     spec_gate: user
+    blocker: "Gate 1 — spec written 2026-07-30 and awaiting USER approval (payments surface, Interview Q1). 4 questions; Q4 (late settlement on an expired hold) has no safe default."
+    spec: .planning/specs/gateway-port.md
     note: >-
       Q7 unparked this: build the provider-agnostic port plus a FAKE gateway
       now, exactly as F11 did for SMS. Real Grow credential validation waits
@@ -179,8 +188,11 @@ queue:
     slug: shift-board-checkin
     epic: SMC
     title: "Live board + check-in (5s poll)"
-    status: queued
+    status: parked
     deps: [F15, F31]
+    blocker: "Design gate — clickable prototype awaiting USER review (Interview Q2, novel pattern). Gate 1 self-approved; only the design gate is open."
+    spec: .planning/specs/shift-board-checkin.md
+    prototype: .planning/design/screens/shift-board/prototype.html
     note: >-
       SMC-5. Q2: NOVEL pattern — design gate requires a user-reviewed clickable
       prototype; does NOT self-approve. Pre-decided #28: done at queue + dispatch,
@@ -534,12 +546,28 @@ user_actions:                   # only the human can clear these; every report r
   - "Find a human Arabic reviewer for legal/policy copy before F45 goes live"
 
 in_run_gates:                   # block a specific feature; the user clears them mid-run
-  - "F20 ppl-compliance — spec awaiting Gate 1 (privacy/legal, Interview Q1)"
-  - "F17 gateway-port — spec awaiting Gate 1 (payments, Interview Q1)"
-  - "F19 deposit-booking-flow — spec written once F17 merges, then Gate 1 (payments)"
-  - "F48 billing — spec awaiting Gate 1 when E10 is reached (money surface)"
-  - "F34 shift-board-checkin — clickable prototype awaiting user review (Interview Q2 novel)"
-  - "F42 seamstress capacity matrix — clickable prototype awaiting user review (Q2 novel)"
+  # OPEN NOW — all three artifacts are written, reviewed and on disk (2026-07-30).
+  # To clear one, say so in any session; the next iteration records the approval in
+  # the spec header, drops the entry's blocker, sets it back to `queued` and builds.
+  - id: F20
+    what: ".planning/specs/ppl-compliance.md — Gate 1 approval (legal surface)"
+    asks: 5
+    sharpest: "retention_enabled now defaults FALSE, so two security-checklist rows merge amber rather than green. Accept, or overrule back to default-on with no backup to undo an irreversible mass-delete."
+  - id: F17
+    what: ".planning/specs/gateway-port.md — Gate 1 approval (payments surface)"
+    asks: 4
+    sharpest: "A verified webhook landing on an EXPIRED hold with real money taken — honour it or refund it. The one question with no safe default; guessing is worse than waiting."
+  - id: F34
+    what: ".planning/design/screens/shift-board/prototype.html — design gate (Interview Q2, novel)"
+    asks: 8
+    sharpest: "Open it in a browser and press «השהיה». That pause control is what makes the board lawful under WCAG 2.0 SC 2.2.2 — a Level A criterion axe-core cannot detect, so CI would have shipped green without it."
+  # LATER — not yet authored, listed so the run's shape is legible.
+  - id: F19
+    what: "deposit flow — spec written once F17 merges, then Gate 1 (payments)"
+  - id: F48
+    what: "billing — Gate 1 when E10 is reached (money surface)"
+  - id: F42
+    what: "seamstress capacity matrix — clickable prototype (Q2 novel)"
 
 rulings_2026_07_30:             # taken in the finish-the-project planning session
   - "Build order: finish the SMC console before E5. Queue reordered to match."

@@ -1,0 +1,1219 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>אב-טיפוס — לוח היום ורישום הגעה (F34 · SMC-5)</title>
+<!--
+  DESIGN GATE PROTOTYPE — F34 live shift board + check-in.
+  Interview Q2 names this a NOVEL interaction pattern, so it does not self-approve:
+  this file is what the user reviews. Companion documents in this directory:
+  design.md (the deck) and copy.md (every Hebrew string + its untranslated ar value).
+
+  Self-contained. No external requests of ANY kind — no CDN, no web fonts, no remote
+  images, no analytics. Production self-hosts Frank Ruhl Libre + Assistant via
+  @fontsource; here the stacks fall back to the system serif/sans, which is expected
+  and does not affect a single token value.
+
+  Every custom property below is copied verbatim from
+  .planning/design/system/tokens.md so a reviewer can diff it line for line.
+
+  TWO THINGS THIS FILE FAKES, ON PURPOSE:
+   1. The 5-second poll. A scripted timer mutates a fixture so you can FEEL whether a
+      board that changes under you every five seconds is usable. That is the whole
+      question Q2 flagged, and a still image cannot answer it.
+   2. The responsive branch. CSS media queries answer to the browser viewport, not to a
+      375px frame drawn inside a 1440px window, so the breakpoint here is selected on
+      .frame[data-w]. Production uses Tailwind's real `sm:` branch (design F-6).
+
+  REVISION 2 — brought to the REVISED spec (D14, D4.3's {401,403}, D4(6)'s backoff).
+  Four things are new in this file and the first is the one the gate is really about:
+   1. A REAL pause / resume control INSIDE the board, at the freshness row's inline-end
+      («השהיה» ⇄ «חידוש»). WCAG 2.0 SC 2.2.2 Pause Stop Hide is Level A, IS 5568 / AA is
+      a LEGAL bar here (pre-decided #38), and axe has NO 2.2.2 rule — so a board without
+      this ships green in CI and non-conformant in law. Press it. It has to work.
+      *** The 5/10/paused switch in the DARK BAR is the reviewer's demo control and is
+      NOT the product. It ships in no .tsx and satisfies no criterion. The product
+      control is the one inside the cream frame, in the tab order, next to «עודכן». ***
+   2. An IDLE STOP. After 45 seconds with no interaction the loop stops itself and says
+      so. FORTY-FIVE SECONDS IS A DEMO VALUE so the state is reachable in a review —
+      production is 10 minutes (design P-8, the user's call).
+   3. A 403 state — a mid-shift demotion, distinct from the 401. Its body is GENERIC by
+      design: it names no role and says nothing about what changed.
+   4. A REAL failure backoff on «לא מתעדכן»: 5s → 10 → 20 → 40 → 60 cap. Watch the beat
+      meter stretch and check that the stale copy is still true at a minute.
+
+  WHAT TO TRY, IN ORDER:
+   a. Sit for thirty seconds and do nothing. Most ticks change nothing — that is the
+      honest common case and it is what makes the beat tolerable.
+   b. Tap «הגיעה» on a row. Watch the control become a fact, and the cue take focus.
+      Then keep sitting: the cue stays on screen and is NOT re-announced by the ticks
+      that follow (design §7.1 / F-7 — the poll may never write into a live region,
+      and re-writing an identical string into one is still writing into it).
+   c. Tap «ביטול הרישום». It is always available; there is no time box.
+   d. Switch to «יום עמוס · 40» and scan it while it ticks. That is the real test.
+   e. Turn on «תצוגת מצבים» and check someone in — the row you touched jumps bands.
+   f. Turn on «הדגשת שינויים» on the busy day and count how long you last.
+   g. Press «לא מתעדכן» to see a stale-but-labelled board, then «רענון».
+   h. Switch to another tab for half a minute and come back. The beat meter stops
+      while you are away and the board fetches IMMEDIATELY on return, not in five
+      seconds (design §3.2 case 3). The «עודכן» stamp is what proves it.
+   i. On «יום עמוס», press and HOLD a finger (or the mouse button) anywhere on the
+      board across a tick boundary. The repaint waits for you to lift, so a row above
+      cannot grow and slide the button out from under a descending finger
+      (design §7.2 / F-8). Release and the held tick lands at once.
+   j. *** THE 2.2.2 CHECK. *** Press «השהיה» inside the board. The beat meter stops, the
+      «עודכן» stamp stops advancing and becomes «מושהה · עודכן 14:07», and a line under
+      it says the board will not update until you resume. Sit as long as you like — it
+      really is stopped. Then press «חידוש»: the board fetches AT ONCE, not after five
+      seconds. Do the same with Tab and Enter; it is the first stop inside the board,
+      before any row, so a keyboard user never walks forty rows to reach it.
+   k. Stop touching anything for 45 seconds. The board stops ITSELF and says why — the
+      difference between «העדכון מושהה» and «העדכון הופסק אחרי … ללא פעילות» is the
+      difference between a control and a bug. One press brings it back.
+   l. Press «לא מתעדכן» and watch the beat meter: 5s, then 10, 20, 40, 60 and no further.
+      The question for you is whether «אין עדכון מאז 14:07» still reads honestly when the
+      next attempt is a minute away. (It says nothing about when — that is deliberate.)
+   m. Press «אין הרשאה» (403). Read the message and check that it does NOT tell the
+      staffer which role she lost, or that a role changed at all.
+-->
+<style>
+  :root{
+    /* ---- colors (tokens.md § Colors + the gold law) ---- */
+    --color-bg:#FDFBF7;
+    --color-surface:#F6F0E6;
+    --color-surface-raised:#FFFFFF;
+    --color-ink:#2B2118;
+    --color-ink-muted:#6B5D4F;
+    --color-gold:#C5A059;          /* decorative only — never carries text */
+    --color-gold-strong:#9E7B36;   /* meaningful NON-TEXT ui (3.80:1). Used once: the «עכשיו» hairline */
+    --color-gold-text:#7F612B;     /* the only gold that touches text */
+    --color-border:#E4DACA;
+    --color-border-input:#8A7A5E;
+    --color-success:#2E6B4F;
+    --color-danger:#A03232;
+    --color-warning-text:#8A5A1E;
+    --color-focus:#7F612B;
+    /* ---- typography ---- */
+    --font-display:"Frank Ruhl Libre","David Libre",serif;
+    --font-body:"Assistant","Heebo",system-ui,sans-serif;
+    --text-xs:0.75rem;   --leading-xs:1.4;
+    --text-sm:0.875rem;  --leading-sm:1.5;
+    --text-base:1rem;    --leading-base:1.6;
+    --text-lg:1.1875rem; --leading-lg:1.5;
+    --text-xl:1.4375rem; --leading-xl:1.35;
+    /* ---- spacing (4px base) ---- */
+    --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+    --space-6:24px; --space-8:32px; --space-12:48px;
+    /* ---- radius & shadows ---- */
+    --radius-sm:4px; --radius-md:8px; --radius-full:9999px;
+    --shadow-sm:0 1px 2px rgb(43 33 24 / 0.06);
+    --shadow-md:0 4px 12px rgb(43 33 24 / 0.10);
+    /* ---- motion ---- */
+    --motion-fast:150ms; --motion-base:200ms;
+    --ease-out:cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  *{box-sizing:border-box;margin:0}
+  body{background:#1b1510;color:var(--color-ink);font-family:var(--font-body);
+       font-size:var(--text-base);line-height:var(--leading-base)}
+  button,input,select{font:inherit;color:inherit}
+  button{cursor:pointer}
+  :focus-visible{outline:2px solid var(--color-focus);outline-offset:2px}
+  .vh{position:absolute;inline-size:1px;block-size:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+
+  /* ============ prototype chrome — NOT part of the product ============
+     Held to the product's own bars: every control clears 44px, and because this bar is
+     dark the --color-focus ring would compute under 3:1 against it, so the ring is
+     re-coloured to cream on this bar only. */
+  .proto{position:sticky;inset-block-start:0;z-index:50;background:#1b1510;color:#FDFBF7;
+         padding:var(--space-2) var(--space-4);font-size:var(--text-xs);
+         border-block-end:1px solid rgb(253 251 247 / .18)}
+  .proto :focus-visible{outline-color:#FDFBF7}
+  .proto-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2);
+             padding-block:var(--space-1)}
+  .proto-row > .lbl{opacity:.62;min-inline-size:5.5em}
+  .proto button{background:transparent;border:1px solid rgb(253 251 247 / .32);color:inherit;
+                border-radius:var(--radius-sm);padding:var(--space-1) var(--space-3);
+                min-block-size:44px;white-space:nowrap;font-size:var(--text-xs)}
+  .proto button[aria-pressed="true"]{background:var(--color-gold);color:var(--color-ink);
+                                     border-color:var(--color-gold);font-weight:700}
+  .proto label.chk{display:inline-flex;align-items:center;gap:var(--space-2);
+                   min-block-size:44px;padding-inline:var(--space-2);
+                   border:1px solid rgb(253 251 247 / .32);border-radius:var(--radius-sm)}
+  .proto input[type=checkbox]{inline-size:18px;block-size:18px;accent-color:var(--color-gold)}
+
+  /* the tick meter — the reviewer must SEE the beat coming, not only suffer it */
+  .beat{display:flex;align-items:center;gap:var(--space-2);min-inline-size:200px}
+  .beat .bar{position:relative;flex:1;block-size:6px;border-radius:var(--radius-full);
+             background:rgb(253 251 247 / .2);overflow:hidden}
+  .beat .bar i{position:absolute;inset-block:0;inset-inline-start:0;inline-size:0%;
+               background:var(--color-gold);display:block}
+  .beat .n{font-variant-numeric:tabular-nums;opacity:.8;min-inline-size:4em;
+           direction:ltr;text-align:start}
+  .log{padding:var(--space-2) var(--space-4);background:#241c15;color:#e8ded0;
+       font-size:var(--text-xs);border-block-end:1px solid rgb(253 251 247 / .12);min-block-size:2.6em}
+  .log b{color:var(--color-gold);font-weight:700}
+  .log .dim{opacity:.55}
+
+  /* ============ device stage ============ */
+  .stage{padding:var(--space-6) var(--space-4);overflow-x:auto}
+  .frame-cap{color:#c9bdae;text-align:center;font-size:var(--text-xs);
+             padding-block-end:var(--space-2);opacity:.75}
+  .frame{position:relative;margin-inline:auto;background:var(--color-bg);color:var(--color-ink);
+         border-radius:var(--radius-md);box-shadow:0 18px 50px rgb(0 0 0 / .45);overflow:hidden}
+  .frame[data-w="375"]{inline-size:375px}
+  .frame[data-w="768"]{inline-size:768px}
+  .frame[data-w="1440"]{inline-size:1440px}
+
+  /* ============ ConsoleShell (packages/ui/src/components/ConsoleShell.tsx) ============ */
+  /* SkipLink (packages/ui/src/components/A11y.tsx) — the FIRST tab stop on the page,
+     which is where design.md §7.2's tab order starts. It is shipped and unchanged;
+     it is here so the documented order is demonstrable from a cold page load. */
+  .skip{position:absolute;inline-size:1px;block-size:1px;overflow:hidden;
+        clip-path:inset(50%);white-space:nowrap;background:var(--color-surface-raised);
+        color:var(--color-ink);border-radius:var(--radius-sm);text-decoration:none}
+  .skip:focus{position:absolute;inset-inline-start:var(--space-2);inset-block-start:var(--space-2);
+              z-index:50;inline-size:auto;block-size:auto;overflow:visible;clip-path:none;
+              padding:var(--space-2) var(--space-4);box-shadow:var(--shadow-md)}
+  .shell-head{display:flex;justify-content:space-between;align-items:center;
+              padding:var(--space-3) var(--space-4);border-block-end:1px solid var(--color-border)}
+  .shell-head .name{font-family:var(--font-display);font-size:var(--text-lg)}
+  .shell-head .logout{background:none;border:none;color:var(--color-ink-muted);
+                      font-size:var(--text-sm);padding:var(--space-2);min-block-size:44px}
+  /* Plain <nav> with aria-current — NEVER role="tab" (manage-restyle.md). Stacks
+     full-width at ≤767, horizontal row at ≥768. */
+  .shell-nav{padding-inline:var(--space-4);border-block-end:1px solid var(--color-border)}
+  .shell-nav ul{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:var(--space-1)}
+  .frame[data-w="768"] .shell-nav ul,
+  .frame[data-w="1440"] .shell-nav ul{flex-direction:row;flex-wrap:wrap;gap:var(--space-6)}
+  .shell-nav button{inline-size:100%;text-align:start;background:none;border:none;
+                    border-block-end:2px solid transparent;padding-block:var(--space-2);
+                    color:var(--color-ink-muted);font-size:var(--text-base);min-block-size:44px}
+  .frame[data-w="768"] .shell-nav button,
+  .frame[data-w="1440"] .shell-nav button{inline-size:auto;text-align:center}
+  .shell-nav button[aria-current="page"]{color:var(--color-ink);font-weight:600;
+                                         border-block-end-color:var(--color-gold-strong)}
+  .shell-main{max-inline-size:720px;margin-inline:auto;padding:var(--space-6) var(--space-4);
+              display:flex;flex-direction:column;gap:var(--space-6)}
+
+  /* ============ board ============ */
+  h2.section{font-size:var(--text-lg);font-weight:600;color:var(--color-ink)}
+  .day-line{font-size:var(--text-sm);color:var(--color-ink-muted);margin-block-start:var(--space-1)}
+  /* THE FRESHNESS ROW. Not announced (no live attributes) and deliberately NOT
+     aria-hidden — design.md §7.1 / F-1: aria-hidden would make the board's only
+     honesty signal sighted-only. */
+  /* items-center (not baseline) and flex-wrap, because this row now carries a 44px
+     control: baseline-aligning a button against a caption drops it below the text's
+     baseline box, and at 375 the long stale/paused stamp pushes the control to its own
+     line (design §5's arithmetic). */
+  .fresh{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;
+         gap:var(--space-3);font-size:var(--text-sm);color:var(--color-ink-muted)}
+  .fresh .end{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);
+              margin-inline-start:auto}
+  /* One escalation, three causes: a failed tick, a manual pause, an idle stop. All three
+     mean "these rows are correct but no longer being refreshed", and P-6's argument —
+     plausible-looking data beside a grey notice gets scanned past — is identical for
+     each. Never colour alone: the words «אין עדכון מאז» / «מושהה» carry it. */
+  .fresh .stale{color:var(--color-warning-text);font-weight:600}
+  /* THE SC 2.2.2 MECHANISM (spec D14). Button ghost md — the SHIPPED ghost variant and
+     the shipped md size (Button.tsx:31,36 → min-h-11 = 44px). No new variant, no
+     aria-pressed (the accessible NAME carries the state), no icon. */
+  .fresh .btn{flex:0 0 auto}
+  .stale-body{font-size:var(--text-sm);color:var(--color-ink-muted);
+              display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-3);
+              margin-block-start:var(--space-2)}
+  /* The ONE announced region. role="status" = polite. User-initiated outcomes only —
+     the poll never writes here (spec D11). */
+  .cue{font-size:var(--text-sm);color:var(--color-ink-muted);min-block-size:1.5em}
+
+  .card{background:var(--color-surface);border-radius:var(--radius-md);
+        padding:var(--space-6);box-shadow:var(--shadow-sm)}
+  ul.rows{list-style:none;padding:0;margin:0}
+  ul.rows > li + li{border-block-start:1px solid var(--color-border)}
+  ul.rows > li.band + li{border-block-start:0}
+
+  li.row{display:flex;flex-direction:column;gap:var(--space-3);padding-block:var(--space-4)}
+  .frame[data-w="768"] li.row,
+  .frame[data-w="1440"] li.row{flex-direction:row;align-items:center;gap:var(--space-4)}
+  .row .text{display:flex;align-items:flex-start;gap:var(--space-3);min-inline-size:0;flex:1}
+  .row .at{inline-size:56px;flex:0 0 56px;font-weight:600;color:var(--color-ink)}
+  .row .body{min-inline-size:0;flex:1;display:flex;flex-direction:column;gap:var(--space-1)}
+  .row .nameline{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2)}
+  .row .nm{font-weight:600;color:var(--color-ink);overflow-wrap:anywhere}
+  .row .meta{font-size:var(--text-sm);color:var(--color-ink-muted);overflow-wrap:anywhere}
+  /* the arrival fact — ink, not muted: on this screen it is the operative fact */
+  .row .arrived{font-size:var(--text-sm);color:var(--color-ink)}
+  .row .ctl{display:flex;justify-content:flex-end;flex:0 0 auto}
+  .frame[data-w="768"] .row .ctl,
+  .frame[data-w="1440"] .row .ctl{justify-content:flex-start}
+  .row .rowerr{font-size:var(--text-sm);color:var(--color-danger)}
+
+  /* Badge (packages/ui/src/components/Badge.tsx) — the WORD carries the state, the
+     variant is redundant reinforcement. No gold variant exists and none is invented. */
+  .badge{display:inline-flex;align-items:center;border-radius:var(--radius-full);
+         padding:2px var(--space-2);font-size:var(--text-xs);border:1px solid var(--color-border);
+         white-space:nowrap}
+  .badge.success{border-color:var(--color-success);color:var(--color-success)}
+  .badge.neutral{border-color:var(--color-border);color:var(--color-ink)}
+  .badge.warning{border-color:var(--color-border);color:var(--color-warning-text);font-weight:600}
+  .badge.muted{border-color:var(--color-border);color:var(--color-ink-muted)}
+
+  /* Button (packages/ui/src/components/Button.tsx) — size md = min-h-11 = 44px */
+  .btn{position:relative;display:inline-flex;align-items:center;justify-content:center;
+       border-radius:var(--radius-md);font-family:var(--font-body);font-weight:600;
+       min-block-size:44px;padding-inline:var(--space-4);font-size:var(--text-base);
+       transition:box-shadow var(--motion-fast) var(--ease-out),
+                  background var(--motion-fast) var(--ease-out);
+       border:1px solid transparent;background:transparent}
+  .btn.secondary{border-color:var(--color-ink);color:var(--color-ink)}
+  .btn.secondary:hover{background:var(--color-surface)}
+  .btn.ghost{color:var(--color-ink)}
+  .btn.ghost:hover{background:var(--color-surface)}
+  .btn[disabled]{opacity:.6;cursor:not-allowed}
+  .btn .spin{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+  .btn .spin i{inline-size:16px;block-size:16px;border-radius:var(--radius-full);
+               border:2px solid currentColor;border-block-start-color:transparent;
+               animation:sp .8s linear infinite;display:block}
+  .btn .lbl.busy{visibility:hidden}
+  @keyframes sp{to{transform:rotate(360deg)}}
+
+  /* the «עכשיו» divider — a gold-strong HAIRLINE (non-text, 3.80:1) with ink-muted
+     words. aria-hidden: a clock-derived visual landmark, and unhidden it would inject
+     a changing string into the middle of the list on every tick. */
+  li.now{display:flex;align-items:center;gap:var(--space-3);padding-block:var(--space-3);
+         font-size:var(--text-xs);color:var(--color-ink-muted)}
+  li.now::before,li.now::after{content:"";flex:1;block-size:0;
+                               border-block-start:1px solid var(--color-gold-strong)}
+
+  .empty{display:flex;flex-direction:column;align-items:center;gap:var(--space-3);
+         padding-block:var(--space-12);text-align:center}
+  .empty .t{font-family:var(--font-display);font-size:var(--text-xl);color:var(--color-ink)}
+  .empty .b{max-inline-size:38ch;color:var(--color-ink-muted)}
+
+  .sk{display:flex;flex-direction:column;gap:var(--space-2)}
+  .sk span{block-size:16px;border-radius:var(--radius-sm);background:var(--color-border);
+           animation:pulse 1.5s ease-in-out infinite}
+  .sk span:last-child{inline-size:66%}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+
+  .outage{font-size:var(--text-sm);color:var(--color-ink-muted)}
+  .ended{font-size:var(--text-sm);color:var(--color-ink)}
+  .trunc{font-size:var(--text-sm);color:var(--color-ink-muted);margin-block-start:var(--space-4)}
+  .actions{display:flex;gap:var(--space-3);flex-wrap:wrap;margin-block-start:var(--space-3)}
+
+  /* Band headings — rendered ONLY under the «תצוגת מצבים» comparison toggle, which
+     exists so the user can rule Q-4 against the thing itself. The deck recommends
+     AGAINST shipping them (P-4). */
+  li.band{padding-block:var(--space-4) var(--space-2)}
+  li.band h3{font-size:var(--text-sm);font-weight:600;color:var(--color-ink-muted)}
+
+  /* PROTOTYPE-ONLY change highlight, off by default. D11 bans it and design §3.1 argues
+     the ban; this toggle exists so the user can overrule the argument. */
+  .hl li.row.changed{background:#F1E7D6;transition:background 1.2s var(--ease-out)}
+
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation:none !important;transition:none !important}
+  }
+</style>
+</head>
+<body>
+
+<div class="proto">
+  <div class="proto-row">
+    <span class="lbl">מכשיר</span>
+    <button type="button" data-dev="375" aria-pressed="true">375 · טלפון</button>
+    <button type="button" data-dev="768" aria-pressed="false">768 · טאבלט</button>
+    <button type="button" data-dev="1440" aria-pressed="false">1440 · שולחני</button>
+    <span class="lbl" style="min-inline-size:auto;opacity:.5">‏720px cap — 768 ו-1440 זהים בכוונה</span>
+  </div>
+  <!-- DEMO CHROME, NOT THE PRODUCT. This row is the reviewer's switchboard: it sets the
+       base interval so 5s and 10s can be felt back to back (Q-1). The product's own
+       SC 2.2.2 pause control is the «השהיה» button INSIDE the cream frame, beside
+       «עודכן». Pressing "השהיה" here and pressing it there are different acts, and only
+       the second one is a mechanism in the content (design §2.4). -->
+  <div class="proto-row">
+    <span class="lbl">דופק (הדמיה)</span>
+    <button type="button" data-int="5000" aria-pressed="true">5 שניות</button>
+    <button type="button" data-int="10000" aria-pressed="false">10 שניות</button>
+    <button type="button" data-int="0" aria-pressed="false">כיבוי הדמיה</button>
+    <span class="beat"><span class="bar"><i id="beatbar"></i></span><span class="n" id="beatn">5.0s</span></span>
+    <label class="chk"><input type="checkbox" id="hl"> הדגשת שינויים</label>
+    <label class="chk"><input type="checkbox" id="bands"> תצוגת מצבים (Q-4)</label>
+    <span class="lbl" style="min-inline-size:auto;opacity:.5">‏חלון חוסר פעילות כאן: 45 שניות · בייצור 10 דקות (P-8)</span>
+  </div>
+  <div class="proto-row">
+    <span class="lbl">תרחיש</span>
+    <button type="button" data-sc="normal" aria-pressed="true">יום רגיל · 12</button>
+    <button type="button" data-sc="busy" aria-pressed="false">יום עמוס · 40</button>
+    <button type="button" data-sc="one" aria-pressed="false">תור אחד</button>
+    <button type="button" data-sc="empty" aria-pressed="false">יום ריק</button>
+    <button type="button" data-sc="long" aria-pressed="false">שם ארוך</button>
+    <button type="button" data-sc="trunc" aria-pressed="false">יום קטוע</button>
+    <button type="button" data-sc="loading" aria-pressed="false">טעינה</button>
+    <button type="button" data-sc="loadfail" aria-pressed="false">כשל טעינה</button>
+    <button type="button" data-sc="stale" aria-pressed="false">לא מתעדכן</button>
+    <button type="button" data-sc="expired" aria-pressed="false">חיבור פג · 401</button>
+    <button type="button" data-sc="forbidden" aria-pressed="false">אין הרשאה · 403</button>
+    <button type="button" data-arm="fail" aria-pressed="false">הפעולה הבאה תיכשל</button>
+  </div>
+</div>
+
+<div class="log" id="log"><span class="dim">יומן הדמיה —</span> ממתין לפעימה הראשונה.</div>
+
+<div class="stage">
+  <p class="frame-cap" id="cap">375 · «לוח היום» · אב-טיפוס · הנתונים מדומים</p>
+  <div class="frame" data-w="375" id="frame">
+
+    <a class="skip" href="#console-main">דלג לתוכן</a>
+    <header class="shell-head">
+      <span class="name">בוטיק אלמה</span>
+      <button type="button" class="logout">יציאה</button>
+    </header>
+    <nav class="shell-nav" aria-label="ניווט הקונסולה">
+      <ul>
+        <li><button type="button">פרופיל והגדרות</button></li>
+        <li><button type="button">שעות פעילות</button></li>
+        <li><button type="button">סוגי תורים</button></li>
+        <li><button type="button">מדיניות ביטולים</button></li>
+        <li><button type="button">שמלות</button></li>
+        <li><button type="button">תורים</button></li>
+        <li><button type="button" aria-current="page" aria-controls="console-main">לוח היום</button></li>
+      </ul>
+    </nav>
+
+    <main class="shell-main" id="console-main" tabindex="-1">
+      <h1 class="vh">MODRYN — ניהול הבוטיק</h1>
+
+      <div>
+        <h2 class="section">לוח היום</h2>
+        <p class="day-line">היום · <bdi dir="ltr">2.8.2026</bdi></p>
+      </div>
+
+      <!-- freshness row: readable, reachable, NEVER announced -->
+      <div id="fresh"></div>
+
+      <!-- the ONE announced region -->
+      <p class="cue" role="status" tabindex="-1" id="cue"></p>
+
+      <div id="board"></div>
+    </main>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ===========================================================================
+  // Simulated clock. Base 14:07 Jerusalem on 2.8.2026, advancing in real time, so
+  // the «עכשיו» divider sits mid-day and the «עודכן» stamp moves like a real one.
+  // ===========================================================================
+  var t0 = Date.now();
+  var BASE_MIN = 14 * 60 + 7;
+  function nowMin() { return BASE_MIN + (Date.now() - t0) / 60000; }
+  function hhmm(min) {
+    var m = Math.floor(min) % 1440, h = Math.floor(m / 60), r = m % 60;
+    return (h < 10 ? "0" : "") + h + ":" + (r < 10 ? "0" : "") + r;
+  }
+
+  // ===========================================================================
+  // Copy — transcribed from copy.md, placeholders spelled the i18next way so this
+  // table is the ONLY place a string lives (no duplicate spelling anywhere below).
+  // ===========================================================================
+  var T = {
+    summary:      "הגיעו {{v}}",
+    updatedAt:    "עודכן {{v}}",
+    staleAt:      "אין עדכון מאז {{v}}",
+    staleBody:    "ייתכן שהמידע אינו עדכני.",
+    refresh:      "רענון",
+    // --- SC 2.2.2 (spec D14). One button, two names; the NAME carries the state. ---
+    pause:        "השהיה",
+    pauseAria:    "השהיה — עדכון הלוח",
+    resume:       "חידוש",
+    resumeAria:   "חידוש — עדכון הלוח",
+    pausedAt:     "מושהה · עודכן {{v}}",
+    paused:       "העדכון מושהה. הלוח לא יתעדכן עד לחידוש.",
+    idleStopped:  "העדכון הופסק אחרי {{v}} דקות ללא פעילות.",
+    resumed:      "העדכון חודש.",
+    checkIn:      "הגיעה",
+    checkInAria:  "הגיעה — {{name}}, {{time}}",
+    checkedInAt:  "נרשמה הגעה · {{v}}",
+    undo:         "ביטול הרישום",
+    undoAria:     "ביטול הרישום — {{name}}, {{time}}",
+    now:          "עכשיו {{v}}",
+    movedAway:    "התור הועבר לתאריך אחר",
+    checkedInCue: "נרשמה הגעה עבור {{name}}.",
+    undoneCue:    "הרישום בוטל עבור {{name}}.",
+    loading:      "טוען את לוח היום…",
+    loadFailed:   "לא הצלחנו לטעון את הלוח כרגע.",
+    emptyTitle:   "אין תורים היום",
+    emptyBody:    "תורים שייקבעו להיום יופיעו כאן. לתאריכים אחרים אפשר לעבור למסך «תורים».",
+    truncated:    "מוצגים {{v}} התורים הראשונים של היום. לרשימה המלאה אפשר לעבור למסך «תורים».",
+    sessionEnded: "תוקף החיבור פג. צריך להתחבר מחדש.",
+    // 403 — a mid-shift demotion (spec D4.3). GENERIC BY DESIGN: the server ships one
+    // body for every unadmitted role so a probe cannot learn which roles exist, so the
+    // client neither knows nor guesses what changed. No role named, ever.
+    accessEnded:  "אין הרשאה לצפות בלוח כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+    reload:       "רענון הדף",
+    // Was «…הלוח יתעדכן מיד.» — a five-second promise, and D4(6)'s backoff stretches the
+    // retry to a minute. Names the next EVENT, not a duration, so it is true at any
+    // interval (copy.md §0 rule 9).
+    errTransition:"מצב התור השתנה. השורה תתוקן בעדכון הבא.",
+    attendance:   "אישרה הגעה",
+    // reused from F15 via statusBadge() in production — one spelling, one map
+    st: {
+      confirmed: { w: "מאושר",    v: "success" },
+      completed: { w: "התקיים",   v: "neutral" },
+      no_show:   { w: "לא הגיעה", v: "warning" },
+      cancelled: { w: "בוטל",     v: "muted"   }
+    },
+    bandWaiting:  "טרם הגיעו",
+    bandHere:     "כאן",
+    bandDone:     "הסתיימו"
+  };
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  // The prototype's isolateLtr: split the template around {{v}} and wrap that ONE run
+  // in <bdi dir="ltr">. Exactly lib/booking.tsx:32's contract.
+  function iso(tpl, v) {
+    var p = tpl.split("{{v}}");
+    return esc(p[0]) + '<bdi dir="ltr">' + esc(v) + "</bdi>" + esc(p[1] || "");
+  }
+  function fill(tpl, map) {
+    return tpl.replace(/\{\{(\w+)\}\}/g, function (_, k) { return map[k]; });
+  }
+
+  var NAMES = ["מיכל לוי","נועה כהן","שיר אברהם","טל בן-דוד","יעל מזרחי","רוני פרץ",
+               "אור דהן","ליהי שמש","אדל חדד","מאיה גולן","הודיה אזולאי","אביגיל רוזנברג",
+               "שקד ביטון","נטע הרוש","עדן סבג","רומי אלבז"];
+  var TYPES = ["מדידה ראשונה","מדידה שנייה","התאמות אחרונות","פגישת ייעוץ","איסוף שמלה"];
+  var DRESS = ["שמלת אלמה","שמלת ורד","Aurora","שמלת ליבי",null,null];
+  var LONG  = "אלכסנדרה-מרי בן-דוד הכהן אשכנזי";
+
+  // ===========================================================================
+  // Fixture. `checkedIn` is minutes-since-midnight or null — the nullable
+  // TIMESTAMPTZ column F34 adds (spec D1/D2).
+  // ===========================================================================
+  var seq = 0;
+  function mk(startMin, i) {
+    return {
+      id: "b" + (++seq),
+      startMin: startMin,
+      name: NAMES[i % NAMES.length],
+      type: TYPES[i % TYPES.length],
+      dress: DRESS[i % DRESS.length],
+      status: "confirmed",
+      checkedIn: null,
+      attendance: i % 3 === 0,
+      moved: false
+    };
+  }
+  function day(n, longName) {
+    var out = [], i, start = 9 * 60, step = Math.max(15, Math.floor(480 / Math.max(n, 1)));
+    for (i = 0; i < n; i++) {
+      var at = start + i * step, b = mk(at, i);
+      if (at < BASE_MIN - 90) { b.checkedIn = at - 6; if (i % 7 === 0) { b.status = "completed"; } }
+      else if (at < BASE_MIN - 20) { b.checkedIn = at - 4; }
+      if (i === 2) { b.status = "cancelled"; b.checkedIn = null; }
+      out.push(b);
+    }
+    if (longName && out.length) { out[Math.min(3, out.length - 1)].name = LONG; }
+    return out;
+  }
+
+  // ===========================================================================
+  // State
+  // ===========================================================================
+  // The idle window. 45s HERE so the state is reachable in a review; production is
+  // design P-8's value (recommended 10 minutes) and the proto bar says so. IDLE_LABEL is
+  // what the copy interpolates — the string the STAFFER reads is always the production
+  // number, because the prototype must not teach the reviewer a wrong one.
+  var IDLE_MS = 45000, IDLE_LABEL = "10";
+  var BACKOFF_CAP = 60000;   // spec D4(6): 5s doubling to a ~60s cap, reset on success
+
+  var S = {
+    phase: "ready",        // ready | loading | loadfail | expired | forbidden
+    rows: day(12),
+    total: 12,
+    stale: false,
+    staleSince: 0,
+    lastOk: nowMin(),
+    cue: "",
+    busyId: null,
+    rowErrId: null,
+    failNext: false,
+    changed: {},
+    interval: 5000,        // the BASE interval (the demo switchboard sets this)
+    fails: 0,              // consecutive failed ticks -> the D4(6) backoff exponent
+    paused: false,         // SC 2.2.2: stopped BY THE USER
+    idle: false,           // SC 2.2.2: stopped BY THE IDLE TIMER. Same stop, different cause
+    bands: false,
+    highlight: false,
+    centred: false         // the divider is scrolled into view on FIRST paint only
+  };
+
+  // Any interaction resets the idle window. Recorded here rather than inside a handler
+  // so every path — tap, key, scroll, focus — feeds one clock.
+  var lastAct = Date.now();
+  function stopped() { return S.paused || S.idle; }
+  // The effective interval: base, doubled per consecutive failure, capped. This is the
+  // whole of D4(6), and it is why no string may name a number of seconds.
+  function effInterval() {
+    if (S.interval === 0) { return 0; }
+    return Math.min(S.interval * Math.pow(2, S.fails), BACKOFF_CAP);
+  }
+
+  var frame   = document.getElementById("frame");
+  var boardEl = document.getElementById("board");
+  var freshEl = document.getElementById("fresh");
+  var cueEl   = document.getElementById("cue");
+  var logEl   = document.getElementById("log");
+  var capEl   = document.getElementById("cap");
+
+  function log(html) {
+    logEl.innerHTML = '<span class="dim">' + hhmm(nowMin()) + " —</span> " + html;
+  }
+  function find(id) {
+    for (var i = 0; i < S.rows.length; i++) { if (S.rows[i].id === id) { return S.rows[i]; } }
+    return null;
+  }
+
+  // ===========================================================================
+  // Render. A full repaint every tick, with focus restored by key — which is what
+  // the React version gets for free from rows keyed by booking id (design §7.2).
+  // ===========================================================================
+  function btn(cls, act, id, label, aria, busy) {
+    return '<button type="button" class="btn ' + cls + '" data-act="' + act + '" data-id="' + id
+      + '" data-fk="' + act + id + '" aria-label="' + esc(aria) + '"' + (busy ? " disabled" : "") + ">"
+      + '<span class="lbl' + (busy ? " busy" : "") + '">' + esc(label) + "</span>"
+      + (busy ? '<span class="spin"><i></i></span>' : "") + "</button>";
+  }
+
+  function rowHtml(b) {
+    var t = hhmm(b.startMin);
+    var busy = S.busyId === b.id;
+    var ctl = "";
+    if (b.moved) {
+      ctl = '<span class="meta">' + esc(T.movedAway) + "</span>";
+    } else if (b.checkedIn !== null) {
+      ctl = btn("ghost", "undo", b.id, T.undo, fill(T.undoAria, { name: b.name, time: t }), busy);
+    } else if (b.status === "confirmed") {
+      ctl = btn("secondary", "in", b.id, T.checkIn, fill(T.checkInAria, { name: b.name, time: t }), busy);
+    }
+    var st = T.st[b.status] || { w: b.status, v: "neutral" };
+
+    return '<li class="row' + (S.changed[b.id] ? " changed" : "") + '">'
+      + '<div class="text">'
+      +   '<span class="at"><bdi dir="ltr">' + t + "</bdi></span>"
+      +   '<span class="body">'
+      +     '<span class="nameline"><bdi class="nm">' + esc(b.name) + "</bdi>"
+      +       '<span class="badge ' + st.v + '">' + esc(st.w) + "</span></span>"
+      +     '<span class="meta">' + esc(b.type)
+      +       (b.attendance ? " · " + esc(T.attendance) : "")
+      +       (b.dress ? " · <bdi>" + esc(b.dress) + "</bdi>" : "") + "</span>"
+      +     (b.checkedIn !== null
+             ? '<span class="arrived">' + iso(T.checkedInAt, hhmm(b.checkedIn)) + "</span>"
+             : "")
+      +     (S.rowErrId === b.id
+             ? '<span class="rowerr" role="alert" tabindex="-1" data-fk="err' + b.id + '">'
+               + esc(T.errTransition) + "</span>"
+             : "")
+      +   "</span>"
+      + "</div>"
+      + (ctl ? '<div class="ctl">' + ctl + "</div>" : "")
+      + "</li>";
+  }
+
+  function bandHtml(label, list) {
+    if (!list.length) { return ""; }
+    return '<li class="band"><h3>' + esc(label) + ' · <bdi dir="ltr">' + list.length + "</bdi></h3></li>"
+         + list.map(rowHtml).join("");
+  }
+
+  function rowsHtml() {
+    var i, n = nowMin();
+
+    if (S.bands) {
+      // Q-4 comparison ONLY. design.md P-4 recommends against shipping this: a check-in
+      // moves the row you just tapped into another band. Tap one and watch it jump.
+      var waiting = [], here = [], done = [];
+      for (i = 0; i < S.rows.length; i++) {
+        var b = S.rows[i];
+        if (b.status === "completed" || b.status === "cancelled") { done.push(b); }
+        else if (b.checkedIn !== null) { here.push(b); }
+        else { waiting.push(b); }
+      }
+      return bandHtml(T.bandHere, here) + bandHtml(T.bandWaiting, waiting) + bandHtml(T.bandDone, done);
+    }
+
+    var out = [], placed = false;
+    for (i = 0; i < S.rows.length; i++) {
+      if (!placed && S.rows[i].startMin > n && i > 0) {
+        out.push('<li class="now" aria-hidden="true">' + iso(T.now, hhmm(n)) + "</li>");
+        placed = true;
+      }
+      out.push(rowHtml(S.rows[i]));
+    }
+    return out.join("");
+  }
+
+  function render() {
+    var active = document.activeElement;
+    var focusKey = active && active.getAttribute ? active.getAttribute("data-fk") : null;
+
+    frame.classList.toggle("hl", S.highlight);
+
+    // ---- freshness row + the SC 2.2.2 control -------------------------------
+    if (S.phase === "ready") {
+      var arrived = 0;
+      for (var i = 0; i < S.rows.length; i++) { if (S.rows[i].checkedIn !== null) { arrived++; } }
+
+      // Precedence in this one slot (design §1.1 / §4): stopped beats stale. A stopped
+      // loop cannot fail a tick, so the stop is the cause in force — and it keeps
+      // «רענון» and «חידוש», two similar Hebrew words, off the same line.
+      var right;
+      if (stopped()) {
+        right = '<span class="stale">' + iso(T.pausedAt, hhmm(S.lastOk)) + "</span>";
+      } else if (S.stale) {
+        right = '<span class="stale">' + iso(T.staleAt, hhmm(S.staleSince)) + "</span>";
+      } else {
+        right = iso(T.updatedAt, hhmm(S.lastOk));
+      }
+
+      // THE PRODUCT'S pause/resume control. One button, name swaps with state, ghost md
+      // (44px), inside the tab order, first stop in the board. data-fk keeps focus on it
+      // across the repaint — it renames, it never unmounts, so focus must not move.
+      var pBtn = '<button type="button" class="btn ghost" data-act="pause" data-fk="pause"'
+        + ' aria-label="' + esc(stopped() ? T.resumeAria : T.pauseAria) + '">'
+        + '<span class="lbl">' + esc(stopped() ? T.resume : T.pause) + "</span></button>";
+
+      // The body line under the row. Paused and idle share the slot and the treatment the
+      // stale state uses; only the sentence differs, because "I stopped this" and "this
+      // stopped itself" are different facts. No «רענון» when stopped — the resume control
+      // IS the affordance.
+      var body = "";
+      if (S.idle)        { body = iso(T.idleStopped, IDLE_LABEL); }  // one LTR run, isolateLtr reused
+      else if (S.paused) { body = esc(T.paused); }
+      else if (S.stale)  {
+        body = "<span>" + esc(T.staleBody) + "</span>"
+          + '<button type="button" class="btn secondary" data-act="refresh" data-fk="refresh">'
+          + '<span class="lbl">' + esc(T.refresh) + "</span></button>";
+      }
+
+      freshEl.innerHTML =
+        '<div class="fresh"><span>' + iso(T.summary, arrived + "/" + S.total) + "</span>"
+        + '<span class="end"><span>' + right + "</span>" + pBtn + "</span></div>"
+        + (body ? '<div class="stale-body">' + body + "</div>" : "");
+    } else {
+      freshEl.innerHTML = "";
+    }
+
+    // THE LIVE-REGION GUARD, and it is not a micro-optimisation. Setting .textContent
+    // runs the DOM's "string replace all": it removes the existing Text node and
+    // inserts a NEW one even when the string is byte-identical. That is a real
+    // childList mutation inside role="status", so an unguarded assignment on a
+    // 5-second repaint re-announces the last cue for the whole shift — exactly the
+    // spam design.md §7.1 and spec D11 rule out. render() is the ONLY writer of this
+    // node, so one guard here covers the poll, the mutations and the scenario buttons.
+    var nextCue = S.phase === "loading" ? T.loading : S.cue;
+    if (cueEl.textContent !== nextCue) { cueEl.textContent = nextCue; }
+
+    // ---- board --------------------------------------------------------------
+    if (S.phase === "loading") {
+      boardEl.innerHTML = '<div class="sk" aria-hidden="true"><span></span><span></span>'
+                        + "<span></span><span></span></div>";
+    } else if (S.phase === "loadfail") {
+      boardEl.innerHTML =
+        '<p class="outage" role="alert">' + esc(T.loadFailed) + "</p>"
+        + '<div class="actions"><button type="button" class="btn secondary" data-act="refresh" '
+        + 'data-fk="refresh"><span class="lbl">' + esc(T.refresh) + "</span></button></div>";
+    } else if (S.phase === "expired" || S.phase === "forbidden") {
+      // Two terminal states, one shape, two sentences (spec D4.3's {401, 403}).
+      // 401 = deactivation: resolve_session returns None. Reload lands on the login screen.
+      // 403 = demotion: the session resolves fine and RoleGate refuses. Reload lands on
+      //       another 403 — honest, and design F-10 records why nothing better is offered.
+      // Rows are cleared in both: a dead session cannot vouch for them, and on the 403 the
+      // day's list is precisely what she is no longer permitted to see.
+      boardEl.innerHTML =
+        '<p class="ended" role="alert">'
+        + esc(S.phase === "forbidden" ? T.accessEnded : T.sessionEnded) + "</p>"
+        + '<div class="actions"><button type="button" class="btn secondary" data-act="reload" '
+        + 'data-fk="reload"><span class="lbl">' + esc(T.reload) + "</span></button></div>";
+    } else if (S.rows.length === 0) {
+      boardEl.innerHTML =
+        '<div class="card"><div class="empty"><p class="t">' + esc(T.emptyTitle) + "</p>"
+        + '<p class="b">' + esc(T.emptyBody) + "</p></div></div>";
+    } else {
+      boardEl.innerHTML =
+        '<div class="card"><ul class="rows">' + rowsHtml() + "</ul></div>"
+        + (S.total > S.rows.length
+            ? '<p class="trunc">' + iso(T.truncated, String(S.rows.length)) + "</p>"
+            : "");
+    }
+
+    if (focusKey) {
+      var back = frame.querySelector('[data-fk="' + focusKey + '"]');
+      if (back) { back.focus(); }
+    }
+    if (!S.centred && S.phase === "ready" && S.rows.length && !S.bands) {
+      S.centred = true;
+      var div = frame.querySelector("li.now");
+      // FIRST PAINT ONLY. The board never moves the scroll again (design §2.3).
+      if (div && div.scrollIntoView) { div.scrollIntoView({ block: "center" }); }
+    }
+  }
+
+  // ===========================================================================
+  // The simulated poll. SCHEDULE-AFTER-SETTLE, the spec's D4.1 loop: the next tick
+  // is armed from the previous one's completion, so two are never in flight. Most
+  // ticks change NOTHING — the honest common case, and the thing a reviewer has to
+  // sit through to judge the beat.
+  // ===========================================================================
+  var timer = null, beatDue = 0;
+  var SCRIPT = ["none","none","remoteIn","none","newBooking","none","none","remoteIn",
+                "cancel","none","movedAway","none"];
+  var at = 0;
+  // A finger (or mouse button) resting on the board holds the repaint — see tick().
+  var pointerDown = false, heldTick = false;
+
+  var beatSpan = 5000;   // the interval the meter is currently counting down
+
+  function schedule() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    // Bail conditions, in the order they matter:
+    //  - stopped() — the SC 2.2.2 mechanism. THIS is the one a user can operate, and it
+    //    is why the criterion is satisfied. It outranks everything below it.
+    //  - document.hidden — automatic, and NOT a 2.2.2 mechanism (spec D14 says so in as
+    //    many words). A backgrounded tab burns no beat (D4.3).
+    if (stopped() || S.interval === 0 || S.phase !== "ready" || S.busyId || document.hidden) {
+      beatDue = 0;
+      return;
+    }
+    beatSpan = effInterval();          // D4(6): grows with S.fails, capped
+    beatDue = Date.now() + beatSpan;
+    timer = setTimeout(tick, beatSpan);
+  }
+
+  function tick() {
+    // D4.4, enforced at the single entry rather than only at the scheduler: a tick
+    // reached by any other path (a held tick released, a visibility return) must
+    // still never repaint a row whose mutation is in flight. mutate() re-arms.
+    if (S.busyId) { return; }
+
+    // The 2.2.2 stop is enforced at the entry, not only at the scheduler: a tick reached
+    // by ANY other path — a held tick released, a visibility return — must not repaint a
+    // board the user stopped. No schedule() here on purpose: stopped means parked.
+    if (stopped()) { return; }
+
+    // REFLOW UNDER A DESCENDING FINGER (design §7.2 / F-8). An arrival line appearing
+    // on an earlier row grows it by ~26px and slides every later row's control down.
+    // If that lands in the 200-400ms while a finger is already travelling toward a
+    // button, the target moves out from under the tap. So: while a pointer is down on
+    // the board, hold the repaint. schedule() still re-arms, so a lost pointerup can
+    // never stall the loop for more than one interval.
+    if (pointerDown) {
+      heldTick = true;
+      log('פעימה מוחזקת — <span class="dim">אצבע על הלוח. שום שורה לא זזה עד שתרימי.</span>');
+      schedule();
+      return;
+    }
+
+    if (S.stale) {
+      // Still failing. Keep the rows, keep trying, keep the honest stamp — and BACK OFF
+      // (spec D4(6)). There is no server-side ceiling on this path: D3 declines a read
+      // limiter, so the only throttle on a fleet of loyal boards pointed at a sick server
+      // is the client's own. 5s -> 10 -> 20 -> 40 -> 60 cap; the first success resets it.
+      S.fails++;
+      var nextS = Math.round(effInterval() / 1000);
+      log("פעימה נכשלה (<b>" + S.fails + "</b> ברצף). השורות נשארות והשעה לא זזה. "
+          + "הניסיון הבא בעוד <b>" + nextS + "s</b>"
+          + (effInterval() >= BACKOFF_CAP ? " — <b>התקרה</b>" : "")
+          + '. <span class="dim">שימי לב: שום מחרוזת על המסך לא נוקבת במספר הזה — '
+          + 'לכן «אין עדכון מאז» נשאר נכון גם בדקה.</span>');
+      render();
+      schedule();
+      return;
+    }
+
+    // A tick that got through is a success: the backoff resets to the base interval.
+    S.fails = 0;
+
+    var ev = SCRIPT[at % SCRIPT.length], i, b;
+    at++;
+    S.changed = {};
+    S.lastOk = nowMin();
+
+    if (ev === "remoteIn") {
+      b = null;
+      for (i = 0; i < S.rows.length; i++) {
+        if (S.rows[i].status === "confirmed" && S.rows[i].checkedIn === null) { b = S.rows[i]; break; }
+      }
+      if (b) {
+        b.checkedIn = Math.floor(nowMin());
+        S.changed[b.id] = true;
+        log("<b>ריהאם</b> רשמה הגעה של <b>" + esc(b.name)
+            + "</b> ממכשיר אחר. השורה התעדכנה בשקט — ללא הכרזה, ללא הבהוב.");
+      } else { log("פעימה. שום דבר לא השתנה."); }
+    } else if (ev === "newBooking") {
+      var t = Math.floor(nowMin()) + 25 + Math.floor(Math.random() * 40);
+      var nb = mk(t, seq + 3);
+      var idx = 0;
+      while (idx < S.rows.length && S.rows[idx].startMin <= t) { idx++; }
+      S.rows.splice(idx, 0, nb);
+      S.total++;
+      S.changed[nb.id] = true;
+      log("תור חדש נקבע להיום — <b>" + esc(nb.name) + " · " + hhmm(t)
+          + "</b>. נכנס במקומו לפי שעה, בלי לדחוף את מה שמעליו.");
+    } else if (ev === "cancel") {
+      b = null;
+      for (i = S.rows.length - 1; i >= 0; i--) {
+        if (S.rows[i].status === "confirmed" && S.rows[i].checkedIn === null
+            && S.rows[i].startMin > nowMin()) { b = S.rows[i]; break; }
+      }
+      if (b) {
+        b.status = "cancelled";
+        S.changed[b.id] = true;
+        log("<b>" + esc(b.name) + "</b> ביטלה דרך הקישור שלה. השורה נשארת בלוח עם «בוטל» — "
+            + "המקום התפנה, וזו העדות לכך.");
+      } else { log("פעימה. שום דבר לא השתנה."); }
+    } else if (ev === "movedAway") {
+      // A row leaving the day (rescheduled elsewhere) is the ONE case where a repaint
+      // could drop focus to <body>. It is removed — unless it holds focus, in which
+      // case it is kept with a muted note until focus moves (design §7.2).
+      b = null;
+      for (i = S.rows.length - 1; i >= 0; i--) {
+        if (S.rows[i].status === "confirmed" && S.rows[i].checkedIn === null
+            && S.rows[i].startMin > nowMin()) { b = S.rows[i]; break; }
+      }
+      if (b) {
+        var held = document.activeElement
+          && document.activeElement.getAttribute
+          && document.activeElement.getAttribute("data-id") === b.id;
+        if (held) {
+          b.moved = true;
+          log("<b>" + esc(b.name) + "</b> הועברה לתאריך אחר — <b>והמוקד שלך יושב על השורה הזאת</b>, "
+              + "אז היא נשארת עם הערה עד שתעברי הלאה.");
+        } else {
+          S.rows.splice(S.rows.indexOf(b), 1);
+          S.total--;
+          log("<b>" + esc(b.name) + "</b> הועברה לתאריך אחר. השורה ירדה מהלוח.");
+        }
+      } else { log("פעימה. שום דבר לא השתנה."); }
+    } else {
+      log('פעימה. שום דבר לא השתנה. <span class="dim">(רק «עודכן» זז — וזה רוב הפעימות)</span>');
+    }
+
+    // a row kept only because it held focus leaves as soon as focus is elsewhere
+    for (i = S.rows.length - 1; i >= 0; i--) {
+      if (S.rows[i].moved) {
+        var stillHeld = document.activeElement
+          && document.activeElement.getAttribute
+          && document.activeElement.getAttribute("data-id") === S.rows[i].id;
+        if (!stillHeld) { S.rows.splice(i, 1); S.total--; }
+      }
+    }
+
+    render();
+    schedule();
+  }
+
+  // ===========================================================================
+  // The idle stop (spec D14). The SAME stop as the pause button, with a timer instead
+  // of a tap — which is why it is one mechanism and not two. Beyond SC 2.2.2 it also
+  // ends the unattended-counter-tablet exposure pre-decided #27 creates: a signed-in
+  // device holding a live list of named brides for a 12-hour session TTL.
+  // It rides the meter's existing 100ms interval — no second timer for one condition.
+  // ===========================================================================
+  // Interaction resets the WINDOW; it does not un-stop a stopped board. Deliberate:
+  // once the board has announced that it stopped, a stray scroll silently restarting it
+  // would contradict the thing it just said, and spec D14 asks for "one tap to resume" —
+  // meaning the control, not any accident. It also keeps the resume press from being
+  // both an un-idle and a re-pause in the same gesture.
+  function touch() { lastAct = Date.now(); }
+  ["pointerdown", "keydown", "wheel", "focusin"].forEach(function (ev) {
+    frame.addEventListener(ev, touch, { passive: true });
+  });
+
+  // the beat meter (prototype chrome)
+  setInterval(function () {
+    if (!stopped() && S.phase === "ready" && S.interval !== 0
+        && Date.now() - lastAct > IDLE_MS) {
+      S.idle = true;
+      S.cue = fill(T.idleStopped, { v: IDLE_LABEL });   // announced once, role="status"
+      log("<b>עצירה עקב חוסר פעילות.</b> הלוח הפסיק לעדכן את עצמו ואומר למה — "
+          + '<span class="dim">כאן אחרי 45 שניות כדי שאפשר יהיה לראות את זה; בייצור 10 דקות (P-8). '
+          + "נגיעה אחת מחזירה אותו.</span>");
+      render();
+      schedule();
+    }
+
+    var bar = document.getElementById("beatbar"), n = document.getElementById("beatn");
+    if (!beatDue) {
+      bar.style.inlineSize = "0%";
+      n.textContent = S.idle ? "עצירה" : stopped() ? "מושהה" : S.interval === 0 ? "כבוי" : "—";
+      return;
+    }
+    var left = Math.max(0, beatDue - Date.now());
+    bar.style.inlineSize = (100 - (left / beatSpan) * 100).toFixed(1) + "%";
+    n.textContent = (left / 1000).toFixed(1) + "s";
+  }, 100);
+
+  // ===========================================================================
+  // Mutations. NOT optimistic (spec D4.4): the control shows `loading`, and the row
+  // is patched only from the "server's" answer. The loop does not tick while a
+  // mutation is in flight, and the tapped control is disabled so a double tap fires
+  // once (and would be an idempotent no-op even if it did not).
+  // ===========================================================================
+  function mutate(id, kind) {
+    var b = find(id);
+    if (!b || S.busyId) { return; }
+    S.busyId = id;
+    S.rowErrId = null;
+    schedule();            // cancels the pending tick — no repaint under the request
+    render();
+
+    setTimeout(function () {
+      S.busyId = null;
+      S.changed = {};
+
+      if (S.failNext && kind === "in") {
+        // 409 BOOKING_TRANSITION_INVALID — somebody cancelled her in the gap
+        S.failNext = false;
+        document.querySelector('[data-arm="fail"]').setAttribute("aria-pressed", "false");
+        b.status = "cancelled";
+        S.rowErrId = id;
+        log("הפעולה נדחתה — <b>409</b>. מישהי ביטלה את התור בין הפעימה לנגיעה. "
+            + "השגיאה יושבת בתוך השורה, לא בראש המסך: בלוח של 40 שורות שגיאה עליונה לא נוקבת בשם.");
+        render();
+        var er = frame.querySelector('[data-fk="err' + id + '"]');
+        if (er) { er.focus(); }
+        schedule();
+        return;
+      }
+
+      if (kind === "in") {
+        // idempotent by predicate: a second writer keeps the FIRST timestamp
+        if (b.checkedIn === null) { b.checkedIn = Math.floor(nowMin()); }
+        S.cue = fill(T.checkedInCue, { name: b.name });
+        log("נרשמה הגעה של <b>" + esc(b.name) + "</b>. הכפתור התחלף בעובדה, "
+            + "והמוקד עבר להודעה — אחרת הוא היה נופל ל-body.");
+      } else {
+        b.checkedIn = null;
+        S.cue = fill(T.undoneCue, { name: b.name });
+        log("הרישום של <b>" + esc(b.name) + "</b> בוטל. תמיד אפשר — אין חלון זמן (P-3).");
+      }
+      S.changed[id] = true;
+      S.lastOk = nowMin();
+      render();
+      cueEl.focus();       // the tapped control just unmounted (design §7.2)
+      schedule();
+    }, 420);
+  }
+
+  // ===========================================================================
+  // Wiring
+  // ===========================================================================
+  frame.addEventListener("click", function (e) {
+    var el = e.target.closest ? e.target.closest("[data-act]") : null;
+    if (!el) { return; }
+    var act = el.getAttribute("data-act");
+    if (act === "in" || act === "undo") {
+      mutate(el.getAttribute("data-id"), act);
+    } else if (act === "pause") {
+      // ================= THE SC 2.2.2 MECHANISM (spec D14) =================
+      // One button. Pausing stops the loop; resuming fetches IMMEDIATELY and then
+      // resumes the interval — the D4.3 visibilitychange behaviour reused, not
+      // reinvented. Focus stays on the control: it renames, it never unmounts.
+      if (stopped()) {
+        var wasIdle = S.idle;
+        S.paused = false;
+        S.idle = false;
+        S.fails = 0;                  // a resume is fresh intent: back to the base beat
+        S.cue = T.resumed;            // announced once, role="status" — user-initiated
+        lastAct = Date.now();
+        log("<b>חידוש.</b> " + (wasIdle ? "העצירה בוטלה. " : "")
+            + 'בקשה נשלחת <b>מיד</b> — <span class="dim">לא המתנה של פעימה שלמה, '
+            + "ולא בהמשך ההשהיה של הכישלונות הקודמים.</span>");
+        render();
+        tick();                       // immediate fetch, then schedule() re-arms
+      } else {
+        S.paused = true;
+        S.cue = T.paused;             // announced once, role="status"
+        lastAct = Date.now();
+        log("<b>העדכון מושהה על ידי המשתמשת.</b> "
+            + '<span class="dim">זו הדרישה של WCAG 2.0 SC 2.2.2 (רמה A) — מנגנון שהמשתמשת '
+            + "מפעילה. הסתרת לשונית היא אוטומטית ואינה עונה עליה, ו-axe לא בודק את הקריטריון הזה בכלל. "
+            + "השורות נשארות נכונות; רק העדכון נעצר.</span>");
+        render();
+        schedule();                   // stopped() is now true, so this parks the loop
+      }
+    } else if (act === "refresh") {
+      S.stale = false;
+      S.phase = "ready";
+      S.fails = 0;                    // a success resets the backoff (spec D4(6))
+      S.lastOk = nowMin();
+      lastAct = Date.now();
+      log("רענון ידני. הלוח חזר להתעדכן, וההשהיה המצטברת אופסה לדופק הבסיסי.");
+      render();
+      schedule();
+    } else if (act === "reload") {
+      log("«רענון הדף» — בייצור זה טוען מחדש, והדף נוחת על מסך הכניסה.");
+    }
+  });
+
+  // A pointer resting on the board holds the repaint (see tick()); lifting releases
+  // the held tick at once, so the hold costs the board no freshness at all. Listened
+  // for on `document` so a release that wanders off the frame still counts.
+  frame.addEventListener("pointerdown", function () { pointerDown = true; });
+  function releasePointer() {
+    if (!pointerDown) { return; }
+    pointerDown = false;
+    if (heldTick) { heldTick = false; tick(); }
+  }
+  document.addEventListener("pointerup", releasePointer);
+  document.addEventListener("pointercancel", releasePointer);
+
+  // Spec D4.3, made feelable rather than only described: a backgrounded tab pauses the
+  // beat, and coming back fetches IMMEDIATELY — the board is current within one
+  // round-trip of picking the phone up, not within five seconds of it.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      beatDue = 0;
+      return;
+    }
+    // stopped() is checked here too: coming back to a tab whose board the user PAUSED
+    // must not quietly restart it. The user's stop outranks the browser's.
+    if (S.interval !== 0 && S.phase === "ready" && !S.busyId && !stopped()) {
+      tick();
+      // tick() writes its own line, so the note is appended to it rather than logged
+      // first and instantly overwritten — the reviewer has to be able to SEE that the
+      // beat did not merely resume, it fired at once.
+      logEl.innerHTML += " <b>(חזרת ללשונית — הדופק היה מושהה כל עוד היא הייתה ברקע, "
+        + "וזו פעימה מיידית ולא המתנה של חמש שניות.)</b>";
+    } else {
+      schedule();
+    }
+  });
+
+  function group(attr, chosen) {
+    var list = document.querySelectorAll(".proto [" + attr + "]");
+    for (var i = 0; i < list.length; i++) {
+      list[i].setAttribute("aria-pressed", String(list[i].getAttribute(attr) === chosen));
+    }
+  }
+
+  document.querySelectorAll(".proto [data-dev]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var w = b.getAttribute("data-dev");
+      frame.setAttribute("data-w", w);
+      capEl.textContent = w + " · «לוח היום» · אב-טיפוס · הנתונים מדומים";
+      group("data-dev", w);
+    });
+  });
+
+  document.querySelectorAll(".proto [data-int]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      S.interval = parseInt(b.getAttribute("data-int"), 10);
+      group("data-int", b.getAttribute("data-int"));
+      lastAct = Date.now();
+      log(S.interval === 0
+        ? 'ההדמיה כבויה. <span class="dim">זו בקרת סקירה, לא המנגנון של 2.2.2 — '
+          + "המנגנון הוא «השהיה» שבתוך הלוח.</span>"
+        : "דופק הבסיס: כל <b>" + (S.interval / 1000) + " שניות</b>. "
+          + '<span class="dim">שאלה Q-1 — האם 10 שניות מרגישות שונה, כשהשורה «עודכן» ממילא אומרת את האמת.</span>');
+      schedule();
+    });
+  });
+
+  document.getElementById("hl").addEventListener("change", function (e) {
+    S.highlight = e.target.checked;
+    log(S.highlight
+      ? "הדגשת שינויים <b>פועלת</b> — כך זה ייראה אם נסמן שורות שהשתנו. נסי את זה על «יום עמוס»."
+      : "הדגשת שינויים כבויה — זו ההמלצה (D11 / §3.1): הבהוב אפשרי כל חמש שניות, משמרת שלמה.");
+    render();
+  });
+
+  document.getElementById("bands").addEventListener("change", function (e) {
+    S.bands = e.target.checked;
+    log(S.bands
+      ? "תצוגת מצבים (Q-4). <b>עכשיו רשמי הגעה למישהי</b> — השורה שנגעת בה קופצת לקבוצה אחרת."
+      : "רשימה אחת כרונולוגית — ההמלצה (P-4). שום נגיעה לא מזיזה שורה.");
+    render();
+  });
+
+  var SC = {
+    normal:  function () { S.phase = "ready"; S.rows = day(12); S.total = 12; S.stale = false; },
+    busy:    function () { S.phase = "ready"; S.rows = day(40); S.total = 40; S.stale = false; },
+    one:     function () { S.phase = "ready"; S.rows = [mk(15 * 60 + 30, 1)]; S.total = 1; S.stale = false; },
+    empty:   function () { S.phase = "ready"; S.rows = []; S.total = 0; S.stale = false; },
+    long:    function () { S.phase = "ready"; S.rows = day(12, true); S.total = 12; S.stale = false; },
+    trunc:   function () { S.phase = "ready"; S.rows = day(50); S.total = 63; S.stale = false; },
+    loading: function () { S.phase = "loading"; },
+    loadfail:function () { S.phase = "loadfail"; },
+    stale:   function () { S.phase = "ready"; S.stale = true; S.staleSince = S.lastOk; S.fails = 0; },
+    expired: function () { S.phase = "expired"; },
+    forbidden: function () { S.phase = "forbidden"; }
+  };
+  var SC_LOG = {
+    normal:  "יום רגיל, 12 תורים.",
+    busy:    "יום עמוס, 40 תורים. <b>זה המבחן</b> — האם רשימה שמשתנה כל חמש שניות עדיין ניתנת לסריקה.",
+    one:     "תור אחד. אין קו «עכשיו» — הוא מופיע רק כשהוא מפריד בין משהו למשהו.",
+    empty:   "יום ריק. EmptyState בלי כפתור פעולה — הבוטיק לא יכול לקבוע תור מהקונסולה (Q6).",
+    long:    "שם ארוך מאוד. עמודת השם עוטפת; הכפתור לא נדחק ולא מתכווץ מתחת ל-44px.",
+    trunc:   "יום קטוע: 50 מוצגים מתוך 63. השורה התחתונה אומרת את זה במפורש — "
+             + "כלה מוסתרת היא הכשל היחיד שאסור ללוח.",
+    loading: "טעינה ראשונה: שלד, והכרזה אחת באזור המוצהר.",
+    loadfail:"כשל בטעינה הראשונה. אין נתונים על המסך, ולכן יש «רענון» — "
+             + "אין פה שדה תאריך לחזור אליו כמו במסך «תורים».",
+    stale:   "פעימה נכשלה <b>עם שורות על המסך</b>. השורות נשארות, והשעה עוברת ל«אין עדכון מאז» "
+             + "ברישום מודגש (P-6). <b>עכשיו הסתכלי על מד הדופק</b>: כל כישלון רצוף מרחיק את "
+             + "הניסיון הבא — 5, 10, 20, 40, 60 ותו לא (D4(6)). השאלה שלך: האם המשפט על המסך "
+             + "עדיין נכון כשהניסיון הבא בעוד דקה.",
+    expired: "401 — <b>הפסקת פעילות של המשתמשת</b>. הלולאה נעצרת. השורות נמחקות: חיבור מת "
+             + "לא יכול לערוב להן. רענון נוחת על מסך הכניסה.",
+    forbidden:"403 — <b>הורדה בתפקיד באמצע משמרת</b> (D4.3). מסלול קוד אחר לגמרי: החיבור "
+             + "תקין, ה-RoleGate מסרב. הלולאה נעצרת באותה מידה — בלי זה הלוח היה ממשיך "
+             + "לדפוק על השרת כל חמש שניות לנצח אחרי שההרשאה נשללה. "
+             + '<span class="dim">קראי את הנוסח: הוא לא נוקב בתפקיד ולא אומר מה השתנה — '
+             + "הגוף של 403 גנרי בכוונה, כדי שגישוש לא ילמד אילו תפקידים קיימים.</span>"
+  };
+
+  document.querySelectorAll(".proto [data-sc]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var k = b.getAttribute("data-sc");
+      SC[k]();
+      S.cue = "";
+      S.rowErrId = null;
+      S.changed = {};
+      S.lastOk = nowMin();
+      S.centred = false;
+      S.paused = false;          // every scenario starts from a live board
+      S.idle = false;
+      lastAct = Date.now();
+      group("data-sc", k);
+      log(SC_LOG[k]);
+      render();
+      schedule();
+    });
+  });
+
+  document.querySelector('[data-arm="fail"]').addEventListener("click", function () {
+    S.failNext = true;
+    this.setAttribute("aria-pressed", "true");
+    log("הפעולה הבאה תיכשל ב-<b>409</b>. לחצי «הגיעה» על שורה כלשהי.");
+  });
+
+  render();
+  schedule();
+  log('הלוח חי. הפעימה הראשונה בעוד חמש שניות — '
+      + '<span class="dim">רוב הפעימות לא ישנו כלום, וזה הנתון החשוב.</span>');
+})();
+</script>
+</body>
+</html>
