@@ -142,7 +142,11 @@ export function ManageBookingPage({ token }: { token: string }) {
   const { boutique: layoutBoutique, loading: boutiqueLoading } = useBoutique();
   const [view, setView] = useState<View>({ kind: "loading" });
   const [revealed, setRevealed] = useState(false);
-  const [busy, setBusy] = useState(false);
+  // WHICH action is in flight, not merely whether one is. Both controls can be
+  // on screen at once (cancel stays available once attendance is confirmed, and
+  // the reveal does not remove the primary button), so a boolean spun the wrong
+  // button.
+  const [busy, setBusy] = useState<"attend" | "cancel" | null>(null);
   // Written on DISCRETE events only (R16): attendance confirmed, cancellation
   // completed. Never on a keystroke or a render.
   const [announced, setAnnounced] = useState<string | null>(null);
@@ -188,11 +192,12 @@ export function ManageBookingPage({ token }: { token: string }) {
   });
 
   const act = async (
+    which: "attend" | "cancel",
     call: (value: string) => Promise<ManageBookingResponse>,
     announce: string,
     focus: "done" | "cancelled",
   ) => {
-    setBusy(true);
+    setBusy(which);
     try {
       const data = await call(token);
       setRevealed(false);
@@ -214,7 +219,7 @@ export function ManageBookingPage({ token }: { token: string }) {
           : { kind: "failed" },
       );
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
@@ -223,7 +228,7 @@ export function ManageBookingPage({ token }: { token: string }) {
   // in flight — flashing a fallback at a panel that is about to arrive is worse
   // than the small delay.
   const payloadBoutique = view.kind === "loaded" ? fallbackBoutique(view.data.boutique) : null;
-  const contact = layoutBoutique ?? payloadBoutique;
+  const contact = boutiqueLoading ? null : (layoutBoutique ?? payloadBoutique);
 
   if (view.kind === "loading") {
     return (
@@ -330,9 +335,9 @@ export function ManageBookingPage({ token }: { token: string }) {
                 variant="primary"
                 size="lg"
                 fullWidthMobile
-                loading={busy && !revealed}
+                loading={busy === "attend"}
                 onClick={() => {
-                  void act(api.confirmAttendance, "manage.attendanceDone", "done");
+                  void act("attend", api.confirmAttendance, "manage.attendanceDone", "done");
                 }}
               >
                 {t("manage.attendanceCta")}
@@ -388,9 +393,9 @@ export function ManageBookingPage({ token }: { token: string }) {
                   variant="danger"
                   size="md"
                   fullWidthMobile
-                  loading={busy}
+                  loading={busy === "cancel"}
                   onClick={() => {
-                    void act(api.cancelBooking, "manage.cancelled", "cancelled");
+                    void act("cancel", api.cancelBooking, "manage.cancelled", "cancelled");
                   }}
                 >
                   {t("manage.cancelConfirm")}
