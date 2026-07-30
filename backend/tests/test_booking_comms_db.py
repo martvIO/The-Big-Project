@@ -66,6 +66,7 @@ from app.models.constants import (
     ScheduledMessageKind,
     ScheduledMessageStatus,
 )
+from app.models.tenant import Tenant
 from app.notifications.base import SendResult, SmsSendError
 from app.notifications.fake import FakeSmsSender
 from app.notifications.service import NotificationService, OtpService
@@ -1067,6 +1068,23 @@ async def test_the_owner_seams_send_their_bodies(app_role_url: str) -> None:
         await engine.dispose()
 
 
+async def _register_tenant(factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID) -> None:
+    """Put the tenant in the registry.
+
+    Every other test here builds a `CommsTenant`/`ManageTenant` value object and
+    hands it straight to the service, so a tenant-scoped seed is all they need.
+    The backfill is the one path that *discovers* its own tenants, via
+    `TenantsRepository.list_active()` — with no `tenants` row it finds nothing and
+    mints nothing. Without this the mint assertions fail, and worse, the two
+    exclusion tests pass for the wrong reason.
+
+    `tenants` is platform-scoped (no tenant_id, no RLS) and `status` server-defaults
+    to active, so a plain insert with an explicit id is enough.
+    """
+    async with factory() as session, session.begin():
+        session.add(Tenant(id=tenant_id, slug=f"bf-{tenant_id.hex[:12]}", name="בלה כלות"))
+
+
 # --- the backfill ---------------------------------------------------------
 
 
@@ -1078,6 +1096,7 @@ async def test_the_backfill_mints_links_and_schedules_reminders_and_is_rerunnabl
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
+        await _register_tenant(factory, tenant_id)
         type_id = await _seed(factory, tenant_id, capacity=2)
         claims = [
             await _claim(factory, tenant_id, type_id, starts_at=_slot(10 + index))
@@ -1123,6 +1142,7 @@ async def test_the_backfill_skips_a_cancelled_booking(app_role_url: str) -> None
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
+        await _register_tenant(factory, tenant_id)
         type_id = await _seed(factory, tenant_id)
         claim = await _claim(factory, tenant_id, type_id)
         async with tenant_session(factory, tenant_id) as session:
@@ -1144,6 +1164,7 @@ async def test_the_backfill_skips_a_booking_that_has_already_happened(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
+        await _register_tenant(factory, tenant_id)
         type_id = await _seed(factory, tenant_id)
         claim = await _claim(factory, tenant_id, type_id)
         async with tenant_session(factory, tenant_id) as session:
@@ -1164,6 +1185,7 @@ async def test_a_backfilled_link_actually_opens_the_page(app_role_url: str) -> N
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
+        await _register_tenant(factory, tenant_id)
         type_id = await _seed(factory, tenant_id)
         claim = await _claim(factory, tenant_id, type_id)
         async with tenant_session(factory, tenant_id) as session:
