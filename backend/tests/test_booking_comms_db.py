@@ -25,6 +25,7 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -1085,6 +1086,23 @@ async def _register_tenant(factory: async_sessionmaker[AsyncSession], tenant_id:
         session.add(Tenant(id=tenant_id, slug=f"bf-{tenant_id.hex[:12]}", name="בלה כלות"))
 
 
+async def _deregister_tenant(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID
+) -> None:
+    """Remove the registry row again, so the tenant is invisible to every later
+    backfill run in this database.
+
+    `list_active()` is global by design — it is a deploy step, not a per-tenant
+    call — so a registered tenant left behind gets rescanned by the next test's
+    backfill. That is not hypothetical: a booking one test treats as past
+    (relative to its own clock) is future relative to another's, so it gets
+    minted a second time and collides on the pending-unique index. Tearing the
+    row down keeps these tests order-independent.
+    """
+    async with factory() as session, session.begin():
+        await session.execute(delete(Tenant).where(Tenant.id == tenant_id))
+
+
 # --- the backfill ---------------------------------------------------------
 
 
@@ -1133,6 +1151,7 @@ async def test_the_backfill_mints_links_and_schedules_reminders_and_is_rerunnabl
             tenants=first.tenants, tokens_minted=0, reminders_scheduled=0
         )
     finally:
+        await _deregister_tenant(factory, tenant_id)
         await engine.dispose()
 
 
@@ -1153,6 +1172,7 @@ async def test_the_backfill_skips_a_cancelled_booking(app_role_url: str) -> None
 
         assert (await ManageLinkBackfill(factory, clock=lambda: NOW).run()).tokens_minted == 0
     finally:
+        await _deregister_tenant(factory, tenant_id)
         await engine.dispose()
 
 
@@ -1176,6 +1196,7 @@ async def test_the_backfill_skips_a_booking_that_has_already_happened(
         after = SLOT + datetime.timedelta(days=1)
         assert (await ManageLinkBackfill(factory, clock=lambda: after).run()).tokens_minted == 0
     finally:
+        await _deregister_tenant(factory, tenant_id)
         await engine.dispose()
 
 
@@ -1207,6 +1228,7 @@ async def test_a_backfilled_link_actually_opens_the_page(app_role_url: str) -> N
         answer = await _manage(factory).lookup(_manage_tenant(tenant_id), token=token)
         assert answer.booking.starts_at == SLOT
     finally:
+        await _deregister_tenant(factory, tenant_id)
         await engine.dispose()
 
 
