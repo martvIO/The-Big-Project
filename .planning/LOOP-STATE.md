@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F51                    # F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
+current: null                   # F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
                                 # Queue reconciled 2026-07-30 for the finish-the-project run:
                                 # 32 features reachable, 0 unreachable, 3 parked (F18/F29 external, F32 subsumed).
                                 # Verified by simulating the pick rule to exhaustion — deps absent from this
@@ -210,7 +210,8 @@ queue:
     slug: staff-management
     epic: SMC
     title: "Staff management section (owner CRUD)"
-    status: specing
+    status: merged
+    pr: 25
     deps: [F31]
     attempts: 1
     note: >-
@@ -218,8 +219,33 @@ queue:
       guards: no self-deactivate, never remove the last live owner. Role-filtered
       nav table lands here. Deactivation is instantly effective (resolve_session
       re-reads staff_users per request) — no session sweep, do not build one.
-      F31 left a pre-flight for this: test_migrations.py proves boutique_app can
-      write the role past 0011's CHECK under RLS, so the CRUD has a verified seam.
+      SHIPPED as PR #25, merged 2026-07-30, all three gating jobs green on the FIRST
+      CI run (no fix round — unusual for a feature whose headline test is db-marked
+      and therefore debuts on CI). NO MIGRATION: staff_users already carried every
+      column, 0011 already CHECK-pins the role set, the email unique index is already
+      partial on deleted_at IS NULL, and audit_log.action is unconstrained TEXT.
+      THREE THINGS A LATER READER NEEDS.
+      (1) The last-owner guard is a NAMESPACED per-tenant advisory lock taken BEFORE
+      the read: pg_advisory_xact_lock(hashtext('staff:' || tenant_id)). The obvious
+      single-statement UPDATE ... WHERE (SELECT count(*)) > 1 is UNSAFE under READ
+      COMMITTED — two concurrent requests each read a snapshot lacking the other's
+      uncommitted write, both see 2, both commit, tenant ends with zero owners and no
+      error anywhere. A partial unique index cannot express this: an index says "at
+      most one", the invariant is "at least one". The key is PREFIXED so staff edits
+      do not serialize against public booking creates (booking/service.py uses the
+      bare hashtext(tenant_id)). The asyncio.gather race test is db-marked: it is the
+      single test that fails if the lock is dropped, and it only runs on CI.
+      (2) Credential delivery is out of band by necessity, not by choice — there is no
+      mailer in the backend and SMC ruling 1 removed SMS from the staff auth path. The
+      owner types the password and tells the staffer; the console says so and never
+      claims anything was sent. This is also WHY password reset is a PATCH field: the
+      operator CLI's reset_owner_password carries role == OWNER in its WHERE clause, so
+      without it a shift manager who forgets her password has no remedy in the product.
+      (3) Review's best catch: a password write did not revoke the target's existing
+      sessions, so a reset did not lock out whoever held the old credential. Fixed in
+      a8355b5. F51 also adds one control beyond the epic's ask — a SELF password change
+      requires current_password, turning a stolen owner session from a permanent
+      takeover (remedy: an operator CLI ticket) into a session-TTL-bounded one.
   - id: F52
     slug: kpi-dashboard
     epic: SMC
