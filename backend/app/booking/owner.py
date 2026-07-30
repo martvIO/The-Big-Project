@@ -86,17 +86,6 @@ class OwnerResendThrottledError(Exception):
     """
 
 
-class NotAuthorizedError(Exception):
-    """A live staff session whose StaffRole is not OWNER. 403 NOT_AUTHORIZED.
-
-    A no-op today — StaffRole has exactly one member — which is precisely why it
-    ships now: on the day E6 adds ASSISTANT, inheriting the future role model by
-    default would hand an assistant the bride's phone with no code change and no
-    failing test. 403 and not 401: the caller IS authenticated, she is just not
-    an owner.
-    """
-
-
 def _last4(phone: str | None) -> str | None:
     """The most of a number that may be written down. See `correct_phone`'s
     audit payload for why the ids beside it are the part that matters."""

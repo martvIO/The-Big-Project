@@ -1,4 +1,4 @@
-"""F15 fast API tests: route wiring, the owner-role guard, the 401 walk, the
+"""F15 fast API tests: route wiring, the role matrix, the 401 walk, the
 complete error-code table and the post-commit send contract — duck-typed
 FakeOwnerBookingService on `app.state`, a hardcoded TenantContext, no database.
 
@@ -31,6 +31,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+# Imported rather than re-copied: nothing in test_staff_role_gating's import
+# graph reaches this module, so the direction that is a cycle for
+# test_catalog_api is open here — and the tripwire asserting the sentinel never
+# becomes a real StaffRole rides along.
+from test_staff_role_gating import UNKNOWN_ROLE
+
 from app.auth.dependencies import get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
@@ -44,9 +50,9 @@ from app.booking.service import BookingNotFoundError, SlotUnavailableError
 from app.booking.slots import Slot
 from app.booking.validation import BOOKING_LIST_DEFAULT_LIMIT
 from app.errors import DomainValidationError
-from app.main import create_app
+from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.booking import Booking
-from app.models.constants import BookingCancelledBy, BookingStatus
+from app.models.constants import BookingCancelledBy, BookingStatus, StaffRole
 from app.models.customer import Customer
 from app.storefront.validation import SlotWindowError
 from app.tenancy.middleware import TenantContext
@@ -331,19 +337,42 @@ def test_every_route_requires_authentication() -> None:
     assert fake.calls == []  # the guard fires before any service call
 
 
-def test_every_route_refuses_a_staff_member_who_is_not_the_owner() -> None:
-    """Vacuous today — StaffRole has exactly one member — and deliberate: on the
-    day E6 adds ASSISTANT, a data change with no code change and no failing test
-    would otherwise hand that assistant the bride's phone and notes, the ability
-    to cancel any booking, and the ability to re-point a live SMS control link at
-    any number with no OTP."""
+def test_both_staff_roles_are_admitted_on_every_route() -> None:
+    """The real policy, not the one F15 designed alone. D20 shipped a bespoke
+    owner-only `require_owner` written when StaffRole had a single member; F31
+    landed SHIFT_MANAGER first, and the shift-manager console interview — a
+    user-answered decision — ruled the bookings section is "F15's, untouched"
+    with "near-owner permissions". Nothing F15 ships is owner-only, so nothing of
+    F15's belongs in test_staff_role_gating.OWNER_ONLY.
+
+    Widening consequence, recorded rather than buried: a shift manager can
+    therefore perform the phone correction and the link resend — the two
+    owner-attested actions that re-point a live SMS control link with no OTP
+    (spec Risk 2)."""
+    for role in (StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value):
+        fake = FakeOwnerBookingService()
+        with _client(fake, role=role) as client:
+            for method, path, body in ROUTES:
+                resp = client.request(method, path, json=body)
+                assert resp.status_code == 200, f"{role} {method} {path} → {resp.text}"
+
+
+def test_an_unadmitted_role_is_403_on_every_route() -> None:
+    """The router-level gate is F31's `require_role(OWNER, SHIFT_MANAGER)`, so a
+    role the enum does not know fails closed on every route with the SAME generic
+    body — naming the required role would tell a prober which roles exist.
+
+    Compared against the imported constant, so this pins uniformity across
+    routes, not the literals; those are pinned once in
+    test_staff_role_gating.test_the_not_authorized_contract_is_pinned_by_literal.
+    """
     fake = FakeOwnerBookingService()
-    with _client(fake, role="assistant") as client:
+    with _client(fake, role=UNKNOWN_ROLE) as client:
         for method, path, body in ROUTES:
             resp = client.request(method, path, json=body)
             assert resp.status_code == 403, f"{method} {path} → {resp.status_code}"
-            assert resp.json()["error"]["code"] == "NOT_AUTHORIZED"
-    assert fake.calls == []
+            assert resp.json() == NOT_AUTHORIZED_BODY
+    assert fake.calls == []  # the gate fires before any service call
 
 
 def test_every_route_is_wired_and_reaches_the_service() -> None:
@@ -818,18 +847,6 @@ ERROR_CASES: list[ErrorCase] = [
         400,
         "VALIDATION_ERROR",
     ),
-    # NOT_AUTHORIZED needs a row of its own: the completeness check below reads
-    # ERROR_CASES, not every assertion in the module, so the role-guard walk
-    # above would not feed the set.
-    ErrorCase(
-        "detail",
-        "GET",
-        DETAIL_PATH,
-        None,
-        AssertionError("unreachable — the guard fires first"),
-        403,
-        "NOT_AUTHORIZED",
-    ),
 ]
 
 
@@ -839,12 +856,8 @@ def test_every_domain_error_maps_to_its_status_and_house_shape(case: ErrorCase) 
     and there is no error registry, so every one of F15's three new codes is a
     bare 500 until its handler exists."""
     fake = FakeOwnerBookingService()
-    # The role guard is the one row that cannot be provoked from a service raise:
-    # it fires before the handler is reached, which is the point of it.
-    role = "assistant" if case.code == "NOT_AUTHORIZED" else "owner"
-    if role == "owner":
-        fake.raise_on[case.method_name] = case.error
-    with _client(fake, role=role) as client:
+    fake.raise_on[case.method_name] = case.error
+    with _client(fake) as client:
         resp = client.request(case.verb, case.path, json=case.body)
     assert resp.status_code == case.status
     body = resp.json()
@@ -880,9 +893,15 @@ def test_the_throttle_reuses_the_existing_too_many_attempts_body() -> None:
 
 def test_every_spec_error_code_is_asserted() -> None:
     """Mechanical completeness: a row added to the spec's error table without a
-    test here fails immediately, rather than shipping as a 500."""
+    test here fails immediately, rather than shipping as a 500.
+
+    Three codes are asserted by dedicated walks rather than by an ERROR_CASES
+    row, because no service raise can provoke them — they fire before the
+    handler. NOT_AUTHORIZED joined that group on the F31 rebase: the 403 now
+    comes from the shared RoleGate and the handler that answers it is
+    app.auth.dependencies' / main's, not F15's."""
     covered = {case.code for case in ERROR_CASES}
-    covered |= {"NOT_AUTHENTICATED", "CSRF_ORIGIN_MISMATCH"}
+    covered |= {"NOT_AUTHENTICATED", "CSRF_ORIGIN_MISMATCH", "NOT_AUTHORIZED"}
     assert covered == SPEC_ERROR_CODES
 
 

@@ -24,7 +24,6 @@ from app.booking.manage import (
 from app.booking.owner import (
     BookingTransitionInvalidError,
     CustomerAlreadyBookedError,
-    NotAuthorizedError,
     OwnerBookingService,
     OwnerResendThrottledError,
 )
@@ -213,9 +212,6 @@ CUSTOMER_ALREADY_BOOKED_BODY = {
         "code": "CUSTOMER_ALREADY_BOOKED",
         "message": "This customer already has a booking at that time.",
     }
-}
-NOT_AUTHORIZED_BODY = {
-    "error": {"code": "NOT_AUTHORIZED", "message": "This action requires an owner account."}
 }
 
 
@@ -624,11 +620,6 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         request: Request, exc: OwnerResendThrottledError
     ) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
-
-    # 403, not 401: she holds a live session — it is the role that refuses.
-    @app.exception_handler(NotAuthorizedError)
-    async def _not_authorized(request: Request, exc: NotAuthorizedError) -> JSONResponse:
-        return JSONResponse(NOT_AUTHORIZED_BODY, status_code=403)
 
     app.include_router(health_router)
     app.include_router(auth_router)

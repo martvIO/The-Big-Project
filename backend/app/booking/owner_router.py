@@ -33,12 +33,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-from app.auth.dependencies import get_current_staff
+from app.auth.dependencies import get_current_staff, require_role
 from app.auth.service import StaffContext
 from app.booking.comms import BookingCommsService, CommsTenant
 from app.booking.owner import (
     MAX_LIST_OFFSET,
-    NotAuthorizedError,
     OwnerBookingService,
     OwnerMutation,
 )
@@ -71,33 +70,22 @@ def _no_store(response: Response) -> None:
     response.headers["cache-control"] = NO_STORE
 
 
-async def require_owner(
-    staff: Annotated[StaffContext, Depends(get_current_staff)],
-) -> StaffContext:
-    """`get_current_staff` proves only "a live session for this tenant", and
-    `StaffRole` has exactly one member today — so this is a NO-OP right now.
+# Authorization is the ROUTER-level RoleGate, matching the boutique and catalog
+# routers: a route added here cannot forget it, and test_staff_role_gating's
+# default-deny walker reads `allowed_roles` off it. Both members are admitted —
+# the shift-manager console interview ruled the bookings section is F15's,
+# untouched, with near-owner permissions (see spec D20 / Risk 2).
+router = APIRouter(
+    prefix="/manage",
+    dependencies=[
+        Depends(_no_store),
+        Depends(require_role(StaffRole.OWNER, StaffRole.SHIFT_MANAGER)),
+    ],
+)
 
-    That is precisely the argument for writing it. On the day E6 adds ASSISTANT
-    and someone inserts a `staff_users` row, a data change with no code change
-    and no failing test would otherwise hand that assistant the bride's phone
-    and her notes, the ability to cancel any booking, and the ability to
-    re-point a live SMS control link at any number with no OTP. Inheriting the
-    future role model by default is the wrong default on this surface; E6's
-    widening should be a deliberate edit against a failing test.
-
-    403 and not 401: the caller IS authenticated — it is the role that refuses.
-    """
-    if staff.role != StaffRole.OWNER:
-        raise NotAuthorizedError
-    return staff
-
-
-router = APIRouter(prefix="/manage", dependencies=[Depends(_no_store)])
-
-# The guard is the alias, so every route carries it by taking the staff it needs
-# for its audit row anyway. A route that forgot `staff` would be unauthenticated
-# outright, which the ROUTES-driven 401 walk catches.
-Owner = Annotated[StaffContext, Depends(require_owner)]
+# Not a guard — every handler needs the staff row for its audit entry anyway.
+# The gate above is what refuses.
+Owner = Annotated[StaffContext, Depends(get_current_staff)]
 Service = Annotated[OwnerBookingService, Depends(get_owner_booking_service)]
 Comms = Annotated[BookingCommsService, Depends(get_comms_service)]
 
