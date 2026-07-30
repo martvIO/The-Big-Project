@@ -39,15 +39,20 @@ queue:
     slug: booking-comms
     epic: E3
     title: Booking comms lifecycle
-    status: building
+    status: pr-open
     branch: feature/booking-comms
+    pr: 21
     deps: [F13]
     attempts: 1
     note: >-
       Spec Gate 1 approved; design deck critic-accepted 2026-07-29; Hebrew copy
       approved as drafted (Interview Q5) and the short-notice reminder resolved
       (Q4: send immediately, drop «מחר», one date-led body). Branch exists with
-      docs commits only — no code yet. Resume it, do not recreate.
+      Built and pushed as PR #21. Local gates green (639 backend / 938
+      frontend / 69 e2e, zero axe). Security + concurrency reviewed by hand;
+      the multi-dimension agent review kept failing on API 529, so
+      spec-conformance and frontend/a11y are NOT yet independently reviewed —
+      merge is held until they are.
   - id: F15
     slug: owner-booking-management
     epic: E3
