@@ -12,12 +12,14 @@ escaping to a real session raises here instead of passing silently.
 """
 
 import datetime
+import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
@@ -26,7 +28,9 @@ from app.booking.comms import BookingCommsService
 from app.booking.owner import (
     MAX_LIST_OFFSET,
     BookingTransitionInvalidError,
+    CustomerAlreadyBookedError,
     OwnerBookingService,
+    OwnerResendThrottledError,
 )
 from app.booking.schemas import (
     OwnerBookingDetail,
@@ -37,7 +41,7 @@ from app.booking.schemas import (
     PhoneCorrectionRequest,
     RescheduleRequest,
 )
-from app.booking.service import BookingNotFoundError
+from app.booking.service import BookingNotFoundError, SlotUnavailableError
 from app.booking.slots import Slot
 from app.booking.validation import BOOKING_LIST_DEFAULT_LIMIT, BOOKING_LIST_MAX_LIMIT
 from app.db.repositories.audit_log import AuditLogRepository
@@ -78,16 +82,35 @@ class _FakeTransaction:
 
 
 class _FakeSession:
+    """`log` is what makes the reschedule ordering assertable: the advisory lock
+    is a raw statement on the session, not a repository call, so the only way to
+    prove it precedes the read is to record both into one sequence."""
+
+    def __init__(self, log: list[str] | None = None) -> None:
+        self._log = log
+
     def begin(self) -> _FakeTransaction:
         return _FakeTransaction()
 
     async def execute(self, *args: object, **kwargs: object) -> None:
+        if self._log is not None and args:
+            statement = str(args[0])
+            if "pg_advisory_xact_lock" in statement:
+                self._log.append("advisory_lock")
         return None
 
 
 @asynccontextmanager
 async def _fake_session_factory() -> AsyncIterator[_FakeSession]:
     yield _FakeSession()
+
+
+def _recording_session_factory(log: list[str]) -> Any:
+    @asynccontextmanager
+    async def factory() -> AsyncIterator[_FakeSession]:
+        yield _FakeSession(log)
+
+    return factory
 
 
 class _FakeStorefront:
@@ -112,9 +135,10 @@ def _service(
     storefront: _FakeStorefront | None = None,
     *,
     sms_limiter: FixedWindowRateLimiter | None = None,
+    session_factory: Any = None,
 ) -> OwnerBookingService:
     return OwnerBookingService(
-        cast(async_sessionmaker, _fake_session_factory),
+        cast(async_sessionmaker, session_factory or _fake_session_factory),
         storefront=cast(StorefrontService, storefront or _FakeStorefront([])),
         comms=cast(BookingCommsService, object()),
         sms_limiter=sms_limiter or FixedWindowRateLimiter(20, 3600.0, lambda: 0.0),
@@ -354,14 +378,19 @@ def _derive(row: Booking, **changes: object) -> Booking:
 
 
 class _Writes:
-    """Every write the transition path can make, in call order."""
+    """Every read and write the owner paths can make, in call order."""
 
-    def __init__(self) -> None:
+    def __init__(self, loaded: Booking | None) -> None:
+        self.loaded = loaded
         self.order: list[str] = []
         self.set_status: list[dict[str, Any]] = []
         self.cancel: list[dict[str, Any]] = []
         self.cancel_pending: list[uuid.UUID] = []
         self.audit: list[dict[str, Any]] = []
+        self.offered_slot: list[dict[str, Any]] = []
+        self.active_at: list[dict[str, Any]] = []
+        self.reschedule: list[dict[str, Any]] = []
+        self.reminder: list[dict[str, Any]] = []
 
 
 def _install(
@@ -370,7 +399,7 @@ def _install(
     *,
     write_result: Any = _UNSET,
 ) -> _Writes:
-    writes = _Writes()
+    writes = _Writes(booking)
 
     async def _by_id(
         self: object, session: object, tenant_id: uuid.UUID, booking_id: uuid.UUID
@@ -443,6 +472,10 @@ def _install(
         details: dict[str, Any] | None = None,
     ) -> None:
         writes.order.append("audit")
+        # `audit_log.details` is JSONB and `session.add` type-checks nothing, so
+        # a datetime or a UUID in there raises at FLUSH — which a fake-repo suite
+        # would never see. Every audit-writing path pays this one line.
+        json.dumps(details)
         writes.audit.append(
             {"action": action, "actor_id": actor_id, "entity": entity, "details": details}
         )
@@ -693,3 +726,413 @@ async def test_cancel_is_not_metered_by_the_owner_sms_limiter(
     _install(monkeypatch, booking)
     result = await _apply(_service(sms_limiter=_spent_limiter()), "cancel", booking.id)
     assert result.changed is True
+
+
+# ---------------------------------------------------------------------------
+# The D5 reschedule protocol (Task 9)
+#
+# Eight ordered steps in one transaction, and the ORDER is the correctness
+# argument — a test that would still pass with the steps reordered is not
+# testing this. The one that matters most is the advisory lock preceding the
+# read: with the read outside the lock, two submissions of the same dialog both
+# see the ORIGINAL `starts_at`, the second misses the no-op short-circuit, and
+# step 5's `active_at` then finds the booking ITSELF.
+# ---------------------------------------------------------------------------
+
+TARGET = datetime.datetime(2026, 8, 9, 7, 0, tzinfo=datetime.UTC)
+YEAR_9999 = datetime.datetime(9999, 12, 31, 23, 0, tzinfo=datetime.UTC)
+
+
+def _slot(starts_at: datetime.datetime = TARGET, *, capacity: int = 2, booked: int = 0) -> Slot:
+    return Slot(starts_at=starts_at, capacity=capacity, booked=booked)
+
+
+def _install_reschedule(
+    monkeypatch: pytest.MonkeyPatch,
+    writes: _Writes,
+    *,
+    slot: Slot | None = None,
+    seats: set[int] | None = None,
+    collision: Booking | None = None,
+    result: Any = _UNSET,
+    reminder: datetime.datetime | None = None,
+) -> None:
+    """Layers the reschedule-only collaborators onto `_install`'s recorder."""
+
+    async def _offered_slot(session: object, **kwargs: object) -> Slot | None:
+        writes.order.append("offered_slot")
+        writes.offered_slot.append(dict(kwargs))
+        return slot
+
+    async def _active_at(
+        self: object,
+        session: object,
+        tenant_id: uuid.UUID,
+        *,
+        customer_id: uuid.UUID,
+        starts_at: datetime.datetime,
+    ) -> Booking | None:
+        writes.order.append("active_at")
+        writes.active_at.append({"customer_id": customer_id, "starts_at": starts_at})
+        return collision
+
+    async def _active_seats_at(
+        self: object, session: object, tenant_id: uuid.UUID, *, starts_at: datetime.datetime
+    ) -> set[int]:
+        writes.order.append("active_seats_at")
+        return set(seats or set())
+
+    async def _reschedule(
+        self: object,
+        session: object,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        starts_at: datetime.datetime,
+        seat_index: int,
+        not_before: datetime.datetime,
+    ) -> Booking | None:
+        writes.order.append("reschedule")
+        writes.reschedule.append(
+            {"starts_at": starts_at, "seat_index": seat_index, "not_before": not_before}
+        )
+        if isinstance(result, BaseException):
+            raise result
+        if result is not _UNSET:
+            return cast(Booking | None, result)
+        assert writes.loaded is not None
+        return _derive(writes.loaded, starts_at=starts_at, seat_index=seat_index)
+
+    async def _upsert_reminder(session: object, **kwargs: object) -> datetime.datetime | None:
+        writes.order.append("upsert_reminder")
+        writes.reminder.append(dict(kwargs))
+        return reminder
+
+    monkeypatch.setattr("app.booking.owner.offered_slot", _offered_slot)
+    monkeypatch.setattr("app.booking.owner.upsert_reminder", _upsert_reminder)
+    monkeypatch.setattr(BookingsRepository, "active_at", _active_at)
+    monkeypatch.setattr(BookingsRepository, "active_seats_at", _active_seats_at)
+    monkeypatch.setattr(BookingsRepository, "reschedule", _reschedule)
+
+
+# --- step 0: the horizon guard, before any arithmetic ---
+
+
+async def test_a_year_9999_target_is_a_409_and_not_an_overflow_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`AwareDatetime` accepts the whole datetime range and `.astimezone()` on a
+    year-9999 instant raises `OverflowError` — an unhandled 500. Comparison
+    itself cannot overflow, so the guard is total (service.py:180-186)."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+
+    with pytest.raises(SlotUnavailableError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=YEAR_9999, staff=STAFF)
+
+    # Before ANY arithmetic means before the transaction, so not even the read ran.
+    assert writes.order == []
+
+
+async def test_a_target_in_the_past_never_reaches_the_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+    with pytest.raises(SlotUnavailableError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=PAST, staff=STAFF)
+    assert writes.order == []
+
+
+# --- step 1: the lock, BEFORE the read ---
+
+
+async def test_the_advisory_lock_is_taken_before_the_booking_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """This is the assertion that fails if the read moves back above the lock.
+
+    With the read outside the lock, two submissions of the same reschedule
+    dialog both read `starts_at = T0`; A moves the booking to T2 and commits; B
+    wakes holding a stale row, misses the no-op short-circuit, and `active_at`
+    finds the booking itself — a spurious CUSTOMER_ALREADY_BOOKED. The audit row
+    would be wrong too: T0 -> T2 for a move that was T1 -> T2.
+    """
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE, seat_index=1)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+
+    await _service(session_factory=_recording_session_factory(writes.order)).reschedule(
+        TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF
+    )
+
+    assert writes.order.index("advisory_lock") < writes.order.index("by_id")
+    assert writes.order == [
+        "advisory_lock",
+        "by_id",
+        "offered_slot",
+        "active_at",
+        "active_seats_at",
+        "reschedule",
+        "upsert_reminder",
+        "audit",
+    ]
+
+
+# --- step 2: load and guard ---
+
+
+async def test_rescheduling_an_unknown_booking_is_a_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    writes = _install(monkeypatch, None)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+    with pytest.raises(BookingNotFoundError):
+        await _service().reschedule(TENANT_ID, uuid.uuid4(), new_starts_at=TARGET, staff=STAFF)
+
+
+@pytest.mark.parametrize("status", [CANCELLED, NO_SHOW, COMPLETED])
+async def test_only_a_confirmed_booking_moves(monkeypatch: pytest.MonkeyPatch, status: str) -> None:
+    booking = _booking(status=status, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+    with pytest.raises(BookingTransitionInvalidError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert writes.audit == []
+    assert writes.reschedule == []
+
+
+async def test_a_past_booking_cannot_be_rewritten_into_next_week(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guarding only on status would let a Tuesday no-show be silently rewritten
+    into next week's appointment — overwriting the very `starts_at` the
+    attendance record turns on, and texting the bride a confirmation for the
+    appointment she missed."""
+    booking = _booking(status=CONFIRMED, starts_at=PAST)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+    with pytest.raises(BookingTransitionInvalidError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert writes.audit == []
+
+
+# --- step 3: the no-op short-circuit ---
+
+
+async def test_a_move_to_the_instant_it_already_holds_writes_nothing_anywhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not a nicety: `active_at` and `active_seats_at` have no booking-id
+    exclusion, so a no-op move would find ITSELF and 409 a capacity-1 booking
+    against its own seat."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+
+    limiter = FixedWindowRateLimiter(20, 3600.0, lambda: 0.0)
+    result = await _service(sms_limiter=limiter).reschedule(
+        TENANT_ID, booking.id, new_starts_at=FUTURE, staff=STAFF
+    )
+
+    assert (result.booking is booking, result.changed) == (True, False)
+    assert writes.order == ["by_id"]
+    # A no-op spends no budget either: no mutation, no SMS.
+    assert limiter.is_blocked(f"booking:owner_sms:{TENANT_ID}") is False
+
+
+# --- steps 4-6: the three distinguishable 409s ---
+
+
+async def test_an_unoffered_target_is_slot_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One call buys past instants, off-grid times, closed and exception days,
+    the DST rules and capacity — full slots are DROPPED rather than marked."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=None)
+    with pytest.raises(SlotUnavailableError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert writes.audit == []
+    assert writes.reschedule == []
+
+
+async def test_the_customer_already_holding_the_target_is_its_own_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0009's index means one person cannot be at two appointments at one
+    instant, and this is a genuinely different failure from a full slot: the
+    target can have free seats and still be unmovable-into for THIS bride."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot(), collision=_booking())
+
+    with pytest.raises(CustomerAlreadyBookedError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+
+    assert writes.active_at == [{"customer_id": booking.customer_id, "starts_at": TARGET}]
+    assert writes.reschedule == []
+
+
+async def test_a_target_whose_every_seat_is_taken_is_slot_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE, seat_index=1)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot(capacity=2), seats={1, 2})
+    with pytest.raises(SlotUnavailableError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert writes.reschedule == []
+
+
+async def test_the_old_seat_is_never_carried_across(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing in the database bounds a seat by its slot's capacity — 0008's
+    CHECK is 1..1000 — so carrying seat 3 into a capacity-1 target satisfies
+    both the CHECK and the unique index and is a SILENT oversell. The lowest
+    free seat at the target is the only correct answer."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE, seat_index=3)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot(capacity=3), seats={2})
+
+    result = await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+
+    assert writes.reschedule[0]["seat_index"] == 1
+    assert result.booking.seat_index == 1
+
+
+# --- step 7: the guarded write ---
+
+
+async def test_the_move_is_guarded_on_a_confirmed_future_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+    await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert writes.reschedule[0]["not_before"] == NOW
+    assert writes.reschedule[0]["starts_at"] == TARGET
+
+
+async def test_a_zero_row_move_rolls_back_before_the_audit_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-tenant lock serializes this against public creates but NOT
+    against the four owner status endpoints, which take no lock — so a
+    concurrent owner cancel can land between the read and the write."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot(), result=None)
+
+    with pytest.raises(BookingTransitionInvalidError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+
+    assert writes.audit == []
+    assert writes.reminder == []
+
+
+async def test_a_lost_index_race_becomes_slot_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same backstop mapping `create_booking` uses for its own lost race."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(
+        monkeypatch,
+        writes,
+        slot=_slot(),
+        result=IntegrityError("UPDATE bookings", {}, Exception("duplicate key")),
+    )
+    with pytest.raises(SlotUnavailableError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert writes.audit == []
+
+
+# --- step 8: the reminder and the audit row, in this transaction ---
+
+
+async def test_the_reminder_upsert_runs_inside_the_transaction_before_the_audit_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-commit, a crash loses or mis-schedules the reminder with nothing
+    sweeping for the gap, and `drain_due` can claim the stale pending row and
+    clear its token in the window (D11)."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE, seat_index=3)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot(capacity=2), reminder=TARGET)
+
+    await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+
+    assert writes.order.index("upsert_reminder") < writes.order.index("audit")
+    assert writes.reminder[0]["booking_id"] == booking.id
+    assert writes.reminder[0]["starts_at"] == TARGET
+    assert writes.reminder[0]["now"] == NOW
+
+
+async def test_a_suppressed_reminder_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`None` means the moved appointment is inside the <2h band and legitimately
+    gets no reminder — it must not surface as a failure."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot(), reminder=None)
+    result = await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert result.changed is True
+    assert len(writes.audit) == 1
+
+
+async def test_the_audit_row_names_both_instants_and_both_seats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE, seat_index=3)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot(capacity=3), seats={1})
+
+    await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+
+    assert writes.audit == [
+        {
+            "action": AuditAction.BOOKING_RESCHEDULED.value,
+            "actor_id": STAFF.id,
+            "entity": str(booking.id),
+            "details": {
+                # ISO strings: `details` is JSONB, and a datetime in there is a
+                # TypeError at flush that only the db-marked suite would see.
+                "old_starts_at": FUTURE.isoformat(),
+                "new_starts_at": TARGET.isoformat(),
+                "old_seat_index": 3,
+                "new_seat_index": 2,
+            },
+        }
+    ]
+
+
+# --- the budget, before the transaction opens (D10) ---
+
+
+async def test_a_throttled_reschedule_writes_nothing_and_never_opens_a_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+
+    with pytest.raises(OwnerResendThrottledError):
+        await _service(sms_limiter=_spent_limiter()).reschedule(
+            TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF
+        )
+
+    assert writes.order == []
+
+
+async def test_a_committed_reschedule_spends_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One tap, one unit — the class counts only what the caller records, and
+    what D10 meters is the owner tap that caused a real SMS attempt (C4)."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+
+    limiter = FixedWindowRateLimiter(1, 3600.0, lambda: 0.0)
+    await _service(sms_limiter=limiter).reschedule(
+        TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF
+    )
+
+    assert limiter.is_blocked(f"booking:owner_sms:{TENANT_ID}") is True

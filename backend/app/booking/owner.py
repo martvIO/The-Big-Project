@@ -10,13 +10,20 @@ import dataclasses
 import datetime
 import uuid
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
-from app.booking.comms import BookingCommsService
-from app.booking.service import BookingNotFoundError
+from app.booking.comms import BookingCommsService, upsert_reminder
+from app.booking.service import (
+    BOOKABLE_HORIZON,
+    BookingNotFoundError,
+    SlotUnavailableError,
+)
 from app.booking.slots import Slot
+from app.booking.slots_io import offered_slot
 from app.booking.validation import BOOKING_LIST_MAX_LIMIT
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.availability import (
@@ -379,6 +386,180 @@ class OwnerBookingService:
                 details={"from": booking.status, "to": target},
             )
             return OwnerMutation(booking=updated)
+
+    # --- the D5 reschedule protocol ----------------------------------------
+
+    async def reschedule(
+        self,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        new_starts_at: datetime.datetime,
+        staff: StaffContext,
+    ) -> OwnerMutation:
+        """An in-place UPDATE of `(starts_at, seat_index)` on the same row —
+        never a cancel-and-reinsert, which would write `cancelled_at` on a
+        booking that was never cancelled, break the customer's manage link,
+        orphan the `scheduled_messages` row, re-snapshot the terms evidence and
+        break the deposit carry-over the epic promises (D4).
+
+        Eight steps in one transaction, and the ORDER is the correctness
+        argument, not an implementation detail.
+        """
+        now = self._now()
+        # 0. Before ANY arithmetic on `new_starts_at`. `AwareDatetime` accepts
+        #    the entire datetime range and `.astimezone()` on a year-9999
+        #    instant raises OverflowError — an unhandled 500. Comparison itself
+        #    cannot overflow, so this guard is total (service.py:180-186).
+        if not now < new_starts_at <= now + BOOKABLE_HORIZON:
+            raise SlotUnavailableError
+        # Consulted BEFORE the transaction opens (D10), so a 429 writes nothing
+        # and sends nothing. Reschedule is metered because it is UNBOUNDED: a
+        # booking can be walked A<->B<->A between two offered slots forever,
+        # each hop a real SMS plus a reminder rewrite plus a token rotation.
+        budget = self._sms_budget_key(tenant_id)
+        if self._sms_limiter.is_blocked(budget):
+            raise OwnerResendThrottledError
+
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            # 1. BEFORE any read of the booking. Skipping the lock does not
+            #    oversell — the index is the backstop — but reading outside it
+            #    races a public create, and worse: two submissions of the same
+            #    dialog would both see the ORIGINAL starts_at, the second would
+            #    miss the no-op short-circuit below, and step 5 would then find
+            #    the booking ITSELF. Every value used below comes from the
+            #    post-lock read.
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"),
+                {"tenant_id": str(tenant_id)},
+            )
+
+            # 2. Load and guard. Only a confirmed FUTURE booking moves: a
+            #    cancelled one is terminal, and a past one is an attendance
+            #    question — rewriting its `starts_at` would overwrite the record
+            #    D3 forbids lying about and text the bride a confirmation for
+            #    the appointment she missed.
+            booking = await self._bookings.by_id(session, tenant_id, booking_id)
+            if booking is None:
+                raise BookingNotFoundError
+            if booking.status != BookingStatus.CONFIRMED.value:
+                raise BookingTransitionInvalidError(f"reschedule from {booking.status}")
+            if booking.starts_at <= now:
+                raise BookingTransitionInvalidError("reschedule after starts_at")
+
+            # 3. The no-op, and it is load-bearing rather than a nicety:
+            #    `active_at` and `active_seats_at` have no booking-id exclusion,
+            #    so a move to the instant this row already holds would find
+            #    itself and 409 a capacity-1 booking against its own seat.
+            if new_starts_at == booking.starts_at:
+                return OwnerMutation(booking=booking, changed=False)
+
+            # 4. One call buys past instants, off-grid times, closed and
+            #    exception days, the DST rules — and capacity, because full
+            #    slots are dropped rather than marked.
+            slot = await offered_slot(
+                session,
+                tenant_id=tenant_id,
+                starts_at=new_starts_at,
+                now=now,
+                rules=self._rules,
+                exceptions=self._exceptions,
+                bookings=self._bookings,
+            )
+            if slot is None:
+                raise SlotUnavailableError
+
+            # 5. A genuinely different failure from a full slot: the target can
+            #    have free seats and still be unmovable-into for THIS bride
+            #    (0009). Step 3 already excluded the row itself, so a hit here
+            #    is always another booking.
+            collision = await self._bookings.active_at(
+                session, tenant_id, customer_id=booking.customer_id, starts_at=slot.starts_at
+            )
+            if collision is not None:
+                raise CustomerAlreadyBookedError
+
+            # 6. The LOWEST FREE seat at the target — never the old one.
+            #    Nothing in the database bounds a seat by its slot's capacity
+            #    (0008's CHECK is 1..1000), so seat 3 carried into a capacity-1
+            #    target satisfies both the CHECK and the unique index and is a
+            #    silent oversell. Capacity is enforced in Python and nowhere else.
+            seats = await self._bookings.active_seats_at(
+                session, tenant_id, starts_at=slot.starts_at
+            )
+            seat_index = next(
+                (index for index in range(1, slot.capacity + 1) if index not in seats), None
+            )
+            if seat_index is None:
+                raise SlotUnavailableError
+
+            # 7. The move. No extra write releases the source seat — both
+            #    partial unique indexes are re-evaluated over the row's new
+            #    values at statement time.
+            try:
+                updated = await self._bookings.reschedule(
+                    session,
+                    tenant_id,
+                    booking_id,
+                    starts_at=slot.starts_at,
+                    seat_index=seat_index,
+                    not_before=now,
+                )
+            except IntegrityError as exc:
+                raise SlotUnavailableError from exc
+            if updated is None:
+                # The per-tenant lock serializes this against public creates but
+                # NOT against the four owner status endpoints, which take no
+                # lock — so a concurrent cancel or no-show landed between step 2
+                # and here. Roll back rather than commit an audit row for a move
+                # that did not happen and render the old time as though it had.
+                raise BookingTransitionInvalidError("reschedule lost to a concurrent write")
+
+            # 8. The reminder rewrite belongs in THIS transaction (D11): post-
+            #    commit, a crash leaves the OLD send_after on a pending row or
+            #    no reminder at all, and `drain_due` can claim the stale row and
+            #    clear its token in the window. A None is NOT an error — the
+            #    moved appointment is inside the <2h band and legitimately gets
+            #    no reminder.
+            await upsert_reminder(
+                session,
+                tenant_id=tenant_id,
+                booking_id=booking_id,
+                starts_at=slot.starts_at,
+                now=now,
+                bookings=self._bookings,
+                scheduled=self._scheduled,
+            )
+            await self._record(
+                session,
+                tenant_id,
+                staff=staff,
+                action=AuditAction.BOOKING_RESCHEDULED,
+                booking_id=booking_id,
+                details={
+                    # ISO strings, not datetimes: `details` is JSONB and every
+                    # other caller in the repo passes JSON-native scalars — a
+                    # `datetime` in here is a TypeError at flush, on the audit
+                    # row that is the entire point of the epic's reschedule line.
+                    "old_starts_at": booking.starts_at.isoformat(),
+                    "new_starts_at": slot.starts_at.isoformat(),
+                    "old_seat_index": booking.seat_index,
+                    "new_seat_index": seat_index,
+                },
+            )
+            result = OwnerMutation(booking=updated)
+
+        # Immediately after the commit, before returning to the router (C4).
+        # The send is the router's (D11) and reaching back into it would put
+        # limiter plumbing in three handlers to move one line; `_deliver`
+        # swallows provider failures and returns False, so there is no
+        # post-send value to branch on anyway.
+        self._sms_limiter.record_failure(budget)
+        return result
+
+    @staticmethod
+    def _sms_budget_key(tenant_id: uuid.UUID) -> str:
+        return f"booking:owner_sms:{tenant_id}"
 
     async def _record(
         self,
