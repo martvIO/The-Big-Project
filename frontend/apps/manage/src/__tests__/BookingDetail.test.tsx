@@ -36,6 +36,12 @@ const completeBooking = vi.mocked(api.completeBooking);
 const confirmBooking = vi.mocked(api.confirmBooking);
 const correctBookingPhone = vi.mocked(api.correctBookingPhone);
 const resendBookingLink = vi.mocked(api.resendBookingLink);
+const rescheduleBooking = vi.mocked(api.rescheduleBooking);
+const listManageSlots = vi.mocked(api.listManageSlots);
+
+function slot(startsAt: string, remaining = 2) {
+  return { starts_at: startsAt, capacity: 3, remaining };
+}
 
 // Three of the four transitions are clock-guarded, so the fixtures sit either
 // side of "now" by construction rather than by faking the clock — the same
@@ -623,6 +629,218 @@ describe("BookingsSection detail hand-off", () => {
     expect(screen.getByLabelText("תאריך")).toBeInTheDocument();
     expect(listBookings).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("RescheduleDialog", () => {
+  // The booking sits at 10:00 Jerusalem on 2099-08-04, so the dialog's window
+  // is that date through +13 days.
+  const OPEN_DATE = "2099-08-04";
+  const WINDOW_END = "2099-08-17";
+  const NEXT = "2099-08-04T08:30:00Z"; // 11:30 Jerusalem, same day
+  const FAR = "2099-08-25T07:00:00Z"; // outside the fetched window
+
+  async function openDialog(slots = [slot(NEXT)]) {
+    mount();
+    listManageSlots.mockResolvedValue({ slots });
+    fireEvent.click(await screen.findByRole("button", { name: "שינוי מועד" }));
+    return dialogOf("שינוי מועד התור");
+  }
+
+  it("RD-load — a Skeleton in the body and a disabled confirm", async () => {
+    mount();
+    listManageSlots.mockReturnValue(new Promise(() => {}));
+    fireEvent.click(await screen.findByRole("button", { name: "שינוי מועד" }));
+
+    const dialog = dialogOf("שינוי מועד התור");
+    expect(within(dialog).queryByRole("radiogroup")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "עדכון המועד" })).toBeDisabled();
+    expect(listManageSlots).toHaveBeenCalledWith(OPEN_DATE, WINDOW_END);
+  });
+
+  it("IS the confirm — one dialog, the consequence directly above the single submit", async () => {
+    const dialog = await openDialog();
+    await within(dialog).findByRole("radio", { name: "11:30" });
+
+    expect(dialog).toHaveTextContent("המועד יתעדכן, והקישור של הלקוחה יצביע על המועד החדש.");
+    // No second Modal stacked on this one: a focus trap over a focus trap for a
+    // decision she is already reading.
+    expect(document.querySelectorAll("dialog")).toHaveLength(1);
+    expect(within(dialog).getAllByRole("button", { name: "עדכון המועד" })).toHaveLength(1);
+  });
+
+  it("RD — the booking's own time is present and pre-selected even when the grid drops it", async () => {
+    // A capacity-1 target the booking itself occupies never comes back from the
+    // engine, so the dialog injects it (D6).
+    const dialog = await openDialog([slot(NEXT)]);
+    const current = await within(dialog).findByRole("radio", { name: "10:00" });
+
+    expect(current).toBeChecked();
+    expect(within(dialog).getByRole("radio", { name: "11:30" })).not.toBeChecked();
+    // The injected option carries the BARE time: SlotPicker renders every label
+    // inside <bdi dir="ltr">, so appending Hebrew would be a bidi defect.
+    expect(current.closest("label")?.textContent).toBe("10:00");
+    // It is named above the picker instead.
+    expect(dialog).toHaveTextContent("המועד הנוכחי:");
+    expect(dialog).toHaveTextContent("4.8.2099");
+  });
+
+  it("does not duplicate the current time when the grid already carries it", async () => {
+    const dialog = await openDialog([slot(FUTURE), slot(NEXT)]);
+    await within(dialog).findByRole("radio", { name: "11:30" });
+
+    expect(within(dialog).getAllByRole("radio", { name: "10:00" })).toHaveLength(1);
+  });
+
+  it("RD-empty — SlotPicker's own no-slots block, and no second empty message", async () => {
+    // Another date in the window with nothing on it.
+    const dialog = await openDialog([]);
+    fireEvent.change(await within(dialog).findByLabelText("תאריך"), {
+      target: { value: "2099-08-06" },
+    });
+
+    expect(
+      within(dialog).getByText(
+        "אין מועדים פנויים בתאריך הזה. אפשר לבחור תאריך אחר, או לפתוח שעות נוספות במסך «שעות פעילות».",
+      ),
+    ).toBeInTheDocument();
+    // Two stacked empty messages for one emptiness would be worse (design P-4).
+    expect(within(dialog).queryByText("אין תורים בתאריך הזה")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "עדכון המועד" })).toBeDisabled();
+  });
+
+  it("refetches only when the chosen date leaves the fetched window", async () => {
+    const dialog = await openDialog();
+    await within(dialog).findByRole("radio", { name: "11:30" });
+    const field = within(dialog).getByLabelText("תאריך");
+    expect(listManageSlots).toHaveBeenCalledTimes(1);
+
+    // Inside the 14-day window: filtered in memory, no round trip.
+    fireEvent.change(field, { target: { value: "2099-08-10" } });
+    expect(listManageSlots).toHaveBeenCalledTimes(1);
+
+    // Outside it: a fresh window anchored at the new date.
+    fireEvent.change(field, { target: { value: "2099-09-02" } });
+    await waitFor(() =>
+      expect(listManageSlots).toHaveBeenLastCalledWith("2099-09-02", "2099-09-15"),
+    );
+  });
+
+  it("bounds the picker below at today and NOT above — the horizon is a server bound", async () => {
+    const dialog = await openDialog();
+    const field = await within(dialog).findByLabelText("תאריך");
+
+    expect(field).toHaveAttribute("min");
+    // F15 mirrors no server bound client-side: a date past the horizon simply
+    // materializes no slots, which is the truth.
+    expect(field).not.toHaveAttribute("max");
+  });
+
+  it("RD-fail — a 409 keeps the dialog OPEN with the grid intact", async () => {
+    const dialog = await openDialog();
+    fireEvent.click(await within(dialog).findByRole("radio", { name: "11:30" }));
+
+    rescheduleBooking.mockRejectedValue(
+      new ApiError(409, "SLOT_UNAVAILABLE", "That time was just taken. Choose another."),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "עדכון המועד" }));
+
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent("המועד הזה נתפס הרגע. אפשר לבחור מועד אחר.");
+    expect(alert).toHaveClass("text-danger");
+    // Closing it would throw away the fetch she needs to pick again.
+    expect(dialogOf("שינוי מועד התור")).toBeInTheDocument();
+    expect(within(dialog).getByRole("radio", { name: "11:30" })).toBeInTheDocument();
+    expect(listManageSlots).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the submit while the request is in flight", async () => {
+    const dialog = await openDialog();
+    fireEvent.click(await within(dialog).findByRole("radio", { name: "11:30" }));
+
+    rescheduleBooking.mockReturnValue(new Promise(() => {}));
+    fireEvent.click(within(dialog).getByRole("button", { name: "עדכון המועד" }));
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole("button", { name: "עדכון המועד" })).toBeDisabled(),
+    );
+    expect(rescheduleBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes on success, re-renders the detail from the response and announces it", async () => {
+    const dialog = await openDialog();
+    fireEvent.click(await within(dialog).findByRole("radio", { name: "11:30" }));
+
+    rescheduleBooking.mockResolvedValue(detail({ starts_at: NEXT }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "עדכון המועד" }));
+
+    expect(await screen.findByText("המועד עודכן.")).toBeInTheDocument();
+    expect(document.querySelectorAll("dialog")).toHaveLength(0);
+    // The whole detail re-renders from the response, never from what the client
+    // hoped: the facts now read 11:30.
+    expect(screen.getByText("11:30")).toBeInTheDocument();
+    expect(rescheduleBooking).toHaveBeenCalledWith("b1", NEXT);
+  });
+
+  it("restores focus to the trigger when the dialog is dismissed", async () => {
+    mount();
+    listManageSlots.mockResolvedValue({ slots: [slot(NEXT)] });
+    const trigger = await screen.findByRole("button", { name: "שינוי מועד" });
+    fireEvent.click(trigger);
+
+    fireEvent.click(
+      within(dialogOf("שינוי מועד התור")).getByRole("button", { name: "חזרה" }),
+    );
+
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(rescheduleBooking).not.toHaveBeenCalled();
+  });
+
+  it("patches the list row from the reschedule response", async () => {
+    listBookings.mockResolvedValue(listRow());
+    getBooking.mockResolvedValue(detail());
+    listManageSlots.mockResolvedValue({ slots: [slot(NEXT)] });
+    rescheduleBooking.mockResolvedValue(detail({ starts_at: NEXT }));
+
+    render(<BookingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: /מיכל לוי/ }));
+    await screen.findByText("הלקוחה");
+    fireEvent.click(screen.getByRole("button", { name: "שינוי מועד" }));
+
+    const dialog = dialogOf("שינוי מועד התור");
+    fireEvent.click(await within(dialog).findByRole("radio", { name: "11:30" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "עדכון המועד" }));
+    await screen.findByText("המועד עודכן.");
+
+    fireEvent.click(screen.getByRole("button", { name: "חזרה לרשימה" }));
+
+    // One list fetch for the whole flow, and the row carries the new time.
+    expect(await screen.findByText("11:30")).toBeInTheDocument();
+    expect(listBookings).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a slot-fetch failure in the OUTAGE register without closing", async () => {
+    mount();
+    listManageSlots.mockRejectedValue(new ApiError(503, "UNAVAILABLE", "Down."));
+    fireEvent.click(await screen.findByRole("button", { name: "שינוי מועד" }));
+
+    const dialog = dialogOf("שינוי מועד התור");
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveClass("text-ink-muted");
+    expect(within(dialog).getByRole("button", { name: "עדכון המועד" })).toBeDisabled();
+  });
+
+  it("passes axe with zero violations with the dialog open", async () => {
+    getBooking.mockResolvedValue(detail());
+    listManageSlots.mockResolvedValue({ slots: [slot(NEXT), slot(FAR)] });
+    const { container } = renderInShell(
+      <BookingDetail bookingId="b1" onBack={vi.fn()} onBookingChanged={vi.fn()} />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "שינוי מועד" }));
+    await within(dialogOf("שינוי מועד התור")).findByRole("radio", { name: "11:30" });
+
+    const results = await run(container);
+    expect(results.violations).toEqual([]);
+  }, 20000);
 });
 
 describe("BookingDetail accessibility", () => {

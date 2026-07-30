@@ -6,6 +6,7 @@ import { api, ApiError, errorMessage } from "../api";
 import type { OwnerBookingDetail } from "../api";
 import { bookingErrorText, isolateLtr, statusBadge } from "../lib/booking";
 import { jerusalemDate, jerusalemTime } from "../lib/jerusalem";
+import { RescheduleDialog } from "./RescheduleDialog";
 
 export interface BookingDetailProps {
   bookingId: string;
@@ -48,13 +49,16 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
   const [phoneDraft, setPhoneDraft] = useState("");
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [confirmingPhone, setConfirmingPhone] = useState(false);
+  const [rescheduling, setRescheduling] = useState(false);
 
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const statusRef = useRef<HTMLParagraphElement | null>(null);
   const cancelTriggerRef = useRef<HTMLButtonElement | null>(null);
   const phoneTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const rescheduleTriggerRef = useRef<HTMLButtonElement | null>(null);
   const wasCancelOpen = useRef(false);
   const wasPhoneOpen = useRef(false);
+  const wasRescheduleOpen = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,6 +113,13 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
     }
     wasPhoneOpen.current = confirmingPhone;
   }, [confirmingPhone]);
+
+  useEffect(() => {
+    if (wasRescheduleOpen.current && !rescheduling) {
+      rescheduleTriggerRef.current?.focus();
+    }
+    wasRescheduleOpen.current = rescheduling;
+  }, [rescheduling]);
 
   const runAction = async (
     key: string,
@@ -379,7 +390,14 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
                 <div className="flex flex-col gap-3">
                   {liveConfirmed && (
                     <>
-                      <Button variant="secondary" size="md" fullWidthMobile disabled={busy}>
+                      <Button
+                        ref={rescheduleTriggerRef}
+                        variant="secondary"
+                        size="md"
+                        fullWidthMobile
+                        disabled={busy}
+                        onClick={() => setRescheduling(true)}
+                      >
                         {t("booking.rescheduleCta")}
                       </Button>
                       <div className="space-y-1">
@@ -533,6 +551,19 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
                   it — owner-attested, no OTP (D8). */}
               {isolateLtr(t("booking.phoneModalBody", { phone: phoneDraft }), phoneDraft)}
             </Modal>
+          )}
+
+          {rescheduling && (
+            <RescheduleDialog
+              booking={detail}
+              onClose={() => setRescheduling(false)}
+              onRescheduled={(next) => {
+                setRescheduling(false);
+                setDetail(next);
+                onBookingChanged(next);
+                setCue(t("booking.rescheduleDone"));
+              }}
+            />
           )}
         </>
       )}
