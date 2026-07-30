@@ -46,18 +46,19 @@ queue:
     note: >-
       Spec Gate 1 approved; design deck critic-accepted 2026-07-29; Hebrew copy
       approved as drafted (Interview Q5) and the short-notice reminder resolved
-      (Q4: send immediately, drop «מחר», one date-led body). Branch exists with
-      Built and pushed as PR #21. Local gates green (639 backend / 938
-      frontend / 69 e2e, zero axe). Security + concurrency reviewed by hand;
-      the multi-dimension agent review kept failing on API 529, so
-      spec-conformance and frontend/a11y are NOT yet independently reviewed —
-      merge is held until they are.
+      (Q4: send immediately, drop «מחר», one date-led body). Shipped as PR #21,
+      merged 2026-07-30. Local gates were green (639 backend / 938 frontend /
+      69 e2e, zero axe) and security + concurrency were reviewed by hand, but
+      the multi-dimension agent review kept dying on API 529 — spec-conformance
+      and frontend/a11y were never independently reviewed. Carried as debt into
+      F15's review and the E3 epic-boundary QA pass.
   - id: F15
     slug: owner-booking-management
     epic: E3
     title: Owner booking management
-    status: queued
+    status: specing
     deps: [F13, F16]
+    attempts: 1
     note: >-
       Q6: status management + owner reschedule (needs a slot picker in manage).
       Owner-CREATED bookings are explicitly OUT — no verified phone, no accepted
