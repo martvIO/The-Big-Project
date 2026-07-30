@@ -9,7 +9,7 @@
 
 ## Why
 
-Everything in this product sits on three guarantees: a request on `{slug}.ourbrand.co.il` is bound to exactly one tenant, no query can ever read another boutique's rows, and only authenticated staff reach management surfaces. This epic builds those guarantees plus the minimal operator tooling to provision tenants — no customer-facing UI yet, by design. Verification pass trimmed it to pilot-minimum: provisioning is an audited CLI (web console arrives with self-serve signup in E5), slug resolution is a direct DB lookup (no Redis yet), and accounts are owner-only (role column reserved for E6).
+Everything in this product sits on three guarantees: a request on `{slug}.modryn.co.il` is bound to exactly one tenant, no query can ever read another boutique's rows, and only authenticated staff reach management surfaces. This epic builds those guarantees plus the minimal operator tooling to provision tenants — no customer-facing UI yet, by design. Verification pass trimmed it to pilot-minimum: provisioning is an audited CLI (web console arrives with self-serve signup in E5), slug resolution is a direct DB lookup (no Redis yet), and accounts are owner-only (role column reserved for E6).
 
 ---
 

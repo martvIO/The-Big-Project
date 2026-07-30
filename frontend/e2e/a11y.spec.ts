@@ -45,6 +45,10 @@ test("storefront (no data): the failure is Hebrew, never the server's English me
 test("storefront: Hebrew document title + cream color-scheme (no forced dark)", async ({ page }) => {
   await page.goto(STOREFRONT);
   await expect(page).toHaveTitle(/[֐-׿]/); // contains Hebrew
+  // F30: MODRYN brands the platform, not the tenant. The storefront is the
+  // boutique's own shop front — the only platform mark it may carry is the
+  // favicon. A MODRYN in the title here is the regression this pins.
+  await expect(page).not.toHaveTitle(/MODRYN/i);
   const scheme = await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme);
   expect(scheme.trim()).toContain("light");
 });
@@ -124,4 +128,17 @@ test("manage: login screen has zero axe A/AA violations + Hebrew title", async (
   await expect(page).toHaveTitle(/[֐-׿]/);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   expect(results.violations).toEqual([]);
+});
+
+// F30: the console IS the platform, so it carries the brand — in the title and
+// as the login lockup. The lockup is the h1: the mark is decorative (alt="")
+// and the Latin wordmark aria-hidden, so the accessible name is the Hebrew
+// sentence and neither "MODRYN" is announced twice.
+test("manage: login screen is MODRYN-branded and still has exactly one h1", async ({ page }) => {
+  await page.goto(MANAGE);
+  await expect(page).toHaveTitle(/^MODRYN — /);
+  const h1 = page.getByRole("heading", { level: 1 });
+  await expect(h1).toHaveCount(1);
+  await expect(h1).toHaveAccessibleName(/^MODRYN — .*[֐-׿]/);
+  await expect(page.getByText("MODRYN", { exact: true })).toBeVisible();
 });

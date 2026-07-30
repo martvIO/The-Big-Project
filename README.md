@@ -1,6 +1,10 @@
-# Boutique Platform
+<img src="assets/brand/modryn-mark.svg" alt="" width="72">
+
+# MODRYN — Boutique Platform
 
 Multi-tenant SaaS for bridal & evening-wear boutiques in Israel. Hebrew-first (RTL), luxury storefronts on tenant subdomains, booking with deposits, and in-store operations tooling.
+
+**MODRYN is the platform's brand, not the boutiques'.** It appears on the owner console, the domain (`*.modryn.co.il`) and the SMS sender ID; a tenant storefront carries the boutique's own name and gets nothing from MODRYN but the favicon. Brand assets live in [`assets/brand/`](assets/brand/).
 
 - **Backend**: FastAPI (Python 3.13, [uv](https://docs.astral.sh/uv/)) + SQLAlchemy 2 + Alembic + PostgreSQL (row-level security per tenant)
 - **Frontend**: pnpm monorepo — React 19 + Vite + TypeScript + Tailwind 4 (`apps/storefront`, `apps/manage`)

@@ -55,7 +55,7 @@ Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutiq
 
 ### v1 definition of done
 
-- A real boutique lives at `{slug}.ourbrand.co.il`; tenants are provisioned/suspended via the audited CLI.
+- A real boutique lives at `{slug}.modryn.co.il`; tenants are provisioned/suspended via the audited CLI.
 - A customer completes both booking paths in Hebrew RTL, **verifying their phone via one-shot OTP**, accepting the versioned terms.
 - Deposits-on path: booking confirms only after a signature-verified Grow webhook; **an unpaid hold expires and its slot becomes rebookable; an in-window cancellation is recorded refund-due (and refunded); an out-of-window one is forfeited per the accepted terms version; a receipt is issued for every charge**.
 - Deposits-off path: **a booking on a no-deposit appointment type confirms immediately** and triggers the confirmation SMS.
