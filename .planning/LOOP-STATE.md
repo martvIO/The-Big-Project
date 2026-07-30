@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # F15 merged (PR #24); E3 is feature-complete
+current: null                   # F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
 
 queue:
   # ---- cross-cutting ----
