@@ -17,7 +17,9 @@ from app.auth.staff import (
     DuplicateEmailError,
     LastOwnerRequiredError,
     StaffSelfManageError,
+    StaffService,
 )
+from app.auth.staff_router import router as staff_router
 from app.booking.comms import BookingCommsService
 from app.booking.manage import (
     BookingAlreadyStartedError,
@@ -320,6 +322,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.state.auth_service = AuthService(get_session_factory(), settings)
+    # Its own service beside the auth one, never methods on it: AuthService
+    # verifies credentials and issues sessions, and folding administration in
+    # would put the login path's fake into every staff CRUD test.
+    app.state.staff_service = StaffService(get_session_factory())
     app.state.login_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.login_max_attempts,
         window_seconds=settings.login_window_seconds,
@@ -678,6 +684,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # shadow whichever was included first. The ROUTES table in
     # test_booking_owner_api.py is what keeps that honest for this one.
     app.include_router(owner_booking_router)
+    # The fifth /manage router, after the owner booking one. Same hazard, now
+    # with five surfaces on one prefix: a duplicated (method, path) would
+    # silently shadow whichever was included first. The ROUTES table in
+    # test_staff_api.py is what keeps that honest for this one.
+    app.include_router(staff_router)
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
     app.include_router(storefront_router)
