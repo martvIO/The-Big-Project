@@ -71,7 +71,9 @@ One builder subagent working inside the worktree. Its prompt **must** carry the 
 
 ### 6. Dual review
 
-Two reviewers in parallel over the diff: the `phase-reviewer` agent for quality/design, and an adversarial security reviewer. The builder applies **one fix commit per round**. Maximum `max_ci_fix_rounds` rounds. A BLOCKER finding that survives the last round means status `failed` → park → continue to the next feature. Never let a reviewer review its own work.
+Two reviewers in parallel over the diff: the `phase-reviewer` agent for quality/design, and an adversarial security reviewer.
+
+**An empty review result is not a pass.** Reviewer agents can die on transient API errors (529, rate limits) and return zero findings — which is indistinguishable from "clean" if you only read the count. Before treating a review as passed, confirm the reviewers actually *ran*: check the agent/workflow failure list and, for workflows, read `journal.jsonl` in the transcript directory for a `result` line per agent. Zero findings with zero completed agents means **re-run the review**, never merge. The same applies to local gates: a command that failed to execute is not a command that passed. The builder applies **one fix commit per round**. Maximum `max_ci_fix_rounds` rounds. A BLOCKER finding that survives the last round means status `failed` → park → continue to the next feature. Never let a reviewer review its own work.
 
 ### 7. Local gates
 
