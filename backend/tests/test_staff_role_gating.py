@@ -24,6 +24,7 @@ from test_boutique_api import (
     FakeBoutiqueService,
 )
 from test_catalog_api import ROUTES as CATALOG_ROUTES
+from test_catalog_api import FakeCatalogService
 
 from app.auth.dependencies import (
     NotAuthorizedError,
@@ -32,8 +33,11 @@ from app.auth.dependencies import (
 )
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
+from app.catalog.router import get_media_storage
+from app.csrf import CSRF_ORIGIN_MISMATCH_BODY
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.constants import StaffRole
+from app.storage.memory import InMemoryMediaStorage
 from app.tenancy.middleware import TenantContext
 
 TERMS_PUBLISH = ("POST", "/manage/terms")
@@ -44,10 +48,18 @@ TERMS_PUBLISH = ("POST", "/manage/terms")
 # so narrowing the shift manager's surface stays a deliberate, reviewed act.
 OWNER_ONLY = {TERMS_PUBLISH}
 
-# The ONLY /manage routes allowed to carry no RoleGate: login is anonymous by
-# definition; logout and me are any-authenticated-staff. Everything else must
-# refuse or admit each role deliberately. Pinned so pruning a route here is a
-# visible act.
+# The ONLY /manage routes allowed to carry no RoleGate — and NOT for the same
+# reason, which an earlier version of this comment got wrong:
+#   POST /manage/auth/login  — anonymous by definition.
+#   POST /manage/auth/logout — ANONYMOUS TOO, not "any authenticated staff". It
+#       carries no auth dependency at all (app/auth/router.py): with no cookie
+#       the revoke is skipped and the caller still gets 200 {"ok": true}. That is
+#       deliberate — gating the one action a staffer takes when her session is
+#       already broken would 401 it. Pinned by the two logout tests below.
+#   GET  /manage/auth/me     — genuinely any-authenticated-staff: get_current_staff
+#       with no RoleGate, so it 401s without a session and never 403s with one.
+# Everything else must refuse or admit each role deliberately. Pinned so pruning
+# a route here is a visible act.
 UNGATED_ALLOWLIST = {
     ("POST", "/manage/auth/login"),
     ("POST", "/manage/auth/logout"),
@@ -224,14 +236,23 @@ class CountingAuthService(FakeAuthService):
             role=role,
         )
         self.resolve_calls = 0
+        self.logout_calls = 0
 
     async def resolve_session(self, tenant_id: uuid.UUID, token: str) -> StaffContext | None:
         self.resolve_calls += 1
         return await super().resolve_session(tenant_id, token)
 
+    async def logout(self, tenant_id: uuid.UUID, token: str) -> None:
+        self.logout_calls += 1
+        return await super().logout(tenant_id, token)
+
 
 def _client(
-    fake: FakeBoutiqueService, role: str, *, authed: bool = True
+    fake: FakeBoutiqueService,
+    role: str,
+    *,
+    authed: bool = True,
+    catalog: FakeCatalogService | None = None,
 ) -> tuple[TestClient, CountingAuthService]:
     async def _resolver(slug: str) -> TenantContext | None:
         return TENANT if slug == "bella" else None
@@ -244,6 +265,14 @@ def _client(
     )
     app.state.boutique_service = fake
     app.dependency_overrides[get_auth_service] = lambda: auth
+    if catalog is not None:
+        # Wired ONLY when a test needs the catalog surface to answer 2xx. Left
+        # unset otherwise on purpose: test_unknown_role_is_403_on_every_gated_route
+        # depends on the real (ambient-env) service never being reached, so a
+        # decoy gate that carries allowed_roles without raising blows that test up
+        # instead of quietly passing.
+        app.state.catalog_service = catalog
+        app.dependency_overrides[get_media_storage] = lambda: InMemoryMediaStorage()
     client = TestClient(app, base_url="http://bella.localtest.me")
     if authed:
         client.cookies.set("boutique_session", TOKEN, domain="bella.localtest.me")
@@ -251,10 +280,14 @@ def _client(
 
 
 def test_shift_manager_is_admitted_everywhere_except_terms_publishing() -> None:
+    # BOTH route tables, so this is symmetric with the unknown-role walk below:
+    # the spec's matrix grants the shift manager the catalog surface, and without
+    # the catalog half an accidental owner-only catalog router would only be
+    # caught structurally.
     fake = FakeBoutiqueService()
-    client, _ = _client(fake, "shift_manager")
+    client, _ = _client(fake, "shift_manager", catalog=FakeCatalogService())
     with client:
-        for method, path, body in ROUTES:
+        for method, path, body in [*ROUTES, *CATALOG_ROUTES]:
             resp = client.request(method, path, json=body)
             if (method, path) in OWNER_ONLY:
                 assert resp.status_code == 403, (method, path, resp.text)
@@ -309,3 +342,120 @@ def test_gate_does_not_resolve_the_session_twice() -> None:
         resp = client.get("/manage/settings")
         assert resp.status_code == 200
     assert auth.resolve_calls == 1
+
+
+def test_two_gates_on_one_route_still_resolve_the_session_once() -> None:
+    """POST /manage/terms carries BOTH the router gate and its own owner-only
+    tightening. The test above uses a ONE-gate route, so it cannot see a cache
+    miss between two separate RoleGate instances — this one can. Must run as
+    owner: a 403 would short-circuit before the second gate ever resolves."""
+    fake = FakeBoutiqueService()
+    client, auth = _client(fake, "owner")
+    with client:
+        assert client.post("/manage/terms", json=TERMS_BODY).status_code == 200
+    assert auth.resolve_calls == 1
+
+
+# --- the ungated allowlist, pinned ---
+
+
+def test_logout_is_reachable_with_no_session_at_all() -> None:
+    """Logout carries no auth dependency: an anonymous POST gets 200, nothing is
+    resolved, no revoke is attempted, and the cookie is cleared anyway. This is
+    the behaviour UNGATED_ALLOWLIST's comment describes."""
+    fake = FakeBoutiqueService()
+    client, auth = _client(fake, "owner", authed=False)
+    with client:
+        resp = client.post("/manage/auth/logout")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert auth.resolve_calls == 0
+    assert auth.logout_calls == 0
+    assert "boutique_session=" in resp.headers["set-cookie"]
+
+
+def test_logout_never_403s_for_any_role() -> None:
+    """The inverse of every gated route: logout admits owner, shift_manager AND a
+    role the enum does not know. A RoleGate added here would 403 exactly the
+    caller who most needs to get rid of her cookie."""
+    for role in ("owner", "shift_manager", "reception"):
+        fake = FakeBoutiqueService()
+        client, _ = _client(fake, role)
+        with client:
+            assert client.post("/manage/auth/logout").status_code == 200, role
+
+
+def test_me_echoes_an_out_of_enum_role_verbatim() -> None:
+    """Recorded honestly, both halves: the serializer applies NO allowlist, so
+    StaffContext.role reaches the browser exactly as staff_users.role held it.
+    What makes that safe is the DATABASE, not this code path — since 0011 no such
+    row can exist, and test_migrations.py's app-role UPDATE probe is what keeps
+    that true. If a role filter is ever wanted on the wire, this is the test that
+    must change."""
+    fake = FakeBoutiqueService()
+    client, _ = _client(fake, "reception")
+    with client:
+        resp = client.get("/manage/auth/me")
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "reception"
+
+
+# --- precedence and the anonymous surface ---
+
+
+def test_a_forged_origin_beats_the_role_gate_on_the_same_route() -> None:
+    """Two different 403s can answer POST /manage/terms. CsrfOriginMiddleware is
+    added after the tenant middleware, so it runs BEFORE routing and a forged
+    Origin can never surface NOT_AUTHORIZED. resolve_calls is what makes this a
+    precedence test rather than two status-code tests: the forged request never
+    reached dependency solving at all."""
+    fake = FakeBoutiqueService()
+    client, auth = _client(fake, "shift_manager")
+    with client:
+        forged = client.post(
+            "/manage/terms", json=TERMS_BODY, headers={"origin": "http://evil.localtest.me"}
+        )
+        honest = client.post("/manage/terms", json=TERMS_BODY)
+    assert forged.status_code == 403
+    assert forged.json() == CSRF_ORIGIN_MISMATCH_BODY
+    assert honest.status_code == 403
+    assert honest.json() == NOT_AUTHORIZED_BODY
+    assert auth.resolve_calls == 1
+    assert fake.calls == []
+
+
+def test_no_route_outside_manage_carries_a_role_gate() -> None:
+    """The inverse of test_every_manage_route_is_role_gated. /storefront* and
+    /health are anonymous by contract; a RoleGate copy-pasted onto one of them
+    would refuse the open internet — a dead public page rather than a security
+    hole, and the kind of failure no gating test would otherwise notice."""
+    app = create_app(resolver=_null_resolver)
+    checked = 0
+    for route in _leaf_routes(app):
+        path = getattr(route, "path", None)
+        dependant = getattr(route, "dependant", None)
+        if path is None or dependant is None or path.startswith("/manage"):
+            continue
+        checked += 1
+        assert not list(_gate_role_sets(dependant)), f"anonymous route is role-gated: {path}"
+    assert checked, "no non-/manage route was discovered — walker is broken"
+
+
+def test_head_and_options_on_a_gated_route_are_405_before_the_gate() -> None:
+    """Framework-safe AND fail-safe, recorded rather than assumed.
+
+    FastAPI overwrites Starlette's HEAD augmentation (it assigns route.methods
+    after super().__init__, dropping Starlette's `if "GET": add("HEAD")`), so a
+    GET route carries methods == {"GET"} and matching returns PARTIAL → 405
+    before any dependency, gate included, is solved. There is no OPTIONS handler
+    because no CORS middleware is installed.
+
+    If either ever changes, HEAD/OPTIONS start appearing in the method walk of
+    test_every_manage_route_is_role_gated — which is gated-or-allowlisted — so
+    the walker goes red too. This test just names the mechanism."""
+    fake = FakeBoutiqueService()
+    client, auth = _client(fake, "shift_manager")
+    with client:
+        assert client.request("HEAD", "/manage/settings").status_code == 405
+        assert client.request("OPTIONS", "/manage/settings").status_code == 405
+    assert auth.resolve_calls == 0
