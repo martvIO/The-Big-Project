@@ -281,6 +281,69 @@ export async function uploadToStorage(presign: PresignResponse, file: File): Pro
   }
 }
 
+// --- owner booking wire types (mirror backend/app/booking/schemas.py) ---
+
+export interface OwnerBookingRow {
+  id: string;
+  starts_at: string;
+  status: string;
+  attendance_confirmed_at: string | null;
+  customer_name: string;
+  appointment_type_name: string;
+  dress_name: string | null;
+}
+
+export interface OwnerBookingListResponse {
+  items: OwnerBookingRow[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+// The row's fields plus the ones the owner opened the booking for: the list is
+// deliberately without the phone and the free text (D18), so it is not a bulk
+// PII export of the boutique's whole day.
+export interface OwnerBookingDetail extends OwnerBookingRow {
+  customer_phone: string;
+  notes: string | null;
+  dress_id: string | null;
+  dress_size: string | null;
+  seat_index: number;
+  created_at: string;
+  terms_version_accepted: number;
+  terms_accepted_at: string;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
+  // `manage_token_hash` is the stored half of a live control credential and
+  // never reaches the wire — only whether one exists.
+  manage_link_issued: boolean;
+}
+
+export interface OwnerSlotRow {
+  starts_at: string;
+  capacity: number;
+  // The owner's grid carries capacity/remaining, which the anonymous storefront
+  // grid fences off: she legitimately needs to know whether a reschedule target
+  // is about to take the last place (D6).
+  remaining: number;
+}
+
+export interface OwnerSlotListResponse {
+  slots: OwnerSlotRow[];
+}
+
+export interface OwnerBookingListQuery {
+  // A Jerusalem calendar date, YYYY-MM-DD. Required — the console has no
+  // all-bookings view (D17).
+  date: string;
+  offset: number;
+  limit: number;
+}
+
+function bookingPath(bookingId: string): string {
+  return `/manage/bookings/${encodeURIComponent(bookingId)}`;
+}
+
 function dressPath(dressId: string): string {
   return `/manage/dresses/${encodeURIComponent(dressId)}`;
 }
@@ -394,5 +457,53 @@ export const api = {
       method: "PUT",
       body: { media_ids: mediaIds },
     });
+  },
+
+  listBookings(query: OwnerBookingListQuery): Promise<OwnerBookingListResponse> {
+    const params = new URLSearchParams({
+      date: query.date,
+      offset: String(query.offset),
+      limit: String(query.limit),
+    });
+    return apiFetch(`/manage/bookings?${params.toString()}`);
+  },
+  getBooking(bookingId: string): Promise<OwnerBookingDetail> {
+    return apiFetch(bookingPath(bookingId));
+  },
+  // Four verb sub-paths rather than one PATCH with a status field (D7): the
+  // guards and the side effects differ per transition.
+  confirmBooking(bookingId: string): Promise<OwnerBookingDetail> {
+    return apiFetch(`${bookingPath(bookingId)}/confirm`, { method: "POST" });
+  },
+  cancelBooking(bookingId: string): Promise<OwnerBookingDetail> {
+    return apiFetch(`${bookingPath(bookingId)}/cancel`, { method: "POST" });
+  },
+  noShowBooking(bookingId: string): Promise<OwnerBookingDetail> {
+    return apiFetch(`${bookingPath(bookingId)}/no-show`, { method: "POST" });
+  },
+  completeBooking(bookingId: string): Promise<OwnerBookingDetail> {
+    return apiFetch(`${bookingPath(bookingId)}/complete`, { method: "POST" });
+  },
+  rescheduleBooking(bookingId: string, startsAt: string): Promise<OwnerBookingDetail> {
+    return apiFetch(`${bookingPath(bookingId)}/reschedule`, {
+      method: "POST",
+      body: { starts_at: startsAt },
+    });
+  },
+  // The phone travels EXACTLY as typed. There is no client-side normalizer
+  // (D20): a third hand-written copy of normalize_israeli_mobile could refuse a
+  // legal Israeli number, or show her an E.164 different from the one actually
+  // stored on the row whose SMS link is about to rotate. The server's 400 is the
+  // only authority.
+  correctBookingPhone(bookingId: string, phone: string): Promise<OwnerBookingDetail> {
+    return apiFetch(`${bookingPath(bookingId)}/phone`, { method: "POST", body: { phone } });
+  },
+  resendBookingLink(bookingId: string): Promise<OwnerBookingDetail> {
+    return apiFetch(`${bookingPath(bookingId)}/resend-link`, { method: "POST" });
+  },
+  // `from`/`to` are the router's query aliases, not the Python parameter names.
+  listManageSlots(from: string, to: string): Promise<OwnerSlotListResponse> {
+    const params = new URLSearchParams({ from, to });
+    return apiFetch(`/manage/slots?${params.toString()}`);
   },
 };

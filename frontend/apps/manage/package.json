@@ -8,7 +8,7 @@
     "preview": "vite preview",
     "lint": "oxlint -c ../../.oxlintrc.json src",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "TZ=America/New_York vitest run"
   },
   "dependencies": {
     "@boutique/ui": "workspace:*",

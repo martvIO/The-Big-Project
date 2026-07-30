@@ -1,0 +1,47 @@
+// Boutique-calendar reads, never the device's — a port of the storefront's
+// BookPage.tsx helpers. New York is a different calendar day from Jerusalem for
+// part of every day, and a booking belongs to the boutique's day.
+//
+// EVERY formatter here passes `timeZone: JERusalem`, imported from @boutique/ui
+// and never re-declared. Date bounds come from instants the server returned.
+import { JERusalem } from "@boutique/ui";
+
+const DATE_PARTS = new Intl.DateTimeFormat("en-CA", {
+  timeZone: JERusalem,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+const TIME_PARTS = new Intl.DateTimeFormat("en-GB", {
+  timeZone: JERusalem,
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function partsOf(formatter: Intl.DateTimeFormat, instant: Date): Record<string, string> {
+  return Object.fromEntries(
+    formatter.formatToParts(instant).map((part) => [part.type, part.value]),
+  );
+}
+
+// d.m.yyyy, unpadded — the spelling comms_templates.py already texts the bride,
+// so the owner reads one date format across the product.
+export function jerusalemDate(instant: string): string {
+  const parts = partsOf(DATE_PARTS, new Date(instant));
+  return `${Number(parts.day)}.${Number(parts.month)}.${parts.year}`;
+}
+
+export function jerusalemTime(instant: string): string {
+  const parts = partsOf(TIME_PARTS, new Date(instant));
+  return `${parts.hour}:${parts.minute}`;
+}
+
+// The day filter's default: ISO, because that is what <input type="date"> takes,
+// and a JERUSALEM calendar date — it goes through the zoned formatter above like
+// everything else, never a bare device-clock read, which lands on the wrong
+// calendar day for part of every day.
+export function todayJerusalem(): string {
+  const parts = partsOf(DATE_PARTS, new Date());
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}

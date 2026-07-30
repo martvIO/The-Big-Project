@@ -236,3 +236,87 @@ describe("catalog endpoints", () => {
     expect(JSON.parse(init.body as string)).toEqual({ media_ids: ["m2", "m1"] });
   });
 });
+
+// --- owner bookings (Feature 15) ---
+
+const BOOKING_ID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb";
+
+describe("owner booking endpoints", () => {
+  it("sends the required date plus paging as query parameters", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, { items: [], total: 0, offset: 0, limit: 50 }),
+    );
+    await api.listBookings({ date: "2026-08-04", offset: 50, limit: 50 });
+    const [path] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const query = new URL(path, "https://bella.example.test").searchParams;
+    expect(query.get("date")).toBe("2026-08-04");
+    expect(query.get("offset")).toBe("50");
+    expect(query.get("limit")).toBe("50");
+  });
+
+  it("reads one booking under its encoded id", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: BOOKING_ID }));
+    await api.getBooking("b 1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/manage/bookings/b%201",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("posts each transition to its own verb sub-path", async () => {
+    const paths: string[] = [];
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: BOOKING_ID }));
+    await api.confirmBooking(BOOKING_ID);
+    await api.cancelBooking(BOOKING_ID);
+    await api.noShowBooking(BOOKING_ID);
+    await api.completeBooking(BOOKING_ID);
+    for (const call of fetchMock.mock.calls) {
+      const [path, init] = call as [string, RequestInit];
+      expect(init.method).toBe("POST");
+      expect(init.body).toBeUndefined();
+      paths.push(path);
+    }
+    expect(paths).toEqual([
+      `/manage/bookings/${BOOKING_ID}/confirm`,
+      `/manage/bookings/${BOOKING_ID}/cancel`,
+      `/manage/bookings/${BOOKING_ID}/no-show`,
+      `/manage/bookings/${BOOKING_ID}/complete`,
+    ]);
+  });
+
+  it("sends the reschedule target as an aware ISO instant", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: BOOKING_ID }));
+    await api.rescheduleBooking(BOOKING_ID, "2026-08-05T11:00:00Z");
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe(`/manage/bookings/${BOOKING_ID}/reschedule`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ starts_at: "2026-08-05T11:00:00Z" });
+  });
+
+  it("sends the corrected phone exactly as typed — the server normalizes", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: BOOKING_ID }));
+    await api.correctBookingPhone(BOOKING_ID, "050-123 4567");
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe(`/manage/bookings/${BOOKING_ID}/phone`);
+    expect(JSON.parse(init.body as string)).toEqual({ phone: "050-123 4567" });
+  });
+
+  it("rotates the manage link through resend-link", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: BOOKING_ID }));
+    await api.resendBookingLink(BOOKING_ID);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/manage/bookings/${BOOKING_ID}/resend-link`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("asks for the owner slot grid with the from/to aliases the router binds", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { slots: [] }));
+    await api.listManageSlots("2026-08-04", "2026-08-17");
+    const [path] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const query = new URL(path, "https://bella.example.test").searchParams;
+    expect(path.startsWith("/manage/slots?")).toBe(true);
+    expect(query.get("from")).toBe("2026-08-04");
+    expect(query.get("to")).toBe("2026-08-17");
+  });
+});

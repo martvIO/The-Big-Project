@@ -10,7 +10,7 @@ import { ProfileSection } from "./components/ProfileSection";
 import { TermsSection } from "./components/TermsSection";
 import { TypesSection } from "./components/TypesSection";
 
-type SectionKey = "profile" | "hours" | "types" | "terms" | "catalog";
+type SectionKey = "profile" | "hours" | "types" | "terms" | "catalog" | "bookings";
 
 export function App() {
   const { t } = useTranslation();
@@ -53,6 +53,7 @@ export function App() {
     { key: "types", label: t("nav.types") },
     { key: "terms", label: t("nav.terms") },
     { key: "catalog", label: t("nav.catalog") },
+    { key: "bookings", label: t("nav.bookings") },
   ];
 
   return (
@@ -72,6 +73,8 @@ export function App() {
         {section === "types" && <TypesSection />}
         {section === "terms" && <TermsSection />}
         {section === "catalog" && <CatalogSection />}
+        {/* Placeholder panel — the next task swaps it for <BookingsSection />. */}
+        {section === "bookings" && <h2 className="text-lg font-semibold text-ink">{t("booking.heading")}</h2>}
       </ConsoleShell>
     </ToastProvider>
   );
