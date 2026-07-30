@@ -154,8 +154,7 @@ def test_route_table_matches_the_permission_matrix() -> None:
         f"routes lock shift_manager out but are not in OWNER_ONLY: {sorted(wrongly_narrowed)}"
     )
     assert not unenforced_owner_only, (
-        f"OWNER_ONLY routes with no gate excluding shift_manager: "
-        f"{sorted(unenforced_owner_only)}"
+        f"OWNER_ONLY routes with no gate excluding shift_manager: {sorted(unenforced_owner_only)}"
     )
 
 
