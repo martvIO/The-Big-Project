@@ -24,6 +24,7 @@ from app.booking.service import (
 )
 from app.booking.slots import Slot
 from app.booking.slots_io import offered_slot
+from app.booking.tokens import manage_token_hash, mint_manage_token
 from app.booking.validation import BOOKING_LIST_MAX_LIMIT
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.availability import (
@@ -41,6 +42,7 @@ from app.models.constants import (
     BookingStatus,
     ScheduledMessageKind,
 )
+from app.notifications.validation import normalize_israeli_mobile
 from app.storefront.service import StorefrontService
 from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock
 
@@ -90,6 +92,12 @@ class NotAuthorizedError(Exception):
     failing test. 403 and not 401: the caller IS authenticated, she is just not
     an owner.
     """
+
+
+def _last4(phone: str | None) -> str | None:
+    """The most of a number that may be written down. See `correct_phone`'s
+    audit payload for why the ids beside it are the part that matters."""
+    return phone[-4:] if phone else None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -560,6 +568,247 @@ class OwnerBookingService:
     @staticmethod
     def _sms_budget_key(tenant_id: uuid.UUID) -> str:
         return f"booking:owner_sms:{tenant_id}"
+
+    # --- D8's phone correction and D9's resend -----------------------------
+    #
+    # The corrected number is OWNER-ATTESTED — no OTP — because requiring one
+    # would require the bride to be reachable at the number that demonstrably
+    # does not work. That narrows an invariant E3 wrote down three times
+    # (verified at creation, owner-attested thereafter), so the mechanics below
+    # are not optional polish; they are the whole argument for shipping it.
+    #
+    # `reissue_manage_token` is deliberately NOT the caller here. It bundles
+    # mint + rotate + re-point + send across a `tenant_session` of its OWN, and
+    # the mint-rotate-repoint half has to be inside ours: two transactions leave
+    # a window where the booking carries the corrected phone and the ORIGINAL
+    # hash, so the stranger's link still resolves and still cancels the bride's
+    # appointment, with nothing sweeping for it. The service calls the public
+    # `send_confirmation` post-commit with the token it already minted, which is
+    # the same message.
+
+    async def correct_phone(
+        self,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        phone: str,
+        staff: StaffContext,
+    ) -> OwnerMutation:
+        """Remedy a number that demonstrably does not work, and revoke every
+        link that went to it.
+
+        Two branches, and the difference is what was wrong. Non-collision: the
+        DIGITS were wrong, so `customers.phone` is corrected and every live
+        booking of that customer rotates — `customers` is the phone identity and
+        every future SMS reads it at send time, while `manage_token_hash` is
+        per-row. Collision: the IDENTITY was wrong, so the booking re-points at
+        the customer who already holds that number, `customers.phone` is never
+        touched, both rows survive, and only THIS booking rotates.
+        """
+        # Normalized first, so a malformed number is a 400 before the budget is
+        # even consulted — the same function the claim uses, so the stored value
+        # stays E.164 like every other phone in the product.
+        normalized = normalize_israeli_mobile(phone)
+        budget = self._sms_budget_key(tenant_id)
+        if self._sms_limiter.is_blocked(budget):
+            raise OwnerResendThrottledError
+
+        now = self._now()
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            booking = await self._guard_live(session, tenant_id, booking_id, now=now)
+            old_customer_id = booking.customer_id
+            old_customer = await self._customers.by_id(session, tenant_id, old_customer_id)
+            old_phone = old_customer.phone if old_customer is not None else None
+
+            target = await self._customers.by_phone(session, tenant_id, phone=normalized)
+            repointed = target is not None and target.id != old_customer_id
+            if target is not None and repointed:
+                # 0009's index, pre-checked: two sisters in one capacity-2 slot
+                # and a correction of the first onto the second's number would
+                # put two live rows on (tenant, customer B, that instant). With
+                # no error registry the flush escapes as a bare 500, outside the
+                # house error shape. A boutique where a party books together
+                # makes this ordinary, not exotic.
+                collision = await self._bookings.active_at(
+                    session, tenant_id, customer_id=target.id, starts_at=booking.starts_at
+                )
+                if collision is not None:
+                    raise CustomerAlreadyBookedError
+                try:
+                    moved = await self._bookings.set_customer_id(
+                        session,
+                        tenant_id,
+                        booking_id,
+                        customer_id=target.id,
+                        allowed_from=(BookingStatus.CONFIRMED.value,),
+                        not_before=now,
+                    )
+                except IntegrityError as exc:
+                    # The pre-check is the answer; this is the backstop, mapped
+                    # to the same error the way `create_booking` treats its own
+                    # lost race.
+                    raise CustomerAlreadyBookedError from exc
+                if moved is None:
+                    raise BookingTransitionInvalidError("re-point lost to a concurrent write")
+                rotate = [booking]
+                new_customer_id = target.id
+            else:
+                if (
+                    await self._customers.set_phone(
+                        session, tenant_id, old_customer_id, phone=normalized
+                    )
+                    is None
+                ):
+                    raise BookingNotFoundError
+                # Every live booking of that customer, because the phone write
+                # moved all of them onto the new number at once.
+                rotate = await self._bookings.list_live_for_customer(
+                    session, tenant_id, customer_id=old_customer_id, after=now
+                )
+                new_customer_id = old_customer_id
+
+            tokens = await self._rotate_links(session, tenant_id, rotate, now=now)
+            await self._record(
+                session,
+                tenant_id,
+                staff=staff,
+                action=AuditAction.BOOKING_PHONE_CORRECTED,
+                booking_id=booking_id,
+                details={
+                    # Last4 only. `audit_log` is retained on the AUDIT clock, not
+                    # the booking clock, and a full number in JSONB is a second
+                    # uncontrolled copy of the one PII field this feature edits.
+                    # The customer ids are what let an Amendment-13 complaint be
+                    # answered at all: `set_phone` overwrites in place and
+                    # `customers` has no history table, so without them the
+                    # number the link was pointed AWAY from survives nowhere.
+                    "old_phone_last4": _last4(old_phone),
+                    "new_phone_last4": _last4(normalized),
+                    "attested": True,
+                    "old_customer_id": str(old_customer_id),
+                    "new_customer_id": str(new_customer_id),
+                    "repointed": repointed,
+                    "rotated_booking_ids": [str(row.id) for row in rotate],
+                },
+            )
+            # Only the EDITED booking's token leaves. Rotating a sibling's token
+            # silently is the safety half and must be unconditional; texting the
+            # bride N confirmations for N bookings is spend and noise (Risk 9).
+            result = OwnerMutation(booking=booking, manage_token=tokens[booking_id])
+
+        self._sms_limiter.record_failure(budget)
+        return result
+
+    async def resend_link(
+        self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
+    ) -> OwnerMutation:
+        """D8's rotation with no phone edit.
+
+        Resend is not a re-send — it invalidates the old link, and the Hebrew
+        says so. A plain resend is impossible in any case for a booking whose
+        reminder has already fired: `bookings` stores only the sha256 and
+        `cancel_pending` clears the raw token off the terminal row, so nothing
+        on the platform can reproduce a sent link. Rotation is the only
+        behaviour available in every case, which makes it the only honest one.
+
+        No compare-and-swap (D9, the one rejected review finding): two rotations
+        seconds apart produce one live link and one dead one, which IS the
+        specified behaviour, and the row lock orders the writes so the surviving
+        hash is always a real one. The mitigation is the client disabling the
+        button while its request is in flight.
+        """
+        budget = self._sms_budget_key(tenant_id)
+        if self._sms_limiter.is_blocked(budget):
+            raise OwnerResendThrottledError
+
+        now = self._now()
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            booking = await self._guard_live(session, tenant_id, booking_id, now=now)
+            tokens = await self._rotate_links(session, tenant_id, [booking], now=now)
+            await self._record(
+                session,
+                tenant_id,
+                staff=staff,
+                action=AuditAction.BOOKING_LINK_RESENT,
+                booking_id=booking_id,
+                details={"customer_id": str(booking.customer_id)},
+            )
+            result = OwnerMutation(booking=booking, manage_token=tokens[booking_id])
+
+        self._sms_limiter.record_failure(budget)
+        return result
+
+    async def _guard_live(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        now: datetime.datetime,
+    ) -> Booking:
+        """Confirmed AND future, or neither operation runs (D8 mechanic 4).
+
+        Evaluated here in Python for the honest answer, and carried again as the
+        predicate on every rotation UPDATE below so it cannot go stale
+        mid-operation — minting a fresh live control token on a booking that was
+        cancelled seconds ago, and texting a confirmation for an appointment
+        that no longer exists, is verbatim the outcome the guard prevents.
+        """
+        booking = await self._bookings.by_id(session, tenant_id, booking_id)
+        if booking is None:
+            raise BookingNotFoundError
+        if booking.status != BookingStatus.CONFIRMED.value:
+            raise BookingTransitionInvalidError(f"link rotation on a {booking.status} booking")
+        if booking.starts_at <= now:
+            raise BookingTransitionInvalidError("link rotation after starts_at")
+        return booking
+
+    async def _rotate_links(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        bookings: list[Booking],
+        *,
+        now: datetime.datetime,
+    ) -> dict[uuid.UUID, str]:
+        """Mint, rotate the hash under the guard predicate, and re-point the
+        pending reminder — for each booking, inside the caller's transaction.
+
+        The reminder re-point is the `reissue_manage_token` idiom verbatim (ORM
+        attribute assignment on the loaded row): without it the reminder would
+        send a link this rotation just invalidated.
+
+        A `None` back from the rotation is a HARD failure that rolls the whole
+        transaction back, never a discarded result. There must be no committed
+        state in which the phone is corrected and the old hash survives — the
+        stranger's link would still resolve through `by_manage_token_hash` and
+        still cancel the bride's appointment at a route that has no phone check.
+        """
+        tokens: dict[uuid.UUID, str] = {}
+        for booking in bookings:
+            token = mint_manage_token()
+            rotated = await self._bookings.set_manage_token_hash(
+                session,
+                tenant_id,
+                booking.id,
+                token_hash=manage_token_hash(token),
+                allowed_from=(BookingStatus.CONFIRMED.value,),
+                not_before=now,
+            )
+            if rotated is None:
+                raise BookingTransitionInvalidError(
+                    f"rotation lost to a concurrent write on booking {booking.id}"
+                )
+            pending = await self._scheduled.pending_for_booking(
+                session,
+                tenant_id,
+                booking_id=booking.id,
+                kind=ScheduledMessageKind.REMINDER.value,
+            )
+            if pending is not None:
+                pending.manage_token = token
+            tokens[booking.id] = token
+        return tokens
 
     async def _record(
         self,

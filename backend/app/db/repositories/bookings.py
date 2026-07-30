@@ -125,19 +125,76 @@ class BookingsRepository:
         return (await session.execute(stmt)).scalar_one_or_none()
 
     async def set_manage_token_hash(
-        self, session: AsyncSession, tenant_id: UUID, booking_id: UUID, *, token_hash: str
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        booking_id: UUID,
+        *,
+        token_hash: str,
+        allowed_from: tuple[str, ...] | None = None,
+        not_before: datetime | None = None,
     ) -> Booking | None:
         """Mint-or-rotate. The backfill uses it to fill a pre-F16 row; F15's
         edit-phone remedy and its resend call this directly, inside their own
-        transaction (D8), to invalidate a link that went to the wrong number."""
+        transaction (D8), to invalidate a link that went to the wrong number.
+
+        The two guard keywords are F15's and default to off, so the backfill and
+        `reissue_manage_token` keep today's contract byte for byte. F15 passes
+        `('confirmed',)` and `now`: D8 requires the same predicate the Python
+        guard checked to ride the rotation UPDATE, so a booking that stopped
+        being confirmed-and-future between the read and here cannot be handed a
+        fresh LIVE control token. That is what makes `None` mean something the
+        caller must roll back on rather than a discarded result."""
+        predicate = [
+            Booking.tenant_id == tenant_id,
+            Booking.id == booking_id,
+            Booking.deleted_at.is_(None),
+        ]
+        if allowed_from is not None:
+            predicate.append(Booking.status.in_(allowed_from))
+        if not_before is not None:
+            predicate.append(Booking.starts_at > not_before)
+        stmt = (
+            update(Booking)
+            .where(*predicate)
+            .values(manage_token_hash=token_hash)
+            .returning(Booking.id)
+        )
+        if (await session.execute(stmt)).scalar_one_or_none() is None:
+            return None
+        return await self.by_id(session, tenant_id, booking_id)
+
+    async def set_customer_id(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        booking_id: UUID,
+        *,
+        customer_id: UUID,
+        allowed_from: tuple[str, ...],
+        not_before: datetime,
+    ) -> Booking | None:
+        """D8's collision branch: the corrected number already belongs to
+        another live customer of this tenant, so the BOOKING moves to her rather
+        than the digits moving onto a row that is not hers. Both customer rows
+        survive — the original may be a real other person, and soft-deleting on
+        a guess is worse than leaving a row nobody looks at.
+
+        Carries the same confirmed-and-future guard as the rotation beside it.
+        The flush can still raise `IntegrityError` from
+        `idx_bookings_tenant_customer_starts_unique` (0009) when the target
+        customer already holds this instant; the service pre-checks with
+        `active_at` so that is a 409 and not a 500, and this is the backstop."""
         stmt = (
             update(Booking)
             .where(
                 Booking.tenant_id == tenant_id,
                 Booking.id == booking_id,
+                Booking.status.in_(allowed_from),
+                Booking.starts_at > not_before,
                 Booking.deleted_at.is_(None),
             )
-            .values(manage_token_hash=token_hash)
+            .values(customer_id=customer_id)
             .returning(Booking.id)
         )
         if (await session.execute(stmt)).scalar_one_or_none() is None:

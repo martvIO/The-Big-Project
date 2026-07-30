@@ -46,7 +46,9 @@ from app.booking.slots import Slot
 from app.booking.validation import BOOKING_LIST_DEFAULT_LIMIT, BOOKING_LIST_MAX_LIMIT
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
+from app.errors import DomainValidationError
 from app.models.booking import Booking
 from app.models.constants import AuditAction, BookingCancelledBy, BookingStatus, StaffRole
 from app.storefront.service import StorefrontService
@@ -391,6 +393,10 @@ class _Writes:
         self.active_at: list[dict[str, Any]] = []
         self.reschedule: list[dict[str, Any]] = []
         self.reminder: list[dict[str, Any]] = []
+        self.by_phone: list[str] = []
+        self.set_phone: list[dict[str, Any]] = []
+        self.rotations: list[dict[str, Any]] = []
+        self.repoint: list[dict[str, Any]] = []
 
 
 def _install(
@@ -1134,5 +1140,562 @@ async def test_a_committed_reschedule_spends_the_budget(monkeypatch: pytest.Monk
     await _service(sms_limiter=limiter).reschedule(
         TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF
     )
+
+    assert limiter.is_blocked(f"booking:owner_sms:{TENANT_ID}") is True
+
+
+# ---------------------------------------------------------------------------
+# Phone correction and resend (Task 10) — the feature's dangerous surface
+#
+# The corrected number is OWNER-ATTESTED: no OTP, because requiring one would
+# require the bride to be reachable at the number that demonstrably does not
+# work. What makes that safe enough is mechanical, and every mechanic below has
+# a test: normalize first, meter before the transaction opens, rotate INSIDE the
+# write, roll back on any failed rotation, and never put a full number in the
+# audit row.
+# ---------------------------------------------------------------------------
+
+WRONG_PHONE = "+972500001111"
+RIGHT_PHONE = "+972500002222"
+TOKENS = ["tok-one", "tok-two", "tok-three"]
+
+
+class _FakeCustomer:
+    def __init__(self, phone: str, customer_id: uuid.UUID | None = None) -> None:
+        self.id = customer_id or uuid.uuid4()
+        self.phone = phone
+
+
+class _FakePending:
+    """The pending reminder row. `reissue_manage_token` re-points it by ORM
+    attribute assignment inside the session, and F15 mirrors that exactly."""
+
+    def __init__(self) -> None:
+        self.manage_token: str | None = "stale-token"
+
+
+def _install_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+    writes: _Writes,
+    *,
+    live: list[Booking] | None = None,
+    by_phone: _FakeCustomer | None = None,
+    owner_customer: _FakeCustomer | None = None,
+    collision: Booking | None = None,
+    set_phone_result: Any = _UNSET,
+    hash_result: Any = _UNSET,
+    repoint_result: Any = _UNSET,
+    pending: dict[uuid.UUID, _FakePending] | None = None,
+) -> None:
+    minted = list(TOKENS)
+
+    def _mint() -> str:
+        return minted.pop(0)
+
+    async def _by_phone(self: object, session: object, tenant_id: uuid.UUID, *, phone: str) -> Any:
+        writes.order.append("by_phone")
+        writes.by_phone.append(phone)
+        return by_phone
+
+    async def _customer_by_id(
+        self: object, session: object, tenant_id: uuid.UUID, customer_id: uuid.UUID
+    ) -> Any:
+        return owner_customer
+
+    async def _set_phone(
+        self: object, session: object, tenant_id: uuid.UUID, customer_id: uuid.UUID, *, phone: str
+    ) -> Any:
+        writes.order.append("set_phone")
+        writes.set_phone.append({"customer_id": customer_id, "phone": phone})
+        if set_phone_result is not _UNSET:
+            return set_phone_result
+        return _FakeCustomer(phone, customer_id)
+
+    async def _list_live(
+        self: object,
+        session: object,
+        tenant_id: uuid.UUID,
+        *,
+        customer_id: uuid.UUID,
+        after: datetime.datetime,
+    ) -> list[Booking]:
+        writes.order.append("list_live")
+        return list(live or [])
+
+    async def _set_hash(
+        self: object,
+        session: object,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        token_hash: str,
+        allowed_from: tuple[str, ...] | None = None,
+        not_before: datetime.datetime | None = None,
+    ) -> Booking | None:
+        writes.order.append("set_manage_token_hash")
+        writes.rotations.append(
+            {"booking_id": booking_id, "allowed_from": allowed_from, "not_before": not_before}
+        )
+        if hash_result is not _UNSET:
+            return cast(Booking | None, hash_result)
+        assert writes.loaded is not None
+        return _derive(writes.loaded)
+
+    async def _set_customer_id(
+        self: object,
+        session: object,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        customer_id: uuid.UUID,
+        allowed_from: tuple[str, ...],
+        not_before: datetime.datetime,
+    ) -> Booking | None:
+        writes.order.append("set_customer_id")
+        writes.repoint.append({"booking_id": booking_id, "customer_id": customer_id})
+        if isinstance(repoint_result, BaseException):
+            raise repoint_result
+        if repoint_result is not _UNSET:
+            return cast(Booking | None, repoint_result)
+        assert writes.loaded is not None
+        return _derive(writes.loaded, customer_id=customer_id)
+
+    async def _pending_for_booking(
+        self: object, session: object, tenant_id: uuid.UUID, *, booking_id: uuid.UUID, kind: str
+    ) -> Any:
+        return (pending or {}).get(booking_id)
+
+    async def _active_at(
+        self: object,
+        session: object,
+        tenant_id: uuid.UUID,
+        *,
+        customer_id: uuid.UUID,
+        starts_at: datetime.datetime,
+    ) -> Booking | None:
+        writes.order.append("active_at")
+        writes.active_at.append({"customer_id": customer_id, "starts_at": starts_at})
+        return collision
+
+    monkeypatch.setattr("app.booking.owner.mint_manage_token", _mint)
+    monkeypatch.setattr(CustomersRepository, "by_phone", _by_phone)
+    monkeypatch.setattr(CustomersRepository, "by_id", _customer_by_id)
+    monkeypatch.setattr(CustomersRepository, "set_phone", _set_phone)
+    monkeypatch.setattr(BookingsRepository, "list_live_for_customer", _list_live)
+    monkeypatch.setattr(BookingsRepository, "set_manage_token_hash", _set_hash)
+    monkeypatch.setattr(BookingsRepository, "set_customer_id", _set_customer_id)
+    monkeypatch.setattr(BookingsRepository, "active_at", _active_at)
+    monkeypatch.setattr(ScheduledMessagesRepository, "pending_for_booking", _pending_for_booking)
+
+
+async def _correct(
+    service: OwnerBookingService, booking_id: uuid.UUID, phone: str = "050-000-2222"
+) -> Any:
+    return await service.correct_phone(TENANT_ID, booking_id, phone=phone, staff=STAFF)
+
+
+# --- mechanic 1: normalize first ---
+
+
+@pytest.mark.parametrize("raw", ["", "not a phone", "+1 415 555 0100", "03-1234567"])
+async def test_a_malformed_phone_is_a_400_before_anything_is_written(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """Through the same `normalize_israeli_mobile` the claim uses, so the stored
+    value stays E.164 like every other phone in the product. No client-side copy
+    of this exists and none is added (D20)."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(monkeypatch, writes)
+
+    with pytest.raises(DomainValidationError):
+        await _correct(_service(), booking.id, raw)
+
+    assert writes.order == []
+
+
+async def test_the_stored_number_is_the_e164_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch, writes, live=[booking], owner_customer=_FakeCustomer(WRONG_PHONE)
+    )
+    await _correct(_service(), booking.id, "050-000-2222")
+    assert writes.set_phone[0]["phone"] == RIGHT_PHONE
+    assert writes.by_phone == [RIGHT_PHONE]
+
+
+# --- mechanic 4: the guard, on both operations ---
+
+
+@pytest.mark.parametrize("operation", ["correct_phone", "resend_link"])
+@pytest.mark.parametrize(
+    ("status", "starts_at"),
+    [(CANCELLED, FUTURE), (NO_SHOW, PAST), (COMPLETED, PAST), (CONFIRMED, PAST)],
+)
+async def test_neither_operation_touches_a_booking_that_is_not_confirmed_and_future(
+    monkeypatch: pytest.MonkeyPatch, operation: str, status: str, starts_at: datetime.datetime
+) -> None:
+    """A live control link must never be minted for an appointment that no
+    longer exists — that is the outcome the guard exists to prevent."""
+    booking = _booking(status=status, starts_at=starts_at)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(monkeypatch, writes, live=[booking])
+
+    with pytest.raises(BookingTransitionInvalidError):
+        if operation == "correct_phone":
+            await _correct(_service(), booking.id)
+        else:
+            await _service().resend_link(TENANT_ID, booking.id, staff=STAFF)
+
+    assert writes.rotations == []
+    assert writes.audit == []
+
+
+@pytest.mark.parametrize("operation", ["correct_phone", "resend_link"])
+async def test_an_unknown_booking_is_a_404_on_both_operations(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    writes = _install(monkeypatch, None)
+    _install_rotation(monkeypatch, writes)
+    with pytest.raises(BookingNotFoundError):
+        if operation == "correct_phone":
+            await _correct(_service(), uuid.uuid4())
+        else:
+            await _service().resend_link(TENANT_ID, uuid.uuid4(), staff=STAFF)
+
+
+# --- the non-collision branch: every live booking of that customer rotates ---
+
+
+async def test_the_non_collision_branch_rotates_every_live_booking_of_that_customer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`customers` IS the phone identity, so `set_phone` moves every booking that
+    customer holds onto the new number — but `manage_token_hash` is per-row. A
+    bride holding two live bookings against the same mistyped number would
+    otherwise keep a working stranger-held cancel link on the second one."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    sibling = _booking(status=CONFIRMED, starts_at=TARGET, customer_id=booking.customer_id)
+    writes = _install(monkeypatch, booking)
+    sibling_pending = _FakePending()
+    _install_rotation(
+        monkeypatch,
+        writes,
+        live=[booking, sibling],
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+        pending={sibling.id: sibling_pending},
+    )
+
+    result = await _correct(_service(), booking.id)
+
+    assert [row["booking_id"] for row in writes.rotations] == [booking.id, sibling.id]
+    # The rotation carries the guard predicate so it cannot go stale mid-loop.
+    assert writes.rotations[0]["allowed_from"] == (CONFIRMED,)
+    assert writes.rotations[0]["not_before"] == NOW
+    # The sibling's pending reminder now carries the sibling's NEW token, or it
+    # would send a link this call just invalidated.
+    assert sibling_pending.manage_token == TOKENS[1]
+    # ...and the token that leaves is the one minted for the EDITED booking.
+    assert result.manage_token == TOKENS[0]
+    assert result.changed is True
+
+
+async def test_the_audit_row_names_both_customers_and_every_rotated_booking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Last4 alone cannot reconstruct the correction: `set_phone` overwrites
+    `customers.phone` in place and `customers` has no history table, so the ids
+    are what let an Amendment-13 complaint be answered at all."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    sibling = _booking(status=CONFIRMED, starts_at=TARGET, customer_id=booking.customer_id)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch,
+        writes,
+        live=[booking, sibling],
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+    )
+
+    await _correct(_service(), booking.id)
+
+    assert writes.audit == [
+        {
+            "action": AuditAction.BOOKING_PHONE_CORRECTED.value,
+            "actor_id": STAFF.id,
+            "entity": str(booking.id),
+            "details": {
+                "old_phone_last4": "1111",
+                "new_phone_last4": "2222",
+                "attested": True,
+                "old_customer_id": str(booking.customer_id),
+                "new_customer_id": str(booking.customer_id),
+                "repointed": False,
+                "rotated_booking_ids": [str(booking.id), str(sibling.id)],
+            },
+        }
+    ]
+
+
+async def test_no_full_phone_number_ever_reaches_the_audit_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`audit_log` is retained on the AUDIT clock, not the booking clock, and a
+    full number in JSONB is a second uncontrolled copy of the one PII field this
+    feature exists to edit."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch,
+        writes,
+        live=[booking],
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+    )
+    await _correct(_service(), booking.id)
+    rendered = json.dumps(writes.audit[0]["details"])
+    assert WRONG_PHONE not in rendered
+    assert RIGHT_PHONE not in rendered
+    assert "0000" not in rendered  # nothing longer than the last four digits
+
+
+# --- the collision branch: a re-point, not a merge and not a refusal ---
+
+
+async def test_a_collision_repoints_the_booking_and_rotates_only_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On this branch the digits were never wrong, the IDENTITY was. The original
+    customer may be a real other person whose other bookings are genuinely hers,
+    so rotating them would revoke credentials nobody proved were misdirected."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    sibling = _booking(status=CONFIRMED, starts_at=TARGET, customer_id=booking.customer_id)
+    target = _FakeCustomer(RIGHT_PHONE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch,
+        writes,
+        live=[booking, sibling],
+        by_phone=target,
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+    )
+
+    result = await _correct(_service(), booking.id)
+
+    # `customers.phone` is NOT touched and both customer rows survive.
+    assert writes.set_phone == []
+    assert writes.repoint == [{"booking_id": booking.id, "customer_id": target.id}]
+    assert [row["booking_id"] for row in writes.rotations] == [booking.id]
+    assert result.manage_token == TOKENS[0]
+    assert writes.audit[0]["details"]["repointed"] is True
+    assert writes.audit[0]["details"]["new_customer_id"] == str(target.id)
+    assert writes.audit[0]["details"]["rotated_booking_ids"] == [str(booking.id)]
+
+
+async def test_the_0009_precheck_makes_the_repoint_a_409_and_never_a_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two sisters in one capacity-2 slot at 14:00 and the owner corrects the
+    first one's number to the second one's: the re-point would put two live rows
+    on (tenant, customer B, 14:00) and the flush would raise. With no error
+    registry that escapes as a bare 500 outside the house error shape."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    target = _FakeCustomer(RIGHT_PHONE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch,
+        writes,
+        by_phone=target,
+        collision=_booking(),
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+    )
+
+    with pytest.raises(CustomerAlreadyBookedError):
+        await _correct(_service(), booking.id)
+
+    assert writes.active_at == [{"customer_id": target.id, "starts_at": booking.starts_at}]
+    assert writes.repoint == []
+    assert writes.audit == []
+
+
+async def test_a_lost_0009_race_on_the_repoint_is_the_same_409_not_a_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-check is the answer; the flush's IntegrityError is the backstop,
+    mapped to the same error the way `create_booking` treats its own race."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch,
+        writes,
+        by_phone=_FakeCustomer(RIGHT_PHONE),
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+        repoint_result=IntegrityError("UPDATE bookings", {}, Exception("duplicate key")),
+    )
+    with pytest.raises(CustomerAlreadyBookedError):
+        await _correct(_service(), booking.id)
+    assert writes.audit == []
+
+
+async def test_correcting_to_the_number_the_customer_already_has_is_not_a_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`by_phone` answering with the booking's OWN customer is not another
+    person holding the number — it is the same person. Re-pointing a booking at
+    the customer it already has would be a no-op dressed as an identity fix."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    hers = _FakeCustomer(RIGHT_PHONE, booking.customer_id)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(monkeypatch, writes, live=[booking], by_phone=hers, owner_customer=hers)
+
+    await _correct(_service(), booking.id)
+
+    assert writes.repoint == []
+    assert writes.set_phone[0]["customer_id"] == booking.customer_id
+    assert writes.audit[0]["details"]["repointed"] is False
+
+
+# --- a failed rotation is a hard failure, never a discarded result ---
+
+
+@pytest.mark.parametrize("operation", ["correct_phone", "resend_link"])
+async def test_a_none_from_any_rotation_aborts_the_whole_thing(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """There must be no committed state in which the phone is corrected and the
+    old hash survives: the stranger's link would still resolve and still cancel
+    the bride's appointment, and nothing sweeps for it."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch,
+        writes,
+        live=[booking],
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+        hash_result=None,
+    )
+
+    with pytest.raises(BookingTransitionInvalidError):
+        if operation == "correct_phone":
+            await _correct(_service(), booking.id)
+        else:
+            await _service().resend_link(TENANT_ID, booking.id, staff=STAFF)
+
+    assert writes.audit == []
+
+
+async def test_a_none_from_a_siblings_rotation_aborts_the_correction_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    sibling = _booking(status=CONFIRMED, starts_at=TARGET, customer_id=booking.customer_id)
+    writes = _install(monkeypatch, booking)
+
+    outcomes: list[Booking | None] = [_derive(booking), None]
+
+    _install_rotation(
+        monkeypatch,
+        writes,
+        live=[booking, sibling],
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+    )
+    original = BookingsRepository.set_manage_token_hash
+
+    async def _flaky(*args: Any, **kwargs: Any) -> Booking | None:
+        await original(*args, **kwargs)
+        return outcomes.pop(0)
+
+    monkeypatch.setattr(BookingsRepository, "set_manage_token_hash", _flaky)
+
+    with pytest.raises(BookingTransitionInvalidError):
+        await _correct(_service(), booking.id)
+
+    assert writes.audit == []
+
+
+# --- resend is a rotation, not a re-send (D9) ---
+
+
+async def test_resend_rotates_this_booking_and_repoints_its_pending_reminder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain resend is impossible anyway: `bookings` stores only the sha256 and
+    `cancel_pending` clears the raw token, so nothing on the platform can
+    reproduce a sent link. Rotation is the only honest behaviour on offer."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    pending = _FakePending()
+    _install_rotation(monkeypatch, writes, pending={booking.id: pending})
+
+    result = await _service().resend_link(TENANT_ID, booking.id, staff=STAFF)
+
+    assert [row["booking_id"] for row in writes.rotations] == [booking.id]
+    assert writes.rotations[0]["allowed_from"] == (CONFIRMED,)
+    assert writes.rotations[0]["not_before"] == NOW
+    assert pending.manage_token == TOKENS[0]
+    assert result.manage_token == TOKENS[0]
+    # No phone edit: neither customer writer is reached.
+    assert (writes.set_phone, writes.repoint, writes.by_phone) == ([], [], [])
+    assert writes.audit == [
+        {
+            "action": AuditAction.BOOKING_LINK_RESENT.value,
+            "actor_id": STAFF.id,
+            "entity": str(booking.id),
+            "details": {"customer_id": str(booking.customer_id)},
+        }
+    ]
+
+
+# --- the budget, before the transaction opens (D10) ---
+
+
+@pytest.mark.parametrize("operation", ["correct_phone", "resend_link"])
+async def test_a_throttled_call_writes_nothing_and_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """The natural reading — meter the send, where the SMS actually is — is the
+    dangerous one: it would commit the corrected number and skip the rotation,
+    leaving a live link pointing at the number the owner just proved is wrong.
+    That state is reachable with no attacker, at 21 taps in an hour."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch,
+        writes,
+        live=[booking],
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+    )
+    service = _service(sms_limiter=_spent_limiter())
+
+    with pytest.raises(OwnerResendThrottledError):
+        if operation == "correct_phone":
+            await _correct(service, booking.id)
+        else:
+            await service.resend_link(TENANT_ID, booking.id, staff=STAFF)
+
+    assert writes.order == []
+    assert (writes.set_phone, writes.rotations) == ([], [])
+
+
+@pytest.mark.parametrize("operation", ["correct_phone", "resend_link"])
+async def test_a_committed_correction_or_resend_spends_the_budget(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch,
+        writes,
+        live=[booking],
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+    )
+    limiter = FixedWindowRateLimiter(1, 3600.0, lambda: 0.0)
+    service = _service(sms_limiter=limiter)
+
+    if operation == "correct_phone":
+        await _correct(service, booking.id)
+    else:
+        await service.resend_link(TENANT_ID, booking.id, staff=STAFF)
 
     assert limiter.is_blocked(f"booking:owner_sms:{TENANT_ID}") is True

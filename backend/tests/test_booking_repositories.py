@@ -741,6 +741,175 @@ async def test_set_phone_rewrites_the_number_and_the_index_is_the_backstop(
         await engine.dispose()
 
 
+async def test_set_manage_token_hash_guard_refuses_a_stale_booking(
+    app_role_url: str,
+) -> None:
+    """D8's rotation carries the same predicate the Python guard checked, so it
+    cannot go stale mid-operation: a booking that stopped being
+    confirmed-and-future between the read and the rotation must not receive a
+    fresh live control token.
+
+    Unguarded (no kwargs) is byte-for-byte today's behaviour — the backfill and
+    `reissue_manage_token` are the callers that rely on it.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    guard = (BookingStatus.CONFIRMED.value,)
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="נועה")
+
+            live = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=1
+            )
+            past = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=PAST_SLOT, seat_index=1
+            )
+            gone = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=T1, seat_index=1
+            )
+            gone.status = BookingStatus.CANCELLED.value
+            await session.flush()
+
+            rotated = await bookings.set_manage_token_hash(
+                session,
+                tenant_id,
+                live.id,
+                token_hash="a" * 64,
+                allowed_from=guard,
+                not_before=NOW,
+            )
+            assert rotated is not None
+            assert rotated.manage_token_hash == "a" * 64
+
+            # Past, and cancelled: both refused, and neither hash moves.
+            assert (
+                await bookings.set_manage_token_hash(
+                    session,
+                    tenant_id,
+                    past.id,
+                    token_hash="b" * 64,
+                    allowed_from=guard,
+                    not_before=NOW,
+                )
+                is None
+            )
+            assert (
+                await bookings.set_manage_token_hash(
+                    session,
+                    tenant_id,
+                    gone.id,
+                    token_hash="b" * 64,
+                    allowed_from=guard,
+                    not_before=NOW,
+                )
+                is None
+            )
+            untouched = await bookings.by_id(session, tenant_id, past.id)
+            assert untouched is not None and untouched.manage_token_hash is None
+
+            # No kwargs: the shipped, unguarded contract the backfill uses.
+            filled = await bookings.set_manage_token_hash(
+                session, tenant_id, past.id, token_hash="c" * 64
+            )
+            assert filled is not None and filled.manage_token_hash == "c" * 64
+    finally:
+        await engine.dispose()
+
+
+async def test_set_customer_id_repoints_the_booking_under_the_same_guard(
+    app_role_url: str,
+) -> None:
+    """D8's collision branch: the number identifies a person and that person
+    already has a record, so the booking moves to her rather than the digits
+    moving onto a row that is not hers."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    guard = (BookingStatus.CONFIRMED.value,)
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            wrong = await customers.upsert(session, tenant_id, phone=_phone(), name="מיכל")
+            right = await customers.upsert(session, tenant_id, phone=_phone(), name="דנה")
+
+            booking = await _insert_booking(
+                bookings, session, tenant_id, wrong.id, starts_at=T0, seat_index=1
+            )
+            moved = await bookings.set_customer_id(
+                session,
+                tenant_id,
+                booking.id,
+                customer_id=right.id,
+                allowed_from=guard,
+                not_before=NOW,
+            )
+            assert moved is not None
+            assert moved.customer_id == right.id
+            # Both customer rows survive — soft-deleting on a guess is worse
+            # than leaving a row nobody looks at.
+            assert (await customers.by_id(session, tenant_id, wrong.id)) is not None
+
+            past = await _insert_booking(
+                bookings, session, tenant_id, wrong.id, starts_at=PAST_SLOT, seat_index=1
+            )
+            assert (
+                await bookings.set_customer_id(
+                    session,
+                    tenant_id,
+                    past.id,
+                    customer_id=right.id,
+                    allowed_from=guard,
+                    not_before=NOW,
+                )
+                is None
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_set_customer_id_onto_a_customer_who_holds_the_instant_raises(
+    app_role_url: str,
+) -> None:
+    """0009's index: two sisters live in one capacity-2 slot, and correcting the
+    first one's number onto the second's would put two live rows on
+    (tenant, customer B, T0). The service pre-checks with `active_at` so this
+    409s rather than 500s; the flush is the backstop."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            first = await customers.upsert(session, tenant_id, phone=_phone(), name="שירה")
+            second = await customers.upsert(session, tenant_id, phone=_phone(), name="תמר")
+            hers = await _insert_booking(
+                bookings, session, tenant_id, first.id, starts_at=T0, seat_index=1
+            )
+            await _insert_booking(
+                bookings, session, tenant_id, second.id, starts_at=T0, seat_index=2
+            )
+            await session.flush()
+            booking_id = hers.id
+            second_id = second.id
+
+        with pytest.raises(IntegrityError):
+            async with tenant_session(factory, tenant_id) as session:
+                await bookings.set_customer_id(
+                    session,
+                    tenant_id,
+                    booking_id,
+                    customer_id=second_id,
+                    allowed_from=(BookingStatus.CONFIRMED.value,),
+                    not_before=NOW,
+                )
+                await session.flush()
+    finally:
+        await engine.dispose()
+
+
 def _f13_table_count(url: str) -> int:
     async def count() -> int:
         engine = create_async_engine(url)
