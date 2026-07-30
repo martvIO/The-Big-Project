@@ -1,6 +1,6 @@
 # Screen: Manage Booking (F16 — `/b/{token}`, Epic E3)
 
-**Date**: 2026-07-29 · **Status**: **critic ACCEPT (round 2, 2026-07-29) — gate closes when the user approves `copy.md`** · **Designer**: Claude (main agent) · **Critic**: design-critic — round 1 NEEDS CHANGES (8 findings, all folded in), round 2 ACCEPT with one plan-phase follow-up (F-M3)
+**Date**: 2026-07-29 · **Status**: **DESIGN GATE CLOSED 2026-07-30** — critic ACCEPT (round 2, 2026-07-29) plus the user's copy approval, `.planning/epics/interview-2026-07-30.md` **Q5**; P1–P5 accepted by **pre-decided #7**, F-M3 discharged in the F16 plan (Task 3) · **Designer**: Claude (main agent) · **Critic**: design-critic — round 1 NEEDS CHANGES (8 findings, all folded in), round 2 ACCEPT with one plan-phase follow-up (F-M3)
 **Consumes**: `.planning/specs/booking-comms.md` (Gate 1 approved, D1–D10) · tokens rev 1 · `packages/ui` as shipped
 **Copy**: `copy.md` in this directory — **the Hebrew is the user's**; every row must be APPROVED before this gate closes.
 

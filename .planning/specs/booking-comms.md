@@ -46,11 +46,12 @@ CREATE INDEX idx_bookings_manage_token ON bookings (tenant_id, manage_token_hash
 ```sql
 CREATE TABLE scheduled_messages (
   -- _STANDARD: id, tenant_id, created_at, updated_at, deleted_at
-  booking_id  UUID NOT NULL,
-  kind        TEXT NOT NULL CHECK (kind IN ('reminder')),        -- E4/E5 widen (hold-expiry, offers) by migration
-  send_after  TIMESTAMPTZ NOT NULL,
-  status      TEXT NOT NULL DEFAULT 'pending'
-              CHECK (status IN ('pending', 'sent', 'cancelled', 'failed'))
+  booking_id   UUID NOT NULL,
+  kind         TEXT NOT NULL CHECK (kind IN ('reminder')),       -- E4/E5 widen (hold-expiry, offers) by migration
+  send_after   TIMESTAMPTZ NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending', 'sent', 'cancelled', 'failed')),
+  manage_token TEXT                                              -- see the amendment below; NULL on every terminal row
 );
 CREATE UNIQUE INDEX idx_scheduled_messages_pending_unique
   ON scheduled_messages (tenant_id, booking_id, kind)
@@ -61,6 +62,8 @@ CREATE INDEX idx_scheduled_messages_due
 ```
 
 `scheduled_messages` keeps the standard **FORCE RLS** policy. The poller stays inside the tenancy posture by enumerating tenants (the `tenants` table is deliberately RLS-free) and claiming due rows one `tenant_session` at a time — cross-tenant leakage is the recorded existential risk, and this is the first background reader; it does not get to be the first RLS exception. <!-- ponytail: O(tenants) queries per tick — fine at pilot volume; revisit at E5 #29's scale pass -->
+
+> **Amendment (plan phase, 2026-07-30) — `scheduled_messages.manage_token`.** Three things this spec requires cannot all hold: the reminder carries "the same manage link", `bookings` stores only `manage_token_hash`, and sha256 makes the raw token unrecoverable after the booking transaction. The worker sends hours or days later and therefore needs the raw token. Declined: deriving it by HMAC from a new platform secret (the platform's first shared secret, plus a `Settings` boot validator, plus a version column for rotation, plus a footgun where losing the secret invalidates every live link); and minting a fresh token at send time (Interview Q4 makes the 2–24h reminder fire *seconds* after the confirmation, so rotation would kill the link in the text she is still reading, and it breaks D1's "idempotent, not single-use"). **Ruled**: the pending `scheduled_messages` row carries the raw token, cleared the moment the row leaves `pending` and purged with its booking (pre-decided #10). `bookings` — retained 7 years — still never holds a secret, and `message_log.body` is still masked (D2 unchanged). Residual: a DB read leak yields working links for bookings with pending reminders; what those grant (read the facts, confirm attendance, cancel) is strictly less than what the same leak already yields from `customers` and `bookings.notes`. Accepted; reversible to HMAC derivation with one migration. *Trigger: F21 audit re-checks.*
 
 ### The manage token (D1, D2)
 
@@ -155,6 +158,8 @@ Repeat confirm-attendance and repeat cancel are **200s**, not errors (idempotent
 | `worker_poll_interval_seconds` | 60 (Settings) | deploy-tunable without code |
 | `booking_lookup_max_per_tenant_window` | 60 / 300s (Settings) | anti-scrape ceiling on the public lookup |
 | `CONFIRMATION_MAX_SEGMENTS` / `REMINDER_MAX_SEGMENTS` | 3 | UCS-2 ceiling the template tests pin mechanically; worst case fixed as: 30-char slug, 43-char token (`generate_session_token` length), ASCII URL chars costing one UCS-2 char each inside a Hebrew body, 67 chars per concatenated segment |
+| `BOUTIQUE_NAME_MAX_CHARS` | 25 | `tenants.name` is unbounded TEXT; the budget arithmetic assumes ≤25, so the templates truncate (Interview pre-decided #8, discharging design finding F-M3) |
+| `MANAGE_LINK_SLUG_BUDGET_CHARS` | 30 | **Amendment (plan phase)**: `is_valid_slug` permits a 63-character DNS label, which pushes the confirmation body to a 4th segment. Recorded, not fixed: capping slug length belongs to F6's provisioning surface, and a boot guard on a legitimate slug would be worse than one extra segment. The budget tests pin the documented 30-char case and name this ceiling. |
 
 ## Frontend changes
 
