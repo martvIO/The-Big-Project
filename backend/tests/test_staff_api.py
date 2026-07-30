@@ -473,6 +473,11 @@ def test_every_spec_error_code_is_asserted() -> None:
     ("verb", "path", "body"),
     [
         pytest.param("POST", LIST_PATH, {**CREATE_BODY, "display_name": ""}, id="empty-name"),
+        # The schema is the trust boundary, and `min_length=1` alone admits this:
+        # a whitespace name renders as an empty <bdi> in the console, findable
+        # only by its email. Both verbs, because PATCH can blank an existing one.
+        pytest.param("POST", LIST_PATH, {**CREATE_BODY, "display_name": "   "}, id="blank-name"),
+        pytest.param("PATCH", DETAIL_PATH, {"display_name": "   "}, id="blank-name-patch"),
         pytest.param(
             "POST",
             LIST_PATH,

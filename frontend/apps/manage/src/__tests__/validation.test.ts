@@ -374,6 +374,7 @@ describe("validateUploadFile", () => {
 describe("validateStaffDraft", () => {
   const good = {
     display_name: "דנה",
+    email: "dana@bella.example",
     password: "a-long-enough-pw",
   };
 
@@ -409,10 +410,35 @@ describe("validateStaffDraft", () => {
     );
   });
 
+  it("requires an email address on the create form", () => {
+    expect(validateStaffDraft({ ...good, email: "   " })).toBe("יש להזין כתובת אימייל");
+  });
+
+  // The gap the browser leaves: WHATWG's `type="email"` regex makes the dot in
+  // the domain optional, so `dana@bella` passes native constraint validation
+  // and pydantic's EmailStr then answers an ENGLISH sentence that the create
+  // form would render verbatim into the RTL console.
+  it("rejects a domain the server's EmailStr will reject", () => {
+    for (const address of ["dana@bella", "dana", "dana@", "@bella.example", "da na@b.example"]) {
+      expect(validateStaffDraft({ ...good, email: address })).toBe("כתובת האימייל אינה תקינה");
+    }
+  });
+
+  it("accepts the addresses EmailStr accepts", () => {
+    for (const address of ["dana@bella.example", "d.a+1@mail.co.il", "  dana@bella.example  "]) {
+      expect(validateStaffDraft({ ...good, email: address })).toBeNull();
+    }
+  });
+
   // An omitted password is the "leave it unchanged" case on the edit form; the
   // create form supplies its own required-field message before calling this.
   it("accepts a null password", () => {
     expect(validateStaffDraft({ ...good, password: null })).toBeNull();
+  });
+
+  // The edit form has no email field at all — the address is not editable (D5).
+  it("accepts a null email", () => {
+    expect(validateStaffDraft({ ...good, email: null })).toBeNull();
   });
 
   // No email validator and no strength rule, deliberately: the server's EmailStr

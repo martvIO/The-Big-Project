@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.auth.passwords import hash_password, verify_password
 from app.auth.service import StaffContext
 from app.db.repositories.audit_log import AuditLogRepository
+from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError, DomainValidationError
@@ -98,6 +99,7 @@ class StaffService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
         self._staff = StaffUsersRepository()
+        self._sessions = SessionsRepository()
         self._audit = AuditLogRepository()
 
     async def list_staff(self, tenant_id: uuid.UUID) -> list[StaffUser]:
@@ -164,8 +166,14 @@ class StaffService:
         role: str | None = None,
         password: str | None = None,
         current_password: str | None = None,
+        acting_token_hash: str | None = None,
         actor: StaffContext,
     ) -> StaffUser:
+        # Hoisted for create's reason: argon2 is deliberately expensive and
+        # nothing about it needs the advisory lock or a pooled connection. The
+        # wasted hash on a refusal path is the trade create already makes.
+        # verify_password below cannot move — it needs the row's own hash.
+        new_password_hash = hash_password(password) if password is not None else None
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(_STAFF_LOCK, {"tenant_id": str(tenant_id)})
             target = await self._staff.by_id(session, tenant_id, staff_id)
@@ -196,7 +204,7 @@ class StaffService:
                     and verify_password(current_password, target.password_hash)
                 ):
                     _refuse_current_password()
-                password_hash = hash_password(password)
+                password_hash = new_password_hash
 
             new_name = (
                 display_name
@@ -243,6 +251,18 @@ class StaffService:
                     details={"from": previous_role, "to": new_role},
                 )
             if password_hash is not None:
+                # A password change must end the sessions the OLD password
+                # could have leaked. Deactivation needs no sweep because
+                # resolve_session re-reads staff_users; a password change gets
+                # no such seam for free, so this is where the spec's «converts
+                # a permanent takeover into a bounded one» claim is actually
+                # paid for. Same transaction, same lock. The acting cookie is
+                # excluded so the owner is not signed out of the tab she just
+                # used — on the reset-someone-else path she holds no session of
+                # the target's, so the exclusion is a no-op there.
+                await self._sessions.revoke_for_staff_user(
+                    session, tenant_id, staff_id, except_token_hash=acting_token_hash
+                )
                 await self._audit.record(
                     session,
                     tenant_id=tenant_id,

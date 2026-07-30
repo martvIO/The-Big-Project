@@ -11,8 +11,13 @@ rejects a legal value or lets an illegal one reach the API before it refuses.
 The staff row is additionally load-bearing for F51's plan C6: the staff forms
 render one field-local Hebrew message for the single 400 the server can answer
 them (a wrong `current_password`), and that is only honest because every OTHER
-400 those forms could produce is caught client-side by one of these mirrored
-bounds. This test is what makes that a checked claim rather than a hope.
+400 those forms could produce is caught client-side first. Three of the four
+guards are the mirrored bounds below and this test is what keeps them in step;
+the fourth is `validateStaffDraft`'s email shape check, which mirrors no
+constant — `EmailStr` is an algorithm, not a number — and is pinned instead by
+`validation.test.ts` against the addresses verified here to round-trip. The
+2026-07-30 review found that fourth guard missing, which had made this
+paragraph's claim false.
 
 The files are read as **text** on purpose — this test must run in the fast,
 no-Docker, no-Node suite. A regex scrape is enough for literals.

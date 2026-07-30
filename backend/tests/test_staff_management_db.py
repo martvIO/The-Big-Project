@@ -758,6 +758,76 @@ def test_deactivating_through_the_route_kills_the_targets_session_on_her_next_re
         asyncio.run(engine.dispose())
 
 
+def test_a_password_change_kills_the_other_live_sessions_but_not_the_acting_one(
+    app_role_url: str,
+) -> None:
+    """The `current_password` check only «converts a permanent takeover into a
+    bounded one» (spec D4) if the bound actually closes. `resolve_session` never
+    consults `password_hash`, so a stolen cookie survives the password change
+    that is meant to contain it — and inside that window POST /manage/staff can
+    mint a standalone second owner that outlives the TTL, the new password and
+    every logout. Two cookies for the same owner: the one that sends the PATCH
+    lives on, the other is a 401 on its very next request."""
+    engine, factory = _factory(app_role_url)
+    try:
+        tenant_id, slug, owner_email = asyncio.run(_seed_tenant(factory))
+        app = _app(factory)
+
+        with _client(app, slug) as acting, _client(app, slug) as stolen:
+            me = _login(acting, owner_email)
+            assert me.status_code == 200
+            my_id = me.json()["id"]
+            assert _login(stolen, owner_email).status_code == 200
+            assert stolen.get("/manage/settings").status_code == 200
+
+            changed = acting.patch(
+                f"/manage/staff/{my_id}",
+                json={"password": "her-brand-new-password", "current_password": PASSWORD},
+            )
+            assert changed.status_code == 200, changed.text
+
+            assert stolen.get("/manage/settings").status_code == 401
+            assert stolen.post("/manage/staff", json={}).status_code == 401
+            # And the tab she changed it in is still hers.
+            assert acting.get("/manage/staff").status_code == 200
+
+        # The new credential is the live one; the old is gone.
+        with _client(app, slug) as fresh:
+            assert _login(fresh, owner_email).status_code == 401
+            assert _login(fresh, owner_email, "her-brand-new-password").status_code == 200
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_a_password_reset_by_the_owner_signs_the_target_out_everywhere(
+    app_role_url: str,
+) -> None:
+    """The reset-someone-else path: the owner holds no session of the target's,
+    so the acting-cookie exclusion is a no-op and every one of the target's
+    sessions goes."""
+    engine, factory = _factory(app_role_url)
+    try:
+        tenant_id, slug, owner_email = asyncio.run(_seed_tenant(factory))
+        target_email = _email()
+        target_id = asyncio.run(
+            _seed_staff(factory, tenant_id, role=StaffRole.SHIFT_MANAGER.value, email=target_email)
+        )
+        app = _app(factory)
+
+        with _client(app, slug) as target, _client(app, slug) as owner:
+            assert _login(target, target_email).status_code == 200
+            assert target.get("/manage/settings").status_code == 200
+
+            assert _login(owner, owner_email).status_code == 200
+            reset = owner.patch(f"/manage/staff/{target_id}", json={"password": "a-reset-password"})
+            assert reset.status_code == 200, reset.text
+
+            assert target.get("/manage/settings").status_code == 401
+            assert owner.get("/manage/staff").status_code == 200
+    finally:
+        asyncio.run(engine.dispose())
+
+
 def test_a_demotion_through_the_route_bites_on_the_very_next_request(
     app_role_url: str,
 ) -> None:

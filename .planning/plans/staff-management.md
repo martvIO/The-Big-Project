@@ -21,7 +21,7 @@ F51 ships **no migration** (D1). `test_every_tenant_id_table_has_forced_rls` sta
 | **Interview Q3 / pre-decided #47** | `apps/manage/src/i18n/ar.ts` gains F51's keys, values = the approved Hebrew, never `""`. `lng` stays `"he"`, no switcher. |
 | **pre-decided #5** | Zero exclamation marks in Hebrew copy — mechanically enforced in `__tests__/i18n.test.ts` (Task 8). |
 | **pre-decided #38** | IS 5568 / WCAG 2.0 AA is a **legal** requirement. The a11y items in Tasks 9 and 10 are not optional polish. |
-| **LOOP-STATE F51 note** | Deactivation is instantly effective; **do not build a session sweep**. F31's `tests/test_migrations.py` app-role probe is the verified DB seam — cite it, do not re-prove it. |
+| **LOOP-STATE F51 note** | Deactivation is instantly effective; **do not build a session sweep**. F31's `tests/test_migrations.py` app-role probe is the verified DB seam — cite it, do not re-prove it. **Scope of that ruling, after the 2026-07-30 review:** it is about *deactivation*, where a sweep is provably unnecessary because `resolve_session` re-reads `staff_users`. It says nothing about a *password change*, which gets no such seam for free — `resolve_session` never consults `password_hash`. F51 therefore revokes the target's other sessions on a password write only (spec D4, Risk 9). |
 
 ---
 

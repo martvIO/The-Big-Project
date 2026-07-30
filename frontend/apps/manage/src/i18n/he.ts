@@ -223,13 +223,16 @@ export const he = {
     "staff.passwordNotice": "יש למסור את הסיסמה לעובדת בעצמך. המערכת אינה מעבירה אותה לאיש.",
     "staff.createCta": "הוספה לצוות",
     "staff.deactivateTitle": "להשבית את הגישה?",
+    // The <bdi> is load-bearing, not markup for its own sake: the name is a
+    // Latin run inside an RTL sentence and reorders without an isolate.
+    // Rendered through <Trans components={{ bdi: <bdi /> }}>.
     "staff.deactivateBody":
-      "הגישה של {{name}} לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת.",
+      "הגישה של <bdi>{{name}}</bdi> לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת.",
     "staff.deactivateConfirm": "השבתה",
 
-    // The four error codes F51 owns — a code→string map, pinned by
-    // SPEC_ERROR_CODES in test_staff_api.py. Everything else, VALIDATION_ERROR
-    // included, falls through to errorMessage(error).
+    // The four error codes F51 owns — a code→string map kept by hand, NOT
+    // pinned by anything (see MAPPED_CODES in StaffSection.tsx). Everything
+    // else, VALIDATION_ERROR included, falls through to errorMessage(error).
     "staff.error.DUPLICATE_EMAIL": "כתובת האימייל הזו כבר משויכת לאשת צוות פעילה.",
     "staff.error.LAST_OWNER_REQUIRED": "לבוטיק חייבת להיות בעלת בוטיק אחת לפחות.",
     "staff.error.STAFF_SELF_MANAGE": "אי אפשר לשנות את התפקיד של עצמך או להשבית את עצמך.",

@@ -151,6 +151,25 @@ class FakeStaffRepository:
         return True
 
 
+class FakeSessionsRepository:
+    def __init__(self, trace: Trace) -> None:
+        self.trace = trace
+        self.revoked: list[dict[str, Any]] = []
+
+    async def revoke_for_staff_user(
+        self,
+        session: object,
+        tenant_id: uuid.UUID,
+        staff_user_id: uuid.UUID,
+        *,
+        except_token_hash: str | None = None,
+    ) -> None:
+        self.trace.append("revoke_sessions")
+        self.revoked.append(
+            {"staff_user_id": staff_user_id, "except_token_hash": except_token_hash}
+        )
+
+
 class FakeAuditRepository:
     def __init__(self) -> None:
         self.rows: list[dict[str, Any]] = []
@@ -173,6 +192,14 @@ def _service(
     service._staff = staff  # type: ignore[assignment]
     service._audit = audit  # type: ignore[assignment]
     return service, staff, audit, trace
+
+
+def _session_spy(service: StaffService, trace: Trace) -> FakeSessionsRepository:
+    """Opt-in rather than part of `_service`: only the password paths touch the
+    sessions table, and widening the tuple would touch twenty call sites."""
+    sessions = FakeSessionsRepository(trace)
+    service._sessions = sessions  # type: ignore[assignment]
+    return sessions
 
 
 # --- the lock protocol: the step order IS the correctness argument ---
@@ -406,11 +433,49 @@ async def test_resetting_someone_elses_password_never_consults_current_password(
     """An owner resetting another staffer's password sends no current_password —
     she does not know it, and that is the field's whole point."""
     target = _row()
-    service, _, audit, _ = _service([target])
+    service, _, audit, trace = _service([target])
+    _session_spy(service, trace)
     updated = await service.update(TENANT_ID, target.id, password="brand-new-pw-1", actor=_actor())
     assert verify_password("brand-new-pw-1", updated.password_hash)
     assert audit.actions() == [AuditAction.STAFF_PASSWORD_RESET]
     assert audit.rows[0]["details"] == {"self": False}
+
+
+async def test_a_password_write_revokes_the_targets_sessions_except_the_acting_cookie() -> None:
+    """Deactivation needs no sweep — resolve_session re-reads staff_users. A
+    password change gets no such seam for free: nothing consults password_hash
+    after login, so without this the sessions the OLD password could have leaked
+    survive it for the whole TTL, and inside that window a stolen owner cookie
+    can mint a second owner through POST /manage/staff that outlives everything.
+    The acting cookie is spared so the owner keeps the tab she just used."""
+    me = _row(staff_id=OWNER_ID, role=StaffRole.OWNER.value, password="my-real-password")
+    service, _, _, trace = _service([me])
+    sessions = _session_spy(service, trace)
+
+    await service.update(
+        TENANT_ID,
+        OWNER_ID,
+        password="brand-new-pw-1",
+        current_password="my-real-password",
+        acting_token_hash="hash-of-her-live-cookie",
+        actor=_actor(),
+    )
+    assert sessions.revoked == [
+        {"staff_user_id": OWNER_ID, "except_token_hash": "hash-of-her-live-cookie"}
+    ]
+    # Inside the lock and before the transaction closes, so a revoke cannot
+    # commit without the hash it was meant to invalidate.
+    assert trace.index("revoke_sessions") > trace.index("update")
+
+
+async def test_a_patch_that_writes_no_password_revokes_nothing() -> None:
+    """A rename is not a credential event. Revoking on every PATCH would sign a
+    staffer out because someone fixed a typo in her name."""
+    target = _row()
+    service, _, _, trace = _service([target])
+    sessions = _session_spy(service, trace)
+    await service.update(TENANT_ID, target.id, display_name="Renamed", actor=_actor())
+    assert sessions.revoked == []
 
 
 # --- the last-owner guard (spec D3) ---

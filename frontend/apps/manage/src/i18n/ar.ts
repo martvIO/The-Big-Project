@@ -136,7 +136,7 @@ export const ar = {
     "staff.createCta": "הוספה לצוות",
     "staff.deactivateTitle": "להשבית את הגישה?",
     "staff.deactivateBody":
-      "הגישה של {{name}} לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת.",
+      "הגישה של <bdi>{{name}}</bdi> לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת.",
     "staff.deactivateConfirm": "השבתה",
     "staff.error.DUPLICATE_EMAIL": "כתובת האימייל הזו כבר משויכת לאשת צוות פעילה.",
     "staff.error.LAST_OWNER_REQUIRED": "לבוטיק חייבת להיות בעלת בוטיק אחת לפחות.",

@@ -66,7 +66,7 @@ Client-side validation messages are **not** in this deck: `validation.ts` return
 | Key | What it must say | Approved Hebrew (`he`) | `ar` | Status |
 |---|---|---|---|---|
 | `staff.deactivateTitle` | The Modal title | להשבית את הגישה? | להשבית את הגישה? | DRAFTED |
-| `staff.deactivateBody` | States the two facts that make this safe to tap: it bites immediately (no sweep — spec Goal), and it is undoable by re-creating the account. `{{name}}` renders inside a bare `<bdi>` | הגישה של {{name}} לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת. | הגישה של {{name}} לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת. | DRAFTED |
+| `staff.deactivateBody` | States the two facts that make this safe to tap: it bites immediately (no sweep — spec Goal), and it is undoable by re-creating the account. The `<bdi>` is **in the string** and rendered through `<Trans components={{ bdi: <bdi /> }}>` — the only key in this deck carrying markup, because the name is a Latin run inside an RTL sentence and reorders without an isolate | הגישה של \<bdi\>{{name}}\</bdi\> לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת. | הגישה של \<bdi\>{{name}}\</bdi\> לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת. | DRAFTED |
 | `staff.deactivateConfirm` | The `danger` button in the Modal's `footer` | השבתה | השבתה | DRAFTED |
 
 ## 6. Error codes → Hebrew

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Badge, Button, Card, Input, Modal, Select, Skeleton } from "@boutique/ui";
 import { api, ApiError, errorMessage } from "../api";
 import type { CreateStaffRequest, StaffMember, StaffRole, UpdateStaffRequest } from "../api";
@@ -8,9 +8,12 @@ import { validateStaffDraft } from "../validation";
 
 // The four codes this section speaks Hebrew for. Everything else — including
 // VALIDATION_ERROR, which has its own field-local treatment below — falls
-// through to errorMessage(error) and shows the server's own text. The set is
-// pinned by SPEC_ERROR_CODES in backend/tests/test_staff_api.py, so it cannot
-// silently drift from what the API can answer.
+// through to errorMessage(error) and shows the server's own text.
+//
+// NOT pinned by anything. SPEC_ERROR_CODES in backend/tests/test_staff_api.py
+// is a Python set checked against a Python module; no test reads this file. A
+// fifth staff error code would render in English with a green build, and the
+// remedy is to add it here by hand.
 const MAPPED_CODES = new Set([
   "DUPLICATE_EMAIL",
   "LAST_OWNER_REQUIRED",
@@ -100,6 +103,7 @@ export function StaffSection({ staffId }: { staffId: string }) {
     event.preventDefault();
     const invalid = validateStaffDraft({
       display_name: createDraft.displayName,
+      email: createDraft.email,
       password: createDraft.password,
     });
     if (invalid !== null) {
@@ -134,6 +138,8 @@ export function StaffSection({ staffId }: { staffId: string }) {
     const isSelf = row.id === staffId;
     const invalid = validateStaffDraft({
       display_name: editDraft.displayName,
+      // The edit form has no email field — the address is not editable (D5).
+      email: null,
       password: editDraft.password === "" ? null : editDraft.password,
     });
     if (invalid !== null) {
@@ -413,8 +419,17 @@ export function StaffSection({ staffId }: { staffId: string }) {
           </>
         }
       >
+        {/* <Trans>, not t(): the name must land inside a bare <bdi> exactly as
+            the list row does. Every founding owner is seeded with
+            display_name = owner_email (ProvisioningService.provision), so a
+            Latin run with neutral edge characters inside this Hebrew sentence
+            is the norm here, not the exception. */}
         <p className="text-sm text-ink">
-          {t("staff.deactivateBody", { name: pending?.display_name ?? "" })}
+          <Trans
+            i18nKey="staff.deactivateBody"
+            values={{ name: pending?.display_name ?? "" }}
+            components={{ bdi: <bdi /> }}
+          />
         </p>
       </Modal>
     </div>

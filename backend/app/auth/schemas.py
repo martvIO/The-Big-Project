@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, StringConstraints
 
 from app.models.constants import StaffRole
 from app.schemas import ForbidExtraModel
@@ -20,6 +21,18 @@ MIN_STAFF_PASSWORD_LENGTH = 10
 # staff_users.display_name is unbounded TEXT with no CHECK. 200 matches
 # app/boutique/validation.py's MAX_APPOINTMENT_TYPE_NAME_LENGTH.
 MAX_DISPLAY_NAME_LENGTH = 200
+
+# Stripped BEFORE the bounds, which is the whole point: `Field(min_length=1)`
+# alone admits "   ", and every sibling name field in this backend rejects blank
+# (boutique/validation.py, catalog/validation.py, booking/validation.py — the
+# first of which is where MAX_DISPLAY_NAME_LENGTH itself was borrowed from). A
+# whitespace name renders as an empty <bdi> in the console, identifiable only by
+# its email. Stripping additionally makes " Dana" and "Dana" one name, so
+# StaffService.update's no-op comparison cannot be fooled by an edge space.
+DisplayName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_DISPLAY_NAME_LENGTH),
+]
 
 
 class LoginRequest(BaseModel):
@@ -48,7 +61,7 @@ class StaffMember(BaseModel):
 
 class CreateStaffRequest(ForbidExtraModel):
     email: EmailStr = Field(max_length=320)
-    display_name: str = Field(min_length=1, max_length=MAX_DISPLAY_NAME_LENGTH)
+    display_name: DisplayName
     # Typed as the enum, so an unknown value is a house 422→400 at the boundary
     # and can never reach 0011's CHECK.
     role: StaffRole
@@ -61,7 +74,7 @@ class UpdateStaffRequest(ForbidExtraModel):
     typo'd or changed address, and a login identity must not move under a live
     session (spec D5)."""
 
-    display_name: str | None = Field(default=None, min_length=1, max_length=MAX_DISPLAY_NAME_LENGTH)
+    display_name: DisplayName | None = None
     role: StaffRole | None = None
     password: str | None = Field(
         default=None, min_length=MIN_STAFF_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH

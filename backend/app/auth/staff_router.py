@@ -35,10 +35,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response
 
+from app.auth.cookies import SESSION_COOKIE
 from app.auth.dependencies import get_current_staff, require_role
 from app.auth.schemas import CreateStaffRequest, StaffMember, UpdateStaffRequest
 from app.auth.service import StaffContext
 from app.auth.staff import StaffService
+from app.auth.tokens import hash_token
 from app.models.constants import StaffRole
 from app.models.staff_user import StaffUser
 from app.schemas import OkResponse
@@ -108,6 +110,10 @@ async def update_staff(
     body: UpdateStaffRequest,
 ) -> StaffMember:
     tenant = get_current_tenant(request)
+    # A password write revokes the target's other sessions; this is the one
+    # cookie that must survive it, so the acting token's hash goes down with the
+    # call. `staff` above already proved the cookie is present and valid.
+    token = request.cookies.get(SESSION_COOKIE)
     updated = await service.update(
         tenant.id,
         staff_id,
@@ -115,6 +121,7 @@ async def update_staff(
         role=body.role.value if body.role is not None else None,
         password=body.password,
         current_password=body.current_password,
+        acting_token_hash=hash_token(token) if token else None,
         actor=staff,
     )
     return _member(updated)

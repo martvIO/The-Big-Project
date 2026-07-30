@@ -196,6 +196,37 @@ describe("StaffSection create", () => {
     expect(createStaff).not.toHaveBeenCalled();
   });
 
+  // The browser's own type="email" check passes `dana@bella` — WHATWG makes the
+  // dot in the domain optional — and pydantic's EmailStr then answers «value is
+  // not a valid email address: The part after the @-sign is not valid...», which
+  // this form would render verbatim into an RTL console.
+  it("blocks an address the server would refuse in English, without calling the API", async () => {
+    listStaff.mockResolvedValue([OWNER]);
+    renderSection();
+    await screen.findByText("שרה");
+
+    fireEvent.change(screen.getByLabelText("אימייל"), { target: { value: "dana@bella" } });
+    fireEvent.change(screen.getByLabelText("שם לתצוגה"), { target: { value: "דנה" } });
+    fireEvent.change(screen.getByLabelText("סיסמה"), { target: { value: "a-long-enough-pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "הוספה לצוות" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("כתובת האימייל אינה תקינה");
+    expect(createStaff).not.toHaveBeenCalled();
+  });
+
+  it("blocks an empty address client-side", async () => {
+    listStaff.mockResolvedValue([OWNER]);
+    renderSection();
+    await screen.findByText("שרה");
+
+    fireEvent.change(screen.getByLabelText("שם לתצוגה"), { target: { value: "דנה" } });
+    fireEvent.change(screen.getByLabelText("סיסמה"), { target: { value: "a-long-enough-pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "הוספה לצוות" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("יש להזין כתובת אימייל");
+    expect(createStaff).not.toHaveBeenCalled();
+  });
+
   it("renders a duplicate address in Hebrew, not the server's English", async () => {
     listStaff.mockResolvedValue([OWNER]);
     createStaff.mockRejectedValue(
@@ -420,6 +451,26 @@ describe("StaffSection deactivate", () => {
     fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "השבתה" }));
     await waitFor(() => expect(deactivateStaff).toHaveBeenCalledWith(HER));
     await waitFor(() => expect(screen.queryByText("דנה")).toBeNull());
+  });
+
+  // The one screen whose whole job is naming the right person before a
+  // destructive action. ProvisioningService seeds every founding owner with
+  // display_name = owner_email, so a Latin run inside this Hebrew sentence is
+  // the norm here and reorders at its neutral edges without an isolate.
+  it("isolates the name in a bare <bdi>, like the list row does", async () => {
+    listStaff.mockResolvedValue([OWNER, member({ display_name: "dana (bella)." })]);
+    renderSection();
+    await screen.findByText("dana (bella).");
+
+    fireEvent.click(
+      within(rowFor("dana (bella).")).getByRole("button", { name: "השבתה" }),
+    );
+    const dialog = screen.getByRole("dialog", { hidden: true });
+    const isolated = within(dialog as HTMLElement).getByText("dana (bella).");
+    expect(isolated.tagName).toBe("BDI");
+    expect(isolated).not.toHaveAttribute("dir");
+    // And the markup is markup, not text the owner reads.
+    expect(dialog).not.toHaveTextContent("<bdi>");
   });
 
   it("cancelling removes nothing and returns focus to the trigger", async () => {
