@@ -86,6 +86,65 @@ def reminder_send_after(
     return now
 
 
+async def upsert_reminder(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    booking_id: uuid.UUID,
+    starts_at: datetime.datetime,
+    now: datetime.datetime,
+    bookings: BookingsRepository,
+    scheduled: ScheduledMessagesRepository,
+) -> datetime.datetime | None:
+    """An UPSERT, never a re-target — and that distinction is the whole point.
+
+    Cancel any pending row, then create a fresh one from the NEW `starts_at`
+    under the D3 bands including the <2h suppression, regardless of whether
+    the prior row was `sent`, `cancelled`, or never existed. A day-of
+    reschedule is the common case and its old reminder has already fired, so
+    "update the pending row" would be a silent no-op that ships green-tested.
+
+    Takes a session rather than opening one, so a caller already inside a
+    transaction can make the reminder rewrite part of it — F15's reschedule
+    needs exactly that, because post-commit a crash loses or mis-schedules the
+    reminder with nothing sweeping for the gap, and `drain_due` can claim the
+    stale pending row and clear its token in the window. `reschedule_reminder`
+    below is the one-line wrapper that opens its own `tenant_session`.
+
+    Returns the new `send_after`, or None when the new time is inside the
+    suppression window.
+    """
+    send_after = reminder_send_after(starts_at=starts_at, now=now)
+    pending = await scheduled.pending_for_booking(
+        session, tenant_id, booking_id=booking_id, kind=ScheduledMessageKind.REMINDER.value
+    )
+    # Read the token BEFORE cancelling — cancel_pending clears it.
+    carried = pending.manage_token if pending is not None else None
+    await scheduled.cancel_pending(
+        session, tenant_id, booking_id=booking_id, kind=ScheduledMessageKind.REMINDER.value
+    )
+    if send_after is None:
+        return None
+    token = carried
+    if token is None:
+        # Nothing pending to inherit the link from, and the hash is
+        # one-way, so the new row needs a new token. Only reached when
+        # the prior reminder already sent.
+        token = mint_manage_token()
+        await bookings.set_manage_token_hash(
+            session, tenant_id, booking_id, token_hash=manage_token_hash(token)
+        )
+    await scheduled.insert(
+        session,
+        tenant_id=tenant_id,
+        booking_id=booking_id,
+        kind=ScheduledMessageKind.REMINDER.value,
+        send_after=send_after,
+        manage_token=token,
+    )
+    return send_after
+
+
 @dataclasses.dataclass(frozen=True)
 class CommsTenant:
     """The tenant identity a body needs: the display name, the slug the link is
@@ -273,47 +332,22 @@ class BookingCommsService:
     async def reschedule_reminder(
         self, tenant: CommsTenant, *, booking_id: uuid.UUID, starts_at: datetime.datetime
     ) -> datetime.datetime | None:
-        """An UPSERT, never a re-target — and that distinction is the whole point.
+        """The seam: `upsert_reminder` in a `tenant_session` of its own.
 
-        Cancel any pending row, then create a fresh one from the NEW `starts_at`
-        under the D3 bands including the <2h suppression, regardless of whether
-        the prior row was `sent`, `cancelled`, or never existed. A day-of
-        reschedule is the common case and its old reminder has already fired, so
-        "update the pending row" would be a silent no-op that ships green-tested.
-
-        Returns the new `send_after`, or None when the new time is inside the
-        suppression window.
+        The body lives at module level so F15's reschedule can run it on the
+        transaction it already holds. `self._clock()` is read HERE, at the call,
+        not inside `upsert_reminder` — the injected frozen clocks still govern.
         """
-        send_after = reminder_send_after(starts_at=starts_at, now=self._clock())
         async with tenant_session(self._session_factory, tenant.id) as session:
-            pending = await self._scheduled.pending_for_booking(
-                session, tenant.id, booking_id=booking_id, kind=ScheduledMessageKind.REMINDER.value
-            )
-            # Read the token BEFORE cancelling — cancel_pending clears it.
-            carried = pending.manage_token if pending is not None else None
-            await self._scheduled.cancel_pending(
-                session, tenant.id, booking_id=booking_id, kind=ScheduledMessageKind.REMINDER.value
-            )
-            if send_after is None:
-                return None
-            token = carried
-            if token is None:
-                # Nothing pending to inherit the link from, and the hash is
-                # one-way, so the new row needs a new token. Only reached when
-                # the prior reminder already sent.
-                token = mint_manage_token()
-                await self._bookings.set_manage_token_hash(
-                    session, tenant.id, booking_id, token_hash=manage_token_hash(token)
-                )
-            await self._scheduled.insert(
+            return await upsert_reminder(
                 session,
                 tenant_id=tenant.id,
                 booking_id=booking_id,
-                kind=ScheduledMessageKind.REMINDER.value,
-                send_after=send_after,
-                manage_token=token,
+                starts_at=starts_at,
+                now=self._clock(),
+                bookings=self._bookings,
+                scheduled=self._scheduled,
             )
-        return send_after
 
     # --- the poller --------------------------------------------------------
 
