@@ -7,8 +7,11 @@ class TenantStatus(StrEnum):
 
 
 class StaffRole(StrEnum):
-    # Owner-only in v1; the real role model gets its first consumer in E6.
+    # The DB pins this exact set (0011). Reception/seamstress/sales join when
+    # E6-proper gives them their first consumer — pre-adding speculative roles
+    # is the un-lazy thing (the ScheduledMessageKind rule).
     OWNER = "owner"
+    SHIFT_MANAGER = "shift_manager"
 
 
 class AppointmentAudience(StrEnum):
