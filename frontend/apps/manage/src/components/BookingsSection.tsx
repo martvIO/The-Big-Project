@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, Card, DateField, EmptyState, Skeleton } from "@boutique/ui";
 import { api, errorMessage } from "../api";
-import type { OwnerBookingRow } from "../api";
+import type { OwnerBookingDetail, OwnerBookingRow } from "../api";
 import { isolateLtr, statusBadge } from "../lib/booking";
 import { jerusalemTime, todayJerusalem } from "../lib/jerusalem";
+import { BookingDetail } from "./BookingDetail";
 
 // Mirrors BOOKING_LIST_DEFAULT_LIMIT. Not parity-guarded: the server clamps the
 // page itself, so a stale client can only ask for a smaller page, never a bigger
@@ -19,6 +20,7 @@ export function BookingsSection() {
   const [rows, setRows] = useState<OwnerBookingRow[] | null>(null);
   const [total, setTotal] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,6 +47,26 @@ export function BookingsSection() {
   }, [date]);
 
   const loading = rows === null && loadError === null;
+
+  if (selectedId !== null) {
+    // An in-panel state swap, the CatalogSection -> DressEditor shape:
+    // apps/manage has no router and F15 does not introduce one for one view.
+    return (
+      <BookingDetail
+        bookingId={selectedId}
+        onBack={() => setSelectedId(null)}
+        // No list refetch. The row is patched from the mutation response, so
+        // the two views cannot disagree — they render the same object.
+        onBookingChanged={(next: OwnerBookingDetail) => {
+          setRows((current) =>
+            current === null
+              ? current
+              : current.map((booking) => (booking.id === next.id ? next : booking)),
+          );
+        }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -110,11 +132,11 @@ export function BookingsSection() {
                 return (
                   <li key={booking.id}>
                     {/* One affordance per row: the whole row opens the detail.
-                        py-4 + text-base clears 44px with no min-h literal.
-                        The next task wires the in-panel swap to it. */}
+                        py-4 + text-base clears 44px with no min-h literal. */}
                     <button
                       type="button"
                       className="flex w-full items-start gap-3 py-4 text-start"
+                      onClick={() => setSelectedId(booking.id)}
                     >
                       <span className="w-14 shrink-0 font-semibold text-ink">
                         <bdi dir="ltr">{jerusalemTime(booking.starts_at)}</bdi>

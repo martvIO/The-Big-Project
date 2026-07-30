@@ -37,11 +37,17 @@ export function jerusalemTime(instant: string): string {
   return `${parts.hour}:${parts.minute}`;
 }
 
-// The day filter's default: ISO, because that is what <input type="date"> takes,
-// and a JERUSALEM calendar date — it goes through the zoned formatter above like
-// everything else, never a bare device-clock read, which lands on the wrong
-// calendar day for part of every day.
-export function todayJerusalem(): string {
-  const parts = partsOf(DATE_PARTS, new Date());
+// The same Jerusalem calendar day in the ISO spelling that <input type="date">
+// and the API's ?date= both take. Separate from jerusalemDate above, which is
+// the human d.m.yyyy the SMS deck already texts the bride.
+export function jerusalemIsoDate(instant: string): string {
+  const parts = partsOf(DATE_PARTS, new Date(instant));
   return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+// The day filter's default: a JERUSALEM calendar date — it goes through the
+// zoned formatter above like everything else, never a bare device-clock read,
+// which lands on the wrong calendar day for part of every day.
+export function todayJerusalem(): string {
+  return jerusalemIsoDate(new Date().toISOString());
 }
