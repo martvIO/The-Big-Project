@@ -67,19 +67,24 @@ queue:
       lenses returned 33 findings (5 blockers); 32 fixed, 1 rejected in writing.
       Effort revised M → L at Gate 1.
   - id: F50
-    slug: owner-created-bookings
+    slug: walk-in-bookings
     epic: E3-carveout
-    title: Owner-created bookings
+    title: Owner-created bookings (walk-in half first)
     status: queued
-    deps: [F15]
+    deps: [F15, F34]
     note: >-
       Carved out of F15 by Interview Q6 and queued here because F15's spec found
       it load-bearing and the roadmap has no entry for it: a booking the owner
       creates has no bride-verified phone and no accepted terms, so the SMS
       control link would target an unverified number. It is also the only remedy
       path for F15's Risk 1 (a mis-tapped cancel is terminal, and the rebook has
-      to come from somewhere). Needs its own answer to consent capture and to
-      the terms version a bride never accepted.
+      to come from somewhere). SPLIT by the SMC epic (2026-07-30, SMC-6): the
+      walk-in half ships from the live board — a real booking with
+      source='walk_in', NO manage token, NO SMS, NULL terms (DB CHECK keeps
+      storefront rows non-null), checked_in_at at birth — the recorded danger
+      (SMS link to an unverified number) evaporates because no link is minted.
+      The remote/scheduled owner-create half (which DOES need the link, consent
+      capture and a terms answer) stays open in this entry after SMC-6.
 
   # ---- E4 — payments build against a fake gateway (Interview Q7) ----
   - id: F20
@@ -213,15 +218,20 @@ queue:
   # Slugs are placeholders until each spec names its own.
   # ---- E6 in-store real-time ----
   - id: F31
-    slug: f31-placeholder
-    epic: E6
-    title: "Staff records, roles & phone-OTP staff login"
-    status: queued
-    deps: [F3, F5, F9, F11]
+    slug: staff-roles-gating
+    epic: SMC
+    title: "Staff roles & default-deny manage gating"
+    status: building
+    deps: [F3, F5]
     note: >-
-      Q11 (against recommendation): staff sign in by phone + SMS OTP, reusing F11. No work
-      emails, no passwords. Costs an SMS per login and depends on sender-ID registration
-      in production. Reuses staff_users.role.
+      Q11 OVERRIDDEN by user decision 2026-07-30 (Shift Manager Console epic,
+      .planning/epics/shift-manager-console.md): staff sign in with email +
+      password through the unchanged /manage/auth/login — no OTP, no F11 dep,
+      no sender-ID blocker. Scope: shift_manager enum member + DB CHECK +
+      require_role default-deny gating on every /manage route, proven by a CI
+      route walker. Staff CRUD UI moved to F51. Started 2026-07-30 on
+      feature/staff-roles-gating, parallel to F15 (contingency: gates the three
+      shipped /manage routers now; F15's owner_router adopts require_role on rebase).
   - id: F32
     slug: f32-placeholder
     epic: E6
@@ -231,6 +241,43 @@ queue:
     note: >-
       Pre-decided #23: NO realtime vendor. ~5s refresh; Pusher only if the pilot proves it
       too slow. #25: events are versioned hints, server is truth.
+      SUBSUMED into F34 by the SMC epic (2026-07-30): the board polls the F15
+      bookings API wholesale; the version field is dropped (computing it costs
+      the same as answering in full). Entry kept for the record, do not build.
+  - id: F51
+    slug: staff-management
+    epic: SMC
+    title: "Staff management section (owner CRUD)"
+    status: queued
+    deps: [F31]
+    note: >-
+      SMC-2. Owner-only staff router (/manage/staff list/create/patch/soft-delete),
+      guards: no self-deactivate, never remove the last live owner. Role-filtered
+      nav table lands here. Deactivation is instantly effective (resolve_session
+      re-reads staff_users per request) — no session sweep, do not build one.
+  - id: F52
+    slug: kpi-dashboard
+    epic: SMC
+    title: "KPI dashboard (ops + customer)"
+    status: queued
+    deps: [F31]
+    note: >-
+      SMC-3. GET /manage/dashboard, Jerusalem window, both roles: bookings/week
+      (Sunday-start buckets), no-show + cancellation rates, busiest types,
+      new-vs-returning, repeat rate, FORWARD-ONLY 7-day slot utilization
+      (historical capacity doesn't exist; snapshot job is the recorded upgrade
+      path). No revenue until E4. Landing section for the console. No chart dep.
+  - id: F53
+    slug: customers-crm
+    epic: SMC
+    title: "Customers CRM + notes/tags + SMS log"
+    status: queued
+    deps: [F31]
+    note: >-
+      SMC-4. customers.notes TEXT + tags TEXT[] (migration), ILIKE search,
+      detail with booking history, read-only SMS log (message_log by phone OR
+      by the customer's booking ids — phone corrections orphan old rows).
+      Never expose provider_message_id/error. Audit logs field names only (PII).
   - id: F33
     slug: f33-placeholder
     epic: E6
@@ -242,15 +289,20 @@ queue:
       opt-in marketing checkbox. #30: one static printed QR per boutique. Soft handoff
       with F20 on the consent column.
   - id: F34
-    slug: f34-placeholder
-    epic: E6
-    title: "Shift-manager live board + dispatch"
+    slug: shift-board-checkin
+    epic: SMC
+    title: "Live board + check-in (5s poll)"
     status: queued
-    deps: [F31, F32, F33]
+    deps: [F15, F31]
     note: >-
-      Q2: NOVEL pattern — design gate requires a user-reviewed clickable prototype; does
-      NOT self-approve. Pre-decided #28: E6 is done at queue + dispatch, no waiting-time
-      analytics.
+      SMC-5. Q2: NOVEL pattern — design gate requires a user-reviewed clickable
+      prototype; does NOT self-approve. Pre-decided #28: done at queue + dispatch,
+      no waiting-time analytics. Re-scoped by the SMC epic (2026-07-30): F32
+      subsumed (client 5s poll of GET /manage/bookings?date=, no version field,
+      pause on document.hidden); F33 dropped as a dep (walk-ins become real
+      bookings via F50). Check-in = bookings.checked_in_at TIMESTAMPTZ column,
+      NOT a fifth status — the CHECK, both partial unique indexes and E4's
+      pending_payment widening stay untouched. Endpoints land on F15's owner router.
   - id: F35
     slug: f35-placeholder
     epic: E6
