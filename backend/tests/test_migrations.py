@@ -39,14 +39,20 @@ _STAFF_INSERT = (
     "INSERT INTO staff_users (tenant_id, email, password_hash, display_name, role) "
     "VALUES (uuid_generate_v4(), 'probe@check.example', 'hash', 'Probe', :role)"
 )
-# 0011's statements, verbatim — the populated-table test below re-runs the real
-# ALTER rather than a paraphrase of it.
 _ROLE_CHECK = "staff_users_role_check"
+# _ADD_ROLE_CHECK is 0011's upgrade statement VERBATIM: the populated-table test
+# below proves the migration's own claim, so it must run the real ALTER and not a
+# paraphrase. _DROP_ROLE_CHECK deliberately drops the IF EXISTS that 0011's
+# downgrade carries — a test that silently no-ops when the constraint is already
+# gone would make the halves below pass vacuously.
 _ADD_ROLE_CHECK = (
     f"ALTER TABLE staff_users ADD CONSTRAINT {_ROLE_CHECK} "
     "CHECK (role IN ('owner', 'shift_manager'))"
 )
 _DROP_ROLE_CHECK = f"ALTER TABLE staff_users DROP CONSTRAINT {_ROLE_CHECK}"
+# Kept in step with test_staff_role_gating.UNKNOWN_ROLE, which owns the tripwire
+# asserting it never becomes a real StaffRole.
+UNKNOWN_ROLE = "no-such-role"
 _COUNT_ROLE_CHECK = "SELECT count(*) FROM pg_constraint WHERE conname = :name"
 
 
@@ -78,7 +84,7 @@ def test_staff_role_check_pins_the_role_set(migrated_db: str) -> None:
             async with engine.connect() as conn:
                 trans = await conn.begin()
                 with pytest.raises(IntegrityError):
-                    await conn.execute(text(_STAFF_INSERT), {"role": "reception"})
+                    await conn.execute(text(_STAFF_INSERT), {"role": UNKNOWN_ROLE})
                 await trans.rollback()
         finally:
             await engine.dispose()
@@ -94,8 +100,13 @@ def test_the_app_role_can_promote_to_shift_manager_but_not_to_an_unknown_role(
     axes the probe above leaves open (it connects as the container superuser and
     only INSERTs). The positive half is also F51's pre-flight: boutique_app really
     can write 'shift_manager' past the constraint, under forced RLS, with only its
-    GRANTs. The seeded row keeps its own random tenant_id, so RLS makes it
-    invisible to every other test sharing the container."""
+    GRANTs.
+
+    The seeded row is left behind under its own random tenant_id, which is safe
+    for two different reasons worth separating: every tenant-scoped reader in the
+    suite cannot see it (RLS), and the two superuser probes in THIS file do see it
+    but do not care — 'shift_manager' satisfies the constraint they add, so the
+    populated-table test's owner half still succeeds with this row present."""
 
     async def check() -> None:
         engine = create_async_engine(app_role_url, poolclass=NullPool)
@@ -124,7 +135,7 @@ def test_the_app_role_can_promote_to_shift_manager_but_not_to_an_unknown_role(
             with pytest.raises(IntegrityError):
                 async with tenant_session(factory, tenant_id) as session:
                     await session.execute(
-                        update(StaffUser).where(StaffUser.id == staff_id).values(role="reception")
+                        update(StaffUser).where(StaffUser.id == staff_id).values(role=UNKNOWN_ROLE)
                     )
 
             async with tenant_session(factory, tenant_id) as session:
@@ -144,7 +155,7 @@ def test_adding_the_role_check_validates_existing_rows(migrated_db: str) -> None
     """0011's comment claims ADD CONSTRAINT validates existing rows, so the
     migration cannot fail on live data where every row carries the 'owner'
     default. Proven with the migration's exact ALTER on a POPULATED table, both
-    halves: an 'owner' row present -> the constraint is added; a 'reception' row
+    halves: an 'owner' row present -> the constraint is added; an unknown-role row
     present -> it is REFUSED. Without the second half a NOT VALID constraint
     would pass the first and the comment would be a lie.
 
@@ -174,7 +185,7 @@ def test_adding_the_role_check_validates_existing_rows(migrated_db: str) -> None
             await engine.dispose()
 
     assert asyncio.run(probe(StaffRole.OWNER.value)) is True
-    assert asyncio.run(probe("reception")) is False
+    assert asyncio.run(probe(UNKNOWN_ROLE)) is False
 
 
 @pytest.mark.db

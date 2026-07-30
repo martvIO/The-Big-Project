@@ -133,6 +133,11 @@ SPEC_ERROR_CODES = {
     "NOT_AUTHORIZED",
 }
 
+# Kept in step with test_staff_role_gating.UNKNOWN_ROLE, which owns the tripwire
+# asserting it never becomes a real StaffRole. Duplicated because that module
+# imports THIS one, so the dependency cannot run the other way.
+UNKNOWN_ROLE = "no-such-role"
+
 
 def _dress_row(*, archived: bool = False) -> Dress:
     return Dress(
@@ -428,12 +433,20 @@ def test_every_route_requires_authentication() -> None:
 
 def test_an_unadmitted_role_is_403_on_every_route() -> None:
     """The catalog router's default posture is require_role(OWNER, SHIFT_MANAGER),
-    so a role the enum does not know fails closed on every route with the ONE
-    generic body (no role names on the wire). This is what earns NOT_AUTHORIZED
-    its row in SPEC_ERROR_CODES — without it the set was a claim, not a test.
-    The admitted-role side of the matrix lives in test_staff_role_gating.py."""
+    so a role the enum does not know fails closed on every route, and every route
+    answers the SAME body. This is what earns NOT_AUTHORIZED its row in
+    SPEC_ERROR_CODES — without it the set was a claim, not a test.
+
+    The comparison is against the imported constant, so it pins uniformity across
+    routes, not the literals; the code and the generic message are pinned once in
+    test_staff_role_gating.test_the_not_authorized_contract_is_pinned_by_literal.
+    The admitted-role side of the matrix also lives in that module.
+
+    UNKNOWN_ROLE is duplicated rather than imported: this module cannot import
+    test_staff_role_gating, which imports it. The tripwire asserting the sentinel
+    never becomes a real role lives there."""
     fake = FakeCatalogService()
-    with _client(fake, role="reception") as client:
+    with _client(fake, role=UNKNOWN_ROLE) as client:
         for method, path, body in ROUTES:
             resp = client.request(method, path, json=body)
             assert resp.status_code == 403, f"{method} {path} → {resp.status_code}"

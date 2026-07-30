@@ -48,6 +48,18 @@ TERMS_PUBLISH = ("POST", "/manage/terms")
 # so narrowing the shift manager's surface stays a deliberate, reviewed act.
 OWNER_ONLY = {TERMS_PUBLISH}
 
+# The probe for "a role the enum does not know", shared verbatim by
+# test_catalog_api and test_migrations. Deliberately NOT 'reception' (or
+# seamstress/sales): 0011's comment names those three as the next roles to join
+# StaffRole, and the day one of them does, a test using it as the unknown-role
+# probe would silently start asserting the opposite of its own name.
+UNKNOWN_ROLE = "no-such-role"
+# The tripwire that keeps the sentence above true.
+assert UNKNOWN_ROLE not in {role.value for role in StaffRole}, (
+    "UNKNOWN_ROLE became a real StaffRole — every unknown-role test now asserts "
+    "the opposite of its name; pick a new sentinel"
+)
+
 # The ONLY /manage routes allowed to carry no RoleGate — and NOT for the same
 # reason, which an earlier version of this comment got wrong:
 #   POST /manage/auth/login  — anonymous by definition.
@@ -219,7 +231,7 @@ async def test_unknown_role_fails_closed_on_every_gate_shape() -> None:
     )
     for gate in gates:
         with pytest.raises(NotAuthorizedError):
-            await gate(_staff("reception"))
+            await gate(_staff(UNKNOWN_ROLE))
 
 
 # --- HTTP matrix: the wiring, end to end over the boutique ROUTES table ---
@@ -291,10 +303,11 @@ def test_shift_manager_is_admitted_everywhere_except_terms_publishing() -> None:
             resp = client.request(method, path, json=body)
             if (method, path) in OWNER_ONLY:
                 assert resp.status_code == 403, (method, path, resp.text)
-                # The FULL body, not just the code: the generic message is a
-                # stated invariant (no role names on the wire), and F15's rebase
-                # carries a same-named constant with a role-naming message —
-                # this assertion is what makes that merge resolution fail loudly.
+                # The whole body, so every route answers the SAME refusal. Note
+                # what this cannot do: both sides are the imported constant, so
+                # renaming the code or leaking role names into the message would
+                # move them together and pass. The literals are pinned once, in
+                # test_the_not_authorized_contract_is_pinned_by_literal.
                 assert resp.json() == NOT_AUTHORIZED_BODY
             else:
                 assert resp.status_code < 400, (method, path, resp.text)
@@ -315,12 +328,35 @@ def test_unknown_role_is_403_on_every_gated_route() -> None:
     # decoy gate that carries allowed_roles but never raises would fall through
     # to the real (unconfigured) CatalogService and blow the test up.
     fake = FakeBoutiqueService()
-    client, _ = _client(fake, "reception")
+    client, _ = _client(fake, UNKNOWN_ROLE)
     with client:
         for method, path, body in [*ROUTES, *CATALOG_ROUTES]:
             resp = client.request(method, path, json=body)
             assert resp.status_code == 403, (method, path, resp.text)
             assert resp.json() == NOT_AUTHORIZED_BODY
+
+
+def test_the_not_authorized_contract_is_pinned_by_literal() -> None:
+    """The one test that reads the LITERALS. Every other 403 assertion on this
+    branch compares resp.json() against NOT_AUTHORIZED_BODY imported from
+    app.main, so both sides move together: renaming the wire code, or leaking
+    role names into the message, passes all of them. This is what actually holds
+    the contract — and what makes F15's rebase fail loudly if its role-naming
+    variant of the same-named constant wins the merge.
+
+    The role-name scan iterates StaffRole rather than listing today's two, so a
+    role added later is covered without touching this test. The reason the body
+    must stay generic is that naming the required role tells a prober which
+    roles exist."""
+    fake = FakeBoutiqueService()
+    client, _ = _client(fake, StaffRole.SHIFT_MANAGER.value)
+    with client:
+        resp = client.post("/manage/terms", json=TERMS_BODY)
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "NOT_AUTHORIZED"
+    assert resp.json()["error"]["message"] == "This action is not available for your account."
+    for role in StaffRole:
+        assert role.value not in resp.text, f"the 403 body names the role {role.value}"
 
 
 def test_auth_me_stays_reachable_for_shift_manager() -> None:
@@ -374,15 +410,23 @@ def test_logout_is_reachable_with_no_session_at_all() -> None:
     assert "boutique_session=" in resp.headers["set-cookie"]
 
 
-def test_logout_never_403s_for_any_role() -> None:
+def test_logout_revokes_the_session_for_any_role() -> None:
     """The inverse of every gated route: logout admits owner, shift_manager AND a
     role the enum does not know. A RoleGate added here would 403 exactly the
-    caller who most needs to get rid of her cookie."""
-    for role in ("owner", "shift_manager", "reception"):
+    caller who most needs to get rid of her cookie.
+
+    logout_calls is the load-bearing assertion, not the 200: the route answers
+    200 whether or not it revoked anything, so status alone would still pass if
+    the revoke were skipped — which is a live risk, because the route reads the
+    cookie by hardcoded literal while everything else reads SESSION_COOKIE. A
+    rename of that constant leaves a stolen token valid until TTL with the user
+    told she logged out."""
+    for role in (StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value, UNKNOWN_ROLE):
         fake = FakeBoutiqueService()
-        client, _ = _client(fake, role)
+        client, auth = _client(fake, role)
         with client:
             assert client.post("/manage/auth/logout").status_code == 200, role
+        assert auth.logout_calls == 1, role
 
 
 def test_me_echoes_an_out_of_enum_role_verbatim() -> None:
@@ -393,11 +437,11 @@ def test_me_echoes_an_out_of_enum_role_verbatim() -> None:
     that true. If a role filter is ever wanted on the wire, this is the test that
     must change."""
     fake = FakeBoutiqueService()
-    client, _ = _client(fake, "reception")
+    client, _ = _client(fake, UNKNOWN_ROLE)
     with client:
         resp = client.get("/manage/auth/me")
     assert resp.status_code == 200
-    assert resp.json()["role"] == "reception"
+    assert resp.json()["role"] == UNKNOWN_ROLE
 
 
 # --- precedence and the anonymous surface ---
@@ -442,17 +486,24 @@ def test_no_route_outside_manage_carries_a_role_gate() -> None:
 
 
 def test_head_and_options_on_a_gated_route_are_405_before_the_gate() -> None:
-    """Framework-safe AND fail-safe, recorded rather than assumed.
+    """A framework CHARACTERIZATION test, not a gating test — it cannot fail for
+    any gate-related reason, and it is here to record why no gate is needed on
+    these two verbs.
 
-    FastAPI overwrites Starlette's HEAD augmentation (it assigns route.methods
-    after super().__init__, dropping Starlette's `if "GET": add("HEAD")`), so a
-    GET route carries methods == {"GET"} and matching returns PARTIAL → 405
-    before any dependency, gate included, is solved. There is no OPTIONS handler
-    because no CORS middleware is installed.
+    In the locked fastapi 0.139.2, APIRoute.__init__ never calls
+    super().__init__(): it calls _populate_api_route_state, which sets
+    route.methods = {m.upper() for m in methods} and never reaches Starlette's
+    `if "GET" in self.methods: self.methods.add("HEAD")`. So a GET route carries
+    methods == {"GET"} exactly, matching returns PARTIAL, and 405 is answered
+    before any dependency — gate included — is solved. OPTIONS 405s for the
+    simpler reason that no CORS middleware is installed to handle it.
 
-    If either ever changes, HEAD/OPTIONS start appearing in the method walk of
-    test_every_manage_route_is_role_gated — which is gated-or-allowlisted — so
-    the walker goes red too. This test just names the mechanism."""
+    Backstop, stated precisely because it is only partial: if a FastAPI bump
+    restored the HEAD augmentation, GET /manage/auth/me would gain HEAD, which is
+    absent from UNGATED_ALLOWLIST, so test_every_manage_route_is_role_gated would
+    go red. Nothing catches a new OPTIONS handler that way — a CORS middleware
+    added later would flip this test's second assertion instead, which is the
+    review such a change deserves."""
     fake = FakeBoutiqueService()
     client, auth = _client(fake, "shift_manager")
     with client:
