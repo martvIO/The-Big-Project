@@ -51,10 +51,12 @@ def test_provision_creates_a_loginable_owner(app_role_url: str) -> None:
             auth.login(result.tenant_id, "owner@bella.example", "s3cret-owner-pw")
         )
         assert staff.email == "owner@bella.example"
-        # ProvisioningService never writes role — the row rides staff_users'
-        # server_default, and 0011's CHECK plus the whole default-deny posture
-        # rest on that default being 'owner'. F51 adds the first writer; until
-        # then this is the only thing pinning it.
+        # ProvisioningService still names no role at its call site; since F51,
+        # StaffUsersRepository.insert defaults the kwarg to OWNER in Python, so
+        # the INSERT emits it explicitly and staff_users' server_default is belt
+        # rather than the sole mechanism. 0011's CHECK and the whole default-deny
+        # posture rest on a freshly provisioned tenant's founder being an owner,
+        # and this assertion is still what pins it.
         assert staff.role == StaffRole.OWNER.value
     finally:
         asyncio.run(engine.dispose())
