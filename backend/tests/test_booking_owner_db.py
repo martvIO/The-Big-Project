@@ -744,6 +744,64 @@ async def test_a_second_cancel_is_a_200_that_writes_no_second_audit_row(
         await engine.dispose()
 
 
+async def test_a_customer_cancel_landing_first_is_a_409_and_writes_no_owner_audit_row(
+    app_role_url: str,
+) -> None:
+    """The race the owner-cancel guard exists for, and it needs real Postgres:
+    no fake can produce the ORM state that made the old guard blind.
+
+    The bride cancels on her manage link and commits between the owner's read
+    and the owner's guarded UPDATE. That UPDATE now matches zero rows — but the
+    row's status IS 'cancelled', which is the owner's target, and SQLAlchemy's
+    `evaluate` synchronization has already stamped `cancelled_by = 'owner'` onto
+    the in-memory instance. Reading the re-fetched row therefore cannot answer
+    "did I do this?", and the only honest signal is `cancel`'s own `.returning()`
+    scalar.
+
+    What must not happen: an `audit_log` row asserting a staff member cancelled
+    an appointment the customer cancelled herself, plus `changed=True` sending
+    her «בוטל על ידי הבוטיק» minutes after she cancelled it.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        owner = _owner(factory)
+        staff = _staff(tenant_id)
+        manage = _manage(factory)
+
+        async def by_owner() -> Any:
+            return await owner.cancel(tenant_id, claim.booking.id, staff=staff)
+
+        async def by_customer() -> Any:
+            return await manage.cancel(_manage_tenant(tenant_id), token=claim.manage_token)
+
+        await asyncio.gather(by_owner(), by_customer(), return_exceptions=True)
+
+        row = await _row(factory, tenant_id, claim.booking.id)
+        assert row is not None
+        assert row.status == BookingStatus.CANCELLED.value
+
+        # The only claim that matters, and it holds whichever writer won:
+        # `cancelled_by` is the truth, and an owner audit row may exist only if
+        # the owner is who the row names. The customer path writes no audit row
+        # at all, so a stray one here is not a duplicate — it is the SOLE trail
+        # entry for that cancellation, naming the wrong actor.
+        cancels = [
+            entry
+            for entry in await _audit(factory, tenant_id)
+            if entry.action == AuditAction.BOOKING_CANCELLED.value
+        ]
+        if row.cancelled_by == BookingCancelledBy.CUSTOMER.value:
+            assert cancels == [], f"an owner audit row for a customer cancel: {cancels!r}"
+        else:
+            assert len(cancels) == 1
+            assert cancels[0].actor_id == staff.id
+    finally:
+        await engine.dispose()
+
+
 async def test_every_transition_writes_exactly_one_audit_row_and_a_refusal_writes_none(
     app_role_url: str,
 ) -> None:

@@ -178,8 +178,9 @@ describe("BookingDetail facts", () => {
     mount();
     await screen.findByText("הלקוחה");
 
-    // phone, appointment date, appointment time, dress size, seat, terms version
-    for (const value of ["+972501234567", "4.8.2099", "10:00", "36", "2", "3"]) {
+    // phone, appointment date, appointment time, seat, terms version. NOT the
+    // dress size — see the bare-bdi case below.
+    for (const value of ["+972501234567", "4.8.2099", "10:00", "2", "3"]) {
       const node = screen.getAllByText(value)[0];
       expect(node.tagName).toBe("BDI");
       expect(node).toHaveAttribute("dir", "ltr");
@@ -187,10 +188,16 @@ describe("BookingDetail facts", () => {
   });
 
   it('leaves free text in a BARE bdi — dir="ltr" on Hebrew is the worse defect', async () => {
-    mount();
+    mount({ dress_size: "מידה 36" });
     await screen.findByText("הלקוחה");
 
-    for (const value of ["מיכל לוי", "שמלת אלמה", "באה עם אמא ואחות, מגיעות מחיפה"]) {
+    // `dress_size` is a snapshot of `dress_variants.size_label`: unbounded
+    // owner-typed TEXT with no numeric constraint, so «מידה 36» or «S ארוך» is
+    // ordinary. Under dir="ltr" the digits render left of the Hebrew. The
+    // storefront already reads this field as owner-authored free text
+    // (ManageBookingPage, BookPage), and a bare bdi still renders a plain "36"
+    // LTR — dir=auto has no strong character to disagree with.
+    for (const value of ["מיכל לוי", "שמלת אלמה", "מידה 36", "באה עם אמא ואחות, מגיעות מחיפה"]) {
       const node = screen.getByText(value);
       expect(node.tagName).toBe("BDI");
       expect(node).not.toHaveAttribute("dir");
@@ -572,6 +579,60 @@ describe("BookingDetail error rendering", () => {
     );
   });
 
+  it("never strands focus on <body> — a plain action that fails moves it to the alert", async () => {
+    // `disabled={busy}` blurs the button the instant it is tapped, and only the
+    // SUCCESS path rescues focus (the cue effect). On failure nothing did: the
+    // owner's next Tab restarted at the skip link and a screen-reader cursor
+    // had left the panel. WCAG 2.4.3.
+    mount({ status: "confirmed", starts_at: PAST });
+    noShowBooking.mockRejectedValue(
+      new ApiError(409, "BOOKING_TRANSITION_INVALID", "Not allowed."),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "סימון: לא הגיעה" }));
+
+    const alert = await screen.findByRole("alert");
+    await waitFor(() => expect(alert).toHaveFocus());
+  });
+
+  it("never strands focus after the cancel Modal's confirm fails", async () => {
+    // The worst instance: `setConfirmingCancel(false)` and `setPending("cancel")`
+    // batch into ONE commit, so the <dialog> unmounts (focus → <body>) while the
+    // trigger it would be restored to is `disabled` in that same commit. The
+    // restore effect's .focus() on a disabled button is a no-op.
+    mount();
+    cancelBooking.mockRejectedValue(
+      new ApiError(409, "BOOKING_TRANSITION_INVALID", "Already started."),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "ביטול התור" }));
+    fireEvent.click(
+      within(dialogOf("לבטל את התור?")).getByRole("button", { name: "אישור הביטול" }),
+    );
+
+    const alert = await screen.findByRole("alert");
+    await waitFor(() => expect(alert).toHaveFocus());
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it("moves focus to the phone field when the server rejects the number", async () => {
+    // The 400 renders in the Input's own error slot, not the shared alert, so
+    // focusing the alert would leave this path stranded.
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "תיקון מספר הטלפון" }));
+    fireEvent.change(screen.getByLabelText("מספר טלפון חדש"), { target: { value: "123" } });
+    correctBookingPhone.mockRejectedValue(
+      new ApiError(400, "VALIDATION_ERROR", "phone: not an Israeli mobile"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "שמירת המספר" }));
+    fireEvent.click(
+      within(dialogOf("לעדכן את מספר הטלפון?")).getByRole("button", { name: "עדכון המספר" }),
+    );
+
+    await screen.findByText("phone: not an Israeli mobile");
+    await waitFor(() => expect(screen.getByLabelText("מספר טלפון חדש")).toHaveFocus());
+  });
+
   it("a 409 leaves the previously-rendered facts exactly where they were", async () => {
     mount({ status: "confirmed", starts_at: PAST });
     noShowBooking.mockRejectedValue(
@@ -795,7 +856,11 @@ describe("RescheduleDialog", () => {
     expect(rescheduleBooking).not.toHaveBeenCalled();
   });
 
-  it("patches the list row from the reschedule response", async () => {
+  it("refetches the day after a move — a patched row cannot keep the list truthful", async () => {
+    // `starts_at` is the one field list MEMBERSHIP, the server `total` and the
+    // server's (starts_at, seat_index) ORDER are all derived from. Patching the
+    // object in place leaves the row parked at its old index; the same-day move
+    // below is the mild case, the cross-day one under it is the dangerous one.
     listBookings.mockResolvedValue(listRow());
     getBooking.mockResolvedValue(detail());
     listManageSlots.mockResolvedValue({ slots: [slot(NEXT)] });
@@ -808,14 +873,65 @@ describe("RescheduleDialog", () => {
 
     const dialog = dialogOf("שינוי מועד התור");
     fireEvent.click(await within(dialog).findByRole("radio", { name: "11:30" }));
+    listBookings.mockResolvedValue(listRow({ starts_at: NEXT }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "עדכון המועד" }));
+    await screen.findByText("המועד עודכן.");
+
+    await waitFor(() => expect(listBookings).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "חזרה לרשימה" }));
+    expect(await screen.findByText("11:30")).toBeInTheDocument();
+  });
+
+  it("drops the row from the filtered day when the move leaves it", async () => {
+    // The list deliberately prints no date (the date IS the filter), so a row
+    // left behind by a cross-day move is visually indistinguishable from a real
+    // one — the owner reads 09:00 on the 4th and prepares for an appointment
+    // that is on the 6th. The announced count would stay wrong too.
+    const OTHER_DAY = "2099-08-06T06:00:00Z"; // 09:00 Jerusalem, two days on
+    listBookings.mockResolvedValue(listRow());
+    getBooking.mockResolvedValue(detail());
+    listManageSlots.mockResolvedValue({ slots: [slot(NEXT), slot(OTHER_DAY)] });
+    rescheduleBooking.mockResolvedValue(detail({ starts_at: OTHER_DAY }));
+
+    render(<BookingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: /מיכל לוי/ }));
+    await screen.findByText("הלקוחה");
+    fireEvent.click(screen.getByRole("button", { name: "שינוי מועד" }));
+
+    const dialog = dialogOf("שינוי מועד התור");
+    fireEvent.change(await within(dialog).findByLabelText("תאריך"), {
+      target: { value: "2099-08-06" },
+    });
+    fireEvent.click(await within(dialog).findByRole("radio", { name: "09:00" }));
+
+    // The 4th, refetched, no longer holds it.
+    listBookings.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 50 });
     fireEvent.click(within(dialog).getByRole("button", { name: "עדכון המועד" }));
     await screen.findByText("המועד עודכן.");
 
     fireEvent.click(screen.getByRole("button", { name: "חזרה לרשימה" }));
 
-    // One list fetch for the whole flow, and the row carries the new time.
-    expect(await screen.findByText("11:30")).toBeInTheDocument();
-    expect(listBookings).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("אין תורים בתאריך הזה")).toBeInTheDocument();
+    expect(screen.getByTestId("bookings-count")).toHaveTextContent("תורים ביום זה: 0");
+    // Same day as the first call — the FILTER did not change, the booking left
+    // it. Only the refetch can know that.
+    expect(listBookings).toHaveBeenCalledTimes(2);
+    expect(listBookings.mock.calls[1]).toEqual(listBookings.mock.calls[0]);
+  });
+
+  it("announces nothing when the pre-selected time is re-submitted unchanged", async () => {
+    // The current time is always present and pre-selected (D6), so the confirm
+    // is live the moment the grid loads and this is one tap away. The server
+    // short-circuits to a no-op 200: no audit row, no send, nothing changed —
+    // and «המועד עודכן» would state a state change that did not happen.
+    const dialog = await openDialog();
+    await within(dialog).findByRole("radio", { name: "11:30" });
+
+    rescheduleBooking.mockResolvedValue(detail());
+    fireEvent.click(within(dialog).getByRole("button", { name: "עדכון המועד" }));
+
+    await waitFor(() => expect(document.querySelectorAll("dialog")).toHaveLength(0));
+    expect(screen.getByTestId("booking-cue")).toHaveTextContent("");
   });
 
   it("surfaces a slot-fetch failure in the OUTAGE register without closing", async () => {
@@ -827,6 +943,28 @@ describe("RescheduleDialog", () => {
     const alert = await within(dialog).findByRole("alert");
     expect(alert).toHaveClass("text-ink-muted");
     expect(within(dialog).getByRole("button", { name: "עדכון המועד" })).toBeDisabled();
+  });
+
+  it("offers a retry, because the branch it replaces owns the only refetch control", async () => {
+    // The list's L-fail declines a retry control on the grounds that
+    // re-selecting the date refetches — true there, because its DateField sits
+    // in a Card ABOVE the alert. Here the alert REPLACES SlotPicker, and the
+    // DateField lives inside it, so the dialog is left with one disabled
+    // control and «חזרה». The storefront's own slots outage ships this button.
+    mount();
+    listManageSlots.mockRejectedValue(new ApiError(503, "UNAVAILABLE", "Down."));
+    fireEvent.click(await screen.findByRole("button", { name: "שינוי מועד" }));
+
+    const dialog = dialogOf("שינוי מועד התור");
+    await within(dialog).findByRole("alert");
+    expect(listManageSlots).toHaveBeenCalledTimes(1);
+
+    listManageSlots.mockResolvedValue({ slots: [slot(NEXT)] });
+    fireEvent.click(within(dialog).getByRole("button", { name: "ניסיון נוסף" }));
+
+    expect(await within(dialog).findByRole("radio", { name: "11:30" })).toBeInTheDocument();
+    expect(listManageSlots).toHaveBeenCalledTimes(2);
+    expect(within(dialog).queryByRole("alert")).toBeNull();
   });
 
   it("passes axe with zero violations with the dialog open", async () => {

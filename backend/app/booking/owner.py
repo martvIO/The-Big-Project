@@ -36,6 +36,7 @@ from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.tenant import tenant_session
+from app.errors import DomainValidationError
 from app.models.booking import Booking
 from app.models.constants import (
     AuditAction,
@@ -170,6 +171,16 @@ class OwnerBookingService:
         non-router caller passing an unbounded Python int would 500 in the
         encoder rather than 400 at the boundary.
         """
+        # Same reason, one line earlier in the pipeline. The router declares a
+        # bare `datetime.date`, so pydantic accepts the whole range, and
+        # `?date=9999-12-31` is among the first things anyone probes: `date + 1
+        # day` raises OverflowError at the top, and at the bottom boutique
+        # midnight on `0001-01-01` is `0000-12-31T22:00Z`, which underflows in
+        # `.astimezone()`. Either escapes as a bare 500 outside the house error
+        # shape (`storefront/service.py`'s `slot_window`, `reschedule` step 0).
+        # Comparison cannot overflow, so this guard is total.
+        if not datetime.date.min < date < datetime.date.max:
+            raise DomainValidationError("date is out of range")
         from_instant = datetime.datetime.combine(
             date, datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
         ).astimezone(datetime.UTC)
@@ -323,6 +334,15 @@ class OwnerBookingService:
                 raise BookingTransitionInvalidError(f"{booking.status} -> {to}")
             if past_only and booking.starts_at > now:
                 raise BookingTransitionInvalidError(f"{booking.status} -> {to} before starts_at")
+            # Captured BEFORE the write, and that is not style. The repository's
+            # UPDATE is ORM-enabled DML: `synchronize_session` defaults to
+            # `evaluate` for these predicates, which stamps the SET values onto
+            # this very instance, and the writer's trailing `by_id` returns the
+            # same object. Reading `booking.status` after the call would record
+            # {from: no_show, to: no_show} — `allowed_from` is genuinely
+            # two-valued for all three verbs, so `from` carries real information
+            # and losing it empties the trail D2 exists for.
+            from_status = booking.status
             updated = await self._bookings.set_status(
                 session,
                 tenant_id,
@@ -335,14 +355,14 @@ class OwnerBookingService:
                 # Another request moved the row between the read and here. The
                 # raise rolls the transaction back BEFORE the audit row, rather
                 # than committing evidence for a move that did not happen.
-                raise BookingTransitionInvalidError(f"{booking.status} -> {to}")
+                raise BookingTransitionInvalidError(f"{from_status} -> {to}")
             await self._record(
                 session,
                 tenant_id,
                 staff=staff,
                 action=action,
                 booking_id=booking_id,
-                details={"from": booking.status, "to": to},
+                details={"from": from_status, "to": to},
             )
             return OwnerMutation(booking=updated)
 
@@ -380,6 +400,7 @@ class OwnerBookingService:
                 raise BookingTransitionInvalidError(f"{booking.status} -> {target}")
             if booking.starts_at <= now:
                 raise BookingTransitionInvalidError(f"{target} after starts_at")
+            from_status = booking.status
             updated = await self._bookings.cancel(
                 session,
                 tenant_id,
@@ -388,16 +409,18 @@ class OwnerBookingService:
                 by=BookingCancelledBy.OWNER.value,
                 not_before=now,
             )
-            # `cancel` answers through a trailing `by_id` and so ALWAYS returns a
-            # row — the customer path depends on that, which is why widening its
-            # predicate unconditionally was declined (D3). So the zero-row signal
-            # here is the re-read's status, not a None. The one case it cannot
-            # distinguish is a concurrent OWNER cancel, whose audit row would be
-            # a duplicate of a truthful one; every other concurrent writer
-            # (no-show, complete, reschedule-into-the-past) leaves the row
-            # un-cancelled and is caught.
+            # `None` is `cancel`'s own `.returning()` scalar and nothing else can
+            # substitute for it. Re-reading the row cannot answer this question:
+            # a bride cancelling on her manage link in the same window leaves
+            # `status = 'cancelled'`, which IS the target, and the ORM's
+            # `evaluate` synchronization has already stamped
+            # `cancelled_by = 'owner'` onto the in-memory instance regardless of
+            # what the database matched — so even the evidence columns lie. The
+            # status check below is belt only. The one case still
+            # indistinguishable is a concurrent OWNER cancel, whose audit row
+            # would be a duplicate of a truthful one.
             if updated is None or updated.status != target:
-                raise BookingTransitionInvalidError(f"{booking.status} -> {target}")
+                raise BookingTransitionInvalidError(f"{from_status} -> {target}")
             await self._scheduled.cancel_pending(
                 session,
                 tenant_id,
@@ -410,7 +433,7 @@ class OwnerBookingService:
                 staff=staff,
                 action=AuditAction.BOOKING_CANCELLED,
                 booking_id=booking_id,
-                details={"from": booking.status, "to": target},
+                details={"from": from_status, "to": target},
             )
             return OwnerMutation(booking=updated)
 
@@ -523,6 +546,16 @@ class OwnerBookingService:
             # 7. The move. No extra write releases the source seat — both
             #    partial unique indexes are re-evaluated over the row's new
             #    values at statement time.
+            #
+            #    The `old_*` half of the audit row is captured HERE, before the
+            #    write. `reschedule` is ORM-enabled DML and its default
+            #    `evaluate` synchronization stamps the new `starts_at` and
+            #    `seat_index` onto this instance, which the trailing `by_id`
+            #    then hands back — so reading `booking.starts_at` after the call
+            #    would record old == new and make the move unrecoverable from
+            #    the one trail the epic's reschedule line exists for.
+            old_starts_at = booking.starts_at
+            old_seat_index = booking.seat_index
             try:
                 updated = await self._bookings.reschedule(
                     session,
@@ -568,9 +601,9 @@ class OwnerBookingService:
                     # other caller in the repo passes JSON-native scalars — a
                     # `datetime` in here is a TypeError at flush, on the audit
                     # row that is the entire point of the epic's reschedule line.
-                    "old_starts_at": booking.starts_at.isoformat(),
+                    "old_starts_at": old_starts_at.isoformat(),
                     "new_starts_at": slot.starts_at.isoformat(),
-                    "old_seat_index": booking.seat_index,
+                    "old_seat_index": old_seat_index,
                     "new_seat_index": seat_index,
                 },
             )
@@ -672,12 +705,25 @@ class OwnerBookingService:
                 rotate = [booking]
                 new_customer_id = target.id
             else:
-                if (
-                    await self._customers.set_phone(
+                try:
+                    written = await self._customers.set_phone(
                         session, tenant_id, old_customer_id, phone=normalized
                     )
-                    is None
-                ):
+                except IntegrityError as exc:
+                    # `by_phone` above is a pre-check, and this method takes no
+                    # advisory lock — unlike `reschedule` and the public
+                    # `create_booking`, both of which write the same
+                    # `idx_customers_tenant_phone_unique`. A create claiming
+                    # that number, or a second owner tab correcting onto it,
+                    # commits in the window and this flush loses. Unmapped it is
+                    # a bare 500, the very thing the re-point branch backstops
+                    # against nine lines up. Not CUSTOMER_ALREADY_BOOKED: nobody
+                    # is double-booked, the number just acquired an owner, and a
+                    # retry takes the re-point branch.
+                    raise BookingTransitionInvalidError(
+                        "phone correction lost to a concurrent write"
+                    ) from exc
+                if written is None:
                     raise BookingNotFoundError
                 # Every live booking of that customer, because the phone write
                 # moved all of them onto the new number at once.

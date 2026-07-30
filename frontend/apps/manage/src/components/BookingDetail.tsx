@@ -53,6 +53,8 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
 
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const statusRef = useRef<HTMLParagraphElement | null>(null);
+  const actionAlertRef = useRef<HTMLParagraphElement | null>(null);
+  const phoneInputRef = useRef<HTMLInputElement | null>(null);
   const cancelTriggerRef = useRef<HTMLButtonElement | null>(null);
   const phoneTriggerRef = useRef<HTMLButtonElement | null>(null);
   const rescheduleTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -97,6 +99,28 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
       statusRef.current?.focus();
     }
   }, [cue]);
+
+  // The symmetric half, and the one that was missing. Only the SUCCESS path had
+  // a rescue: every action button carries `disabled={busy}`, which blurs it the
+  // instant it is tapped, and the cancel/phone Modals unmount in the very commit
+  // that disables their trigger — so the restore effects below call .focus() on
+  // a disabled element, which is a no-op. On failure focus therefore sat on
+  // <body>: the next Tab restarted at the skip link (WCAG 2.4.3). Keyed on the
+  // error rather than on `pending`, so it runs on the render that carries the
+  // answer, after `busy` has cleared.
+  useEffect(() => {
+    if (actionError !== null) {
+      actionAlertRef.current?.focus();
+    }
+  }, [actionError]);
+
+  // The server's 400 on the number renders in the Input's own error slot, not
+  // in the shared alert, so this path needs its own destination.
+  useEffect(() => {
+    if (phoneError !== null) {
+      phoneInputRef.current?.focus();
+    }
+  }, [phoneError]);
 
   // Native <dialog> returns focus to whatever had it, which after a re-render
   // may be nothing at all — DressEditor.tsx:130-136 records the same fix.
@@ -239,6 +263,7 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
               (phoneEditing ? (
                 <div className="space-y-3">
                   <Input
+                    ref={phoneInputRef}
                     label={t("booking.phoneFieldLabel")}
                     dir="ltr"
                     type="tel"
@@ -305,7 +330,13 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
                   {detail.dress_size !== null && (
                     <>
                       {" · "}
-                      {t("booking.dressSize")} <bdi dir="ltr">{detail.dress_size}</bdi>
+                      {/* Bare bdi, with the free text and not the numeric runs:
+                          `dress_size` snapshots `dress_variants.size_label`,
+                          unbounded owner-typed TEXT with no numeric constraint,
+                          so «מידה 36» renders its digits on the wrong side under
+                          dir="ltr". dir=auto still resolves a plain "36" LTR.
+                          The storefront already reads it this way. */}
+                      {t("booking.dressSize")} <bdi>{detail.dress_size}</bdi>
                     </>
                   )}
                 </Fact>
@@ -379,7 +410,12 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
                 <p className="text-sm text-ink-muted">{t("booking.deliveryNotice")}</p>
 
                 {actionError !== null && (
-                  <p role="alert" className="text-sm text-danger">
+                  <p
+                    role="alert"
+                    tabIndex={-1}
+                    ref={actionAlertRef}
+                    className="text-sm text-danger"
+                  >
                     {actionError}
                   </p>
                 )}
@@ -561,7 +597,15 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
                 setRescheduling(false);
                 setDetail(next);
                 onBookingChanged(next);
-                setCue(t("booking.rescheduleDone"));
+                // The booking's own time is always present and pre-selected
+                // (D6), so re-submitting it unchanged is one tap away and the
+                // server short-circuits it to a no-op 200 — no audit row, no
+                // send. Announcing «המועד עודכן» there would state a state
+                // change that did not happen. Compared against the RESPONSE,
+                // not against what the dialog asked for.
+                if (next.starts_at !== detail.starts_at) {
+                  setCue(t("booking.rescheduleDone"));
+                }
               }}
             />
           )}

@@ -38,6 +38,11 @@ export function RescheduleDialog({ booking, onClose, onRescheduled }: Reschedule
   const [value, setValue] = useState<string | null>(booking.starts_at);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // The retry control's only job. The list's L-fail can decline one because its
+  // DateField sits ABOVE the alert and re-selecting the date refetches; here the
+  // alert REPLACES SlotPicker, which owns the DateField, so without this the
+  // dialog holds one disabled control and «חזרה» and nothing can clear it.
+  const [attempt, setAttempt] = useState(0);
 
   const windowTo = addDays(windowFrom, WINDOW_DAYS - 1);
 
@@ -60,7 +65,7 @@ export function RescheduleDialog({ booking, onClose, onRescheduled }: Reschedule
     return () => {
       cancelled = true;
     };
-  }, [windowFrom, windowTo, t]);
+  }, [windowFrom, windowTo, t, attempt]);
 
   const loading = slots === null && loadError === null;
 
@@ -123,9 +128,14 @@ export function RescheduleDialog({ booking, onClose, onRescheduled }: Reschedule
         {loading ? (
           <Skeleton variant="text" lines={3} />
         ) : loadError !== null ? (
-          <p role="alert" className="text-sm text-ink-muted">
-            {loadError}
-          </p>
+          <div className="space-y-3">
+            <p role="alert" className="text-sm text-ink-muted">
+              {loadError}
+            </p>
+            <Button variant="secondary" size="md" onClick={() => setAttempt((n) => n + 1)}>
+              {t("booking.retry")}
+            </Button>
+          </div>
         ) : (
           <SlotPicker
             labels={{

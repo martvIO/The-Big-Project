@@ -21,6 +21,8 @@ export function BookingsSection() {
   const [total, setTotal] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Bumped when a mutation moved the booking in time. See onBookingChanged.
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,7 +46,7 @@ export function BookingsSection() {
     return () => {
       cancelled = true;
     };
-  }, [date]);
+  }, [date, reload]);
 
   const loading = rows === null && loadError === null;
 
@@ -55,9 +57,20 @@ export function BookingsSection() {
       <BookingDetail
         bookingId={selectedId}
         onBack={() => setSelectedId(null)}
-        // No list refetch. The row is patched from the mutation response, so
-        // the two views cannot disagree — they render the same object.
         onBookingChanged={(next: OwnerBookingDetail) => {
+          const previous = rows?.find((booking) => booking.id === next.id);
+          if (previous !== undefined && previous.starts_at !== next.starts_at) {
+            // A reschedule is the one mutation a patch cannot absorb: list
+            // MEMBERSHIP, the server `total` and the server's
+            // (starts_at, seat_index) ORDER are all derived from `starts_at`.
+            // Patched in place, a cross-day move leaves a phantom row on a list
+            // that deliberately prints no date, and the announced count stays
+            // wrong. Refetch the day instead of guessing all three.
+            setReload((n) => n + 1);
+            return;
+          }
+          // Every other mutation: no refetch. The row is patched from the
+          // response, so the two views cannot disagree — same object.
           setRows((current) =>
             current === null
               ? current

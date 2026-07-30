@@ -259,6 +259,25 @@ async def test_paging_floors_and_ceilings(day_calls: list[dict[str, object]]) ->
     assert (day_calls[0]["offset"], day_calls[0]["limit"]) == (0, BOOKING_LIST_MAX_LIMIT)
 
 
+@pytest.mark.parametrize("date", [datetime.date.max, datetime.date.min])
+async def test_a_date_at_the_edge_of_the_range_is_a_400_and_not_an_overflow_500(
+    day_calls: list[dict[str, object]], date: datetime.date
+) -> None:
+    """`?date=9999-12-31` is among the first things anyone probes, and the router
+    declares a bare `datetime.date` — pydantic accepts the whole range.
+
+    `date + timedelta(days=1)` overflows at the top; at the bottom the
+    Jerusalem→UTC conversion underflows, because boutique midnight on
+    `0001-01-01` is `0000-12-31T22:00Z`. Either escapes as a bare 500 outside
+    the house error shape. `storefront/service.py`'s `slot_window` and
+    `reschedule`'s own year-9999 guard both make the arithmetic total for the
+    same reason; `list_day` copied the conversion and not the guard.
+    """
+    with pytest.raises(DomainValidationError):
+        await _service().list_day(TENANT_ID, date=date, offset=0, limit=10)
+    assert day_calls == []
+
+
 # --- detail ---
 
 
@@ -367,7 +386,20 @@ _UNSET = object()
 
 def _derive(row: Booking, **changes: object) -> Booking:
     """A post-write re-read of the same booking — the shape every guarded writer
-    answers with (they all return through a trailing `by_id`)."""
+    answers with (they all return through a trailing `by_id`).
+
+    It also STAMPS the changes onto `row` itself, and that is fidelity rather
+    than convenience. `update(Booking)` on an `AsyncSession` is ORM-enabled DML;
+    the default `synchronize_session="auto"` resolves to `evaluate` for these
+    all-comparison predicates, which applies the SET values to the
+    identity-mapped instance, and the trailing `by_id` (a plain `select`, no
+    `populate_existing`) hands that SAME instance back. A fake that answers with
+    a fresh object leaves the loaded row untouched and so cannot see a service
+    that reads a pre-write value AFTER the write — which is exactly how three
+    audit rows shipped carrying the post-write value in their `old_*` fields.
+    """
+    for key, value in changes.items():
+        setattr(row, key, value)
     fields: dict[str, object] = {
         "id": row.id,
         "customer_id": row.customer_id,
@@ -706,9 +738,8 @@ async def test_a_zero_row_guarded_write_is_a_409_with_no_audit_row(
 async def test_a_cancel_whose_row_comes_back_uncancelled_is_a_409(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`BookingsRepository.cancel` answers through a trailing `by_id` and so
-    always returns a row — the customer path depends on that. So the owner
-    path's zero-row signal is the re-read's status, not a `None`."""
+    """Belt beside the `None` brace: a row that is not at the target cannot be
+    this call's work either."""
     booking = _booking(status=CONFIRMED, starts_at=FUTURE)
     unchanged = _derive(booking, status=CONFIRMED)
     writes = _install(monkeypatch, booking, write_result=unchanged)
@@ -718,6 +749,68 @@ async def test_a_cancel_whose_row_comes_back_uncancelled_is_a_409(
 
     assert writes.audit == []
     assert writes.cancel_pending == []
+
+
+# --- the repository contract the owner cancel guard rests on ---
+
+
+class _ZeroRowSession:
+    """An `execute` that reports a statement matching nothing, and a `scalars`
+    that would answer a follow-up SELECT with the row as the DATABASE holds it."""
+
+    def __init__(self, reread: Booking) -> None:
+        self.statements: list[str] = []
+        self._reread = reread
+
+    async def execute(self, statement: object, *args: object, **kwargs: object) -> Any:
+        text_of = str(statement)
+        self.statements.append(text_of)
+
+        class _Result:
+            def __init__(self, row: Booking | None) -> None:
+                self._row = row
+
+            def scalar_one_or_none(self) -> Booking | None:
+                return self._row
+
+        # The UPDATE matched nothing; a SELECT still finds the row.
+        return _Result(None if text_of.startswith("UPDATE") else self._reread)
+
+
+async def test_cancel_reports_a_zero_row_update_as_none_rather_than_a_re_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole owner-cancel race hinges on this.
+
+    A bride cancelling on her manage link commits between the owner's read and
+    the owner's guarded UPDATE. The owner's UPDATE then matches zero rows — but
+    if `cancel` answers through its trailing `by_id`, the caller gets back a row
+    whose status IS 'cancelled', because the customer cancelled it. Worse, the
+    ORM's `evaluate` synchronization has already stamped `cancelled_by='owner'`
+    onto the in-memory instance, so even a `cancelled_by` check would pass.
+
+    `set_status` and `reschedule` both consume their `.returning()` scalar and
+    answer `None`; `cancel` discarded it. Without this, `owner.py` commits a
+    BOOKING_CANCELLED audit row naming a staff member who cancelled nothing, and
+    the router texts the bride «בוטל על ידי הבוטיק» minutes after she cancelled
+    it herself.
+    """
+    booking = _booking(status=CANCELLED, starts_at=FUTURE)
+    booking.cancelled_by = BookingCancelledBy.CUSTOMER.value
+    session = _ZeroRowSession(booking)
+
+    answered = await BookingsRepository().cancel(
+        cast(Any, session),
+        TENANT_ID,
+        booking.id,
+        at=NOW,
+        by=BookingCancelledBy.OWNER.value,
+        not_before=NOW,
+    )
+
+    assert answered is None
+    # And it never even ran the re-read: one statement, the UPDATE.
+    assert len(session.statements) == 1
 
 
 # --- cancel is deliberately off the owner-SMS budget (D10) ---
@@ -1207,6 +1300,8 @@ def _install_rotation(
     ) -> Any:
         writes.order.append("set_phone")
         writes.set_phone.append({"customer_id": customer_id, "phone": phone})
+        if isinstance(set_phone_result, BaseException):
+            raise set_phone_result
         if set_phone_result is not _UNSET:
             return set_phone_result
         return _FakeCustomer(phone, customer_id)
@@ -1536,6 +1631,42 @@ async def test_a_lost_0009_race_on_the_repoint_is_the_same_409_not_a_500(
     with pytest.raises(CustomerAlreadyBookedError):
         await _correct(_service(), booking.id)
     assert writes.audit == []
+
+
+async def test_a_lost_race_on_the_phone_write_itself_is_a_409_not_a_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mirror image of the branch above, and it shipped without the backstop.
+
+    `by_phone` at the top of `correct_phone` is a pre-check inside the
+    transaction, and `correct_phone` takes NO advisory lock — unlike
+    `reschedule` and the public `create_booking`, both of which write the same
+    `idx_customers_tenant_phone_unique`. A public create claiming that number,
+    or a second owner correction onto it, commits in the window and
+    `CustomersRepository.set_phone` flushes into the index.
+
+    `create_app` registers no `IntegrityError` handler, so unmapped it is a bare
+    500 outside the house `{"error": …}` shape. BOOKING_TRANSITION_INVALID and
+    not CUSTOMER_ALREADY_BOOKED: nobody is double-booked here, the number simply
+    acquired an owner between the check and the write, and a retry takes the
+    re-point branch.
+    """
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE)
+    writes = _install(monkeypatch, booking)
+    _install_rotation(
+        monkeypatch,
+        writes,
+        live=[booking],
+        by_phone=None,
+        owner_customer=_FakeCustomer(WRONG_PHONE, booking.customer_id),
+        set_phone_result=IntegrityError("UPDATE customers", {}, Exception("duplicate key")),
+    )
+
+    with pytest.raises(BookingTransitionInvalidError):
+        await _correct(_service(), booking.id)
+
+    assert writes.audit == []
+    assert writes.rotations == []
 
 
 async def test_correcting_to_the_number_the_customer_already_has_is_not_a_collision(

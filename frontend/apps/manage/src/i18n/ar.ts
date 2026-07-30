@@ -87,6 +87,7 @@ export const ar = {
     "booking.rescheduleConsequence": "המועד יתעדכן, והקישור של הלקוחה יצביע על המועד החדש.",
     "booking.rescheduleConfirm": "עדכון המועד",
     "booking.rescheduleDone": "המועד עודכן.",
+    "booking.retry": "ניסיון נוסף",
     "booking.pickDate": "תאריך",
     "booking.pickTime": "שעה",
     "booking.noSlots":

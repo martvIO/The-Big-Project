@@ -284,10 +284,20 @@ class BookingsRepository:
         keeps the first cancellation's evidence — the caller re-reads and renders
         the same cancelled state.
 
+        `None` means the predicate matched nothing, and reading it off the
+        `.returning()` scalar is the ONLY way to know that. The re-read cannot
+        tell: `update(Booking)` on an `AsyncSession` is ORM-enabled DML whose
+        default `evaluate` synchronization stamps the SET values onto the
+        identity-mapped instance whatever the database matched, and `by_id`
+        hands that same instance back. So a customer cancel that lands in the
+        owner's window comes back reading `cancelled` / `cancelled_by='owner'`
+        while the row says `customer` — a caller inspecting the returned row
+        cannot distinguish its own write from anyone else's.
+
         `not_before` adds `starts_at > :not_before` and is F15's owner cancel
-        ONLY (D3). The customer path must never pass it: this method always
-        answers through the trailing `by_id`, so widening the predicate
-        unconditionally would turn `ManageBookingService`'s 409
+        ONLY (D3). The customer path must never pass it: `ManageBookingService`
+        has already ruled out the cancelled and already-started cases in Python,
+        so widening the predicate unconditionally would turn its 409
         BOOKING_ALREADY_STARTED into a 200 rendering an un-cancelled booking."""
         predicate = [
             Booking.tenant_id == tenant_id,
@@ -303,7 +313,8 @@ class BookingsRepository:
             .values(status=BookingStatus.CANCELLED.value, cancelled_at=at, cancelled_by=by)
             .returning(Booking.id)
         )
-        await session.execute(stmt)
+        if (await session.execute(stmt)).scalar_one_or_none() is None:
+            return None
         return await self.by_id(session, tenant_id, booking_id)
 
     async def reschedule(

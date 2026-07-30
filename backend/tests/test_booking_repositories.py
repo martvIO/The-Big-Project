@@ -453,13 +453,25 @@ async def test_set_status_refuses_the_illegal_from_the_clock_and_a_deleted_row(
         await engine.dispose()
 
 
-async def test_cancel_without_not_before_is_byte_for_byte_todays_behaviour(
+async def test_cancel_answers_none_when_its_own_update_matched_nothing(
     app_role_url: str,
 ) -> None:
-    """F16's ManageBookingService.cancel does not pass `not_before`, and its
-    BookingAlreadyStartedError contract depends on cancel still returning the
-    row through its trailing by_id whatever the predicate did. Passing the
-    keyword adds `starts_at > :not_before`; omitting it changes nothing."""
+    """`cancel` consumes its `.returning()` scalar, like `set_status` and
+    `reschedule` — it is the only signal that can tell the caller whether the
+    row was cancelled by THIS call.
+
+    The re-read cannot: `update(Booking)` is ORM-enabled DML whose `evaluate`
+    synchronization stamps the SET values onto the identity-mapped instance
+    whatever the database matched, and the trailing `by_id` returns that same
+    instance. Without the scalar, a customer cancel landing in the owner's
+    window comes back reading `cancelled_by = 'owner'`, and the owner path
+    commits an audit row for a cancellation it did not perform.
+
+    F16's `ManageBookingService.cancel` passes no `not_before` and already falls
+    back to the row it read (`updated if updated is not None else booking`), so
+    the `None` costs it nothing — it has ruled out both the cancelled and the
+    already-started case before calling.
+    """
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     customers = CustomersRepository()
@@ -483,8 +495,9 @@ async def test_cancel_without_not_before_is_byte_for_byte_todays_behaviour(
             assert cancelled.cancelled_at == NOW
             assert cancelled.cancelled_by == BookingCancelledBy.CUSTOMER.value
 
-            # F15's owner path passes it, and a past booking is refused — but
-            # the row still comes back, un-cancelled, not None.
+            # F15's owner path passes it, and a past booking is refused. Zero
+            # rows, so `None` — and the committed evidence still names the
+            # customer, which is exactly what the caller must not overwrite.
             refused = await bookings.cancel(
                 session,
                 tenant_id,
@@ -493,8 +506,20 @@ async def test_cancel_without_not_before_is_byte_for_byte_todays_behaviour(
                 by=BookingCancelledBy.OWNER.value,
                 not_before=NOW,
             )
-            assert refused is not None
-            assert refused.cancelled_by == BookingCancelledBy.CUSTOMER.value
+            assert refused is None
+            reread = await bookings.by_id(session, tenant_id, past.id)
+            assert reread is not None
+            assert reread.cancelled_by == BookingCancelledBy.CUSTOMER.value
+
+            # A repeat cancel is the same zero-row answer: the predicate is
+            # `status = 'confirmed'`, so the first cancellation's evidence
+            # survives untouched.
+            assert (
+                await bookings.cancel(
+                    session, tenant_id, past.id, at=T1, by=BookingCancelledBy.CUSTOMER.value
+                )
+                is None
+            )
 
             owner_cancelled = await bookings.cancel(
                 session,

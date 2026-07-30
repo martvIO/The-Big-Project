@@ -142,6 +142,11 @@ export const he = {
     "booking.rescheduleConsequence": "המועד יתעדכן, והקישור של הלקוחה יצביע על המועד החדש.",
     "booking.rescheduleConfirm": "עדכון המועד",
     "booking.rescheduleDone": "המועד עודכן.",
+    // The dialog's slot-read failure REPLACES the picker, and the picker owns
+    // the date control that would otherwise refetch — so this branch needs its
+    // own way out. The list's own outage does not: its date control is above
+    // the alert and stays mounted.
+    "booking.retry": "ניסיון נוסף",
     "booking.pickDate": "תאריך",
     "booking.pickTime": "שעה",
     "booking.noSlots":
