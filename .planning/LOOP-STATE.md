@@ -221,7 +221,7 @@ queue:
     slug: staff-roles-gating
     epic: SMC
     title: "Staff roles & default-deny manage gating"
-    status: pr-open
+    status: merged
     pr: 22
     deps: [F3, F5]
     note: >-
