@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.customer import Customer
@@ -29,6 +29,34 @@ class CustomersRepository:
             Customer.deleted_at.is_(None),
         )
         return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def set_phone(
+        self, session: AsyncSession, tenant_id: UUID, customer_id: UUID, *, phone: str
+    ) -> Customer | None:
+        """The owner's phone correction (D8), as one UPDATE.
+
+        `upsert` is NOT the writer for this: it keys on phone, so calling it
+        with the corrected number would create a SECOND customer and leave the
+        booking pointing at the first. `None` means no live row by that id.
+
+        When the corrected number already belongs to another live customer of
+        this tenant, `idx_customers_tenant_phone_unique` refuses and this
+        raises. The service never reaches that — it pre-checks and re-points
+        `bookings.customer_id` at the existing row instead, because the number
+        identifies a person and that person already has a record."""
+        stmt = (
+            update(Customer)
+            .where(
+                Customer.tenant_id == tenant_id,
+                Customer.id == customer_id,
+                Customer.deleted_at.is_(None),
+            )
+            .values(phone=phone)
+            .returning(Customer.id)
+        )
+        if (await session.execute(stmt)).scalar_one_or_none() is None:
+            return None
+        return await self.by_id(session, tenant_id, customer_id)
 
     async def upsert(
         self, session: AsyncSession, tenant_id: UUID, *, phone: str, name: str

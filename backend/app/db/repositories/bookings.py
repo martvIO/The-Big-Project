@@ -166,8 +166,57 @@ class BookingsRepository:
         await session.execute(stmt)
         return await self.by_id(session, tenant_id, booking_id)
 
+    async def set_status(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        booking_id: UUID,
+        *,
+        to: str,
+        allowed_from: tuple[str, ...],
+        not_before: datetime | None = None,
+        not_after: datetime | None = None,
+    ) -> Booking | None:
+        """The owner console's three non-cancel transitions, as one writer (D3):
+        no-show, completed, and the confirm that undoes a mis-tap of either.
+
+        `allowed_from` is the graph edge and the clock bounds are the
+        `starts_at` split the graph turns on — `not_after` for the attendance
+        verbs (a PAST appointment), `not_before` for anything that only applies
+        to a future one. `None` back means the predicate matched nothing, which
+        the service answers as 409: it has already read the row and ruled out
+        the legal-repeat case in Python, so a zero-row result here can only be
+        a concurrent writer.
+
+        Never writes `cancelled_at` / `cancelled_by` — cancel keeps its own
+        writer because it carries that evidence and is shared with the customer
+        path. And never `attendance_confirmed_at`: that is F16's column and it
+        means the bride said she is coming, not that the owner recorded an
+        outcome."""
+        predicate = [
+            Booking.tenant_id == tenant_id,
+            Booking.id == booking_id,
+            Booking.status.in_(allowed_from),
+            Booking.deleted_at.is_(None),
+        ]
+        if not_before is not None:
+            predicate.append(Booking.starts_at > not_before)
+        if not_after is not None:
+            predicate.append(Booking.starts_at <= not_after)
+        stmt = update(Booking).where(*predicate).values(status=to).returning(Booking.id)
+        if (await session.execute(stmt)).scalar_one_or_none() is None:
+            return None
+        return await self.by_id(session, tenant_id, booking_id)
+
     async def cancel(
-        self, session: AsyncSession, tenant_id: UUID, booking_id: UUID, *, at: datetime, by: str
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        booking_id: UUID,
+        *,
+        at: datetime,
+        by: str,
+        not_before: datetime | None = None,
     ) -> Booking | None:
         """One statement, and the seat is freed structurally: both partial unique
         indexes (0008's slot-seat, 0009's per-customer instant) exclude
@@ -176,20 +225,125 @@ class BookingsRepository:
 
         Guarded on `status = 'confirmed'` so a repeat cancel writes nothing and
         keeps the first cancellation's evidence — the caller re-reads and renders
-        the same cancelled state."""
+        the same cancelled state.
+
+        `not_before` adds `starts_at > :not_before` and is F15's owner cancel
+        ONLY (D3). The customer path must never pass it: this method always
+        answers through the trailing `by_id`, so widening the predicate
+        unconditionally would turn `ManageBookingService`'s 409
+        BOOKING_ALREADY_STARTED into a 200 rendering an un-cancelled booking."""
+        predicate = [
+            Booking.tenant_id == tenant_id,
+            Booking.id == booking_id,
+            Booking.status == BookingStatus.CONFIRMED.value,
+            Booking.deleted_at.is_(None),
+        ]
+        if not_before is not None:
+            predicate.append(Booking.starts_at > not_before)
+        stmt = (
+            update(Booking)
+            .where(*predicate)
+            .values(status=BookingStatus.CANCELLED.value, cancelled_at=at, cancelled_by=by)
+            .returning(Booking.id)
+        )
+        await session.execute(stmt)
+        return await self.by_id(session, tenant_id, booking_id)
+
+    async def reschedule(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        booking_id: UUID,
+        *,
+        starts_at: datetime,
+        seat_index: int,
+        not_before: datetime,
+    ) -> Booking | None:
+        """D5 step 7: the move, in place, as one statement.
+
+        The source seat needs no separate release — both partial unique indexes
+        are re-evaluated over the row's new values. A collision on
+        `idx_bookings_slot_seat_unique` raises `IntegrityError`, which the
+        service maps to SLOT_UNAVAILABLE exactly as `create_booking` maps its
+        own lost race.
+
+        `None` is not silence: the per-tenant advisory lock the caller holds
+        serializes this against public creates but NOT against the owner status
+        endpoints, so zero rows means a concurrent cancel or no-show landed
+        between the caller's read and this write. The service rolls back rather
+        than committing an audit row for a move that did not happen."""
         stmt = (
             update(Booking)
             .where(
                 Booking.tenant_id == tenant_id,
                 Booking.id == booking_id,
                 Booking.status == BookingStatus.CONFIRMED.value,
+                Booking.starts_at > not_before,
                 Booking.deleted_at.is_(None),
             )
-            .values(status=BookingStatus.CANCELLED.value, cancelled_at=at, cancelled_by=by)
+            .values(starts_at=starts_at, seat_index=seat_index)
             .returning(Booking.id)
         )
-        await session.execute(stmt)
+        if (await session.execute(stmt)).scalar_one_or_none() is None:
+            return None
         return await self.by_id(session, tenant_id, booking_id)
+
+    async def list_day(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        *,
+        from_instant: datetime,
+        until_instant: datetime,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[Booking], int]:
+        """The owner console's day list (D17): page plus whole-day total, in
+        `[from_instant, until_instant)` — half-open on the right so the caller
+        can pass start-of-next-day. One range scan on idx_bookings_tenant_starts.
+
+        **Every status, cancelled included.** This deliberately does NOT inherit
+        `count_by_start`'s `status <> 'cancelled'` predicate: that method mirrors
+        the occupancy indexes, while a cancelled row here is the owner's evidence
+        that the slot re-opened."""
+        window = (
+            Booking.tenant_id == tenant_id,
+            Booking.starts_at >= from_instant,
+            Booking.starts_at < until_instant,
+            Booking.deleted_at.is_(None),
+        )
+        page = (
+            select(Booking)
+            .where(*window)
+            .order_by(Booking.starts_at, Booking.seat_index)
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = list((await session.execute(page)).scalars().all())
+        total = (
+            await session.execute(select(func.count()).select_from(Booking).where(*window))
+        ).scalar_one()
+        return rows, total
+
+    async def list_live_for_customer(
+        self, session: AsyncSession, tenant_id: UUID, *, customer_id: UUID, after: datetime
+    ) -> list[Booking]:
+        """Every booking of this customer whose manage link is still live (D8) —
+        the set a phone correction has to re-mint, because `customers.phone` is
+        the identity every future SMS reads at send time while
+        `manage_token_hash` is per-row. Rides idx_bookings_tenant_customer."""
+        stmt = (
+            select(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.customer_id == customer_id,
+                Booking.status == BookingStatus.CONFIRMED.value,
+                Booking.starts_at > after,
+                Booking.deleted_at.is_(None),
+            )
+            .order_by(Booking.starts_at)
+        )
+        return list((await session.execute(stmt)).scalars().all())
 
     async def list_confirmed_without_manage_token(
         self, session: AsyncSession, tenant_id: UUID, *, after: datetime, limit: int
