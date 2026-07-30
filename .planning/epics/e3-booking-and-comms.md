@@ -35,7 +35,7 @@ This is the product's transactional core: turn the browse-only storefront into a
 | 12 | Availability & slot engine | **done** (PR #17) | [spec](../specs/availability-slot-engine.md) | [plan](../plans/availability-slot-engine.md) | E2 #7 |
 | 13 | Booking core API | **done** (PR #18) | [spec](../specs/booking-core.md) | [plan](../plans/booking-core.md) | E2 #7, #11, #12 |
 | 14 | Storefront booking UI | **done** (PR #19) | [spec](../specs/storefront-booking-ui.md) · [design](../design/screens/booking/booking.md) · [copy](../design/screens/booking/copy.md) | [plan](../plans/storefront-booking-ui.md) | E2 #9, #10 · #11, #12, #13 |
-| 15 | Owner booking management | todo — **spec'd third**, after #16 | — | — | #13 |
+| 15 | Owner booking management | **spec'd** — Gate 1 self-approved 2026-07-30, building | [spec](../specs/owner-booking-management.md) | — | #12, #13, #16 |
 | 16 | Booking comms lifecycle | done (PR #21) | `booking-comms.md` | `booking-comms.md` | #13 |
 
 **Remaining order is #14 → #16 → #15, and the ordering is deliberate.** #16 is sequenced ahead of #15 because the day #14 merges, a real customer completes a booking and hears silence — that is a customer-facing hole, where #15's absence is only an owner inconvenience the owner can work around by reading the database or phoning the bride back. #14's D6 makes the confirmation screen carry the whole promise in the meantime, and one string on it changes when #16 lands.
@@ -56,7 +56,7 @@ Backend only (UI is Feature 14). Both PRD paths: item-based (binds dress ID/name
 ### Feature 14: Storefront booking UI (L — revised up from M at Gate 1)
 The customer-facing flow for both paths on the storefront. **Gate 1 (2026-07-29) settled its shape**: a `/book` **route** (not a modal behind the shipped CTA), stepped slot → details → terms → **OTP last** so the 600-second verification token cannot expire mid-policy, then the confirmation screen. It also carries a backend amendment — `GET /storefront/terms`, because `POST /storefront/bookings` requires a `terms_version` an anonymous bride has no public way to learn — which is what moved the estimate M → L. Luxury RTL per the Feature 9 system. Deposit-required appointment types show but book by phone until E4; when E4 lands, the deposit redirect inserts between OTP and confirmation without UI restructuring.
 
-### Feature 15: Owner booking management (M)
+### Feature 15: Owner booking management (L — revised up from M at Gate 1)
 `apps/manage` booking list + day filter (calendar visualization deferred to E10 — the list covers the operational need at pilot volume). Status transitions with audit log; booking detail incl. dress snapshot and accepted-terms version. **Owner reschedule: move a booking to a new slot — deposit (once E4 exists) carries over, no re-payment round-trip.** Remedy path: edit customer phone (re-verify or owner-attested) + resend confirmation/token SMS. No real-time board — refresh/poll acceptable until E6.
 
 ### Feature 16: Booking comms lifecycle (M)

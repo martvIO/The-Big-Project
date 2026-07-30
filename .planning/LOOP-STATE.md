@@ -62,7 +62,24 @@ queue:
     note: >-
       Q6: status management + owner reschedule (needs a slot picker in manage).
       Owner-CREATED bookings are explicitly OUT — no verified phone, no accepted
-      terms; that earns its own spec.
+      terms; that earns its own spec (now queued as F50).
+      Spec written and Gate 1 self-approved 2026-07-30. Three adversarial review
+      lenses returned 33 findings (5 blockers); 32 fixed, 1 rejected in writing.
+      Effort revised M → L at Gate 1.
+  - id: F50
+    slug: owner-created-bookings
+    epic: E3-carveout
+    title: Owner-created bookings
+    status: queued
+    deps: [F15]
+    note: >-
+      Carved out of F15 by Interview Q6 and queued here because F15's spec found
+      it load-bearing and the roadmap has no entry for it: a booking the owner
+      creates has no bride-verified phone and no accepted terms, so the SMS
+      control link would target an unverified number. It is also the only remedy
+      path for F15's Risk 1 (a mis-tapped cancel is terminal, and the rebook has
+      to come from somewhere). Needs its own answer to consent capture and to
+      the terms version a bride never accepted.
 
   # ---- E4 — payments build against a fake gateway (Interview Q7) ----
   - id: F20
