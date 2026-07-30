@@ -180,5 +180,61 @@ export const he = {
     "booking.error.SLOT_UNAVAILABLE": "המועד הזה נתפס הרגע. אפשר לבחור מועד אחר.",
     "booking.error.CUSTOMER_ALREADY_BOOKED": "ללקוחה כבר יש תור פעיל במועד הזה.",
     "booking.error.TOO_MANY_ATTEMPTS": "בוצעו יותר מדי פעולות בזמן קצר. כדאי להמתין מעט ולנסות שוב.",
+    // --- F51 owner-only staff section ---
+    //
+    // Transcribed row-for-row from .planning/design/screens/manage-staff/copy.md
+    // as DOTTED LITERAL keys, so the deck and this block diff against each other
+    // line by line. __tests__/i18n.test.ts proves every one of them resolves and
+    // enforces the deck's two mechanical rules — no exclamation mark, and no
+    // string that claims, implies or hedges that anything was sent.
+    //
+    // That second rule is not inherited boilerplate here: there is NO channel.
+    // No mailer exists anywhere in Backend/app, app/notifications is SMS-only
+    // with no registered sender ID, and SMC ruling 1 removed SMS from the staff
+    // auth path. So the owner types the password and tells the staffer what it
+    // is, and `staff.passwordNotice` says exactly that — phrased «יש למסור…»
+    // rather than «אינה נשלחת…» because the latter contains נשלח and would trip
+    // the guard, and copy that has to dodge its own guard is one edit from lying.
+    "nav.staff": "צוות",
+    "staff.heading": "צוות",
+    "staff.loadFailed": "לא הצלחנו לטעון את רשימת הצוות כרגע.",
+    // The WORD carries the role; the Badge's colour never does.
+    "staff.roleOwner": "בעלת הבוטיק",
+    "staff.roleShiftManager": "אחראית משמרת",
+    "staff.selfMarker": "זו את",
+    "staff.editCta": "עריכה",
+    // «השבתה», never «מחיקה»: the row is soft-deleted and its audit trail lives.
+    "staff.deactivateCta": "השבתה",
+    "staff.displayNameLabel": "שם לתצוגה",
+    "staff.emailLabel": "אימייל",
+    "staff.roleLabel": "תפקיד",
+    "staff.newPasswordLabel": "סיסמה חדשה",
+    "staff.newPasswordHelp": "אפשר להשאיר ריק כדי לא לשנות את הסיסמה.",
+    "staff.currentPasswordLabel": "הסיסמה הנוכחית שלך",
+    "staff.currentPasswordHelp": "נדרשת כדי לשנות את הסיסמה של עצמך.",
+    // Plan C6: the server answers this one 400 with an English VALIDATION_ERROR
+    // message, so the field renders its own Hebrew instead of the code map.
+    "staff.currentPasswordWrong":
+      "הסיסמה הנוכחית שגויה. יש להזין את הסיסמה הנוכחית כדי לשנות אותה.",
+    "staff.saveCta": "שמירה",
+    "staff.cancelCta": "ביטול",
+    "staff.createHeading": "הוספת אשת צוות",
+    "staff.passwordLabel": "סיסמה",
+    "staff.passwordNotice": "יש למסור את הסיסמה לעובדת בעצמך. המערכת אינה מעבירה אותה לאיש.",
+    "staff.createCta": "הוספה לצוות",
+    "staff.deactivateTitle": "להשבית את הגישה?",
+    "staff.deactivateBody":
+      "הגישה של {{name}} לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת.",
+    "staff.deactivateConfirm": "השבתה",
+
+    // The four error codes F51 owns — a code→string map, pinned by
+    // SPEC_ERROR_CODES in test_staff_api.py. Everything else, VALIDATION_ERROR
+    // included, falls through to errorMessage(error).
+    "staff.error.DUPLICATE_EMAIL": "כתובת האימייל הזו כבר משויכת לאשת צוות פעילה.",
+    "staff.error.LAST_OWNER_REQUIRED": "לבוטיק חייבת להיות בעלת בוטיק אחת לפחות.",
+    "staff.error.STAFF_SELF_MANAGE": "אי אפשר לשנות את התפקיד של עצמך או להשבית את עצמך.",
+    // The server's generic 403 body is ENGLISH and errorMessage() surfaces it
+    // verbatim; this is the section's own Hebrew for a mid-session demotion.
+    "staff.error.NOT_AUTHORIZED": "הפעולה הזו זמינה לבעלת הבוטיק בלבד.",
   },
 } as const;
