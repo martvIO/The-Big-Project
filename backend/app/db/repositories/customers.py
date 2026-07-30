@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -29,6 +30,21 @@ class CustomersRepository:
             Customer.deleted_at.is_(None),
         )
         return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def by_ids(
+        self, session: AsyncSession, tenant_id: UUID, customer_ids: Sequence[UUID]
+    ) -> list[Customer]:
+        """The owner day list's name column, in one statement rather than one
+        per row. An empty input short-circuits: `IN ()` is a syntax error in
+        Postgres and SQLAlchemy's empty-IN rewrite is a needless round trip."""
+        if not customer_ids:
+            return []
+        stmt = select(Customer).where(
+            Customer.tenant_id == tenant_id,
+            Customer.id.in_(customer_ids),
+            Customer.deleted_at.is_(None),
+        )
+        return list((await session.execute(stmt)).scalars())
 
     async def set_phone(
         self, session: AsyncSession, tenant_id: UUID, customer_id: UUID, *, phone: str

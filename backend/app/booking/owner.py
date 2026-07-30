@@ -9,6 +9,7 @@ the screen is that the owner can call the bride and read what she wrote (D18).
 import dataclasses
 import datetime
 import uuid
+from collections.abc import Iterable
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -42,6 +43,7 @@ from app.models.constants import (
     BookingStatus,
     ScheduledMessageKind,
 )
+from app.models.customer import Customer
 from app.notifications.validation import normalize_israeli_mobile
 from app.storefront.service import StorefrontService
 from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock
@@ -195,6 +197,23 @@ class OwnerBookingService:
         if booking is None:
             raise BookingNotFoundError
         return booking
+
+    async def customers_for(
+        self, tenant_id: uuid.UUID, customer_ids: Iterable[uuid.UUID]
+    ) -> dict[uuid.UUID, Customer]:
+        """The name on every list row and the phone on the detail.
+
+        `bookings` snapshots the appointment type and the dress but NOT the
+        person: `customers` is the phone identity and D8's correction rewrites
+        it in place, so a snapshot here would render the number the owner just
+        fixed. One statement per request, keyed for the caller.
+        """
+        ids = list(dict.fromkeys(customer_ids))
+        if not ids:
+            return {}
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rows = await self._customers.by_ids(session, tenant_id, ids)
+        return {row.id: row for row in rows}
 
     async def list_slots(
         self,

@@ -25,8 +25,10 @@ from app.booking.owner import (
     BookingTransitionInvalidError,
     CustomerAlreadyBookedError,
     NotAuthorizedError,
+    OwnerBookingService,
     OwnerResendThrottledError,
 )
+from app.booking.owner_router import router as owner_booking_router
 from app.booking.router import router as booking_router
 from app.booking.service import (
     BookingService,
@@ -398,6 +400,26 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             clock=time.monotonic,
         ),
     )
+    # After booking_comms_service and storefront_service: it holds both. The
+    # storefront service is INJECTED rather than re-implemented — GET
+    # /manage/slots is its list_slots plus an owner projection (D6), and a
+    # second materializer is the one thing app/booking/slots.py exists to forbid.
+    app.state.owner_booking_service = OwnerBookingService(
+        get_session_factory(),
+        storefront=app.state.storefront_service,
+        comms=app.state.booking_comms_service,
+        # Its own instance, for the fourth time and the same reason: max_attempts
+        # lives on the LIMITER, not per key, so a second key on an existing
+        # budget could never trip first. Resend, phone correction and reschedule
+        # share this one because all three spend real SMS credit on an owner tap;
+        # owner cancel does not, because `cancelled` is terminal and its ceiling
+        # is the number of bookings the boutique has (D10).
+        sms_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.booking_owner_sms_max_per_tenant_window,
+            window_seconds=settings.booking_owner_sms_window_seconds,
+            clock=time.monotonic,
+        ),
+    )
 
     @app.exception_handler(TenantNotResolvedError)
     async def _tenant_not_resolved(request: Request, exc: TenantNotResolvedError) -> JSONResponse:
@@ -615,6 +637,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # path would silently shadow. The ROUTES table in test_catalog_api.py is
     # what keeps that honest.
     app.include_router(catalog_router)
+    # The fourth /manage router, after the catalog one. Same hazard, now with
+    # four surfaces on one prefix: a duplicated (method, path) would silently
+    # shadow whichever was included first. The ROUTES table in
+    # test_booking_owner_api.py is what keeps that honest for this one.
+    app.include_router(owner_booking_router)
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
     app.include_router(storefront_router)
