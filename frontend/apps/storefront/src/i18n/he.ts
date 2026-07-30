@@ -17,6 +17,10 @@ export const he = {
       // ONE title for all five booking steps — the flow is one page to the tab
       // strip, and it is the h1 of the two no-step degrade screens as well.
       book: "קביעת תור",
+      // The tokenized manage page (F16). One title for all six of its states:
+      // she arrived from a text message, and the tab strip is not where an
+      // outcome should be announced.
+      manageTitle: "התור שלך",
     },
 
     catalog: {
@@ -220,8 +224,6 @@ export const he = {
       submit: "אישור וקביעת התור",
       submitting: "קובעות את התור",
 
-      // F16 has not shipped: a booking sends NO message, so this screen is her
-      // only record and nothing here may promise one.
       confirmTitle: "התור נקבע",
       // R19 lead, and the highest-risk one in the flow: the boutique's own
       // free-text name lands in the h1 of her only record. Bare <bdi> at the
@@ -235,8 +237,16 @@ export const he = {
       // R19: value-first and two-valued, so this is the lead-less unit between
       // them. Both values are owner text and take a bare <bdi>.
       confirmDress: "מידה",
+      // REWRITTEN at the F16 design gate (booking.md:1823, Interview
+      // pre-decided #3). The screen stops claiming to be her ONLY record,
+      // because a confirmation SMS now exists — but the save-the-screen nudge
+      // STAYS, and may not become a delivery promise in any tense: at F16 ship
+      // time no provider is configured so zero confirmations send, and
+      // kosher-phone customers never receive one at any time. Dropping the
+      // nudge would re-open F-C7's dead end for exactly the people the SMS
+      // cannot reach.
       confirmKeepScreen:
-        "זה האישור היחיד שלך — כדאי לצלם את המסך או לשמור אותו. אנחנו נחכה לך.",
+        "פרטי התור נשמרו אצלנו, וכדאי בכל זאת לצלם את המסך. אנחנו נחכה לך.",
       // CONDITIONAL, per R14 and copy.md rev 4: /book/confirm is guard-exempt,
       // so a hand-typed URL or a stale bookmark reaches this screen with no
       // booking behind it. It may not assert one it has no evidence for.
@@ -250,6 +260,64 @@ export const he = {
       // fetch failed. Name-free by construction: that fetch carried the name.
       contactUnavailable:
         "לא הצלחנו לטעון כאן את פרטי הקשר של הבוטיק. אפשר לנסות לרענן את העמוד בעוד רגע.",
+    },
+
+    // The tokenized manage page `/b/{token}` — copy.md APPROVED 2026-07-30
+    // (Interview Q5, with pre-decided #3/#4/#5 folded in).
+    //
+    // The facts card deliberately reuses `booking.confirmWhen` /
+    // `confirmWhat` / `confirmDress` instead of minting `manage.*` duplicates
+    // (design P2): one label, one Hebrew, no drift between the two screens that
+    // show the same appointment.
+    manage: {
+      title: "התור שלך",
+      // The VisuallyHidden role="status" while the lookup is in flight (R30):
+      // aria-busy on a plain div is announced by neither VoiceOver nor NVDA.
+      loading: "טוענות את פרטי התור",
+
+      attendanceCta: "אישור הגעה",
+      // Replaces the primary button after confirmation, and is what the status
+      // region announces. No exclamation mark (pre-decided #5): the whole
+      // storefront bundle contains zero, and one here would be the single string
+      // that breaks the product's punctuation register.
+      attendanceDone: "ההגעה אושרה. נתראה.",
+
+      // The reveal TRIGGER, not the cancellation. One tap must never cancel a
+      // wedding-dress appointment.
+      cancelCta: "ביטול התור",
+      cancelQuestion: "לבטל את התור?",
+      // R19 split: the number is isolated in a <bdi dir="ltr"> between these two,
+      // because i18next interpolation cannot carry the isolation a numeral needs.
+      cancelPolicyLead: "לפי המדיניות שאישרת, אפשר לבטל עד",
+      cancelPolicySuffix: "שעות לפני המועד.",
+      // The pre-E4 truth, rendered on BOTH sides of the window (pre-decided #4):
+      // every F16-era booking is deposit-free, so a forfeit warning about a
+      // deposit that was never taken would be a lie. The in/out-of-window split
+      // ships as structure and E4 swaps the out-of-window key.
+      cancelConsequenceFree: "לא נגבה תשלום על התור, כך שהביטול אינו כרוך בעלות.",
+      // The screen's only `danger` control — the click that destroys.
+      cancelConfirm: "אישור הביטול",
+      cancelKeep: "השארת התור",
+
+      // The cancelled state's line, and what the status region announces. Plain
+      // fact, no guilt.
+      cancelled: "התור בוטל.",
+      // The seat she freed is bookable again, and she is the likeliest person to
+      // want it (design P4).
+      rebookCta: "קביעת תור חדש",
+      // The link still answers after the appointment — an honest "this has
+      // passed" beats a dead link for someone re-opening her SMS.
+      past: "המועד הזה כבר עבר.",
+
+      // Unknown or rotated token. No blame, no technical words, and never the
+      // word "token".
+      invalid: "הקישור הזה כבר לא תקף.",
+      invalidHint: "לכל שאלה על התור, אפשר להתקשר לבוטיק.",
+      // 429 / network / 5xx on the lookup — recoverable and unblaming, the F14
+      // honest-throttle shape (finding F-M1). Its own rows rather than borrowing
+      // errors.slotsError, whose wording is about times that did not load.
+      loadFailed: "לא הצלחנו להציג את פרטי התור כרגע.",
+      retry: "ניסיון נוסף",
     },
 
     contact: {

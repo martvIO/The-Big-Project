@@ -1892,6 +1892,15 @@ describe("BookPage — the error-recovery matrix", () => {
     });
     expect(screen.getByText(i18n.t("booking.dressGoneGeneric"))).toBeInTheDocument();
     expect(screen.getByText(i18n.t("booking.confirmKeepScreen"))).toBeInTheDocument();
+    // F16's one-string change (booking.md:1823, pre-decided #3): the screen
+    // stops claiming to be her ONLY record, because a confirmation SMS now
+    // exists — and it may not promise one in any tense, because at F16 ship time
+    // no provider is configured and kosher phones never receive SMS at all. The
+    // screenshot nudge STAYS for exactly those customers.
+    const keep = i18n.t("booking.confirmKeepScreen");
+    expect(keep).not.toContain("היחיד");
+    expect(keep).toContain("לצלם את המסך");
+    expect(keep).not.toMatch(/נשלח|נשלחה|נשלח לך|הודעה|SMS/);
     expect(createBooking).toHaveBeenCalledTimes(2);
     expect(createBooking).toHaveBeenNthCalledWith(
       2,

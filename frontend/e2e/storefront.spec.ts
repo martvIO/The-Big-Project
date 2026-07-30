@@ -220,7 +220,12 @@ type BookingEndpoint =
   | "slots"
   | "otp/send"
   | "otp/verify"
-  | "bookings";
+  | "bookings"
+  // F16's tokenized manage surface. All three are POSTs, the lookup included:
+  // a GET would put the manage token in the query string.
+  | "booking/lookup"
+  | "booking/confirm-attendance"
+  | "booking/cancel";
 
 const BOOKING_PATHS: Record<string, BookingEndpoint> = {
   "/storefront/terms": "terms",
@@ -229,6 +234,9 @@ const BOOKING_PATHS: Record<string, BookingEndpoint> = {
   "/storefront/otp/send": "otp/send",
   "/storefront/otp/verify": "otp/verify",
   "/storefront/bookings": "bookings",
+  "/storefront/booking/lookup": "booking/lookup",
+  "/storefront/booking/confirm-attendance": "booking/confirm-attendance",
+  "/storefront/booking/cancel": "booking/cancel",
 };
 
 type BookingReplies = Record<BookingEndpoint, Reply[]>;
@@ -288,6 +296,37 @@ const BOOKED = {
   dress_size: null,
 };
 
+// --- F16 manage fixtures -----------------------------------------------------
+
+const MANAGE_TOKEN = "mt-e2e-0123456789";
+
+const MANAGE_BOUTIQUE = {
+  name: BOUTIQUE.name,
+  phone: BOUTIQUE.phone,
+  address: BOUTIQUE.address,
+  maps_url: BOUTIQUE.maps_url,
+};
+
+function manageBody(
+  overrides: { status?: string; attendance_confirmed_at?: string | null } = {},
+): unknown {
+  return {
+    booking: {
+      starts_at: SLOT_1000,
+      status: overrides.status ?? "confirmed",
+      attendance_confirmed_at: overrides.attendance_confirmed_at ?? null,
+      appointment_type_name: TYPE_PLAIN.name,
+      dress_name: null,
+      dress_size: null,
+    },
+    policy: {
+      refundable_until_hours_before: TERMS_V3.refundable_until_hours_before,
+      forfeit_percent: TERMS_V3.forfeit_percent,
+    },
+    boutique: MANAGE_BOUTIQUE,
+  };
+}
+
 function slotBody(instants: string[]): unknown {
   return { slots: instants.map((starts_at) => ({ starts_at })) };
 }
@@ -303,6 +342,11 @@ function bookingFixture(): BookingReplies {
     "otp/send": [{ status: 204, body: null }],
     "otp/verify": [ok({ verification_token: VERIFICATION_TOKEN, expires_at: SLOT_1000 })],
     bookings: [{ status: 201, body: BOOKED }],
+    "booking/lookup": [ok(manageBody())],
+    "booking/confirm-attendance": [
+      ok(manageBody({ attendance_confirmed_at: "2099-01-03T08:00:00Z" })),
+    ],
+    "booking/cancel": [ok(manageBody({ status: "cancelled" }))],
   };
 }
 
@@ -1578,10 +1622,15 @@ test("storefront booking: the generic path walks all five steps to a confirmatio
   // (10:00 Jerusalem, from an 08:00Z instant), and promises no SMS.
   await expect(page.getByText(TYPE_PLAIN.name)).toBeVisible();
   await expect(page.getByText(SLOT_LABEL, { exact: true })).toBeVisible();
-  await expect(page.getByText("זה האישור היחיד שלך")).toBeVisible();
-  // F16 has not shipped: a booking sends NO message, so this screen is her only
-  // record and nothing on it may promise one.
+  // REWRITTEN by F16 (pre-decided #3): the screen no longer claims to be her
+  // ONLY record, because a confirmation SMS now exists — but the screenshot
+  // nudge stays, because at F16 ship time no provider is configured and kosher
+  // phones never receive SMS at all.
+  await expect(page.getByText("כדאי בכל זאת לצלם את המסך")).toBeVisible();
   const body = await page.locator("body").innerText();
+  expect(body, "the confirmation still claims to be her only record").not.toContain("היחיד");
+  // Still no delivery claim, in any tense: the copy may not promise a message
+  // the product may not send.
   for (const promised of ["SMS", "מסרון"]) {
     expect(body, `the confirmation promises a message it will never send: ${promised}`).not.toContain(
       promised,
@@ -1964,4 +2013,214 @@ test("storefront booking: republished terms are re-shown and re-accepted before 
     expect.objectContaining({ terms_version: TERMS_V3.version }),
     expect.objectContaining({ terms_version: TERMS_V4.version }),
   ]);
+});
+
+// --- F16: the tokenized manage page `/b/{token}` ------------------------------
+//
+// The SMS is the only way in, so every spec below starts at a URL a bride pastes
+// out of a text message. `installApi` fulfils the three manage POSTs; nothing
+// here depends on the booking flow having run first, which is the point — she
+// arrives weeks later, on a different device.
+
+const MANAGE_TITLE = "התור שלך";
+const CONFIRM_ATTENDANCE = "אישור הגעה";
+const ATTENDANCE_DONE = "ההגעה אושרה. נתראה.";
+const CANCEL_TRIGGER = "ביטול התור";
+const CANCEL_QUESTION = "לבטל את התור?";
+const CANCEL_CONFIRM = "אישור הביטול";
+const CANCEL_KEEP = "השארת התור";
+const CANCELLED_LINE = "התור בוטל.";
+const REBOOK = "קביעת תור חדש";
+const INVALID_LINE = "הקישור הזה כבר לא תקף.";
+const MANAGE_RETRY = "ניסיון נוסף";
+
+async function gotoManage(page: Page, token = MANAGE_TOKEN): Promise<void> {
+  await page.goto(`${STOREFRONT}/b/${token}`);
+  // Waits for real content, never the skeleton: an axe scan against a skeleton
+  // passes vacuously, which is the same trap gotoSettled exists for.
+  await expect(page.getByRole("heading", { level: 1, name: MANAGE_TITLE })).toBeVisible();
+  await expect(page.getByRole("button", { name: CONFIRM_ATTENDANCE })).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+}
+
+test("storefront manage: the link opens the appointment, confirms attendance and cancels", async ({
+  page,
+}) => {
+  await installApi(page);
+  const posted: { path: string; body: unknown }[] = [];
+  page.on("request", (request) => {
+    const { pathname } = new URL(request.url());
+    if (pathname.startsWith("/storefront/booking/")) {
+      posted.push({ path: pathname, body: request.postDataJSON() });
+    }
+  });
+
+  await gotoManage(page);
+
+  // The facts, in the BOUTIQUE's calendar: 10:00 Jerusalem from an 08:00Z
+  // instant, exactly as the confirmation screen renders it.
+  await expect(page.getByText(TYPE_PLAIN.name)).toBeVisible();
+  await expect(page.getByText(SLOT_LABEL, { exact: true })).toBeVisible();
+  // The accepted policy's window, not the current one.
+  await expect(page.getByText(String(TERMS_V3.refundable_until_hours_before))).toBeVisible();
+
+  await page.getByRole("button", { name: CONFIRM_ATTENDANCE }).click();
+  await expect(page.getByText(ATTENDANCE_DONE).first()).toBeVisible();
+  // Cancel STAYS available after attendance is confirmed (design P3).
+  await expect(page.getByRole("button", { name: CANCEL_TRIGGER })).toBeVisible();
+
+  // The two-step: the first tap reveals, and only the second cancels.
+  await page.getByRole("button", { name: CANCEL_TRIGGER }).click();
+  await expect(page.getByText(CANCEL_QUESTION)).toBeVisible();
+  expect(
+    posted.map((entry) => entry.path),
+    "the reveal must not call the cancel endpoint",
+  ).not.toContain("/storefront/booking/cancel");
+
+  await page.getByRole("button", { name: CANCEL_CONFIRM }).click();
+  await expect(page.getByText(CANCELLED_LINE).first()).toBeVisible();
+  // The seat she freed is bookable again, and she is the likeliest person to
+  // want it (design P4).
+  await expect(page.getByRole("link", { name: REBOOK })).toHaveAttribute("href", "/book/slot");
+
+  // The token travels in the BODY on all three calls, and never in a URL.
+  expect(posted.map((entry) => entry.path)).toEqual([
+    "/storefront/booking/lookup",
+    "/storefront/booking/confirm-attendance",
+    "/storefront/booking/cancel",
+  ]);
+  for (const entry of posted) {
+    expect(entry.body).toEqual({ token: MANAGE_TOKEN });
+    expect(entry.path, "the token reached the URL").not.toContain(MANAGE_TOKEN);
+  }
+});
+
+test("storefront manage: the cancel reveal can be backed out of without cancelling", async ({
+  page,
+}) => {
+  await installApi(page);
+  await gotoManage(page);
+
+  await page.getByRole("button", { name: CANCEL_TRIGGER }).click();
+  await page.getByRole("button", { name: CANCEL_KEEP }).click();
+
+  await expect(page.getByText(CANCEL_QUESTION)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: CANCEL_TRIGGER })).toBeFocused();
+});
+
+test("storefront manage: an already-cancelled appointment reads as cancelled, with no actions", async ({
+  page,
+}) => {
+  await installApi(page, "populated", BOUTIQUE, {
+    "booking/lookup": [ok(manageBody({ status: "cancelled" }))],
+  });
+  await page.goto(`${STOREFRONT}/b/${MANAGE_TOKEN}`);
+
+  await expect(page.getByText(CANCELLED_LINE).first()).toBeVisible();
+  // The facts stay — she may need the date to rebook.
+  await expect(page.getByText(TYPE_PLAIN.name)).toBeVisible();
+  await expect(page.getByRole("button", { name: CONFIRM_ATTENDANCE })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: CANCEL_TRIGGER })).toHaveCount(0);
+});
+
+test("storefront manage: an invalid link explains itself instead of dumping her on the catalog", async ({
+  page,
+}) => {
+  // D7/D8: the page owns the invalid-link state, and the catalog fallthrough
+  // must never swallow a bad token — a bride whose link was rotated would
+  // otherwise land on a dress grid with no explanation.
+  await installApi(page, "populated", BOUTIQUE, {
+    "booking/lookup": [conflict(404, "BOOKING_LINK_INVALID")],
+  });
+  await page.goto(`${STOREFRONT}/b/no-such-token`);
+
+  await expect(page.getByText(INVALID_LINE)).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: MANAGE_TITLE })).toBeVisible();
+  // No facts, no actions, no retry — an invalid link is not a transient failure.
+  await expect(page.getByRole("button", { name: CONFIRM_ATTENDANCE })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: MANAGE_RETRY })).toHaveCount(0);
+  // And never the server's English sentence on a Hebrew page.
+  const body = await page.locator("body").innerText();
+  expect(body).toMatch(/[֐-׿]/);
+  expect(body, "the fixture's English error message reached the page").not.toContain(
+    "BOOKING_LINK_INVALID",
+  );
+});
+
+test("storefront manage: a throttled lookup offers a retry that recovers", async ({ page }) => {
+  await installApi(page, "populated", BOUTIQUE, {
+    "booking/lookup": [conflict(429, "TOO_MANY_ATTEMPTS"), ok(manageBody())],
+  });
+  await page.goto(`${STOREFRONT}/b/${MANAGE_TOKEN}`);
+
+  await expect(page.getByRole("alert")).toBeVisible();
+  await page.getByRole("button", { name: MANAGE_RETRY }).click();
+  await expect(page.getByRole("button", { name: CONFIRM_ATTENDANCE })).toBeVisible();
+});
+
+test("storefront manage: zero axe A/AA violations in every state that has content", async ({
+  page,
+}) => {
+  await installApi(page);
+  await gotoManage(page);
+  expect(await axeViolations(page), "loaded").toEqual([]);
+
+  // The revealed cancel block is a materially different screen: a danger control
+  // makes its first storefront appearance in it (design P5).
+  await page.getByRole("button", { name: CANCEL_TRIGGER }).click();
+  await expect(page.getByText(CANCEL_QUESTION)).toBeVisible();
+  expect(await axeViolations(page), "cancel revealed").toEqual([]);
+
+  await page.getByRole("button", { name: CANCEL_CONFIRM }).click();
+  await expect(page.getByText(CANCELLED_LINE).first()).toBeVisible();
+  expect(await axeViolations(page), "cancelled").toEqual([]);
+});
+
+test("storefront manage: the invalid-link state has zero axe A/AA violations", async ({ page }) => {
+  await installApi(page, "populated", BOUTIQUE, {
+    "booking/lookup": [conflict(404, "BOOKING_LINK_INVALID")],
+  });
+  await page.goto(`${STOREFRONT}/b/no-such-token`);
+  await expect(page.getByText(INVALID_LINE)).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  expect(await axeViolations(page)).toEqual([]);
+});
+
+test("storefront manage: no horizontal scroll at 375 / 768 / 1440, reveal open", async ({
+  page,
+}) => {
+  await installApi(page);
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await gotoManage(page);
+    await page.getByRole("button", { name: CANCEL_TRIGGER }).click();
+    await expect(page.getByText(CANCEL_QUESTION)).toBeVisible();
+    expect(await horizontalOverflow(page), `overflow at ${width}px`).toBe(0);
+  }
+});
+
+test("storefront manage: the skip link is still the first Tab stop and lands in #content", async ({
+  page,
+}) => {
+  await installApi(page);
+  await gotoManage(page);
+
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("link", { name: SKIP_LINK })).toBeFocused();
+  await page.keyboard.press("Enter");
+  expect(
+    await page.evaluate(() => ({
+      tag: document.activeElement?.tagName ?? "",
+      id: document.activeElement?.id ?? "",
+    })),
+  ).toEqual({ tag: "MAIN", id: MAIN_ID });
+});
+
+test("storefront manage: renders no BookingCTA bar @375", async ({ page }) => {
+  // hasBookingBar() is catalog||dress, so the manage page reserves no gutter —
+  // and a bar here would put a "book" CTA on a screen about an existing booking.
+  await installApi(page);
+  await page.setViewportSize({ width: 375, height: 900 });
+  await gotoManage(page);
+  await expect(ctaBar(page)).toHaveCount(0);
 });
