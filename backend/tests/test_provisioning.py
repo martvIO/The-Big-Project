@@ -8,6 +8,7 @@ from sqlalchemy.pool import NullPool
 
 from app.auth.service import AuthService, InvalidCredentialsError
 from app.core.config import Settings
+from app.models.constants import StaffRole
 from app.platform.service import ProvisioningService
 
 pytestmark = pytest.mark.db
@@ -50,6 +51,11 @@ def test_provision_creates_a_loginable_owner(app_role_url: str) -> None:
             auth.login(result.tenant_id, "owner@bella.example", "s3cret-owner-pw")
         )
         assert staff.email == "owner@bella.example"
+        # ProvisioningService never writes role — the row rides staff_users'
+        # server_default, and 0011's CHECK plus the whole default-deny posture
+        # rest on that default being 'owner'. F51 adds the first writer; until
+        # then this is the only thing pinning it.
+        assert staff.role == StaffRole.OWNER.value
     finally:
         asyncio.run(engine.dispose())
 

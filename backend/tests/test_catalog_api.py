@@ -44,7 +44,7 @@ from app.catalog.validation import (
     VariantInput,
 )
 from app.core.config import Settings
-from app.main import create_app
+from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.dress import Dress
 from app.models.dress_media import DressMedia
 from app.models.dress_variant import DressVariant
@@ -130,7 +130,13 @@ SPEC_ERROR_CODES = {
     "TOO_MANY_ATTEMPTS",
     "NOT_AUTHENTICATED",
     "CSRF_ORIGIN_MISMATCH",
+    "NOT_AUTHORIZED",
 }
+
+# Kept in step with test_staff_role_gating.UNKNOWN_ROLE, which owns the tripwire
+# asserting it never becomes a real StaffRole. Duplicated because that module
+# imports THIS one, so the dependency cannot run the other way.
+UNKNOWN_ROLE = "no-such-role"
 
 
 def _dress_row(*, archived: bool = False) -> Dress:
@@ -238,13 +244,13 @@ DETAIL_JSON: dict[str, Any] = {
 
 
 class FakeAuthService:
-    def __init__(self) -> None:
+    def __init__(self, role: str = "owner") -> None:
         self.staff = StaffContext(
             id=STAFF_ID,
             tenant_id=TENANT.id,
             email="owner@bella.example",
             display_name="Owner",
-            role="owner",
+            role=role,
         )
 
     async def login(
@@ -388,12 +394,13 @@ def _client(
     *,
     authed: bool = True,
     storage: MediaStorage | None = None,
+    role: str = "owner",
 ) -> TestClient:
     async def _resolver(slug: str) -> TenantContext | None:
         return TENANT if slug == "bella" else None
 
     app = create_app(resolver=_resolver)
-    auth = FakeAuthService()
+    auth = FakeAuthService(role)
     app.state.auth_service = auth
     app.state.login_rate_limiter = FixedWindowRateLimiter(
         max_attempts=3, window_seconds=900, clock=time.monotonic
@@ -422,6 +429,29 @@ def test_every_route_requires_authentication() -> None:
             assert resp.status_code == 401, f"{method} {path} → {resp.status_code}"
             assert resp.json()["error"]["code"] == "NOT_AUTHENTICATED"
     assert fake.calls == []  # the guard fires before any service call
+
+
+def test_an_unadmitted_role_is_403_on_every_route() -> None:
+    """The catalog router's default posture is require_role(OWNER, SHIFT_MANAGER),
+    so a role the enum does not know fails closed on every route, and every route
+    answers the SAME body. This is what earns NOT_AUTHORIZED its row in
+    SPEC_ERROR_CODES — without it the set was a claim, not a test.
+
+    The comparison is against the imported constant, so it pins uniformity across
+    routes, not the literals; the code and the generic message are pinned once in
+    test_staff_role_gating.test_the_not_authorized_contract_is_pinned_by_literal.
+    The admitted-role side of the matrix also lives in that module.
+
+    UNKNOWN_ROLE is duplicated rather than imported: this module cannot import
+    test_staff_role_gating, which imports it. The tripwire asserting the sentinel
+    never becomes a real role lives there."""
+    fake = FakeCatalogService()
+    with _client(fake, role=UNKNOWN_ROLE) as client:
+        for method, path, body in ROUTES:
+            resp = client.request(method, path, json=body)
+            assert resp.status_code == 403, f"{method} {path} → {resp.status_code}"
+            assert resp.json() == NOT_AUTHORIZED_BODY
+    assert fake.calls == []  # the gate fires before any service call
 
 
 def test_every_route_is_wired_and_reaches_the_service() -> None:
@@ -948,7 +978,10 @@ def test_every_spec_error_code_is_asserted() -> None:
     """Mechanical completeness: a row added to the spec's error table without a
     test here fails immediately, rather than shipping as a 500."""
     covered = {case.code for case in ERROR_CASES}
-    covered |= {"NOT_AUTHENTICATED", "CSRF_ORIGIN_MISMATCH"}
+    # Hand-unioned, not ErrorCase rows: all three are raised during dependency
+    # solving or in middleware, never by a service method, so no ErrorCase can
+    # express them. Their tests are the three walks above.
+    covered |= {"NOT_AUTHENTICATED", "CSRF_ORIGIN_MISMATCH", "NOT_AUTHORIZED"}
     assert covered == SPEC_ERROR_CODES
 
 
