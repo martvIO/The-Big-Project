@@ -61,3 +61,26 @@ omissions worth keeping: why SlotRow drops `remaining` (it equals capacity whene
 smuggling a fenced field past a key-based absence walk), why StorefrontTerms cannot subclass the manage
 schema, and why verify is throttled separately from send. Stale 4→0. 577 files still have no page —
 all missing, none orphaned. Queue at 367 entries — no rotation (threshold 500).
+
+## [2026-07-30] sync | 5 stale reconciled, 0 orphans
+Reconciled the drift from F16 (booking comms lifecycle, PR #21) plus F30 (MODRYN branding, PR #20).
+All five stale pages traced to one commit, 7a2380b. backend/app/worker.py needed a full rewrite rather
+than a patch: it stopped being a job-less placeholder that slept forever and imported nothing from app,
+and became the real scheduled-message poller (build_sender / poll_once / main, ensure_safe_database_role
+at boot, enumerate-then-claim because scheduled_messages carries FORCE RLS while tenants is deliberately
+RLS-free, per-tenant failure containment so one bad row cannot silence every boutique). Its old page had
+predicted the first real poller "should add the database role check and a graceful-shutdown path before
+this file gets a test" — the role check and the tests arrived, the graceful shutdown did not, so that gap
+is now recorded as the deliberate at-least-once posture. backend/app/main.py (BookingCommsService and
+ManageBookingService on app.state; three POST endpoints rather than GETs, because a manage token in a
+request line reaches access logs, Referer and history; ONE body for unknown/rotated/malformed tokens so
+the lookup is not an oracle for token shape). backend/app/cli.py (backfill-booking-links, a re-runnable
+one-time deploy step on the audited command layer). backend/app/core/config.py (the booking-lookup
+anti-scrape budget — the one endpoint that answers a secret — and worker_poll_interval_seconds, a tick
+rather than a limit). backend/app/storefront/router.py (the ""-to-null WCAG 2.4.4 collapse moved out to
+profile_text in storefront/validation.py, shared with F16's manage page).
+Corrected two pre-existing inaccuracies while in the affected sections: main.py's "seven rate limiters
+on app.state" was wrong in both number and placement — there are ten instances, only two parked on
+app.state — and cli.py's four subcommands are now five. Stale 5→0. 621 files still have no page, none
+orphaned; largest unbuilt clusters are .claude/commands/spartan (70, vendored) and backend/tests (51).
+Queue at 379 entries — no rotation (threshold 500).

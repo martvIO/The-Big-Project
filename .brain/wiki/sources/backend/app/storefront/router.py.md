@@ -2,11 +2,11 @@
 tags: [backend, storefront, python, fastapi, routing, public-api, rate-limiting]
 sources: [backend/app/storefront/router.py]
 created: 2026-07-27
-updated: 2026-07-29
+updated: 2026-07-30
 # --- .brain extensions (see .brain/CLAUDE.md § Deviations) ---
 path: backend/app/storefront/router.py
-blob: 469c3c5cc407313e2e50ac87d7608376c7d32fb9
-commit: 9507140f3d31cba691e762fc0ed89c9f738e912b
+blob: 32e43ae38da10fb8596db14579c5046bbc33125a
+commit: 99a8cef22bcd1b6c55105cb6e740d5a560f0596e
 kind: code
 applicability: active
 ---
@@ -42,13 +42,13 @@ applicability: active
 
 **This router is GET-only, and that is load-bearing rather than incidental.** E3's mutating public routes — OTP send/verify (F11) and booking create (F13) — live in *sibling* routers on the same `/storefront` prefix instead of here, so the no-auth / no-cookie / no-mutation contract above stays mechanically true. The cross-router shadowing guard in [[backend/tests/test_storefront_api.py]] covers the whole prefix, and its route table is **derived from the registered routes**, so a new public surface is automatically pulled into all five guard suites (no-auth, no-store, tenant-not-exempt, forbidden-key wire-walk, throttle-not-inert). Adding `/terms` to that hand-maintained literal set is deliberately manual: a new public surface **must fail one test on purpose** before it is allowed through.
 
-The projections are the field allowlist in code. `public_dress`/`public_dress_detail` serialize `id`, `name`, `price_agorot` (already nulled by `_public_price` when hidden — the wire cannot distinguish "hidden" from "price null + visible", by design), `reserved`, cover/media, description (`or None`), and `sizes` as `{size_label, available}` — never `quantity`, never `out_of_stock`, never `sort_order` or timestamps. `public_slots` ships start times only — **neither `capacity` nor `remaining`** (see [[backend/app/storefront/schemas.py]] for why `remaining` was dropped: with nothing booked it equals `capacity` exactly, smuggling a fenced field past a key-based absence walk). `public_terms` builds field-by-field and never serializes the row, so `id`, `tenant_id`, `created_by` and the timestamps — operator provenance — cannot reach the wire. `public_boutique` reads exactly six keys out of the `tenants.settings` JSONB (`essence`, `description`, `phone`, `address`, `maps_url`, `instagram`), so a key a later feature adds to `profile` cannot reach the public page by default, and `toggles` is not read at all; each field goes through `.strip()` then an `""`-to-null collapse, because `""` is the wire's canonical cleared value and shipping it would render `<a href="tel:">` with no accessible name — a WCAG 2.4.4 failure, worst on the statutory הצהרת נגישות contact block. Upcoming-exceptions filtering and the Jerusalem clock live in [[backend/app/storefront/service.py]] / [[backend/app/storefront/validation.py]], not here.
+The projections are the field allowlist in code. `public_dress`/`public_dress_detail` serialize `id`, `name`, `price_agorot` (already nulled by `_public_price` when hidden — the wire cannot distinguish "hidden" from "price null + visible", by design), `reserved`, cover/media, description (`or None`), and `sizes` as `{size_label, available}` — never `quantity`, never `out_of_stock`, never `sort_order` or timestamps. `public_slots` ships start times only — **neither `capacity` nor `remaining`** (see [[backend/app/storefront/schemas.py]] for why `remaining` was dropped: with nothing booked it equals `capacity` exactly, smuggling a fenced field past a key-based absence walk). `public_terms` builds field-by-field and never serializes the row, so `id`, `tenant_id`, `created_by` and the timestamps — operator provenance — cannot reach the wire. `public_boutique` reads exactly six keys out of the `tenants.settings` JSONB (`essence`, `description`, `phone`, `address`, `maps_url`, `instagram`), so a key a later feature adds to `profile` cannot reach the public page by default, and `toggles` is not read at all; each field goes through `profile_text`, which applies `.strip()` then an `""`-to-null collapse. **F16 moved that helper out of this module** into [[backend/app/storefront/validation.py]], because the manage page needs the identical rule for the identical reason and a second copy would be a second thing to get wrong; the full argument — `""` is the wire's canonical cleared value, and shipping it renders `<a href="tel:">` with no accessible name, a WCAG 2.4.4 failure worst of all on the statutory הצהרת נגישות contact block — now lives in that function's docstring rather than here. Upcoming-exceptions filtering and the Jerusalem clock live in [[backend/app/storefront/service.py]] / [[backend/app/storefront/validation.py]], not here.
 
 ## Depends On
 
 - [[backend/app/storefront/schemas.py]] — every response model
 - [[backend/app/storefront/service.py]] — `StorefrontService` and its frozen `Storefront*View` dataclasses
-- [[backend/app/storefront/validation.py]] — `STOREFRONT_LIST_DEFAULT_LIMIT`, `STOREFRONT_LIST_MAX_LIMIT`, `StorefrontThrottledError`
+- [[backend/app/storefront/validation.py]] — `STOREFRONT_LIST_DEFAULT_LIMIT`, `STOREFRONT_LIST_MAX_LIMIT`, `StorefrontThrottledError`, `profile_text` (F16)
 - [[backend/app/catalog/service.py]] — `MediaView` (the signed-URL view type only; no service call)
 - [[backend/app/auth/rate_limit.py]] — `FixedWindowRateLimiter` (type of the state-parked limiter)
 - [[backend/app/tenancy/middleware.py]] — `get_current_tenant`, and `TenantContext.name`/`settings` for the boutique route
