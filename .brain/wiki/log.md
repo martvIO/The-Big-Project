@@ -84,3 +84,27 @@ on app.state" was wrong in both number and placement — there are ten instances
 app.state — and cli.py's four subcommands are now five. Stale 5→0. 621 files still have no page, none
 orphaned; largest unbuilt clusters are .claude/commands/spartan (70, vendored) and backend/tests (51).
 Queue at 379 entries — no rotation (threshold 500).
+
+## [2026-07-30] sync | 2 stale reconciled, 0 orphans, E3 epic boundary
+Ran at the E3 epic boundary, after F15 (owner booking management, PR #24) closed the epic. Both stale
+pages were made stale by that merge and both were rewritten from their diffs rather than regenerated.
+
+backend/app/core/config.py — one additive change: `booking_owner_sms_*`, a single per-tenant window
+shared by the three owner taps that spend real SMS credit (resend, phone correction, reschedule). Owner
+cancel is deliberately off it, because `cancelled` is terminal and its ceiling is therefore the number of
+bookings the boutique has. Reschedule is the one that needed it — a booking can be walked between two
+legitimately offered slots indefinitely, one SMS and one token rotation per hop.
+
+backend/app/main.py — F31 and F15 landed together and the page now carries their interaction, because it
+is the kind of thing a page is for. Both features had independently invented a `NotAuthorizedError`; the
+rebase merged with no textual conflict, Python's second binding won, and both handlers registered against
+F15's class — leaving F31's unhandled, so every role-gated 403 in already-merged code would have returned
+a bare 500. Ruff's F811 on CI caught it. The page now states the general rule plainly: there is no error
+registry in this module, an unmapped typed error is a 500, and a *duplicate* one is worse than a missing
+one because it fails silently. Also records F15's fourth /manage router, its three new error bodies, and
+why the owner slot grid injects StorefrontService instead of re-materializing the grid.
+
+Stale 2→0. 646 files still have no page and none are orphaned — the backlog grew from 621 as F15 and F31
+added files, and it needs a dedicated /brain-ingest pass rather than an epic-boundary chore; largest
+unbuilt clusters remain .claude/commands/spartan (vendored) and backend/tests. Queue at 385 entries — no
+rotation (threshold 500).
