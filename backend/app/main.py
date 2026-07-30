@@ -13,6 +13,11 @@ from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.router import RateLimitedError
 from app.auth.router import router as auth_router
 from app.auth.service import AuthService, InvalidCredentialsError
+from app.auth.staff import (
+    DuplicateEmailError,
+    LastOwnerRequiredError,
+    StaffSelfManageError,
+)
 from app.booking.comms import BookingCommsService
 from app.booking.manage import (
     BookingAlreadyStartedError,
@@ -211,6 +216,26 @@ CUSTOMER_ALREADY_BOOKED_BODY = {
     "error": {
         "code": "CUSTOMER_ALREADY_BOOKED",
         "message": "This customer already has a booking at that time.",
+    }
+}
+DUPLICATE_EMAIL_BODY = {
+    "error": {
+        "code": "DUPLICATE_EMAIL",
+        "message": "A staff member with this email already exists.",
+    }
+}
+# No count in the message: how many owners exist is not the owner's problem to
+# solve, and naming it would leak the tenant's staffing to a probe.
+LAST_OWNER_REQUIRED_BODY = {
+    "error": {
+        "code": "LAST_OWNER_REQUIRED",
+        "message": "The boutique must always have at least one owner.",
+    }
+}
+STAFF_SELF_MANAGE_BODY = {
+    "error": {
+        "code": "STAFF_SELF_MANAGE",
+        "message": "You cannot change your own role or deactivate your own account.",
     }
 }
 
@@ -620,6 +645,26 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         request: Request, exc: OwnerResendThrottledError
     ) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
+    # F51's three. Deliberately NOT registered beside them, so a reviewer can
+    # check this list is complete rather than short: StaffNotFoundError
+    # subclasses DomainNotFoundError and is bound to the base above; the
+    # current_password failures are DomainValidationError; NotAuthorizedError is
+    # F31's app-wide 403; NotAuthenticatedError is the app-wide 401; and a forged
+    # Origin is answered by the middleware before routing.
+    @app.exception_handler(DuplicateEmailError)
+    async def _duplicate_email(request: Request, exc: DuplicateEmailError) -> JSONResponse:
+        return JSONResponse(DUPLICATE_EMAIL_BODY, status_code=409)
+
+    @app.exception_handler(LastOwnerRequiredError)
+    async def _last_owner_required(request: Request, exc: LastOwnerRequiredError) -> JSONResponse:
+        return JSONResponse(LAST_OWNER_REQUIRED_BODY, status_code=409)
+
+    # 409, not 403: the request is well-formed and the caller is authorized — the
+    # identity of the TARGET is what refuses it.
+    @app.exception_handler(StaffSelfManageError)
+    async def _staff_self_manage(request: Request, exc: StaffSelfManageError) -> JSONResponse:
+        return JSONResponse(STAFF_SELF_MANAGE_BODY, status_code=409)
 
     app.include_router(health_router)
     app.include_router(auth_router)

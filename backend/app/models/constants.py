@@ -93,6 +93,17 @@ class AuditAction(StrEnum):
     BOOKING_RESCHEDULED = "booking_rescheduled"
     BOOKING_PHONE_CORRECTED = "booking_phone_corrected"
     BOOKING_LINK_RESENT = "booking_link_resent"
+    # F51's owner-only staff section (D8). Same fact as the BOOKING_* block above:
+    # audit_log.action is plain TEXT with no CHECK, so these need no migration.
+    # Role change and password reset keep their own values rather than folding
+    # into STAFF_UPDATED, because those are the two questions a security audit
+    # actually asks of this table — "who was made an owner" and "whose password
+    # did someone else change" — and each stays one WHERE action = ….
+    STAFF_CREATED = "staff_created"
+    STAFF_UPDATED = "staff_updated"
+    STAFF_ROLE_CHANGED = "staff_role_changed"
+    STAFF_PASSWORD_RESET = "staff_password_reset"
+    STAFF_DEACTIVATED = "staff_deactivated"
 
 
 class PlatformAuditAction(StrEnum):
