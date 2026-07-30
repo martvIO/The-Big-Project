@@ -51,6 +51,30 @@ class BookingStatus(StrEnum):
     COMPLETED = "completed"
 
 
+class BookingCancelledBy(StrEnum):
+    # The DB pins this exact set (0010). 'owner' has no writer until F15 ships
+    # the console; the value exists now so E4 needs no second migration.
+    CUSTOMER = "customer"
+    OWNER = "owner"
+
+
+class ScheduledMessageKind(StrEnum):
+    # The DB pins this exact set (0010). E4's hold-expiry sweep and E5's offer
+    # cascade widen the CHECK when they arrive — pre-adding speculative kinds is
+    # exactly the un-lazy thing (D9).
+    REMINDER = "reminder"
+
+
+class ScheduledMessageStatus(StrEnum):
+    # The DB pins this exact set (0010). CANCELLED covers both "the booking was
+    # cancelled" and "the claim-time re-check found the appointment already
+    # started" — neither is a delivery failure, so neither is FAILED.
+    PENDING = "pending"
+    SENT = "sent"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
 class AuditAction(StrEnum):
     LOGIN = "login"
     LOGIN_FAILED = "login_failed"
@@ -62,3 +86,6 @@ class PlatformAuditAction(StrEnum):
     TENANT_PROVISION_FAILED = "tenant_provision_failed"
     TENANT_SUSPENDED = "tenant_suspended"
     OWNER_PASSWORD_RESET = "owner_password_reset"
+    # F16's one-time deploy step (D10). platform_audit_log.action is plain TEXT
+    # with no CHECK (0004), so this needs no migration.
+    BOOKING_LINKS_BACKFILLED = "booking_links_backfilled"

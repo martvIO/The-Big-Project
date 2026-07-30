@@ -42,3 +42,12 @@ class Booking(StandardColumns, Base):
     dress_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     dress_size: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # sha256 of the tokenized manage link (F16, 0010). The RAW token never lands
+    # here — it rides the SMS body and, while a reminder is pending, the
+    # scheduled_messages row. NULL only on pre-F16 rows the backfill has not
+    # reached.
+    manage_token_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Cancel evidence: E4 #19 evaluates refund-due vs forfeit from these plus
+    # starts_at and the ACCEPTED terms version. 'customer' | 'owner' (DB CHECK).
+    cancelled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    cancelled_by: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.booking import Booking
@@ -28,6 +28,7 @@ class BookingsRepository:
         dress_name: str | None = None,
         dress_size: str | None = None,
         notes: str | None = None,
+        manage_token_hash: str | None = None,
     ) -> Booking:
         """Flush surfaces IntegrityError when the (tenant, starts_at, seat_index)
         partial unique index rejects a lost race. Deliberately NOT pre-checked
@@ -53,6 +54,7 @@ class BookingsRepository:
             dress_name=dress_name,
             dress_size=dress_size,
             notes=notes,
+            manage_token_hash=manage_token_hash,
         )
         session.add(row)
         await session.flush()
@@ -102,6 +104,111 @@ class BookingsRepository:
             Booking.deleted_at.is_(None),
         )
         return set((await session.execute(stmt)).scalars().all())
+
+    async def by_manage_token_hash(
+        self, session: AsyncSession, tenant_id: UUID, token_hash: str
+    ) -> Booking | None:
+        """The tokenized page's ONLY read path — possession of the link, never an
+        id. Rides idx_bookings_manage_token.
+
+        No status predicate: a cancelled booking and a past one both still answer
+        the link (the design's C and P states), because an honest "this was
+        cancelled" beats a dead link for someone re-opening her SMS. The service
+        decides which ACTIONS remain legal.
+        """
+        stmt = select(Booking).where(
+            Booking.tenant_id == tenant_id,
+            Booking.manage_token_hash == token_hash,
+            Booking.deleted_at.is_(None),
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def set_manage_token_hash(
+        self, session: AsyncSession, tenant_id: UUID, booking_id: UUID, *, token_hash: str
+    ) -> Booking | None:
+        """Mint-or-rotate. The backfill uses it to fill a pre-F16 row; F15's
+        edit-phone remedy uses it through `reissue_manage_token` to invalidate a
+        link that went to the wrong number."""
+        stmt = (
+            update(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.id == booking_id,
+                Booking.deleted_at.is_(None),
+            )
+            .values(manage_token_hash=token_hash)
+            .returning(Booking.id)
+        )
+        if (await session.execute(stmt)).scalar_one_or_none() is None:
+            return None
+        return await self.by_id(session, tenant_id, booking_id)
+
+    async def confirm_attendance(
+        self, session: AsyncSession, tenant_id: UUID, booking_id: UUID, *, at: datetime
+    ) -> Booking | None:
+        """Idempotent by predicate, not by a read-then-write: `IS NULL` means a
+        second tap keeps the FIRST confirmation's timestamp rather than moving
+        it, and a caller that gets no row back re-reads the booking and renders
+        the same success (checklist row 21)."""
+        stmt = (
+            update(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.id == booking_id,
+                Booking.attendance_confirmed_at.is_(None),
+                Booking.status == BookingStatus.CONFIRMED.value,
+                Booking.deleted_at.is_(None),
+            )
+            .values(attendance_confirmed_at=at)
+            .returning(Booking.id)
+        )
+        await session.execute(stmt)
+        return await self.by_id(session, tenant_id, booking_id)
+
+    async def cancel(
+        self, session: AsyncSession, tenant_id: UUID, booking_id: UUID, *, at: datetime, by: str
+    ) -> Booking | None:
+        """One statement, and the seat is freed structurally: both partial unique
+        indexes (0008's slot-seat, 0009's per-customer instant) exclude
+        `status = 'cancelled'`, so this simultaneously returns the seat to the
+        grid and re-opens the idempotency slot for a rebook at the same instant.
+
+        Guarded on `status = 'confirmed'` so a repeat cancel writes nothing and
+        keeps the first cancellation's evidence — the caller re-reads and renders
+        the same cancelled state."""
+        stmt = (
+            update(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.id == booking_id,
+                Booking.status == BookingStatus.CONFIRMED.value,
+                Booking.deleted_at.is_(None),
+            )
+            .values(status=BookingStatus.CANCELLED.value, cancelled_at=at, cancelled_by=by)
+            .returning(Booking.id)
+        )
+        await session.execute(stmt)
+        return await self.by_id(session, tenant_id, booking_id)
+
+    async def list_confirmed_without_manage_token(
+        self, session: AsyncSession, tenant_id: UUID, *, after: datetime, limit: int
+    ) -> list[Booking]:
+        """The backfill's feed (D10): confirmed, still in the future, and never
+        issued a link. The predicate is also what makes a second run a no-op —
+        the first run filled `manage_token_hash`."""
+        stmt = (
+            select(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.status == BookingStatus.CONFIRMED.value,
+                Booking.starts_at > after,
+                Booking.manage_token_hash.is_(None),
+                Booking.deleted_at.is_(None),
+            )
+            .order_by(Booking.starts_at)
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
 
     async def count_by_start(
         self,

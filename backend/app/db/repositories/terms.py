@@ -54,6 +54,25 @@ class TermsVersionsRepository:
         )
         return (await session.execute(stmt)).scalar_one_or_none()
 
+    async def by_version(
+        self, session: AsyncSession, tenant_id: UUID, version: int
+    ) -> TermsVersion | None:
+        """One exact version, on the existing unique (tenant_id, version).
+
+        **`current()` must not be substituted here.** F16's manage page computes
+        a customer's cancellation consequence from the version she ACCEPTED, and
+        reading the current one instead is precisely the bug
+        `bookings.terms_version_accepted` exists to prevent: a boutique that
+        republishes its policy would silently rewrite the terms of appointments
+        already agreed to.
+        """
+        stmt = select(TermsVersion).where(
+            TermsVersion.tenant_id == tenant_id,
+            TermsVersion.version == version,
+            TermsVersion.deleted_at.is_(None),
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
     async def list_versions(
         self, session: AsyncSession, tenant_id: UUID, *, offset: int, limit: int
     ) -> list[TermsVersion]:
