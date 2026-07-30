@@ -22,7 +22,7 @@ Read these before touching anything. Violating them is how this loop breaks the 
 4. **No Docker locally.** Tests marked `db` or `s3` only run on CI. The first CI run of a feature routinely fails on a *test* bug rather than a product bug — that is expected, budgeted for, and not a quality failure.
 5. **Paths contain spaces and a `+`.** Quote every shell path.
 6. **All code mutations happen in a worktree** under `.worktrees/<slug>`. Parallel sessions share the main checkout — never assume its branch or working tree is what you left it as. Re-read state before every mutation.
-7. **Never stop to ask the user a question.** Every product decision was made in `.planning/epics/interview-2026-07-29.md`. Answers recorded there as `DELEGATED` are explicit licence to decide yourself after researching (web + codebase); record what you decided in the spec. If you hit something genuinely unanswerable, park the feature and continue — do not idle.
+7. **Never stop to ask the user a question.** Every product decision was made in `.planning/epics/interview-2026-07-30.md`. Answers recorded there as `DELEGATED` are explicit licence to decide yourself after researching (web + codebase); record what you decided in the spec. If you hit something genuinely unanswerable, park the feature and continue — do not idle.
 
 ---
 
@@ -53,7 +53,7 @@ docs(planning): loop — F<N> started
 
 ### 3. Spec and plan (fresh-context subagents)
 
-If `.planning/specs/<slug>.md` is missing, dispatch a spec-writer subagent: it reads the epic brief, the relevant interview answers, and **verifies against the current codebase** (what already exists to build on changes with every merge). The spec header records `Gate 1: standing approval — interview-2026-07-29.md §Standing approvals`.
+If `.planning/specs/<slug>.md` is missing, dispatch a spec-writer subagent: it reads the epic brief, the relevant interview answers, and **verifies against the current codebase** (what already exists to build on changes with every merge). The spec header records `Gate 1: standing approval — interview-2026-07-30.md §Standing approvals`.
 
 Frontend-touching features also get a design doc under `.planning/design/screens/<slug>/`, following the copy rules already approved in the interview, plus the `design-critic` agent. The design gate is agent-approved under the standing delegation.
 

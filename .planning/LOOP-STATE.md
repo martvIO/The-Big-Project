@@ -17,7 +17,7 @@ config:
   warn_only_jobs:               # usually red — ignore
     - "Code wiki drift (warn-only)"
     - "Dependency audits (warn-only)"
-  interview: .planning/epics/interview-2026-07-29.md
+  interview: .planning/epics/interview-2026-07-30.md
 
 current: F30
 
