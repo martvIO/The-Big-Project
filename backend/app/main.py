@@ -21,6 +21,13 @@ from app.booking.manage import (
     BookingLookupThrottledError,
     ManageBookingService,
 )
+from app.booking.owner import (
+    BookingTransitionInvalidError,
+    CustomerAlreadyBookedError,
+    OwnerBookingService,
+    OwnerResendThrottledError,
+)
+from app.booking.owner_router import router as owner_booking_router
 from app.booking.router import router as booking_router
 from app.booking.service import (
     BookingService,
@@ -191,6 +198,20 @@ BOOKING_ALREADY_STARTED_BODY = {
 }
 BOOKING_CANCELLED_BODY = {
     "error": {"code": "BOOKING_CANCELLED", "message": "This appointment was cancelled."}
+}
+# ONE body for every refused owner transition — an illegal status pair, a
+# no-show before the appointment, a cancel after it (D19).
+BOOKING_TRANSITION_INVALID_BODY = {
+    "error": {
+        "code": "BOOKING_TRANSITION_INVALID",
+        "message": "That change is not allowed for this booking's current state.",
+    }
+}
+CUSTOMER_ALREADY_BOOKED_BODY = {
+    "error": {
+        "code": "CUSTOMER_ALREADY_BOOKED",
+        "message": "This customer already has a booking at that time.",
+    }
 }
 
 
@@ -372,6 +393,26 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         lookup_limiter=FixedWindowRateLimiter(
             max_attempts=settings.booking_lookup_max_per_tenant_window,
             window_seconds=settings.booking_lookup_window_seconds,
+            clock=time.monotonic,
+        ),
+    )
+    # After booking_comms_service and storefront_service: it holds both. The
+    # storefront service is INJECTED rather than re-implemented — GET
+    # /manage/slots is its list_slots plus an owner projection (D6), and a
+    # second materializer is the one thing app/booking/slots.py exists to forbid.
+    app.state.owner_booking_service = OwnerBookingService(
+        get_session_factory(),
+        storefront=app.state.storefront_service,
+        comms=app.state.booking_comms_service,
+        # Its own instance, for the fourth time and the same reason: max_attempts
+        # lives on the LIMITER, not per key, so a second key on an existing
+        # budget could never trip first. Resend, phone correction and reschedule
+        # share this one because all three spend real SMS credit on an owner tap;
+        # owner cancel does not, because `cancelled` is terminal and its ceiling
+        # is the number of bookings the boutique has (D10).
+        sms_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.booking_owner_sms_max_per_tenant_window,
+            window_seconds=settings.booking_owner_sms_window_seconds,
             clock=time.monotonic,
         ),
     )
@@ -558,6 +599,28 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     ) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
 
+    # 409, not 400: the request is well-formed — the booking's state (or the
+    # clock) is what refuses it.
+    @app.exception_handler(BookingTransitionInvalidError)
+    async def _booking_transition_invalid(
+        request: Request, exc: BookingTransitionInvalidError
+    ) -> JSONResponse:
+        return JSONResponse(BOOKING_TRANSITION_INVALID_BODY, status_code=409)
+
+    @app.exception_handler(CustomerAlreadyBookedError)
+    async def _customer_already_booked(
+        request: Request, exc: CustomerAlreadyBookedError
+    ) -> JSONResponse:
+        return JSONResponse(CUSTOMER_ALREADY_BOOKED_BODY, status_code=409)
+
+    # The existing 429 body, deliberately: a fourth spelling of "too many
+    # attempts" would be a new code for the same fact (D10).
+    @app.exception_handler(OwnerResendThrottledError)
+    async def _owner_resend_throttled(
+        request: Request, exc: OwnerResendThrottledError
+    ) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(boutique_router)
@@ -565,6 +628,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # path would silently shadow. The ROUTES table in test_catalog_api.py is
     # what keeps that honest.
     app.include_router(catalog_router)
+    # The fourth /manage router, after the catalog one. Same hazard, now with
+    # four surfaces on one prefix: a duplicated (method, path) would silently
+    # shadow whichever was included first. The ROUTES table in
+    # test_booking_owner_api.py is what keeps that honest for this one.
+    app.include_router(owner_booking_router)
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
     app.include_router(storefront_router)

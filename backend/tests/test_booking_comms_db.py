@@ -747,7 +747,8 @@ async def test_an_unknown_or_rotated_token_is_one_indistinguishable_404(
         with pytest.raises(BookingLinkInvalidError):
             await service.lookup(_manage_tenant(tenant_id), token=mint_manage_token())
 
-        # Rotation (F15's edit-phone remedy) kills the old link.
+        # Rotation kills the old link. F15's remedy rotates in its own
+        # transaction (D8); this proves the seam, not its caller.
         comms, _ = _comms(factory)
         rotated = await comms.reissue_manage_token(_tenant(tenant_id), booking_id=claim.booking.id)
         assert rotated is not None and rotated != claim.manage_token

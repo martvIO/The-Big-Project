@@ -8,11 +8,13 @@ import {
   Input,
   JERusalem,
   Skeleton,
+  SlotPicker,
   TextArea,
   VisuallyHidden,
   cn,
   focusRing,
 } from "@boutique/ui";
+import type { SlotTime } from "@boutique/ui";
 import { ApiError, api, errorMessageKey, errorMessageOr } from "../api";
 import type {
   AppointmentTypeRow,
@@ -24,8 +26,6 @@ import type {
 } from "../api";
 import { ContactCard } from "../components/ContactCard";
 import { SizeChips } from "../components/booking/SizeChips";
-import { SlotPicker } from "../components/booking/SlotPicker";
-import type { SlotTime } from "../components/booking/SlotPicker";
 import { TypePicker } from "../components/booking/TypePicker";
 import { useBoutique } from "../components/StorefrontLayout";
 import { Link, navigate } from "../router";
@@ -945,6 +945,11 @@ export function BookPage({ step, dressId }: BookPageProps) {
                 ref={typeRef}
               />
               <SlotPicker
+                labels={{
+                  pickDate: t("booking.pickDate"),
+                  pickTime: t("booking.pickTime"),
+                  noSlots: t("booking.noSlots"),
+                }}
                 date={date}
                 min={min}
                 max={max}

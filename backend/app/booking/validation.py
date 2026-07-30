@@ -44,6 +44,16 @@ MAX_CUSTOMER_NAME_LENGTH = 80
 # HTML (spec risk #3).
 MAX_BOOKING_NOTES_LENGTH = 500
 
+# One Jerusalem day of the owner console's booking list. A pilot boutique runs
+# tens of appointments a day across every seat, so 50 is the whole day in one
+# page and the screen ships no paging controls at all.
+BOOKING_LIST_DEFAULT_LIMIT = 50
+
+# The `?limit=` ceiling, enforced as Query(ge=1, le=…) at the owner router. 4x
+# the default: enough headroom for a boutique that grows past one page a day,
+# and small enough that one request can never materialize a month.
+BOOKING_LIST_MAX_LIMIT = 200
+
 # Matches MAX_RULE_CAPACITY exactly (not the usual 10x absurdity ceiling):
 # a seat index above capacity can never be claimed, so capacity itself is
 # already the bound and 0008's CHECK pins the same number.

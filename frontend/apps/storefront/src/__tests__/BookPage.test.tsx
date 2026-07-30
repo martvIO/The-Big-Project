@@ -8,10 +8,10 @@ import type {
   StorefrontDetail,
   StorefrontTerms,
 } from "../api";
+import { SlotPicker } from "@boutique/ui";
 import i18n from "../i18n";
 import { StorefrontLayout } from "../components/StorefrontLayout";
 import { SizeChips } from "../components/booking/SizeChips";
-import { SlotPicker } from "../components/booking/SlotPicker";
 import { TypePicker } from "../components/booking/TypePicker";
 import { BookPage } from "../routes/BookPage";
 import { matchRoute, usePathname } from "../router";
@@ -734,6 +734,11 @@ describe("BookPage slot step — the mid-flow returns", () => {
     render(
       <StorefrontLayout>
         <SlotPicker
+          labels={{
+            pickDate: i18n.t("booking.pickDate"),
+            pickTime: i18n.t("booking.pickTime"),
+            noSlots: i18n.t("booking.noSlots"),
+          }}
           date="2026-08-04"
           times={[{ value: AUG4_1000, label: "10:00" }]}
           value={null}

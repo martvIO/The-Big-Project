@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ConsoleShell, ToastProvider } from "@boutique/ui";
 import { api } from "./api";
 import type { Staff } from "./api";
+import { BookingsSection } from "./components/BookingsSection";
 import { CatalogSection } from "./components/CatalogSection";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
@@ -10,7 +11,7 @@ import { ProfileSection } from "./components/ProfileSection";
 import { TermsSection } from "./components/TermsSection";
 import { TypesSection } from "./components/TypesSection";
 
-type SectionKey = "profile" | "hours" | "types" | "terms" | "catalog";
+type SectionKey = "profile" | "hours" | "types" | "terms" | "catalog" | "bookings";
 
 export function App() {
   const { t } = useTranslation();
@@ -53,6 +54,7 @@ export function App() {
     { key: "types", label: t("nav.types") },
     { key: "terms", label: t("nav.terms") },
     { key: "catalog", label: t("nav.catalog") },
+    { key: "bookings", label: t("nav.bookings") },
   ];
 
   return (
@@ -72,6 +74,7 @@ export function App() {
         {section === "types" && <TypesSection />}
         {section === "terms" && <TermsSection />}
         {section === "catalog" && <CatalogSection />}
+        {section === "bookings" && <BookingsSection />}
       </ConsoleShell>
     </ToastProvider>
   );
