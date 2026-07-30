@@ -233,6 +233,17 @@ queue:
       route walker. Staff CRUD UI moved to F51. Started 2026-07-30 on
       feature/staff-roles-gating, parallel to F15 (contingency: gates the three
       shipped /manage routers now; F15's owner_router adopts require_role on rebase).
+      Test hardening shipped separately as PR #23 (merged 2026-07-30): all 13
+      audited coverage gaps closed, +16 tests, CI 882 passed with no deselections.
+      The DB->gate seam is now proven on real Postgres
+      (tests/test_staff_role_gating_integration.py — a shift_manager row written by
+      the app principal past 0011's CHECK decides the gate over HTTP, and demotion
+      bites on the next request, so F51 needs no session sweep). Two notes for
+      whoever touches this next: the app-role UPDATE probe in test_migrations.py is
+      F51's pre-flight (boutique_app can write the role past the CHECK under RLS),
+      and NOT_AUTHORIZED's wire code plus generic body are pinned by literal in
+      test_the_not_authorized_contract_is_pinned_by_literal — F15's rebase fails
+      loudly if its role-naming variant of the same-named constant wins the merge.
   - id: F32
     slug: f32-placeholder
     epic: E6
