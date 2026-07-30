@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F15
+current: null                   # F15 merged (PR #24); E3 is feature-complete
 
 queue:
   # ---- cross-cutting ----
@@ -56,7 +56,8 @@ queue:
     slug: owner-booking-management
     epic: E3
     title: Owner booking management
-    status: specing
+    status: merged
+    pr: 24
     deps: [F13, F16]
     attempts: 1
     note: >-
@@ -65,7 +66,21 @@ queue:
       terms; that earns its own spec (now queued as F50).
       Spec written and Gate 1 self-approved 2026-07-30. Three adversarial review
       lenses returned 33 findings (5 blockers); 32 fixed, 1 rejected in writing.
-      Effort revised M → L at Gate 1.
+      Effort revised M → L at Gate 1. Built in 18 TDD commits; dual review ran
+      FOUR lenses (quality, security/concurrency, spec-conformance,
+      frontend/a11y — the last two discharging F16's parked debt), 16 findings,
+      each judged by two skeptics, 9 survived, one fix commit. Merged as PR #24
+      2026-07-30, all three gating jobs green.
+      TWO THINGS A LATER READER NEEDS. (1) F31 merged first and collided: both
+      features had invented a NotAuthorizedError, and the rebase applied with no
+      textual conflict, so Python's second binding silently left F31's class with
+      no handler — every shipped role-gated 403 would have become a 500. CI's
+      ruff F811 is what caught it. Resolved per shift-manager-console.md's
+      pre-written contingency: F15 adopted require_role and dropped its copy.
+      (2) That ruling admits shift_manager on all ten F15 routes, so Risk 2 (the
+      owner-attested phone re-points a live SMS control link with no OTP) now
+      extends to shift managers — F15's D20 guard was one of its three bounds and
+      it is gone. Recorded in the spec, re-nagged below.
   - id: F50
     slug: walk-in-bookings
     epic: E3-carveout
@@ -471,6 +486,14 @@ user_actions:                   # only the human can clear these; every report r
   - "File Meta business verification for WhatsApp (pre-decided #42) — long lead time, needed before F46"
   - "Get counsel to review the F16 SMS bodies and the F20 privacy default before either goes live"
   - "Find a human Arabic reviewer for legal/policy copy before F45 goes live"
+  - >-
+    ACKNOWLEDGE OR OVERTURN (F15, PR #24): the owner console can correct a
+    customer's phone on the owner's word alone — no OTP — and that rewrite
+    re-points her live SMS control link. The epic authorised it
+    (e3-booking-and-comms.md:60, 're-verify or owner-attested') so the loop did
+    not stop, but the SMC ruling then admitted shift_manager on every F15 route,
+    so this now sits with shift managers too. Spec Risk 2 carries the full
+    argument; the F21 audit is the scheduled re-check.
 ```
 
 ## Run report

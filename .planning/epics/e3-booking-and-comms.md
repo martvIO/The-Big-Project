@@ -35,10 +35,12 @@ This is the product's transactional core: turn the browse-only storefront into a
 | 12 | Availability & slot engine | **done** (PR #17) | [spec](../specs/availability-slot-engine.md) | [plan](../plans/availability-slot-engine.md) | E2 #7 |
 | 13 | Booking core API | **done** (PR #18) | [spec](../specs/booking-core.md) | [plan](../plans/booking-core.md) | E2 #7, #11, #12 |
 | 14 | Storefront booking UI | **done** (PR #19) | [spec](../specs/storefront-booking-ui.md) · [design](../design/screens/booking/booking.md) · [copy](../design/screens/booking/copy.md) | [plan](../plans/storefront-booking-ui.md) | E2 #9, #10 · #11, #12, #13 |
-| 15 | Owner booking management | **spec'd** — Gate 1 self-approved 2026-07-30, building | [spec](../specs/owner-booking-management.md) | — | #12, #13, #16 |
+| 15 | Owner booking management | **done** (PR #24) | [spec](../specs/owner-booking-management.md) · [design](../design/screens/owner-bookings/owner-bookings.md) · [copy](../design/screens/owner-bookings/copy.md) | [plan](../plans/owner-booking-management.md) | #12, #13, #16 |
 | 16 | Booking comms lifecycle | done (PR #21) | `booking-comms.md` | `booking-comms.md` | #13 |
 
-**Remaining order is #14 → #16 → #15, and the ordering is deliberate.** #16 is sequenced ahead of #15 because the day #14 merges, a real customer completes a booking and hears silence — that is a customer-facing hole, where #15's absence is only an owner inconvenience the owner can work around by reading the database or phoning the bride back. #14's D6 makes the confirmation screen carry the whole promise in the meantime, and one string on it changes when #16 lands.
+**All six shipped. The order was #11 → #12 → #13 → #14 → #16 → #15, and #16-before-#15 was deliberate:** the day #14 merged, a real customer could complete a booking and hear silence — a customer-facing hole, where #15's absence was only an owner inconvenience she could work around by reading the database or phoning the bride back. That window is closed.
+
+**F15 closed the epic on 2026-07-30 (PR #24)**, and two things about it outlive the epic. It shipped no migration — every fact it needed was already pinned by 0007/0008/0010 — and it is the first feature to have collided with a parallel epic: F31 (shift-manager console) merged first, both features had independently invented a `NotAuthorizedError`, and the rebase applied with *no textual conflict*, which would have left F31's class unhandled and turned every shipped role-gated 403 into a 500. Ruff's F811 on CI is the only thing that caught it. The resolution was pre-written in `shift-manager-console.md` — F15 adopts `require_role` and drops its copy — and its consequence is recorded in F15's Risk 2: a shift manager can now perform the owner-attested phone correction.
 
 ---
 
