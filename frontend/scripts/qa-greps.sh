@@ -43,10 +43,26 @@ check "no raw hex colours"          '#[0-9a-fA-F]{6}\b'                      "$S
 
 # Dates must be read in an explicit zone. lib/hours.ts owns the zoned helpers;
 # a bare getDay()/toLocaleDateString() reads the DEVICE clock, which is a
-# different calendar day from Jerusalem for part of every day.
+# different calendar day from Jerusalem for part of every day. The second grep
+# is the same rule for formatters: an Intl.DateTimeFormat built without a
+# timeZone formats in the device zone.
+#
+# It matches only a COMPLETE single-line construction, and NOT the spec's
+# `Intl\.DateTimeFormat\((?![^)]*timeZone)`. That is a PCRE lookahead; this is
+# `grep -rnE` (POSIX ERE, no lookaheads), so it would abort with "invalid
+# syntax" — and because the line ends `2>/dev/null || true` the error would be
+# swallowed and the block would print "ok" while checking nothing, silently
+# retiring the four patterns above. It would also be wrong if it ran: every
+# correctly-zoned formatter here opens on one line and puts `timeZone:` on the
+# next, so a single-line lookahead flags all of them. Multi-line calls have no
+# closing `)` on the line and never match; single-line zoned ones are dropped
+# by `grep -v timeZone`.
 printf '\n'
-zoned=$(grep -rnE 'getDay\(\)|getDate\(\)|toLocaleDateString|toLocaleTimeString' \
-  apps/storefront/src apps/manage/src packages/ui/src 2>/dev/null || true)
+zoned=$( { grep -rnE 'getDay\(\)|getDate\(\)|toLocaleDateString|toLocaleTimeString' \
+             apps/storefront/src apps/manage/src packages/ui/src;
+           grep -rnE 'Intl\.DateTimeFormat\([^)]*\)' \
+             apps/storefront/src apps/manage/src packages/ui/src | grep -v timeZone; \
+         } 2>/dev/null || true)
 if [ -n "$zoned" ]; then
   printf '\033[33mreview\033[0m  date reads — each must be explicitly zoned:\n%s\n' "$zoned"
 else
