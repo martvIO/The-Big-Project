@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
+current: F51                    # F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
                                 # Queue reconciled 2026-07-30 for the finish-the-project run:
                                 # 32 features reachable, 0 unreachable, 3 parked (F18/F29 external, F32 subsumed).
                                 # Verified by simulating the pick rule to exhaustion — deps absent from this
@@ -210,8 +210,9 @@ queue:
     slug: staff-management
     epic: SMC
     title: "Staff management section (owner CRUD)"
-    status: queued
+    status: specing
     deps: [F31]
+    attempts: 1
     note: >-
       SMC-2. Owner-only staff router (/manage/staff list/create/patch/soft-delete),
       guards: no self-deactivate, never remove the last live owner. Role-filtered
