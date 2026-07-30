@@ -96,6 +96,14 @@ class Settings(BaseSettings):
     # below a useful rate against a 256-bit token space.
     booking_lookup_max_per_tenant_window: int = 60
     booking_lookup_window_seconds: int = 300
+    # One budget shared by the three owner taps that spend real SMS credit —
+    # resend, phone correction and reschedule (D10). Owner cancel is off it:
+    # `cancelled` is terminal, so it is bounded at one SMS per booking by
+    # construction. The realistic failure is a stuck button and an impatient
+    # owner, not an attacker, so 20/hour is a runaway brake far above a
+    # boutique's real volume rather than a defence.
+    booking_owner_sms_max_per_tenant_window: int = 20
+    booking_owner_sms_window_seconds: int = 3600
     # How often the worker drains due scheduled messages. Deploy-tunable without
     # a code change, and a missed window self-heals on the next tick because the
     # claim is `send_after <= now()` rather than an exact-time match.

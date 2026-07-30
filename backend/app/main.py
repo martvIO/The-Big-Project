@@ -21,6 +21,12 @@ from app.booking.manage import (
     BookingLookupThrottledError,
     ManageBookingService,
 )
+from app.booking.owner import (
+    BookingTransitionInvalidError,
+    CustomerAlreadyBookedError,
+    NotAuthorizedError,
+    OwnerResendThrottledError,
+)
 from app.booking.router import router as booking_router
 from app.booking.service import (
     BookingService,
@@ -191,6 +197,23 @@ BOOKING_ALREADY_STARTED_BODY = {
 }
 BOOKING_CANCELLED_BODY = {
     "error": {"code": "BOOKING_CANCELLED", "message": "This appointment was cancelled."}
+}
+# ONE body for every refused owner transition — an illegal status pair, a
+# no-show before the appointment, a cancel after it (D19).
+BOOKING_TRANSITION_INVALID_BODY = {
+    "error": {
+        "code": "BOOKING_TRANSITION_INVALID",
+        "message": "That change is not allowed for this booking's current state.",
+    }
+}
+CUSTOMER_ALREADY_BOOKED_BODY = {
+    "error": {
+        "code": "CUSTOMER_ALREADY_BOOKED",
+        "message": "This customer already has a booking at that time.",
+    }
+}
+NOT_AUTHORIZED_BODY = {
+    "error": {"code": "NOT_AUTHORIZED", "message": "This action requires an owner account."}
 }
 
 
@@ -557,6 +580,33 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         request: Request, exc: BookingLookupThrottledError
     ) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
+    # 409, not 400: the request is well-formed — the booking's state (or the
+    # clock) is what refuses it.
+    @app.exception_handler(BookingTransitionInvalidError)
+    async def _booking_transition_invalid(
+        request: Request, exc: BookingTransitionInvalidError
+    ) -> JSONResponse:
+        return JSONResponse(BOOKING_TRANSITION_INVALID_BODY, status_code=409)
+
+    @app.exception_handler(CustomerAlreadyBookedError)
+    async def _customer_already_booked(
+        request: Request, exc: CustomerAlreadyBookedError
+    ) -> JSONResponse:
+        return JSONResponse(CUSTOMER_ALREADY_BOOKED_BODY, status_code=409)
+
+    # The existing 429 body, deliberately: a fourth spelling of "too many
+    # attempts" would be a new code for the same fact (D10).
+    @app.exception_handler(OwnerResendThrottledError)
+    async def _owner_resend_throttled(
+        request: Request, exc: OwnerResendThrottledError
+    ) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
+    # 403, not 401: she holds a live session — it is the role that refuses.
+    @app.exception_handler(NotAuthorizedError)
+    async def _not_authorized(request: Request, exc: NotAuthorizedError) -> JSONResponse:
+        return JSONResponse(NOT_AUTHORIZED_BODY, status_code=403)
 
     app.include_router(health_router)
     app.include_router(auth_router)

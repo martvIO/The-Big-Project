@@ -82,6 +82,17 @@ class AuditAction(StrEnum):
     LOGIN = "login"
     LOGIN_FAILED = "login_failed"
     LOGOUT = "logout"
+    # F15's owner console (D2). audit_log.action is plain TEXT with no CHECK
+    # (0003), so these need no migration. One value per action rather than a
+    # single booking_status_changed carrying the pair in `details`: a filtered
+    # read stays one WHERE instead of a JSONB predicate.
+    BOOKING_CONFIRMED = "booking_confirmed"
+    BOOKING_CANCELLED = "booking_cancelled"
+    BOOKING_NO_SHOW = "booking_no_show"
+    BOOKING_COMPLETED = "booking_completed"
+    BOOKING_RESCHEDULED = "booking_rescheduled"
+    BOOKING_PHONE_CORRECTED = "booking_phone_corrected"
+    BOOKING_LINK_RESENT = "booking_link_resent"
 
 
 class PlatformAuditAction(StrEnum):
