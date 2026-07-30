@@ -6,12 +6,14 @@ this one may carry the customer's phone and her notes — the operational point 
 the screen is that the owner can call the bride and read what she wrote (D18).
 """
 
+import dataclasses
 import datetime
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
+from app.auth.service import StaffContext
 from app.booking.comms import BookingCommsService
 from app.booking.service import BookingNotFoundError
 from app.booking.slots import Slot
@@ -26,6 +28,12 @@ from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
+from app.models.constants import (
+    AuditAction,
+    BookingCancelledBy,
+    BookingStatus,
+    ScheduledMessageKind,
+)
 from app.storefront.service import StorefrontService
 from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock
 
@@ -75,6 +83,26 @@ class NotAuthorizedError(Exception):
     failing test. 403 and not 401: the caller IS authenticated, she is just not
     an owner.
     """
+
+
+@dataclasses.dataclass(frozen=True)
+class OwnerMutation:
+    """What every owner mutation answers, and why it is not a bare `Booking` —
+    the `BookingClaim` precedent, for the same two reasons.
+
+    `changed` is False for the two no-ops the graph deliberately answers 200 to:
+    a repeat of the same transition (D3 step 2) and a reschedule to the instant
+    the booking already holds (D5 step 3). The router reads it to decide whether
+    to send — nothing happened, so nothing is texted.
+
+    `manage_token` carries the raw token minted INSIDE the transaction for the
+    edited booking. sha256 is one-way, so it travels out of here or the
+    post-commit `send_confirmation` has no link to put in the message.
+    """
+
+    booking: Booking
+    changed: bool = True
+    manage_token: str | None = None
 
 
 class OwnerBookingService:
@@ -168,3 +196,208 @@ class OwnerBookingService:
         `DomainValidationError`, so it is already a 400 VALIDATION_ERROR.
         """
         return await self._storefront.list_slots(tenant_id, from_date=from_date, to_date=to_date)
+
+    # --- the D3 transition graph -------------------------------------------
+    #
+    # All four verbs run the same five ordered steps inside ONE tenant_session:
+    #
+    #   1. load          — missing is a 404
+    #   2. compare       — already at the target is a 200, unchanged, NO audit row
+    #   3. raise         — an illegal pair or an illegal clock is a 409, nothing written
+    #   4. guarded write — carrying the same predicate as belt to the Python braces
+    #   5. audit         — same transaction, before commit
+    #
+    # Step 4 is not redundant with step 3: the predicate is what makes the write
+    # safe under a concurrent writer, and the Python check above it is what makes
+    # the ANSWER honest — a predicate-guarded UPDATE returns zero rows for an
+    # illegal transition AND for a legal repeat, so the statement result alone
+    # cannot separate the 409 from the 200 step 2 promises.
+
+    async def confirm(
+        self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
+    ) -> OwnerMutation:
+        """The undo of a mis-tapped no-show or completed.
+
+        No clock bound: a mis-tap is correctable whenever it is noticed. And it
+        writes `status` ONLY — `attendance_confirmed_at` is F16's column and
+        means the BRIDE said she is coming, so the owner correcting her own
+        record of the outcome does not get to speak for her (D3).
+        """
+        return await self._transition(
+            tenant_id,
+            booking_id,
+            staff=staff,
+            to=BookingStatus.CONFIRMED.value,
+            allowed_from=(BookingStatus.NO_SHOW.value, BookingStatus.COMPLETED.value),
+            action=AuditAction.BOOKING_CONFIRMED,
+        )
+
+    async def no_show(
+        self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
+    ) -> OwnerMutation:
+        return await self._transition(
+            tenant_id,
+            booking_id,
+            staff=staff,
+            to=BookingStatus.NO_SHOW.value,
+            allowed_from=(BookingStatus.CONFIRMED.value, BookingStatus.COMPLETED.value),
+            action=AuditAction.BOOKING_NO_SHOW,
+            past_only=True,
+        )
+
+    async def complete(
+        self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
+    ) -> OwnerMutation:
+        return await self._transition(
+            tenant_id,
+            booking_id,
+            staff=staff,
+            to=BookingStatus.COMPLETED.value,
+            allowed_from=(BookingStatus.CONFIRMED.value, BookingStatus.NO_SHOW.value),
+            action=AuditAction.BOOKING_COMPLETED,
+            past_only=True,
+        )
+
+    async def _transition(
+        self,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        staff: StaffContext,
+        to: str,
+        allowed_from: tuple[str, ...],
+        action: AuditAction,
+        past_only: bool = False,
+    ) -> OwnerMutation:
+        """The three non-cancel verbs. Cancel keeps its own body below: it uses a
+        different writer (the shipped one, shared with the customer path), guards
+        the opposite side of `starts_at`, and has a side effect the others do not.
+
+        `past_only` is D3's whole shape. Marking no-show or completed is a thing
+        you do to a PAST appointment — both are attendance records; cancelling is
+        a thing you do to a future one, because it frees a seat and texts the
+        customer. The split falls exactly at `now`.
+        """
+        now = self._now()
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            booking = await self._bookings.by_id(session, tenant_id, booking_id)
+            if booking is None:
+                raise BookingNotFoundError
+            if booking.status == to:
+                return OwnerMutation(booking=booking, changed=False)
+            if booking.status not in allowed_from:
+                raise BookingTransitionInvalidError(f"{booking.status} -> {to}")
+            if past_only and booking.starts_at > now:
+                raise BookingTransitionInvalidError(f"{booking.status} -> {to} before starts_at")
+            updated = await self._bookings.set_status(
+                session,
+                tenant_id,
+                booking_id,
+                to=to,
+                allowed_from=allowed_from,
+                not_after=now if past_only else None,
+            )
+            if updated is None:
+                # Another request moved the row between the read and here. The
+                # raise rolls the transaction back BEFORE the audit row, rather
+                # than committing evidence for a move that did not happen.
+                raise BookingTransitionInvalidError(f"{booking.status} -> {to}")
+            await self._record(
+                session,
+                tenant_id,
+                staff=staff,
+                action=action,
+                booking_id=booking_id,
+                details={"from": booking.status, "to": to},
+            )
+            return OwnerMutation(booking=updated)
+
+    async def cancel(
+        self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
+    ) -> OwnerMutation:
+        """Owner cancel — and it must kill its own pending reminder.
+
+        `notify_owner_cancel` does not touch `scheduled_messages`
+        (`comms.py:187-204`), so without the `cancel_pending` below the customer
+        gets a cancellation SMS and then, hours later, a reminder for the
+        appointment that was cancelled. `ManageBookingService.cancel` already
+        does exactly this for the customer path and F15 mirrors it.
+
+        Not metered by the owner-SMS limiter (D10): `cancelled` is terminal, so
+        this is at most one SMS per booking and the ceiling is the number of
+        bookings the boutique has.
+        """
+        now = self._now()
+        target = BookingStatus.CANCELLED.value
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            booking = await self._bookings.by_id(session, tenant_id, booking_id)
+            if booking is None:
+                raise BookingNotFoundError
+            if booking.status == target:
+                # Checked BEFORE the clock, the `manage.py:158-161` shape: a
+                # second tap on an already-cancelled appointment is the same
+                # success even once its time has passed.
+                return OwnerMutation(booking=booking, changed=False)
+            if booking.status != BookingStatus.CONFIRMED.value:
+                # no_show / completed -> cancelled is forbidden for a reason of
+                # its own: E4 #19 evaluates refund-due versus forfeit from
+                # `cancelled_at`, and writing it on a booking the bride actually
+                # attended would make that evaluation lie.
+                raise BookingTransitionInvalidError(f"{booking.status} -> {target}")
+            if booking.starts_at <= now:
+                raise BookingTransitionInvalidError(f"{target} after starts_at")
+            updated = await self._bookings.cancel(
+                session,
+                tenant_id,
+                booking_id,
+                at=now,
+                by=BookingCancelledBy.OWNER.value,
+                not_before=now,
+            )
+            # `cancel` answers through a trailing `by_id` and so ALWAYS returns a
+            # row — the customer path depends on that, which is why widening its
+            # predicate unconditionally was declined (D3). So the zero-row signal
+            # here is the re-read's status, not a None. The one case it cannot
+            # distinguish is a concurrent OWNER cancel, whose audit row would be
+            # a duplicate of a truthful one; every other concurrent writer
+            # (no-show, complete, reschedule-into-the-past) leaves the row
+            # un-cancelled and is caught.
+            if updated is None or updated.status != target:
+                raise BookingTransitionInvalidError(f"{booking.status} -> {target}")
+            await self._scheduled.cancel_pending(
+                session,
+                tenant_id,
+                booking_id=booking_id,
+                kind=ScheduledMessageKind.REMINDER.value,
+            )
+            await self._record(
+                session,
+                tenant_id,
+                staff=staff,
+                action=AuditAction.BOOKING_CANCELLED,
+                booking_id=booking_id,
+                details={"from": booking.status, "to": target},
+            )
+            return OwnerMutation(booking=updated)
+
+    async def _record(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        *,
+        staff: StaffContext,
+        action: AuditAction,
+        booking_id: uuid.UUID,
+        details: dict[str, object],
+    ) -> None:
+        """`entity` is the booking id as a string — the auth precedent puts a
+        human-meaningful target there — and `actor_id` is the staff member who
+        tapped, which is the whole reason this trail exists (D2)."""
+        await self._audit.record(
+            session,
+            tenant_id=tenant_id,
+            action=action.value,
+            actor_id=staff.id,
+            entity=str(booking_id),
+            details=details,
+        )
