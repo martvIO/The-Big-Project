@@ -16,6 +16,9 @@ vi.mock("../routes/AccessibilityPage", () => ({ AccessibilityPage: () => "נגי
 vi.mock("../routes/BookPage", () => ({
   BookPage: ({ step }: { step: string }) => `שלב ${step}`,
 }));
+vi.mock("../routes/ManageBookingPage", () => ({
+  ManageBookingPage: ({ token }: { token: string }) => `ניהול ${token}`,
+}));
 
 function go(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -103,6 +106,41 @@ describe("matchRoute", () => {
     expect(matchRoute("/nope")).toEqual({ name: "catalog" });
     expect(matchRoute("/dress")).toEqual({ name: "catalog" });
     expect(matchRoute("/dress/a/b")).toEqual({ name: "catalog" });
+  });
+
+  // F16's tokenized manage link. The path is SHORT on purpose (spec D7): the URL
+  // rides inside a UCS-2 Hebrew SMS where every character is segment budget.
+  it("extracts the manage token from /b/:token", () => {
+    expect(matchRoute("/b/mt-abc123")).toEqual({ name: "manage", token: "mt-abc123" });
+  });
+
+  it("accepts every character generate_session_token can emit", () => {
+    // token_urlsafe uses [A-Za-z0-9_-]; a route that choked on "-" or "_" would
+    // 404 a working link roughly half the time.
+    expect(matchRoute("/b/aB0_-xyz")).toEqual({ name: "manage", token: "aB0_-xyz" });
+  });
+
+  it("ignores a trailing slash on the manage path too", () => {
+    expect(matchRoute("/b/tok/")).toEqual({ name: "manage", token: "tok" });
+  });
+
+  it("does not throw on a malformed escape in a token", () => {
+    expect(matchRoute("/b/%")).toEqual({ name: "manage", token: "%" });
+  });
+
+  it("routes an UNKNOWN token to the page, not to the catalog", () => {
+    // Load-bearing (D7/D8): the page owns the invalid-link state, and the
+    // catalog fallthrough must never swallow a bad token — a bride whose link
+    // was rotated would otherwise land on a dress grid with no explanation.
+    expect(matchRoute("/b/anything-at-all")).toEqual({
+      name: "manage",
+      token: "anything-at-all",
+    });
+  });
+
+  it("does not read a deeper or bare /b path as a manage route", () => {
+    expect(matchRoute("/b")).toEqual({ name: "catalog" });
+    expect(matchRoute("/b/tok/extra")).toEqual({ name: "catalog" });
   });
 
   it.each(BOOK_STEPS)("maps /book/%s to its step", (step) => {
@@ -304,6 +342,19 @@ describe("Router document title, focus and scroll", () => {
       expect(document.title).not.toBe("document.book");
     },
   );
+
+  it("titles the manage route with its own single title", () => {
+    // One title for all six manage states: she arrived from a text message, and
+    // an outcome ("cancelled") does not belong in the tab strip.
+    renderRoute("/b/mt-abc123");
+    expect(document.title).toBe(i18n.t("document.manageTitle"));
+    expect(document.title).not.toBe("document.manageTitle");
+  });
+
+  it("never puts the manage token in the document title", () => {
+    renderRoute("/b/mt-secret-token");
+    expect(document.title).not.toContain("mt-secret-token");
+  });
 
   it("does not steal focus on first paint — the skip link is the first stop", () => {
     renderRoute("/");

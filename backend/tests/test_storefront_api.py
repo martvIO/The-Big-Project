@@ -589,6 +589,17 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         "/storefront/bookings",
         # F14's cancellation-policy read, back on this GET-only read router.
         "/storefront/terms",
+        # F16's tokenized manage surface, on that same third sibling. POST for
+        # all three INCLUDING the read: a GET would put the manage token in the
+        # query string and from there into every access log on the path (D7).
+        # Posture asserted in test_booking_manage_api.py.
+        "/storefront/booking/lookup",
+        "/storefront/booking/confirm-attendance",
+        "/storefront/booking/cancel",
+    }
+    # Singular /booking/* must never collide with the plural /bookings create.
+    assert "/storefront/bookings" not in {
+        path for _, path in registered if path.startswith("/storefront/booking/")
     }
     # And no storefront path is reachable under the CSRF-protected prefix.
     assert not any(path.startswith("/manage/storefront") for _, path in registered)

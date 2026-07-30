@@ -78,6 +78,7 @@ from app.storefront.validation import (
     STOREFRONT_LIST_DEFAULT_LIMIT,
     STOREFRONT_LIST_MAX_LIMIT,
     StorefrontThrottledError,
+    profile_text,
 )
 from app.tenancy.middleware import get_current_tenant
 
@@ -182,27 +183,14 @@ def public_boutique(view: StorefrontBoutiqueView) -> BoutiqueResponse:
     key a later feature adds to `profile` cannot reach the public page by
     default.
 
-    `or None` collapses "" to null. Empty string is the wire's *canonical
-    cleared value* (see boutique/validation.py) and the manage form seeds every
-    blank field to "" before submitting, so any owner who saves the profile once
-    converts their blanks from null to "". Shipping "" to the storefront renders
-    `<a href="tel:">` with no accessible name — a WCAG 2.4.4 (A) failure, worst
-    of all on the statutory הצהרת נגישות contact block. Both values already MEAN
-    "not set"; making them identical on the wire is what lets every client guard
-    be a plain null check.
+    The ""-to-null collapse now lives in `profile_text` (storefront/validation.py)
+    because F16's manage page needs the same rule for the same reason — the
+    argument, including the WCAG 2.4.4 one, is in that docstring.
     """
     profile = view.profile
 
     def field(key: str) -> str | None:
-        value = profile.get(key)
-        if not isinstance(value, str):
-            return None
-        # .strip() before the null collapse: an owner who clears a field by
-        # deleting its text often leaves a space behind, and " " is truthy. A
-        # space-only address would otherwise render a Waze link to nowhere and
-        # an <a> whose accessible name is whitespace — the same WCAG 2.4.4
-        # failure the ""-to-null collapse exists to prevent, one keystroke away.
-        return value.strip() or None
+        return profile_text(profile, key)
 
     return BoutiqueResponse(
         name=view.name,

@@ -297,6 +297,46 @@ export interface BookingCreateResponse {
   dress_size: string | null;
 }
 
+// --- manage wire types (mirror backend/app/booking/schemas.py) ---
+//
+// NOTE what is absent and must stay absent: the booking id, the customer's name
+// and phone, the seat index and the notes. The manage link is possession-auth, so
+// the payload carries the appointment's facts and no PII beyond them.
+
+export interface ManageBookingFacts {
+  starts_at: string;
+  // "confirmed" | "cancelled" | "no_show" | "completed". The page branches on
+  // cancelled and treats everything else as an appointment that stands.
+  status: string;
+  // null until she taps אישור הגעה; set once and never moved.
+  attendance_confirmed_at: string | null;
+  appointment_type_name: string;
+  dress_name: string | null;
+  dress_size: string | null;
+}
+
+export interface ManagePolicy {
+  // From the version she ACCEPTED, never the current one — a republished policy
+  // must not change the terms of an appointment already agreed to.
+  refundable_until_hours_before: number;
+  forfeit_percent: number;
+}
+
+export interface ManageBoutique {
+  name: string;
+  phone: string | null;
+  address: string | null;
+  maps_url: string | null;
+}
+
+export interface ManageBookingResponse {
+  booking: ManageBookingFacts;
+  // null only if the accepted terms row has gone; the page then renders the
+  // cancel step without the window sentence rather than inventing a number.
+  policy: ManagePolicy | null;
+  boutique: ManageBoutique;
+}
+
 // --- endpoints ---
 
 export const api = {
@@ -335,6 +375,23 @@ export const api = {
   },
   createBooking(body: BookingCreateRequest): Promise<BookingCreateResponse> {
     return apiFetch("/storefront/bookings", { method: "POST", body });
+  },
+
+  // All three take the manage token in the BODY and answer the SAME shape, so
+  // the page re-renders every state from one response type. POST even for the
+  // lookup: a GET would put a live credential in the query string, and from
+  // there into every access log, proxy trace and Referer header on the path.
+  lookupBooking(token: string): Promise<ManageBookingResponse> {
+    return apiFetch("/storefront/booking/lookup", { method: "POST", body: { token } });
+  },
+  confirmAttendance(token: string): Promise<ManageBookingResponse> {
+    return apiFetch("/storefront/booking/confirm-attendance", {
+      method: "POST",
+      body: { token },
+    });
+  },
+  cancelBooking(token: string): Promise<ManageBookingResponse> {
+    return apiFetch("/storefront/booking/cancel", { method: "POST", body: { token } });
   },
 };
 

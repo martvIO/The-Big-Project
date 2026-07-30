@@ -32,6 +32,7 @@ class ProvisioningLike(Protocol):
         self, *, slug: str, name: str, owner_email: str, owner_password: str, operator: str
     ) -> CommandResult: ...
     async def suspend(self, *, slug: str, operator: str) -> CommandResult: ...
+    async def backfill_booking_links(self, *, operator: str) -> CommandResult: ...
     async def reset_owner_password(
         self, *, slug: str, owner_email: str, new_password: str, operator: str
     ) -> CommandResult: ...
@@ -65,6 +66,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = sub.add_parser("list", help="list all tenants")
     _with_operator(listing)
+
+    # F16's one-time deploy step: F14 shipped the booking flow before any SMS
+    # existed, so confirmed future bookings already exist with no manage link and
+    # no reminder. Safe to re-run — the feed is "no token yet".
+    backfill = sub.add_parser(
+        "backfill-booking-links",
+        help="one-time: mint manage links + schedule reminders for existing future bookings",
+    )
+    _with_operator(backfill)
 
     return parser
 
@@ -110,6 +120,8 @@ async def _dispatch(
                 operator=args.operator,
             )
         )
+    if args.command == "backfill-booking-links":
+        return _report(await service.backfill_booking_links(operator=args.operator))
     if args.command == "list":
         _print_tenants(await service.list_tenants())
         return 0

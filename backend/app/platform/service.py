@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.passwords import hash_password
+from app.booking.backfill import ManageLinkBackfill
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
@@ -106,6 +107,39 @@ class ProvisioningService:
                 details={"slug": slug},
             )
         return CommandResult(ok=True, message="suspended", tenant_id=tenant.id)
+
+    async def backfill_booking_links(self, *, operator: str) -> CommandResult:
+        """F16's one-time deploy step (D10, mechanism per Interview pre-decided
+        #9): mint a manage token and schedule a D3-band reminder for every
+        already-confirmed future booking.
+
+        It lives on the audited command layer rather than in a standalone script
+        because that layer is what F25's platform console will reuse as its
+        service layer (pre-decided #20), and because a one-shot operator action
+        that touches every tenant's bookings should leave an audit row.
+
+        Safe to re-run: the feed is `manage_token_hash IS NULL`, which the first
+        run fills.
+        """
+        result = await ManageLinkBackfill(self._session_factory).run()
+        async with self._session_factory() as session, session.begin():
+            await self._audit.record(
+                session,
+                operator=operator,
+                action=PlatformAuditAction.BOOKING_LINKS_BACKFILLED,
+                details={
+                    "tenants": result.tenants,
+                    "tokens_minted": result.tokens_minted,
+                    "reminders_scheduled": result.reminders_scheduled,
+                },
+            )
+        return CommandResult(
+            ok=True,
+            message=(
+                f"backfilled {result.tokens_minted} manage link(s) and scheduled "
+                f"{result.reminders_scheduled} reminder(s) across {result.tenants} tenant(s)"
+            ),
+        )
 
     async def list_tenants(self) -> list[TenantSummary]:
         async with self._session_factory() as session:

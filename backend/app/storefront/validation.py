@@ -10,6 +10,7 @@ tightened during an incident without a deploy.)
 
 import datetime
 from collections.abc import Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.errors import DomainValidationError
@@ -57,6 +58,29 @@ class SlotWindowError(DomainValidationError):
     """`to` precedes `from`. A DomainValidationError subclass so the platform's
     existing handler maps it to the house-shape 400 carrying this message —
     no new handler, no new error code."""
+
+
+def profile_text(profile: dict[str, Any], key: str) -> str | None:
+    """One published profile string, or None — the ONE place the ""-to-null
+    collapse lives.
+
+    Empty string is the wire's canonical cleared value (see
+    `boutique/validation.py`) and the manage form seeds every blank field to ""
+    before submitting, so any owner who saves the profile once converts their
+    blanks from null to "". Shipping "" to a public surface renders
+    `<a href="tel:">` with no accessible name — a WCAG 2.4.4 (A) failure. The
+    `.strip()` comes first because an owner who clears a field by deleting its
+    text often leaves a space behind, and " " is truthy: a space-only address
+    would otherwise render a Waze link to nowhere.
+
+    Both public projections read through this — `public_boutique` for /about and
+    the F16 manage page's contact block. A second copy of the rule is exactly the
+    drift `storefront/router.py` says projections exist to prevent.
+    """
+    value = profile.get(key)
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
 
 
 def today_jerusalem(clock: Clock | None = None) -> datetime.date:

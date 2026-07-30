@@ -88,6 +88,18 @@ class Settings(BaseSettings):
     # that six phones could close a boutique for an hour.
     booking_create_max_per_window: int = 300
     booking_create_window_seconds: int = 3600
+    # An anti-scrape ceiling on the public manage lookup — the one endpoint that
+    # answers a secret, so unlike the storefront reads this really is a defence
+    # and not only a runaway brake. Per tenant, not per IP, for the same reason
+    # every other budget here is: trust_forwarded_for is unresolved until F21.
+    # 60 per 5 minutes is far past a bride re-opening her SMS a few times and far
+    # below a useful rate against a 256-bit token space.
+    booking_lookup_max_per_tenant_window: int = 60
+    booking_lookup_window_seconds: int = 300
+    # How often the worker drains due scheduled messages. Deploy-tunable without
+    # a code change, and a missed window self-heals on the next tick because the
+    # claim is `send_after <= now()` rather than an exact-time match.
+    worker_poll_interval_seconds: int = 60
 
     # Per-TENANT budget on the anonymous storefront reads: a runaway brake, not
     # a defence (see app/storefront/router.py._throttle for the full argument).

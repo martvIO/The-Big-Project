@@ -12,6 +12,7 @@ this customer already holds at this instant returns that booking rather than a
 second one, guarded by 0009's index. See step 4b.
 """
 
+import dataclasses
 import datetime
 import uuid
 
@@ -20,7 +21,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
+from app.booking.comms import reminder_send_after
 from app.booking.slots import Slot, materialize_slots
+from app.booking.tokens import manage_token_hash, mint_manage_token
 from app.booking.validation import (
     SLOT_WINDOW_MAX_DAYS,
     BookingValidationError,
@@ -36,10 +39,12 @@ from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
+from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
 from app.models.booking import Booking
+from app.models.constants import ScheduledMessageKind
 from app.notifications.service import OtpService
 from app.notifications.validation import normalize_israeli_mobile
 from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock
@@ -85,6 +90,25 @@ class BookingThrottledError(Exception):
     hour becomes 60 requests carrying nothing but a hostname."""
 
 
+@dataclasses.dataclass(frozen=True)
+class BookingClaim:
+    """What a create returns, and why it is no longer a bare `Booking`.
+
+    Before F16 this method returned the row on BOTH the fresh-insert and the
+    0009-replay path, so the caller could not tell them apart. F16 needs that
+    distinction twice over: a replay must not resend the confirmation SMS, and
+    sha256 is one-way — the raw manage token is unrecoverable the moment the
+    transaction ends, so it has to travel out of here or not at all.
+
+    `manage_token` is None on a replay. That is what makes "the replay does not
+    resend" structural rather than a remembered `if` at the call site.
+    """
+
+    booking: Booking
+    created: bool
+    manage_token: str | None
+
+
 class BookingService:
     def __init__(
         self,
@@ -112,6 +136,7 @@ class BookingService:
         self._variants = DressVariantsRepository()
         self._rules = AvailabilityRulesRepository()
         self._exceptions = AvailabilityExceptionsRepository()
+        self._scheduled = ScheduledMessagesRepository()
 
     async def create_booking(
         self,
@@ -126,7 +151,7 @@ class BookingService:
         dress_id: uuid.UUID | None = None,
         dress_size: str | None = None,
         notes: str | None = None,
-    ) -> Booking:
+    ) -> BookingClaim:
         """The spec's seven ordered steps. `starts_at` must be timezone-aware
         (the schema boundary enforces it); it is compared as a UTC instant
         against a freshly materialized grid, because the picker is not a
@@ -138,6 +163,14 @@ class BookingService:
         That rollback is why the create budget below is spent OUTSIDE the
         transaction's rollback semantics: a reusable token must not also buy
         unlimited attempts.
+
+        F16 adds two writes to the same transaction and no third round trip: the
+        manage token's hash lands on the INSERT, and the reminder's
+        `scheduled_messages` row is written here rather than post-commit. Leaving
+        the schedule to a post-commit block would let a crash between commit and
+        block lose the reminder permanently, with nothing sweeping for the gap —
+        same-database work belongs in the transaction. The SMS send is the only
+        post-commit work, and the router owns it.
         """
         validate_booking_request(name=name, notes=notes, dress_id=dress_id, dress_size=dress_size)
         phone = normalize_israeli_mobile(raw_phone)
@@ -257,7 +290,10 @@ class BookingService:
                     session, tenant_id, customer_id=existing_customer.id, starts_at=starts_at
                 )
                 if replayed is not None:
-                    return replayed
+                    # No token: the first submission's raw value is already gone
+                    # (only its sha256 survives), and a replay must not resend
+                    # the confirmation SMS anyway. Both facts are the same fact.
+                    return BookingClaim(booking=replayed, created=False, manage_token=None)
 
             # 5. Re-materialize the grid and assert the instant is offered —
             #    fed the REAL booked counts, so this also enforces capacity.
@@ -281,8 +317,13 @@ class BookingService:
             )
             if seat_index is None:
                 raise SlotUnavailableError
+            # 8. The manage token, minted here so its hash commits atomically
+            #    with the row it authorises. The raw value leaves in the result
+            #    and is then only ever in an SMS body and (while the reminder is
+            #    still pending) on the scheduled_messages row.
+            manage_token = mint_manage_token()
             try:
-                return await self._bookings.insert(
+                booking = await self._bookings.insert(
                     session,
                     tenant_id=tenant_id,
                     customer_id=customer.id,
@@ -296,11 +337,27 @@ class BookingService:
                     dress_name=dress_name,
                     dress_size=snapshot_size,
                     notes=notes,
+                    manage_token_hash=manage_token_hash(manage_token),
                 )
             except IntegrityError as exc:
                 # Lost a race the advisory lock should have prevented — the
                 # index is the backstop, and to the caller it is the same 409.
                 raise SlotUnavailableError from exc
+
+            # 9. The reminder, under D3's bands. None means the appointment is
+            #    inside the two-hour suppression window and the confirmation
+            #    seconds old — no row, deliberately.
+            send_after = reminder_send_after(starts_at=booking.starts_at, now=now)
+            if send_after is not None:
+                await self._scheduled.insert(
+                    session,
+                    tenant_id=tenant_id,
+                    booking_id=booking.id,
+                    kind=ScheduledMessageKind.REMINDER.value,
+                    send_after=send_after,
+                    manage_token=manage_token,
+                )
+            return BookingClaim(booking=booking, created=True, manage_token=manage_token)
 
     async def _offered_slot(
         self,

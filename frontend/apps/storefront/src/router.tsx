@@ -9,6 +9,7 @@ import { AccessibilityPage } from "./routes/AccessibilityPage";
 import { BookPage } from "./routes/BookPage";
 import { CatalogPage } from "./routes/CatalogPage";
 import { DressPage } from "./routes/DressPage";
+import { ManageBookingPage } from "./routes/ManageBookingPage";
 
 // ponytail: hand-rolled router. The workspace carries no router dependency and
 // the storefront has a handful of flat routes, so this is ~90 lines instead of
@@ -19,7 +20,7 @@ import { DressPage } from "./routes/DressPage";
 // Side effect worth keeping: with no back() to call, the qa-checklist ban on
 // history-based back navigation is structural rather than a grep.
 
-export type RouteName = "catalog" | "dress" | "about" | "accessibility" | "book";
+export type RouteName = "catalog" | "dress" | "about" | "accessibility" | "book" | "manage";
 
 // A closed set, which is what lets /book/{step} and /book/{step}/{dressId}
 // share a shape: no dress id can ever be read as a step.
@@ -32,7 +33,10 @@ export type RouteMatch =
   | { name: "dress"; dressId: string }
   | { name: "about" }
   | { name: "accessibility" }
-  | { name: "book"; step: BookStep; dressId?: string };
+  | { name: "book"; step: BookStep; dressId?: string }
+  // The token is opaque and is NOT validated here: an unknown or rotated token
+  // has to reach the page so the page can render its own invalid-link state.
+  | { name: "manage"; token: string };
 
 // The id of StorefrontLayout's <main tabindex="-1">. Focus lands here after
 // every client navigation, and the SkipLink targets it.
@@ -51,10 +55,17 @@ const DOC_TITLE_KEYS: Record<RouteName, string> = {
   // flushes a child's passive effects before its parent's, so the effect below
   // would run last and clobber a per-step title.
   book: "document.book",
+  // One title for all six manage states. She arrived from a text message, and an
+  // outcome ("cancelled") does not belong in the tab strip.
+  manage: "document.manageTitle",
 };
 
 const DRESS_PATH = /^\/dress\/([^/]+)$/;
 const BOOK_PATH = /^\/book(?:\/([^/]+)(?:\/([^/]+))?)?$/;
+// Short on purpose (spec D7): the URL rides inside a UCS-2 Hebrew SMS where every
+// character is segment budget. /manage-booking/{token} would spend ~14 extra
+// characters per message forever.
+const MANAGE_PATH = /^\/b\/([^/]+)$/;
 
 function isBookStep(value: string): value is BookStep {
   return (BOOK_STEPS as readonly string[]).includes(value);
@@ -77,6 +88,12 @@ export function matchRoute(pathname: string): RouteMatch {
 
   const dress = DRESS_PATH.exec(path);
   if (dress) return { name: "dress", dressId: decodeId(dress[1]) };
+
+  // BEFORE the catalog fallthrough, and that ordering is load-bearing: a bad
+  // token must render the page's invalid-link state, never be silently swallowed
+  // into the collection (spec D7/D8). Anything after /b/ matches.
+  const manage = MANAGE_PATH.exec(path);
+  if (manage) return { name: "manage", token: decodeId(manage[1]) };
 
   const book = BOOK_PATH.exec(path);
   if (book !== null) {
@@ -264,6 +281,8 @@ export function Router() {
       return <AccessibilityPage />;
     case "book":
       return <BookPage step={match.step} dressId={match.dressId} />;
+    case "manage":
+      return <ManageBookingPage token={match.token} />;
     default:
       return <CatalogPage />;
   }

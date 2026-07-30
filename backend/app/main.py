@@ -13,6 +13,14 @@ from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.router import RateLimitedError
 from app.auth.router import router as auth_router
 from app.auth.service import AuthService, InvalidCredentialsError
+from app.booking.comms import BookingCommsService
+from app.booking.manage import (
+    BookingAlreadyStartedError,
+    BookingCancelledError,
+    BookingLinkInvalidError,
+    BookingLookupThrottledError,
+    ManageBookingService,
+)
 from app.booking.router import router as booking_router
 from app.booking.service import (
     BookingService,
@@ -164,6 +172,20 @@ TERMS_STALE_BODY = {
         "code": "TERMS_STALE",
         "message": "The booking terms changed. Review and accept them again.",
     }
+}
+# ONE body for unknown, rotated and malformed manage tokens — distinguishing them
+# would turn the lookup into an oracle for "is this token shaped right".
+BOOKING_LINK_INVALID_BODY = {
+    "error": {"code": "BOOKING_LINK_INVALID", "message": "This link is no longer valid."}
+}
+BOOKING_ALREADY_STARTED_BODY = {
+    "error": {
+        "code": "BOOKING_ALREADY_STARTED",
+        "message": "This appointment has already started.",
+    }
+}
+BOOKING_CANCELLED_BODY = {
+    "error": {"code": "BOOKING_CANCELLED", "message": "This appointment was cancelled."}
 }
 
 
@@ -330,6 +352,24 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             clock=time.monotonic,
         ),
     )
+    # base_domain, not a hardcoded host: the manage link the SMS carries has to
+    # resolve to the tenant's own storefront in dev, staging and production
+    # alike, and Settings is where deployment identity lives.
+    app.state.booking_comms_service = BookingCommsService(
+        get_session_factory(),
+        notifications=app.state.notification_service,
+        base_domain=settings.base_domain,
+    )
+    app.state.manage_booking_service = ManageBookingService(
+        get_session_factory(),
+        # Its own instance again, never a shared one: max_attempts is per limiter,
+        # so a second key on an existing budget could never trip first.
+        lookup_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.booking_lookup_max_per_tenant_window,
+            window_seconds=settings.booking_lookup_window_seconds,
+            clock=time.monotonic,
+        ),
+    )
 
     @app.exception_handler(TenantNotResolvedError)
     async def _tenant_not_resolved(request: Request, exc: TenantNotResolvedError) -> JSONResponse:
@@ -482,6 +522,31 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _booking_throttled(request: Request, exc: BookingThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
 
+    # 404, and NOT the shared NOT_FOUND body: the page renders its own
+    # invalid-link state off this code, and reusing NOT_FOUND would make it
+    # indistinguishable from an archived dress on the same origin.
+    @app.exception_handler(BookingLinkInvalidError)
+    async def _booking_link_invalid(request: Request, exc: BookingLinkInvalidError) -> JSONResponse:
+        return JSONResponse(BOOKING_LINK_INVALID_BODY, status_code=404)
+
+    # 409, not 403: the token is valid and the caller is who she says she is —
+    # the appointment's state is what refuses the action.
+    @app.exception_handler(BookingAlreadyStartedError)
+    async def _booking_already_started(
+        request: Request, exc: BookingAlreadyStartedError
+    ) -> JSONResponse:
+        return JSONResponse(BOOKING_ALREADY_STARTED_BODY, status_code=409)
+
+    @app.exception_handler(BookingCancelledError)
+    async def _booking_cancelled(request: Request, exc: BookingCancelledError) -> JSONResponse:
+        return JSONResponse(BOOKING_CANCELLED_BODY, status_code=409)
+
+    @app.exception_handler(BookingLookupThrottledError)
+    async def _booking_lookup_throttled(
+        request: Request, exc: BookingLookupThrottledError
+    ) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(boutique_router)
@@ -496,8 +561,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # GET-only, so the OTP mutations live in app/notifications/router.py. The
     # cross-router shadowing guard in test_storefront_api.py covers the pair.
     app.include_router(otp_router)
-    # The third /storefront sibling: the one route that writes a booking. Same
-    # anonymous posture as the OTP pair; asserted in test_booking_api.py.
+    # The third /storefront sibling: the booking create plus F16's three
+    # tokenized manage routes. Same anonymous posture as the OTP pair; asserted
+    # in test_booking_api.py and test_booking_manage_api.py.
     app.include_router(booking_router)
     return app
 
