@@ -40,7 +40,8 @@ class BookingsRepository:
         BookingService.create_booking. Oversell stays structurally impossible
         without it (the index is the backstop), but a writer that skips the
         lock races the read and hands honest customers a spurious 409. F15's
-        owner-side create and reschedule are the next callers."""
+        owner-side reschedule is the next caller; owner-side creation is out of
+        F15 (Interview Q6) and belongs to the owner-created-bookings spec."""
         row = Booking(
             tenant_id=tenant_id,
             customer_id=customer_id,
@@ -127,8 +128,8 @@ class BookingsRepository:
         self, session: AsyncSession, tenant_id: UUID, booking_id: UUID, *, token_hash: str
     ) -> Booking | None:
         """Mint-or-rotate. The backfill uses it to fill a pre-F16 row; F15's
-        edit-phone remedy uses it through `reissue_manage_token` to invalidate a
-        link that went to the wrong number."""
+        edit-phone remedy and its resend call this directly, inside their own
+        transaction (D8), to invalidate a link that went to the wrong number."""
         stmt = (
             update(Booking)
             .where(

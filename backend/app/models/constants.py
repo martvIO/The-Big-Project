@@ -55,8 +55,8 @@ class BookingStatus(StrEnum):
 
 
 class BookingCancelledBy(StrEnum):
-    # The DB pins this exact set (0010). 'owner' has no writer until F15 ships
-    # the console; the value exists now so E4 needs no second migration.
+    # The DB pins this exact set (0010). F15's owner cancel is the 'owner'
+    # writer; the value predates it so E4 needed no second migration.
     CUSTOMER = "customer"
     OWNER = "owner"
 

@@ -304,12 +304,18 @@ class BookingCommsService:
     async def reissue_manage_token(
         self, tenant: CommsTenant, *, booking_id: uuid.UUID
     ) -> str | None:
-        """Rotate the hash and resend the confirmation — F15's edit-phone remedy.
+        """Rotate the hash and resend the confirmation.
 
         Rotation is the point, not a side effect: the old link went to a number
         that turned out to be wrong, so it has to stop working. Any pending
         reminder is re-pointed at the new token in the same transaction, or it
         would send a link this call just invalidated.
+
+        Kept as a tested seam with no caller: D8 requires the mint-rotate-repoint
+        half to run inside F15's own transaction, and this bundles it with the
+        send across a `tenant_session` of its own — so it belongs to the surface
+        that can afford a second one. F15 calls the public `send_confirmation`
+        post-commit with the token it already minted, which is the same message.
         """
         async with tenant_session(self._session_factory, tenant.id) as session:
             booking = await self._bookings.by_id(session, tenant.id, booking_id)
