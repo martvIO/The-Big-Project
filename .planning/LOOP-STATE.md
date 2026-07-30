@@ -23,6 +23,10 @@ config:
   merge_gate: .claude/scripts/merge-gate.sh
 
 current: null                   # F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
+                                # Queue reconciled 2026-07-30 for the finish-the-project run:
+                                # 32 features reachable, 0 unreachable, 3 parked (F18/F29 external, F32 subsumed).
+                                # Verified by simulating the pick rule to exhaustion — deps absent from this
+                                # queue (F3-F14) are historical merged features, which is how the loop reads them.
 
 queue:
   # ---- cross-cutting ----
@@ -80,7 +84,13 @@ queue:
       (2) That ruling admits shift_manager on all ten F15 routes, so Risk 2 (the
       owner-attested phone re-points a live SMS control link with no OTP) now
       extends to shift managers — F15's D20 guard was one of its three bounds and
-      it is gone. Recorded in the spec, re-nagged below.
+      it is gone. Recorded in the spec.
+      RULED 2026-07-30: the user ACKNOWLEDGED this as shipped. Owner and
+      shift_manager may both correct a phone on their word alone, with no OTP on the
+      new number. The nag is cleared from user_actions and is NOT to be re-raised as
+      an open question. The F21 security audit is the scheduled re-check — it must
+      re-derive the risk from scratch rather than treat this acknowledgment as a
+      finding already closed.
   - id: F50
     slug: walk-in-bookings
     epic: E3-carveout
@@ -152,7 +162,74 @@ queue:
     note: >-
       Pre-decided #11: rows needing no production environment (dependency
       scanning, security headers, accessibility pass) run now; the rest wait
-      for staging, which waits on the domain purchase.
+      for staging, which waits on the domain purchase. The spec must therefore
+      SPLIT: build the non-production rows as this feature, and record the
+      production rows as a parked follow-up naming the domain as the blocker —
+      do not let the whole feature park on staging.
+      CARRIES ONE NAMED AUDIT ROW (from F15 Risk 2, acknowledged 2026-07-30):
+      owner AND shift_manager can re-point a live SMS control link by typing a
+      new phone, with no OTP. The user acknowledged this for the pilot; F21 must
+      re-derive it from the code at production scale rather than treat the
+      acknowledgment as a closed finding.
+
+  # ---- SMC console finish (moved here 2026-07-30: user ruled SMC before E5) ----
+  # F34 sits first so its prototype gate reaches the user on the very next
+  # iteration and its review runs on the user's clock while F51-F53 build.
+  - id: F34
+    slug: shift-board-checkin
+    epic: SMC
+    title: "Live board + check-in (5s poll)"
+    status: queued
+    deps: [F15, F31]
+    note: >-
+      SMC-5. Q2: NOVEL pattern — design gate requires a user-reviewed clickable
+      prototype; does NOT self-approve. Pre-decided #28: done at queue + dispatch,
+      no waiting-time analytics. Re-scoped by the SMC epic (2026-07-30): F32
+      subsumed (client 5s poll of GET /manage/bookings?date=, no version field,
+      pause on document.hidden); F33 no longer a dep (walk-ins become real
+      bookings via F50) though F33 itself is still built later per the 2026-07-30
+      ruling. Check-in = bookings.checked_in_at TIMESTAMPTZ column,
+      NOT a fifth status — the CHECK, both partial unique indexes and E4's
+      pending_payment widening stay untouched. Endpoints land on F15's owner router.
+      Sequencing note: spec + prototype are authored, then the entry PARKS on the
+      user's prototype review. It does not self-approve. Build resumes when the
+      user says so; F51-F53 fill the wait.
+  - id: F51
+    slug: staff-management
+    epic: SMC
+    title: "Staff management section (owner CRUD)"
+    status: queued
+    deps: [F31]
+    note: >-
+      SMC-2. Owner-only staff router (/manage/staff list/create/patch/soft-delete),
+      guards: no self-deactivate, never remove the last live owner. Role-filtered
+      nav table lands here. Deactivation is instantly effective (resolve_session
+      re-reads staff_users per request) — no session sweep, do not build one.
+      F31 left a pre-flight for this: test_migrations.py proves boutique_app can
+      write the role past 0011's CHECK under RLS, so the CRUD has a verified seam.
+  - id: F52
+    slug: kpi-dashboard
+    epic: SMC
+    title: "KPI dashboard (ops + customer)"
+    status: queued
+    deps: [F31]
+    note: >-
+      SMC-3. GET /manage/dashboard, Jerusalem window, both roles: bookings/week
+      (Sunday-start buckets), no-show + cancellation rates, busiest types,
+      new-vs-returning, repeat rate, FORWARD-ONLY 7-day slot utilization
+      (historical capacity doesn't exist; snapshot job is the recorded upgrade
+      path). No revenue until E4. Landing section for the console. No chart dep.
+  - id: F53
+    slug: customers-crm
+    epic: SMC
+    title: "Customers CRM + notes/tags + SMS log"
+    status: queued
+    deps: [F31]
+    note: >-
+      SMC-4. customers.notes TEXT + tags TEXT[] (migration), ILIKE search,
+      detail with booking history, read-only SMS log (message_log by phone OR
+      by the customer's booking ids — phone corrections orphan old rows).
+      Never expose provider_message_id/error. Audit logs field names only (PII).
 
   # ---- E5 growth ----
   - id: F22
@@ -263,48 +340,24 @@ queue:
     slug: f32-placeholder
     epic: E6
     title: "Live-update substrate (versioned board state + polling)"
-    status: queued
+    status: parked
     deps: [F31]
+    blocker: "subsumed into F34 (SMC epic ruling 3, 2026-07-30) — never build"
     note: >-
       Pre-decided #23: NO realtime vendor. ~5s refresh; Pusher only if the pilot proves it
       too slow. #25: events are versioned hints, server is truth.
       SUBSUMED into F34 by the SMC epic (2026-07-30): the board polls the F15
       bookings API wholesale; the version field is dropped (computing it costs
       the same as answering in full). Entry kept for the record, do not build.
-  - id: F51
-    slug: staff-management
-    epic: SMC
-    title: "Staff management section (owner CRUD)"
-    status: queued
-    deps: [F31]
-    note: >-
-      SMC-2. Owner-only staff router (/manage/staff list/create/patch/soft-delete),
-      guards: no self-deactivate, never remove the last live owner. Role-filtered
-      nav table lands here. Deactivation is instantly effective (resolve_session
-      re-reads staff_users per request) — no session sweep, do not build one.
-  - id: F52
-    slug: kpi-dashboard
-    epic: SMC
-    title: "KPI dashboard (ops + customer)"
-    status: queued
-    deps: [F31]
-    note: >-
-      SMC-3. GET /manage/dashboard, Jerusalem window, both roles: bookings/week
-      (Sunday-start buckets), no-show + cancellation rates, busiest types,
-      new-vs-returning, repeat rate, FORWARD-ONLY 7-day slot utilization
-      (historical capacity doesn't exist; snapshot job is the recorded upgrade
-      path). No revenue until E4. Landing section for the console. No chart dep.
-  - id: F53
-    slug: customers-crm
-    epic: SMC
-    title: "Customers CRM + notes/tags + SMS log"
-    status: queued
-    deps: [F31]
-    note: >-
-      SMC-4. customers.notes TEXT + tags TEXT[] (migration), ILIKE search,
-      detail with booking history, read-only SMS log (message_log by phone OR
-      by the customer's booking ids — phone corrections orphan old rows).
-      Never expose provider_message_id/error. Audit logs field names only (PII).
+      PARKED 2026-07-30 (program reconciliation) because it was still `queued`
+      with its only dep merged, so the loop's next pick would have been a feature
+      the epic ruled out. Every downstream dep list that named F32 (F35, F36,
+      F37, F44) was rewritten to name F34 or to drop it — leaving them pointing at
+      a never-merging entry would have stalled E7 and E9 permanently.
+  # F51, F52, F53 and F34 (the rest of the SMC console) were moved ABOVE the E5
+  # block on 2026-07-30 — the user's build-order ruling is "finish SMC first", and
+  # the loop picks the first eligible entry in FILE order, so priority has to be
+  # expressed as position. Do not re-sort this file by epic.
   - id: F33
     slug: f33-placeholder
     epic: E6
@@ -315,27 +368,20 @@ queue:
       Pre-decided #26: queue ticket by default, auto-deleted days after the visit, one
       opt-in marketing checkbox. #30: one static printed QR per boutique. Soft handoff
       with F20 on the consent column.
-  - id: F34
-    slug: shift-board-checkin
-    epic: SMC
-    title: "Live board + check-in (5s poll)"
-    status: queued
-    deps: [F15, F31]
-    note: >-
-      SMC-5. Q2: NOVEL pattern — design gate requires a user-reviewed clickable
-      prototype; does NOT self-approve. Pre-decided #28: done at queue + dispatch,
-      no waiting-time analytics. Re-scoped by the SMC epic (2026-07-30): F32
-      subsumed (client 5s poll of GET /manage/bookings?date=, no version field,
-      pause on document.hidden); F33 dropped as a dep (walk-ins become real
-      bookings via F50). Check-in = bookings.checked_in_at TIMESTAMPTZ column,
-      NOT a fifth status — the CHECK, both partial unique indexes and E4's
-      pending_payment widening stay untouched. Endpoints land on F15's owner router.
+      KEPT by user ruling 2026-07-30. The SMC epic contradicted itself — ruling 3 said
+      "F33 is not built" while ruling 2 said E6-proper's QR queue "stays queued" — and
+      the user resolved it in favour of building. Read the two as complementary, not
+      alternatives: F50 makes a walk-in the STAFF books a real booking; F33 is the
+      self-service QR at the door that captures a lead before anyone is free to serve
+      her, with a queue ticket that is NOT a booking. Builds after F20 (needs its
+      consent column). If F34's board makes the queue-ticket model redundant in
+      practice, say so then — do not silently skip it.
   - id: F35
     slug: f35-placeholder
     epic: E6
     title: "Staff in-app notification bell"
     status: queued
-    deps: [F31, F32, F34]
+    deps: [F31, F34]
     note: >-
       Pre-decided #32: in-app only. No browser push, no APNs/FCM.
 
@@ -345,7 +391,7 @@ queue:
     epic: E7
     title: "Fitting-room registry + staff/client/room/dress assignment"
     status: queued
-    deps: [F8, F13, F31, F32, F34]
+    deps: [F8, F13, F31, F34]
     note: >-
       Pre-decided #31: one active assignment per room via a partial unique index — same
       concurrency discipline as the F13 slot claim.
@@ -354,11 +400,11 @@ queue:
     epic: E7
     title: "SOS paging: role-targeted page, live alert, resolution"
     status: queued
-    deps: [F31, F32, F35, F36]
+    deps: [F31, F35, F36]
     note: >-
       Pre-decided #29: she picks a ROLE; every on-shift staffer with it is paged; first to
-      accept owns it. Rides F32's poll — the latency tradeoff is recorded in the epic's
-      Risks.
+      accept owns it. Rides F34's 5s poll (F32 subsumed) — the latency tradeoff is
+      recorded in the epic's Risks.
 
   # ---- E8 weekly scheduler & full HR ----
   - id: F38
@@ -422,7 +468,7 @@ queue:
     epic: E9
     title: "Live workshop board + owner throughput analytics"
     status: queued
-    deps: [F32, F41, F42]
+    deps: [F34, F41, F42]
     note: >-
       The one place pre-decided #23 authorises assuming a realtime vendor exists; the
       no-vendor fallback is recorded.
@@ -486,14 +532,19 @@ user_actions:                   # only the human can clear these; every report r
   - "File Meta business verification for WhatsApp (pre-decided #42) — long lead time, needed before F46"
   - "Get counsel to review the F16 SMS bodies and the F20 privacy default before either goes live"
   - "Find a human Arabic reviewer for legal/policy copy before F45 goes live"
-  - >-
-    ACKNOWLEDGE OR OVERTURN (F15, PR #24): the owner console can correct a
-    customer's phone on the owner's word alone — no OTP — and that rewrite
-    re-points her live SMS control link. The epic authorised it
-    (e3-booking-and-comms.md:60, 're-verify or owner-attested') so the loop did
-    not stop, but the SMC ruling then admitted shift_manager on every F15 route,
-    so this now sits with shift managers too. Spec Risk 2 carries the full
-    argument; the F21 audit is the scheduled re-check.
+
+in_run_gates:                   # block a specific feature; the user clears them mid-run
+  - "F20 ppl-compliance — spec awaiting Gate 1 (privacy/legal, Interview Q1)"
+  - "F17 gateway-port — spec awaiting Gate 1 (payments, Interview Q1)"
+  - "F19 deposit-booking-flow — spec written once F17 merges, then Gate 1 (payments)"
+  - "F48 billing — spec awaiting Gate 1 when E10 is reached (money surface)"
+  - "F34 shift-board-checkin — clickable prototype awaiting user review (Interview Q2 novel)"
+  - "F42 seamstress capacity matrix — clickable prototype awaiting user review (Q2 novel)"
+
+rulings_2026_07_30:             # taken in the finish-the-project planning session
+  - "Build order: finish the SMC console before E5. Queue reordered to match."
+  - "F33 QR check-in is KEPT (builds after F20), resolving the SMC epic's self-contradiction."
+  - "F15 phone-correction without OTP is ACKNOWLEDGED as shipped for owner AND shift_manager."
 ```
 
 ## Run report
