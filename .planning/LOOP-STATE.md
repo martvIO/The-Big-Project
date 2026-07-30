@@ -221,7 +221,8 @@ queue:
     slug: staff-roles-gating
     epic: SMC
     title: "Staff roles & default-deny manage gating"
-    status: building
+    status: pr-open
+    pr: 22
     deps: [F3, F5]
     note: >-
       Q11 OVERRIDDEN by user decision 2026-07-30 (Shift Manager Console epic,
