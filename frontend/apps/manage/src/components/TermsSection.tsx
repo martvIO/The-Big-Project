@@ -11,7 +11,14 @@ function formatDate(utcString: string): string {
   );
 }
 
-export function TermsSection() {
+// `role` is the signed-in staffer's, passed down from App's already-fetched
+// Staff. POST /manage/terms is one of the SMC epic's two owner-only surfaces,
+// while GET /manage/terms is not — so the nav item stays visible for both roles
+// and only the publish form goes. Without this a shift manager taps «שמירת גרסה
+// חדשה» and gets the generic 403, whose message is ENGLISH and which
+// errorMessage() surfaces verbatim into a Hebrew console.
+export function TermsSection({ role }: { role: string }) {
+  const isOwner = role === "owner";
   const [history, setHistory] = useState<TermsHistory | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [termsText, setTermsText] = useState("");
@@ -83,9 +90,16 @@ export function TermsSection() {
           <h3 className="text-base font-semibold text-warning-text">
             עדיין לא הוגדרה מדיניות ביטולים
           </h3>
+          {/* The blocker stays for BOTH roles — a shift manager must know the
+              boutique cannot accept bookings — but its action sentence swaps,
+              because for her the form below is not there to point at. Hardcoded
+              Hebrew, matching this file's existing style: F15's D16 rule that
+              these four sections are not retrofitted to i18n still stands. */}
           <p className="mt-1 text-sm text-warning-text">
-            לא ניתן לקבל הזמנות ללא מדיניות ביטולים פעילה — כל הזמנה מחייבת אישור תקנון. יש
-            ליצור גרסה ראשונה למטה כדי להשלים את הקמת הבוטיק.
+            לא ניתן לקבל הזמנות ללא מדיניות ביטולים פעילה — כל הזמנה מחייבת אישור תקנון.{" "}
+            {isOwner
+              ? "יש ליצור גרסה ראשונה למטה כדי להשלים את הקמת הבוטיק."
+              : "יש לפנות לבעלת הבוטיק כדי להגדיר מדיניות ביטולים."}
           </p>
         </div>
       )}
@@ -102,6 +116,7 @@ export function TermsSection() {
         </Card>
       )}
 
+      {isOwner && (
       <Card>
         <form onSubmit={(event) => void handleSubmit(event)} className="flex flex-col gap-4">
           <h3 className="text-sm font-semibold">יצירת גרסה חדשה</h3>
@@ -141,6 +156,7 @@ export function TermsSection() {
           </Button>
         </form>
       </Card>
+      )}
 
       {hasPolicy && (
         <Card>
