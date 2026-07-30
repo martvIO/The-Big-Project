@@ -21,11 +21,13 @@ Runs as boutique_app (`app_role_url`), the production principal — so _promote
 below doubles as proof that production CAN write 'shift_manager' past the new
 CHECK under forced RLS with only its GRANTs.
 
-Nothing in production writes staff_users.role: StaffUsersRepository.insert does
-not accept it and the column rides its server_default. _promote is therefore a
-test-only raw UPDATE, the same shape as test_auth_integration's soft-delete
-trick. F51 owns the repository writer; when it lands, _promote becomes a call to
-it rather than a hand-written statement.
+F51 landed the repository writer this module's earlier revision was waiting for:
+`StaffUsersRepository.insert` now takes a `role` kwarg and `update` writes it, so
+_promote is a real call rather than a hand-written statement. That matters beyond
+tidiness — a test-only UPDATE would exercise a path production does not have, and
+these four tests are the only place the role's DB round trip is asserted.
+_soft_delete stays a raw UPDATE on purpose: F51's own db suite covers the
+deactivate route, and this module's job is the gate, not the product's writer.
 
 Every test mints its own tenant slug and staff email: the Postgres container is
 session-scoped and nothing here truncates.
@@ -112,7 +114,7 @@ async def _promote(
     role: str,
 ) -> None:
     async with tenant_session(factory, tenant_id) as session:
-        await session.execute(update(StaffUser).where(StaffUser.id == staff_id).values(role=role))
+        await StaffUsersRepository().update(session, tenant_id, staff_id, role=role)
 
 
 async def _soft_delete(

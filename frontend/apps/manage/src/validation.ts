@@ -301,3 +301,63 @@ export function validateUploadFile(file: UploadCandidate): string | null {
   }
   return null;
 }
+
+// --- staff (Feature 51) ---
+//
+// Mirrors of backend/app/auth/schemas.py, and load-bearing beyond the usual
+// "immediate Hebrew instead of a round-trip 400": the staff forms render ONE
+// field-local Hebrew message for the single 400 the server can answer them (a
+// wrong current_password), and that is only honest because every other 400 those
+// forms could produce is caught right here. backend/tests/
+// test_frontend_constant_parity.py fails if any of these drifts.
+
+export const MIN_STAFF_PASSWORD_LENGTH = 10;
+export const MAX_PASSWORD_LENGTH = 4096;
+export const MAX_DISPLAY_NAME_LENGTH = 200;
+
+// The shape EmailStr rejects that the browser's own `type="email"` accepts:
+// WHATWG's control regex makes the dot in the domain OPTIONAL, so `dana@bella`
+// sails through native constraint validation and comes back as an ENGLISH
+// pydantic sentence in an RTL console. Deliberately not a fuller RFC 5322
+// attempt — the server stays the authority on what is deliverable; this only
+// has to cover the gap the browser leaves.
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+
+export interface StaffDraft {
+  display_name: string;
+  // null on the edit form: the address is not editable after creation (spec
+  // D5), so only the create form supplies one.
+  email: string | null;
+  // null on the edit form means "leave the password alone"; the create form
+  // supplies its own required-field message before calling this.
+  password: string | null;
+}
+
+export function validateStaffDraft(draft: StaffDraft): string | null {
+  if (!draft.display_name.trim()) {
+    return "יש להזין שם לתצוגה";
+  }
+  if (draft.display_name.length > MAX_DISPLAY_NAME_LENGTH) {
+    return "השם לתצוגה ארוך מדי";
+  }
+  if (draft.email !== null) {
+    if (!draft.email.trim()) {
+      return "יש להזין כתובת אימייל";
+    }
+    if (!EMAIL_SHAPE.test(draft.email.trim())) {
+      return "כתובת האימייל אינה תקינה";
+    }
+  }
+  // No password strength rule: 800-63B advises against composition rules —
+  // they push an owner toward `Boutique1!`, which is worse than the length
+  // floor alone.
+  if (draft.password !== null) {
+    if (draft.password.length < MIN_STAFF_PASSWORD_LENGTH) {
+      return `הסיסמה חייבת להכיל לפחות ${MIN_STAFF_PASSWORD_LENGTH} תווים`;
+    }
+    if (draft.password.length > MAX_PASSWORD_LENGTH) {
+      return "הסיסמה ארוכה מדי";
+    }
+  }
+  return null;
+}

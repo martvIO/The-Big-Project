@@ -6,9 +6,11 @@ import {
   formatIlsAmount,
   ilsFromAgorot,
   MAX_DEPOSIT_AMOUNT_AGOROT,
+  MAX_DISPLAY_NAME_LENGTH,
   MAX_DRESS_DESCRIPTION_LENGTH,
   MAX_DRESS_NAME_LENGTH,
   MAX_MEDIA_PER_DRESS,
+  MAX_PASSWORD_LENGTH,
   MAX_PRICE_AGOROT,
   MAX_SEARCH_LENGTH,
   MAX_SIZE_LABEL_LENGTH,
@@ -16,11 +18,13 @@ import {
   MAX_UPLOAD_BYTES,
   MAX_VARIANT_QUANTITY,
   MAX_VARIANTS_PER_DRESS,
+  MIN_STAFF_PASSWORD_LENGTH,
   MIN_UPLOAD_BYTES,
   normalizeSizeLabel,
   validateAppointmentType,
   validateDress,
   validateExceptionTimes,
+  validateStaffDraft,
   validateTerms,
   validateUploadFile,
   validateVariants,
@@ -362,5 +366,85 @@ describe("validateUploadFile", () => {
     expect(validateUploadFile(file("a.jpg", "image/jpeg", MIN_UPLOAD_BYTES - 1))).toBe(
       "הקובץ אינו תמונה תקינה.",
     );
+  });
+});
+
+// --- F51 staff bounds (mirrors backend/app/auth/schemas.py) ---
+
+describe("validateStaffDraft", () => {
+  const good = {
+    display_name: "דנה",
+    email: "dana@bella.example",
+    password: "a-long-enough-pw",
+  };
+
+  it("accepts a draft inside every bound", () => {
+    expect(validateStaffDraft(good)).toBeNull();
+  });
+
+  it("requires a display name", () => {
+    expect(validateStaffDraft({ ...good, display_name: "   " })).toBe("יש להזין שם לתצוגה");
+  });
+
+  it("rejects a display name over MAX_DISPLAY_NAME_LENGTH", () => {
+    expect(
+      validateStaffDraft({ ...good, display_name: "x".repeat(MAX_DISPLAY_NAME_LENGTH + 1) }),
+    ).toBe("השם לתצוגה ארוך מדי");
+    expect(
+      validateStaffDraft({ ...good, display_name: "x".repeat(MAX_DISPLAY_NAME_LENGTH) }),
+    ).toBeNull();
+  });
+
+  it("rejects a password under MIN_STAFF_PASSWORD_LENGTH", () => {
+    expect(
+      validateStaffDraft({ ...good, password: "x".repeat(MIN_STAFF_PASSWORD_LENGTH - 1) }),
+    ).toBe(`הסיסמה חייבת להכיל לפחות ${MIN_STAFF_PASSWORD_LENGTH} תווים`);
+    expect(
+      validateStaffDraft({ ...good, password: "x".repeat(MIN_STAFF_PASSWORD_LENGTH) }),
+    ).toBeNull();
+  });
+
+  it("rejects a password over MAX_PASSWORD_LENGTH", () => {
+    expect(validateStaffDraft({ ...good, password: "x".repeat(MAX_PASSWORD_LENGTH + 1) })).toBe(
+      "הסיסמה ארוכה מדי",
+    );
+  });
+
+  it("requires an email address on the create form", () => {
+    expect(validateStaffDraft({ ...good, email: "   " })).toBe("יש להזין כתובת אימייל");
+  });
+
+  // The gap the browser leaves: WHATWG's `type="email"` regex makes the dot in
+  // the domain optional, so `dana@bella` passes native constraint validation
+  // and pydantic's EmailStr then answers an ENGLISH sentence that the create
+  // form would render verbatim into the RTL console.
+  it("rejects a domain the server's EmailStr will reject", () => {
+    for (const address of ["dana@bella", "dana", "dana@", "@bella.example", "da na@b.example"]) {
+      expect(validateStaffDraft({ ...good, email: address })).toBe("כתובת האימייל אינה תקינה");
+    }
+  });
+
+  it("accepts the addresses EmailStr accepts", () => {
+    for (const address of ["dana@bella.example", "d.a+1@mail.co.il", "  dana@bella.example  "]) {
+      expect(validateStaffDraft({ ...good, email: address })).toBeNull();
+    }
+  });
+
+  // An omitted password is the "leave it unchanged" case on the edit form; the
+  // create form supplies its own required-field message before calling this.
+  it("accepts a null password", () => {
+    expect(validateStaffDraft({ ...good, password: null })).toBeNull();
+  });
+
+  // The edit form has no email field at all — the address is not editable (D5).
+  it("accepts a null email", () => {
+    expect(validateStaffDraft({ ...good, email: null })).toBeNull();
+  });
+
+  // No email validator and no strength rule, deliberately: the server's EmailStr
+  // is the authority, and spec D6 declines composition rules (800-63B advises
+  // against them and they push an owner toward `Boutique1!`).
+  it("has no opinion about the email or the password's composition", () => {
+    expect(validateStaffDraft({ ...good, password: "aaaaaaaaaaaa" })).toBeNull();
   });
 });

@@ -2,11 +2,22 @@
 
 Two frontend files restate backend bounds so the user sees an immediate Hebrew
 error instead of a round-trip 400: `frontend/apps/manage/src/validation.ts`
-mirrors `app/catalog/validation.py`, and
+mirrors `app/catalog/validation.py` **and `app/auth/schemas.py`**, and
 `frontend/apps/storefront/src/validation.ts` mirrors
 `app/booking/validation.py`. Nothing enforces that the copies agree, and the
 failure mode is silent: raise a cap on one side only and the client either
 rejects a legal value or lets an illegal one reach the API before it refuses.
+
+The staff row is additionally load-bearing for F51's plan C6: the staff forms
+render one field-local Hebrew message for the single 400 the server can answer
+them (a wrong `current_password`), and that is only honest because every OTHER
+400 those forms could produce is caught client-side first. Three of the four
+guards are the mirrored bounds below and this test is what keeps them in step;
+the fourth is `validateStaffDraft`'s email shape check, which mirrors no
+constant — `EmailStr` is an algorithm, not a number — and is pinned instead by
+`validation.test.ts` against the addresses verified here to round-trip. The
+2026-07-30 review found that fourth guard missing, which had made this
+paragraph's claim false.
 
 The files are read as **text** on purpose — this test must run in the fast,
 no-Docker, no-Node suite. A regex scrape is enough for literals.
@@ -23,6 +34,7 @@ from types import ModuleType
 
 import pytest
 
+from app.auth import schemas as auth_schemas
 from app.booking import validation as booking_validation
 from app.booking.validation import jerusalem_day_index
 from app.catalog import validation as catalog_validation
@@ -56,6 +68,16 @@ MIRRORS = (
             "MAX_SORT_ORDER",
         ),
         id="manage",
+    ),
+    pytest.param(
+        MANAGE_VALIDATION_TS,
+        auth_schemas,
+        (
+            "MIN_STAFF_PASSWORD_LENGTH",
+            "MAX_PASSWORD_LENGTH",
+            "MAX_DISPLAY_NAME_LENGTH",
+        ),
+        id="manage-staff",
     ),
     pytest.param(
         STOREFRONT_VALIDATION_TS,

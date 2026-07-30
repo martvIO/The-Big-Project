@@ -42,11 +42,21 @@ from app.tenancy.middleware import TenantContext
 
 TERMS_PUBLISH = ("POST", "/manage/terms")
 
+# Spelled as ROUTE-TABLE TEMPLATES, not concrete URLs: the walkers below read
+# route.path, so a literal /manage/staff/<uuid> would never match and
+# test_route_table_matches_the_permission_matrix would red-fail with "routes lock
+# shift_manager out but are not in OWNER_ONLY".
+STAFF_LIST = ("GET", "/manage/staff")
+STAFF_CREATE = ("POST", "/manage/staff")
+STAFF_PATCH = ("PATCH", "/manage/staff/{staff_id}")
+STAFF_DELETE = ("DELETE", "/manage/staff/{staff_id}")
+
 # The routes a shift_manager must NOT reach — the spec's permission matrix,
-# pinned. F51's staff router adds its rows here; adding an owner-only
+# pinned. F51's staff router added its four rows; adding an owner-only
 # tightening anywhere else fails test_route_table_matches_the_permission_matrix,
 # so narrowing the shift manager's surface stays a deliberate, reviewed act.
-OWNER_ONLY = {TERMS_PUBLISH}
+# The SMC epic's locked table names exactly these two surfaces.
+OWNER_ONLY = {TERMS_PUBLISH, STAFF_LIST, STAFF_CREATE, STAFF_PATCH, STAFF_DELETE}
 
 # The probe for "a role the enum does not know", shared verbatim by
 # test_catalog_api and test_migrations. Deliberately NOT 'reception' (or

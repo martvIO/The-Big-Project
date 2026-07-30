@@ -320,3 +320,65 @@ describe("owner booking endpoints", () => {
     expect(query.get("to")).toBe("2026-08-17");
   });
 });
+
+// --- F51 staff endpoints ---
+
+describe("staff endpoints", () => {
+  it("lists staff with a bare GET", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, []));
+    await api.listStaff();
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/staff");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET" });
+  });
+
+  it("creates a staff member with the snake_case wire body verbatim", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.createStaff({
+      email: "dana@bella.example",
+      display_name: "דנה",
+      role: "shift_manager",
+      password: "a-long-enough-pw",
+    });
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/manage/staff");
+    expect(init.method).toBe("POST");
+    // No case-conversion layer in this app: the body is the backend's snake_case
+    // spelling, sent as written.
+    expect(JSON.parse(init.body)).toEqual({
+      email: "dana@bella.example",
+      display_name: "דנה",
+      role: "shift_manager",
+      password: "a-long-enough-pw",
+    });
+  });
+
+  it("patches a staff member by id with only the fields it was given", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.updateStaff("11111111-2222-3333-4444-555555555555", { display_name: "דנה כהן" });
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/manage/staff/11111111-2222-3333-4444-555555555555");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({ display_name: "דנה כהן" });
+  });
+
+  it("encodes the id in the path", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.deactivateStaff("a b/c");
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/staff/a%20b%2Fc");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "DELETE" });
+  });
+
+  it("surfaces the three staff 409s as ApiError codes the section can map", async () => {
+    for (const code of ["DUPLICATE_EMAIL", "LAST_OWNER_REQUIRED", "STAFF_SELF_MANAGE"]) {
+      stubFetch(() => jsonResponse(409, { error: { code, message: "…" } }));
+      await expect(
+        api.createStaff({
+          email: "dana@bella.example",
+          display_name: "דנה",
+          role: "owner",
+          password: "a-long-enough-pw",
+        }),
+      ).rejects.toMatchObject({ status: 409, code });
+    }
+  });
+});

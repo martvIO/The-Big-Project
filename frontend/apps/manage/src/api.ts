@@ -352,6 +352,41 @@ function mediaPath(dressId: string, mediaId: string): string {
   return `${dressPath(dressId)}/media/${encodeURIComponent(mediaId)}`;
 }
 
+// --- staff wire types (mirror backend/app/auth/schemas.py) ---
+
+export type StaffRole = "owner" | "shift_manager";
+
+export interface StaffMember {
+  id: string;
+  email: string;
+  display_name: string;
+  role: StaffRole;
+  created_at: string;
+}
+
+export interface CreateStaffRequest {
+  email: string;
+  display_name: string;
+  role: StaffRole;
+  password: string;
+}
+
+// Every field optional. `email` is absent on purpose: the unique index is
+// partial on deleted_at IS NULL, so a typo'd or changed address is fixed by
+// deactivate + re-create, and a login identity must not move under a live
+// session. `current_password` is required only when the acting owner changes her
+// OWN password.
+export interface UpdateStaffRequest {
+  display_name?: string;
+  role?: StaffRole;
+  password?: string;
+  current_password?: string;
+}
+
+function staffPath(staffId: string): string {
+  return `/manage/staff/${encodeURIComponent(staffId)}`;
+}
+
 // --- endpoints ---
 
 export const api = {
@@ -505,5 +540,22 @@ export const api = {
   listManageSlots(from: string, to: string): Promise<OwnerSlotListResponse> {
     const params = new URLSearchParams({ from, to });
     return apiFetch(`/manage/slots?${params.toString()}`);
+  },
+
+  // Owner-only, all four: the server's RoleGate is the control, and a shift
+  // manager who reached these would get the generic 403.
+  listStaff(): Promise<StaffMember[]> {
+    return apiFetch("/manage/staff");
+  },
+  createStaff(body: CreateStaffRequest): Promise<StaffMember> {
+    return apiFetch("/manage/staff", { method: "POST", body });
+  },
+  // Partial by design — an omitted key means "unchanged", and the server reads
+  // an all-unchanged patch as a no-op that writes no audit row.
+  updateStaff(staffId: string, body: UpdateStaffRequest): Promise<StaffMember> {
+    return apiFetch(staffPath(staffId), { method: "PATCH", body });
+  },
+  deactivateStaff(staffId: string): Promise<OkResponse> {
+    return apiFetch(staffPath(staffId), { method: "DELETE" });
   },
 };
