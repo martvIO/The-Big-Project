@@ -64,6 +64,12 @@ export type { ContactPanelProps, ContactPanelLabels } from "./components/Contact
 export { A11yMenu, A11yStatementLink } from "./components/A11yMenu";
 export type { A11yMenuProps, A11yMenuControls, A11yStatementLinkProps } from "./components/A11yMenu";
 
+// Shared by both apps: the storefront's booking flow and the console's
+// reschedule dialog show the SAME grid from the same materializer, so the
+// fieldset/legend/radio contract lives in one place rather than two.
+export { SlotPicker } from "./components/SlotPicker";
+export type { SlotPickerProps, SlotPickerLabels, SlotTime } from "./components/SlotPicker";
+
 // Manage-console composites
 export { ConsoleShell } from "./components/ConsoleShell";
 export type { ConsoleShellProps, ConsoleNavItem } from "./components/ConsoleShell";

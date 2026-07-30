@@ -1,7 +1,7 @@
 import { useId } from "react";
 import type { Ref } from "react";
-import { useTranslation } from "react-i18next";
-import { DateField, cn } from "@boutique/ui";
+import { DateField } from "./DateTimeFields";
+import { cn } from "../lib/styles";
 
 export interface SlotTime {
   // The slot's raw starts_at instant — what the booking POST carries.
@@ -10,7 +10,17 @@ export interface SlotTime {
   label: string;
 }
 
+export interface SlotPickerLabels {
+  pickDate: string;
+  pickTime: string;
+  noSlots: string;
+}
+
 export interface SlotPickerProps {
+  // Required, never optional-with-a-default: this package holds no Hebrew
+  // (Price.tsx:7, Gallery.tsx:12, BoutiqueHeader.tsx:7) and has no i18next
+  // dependency, so a default would be the first one.
+  labels: SlotPickerLabels;
   date: string;
   min?: string;
   max?: string;
@@ -36,6 +46,7 @@ const chipClass = cn(
 // ONE fetch covers the whole window; changing the date filters in memory rather
 // than spending fourteen round trips against a throttled read budget.
 export function SlotPicker({
+  labels,
   date,
   min,
   max,
@@ -46,13 +57,12 @@ export function SlotPicker({
   error,
   ref,
 }: SlotPickerProps) {
-  const { t } = useTranslation();
   const groupId = useId();
 
   return (
     <div className="flex flex-col gap-6">
       <DateField
-        label={t("booking.pickDate")}
+        label={labels.pickDate}
         // A date control is a numeric run.
         dir="ltr"
         value={date}
@@ -73,14 +83,14 @@ export function SlotPicker({
       )}
 
       <fieldset className="border-0 p-0">
-        <legend className="mb-2 text-sm font-semibold text-ink">{t("booking.pickTime")}</legend>
+        <legend className="mb-2 text-sm font-semibold text-ink">{labels.pickTime}</legend>
         {times.length === 0 ? (
           // The state every new tenant ships in, so it reads as a fact, not a
           // fault: no icon, no border, no danger colour, no retry — there is
           // nothing to retry. Whole-window-empty and this-date-empty are the
           // same block and the same string.
           <p className="mx-auto max-w-[40ch] py-8 text-center text-base text-ink-muted">
-            {t("booking.noSlots")}
+            {labels.noSlots}
           </p>
         ) : (
           // ONE auto-fill rule, no breakpoints: the column count is a
