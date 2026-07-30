@@ -8,7 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.routes.health import router as health_router
-from app.auth.dependencies import NotAuthenticatedError
+from app.auth.dependencies import NotAuthenticatedError, NotAuthorizedError
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.router import RateLimitedError
 from app.auth.router import router as auth_router
@@ -92,6 +92,11 @@ TOO_MANY_ATTEMPTS_BODY = {
 }
 NOT_AUTHENTICATED_BODY = {
     "error": {"code": "NOT_AUTHENTICATED", "message": "Authentication required."}
+}
+# ONE body for every unadmitted role — naming the required role would tell a
+# probe which roles exist.
+NOT_AUTHORIZED_BODY = {
+    "error": {"code": "NOT_AUTHORIZED", "message": "This action is not available for your account."}
 }
 NOT_FOUND_BODY = {"error": {"code": "NOT_FOUND", "message": "Resource not found."}}
 DUPLICATE_NAME_BODY = {
@@ -388,6 +393,12 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     @app.exception_handler(NotAuthenticatedError)
     async def _not_authenticated(request: Request, exc: NotAuthenticatedError) -> JSONResponse:
         return JSONResponse(NOT_AUTHENTICATED_BODY, status_code=401)
+
+    # 403, not 401: the session is live and the staffer is who she says she is —
+    # her role is what refuses the action.
+    @app.exception_handler(NotAuthorizedError)
+    async def _not_authorized(request: Request, exc: NotAuthorizedError) -> JSONResponse:
+        return JSONResponse(NOT_AUTHORIZED_BODY, status_code=403)
 
     @app.exception_handler(RequestValidationError)
     async def _request_validation(request: Request, exc: RequestValidationError) -> JSONResponse:

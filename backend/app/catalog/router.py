@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-from app.auth.dependencies import get_current_staff
+from app.auth.dependencies import get_current_staff, require_role
 from app.auth.service import StaffContext
 from app.catalog.schemas import (
     CreateDressRequest,
@@ -32,6 +32,7 @@ from app.catalog.validation import (
     MAX_SEARCH_LENGTH,
     VariantInput,
 )
+from app.models.constants import StaffRole
 from app.schemas import OkResponse
 from app.storage.base import MediaNotConfiguredError, MediaStorage
 from app.tenancy.middleware import get_current_tenant
@@ -53,7 +54,13 @@ def _no_store(response: Response) -> None:
     response.headers["cache-control"] = NO_STORE
 
 
-router = APIRouter(prefix="/manage", dependencies=[Depends(_no_store)])
+router = APIRouter(
+    prefix="/manage",
+    dependencies=[
+        Depends(_no_store),
+        Depends(require_role(StaffRole.OWNER, StaffRole.SHIFT_MANAGER)),
+    ],
+)
 
 Staff = Annotated[StaffContext, Depends(get_current_staff)]
 

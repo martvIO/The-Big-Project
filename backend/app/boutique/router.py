@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.auth.dependencies import get_current_staff
+from app.auth.dependencies import get_current_staff, require_role
 from app.auth.service import StaffContext
 from app.boutique.schemas import (
     AppointmentTypeResponse,
@@ -23,9 +23,15 @@ from app.boutique.schemas import (
 )
 from app.boutique.service import TERMS_HISTORY_DEFAULT_LIMIT, BoutiqueSettingsService
 from app.boutique.validation import WeeklyRuleInput
+from app.models.constants import StaffRole
 from app.tenancy.middleware import get_current_tenant
 
-router = APIRouter(prefix="/manage")
+# Router-level gate = the default posture for every route added here; the one
+# owner-only route (terms publishing) tightens per-route below. Both gates run.
+router = APIRouter(
+    prefix="/manage",
+    dependencies=[Depends(require_role(StaffRole.OWNER, StaffRole.SHIFT_MANAGER))],
+)
 
 Staff = Annotated[StaffContext, Depends(get_current_staff)]
 
@@ -204,7 +210,9 @@ async def get_terms_history(
     )
 
 
-@router.post("/terms")
+# Owner-only tightening (SMC ruling): publishing a new policy version binds
+# every future booking — the shift manager reads terms, never writes them.
+@router.post("/terms", dependencies=[Depends(require_role(StaffRole.OWNER))])
 async def create_terms_version(
     request: Request, staff: Staff, service: Service, body: CreateTermsRequest
 ) -> TermsVersionResponse:
