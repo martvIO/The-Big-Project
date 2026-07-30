@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.booking.comms import reminder_send_after
-from app.booking.slots import Slot, materialize_slots
+from app.booking.slots_io import offered_slot
 from app.booking.tokens import manage_token_hash, mint_manage_token
 from app.booking.validation import (
     SLOT_WINDOW_MAX_DAYS,
@@ -47,7 +47,7 @@ from app.models.booking import Booking
 from app.models.constants import ScheduledMessageKind
 from app.notifications.service import OtpService
 from app.notifications.validation import normalize_israeli_mobile
-from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock
+from app.storefront.validation import Clock
 
 # Past the grid's own publishable ceiling, so rejecting anything beyond it can
 # never cost a real booking. TWO days of slack, not one: the ceiling is a
@@ -297,7 +297,15 @@ class BookingService:
 
             # 5. Re-materialize the grid and assert the instant is offered —
             #    fed the REAL booked counts, so this also enforces capacity.
-            slot = await self._offered_slot(session, tenant_id, starts_at=starts_at, now=now)
+            slot = await offered_slot(
+                session,
+                tenant_id=tenant_id,
+                starts_at=starts_at,
+                now=now,
+                rules=self._rules,
+                exceptions=self._exceptions,
+                bookings=self._bookings,
+            )
             if slot is None:
                 raise SlotUnavailableError
 
@@ -358,42 +366,3 @@ class BookingService:
                     manage_token=manage_token,
                 )
             return BookingClaim(booking=booking, created=True, manage_token=manage_token)
-
-    async def _offered_slot(
-        self,
-        session: AsyncSession,
-        tenant_id: uuid.UUID,
-        *,
-        starts_at: datetime.datetime,
-        now: datetime.datetime,
-    ) -> Slot | None:
-        """The requested instant as the grid currently offers it, or None.
-
-        Not a formality: without this a caller books 03:00 on a closed Saturday
-        by posting an arbitrary timestamp. One boutique-calendar day is enough —
-        a slot's date in the boutique's own zone is the only date whose rules
-        and exceptions can produce it."""
-        wanted = starts_at.astimezone(datetime.UTC)
-        target_date = wanted.astimezone(BOUTIQUE_TIMEZONE).date()
-        rules = await self._rules.list_active(session, tenant_id)
-        exceptions = await self._exceptions.list_active(
-            session, tenant_id, on_or_after=target_date, on_or_before=target_date
-        )
-        day_start = datetime.datetime.combine(
-            target_date, datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
-        ).astimezone(datetime.UTC)
-        day_end = datetime.datetime.combine(
-            target_date + datetime.timedelta(days=1), datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
-        ).astimezone(datetime.UTC)
-        booked = await self._bookings.count_by_start(
-            session, tenant_id, from_instant=day_start, until_instant=day_end
-        )
-        slots = materialize_slots(
-            rules=rules,
-            exceptions=exceptions,
-            booked=booked,
-            window_start=target_date,
-            window_end=target_date,
-            now=now,
-        )
-        return next((slot for slot in slots if slot.starts_at == wanted), None)

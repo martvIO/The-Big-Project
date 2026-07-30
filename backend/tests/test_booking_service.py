@@ -1047,7 +1047,7 @@ async def test_beyond_the_publishable_window_is_refused(app_role_url: str) -> No
     """A day the boutique never publishes is not bookable, even though the
     engine would happily materialize it.
 
-    `_offered_slot` re-materializes the requested date on demand, so without
+    `offered_slot` re-materializes the requested date on demand, so without
     the horizon guard a caller could post the SAME weekday 91 days out — the
     weekly rule opens it, every other check passes — and claim an appointment
     at a time `/storefront/slots` (clamped to SLOT_WINDOW_MAX_DAYS) would never
