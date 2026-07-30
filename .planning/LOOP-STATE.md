@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F16
+current: F15
 
 queue:
   # ---- cross-cutting ----
@@ -39,8 +39,7 @@ queue:
     slug: booking-comms
     epic: E3
     title: Booking comms lifecycle
-    status: pr-open
-    branch: feature/booking-comms
+    status: merged
     pr: 21
     deps: [F13]
     attempts: 1

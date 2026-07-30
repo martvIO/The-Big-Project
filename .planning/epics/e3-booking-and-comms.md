@@ -36,7 +36,7 @@ This is the product's transactional core: turn the browse-only storefront into a
 | 13 | Booking core API | **done** (PR #18) | [spec](../specs/booking-core.md) | [plan](../plans/booking-core.md) | E2 #7, #11, #12 |
 | 14 | Storefront booking UI | **done** (PR #19) | [spec](../specs/storefront-booking-ui.md) · [design](../design/screens/booking/booking.md) · [copy](../design/screens/booking/copy.md) | [plan](../plans/storefront-booking-ui.md) | E2 #9, #10 · #11, #12, #13 |
 | 15 | Owner booking management | todo — **spec'd third**, after #16 | — | — | #13 |
-| 16 | Booking comms lifecycle | **Gate 1 approved 2026-07-29** (D1–D10) — design gate for the manage page next | [spec](../specs/booking-comms.md) | — | #13 |
+| 16 | Booking comms lifecycle | done (PR #21) | `booking-comms.md` | `booking-comms.md` | #13 |
 
 **Remaining order is #14 → #16 → #15, and the ordering is deliberate.** #16 is sequenced ahead of #15 because the day #14 merges, a real customer completes a booking and hears silence — that is a customer-facing hole, where #15's absence is only an owner inconvenience the owner can work around by reading the database or phoning the bride back. #14's D6 makes the confirmation screen carry the whole promise in the meantime, and one string on it changes when #16 lands.
 
