@@ -22,7 +22,8 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F34                    # floor program iteration 1 of 10, started 2026-07-31.
+current: null                   # floor program: F34 MERGED (PR #32) 2026-07-31, iteration 1 of 10 done.
+                                # Next pick is F57 (floor-staff-roles) — F34's merge unblocked it.
                                 # F56 merged (PR #30), F52 merged (PR #28) 2026-07-31.
                                 # RE-PRIORITISED 2026-07-31: the FLOOR-MANAGEMENT PROGRAM now sits at the top of
                                 # `queue:` and preempts everything. Next pick is F34, then F57, F36, F33, F58,
@@ -48,10 +49,54 @@ queue:
     slug: shift-board-checkin
     epic: SMC
     title: "Live board + check-in (5s poll)"
-    status: building
+    status: merged
+    pr: 32
+    attempts: 1
     deps: [F15, F31]
     spec: .planning/specs/shift-board-checkin.md
     prototype: .planning/design/screens/shift-board/prototype.html
+    shipped: >-
+      SHIPPED as PR #32, merged 2026-07-31. ALL THREE GATING JOBS GREEN ON THE
+      FIRST CI RUN — unusual for a feature whose headline tests are db-marked
+      and therefore debut on CI. That is not luck: the builder found Postgres 16
+      installed locally, stood up a throwaway cluster outside the repo, ran all
+      14 migrations and executed every db-marked test before pushing. It bought
+      three things — the three pinned definitions in test_migrations.py are
+      CAPTURED rather than guessed (Postgres deparses IN (...) to = ANY
+      (ARRAY[...]) and reorders index predicates, so transcribing them from
+      0008/0009 would have pinned nothing and reddened CI), one real test bug
+      was found and fixed locally (insert() takes no status kwarg), and two
+      mutation checks proved the concurrency tests are not vacuous (removing
+      populate_existing=True turns both forced-interleave tests red and nothing
+      else). Worth repeating for F36/F58, whose races are harder than this one.
+      Migration is 0014 — the spec's D2 rule to resolve the revision id from
+      `alembic heads` at build time rather than hardcoding 0012 paid off exactly
+      as predicted: 0012_payments and 0013_lemonsqueezy_provider landed in the
+      window the spec expected to be a design-gate park.
+      REVIEW: five lenses, every finding judged by an independent skeptic — 21
+      findings, 6 survived, deduplicating to 4 defects, ALL in BoardSection.tsx,
+      all fixed in one round (0c7015a) and each verified to fail on the pre-fix
+      source. THE TWO BLOCKERS ARE WORTH A LATER READER'S TIME.
+      (1) Focus fell to <body> on a FAILED check-in. @boutique/ui's Button is
+      disabled={disabled || loading} and both board controls pass loading={busy},
+      so the browser blurs the tapped control the instant the request starts. The
+      success path compensated and carried a comment naming the hazard; the catch
+      path restored nothing. WCAG 2.4.3 Level A, i.e. legal here. This is the
+      SECOND time this exact bug class shipped in this repo (F56 was the first,
+      on the storefront) and the second time axe passed straight over it — axe
+      cannot see a focus move that never happened.
+      (2) The poll loop SURVIVED UNMOUNT. Cleanup cancelled the armed timer, but
+      the arming sites are load()'s and mutate()'s .finally(), which run AFTER
+      cleanup when a request was in flight, and schedule() gates only on
+      runningRef — still permissive on a dead component. Nothing in the cycle
+      touches React state, so unmount could not break it. Switching nav sections
+      mid-request leaked a permanent 5s request loop, one per nav-away, for the
+      rest of a 12-hour session. The fix is one line, and it is what makes the
+      spec's own claim — "at most one poll in flight per tab BY CONSTRUCTION" —
+      actually true rather than aspirational. Any later feature copying D4's
+      mechanisms (F57, F37, F41, F59 all will) must copy this line with them.
+      Gates: backend 1226 passed / 362 deselected, frontend 1244 across 49 files
+      (manage 407, +59 in BoardSection.test.tsx), e2e 69 passed, zero axe.
     note: >-
       SMC-5. DESIGN GATE SELF-APPROVED by user ruling 2026-07-31 — this entry no
       longer parks; build from the finished spec. The spec's design-gate section
