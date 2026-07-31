@@ -26,6 +26,27 @@ deposit is an arbitrary sum. `checkout_data.custom_price` overrides the
 variant's price, so one placeholder variant serves every amount and its id is
 simply another declared credential field (D5) — which is why F18 needs no
 frontend change.
+
+READ THIS BEFORE WIRING THE WEBHOOK ROUTE (F19). `provider_session_id` is NOT
+the same value on both halves of this adapter, and it cannot be:
+
+  create_session  -> the LS CHECKOUT id (`data.id`)
+  verify_webhook  -> the REFERENCE we round-tripped through
+                     `checkout_data.custom` -> `meta.custom_data`
+
+An LS ORDER carries no checkout id, so the checkout id is unrecoverable from
+the webhook; `custom` is the only field LS echoes back, and it is fixed at
+create time, before the checkout id exists. Both spellings are what F18 was
+specified to return, and they are individually right — but F17's
+`open_deposit` stores `PaymentSession.provider_session_id` while
+`settle_from_webhook` looks the row up with `by_provider_session_id(session_id
+= event.provider_session_id)`, so composing them as they stand matches no row.
+
+F19 has to close this, one of two ways, and either is a one-line change:
+store the reference (`str(booking_id)`, which `open_deposit` already passes)
+in `payments.provider_session_id`, or resolve the settle path by booking id
+instead. Nothing here should be "fixed" in isolation — changing one half
+alone silently breaks the other.
 """
 
 import datetime

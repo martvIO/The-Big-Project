@@ -428,6 +428,35 @@ async def test_create_session_reports_a_confirmed_test_checkout_it_cannot_read_a
         )
 
 
+async def test_the_two_halves_spell_provider_session_id_differently() -> None:
+    """PINS the seam the module docstring opens with, so F19 meets it as a
+    failing expectation rather than as a webhook that matches no row.
+
+    create_session returns the LS CHECKOUT id; verify_webhook returns the
+    REFERENCE. That is not sloppiness — an LS order carries no checkout id, and
+    `checkout_data.custom` (the only field LS echoes back) is fixed before the
+    checkout id exists, so the checkout id is unrecoverable from a webhook.
+
+    F17's open_deposit stores the first and settle_from_webhook looks up by the
+    second, so F19 must reconcile them. This test fails the moment either half
+    changes, which is the point: fixing one alone silently breaks the other."""
+    transport, _ = _mock(201, _checkout_payload())
+
+    session = await _gateway(transport).create_session(
+        _credentials(),
+        amount_agorot=AMOUNT_AGOROT,
+        reference=REFERENCE,
+        return_url=RETURN_URL,
+        expires_in=900,
+    )
+    body = _webhook_body()
+    event = LemonSqueezyGateway().verify_webhook(_credentials(), body=body, signature=_sign(body))
+
+    assert session.provider_session_id == CHECKOUT_ID
+    assert event.provider_session_id == REFERENCE
+    assert session.provider_session_id != event.provider_session_id
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
