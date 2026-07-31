@@ -102,6 +102,7 @@ def _row_fields(booking: Booking, customer: Customer | None) -> dict[str, object
         "starts_at": booking.starts_at,
         "status": booking.status,
         "attendance_confirmed_at": booking.attendance_confirmed_at,
+        "checked_in_at": booking.checked_in_at,
         # A soft-deleted customer renders blank rather than 500-ing the day
         # list: the booking is still the boutique's appointment either way.
         "customer_name": customer.name if customer is not None else "",
@@ -233,6 +234,45 @@ async def mark_completed(
 ) -> OwnerBookingDetail:
     tenant = get_current_tenant(request)
     result = await service.complete(tenant.id, booking_id, staff=staff)
+    return await _detail_of(service, tenant.id, result.booking)
+
+
+# F34's pair, and they are two verbs rather than one `/check-in` carrying
+# `{"checked_in": bool}` for the reason the four above are four: two guards
+# (check-in requires `status = 'confirmed'`, the undo requires nothing), two
+# audit actions and two `details` shapes. One handler would collapse all of that
+# into a body of ifs.
+#
+# Both send nothing — check-in texts nobody, the `no-show`/`complete`/`confirm`
+# row of F15's post-commit table — and neither takes a request body, so neither
+# needs a ForbidExtraModel. Both inherit `_no_store` and the router-level
+# RoleGate by construction.
+
+
+@router.post("/bookings/{booking_id}/check-in")
+async def check_in_booking(
+    request: Request, staff: Owner, service: Service, booking_id: uuid.UUID
+) -> OwnerBookingDetail:
+    """Record that this person is physically in the boutique.
+
+    A repeat tap is a 200 carrying the FIRST staffer's timestamp, not an error:
+    the outcome the caller wanted is the outcome that holds. The only refusal is
+    a booking that is no longer `confirmed`, which rides F15's
+    BOOKING_TRANSITION_INVALID — F34 invents no error code."""
+    tenant = get_current_tenant(request)
+    result = await service.check_in(tenant.id, booking_id, staff=staff)
+    return await _detail_of(service, tenant.id, result.booking)
+
+
+@router.post("/bookings/{booking_id}/undo-check-in")
+async def undo_booking_check_in(
+    request: Request, staff: Owner, service: Service, booking_id: uuid.UUID
+) -> OwnerBookingDetail:
+    """The undo of a mis-tapped check-in, with no status guard and no clock
+    bound — so its only failure is a 404. A bride checked in and then cancelled
+    must still have the mis-tap undoable (D5)."""
+    tenant = get_current_tenant(request)
+    result = await service.undo_check_in(tenant.id, booking_id, staff=staff)
     return await _detail_of(service, tenant.id, result.booking)
 
 

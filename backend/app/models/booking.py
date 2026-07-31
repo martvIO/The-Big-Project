@@ -33,6 +33,16 @@ class Booking(StandardColumns, Base):
     attendance_confirmed_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    # When a staff member recorded that this person is physically in the boutique
+    # (F34's live shift board). NULL = not arrived (yet), and it is the only
+    # sentinel. NOT a fifth BookingStatus (spec D1): status says what became of
+    # the appointment, this says whether she is in the building, and the two are
+    # true at once — a bride is checked in and then `completed`.
+    #
+    # Emphatically NOT `attendance_confirmed_at` above: that one is the BRIDE's,
+    # written through her own tokenized link, and F15's /confirm refuses to touch
+    # it in writing. A staffer's tap does not get to speak for her.
+    checked_in_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     # A pointer into the append-only terms_versions table, never a copy of the
     # text: the number is permanent evidence at a fraction of the size.
     terms_version_accepted: Mapped[int] = mapped_column(Integer, nullable=False)

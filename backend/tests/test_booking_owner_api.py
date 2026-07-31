@@ -85,6 +85,8 @@ COMPLETE_PATH = f"{DETAIL_PATH}/complete"
 RESCHEDULE_PATH = f"{DETAIL_PATH}/reschedule"
 PHONE_PATH = f"{DETAIL_PATH}/phone"
 RESEND_PATH = f"{DETAIL_PATH}/resend-link"
+CHECK_IN_PATH = f"{DETAIL_PATH}/check-in"
+UNDO_CHECK_IN_PATH = f"{DETAIL_PATH}/undo-check-in"
 SLOTS_PATH = "/manage/slots"
 
 # Every /manage route F15 adds, with a body that passes schema validation — so a
@@ -99,6 +101,11 @@ ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", RESCHEDULE_PATH, RESCHEDULE_BODY),
     ("POST", PHONE_PATH, PHONE_BODY),
     ("POST", RESEND_PATH, None),
+    # F34's two. Adding them here automatically extends the 401 walk, both
+    # role walks, the wiring walk and the no-store parametrization — five
+    # shipped tests that now cover the new routes with nothing new written.
+    ("POST", CHECK_IN_PATH, None),
+    ("POST", UNDO_CHECK_IN_PATH, None),
     ("GET", SLOTS_PATH, None),
 ]
 
@@ -239,6 +246,18 @@ class FakeOwnerBookingService:
         self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
     ) -> OwnerMutation:
         return self._mutation("no_show", tenant_id=tenant_id, booking_id=booking_id, staff=staff)
+
+    async def check_in(
+        self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
+    ) -> OwnerMutation:
+        return self._mutation("check_in", tenant_id=tenant_id, booking_id=booking_id, staff=staff)
+
+    async def undo_check_in(
+        self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
+    ) -> OwnerMutation:
+        return self._mutation(
+            "undo_check_in", tenant_id=tenant_id, booking_id=booking_id, staff=staff
+        )
 
     async def complete(
         self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
@@ -425,6 +444,7 @@ def test_the_list_applies_the_documented_defaults() -> None:
             "starts_at": "2026-08-02T07:00:00Z",
             "status": "confirmed",
             "attendance_confirmed_at": None,
+            "checked_in_at": None,
             "customer_name": "נועה",
             "appointment_type_name": "מדידת שמלה",
             "dress_name": "Aurora",
@@ -504,6 +524,7 @@ def test_the_detail_carries_the_phone_the_notes_and_the_terms_evidence() -> None
         "starts_at": "2026-08-02T07:00:00Z",
         "status": "confirmed",
         "attendance_confirmed_at": None,
+        "checked_in_at": None,
         "customer_name": "נועה",
         "appointment_type_name": "מדידת שמלה",
         "dress_name": "Aurora",
@@ -559,6 +580,13 @@ def test_the_detail_renders_the_cancel_evidence() -> None:
         pytest.param(CANCEL_PATH, "cancel", id="cancel"),
         pytest.param(NO_SHOW_PATH, "no_show", id="no-show"),
         pytest.param(COMPLETE_PATH, "complete", id="complete"),
+        # F34's pair. Two verbs and not one /check-in carrying {"checked_in":
+        # bool}: two guards (check-in requires status = 'confirmed', the undo
+        # requires nothing), two audit actions and two `details` shapes — one
+        # handler would collapse all of it into a body of ifs, which is the
+        # argument D7 already made against a single PATCH carrying `status`.
+        pytest.param(CHECK_IN_PATH, "check_in", id="check-in"),
+        pytest.param(UNDO_CHECK_IN_PATH, "undo_check_in", id="undo-check-in"),
     ],
 )
 def test_each_transition_verb_has_its_own_handler(path: str, method_name: str) -> None:
@@ -795,6 +823,31 @@ ERROR_CASES: list[ErrorCase] = [
         BookingTransitionInvalidError("confirmed -> no_show before starts_at"),
         409,
         "BOOKING_TRANSITION_INVALID",
+    ),
+    # F34 invents NO error code and NO handler: check-in on a booking that is
+    # not confirmed rides F15's BOOKING_TRANSITION_INVALID, whose docstring
+    # already scopes itself to this class of refusal, and an unknown id rides
+    # DomainNotFoundError. SPEC_ERROR_CODES is asserted by set equality and
+    # stays unchanged — which is a real result and not an accident of laziness.
+    ErrorCase(
+        "check_in",
+        "POST",
+        CHECK_IN_PATH,
+        None,
+        BookingTransitionInvalidError("cancelled -> checked_in"),
+        409,
+        "BOOKING_TRANSITION_INVALID",
+    ),
+    ErrorCase("check_in", "POST", CHECK_IN_PATH, None, BookingNotFoundError(), 404, "NOT_FOUND"),
+    # The undo has NO status guard at all (spec D5), so 404 is its ONLY failure.
+    ErrorCase(
+        "undo_check_in",
+        "POST",
+        UNDO_CHECK_IN_PATH,
+        None,
+        BookingNotFoundError(),
+        404,
+        "NOT_FOUND",
     ),
     ErrorCase(
         "reschedule",

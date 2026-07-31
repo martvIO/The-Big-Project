@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.bookings import BookingsRepository, CheckInOutcome
 from app.db.repositories.customers import CustomersRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
@@ -45,6 +45,12 @@ NOW = datetime.datetime(2026, 7, 30, 12, 0, tzinfo=datetime.UTC)
 # The Jerusalem day T0 and T1 fall in, as the half-open UTC pair list_day takes.
 DAY_START = datetime.datetime(2099, 8, 2, 0, 0, tzinfo=datetime.UTC)
 DAY_END = datetime.datetime(2099, 8, 3, 0, 0, tzinfo=datetime.UTC)
+
+# F34's two arrival clocks. Only ever compared, and DISTINCT is the whole point:
+# the second-tap assertion is that the row still reads FIRST_ARRIVAL, which a
+# single shared constant could pass without meaning anything.
+FIRST_ARRIVAL = datetime.datetime(2099, 8, 2, 6, 52, tzinfo=datetime.UTC)
+SECOND_ARRIVAL = datetime.datetime(2099, 8, 2, 8, 52, tzinfo=datetime.UTC)
 
 
 def _factory(app_role_url: str) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
@@ -931,6 +937,222 @@ async def test_set_customer_id_onto_a_customer_who_holds_the_instant_raises(
                     not_before=NOW,
                 )
                 await session.flush()
+    finally:
+        await engine.dispose()
+
+
+async def test_check_in_writes_once_and_a_second_call_keeps_the_first_timestamp(
+    app_role_url: str,
+) -> None:
+    """The two zero-row causes mean opposite things, so the writer answers three
+    values and not a bare `Booking | None` (spec D4(5)).
+
+    `ALREADY_CHECKED_IN` carries the FIRST writer's timestamp, and that is the
+    guarantee the whole feature exists to make: two staffers tapping the same
+    bride both get a success and there is one arrival time."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="נועה")
+            booking = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=1
+            )
+
+            outcome, row = await bookings.check_in(session, tenant_id, booking.id, at=FIRST_ARRIVAL)
+            assert outcome is CheckInOutcome.WROTE
+            assert row is not None
+            assert row.checked_in_at == FIRST_ARRIVAL
+
+            # The second tap matches zero rows on `checked_in_at IS NULL`…
+            outcome, row = await bookings.check_in(
+                session, tenant_id, booking.id, at=SECOND_ARRIVAL
+            )
+            assert outcome is CheckInOutcome.ALREADY_CHECKED_IN
+            assert row is not None
+            # …and renders the FIRST time, not this request's.
+            assert row.checked_in_at == FIRST_ARRIVAL
+            assert row.checked_in_at != SECOND_ARRIVAL
+    finally:
+        await engine.dispose()
+
+
+async def test_check_in_answers_not_confirmed_on_every_terminal_status(
+    app_role_url: str,
+) -> None:
+    """The other zero-row cause. `cancelled` is the one that matters in
+    practice — it is what a concurrent cancel leaves behind — but the predicate
+    is `status = 'confirmed'`, so no-show and completed refuse identically and
+    all three are asserted rather than assumed from one.
+
+    Nothing is written in any of the three, which is the half a 200 would hide."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="שירה")
+            for seat, status in enumerate(
+                (
+                    BookingStatus.CANCELLED.value,
+                    BookingStatus.NO_SHOW.value,
+                    BookingStatus.COMPLETED.value,
+                ),
+                start=1,
+            ):
+                booking = await _insert_booking(
+                    bookings,
+                    session,
+                    tenant_id,
+                    customer.id,
+                    starts_at=PAST_SLOT + datetime.timedelta(days=seat),
+                    seat_index=seat,
+                )
+                # `insert` takes no status — the column carries a server default
+                # and every writer that moves it is guarded. Set it directly, the
+                # way the deleted_at probes above do.
+                booking.status = status
+                await session.flush()
+
+                outcome, row = await bookings.check_in(
+                    session, tenant_id, booking.id, at=FIRST_ARRIVAL
+                )
+                assert outcome is CheckInOutcome.NOT_CONFIRMED, status
+                assert row is not None, status
+                assert row.checked_in_at is None, status
+    finally:
+        await engine.dispose()
+
+
+async def test_check_in_answers_missing_for_an_unknown_id_and_a_soft_deleted_row(
+    app_role_url: str,
+) -> None:
+    """`MISSING` is what the service turns into a 404, and a soft-deleted row
+    must reach it by the same path as an id that was never real — the two are
+    indistinguishable to the caller on purpose, exactly as they are under RLS
+    for another tenant's booking."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="תמר")
+            booking = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=1
+            )
+
+            outcome, row = await bookings.check_in(
+                session, tenant_id, uuid.uuid4(), at=FIRST_ARRIVAL
+            )
+            assert outcome is CheckInOutcome.MISSING
+            assert row is None
+
+            booking.deleted_at = datetime.datetime.now(datetime.UTC)
+            await session.flush()
+            outcome, row = await bookings.check_in(session, tenant_id, booking.id, at=FIRST_ARRIVAL)
+            assert outcome is CheckInOutcome.MISSING
+            assert row is None
+    finally:
+        await engine.dispose()
+
+
+async def test_undo_check_in_clears_it_and_a_second_undo_reads_already_clear(
+    app_role_url: str,
+) -> None:
+    """`ALREADY_CHECKED_IN` reads as "it is already clear" here — the member
+    names the fact that the PREDICATE'S TARGET STATE already holds, which is the
+    same fact under both verbs and is why both answer 200 unchanged."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="רות")
+            booking = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=1
+            )
+            await bookings.check_in(session, tenant_id, booking.id, at=FIRST_ARRIVAL)
+
+            outcome, row = await bookings.undo_check_in(session, tenant_id, booking.id)
+            assert outcome is CheckInOutcome.WROTE
+            assert row is not None
+            assert row.checked_in_at is None
+
+            outcome, row = await bookings.undo_check_in(session, tenant_id, booking.id)
+            assert outcome is CheckInOutcome.ALREADY_CHECKED_IN
+            assert row is not None
+            assert row.checked_in_at is None
+    finally:
+        await engine.dispose()
+
+
+async def test_undo_check_in_takes_no_status_guard_and_clears_a_cancelled_booking(
+    app_role_url: str,
+) -> None:
+    """Spec D5's ruling, asserted rather than left to be inferred from an absent
+    predicate: the undo carries NO status guard at all, the `/confirm`
+    precedent — a mis-tap is correctable whenever it is noticed.
+
+    A bride checked in and then cancelled must still have the mis-tap undoable.
+    Refusing it would leave a permanent wrong arrival record with no remedy, on
+    a surface where the tap is one finger wide."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="מיכל")
+            booking = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=1
+            )
+            await bookings.check_in(session, tenant_id, booking.id, at=FIRST_ARRIVAL)
+            await bookings.cancel(
+                session,
+                tenant_id,
+                booking.id,
+                at=NOW,
+                by=BookingCancelledBy.CUSTOMER.value,
+            )
+
+            outcome, row = await bookings.undo_check_in(session, tenant_id, booking.id)
+            assert outcome is CheckInOutcome.WROTE
+            assert row is not None
+            assert row.checked_in_at is None
+            # …and it cleared ONLY the arrival. The cancellation is untouched.
+            assert row.status == BookingStatus.CANCELLED.value
+
+    finally:
+        await engine.dispose()
+
+
+async def test_undo_check_in_answers_missing_for_a_soft_deleted_row(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="דנה")
+            booking = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=1
+            )
+            await bookings.check_in(session, tenant_id, booking.id, at=FIRST_ARRIVAL)
+            booking.deleted_at = datetime.datetime.now(datetime.UTC)
+            await session.flush()
+
+            outcome, row = await bookings.undo_check_in(session, tenant_id, booking.id)
+            assert outcome is CheckInOutcome.MISSING
+            assert row is None
+
+            outcome, row = await bookings.undo_check_in(session, tenant_id, uuid.uuid4())
+            assert outcome is CheckInOutcome.MISSING
+            assert row is None
     finally:
         await engine.dispose()
 

@@ -54,7 +54,7 @@ from app.booking.tokens import manage_token_hash
 from app.booking.validation import BOOKING_LIST_DEFAULT_LIMIT, jerusalem_day_index
 from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.availability import AvailabilityRulesRepository
-from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.bookings import BookingsRepository, CheckInOutcome
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.otp_codes import OtpCodesRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
@@ -1306,5 +1306,325 @@ async def test_a_foreign_tenants_owner_can_neither_read_nor_transition_the_booki
             theirs, date=TARGET_DATE, offset=0, limit=BOOKING_LIST_DEFAULT_LIMIT
         )
         assert (rows, total) == ([], 0)
+    finally:
+        await engine.dispose()
+
+
+# --- F34: check-in, and the forced interleave the zero-row branch needs -------
+#
+# `asyncio.gather` is deliberately NOT used for the two headline tests, and the
+# reason is above in this very file: the customer-cancel race uses it and then
+# asserts outcome-agnostically ("the only claim that matters, and it holds
+# whichever writer won") precisely because gather does not ORDER two
+# transactions. For F34 that is worse than imprecise. Under gather the loser
+# most often loads AFTER the winner commits, takes the service's Python
+# pre-check and never reaches the guarded UPDATE at all — so the zero-row branch
+# these tests exist to prove would be green without ever executing.
+#
+# They therefore drive the REPOSITORY directly. At the service layer the
+# interleave is unreachable by construction: `check_in`'s step 2
+# (`checked_in_at is not None`) and step 3 (`status != 'confirmed'`) both
+# short-circuit in Python before the write. A service-level "forced interleave"
+# would assert the Python pre-check, which is the same silent vacuity. The
+# service's mapping of the three outcomes onto 200/409/404 is proven against
+# fakes in test_booking_owner_service.py, where it is a pure branch.
+#
+# The mechanism: `tenant_session` is `async with session_factory() as session,
+# session.begin()`, so EXITING the context manager is the commit, and two nested
+# tenant_sessions on one factory take two separate pool connections (NullPool).
+# Under READ COMMITTED each statement sees data committed as of statement start,
+# which is what lets the loser's UPDATE see the winner's write.
+
+FIRST_ARRIVAL = datetime.datetime(2026, 7, 28, 11, 50, tzinfo=datetime.UTC)
+LOSER_ARRIVAL = datetime.datetime(2026, 7, 28, 13, 40, tzinfo=datetime.UTC)
+
+
+async def test_a_cancel_landing_between_the_read_and_the_write_is_not_confirmed(
+    app_role_url: str,
+) -> None:
+    """Zero rows, cause one: somebody cancelled her in the gap. 409.
+
+    The second assertion is the one that carries the feature. `refreshed` must
+    read `checked_in_at IS NULL`, and it FAILS if the discrimination is taken off
+    the in-memory instance — because `update(Booking)` is ORM-enabled DML whose
+    `evaluate` synchronization has already stamped LOSER_ARRIVAL onto that
+    object, whatever the database matched. Without `populate_existing=True` on
+    the re-read, this row comes back claiming an arrival that was never written,
+    on a booking that is cancelled.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    repo = BookingsRepository()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        booking_id = claim.booking.id
+
+        # The LOSER's session, held open across the winner's whole transaction.
+        async with tenant_session(factory, tenant_id) as loser:
+            loaded = await repo.by_id(loser, tenant_id, booking_id)
+            assert loaded is not None
+            # The service's Python pre-check WOULD pass at this point, which is
+            # exactly what makes the guarded UPDATE the only thing standing.
+            assert loaded.checked_in_at is None
+            assert loaded.status == BookingStatus.CONFIRMED.value
+
+            # The WINNER commits in a SECOND session while the loser holds its
+            # read. Exiting this block is the commit.
+            async with tenant_session(factory, tenant_id) as winner:
+                await repo.cancel(
+                    winner,
+                    tenant_id,
+                    booking_id,
+                    at=NOW,
+                    by=BookingCancelledBy.CUSTOMER.value,
+                )
+
+            # Only now does the loser's guarded UPDATE run. It matches ZERO rows.
+            outcome, refreshed = await repo.check_in(loser, tenant_id, booking_id, at=LOSER_ARRIVAL)
+
+        assert outcome is CheckInOutcome.NOT_CONFIRMED
+        assert refreshed is not None
+        assert refreshed.checked_in_at is None
+        assert refreshed.status == BookingStatus.CANCELLED.value
+
+        # …and nothing was written, read back on a fresh connection.
+        row = await _row(factory, tenant_id, booking_id)
+        assert row is not None
+        assert row.checked_in_at is None
+    finally:
+        await engine.dispose()
+
+
+async def test_a_check_in_landing_in_the_gap_keeps_the_first_writers_timestamp(
+    app_role_url: str,
+) -> None:
+    """Zero rows, cause two: she is already checked in. 200 unchanged.
+
+    The same forced interleave, the OTHER cause — and this is the half that
+    makes the pair meaningful. Either test alone can be passed by a coin flip;
+    together they prove the discrimination is real, because one demands
+    NOT_CONFIRMED and the other ALREADY_CHECKED_IN off the identical zero-row
+    UPDATE.
+
+    `refreshed.checked_in_at == FIRST_ARRIVAL` is the render guarantee: the
+    losing writer must show the FIRST staffer's time. Off the poisoned instance
+    it would show LOSER_ARRIVAL — contradicting the exact promise this case
+    exists to make.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    repo = BookingsRepository()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        booking_id = claim.booking.id
+
+        async with tenant_session(factory, tenant_id) as loser:
+            loaded = await repo.by_id(loser, tenant_id, booking_id)
+            assert loaded is not None
+            assert loaded.checked_in_at is None
+
+            async with tenant_session(factory, tenant_id) as winner:
+                won, _ = await repo.check_in(winner, tenant_id, booking_id, at=FIRST_ARRIVAL)
+                assert won is CheckInOutcome.WROTE
+
+            outcome, refreshed = await repo.check_in(loser, tenant_id, booking_id, at=LOSER_ARRIVAL)
+
+        assert outcome is CheckInOutcome.ALREADY_CHECKED_IN
+        assert refreshed is not None
+        assert refreshed.checked_in_at == FIRST_ARRIVAL
+        assert refreshed.checked_in_at != LOSER_ARRIVAL
+
+        row = await _row(factory, tenant_id, booking_id)
+        assert row is not None
+        assert row.checked_in_at == FIRST_ARRIVAL
+    finally:
+        await engine.dispose()
+
+
+async def test_two_sequential_taps_both_answer_200_and_the_first_timestamp_survives(
+    app_role_url: str,
+) -> None:
+    """The uncontended shape of the same guarantee, at the SERVICE layer, with
+    two injected clocks — `test_booking_comms_db.py`'s two-clock idempotency
+    pattern.
+
+    Two staffers on two phones, two hours apart. Both get a success, the arrival
+    time does not move, and exactly ONE audit row exists: the second tap changed
+    nothing, so `{from: checked_in, to: checked_in}` noise in the one trail this
+    area has would be worse than silence.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    later = NOW + datetime.timedelta(hours=2)
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        staff = _staff(tenant_id)
+
+        first_tap = await _owner(factory, now=NOW).check_in(
+            tenant_id, claim.booking.id, staff=staff
+        )
+        later_tap = await _owner(factory, now=later).check_in(
+            tenant_id, claim.booking.id, staff=staff
+        )
+
+        assert first_tap.changed is True
+        assert later_tap.changed is False
+        assert first_tap.booking.checked_in_at == NOW
+        assert later_tap.booking.checked_in_at == NOW
+
+        row = await _row(factory, tenant_id, claim.booking.id)
+        assert row is not None
+        assert row.checked_in_at == NOW
+
+        check_ins = [
+            entry
+            for entry in await _audit(factory, tenant_id)
+            if entry.action == AuditAction.BOOKING_CHECKED_IN.value
+        ]
+        assert len(check_ins) == 1
+        assert check_ins[0].actor_id == staff.id
+        assert check_ins[0].entity == str(claim.booking.id)
+        assert check_ins[0].details == {"checked_in_at": NOW.isoformat()}
+    finally:
+        await engine.dispose()
+
+
+async def test_check_in_on_a_cancelled_booking_is_a_409_and_writes_no_audit_row(
+    app_role_url: str,
+) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        owner = _owner(factory)
+        staff = _staff(tenant_id)
+        await owner.cancel(tenant_id, claim.booking.id, staff=staff)
+
+        with pytest.raises(BookingTransitionInvalidError):
+            await owner.check_in(tenant_id, claim.booking.id, staff=staff)
+
+        row = await _row(factory, tenant_id, claim.booking.id)
+        assert row is not None
+        assert row.checked_in_at is None
+        assert not [
+            entry
+            for entry in await _audit(factory, tenant_id)
+            if entry.action == AuditAction.BOOKING_CHECKED_IN.value
+        ]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("verb", ["no_show", "complete"])
+async def test_a_status_transition_never_clears_the_arrival_timestamp(
+    app_role_url: str, verb: str
+) -> None:
+    """Spec D5's declined auto-clear, asserted as a DECISION rather than left as
+    an oversight.
+
+    Marking a checked-in bride `no_show` looks contradictory, and the temptation
+    is to clear the timestamp inside `set_status`. Declined: it would make F15's
+    one status writer do two things, destroy the only record of an arrival as a
+    side effect of an unrelated verb, and presume the owner meant the arrival was
+    wrong when she may have meant the bride left. The explicit undo is the
+    remedy."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    # The attendance verbs are guarded on a PAST starts_at, so the clock has to
+    # sit after the slot rather than before it.
+    after = SLOT_A + datetime.timedelta(hours=1)
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        staff = _staff(tenant_id)
+
+        await _owner(factory, now=NOW).check_in(tenant_id, claim.booking.id, staff=staff)
+        await getattr(_owner(factory, now=after), verb)(tenant_id, claim.booking.id, staff=staff)
+
+        row = await _row(factory, tenant_id, claim.booking.id)
+        assert row is not None
+        assert row.checked_in_at == NOW
+        assert row.status == (
+            BookingStatus.NO_SHOW.value if verb == "no_show" else BookingStatus.COMPLETED.value
+        )
+    finally:
+        await engine.dispose()
+
+
+async def test_the_undo_clears_a_cancelled_bookings_arrival_and_records_what_it_destroyed(
+    app_role_url: str,
+) -> None:
+    """D5's no-status-guard ruling end to end, and the `previous_checked_in_at`
+    payload that is the only surviving copy of the value: `bookings` has no
+    history table, so once the column is cleared this audit row is the record."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        owner = _owner(factory)
+        staff = _staff(tenant_id)
+
+        await owner.check_in(tenant_id, claim.booking.id, staff=staff)
+        await owner.cancel(tenant_id, claim.booking.id, staff=staff)
+
+        undone = await owner.undo_check_in(tenant_id, claim.booking.id, staff=staff)
+        assert undone.changed is True
+        assert undone.booking.checked_in_at is None
+
+        row = await _row(factory, tenant_id, claim.booking.id)
+        assert row is not None
+        assert row.checked_in_at is None
+        # The cancellation is untouched — the undo clears the arrival and only
+        # the arrival.
+        assert row.status == BookingStatus.CANCELLED.value
+
+        undos = [
+            entry
+            for entry in await _audit(factory, tenant_id)
+            if entry.action == AuditAction.BOOKING_CHECK_IN_UNDONE.value
+        ]
+        assert len(undos) == 1
+        assert undos[0].actor_id == staff.id
+        assert undos[0].entity == str(claim.booking.id)
+        assert undos[0].details == {"previous_checked_in_at": NOW.isoformat()}
+
+        # A repeat undo is a 200 that writes nothing further.
+        repeat = await owner.undo_check_in(tenant_id, claim.booking.id, staff=staff)
+        assert repeat.changed is False
+        assert (
+            len(
+                [
+                    entry
+                    for entry in await _audit(factory, tenant_id)
+                    if entry.action == AuditAction.BOOKING_CHECK_IN_UNDONE.value
+                ]
+            )
+            == 1
+        )
+    finally:
+        await engine.dispose()
+
+
+async def test_the_day_list_carries_the_arrival_timestamp(app_role_url: str) -> None:
+    """The board only ever reads the list, so `checked_in_at` has to survive
+    `list_day` — the one read this feature adds no query for."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        owner = _owner(factory)
+        await owner.check_in(tenant_id, claim.booking.id, staff=_staff(tenant_id))
+
+        rows, total = await owner.list_day(
+            tenant_id, date=TARGET_DATE, offset=0, limit=BOOKING_LIST_DEFAULT_LIMIT
+        )
+        assert total == 1
+        assert rows[0].checked_in_at == NOW
     finally:
         await engine.dispose()

@@ -284,6 +284,36 @@ describe("owner booking endpoints", () => {
     ]);
   });
 
+  // F34. Two verbs, not one /check-in carrying {"checked_in": bool}: the guards
+  // differ (check-in requires status = 'confirmed', the undo requires nothing),
+  // and one handler would collapse that into a body of ifs.
+  it("posts the check-in and its undo to their own verb sub-paths, with no body", async () => {
+    const paths: string[] = [];
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: BOOKING_ID }));
+    await api.checkInBooking(BOOKING_ID);
+    await api.undoBookingCheckIn(BOOKING_ID);
+    for (const call of fetchMock.mock.calls) {
+      const [path, init] = call as [string, RequestInit];
+      expect(init.method).toBe("POST");
+      // The booking id is the whole request; neither route takes a body.
+      expect(init.body).toBeUndefined();
+      paths.push(path);
+    }
+    expect(paths).toEqual([
+      `/manage/bookings/${BOOKING_ID}/check-in`,
+      `/manage/bookings/${BOOKING_ID}/undo-check-in`,
+    ]);
+  });
+
+  it("encodes the booking id on the check-in path", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: BOOKING_ID }));
+    await api.checkInBooking("b 1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/manage/bookings/b%201/check-in",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("sends the reschedule target as an aware ISO instant", async () => {
     const fetchMock = stubFetch(() => jsonResponse(200, { id: BOOKING_ID }));
     await api.rescheduleBooking(BOOKING_ID, "2026-08-05T11:00:00Z");

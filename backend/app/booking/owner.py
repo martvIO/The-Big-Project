@@ -32,7 +32,7 @@ from app.db.repositories.availability import (
     AvailabilityExceptionsRepository,
     AvailabilityRulesRepository,
 )
-from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.bookings import BookingsRepository, CheckInOutcome
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.tenant import tenant_session
@@ -354,6 +354,110 @@ class OwnerBookingService:
                 details={"from": from_status, "to": to},
             )
             return OwnerMutation(booking=updated)
+
+    # --- F34's check-in pair -------------------------------------------------
+    #
+    # The same five ordered steps as the graph above, with one difference that is
+    # the whole of spec D4(5): step 4 does not answer `Booking | None`. A guarded
+    # UPDATE matches zero rows for two causes that mean OPPOSITE things — she is
+    # already checked in (200 unchanged) and somebody cancelled her in the gap
+    # (409) — so the repository returns a three-valued outcome and this branches
+    # on THAT, never on the row it loaded in step 1.
+
+    async def check_in(
+        self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
+    ) -> OwnerMutation:
+        """Record that this person is physically in the boutique.
+
+        No clock bound, in either direction: a bride arriving twenty minutes
+        early is the ordinary case the board exists for, and `starts_at <= now`
+        would refuse it. An early arrival is not a lie, it is a fact with a
+        timestamp.
+
+        Steps 2 and 3 are the shipped shape's Python pre-checks and they STAY —
+        they are what makes the answer honest in the uncontended case. What is
+        new is step 4's aftermath: the REPOSITORY says which of the three things
+        happened, because only it holds the `.returning()` scalar and the
+        refreshed row at the same moment.
+        """
+        now = self._now()
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            booking = await self._bookings.by_id(session, tenant_id, booking_id)
+            if booking is None:
+                raise BookingNotFoundError
+            if booking.checked_in_at is not None:
+                # The outcome the caller wanted is the outcome that holds, and
+                # the audit row belongs to whoever actually wrote it.
+                return OwnerMutation(booking=booking, changed=False)
+            if booking.status != BookingStatus.CONFIRMED.value:
+                raise BookingTransitionInvalidError(f"{booking.status} -> checked_in")
+            outcome, refreshed = await self._bookings.check_in(
+                session, tenant_id, booking_id, at=now
+            )
+            match outcome:
+                case CheckInOutcome.MISSING:
+                    raise BookingNotFoundError
+                case CheckInOutcome.NOT_CONFIRMED:
+                    # A cancel landed between the read and the write. The raise
+                    # rolls back BEFORE the audit row, rather than committing
+                    # evidence for a check-in that did not happen.
+                    raise BookingTransitionInvalidError(f"{booking.status} -> checked_in")
+                case CheckInOutcome.ALREADY_CHECKED_IN:
+                    # Another staffer won the race. `refreshed` carries HER
+                    # timestamp, which is the guarantee this case exists to make.
+                    assert refreshed is not None
+                    return OwnerMutation(booking=refreshed, changed=False)
+                case CheckInOutcome.WROTE:
+                    assert refreshed is not None
+                    await self._record(
+                        session,
+                        tenant_id,
+                        staff=staff,
+                        action=AuditAction.BOOKING_CHECKED_IN,
+                        booking_id=booking_id,
+                        details={"checked_in_at": now.isoformat()},
+                    )
+                    return OwnerMutation(booking=refreshed)
+
+    async def undo_check_in(
+        self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext
+    ) -> OwnerMutation:
+        """The undo of a mis-tapped check-in. **No status guard at all** (D5, the
+        `/confirm` precedent), so its only failure is a 404: a bride checked in
+        and then cancelled must still have the mis-tap undoable, or a wrong
+        arrival record is permanent on a surface where the tap is one finger
+        wide.
+
+        `previous_checked_in_at` is captured BEFORE the write and that is not
+        style — it is the same reason `_transition` captures `from_status`
+        first. Clearing the column destroys the only copy of the arrival time
+        and `bookings` has no history table, so reading it after the write
+        (which stamps the in-memory instance) would record the destruction and
+        not the value.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            booking = await self._bookings.by_id(session, tenant_id, booking_id)
+            if booking is None:
+                raise BookingNotFoundError
+            if booking.checked_in_at is None:
+                return OwnerMutation(booking=booking, changed=False)
+            previous = booking.checked_in_at
+            outcome, refreshed = await self._bookings.undo_check_in(session, tenant_id, booking_id)
+            if outcome is CheckInOutcome.MISSING or refreshed is None:
+                raise BookingNotFoundError
+            if outcome is not CheckInOutcome.WROTE:
+                # A concurrent undo got there first. 200 unchanged, no audit
+                # row, rendering the DATABASE's NULL rather than this request's.
+                return OwnerMutation(booking=refreshed, changed=False)
+            await self._record(
+                session,
+                tenant_id,
+                staff=staff,
+                action=AuditAction.BOOKING_CHECK_IN_UNDONE,
+                booking_id=booking_id,
+                details={"previous_checked_in_at": previous.isoformat()},
+            )
+            return OwnerMutation(booking=refreshed)
 
     async def cancel(
         self, tenant_id: uuid.UUID, booking_id: uuid.UUID, *, staff: StaffContext

@@ -288,6 +288,11 @@ export interface OwnerBookingRow {
   starts_at: string;
   status: string;
   attendance_confirmed_at: string | null;
+  // The arrival timestamp the board writes, null until a staffer taps (F34 D1:
+  // a column, not a fifth status — arrival is orthogonal to what the booking
+  // BECAME). It is on the ROW rather than the detail because the board only
+  // ever reads the list, and OwnerBookingDetail inherits it by extending.
+  checked_in_at: string | null;
   customer_name: string;
   appointment_type_name: string;
   dress_name: string | null;
@@ -614,6 +619,18 @@ export const api = {
   },
   completeBooking(bookingId: string): Promise<OwnerBookingDetail> {
     return apiFetch(`${bookingPath(bookingId)}/complete`, { method: "POST" });
+  },
+  // F34's two. Both answer the full OwnerBookingDetail, which extends the list
+  // row, so a board row patches in place from the response and the two views
+  // cannot disagree. Neither is time-boxed on the client because neither is on
+  // the server: check-in has no clock bound in either direction (an early
+  // arrival is the ordinary case the board exists for) and the undo has no
+  // status guard and no clock bound at all.
+  checkInBooking(bookingId: string): Promise<OwnerBookingDetail> {
+    return apiFetch(`${bookingPath(bookingId)}/check-in`, { method: "POST" });
+  },
+  undoBookingCheckIn(bookingId: string): Promise<OwnerBookingDetail> {
+    return apiFetch(`${bookingPath(bookingId)}/undo-check-in`, { method: "POST" });
   },
   rescheduleBooking(bookingId: string, startsAt: string): Promise<OwnerBookingDetail> {
     return apiFetch(`${bookingPath(bookingId)}/reschedule`, {

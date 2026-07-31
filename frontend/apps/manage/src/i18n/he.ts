@@ -98,6 +98,11 @@ export const he = {
     "booking.manageLink": "קישור ניהול",
     "booking.manageLinkIssued": "קישור ניהול פעיל",
     "booking.manageLinkMissing": "לא הונפק קישור ניהול",
+    // F34's one addition to this namespace: the arrival FACT's label on the
+    // detail. The board's copy deck covers the board screen and carries no key
+    // for this row, so the wording follows the deck's own «נרשמה הגעה» — a
+    // record that was made — rather than inventing a third spelling.
+    "booking.checkedInAt": "נרשמה הגעה",
     "booking.cancelledAt": "בוטל בתאריך",
     "booking.cancelledBy": "בוטל על ידי",
     "booking.cancelledByOwner": "הבוטיק",
@@ -428,5 +433,107 @@ export const he = {
     "gateway.error.GATEWAY_NOT_CONNECTED": "צריך לחבר חשבון סליקה קודם.",
     "gateway.error.GATEWAY_UNAVAILABLE": "ספק הסליקה אינו זמין כרגע. אפשר לנסות שוב בעוד כמה דקות.",
     "gateway.error.TOO_MANY_ATTEMPTS": "יותר מדי ניסיונות. אפשר לנסות שוב מאוחר יותר.",
+
+    // --- F34, the live shift board ---
+    //
+    // 34 rows transcribed from .planning/design/screens/shift-board/copy.md as
+    // DOTTED LITERAL keys, so the deck and this block diff line by line.
+    //
+    // Two of the deck's §0 rules bite harder here than anywhere before, and both
+    // are asserted in __tests__/i18n.test.ts rather than trusted:
+    //
+    // §0 rule 9 — NO string names or implies a retry interval. D4(6) backs the
+    // poll off 5s -> ~60s on consecutive failures, so «הלוח יתעדכן מיד» is true
+    // at tick 1 and a lie by tick 5, on a screen nobody is watching change. The
+    // stale copy states what is UNKNOWN, never when it will be known.
+    //
+    // §0 rule 10 — the 403 body is generic BY DESIGN. The server ships one body
+    // for every unadmitted role (auth/dependencies.py:17-21) so a probe cannot
+    // learn which roles exist; naming a role here would be an invention the
+    // server never made, and on the demotion path it would be the product
+    // telling a staffer she was demoted, which is her manager's sentence.
+    //
+    // The four status words and «אישרה הגעה» are REUSED via statusBadge, never
+    // re-declared: a second spelling of «בוטל» in one console is a defect.
+    "nav.board": "לוח היום",
+    "board.heading": "לוח היום",
+    // A board with no date picker must still say which day it shows. The moment
+    // it matters is a counter tablet at 00:01 (D12), where the date rolling
+    // under an unattended screen would otherwise be invisible.
+    "board.dayLine": "היום · {{date}}",
+
+    // The freshness row — the whole live-ness contract, and never announced.
+    // Past tense on purpose: «עודכן 14:07» says THIS WAS TRUE AT 14:07, never
+    // «בזמן אמת», which the poll cannot keep even for one interval.
+    "board.summary": "הגיעו {{ratio}}",
+    "board.updatedAt": "עודכן {{time}}",
+    "board.staleAt": "אין עדכון מאז {{time}}",
+    "board.staleBody": "ייתכן שהמידע אינו עדכני.",
+    "board.refresh": "רענון",
+
+    // WCAG 2.0 SC 2.2.2 Pause, Stop, Hide — Level A, inside AA, and AA is a
+    // LEGAL bar here (pre-decided #38). axe has no rule for it, so these eight
+    // rows are the difference between green-in-CI and conformant-in-law.
+    // One button whose NAME changes, never two buttons and never aria-pressed.
+    // Each Aria string starts with its visible label so 2.5.3 label-in-name
+    // holds.
+    "board.pause": "השהיה",
+    "board.pauseAria": "השהיה — עדכון הלוח",
+    "board.resume": "חידוש",
+    "board.resumeAria": "חידוש — עדכון הלוח",
+    "board.pausedAt": "מושהה · עודכן {{time}}",
+    "board.paused": "העדכון מושהה. הלוח לא יתעדכן עד לחידוש.",
+    // Names the cause: the difference between "I paused this" and "this paused
+    // itself" is the whole difference between a control and a bug.
+    "board.idleStopped": "העדכון הופסק אחרי {{minutes}} דקות ללא פעילות.",
+    // Not symmetry — a screen reader does not reliably re-announce the name of
+    // an already-focused control that renamed itself, so without this the one
+    // confirmation a sighted user gets free is denied to the user 2.2.2 is for.
+    "board.resumed": "העדכון חודש.",
+
+    // The row. «הגיעה» is the exact positive of the shipped «לא הגיעה», and the
+    // recorded fact is spelled DIFFERENTLY on purpose: a booking marked no_show
+    // after a check-in (D5 permits it — a status transition never clears
+    // checked_in_at) then reads as two true facts, not a contradiction.
+    "board.checkIn": "הגיעה",
+    "board.checkInAria": "הגיעה — {{name}}, {{time}}",
+    "board.checkedInAt": "נרשמה הגעה · {{time}}",
+    "board.undo": "ביטול הרישום",
+    "board.undoAria": "ביטול הרישום — {{name}}, {{time}}",
+    "board.now": "עכשיו {{time}}",
+    "board.movedAway": "התור הועבר לתאריך אחר",
+
+    // The announced cues — user-initiated only, and they name the bride: after
+    // tapping one of forty rows, «נרשמה הגעה.» cannot confirm WHICH one, which
+    // makes it useless exactly when the board is busy. (F15 keeps the name out
+    // of the detail h2 for the opposite reason: that is a persistent landmark.)
+    "board.checkedInCue": "נרשמה הגעה עבור {{name}}.",
+    "board.undoneCue": "הרישום בוטל עבור {{name}}.",
+
+    // States.
+    "board.loading": "טוען את לוח היום…",
+    "board.loadFailed": "לא הצלחנו לטעון את הלוח כרגע.",
+    "board.emptyTitle": "אין תורים היום",
+    "board.emptyBody":
+      "תורים שייקבעו להיום יופיעו כאן. לתאריכים אחרים אפשר לעבור למסך «תורים».",
+    // Stated, never absorbed — a hidden bride is the one failure a board may
+    // not have (D3).
+    "board.truncated":
+      "מוצגים {{count}} התורים הראשונים של היום. לרשימה המלאה אפשר לעבור למסך «תורים».",
+    "board.sessionEnded": "תוקף החיבור פג. צריך להתחבר מחדש.",
+    // The mid-shift demotion. Generic by design (§0 rule 10). «כרגע» is doing
+    // real work: a re-promotion restores the board, so a sentence implying the
+    // door is shut for good would be a guess the server never made. It points
+    // at a person because there is nothing here she can fix from this screen.
+    "board.accessEnded": "אין הרשאה לצפות בלוח כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+    "board.reload": "רענון הדף",
+
+    // The ONE error string the board owns. F15's Hebrew for this code says
+    // «כדאי לחזור לרשימה ולפתוח את התור מחדש» — advice for a detail screen you
+    // can back out of. The board has no list to go back to and repairs itself on
+    // the next tick. It names the EVENT, not a duration: «בעדכון הבא» is true at
+    // 5s, at 60s and at whatever constant F29 lands on (§0 rule 9). Every other
+    // code falls through to bookingErrorText unchanged.
+    "board.error.transitionInvalid": "מצב התור השתנה. השורה תתוקן בעדכון הבא.",
   },
 } as const;

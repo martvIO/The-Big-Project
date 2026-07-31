@@ -362,6 +362,16 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
                   ? t("booking.manageLinkIssued")
                   : t("booking.manageLinkMissing")}
               </Fact>
+              {detail.checked_in_at !== null && (
+                // F34 D6. The detail STATES the arrival; the action lives on
+                // the board, one place. Spelled «נרשמה הגעה» rather than
+                // «הגיעה» so a booking marked no_show after a check-in — which
+                // D5 permits, since a status transition never clears the
+                // column — reads as two true facts about different things.
+                <Fact label={t("booking.checkedInAt")}>
+                  <Instant value={detail.checked_in_at} />
+                </Fact>
+              )}
               {detail.cancelled_at !== null && (
                 <Fact label={t("booking.cancelledAt")}>
                   <Instant value={detail.cancelled_at} />

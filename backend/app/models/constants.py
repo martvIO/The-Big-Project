@@ -117,6 +117,15 @@ class AuditAction(StrEnum):
     BOOKING_RESCHEDULED = "booking_rescheduled"
     BOOKING_PHONE_CORRECTED = "booking_phone_corrected"
     BOOKING_LINK_RESENT = "booking_link_resent"
+    # F34's live shift board (D8). Same fact as every block here: audit_log.action
+    # is plain TEXT with no CHECK (0003), so these need no migration.
+    #
+    # The undo keeps its own value rather than folding into BOOKING_CHECKED_IN
+    # with a flag in `details`, for the reason the BOOKING_* block above already
+    # gives: the question this table gets asked is "who recorded that she
+    # arrived, and who took it back", and each stays one WHERE action = ….
+    BOOKING_CHECKED_IN = "booking_checked_in"
+    BOOKING_CHECK_IN_UNDONE = "booking_check_in_undone"
     # F51's owner-only staff section (D8). Same fact as the BOOKING_* block above:
     # audit_log.action is plain TEXT with no CHECK, so these need no migration.
     # Role change and password reset keep their own values rather than folding

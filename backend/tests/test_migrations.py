@@ -380,6 +380,125 @@ def test_migration_0013_round_trips(migrated_db: str) -> None:
         command.upgrade(cfg, "head")  # idempotent when already at head
 
 
+# --- 0014: the booking check-in column ---
+
+_CHECK_IN_COLUMN = (
+    "SELECT data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'bookings' AND column_name = 'checked_in_at'"
+)
+_STATUS_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'bookings'::regclass AND conname = 'bookings_status_check'"
+)
+_INDEX_DEF = "SELECT indexdef FROM pg_indexes WHERE tablename = 'bookings' AND indexname = :name"
+# Spelled as POSTGRES deparses them, not as 0008/0009 wrote them: both
+# pg_get_constraintdef and pg_indexes.indexdef normalise (IN (...) becomes
+# = ANY (ARRAY[...]), predicates get parenthesised and re-ordered, and the
+# schema is qualified). Captured from a real 16.x server rather than
+# transcribed from the migration source, because a literal that merely looks
+# right would pin nothing.
+_STATUS_CHECK_DEF = (
+    "CHECK ((status = ANY (ARRAY['confirmed'::text, 'cancelled'::text, "
+    "'no_show'::text, 'completed'::text])))"
+)
+_SLOT_SEAT_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_bookings_slot_seat_unique ON public.bookings "
+    "USING btree (tenant_id, starts_at, seat_index) "
+    "WHERE ((deleted_at IS NULL) AND (status <> 'cancelled'::text))"
+)
+_CUSTOMER_STARTS_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_bookings_tenant_customer_starts_unique ON public.bookings "
+    "USING btree (tenant_id, customer_id, starts_at) "
+    "WHERE ((deleted_at IS NULL) AND (status <> 'cancelled'::text))"
+)
+
+
+def _check_in_column(url: str) -> tuple[str, str] | None:
+    async def read() -> tuple[str, str] | None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                row = (await conn.execute(text(_CHECK_IN_COLUMN))).first()
+                return None if row is None else (str(row[0]), str(row[1]))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _pinned_definitions(url: str) -> tuple[str, str, str]:
+    async def read() -> tuple[str, str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                status = await conn.execute(text(_STATUS_CONSTRAINT_DEF))
+                slot = await conn.execute(
+                    text(_INDEX_DEF), {"name": "idx_bookings_slot_seat_unique"}
+                )
+                customer = await conn.execute(
+                    text(_INDEX_DEF), {"name": "idx_bookings_tenant_customer_starts_unique"}
+                )
+                return (
+                    str(status.scalar_one()),
+                    str(slot.scalar_one()),
+                    str(customer.scalar_one()),
+                )
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_the_booking_check_in_migration_leaves_the_status_check_and_both_unique_indexes_alone(
+    migrated_db: str,
+) -> None:
+    """The highest-value test in F34, and what it guards is a FUTURE edit.
+
+    Spec D1 argues at length that check-in is a COLUMN and not a fifth
+    BookingStatus, and the whole argument rests on the status CHECK and the two
+    partial unique indexes being untouched. This makes that promise mechanical
+    instead of rhetorical: when E4 widens the CHECK for 'pending_payment' it
+    collides with a pinned literal and a deliberate review, instead of colliding
+    with nothing.
+
+    Keyed to `head` — i.e. AFTER this feature's migration, whatever number it
+    ended up with — and never to a hardcoded revision id (D2). The migration id
+    is resolved from `alembic heads` at build time, so a literal here would rot
+    the first time another feature lands a migration first."""
+    status_check, slot_seat, customer_starts = _pinned_definitions(migrated_db)
+    assert status_check == _STATUS_CHECK_DEF
+    assert slot_seat == _SLOT_SEAT_INDEX_DEF
+    assert customer_starts == _CUSTOMER_STARTS_INDEX_DEF
+
+
+@pytest.mark.db
+def test_migration_0014_round_trips(migrated_db: str) -> None:
+    """upgrade() adds one nullable TIMESTAMPTZ; downgrade() drops it. Runs as the
+    migration owner (the app role cannot ALTER) and mutates the live
+    session-scoped schema, so it is LAST among the schema-mutating tests in this
+    file and owns no fixtures.
+
+    Probes BOTH directions rather than only the end state, which is 0013's own
+    rule: a downgrade that silently no-ops would otherwise stay green while
+    shipping a migration that cannot be rolled back.
+
+    The finally is not decoration. Leaving the schema at 0013 drops the column
+    the ORM still maps, so every later booking db test in the shared container
+    would fail with UndefinedColumn somewhere unrelated to itself."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    try:
+        assert _check_in_column(migrated_db) == ("timestamp with time zone", "YES")
+        command.downgrade(cfg, "0013")
+        assert _check_in_column(migrated_db) is None
+        command.upgrade(cfg, "head")
+        assert _check_in_column(migrated_db) == ("timestamp with time zone", "YES")
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
 def test_running_env_py_does_not_disable_the_app_logger() -> None:
     """Unmarked and offline (`sql=True` runs env.py and touches no database), so
     this guard runs in the fast suite that the db-marked tests are deselected

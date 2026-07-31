@@ -29,6 +29,7 @@ function row(overrides: Partial<OwnerBookingRow> = {}): OwnerBookingRow {
     starts_at: "2026-08-04T07:00:00Z",
     status: "confirmed",
     attendance_confirmed_at: null,
+    checked_in_at: null,
     customer_name: "מיכל לוי",
     appointment_type_name: "מדידה ראשונה",
     dress_name: "שמלת אלמה",

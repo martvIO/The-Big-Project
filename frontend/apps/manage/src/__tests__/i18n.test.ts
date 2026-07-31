@@ -35,7 +35,8 @@ const HE_F52 = entries(
 // these into an existing list would let that feature's rows shrink by this many
 // and still pass. Every block keeps its own floor.
 const HE_F17 = entries(he.translation, (key) => key === "nav.gateway" || key.startsWith("gateway."));
-const HE = [...HE_F15, ...HE_F51, ...HE_F52, ...HE_F17];
+const HE_F34 = entries(he.translation, (key) => key === "nav.board" || key.startsWith("board."));
+const HE = [...HE_F15, ...HE_F51, ...HE_F52, ...HE_F17, ...HE_F34];
 
 describe("F15 keys resolve", () => {
   it("carries the whole copy deck", () => {
@@ -148,6 +149,84 @@ describe("F17 gateway keys resolve", () => {
     // this suite cannot see a key it never renders.
     expect(i18n.t("gateway.field.api_key")).toBe("מפתח API");
     expect(i18n.t("gateway.field.store_id")).toBe("gateway.field.store_id");
+  });
+});
+
+describe("F34 board keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // 34 rows: nav.board plus 33 under board.* (copy.md:30).
+    expect(HE_F34.length).toBeGreaterThanOrEqual(34);
+  });
+
+  it("resolves the tenth nav item beside the nested nav object", () => {
+    expect(i18n.t("nav.board")).toBe("לוח היום");
+  });
+
+  it("resolves the one error string the board owns", () => {
+    // F-2: F15's BOOKING_TRANSITION_INVALID Hebrew tells the owner to go back to
+    // a list this screen does not have. The board owns a replacement for that
+    // one code and delegates every other code to bookingErrorText unchanged.
+    expect(i18n.t("board.error.transitionInvalid")).toBe(
+      "מצב התור השתנה. השורה תתוקן בעדכון הבא.",
+    );
+  });
+
+  it("names no retry interval anywhere (§0 rule 9)", () => {
+    // D4(6) stretches the retry 5s -> ~60s, so any string quantifying the wait
+    // becomes a lie the board silently stops keeping. «מיד» is the word that
+    // was removed; the stale copy states what is unknown, never when.
+    //
+    // Whole words, not substrings: «מידע» (information) contains «מיד» and is
+    // the legitimate word in board.staleBody. A naive /מיד/ fails the one string
+    // this rule was written to protect, which is the wrong way round.
+    for (const [, value] of HE_F34) {
+      expect(value).not.toMatch(/(^|[\s"«])(מיד|שניות|חמש)([\s".,»]|$)/);
+    }
+  });
+
+  it("keeps the 403 body generic — no role, and nothing about what changed", () => {
+    const body = i18n.t("board.accessEnded");
+    expect(body).toBe("אין הרשאה לצפות בלוח כרגע. לבירור אפשר לפנות לבעלת הבוטיק.");
+    // §0 rule 10: the server ships ONE 403 body for every unadmitted role
+    // (auth/dependencies.py:17-21) so a probe cannot learn which roles exist.
+    // The client therefore may not say which role she now holds, nor that
+    // anything changed — and on the demotion path, telling a staffer she was
+    // demoted is her manager's sentence to say, not a screen's. «בעלת הבוטיק»
+    // is who to ask, which is the one thing the screen can honestly offer.
+    for (const word of ["אחראית משמרת", "תפקיד", "בוטלו", "הוסרה", "שונה"]) {
+      expect(body).not.toContain(word);
+    }
+    // «כרגע» is load-bearing: a re-promotion restores the board, so a sentence
+    // implying the door is shut for good would be a guess the server never made.
+    expect(body).toContain("כרגע");
+  });
+
+  it("interpolates the freshness, ratio and idle-window placeholders", () => {
+    expect(i18n.t("board.updatedAt", { time: "14:07" })).toBe("עודכן 14:07");
+    expect(i18n.t("board.staleAt", { time: "14:07" })).toBe("אין עדכון מאז 14:07");
+    expect(i18n.t("board.pausedAt", { time: "14:07" })).toBe("מושהה · עודכן 14:07");
+    expect(i18n.t("board.summary", { ratio: "3/12" })).toBe("הגיעו 3/12");
+    expect(i18n.t("board.idleStopped", { minutes: 10 })).toContain("10");
+  });
+
+  it("spells the arrival FACT differently from the arrival VERB", () => {
+    // P-7. «לא הגיעה» is a shipped status word, so the button is its exact
+    // positive and the record is spelled apart from both — a booking marked
+    // no_show after a check-in must read as two true facts, not a contradiction.
+    expect(i18n.t("board.checkIn")).toBe("הגיעה");
+    expect(i18n.t("booking.statusNoShow")).toBe("לא הגיעה");
+    expect(i18n.t("board.checkedInAt", { time: "09:24" })).toBe("נרשמה הגעה · 09:24");
+  });
+
+  it("starts each accessible name with its visible label (WCAG 2.5.3)", () => {
+    expect(i18n.t("board.pauseAria")).toMatch(new RegExp(`^${i18n.t("board.pause")}`));
+    expect(i18n.t("board.resumeAria")).toMatch(new RegExp(`^${i18n.t("board.resume")}`));
+    expect(i18n.t("board.checkInAria", { name: "מיכל לוי", time: "09:30" })).toMatch(
+      new RegExp(`^${i18n.t("board.checkIn")}`),
+    );
+    expect(i18n.t("board.undoAria", { name: "מיכל לוי", time: "09:30" })).toMatch(
+      new RegExp(`^${i18n.t("board.undo")}`),
+    );
   });
 });
 
