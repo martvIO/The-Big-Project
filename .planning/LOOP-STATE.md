@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F52                    # started 2026-07-31. F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
+current: null                   # F52 merged (PR #28) 2026-07-31. F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
                                 # Queue reconciled 2026-07-30 for the finish-the-project run:
                                 # 32 features reachable, 0 unreachable, 3 parked (F18/F29 external, F32 subsumed).
                                 # Verified by simulating the pick rule to exhaustion — deps absent from this
@@ -356,7 +356,8 @@ queue:
     slug: kpi-dashboard
     epic: SMC
     title: "KPI dashboard (ops + customer)"
-    status: specing
+    status: merged
+    pr: 28
     deps: [F31]
     attempts: 1
     note: >-
@@ -365,6 +366,57 @@ queue:
       new-vs-returning, repeat rate, FORWARD-ONLY 7-day slot utilization
       (historical capacity doesn't exist; snapshot job is the recorded upgrade
       path). No revenue until E4. Landing section for the console. No chart dep.
+      SHIPPED as PR #28, merged 2026-07-31, all three gating jobs green. NO
+      MIGRATION. Spec review ran 3 lenses -> 20 findings (1 blocker: the normative
+      example payload shipped an in-progress week), all 20 fixed, none rejected.
+      Code review ran 4 lenses -> 6 findings, 0 blockers, 1 MAJOR survived two
+      skeptics. 1005 backend / 1138 frontend / 69 e2e green, zero axe violations.
+      FOUR THINGS A LATER READER NEEDS.
+      (1) Forward utilization calls materialize_slots with booked={}. The engine
+      DROPS full slots on purpose ("a public response that enumerated them would
+      disclose the boutique's booking density", slots.py:149-152), so summing
+      capacity over its normal output omits exactly the fully-booked slots — the
+      metric is biased downward and the error GROWS as the boutique gets busier.
+      booked={} makes taken 0 everywhere and CHECK (capacity > 0) makes that total,
+      so the grid is complete with ZERO change to the engine. An include_full flag
+      was declined: its only job would be switching off a disclosure control on the
+      function that also serves anonymous storefront traffic.
+      (2) The forward window's two bounds differ by one day DELIBERATELY —
+      materialize_slots is inclusive on both ends (today+6), count_by_start is
+      half-open on the right (midnight of today+7). Either error misstates
+      utilization by up to a seventh, permanently and silently. A db test pins it
+      by putting its booked slot on today+6 specifically.
+      (3) Busiest-types labels come from max(created_at), NOT max(starts_at) —
+      appointment_type_name is snapshotted at booking CREATION, and brides book
+      months ahead, so starts_at order routinely disagrees. Review caught this; the
+      fixture is required to order the two keys OPPOSITELY or the test pins neither.
+      (4) F55 merged mid-review and the rebase applied with NO textual conflict and
+      still broke: F55's guard derives the /manage path-segment set from the LIVE
+      route table, F52 is the tenth such router, and without the vite.config.ts edit
+      /manage/dashboard was served the SPA shell instead of proxied to the API — a
+      200 with the WRONG BODY, which no status assertion catches. Fixed in 6c232cc.
+      This is the second time a pre-written guard caught a clean-rebase collision
+      (the first was ruff F811 on F15/F31). Router order verified: dashboard_router
+      registers before _register_spas.
+  - id: F56
+    slug: storefront-focus-flake
+    epic: cross
+    title: "Fix the flaky storefront focus assertions (CI merge blocker)"
+    status: queued
+    deps: []
+    note: >-
+      FOUND BY F52's CI run 2026-07-31, and it is NOT an F52 regression — F52
+      touches zero storefront files. `frontend/apps/storefront/src/__tests__/
+      BookPage.test.tsx` asserts `document.activeElement` synchronously after a
+      focus move; on CI it intermittently reads `<body>` instead of the element
+      carrying tabindex="-1". PROOF it is pre-existing and flaky rather than a
+      regression: commit fc5f7eb8 is a DOCUMENTATION-ONLY change (.planning
+      markdown, no code at all) and its Frontend job failed with the same
+      assertion shape (`<p tabindex="-1">` that time, `<div>` on F52's run).
+      Re-running the identical commit turned it green. This is a GATING job, so
+      the flake blocks an arbitrary fraction of ALL merges and cost F52 one full
+      CI cycle. Likely fix: await the focus move (findBy*/waitFor) instead of
+      asserting synchronously. Small, but it taxes every feature until done.
   - id: F53
     slug: customers-crm
     epic: SMC
