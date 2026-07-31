@@ -95,6 +95,7 @@ from app.payments.base import (
     PaymentGateway,
 )
 from app.payments.fake import FakeGateway
+from app.payments.lemonsqueezy import LEMONSQUEEZY_PROVIDER, LemonSqueezyGateway
 from app.payments.router import router as gateway_router
 from app.payments.secretbox import (
     FakeSecretBox,
@@ -490,6 +491,16 @@ def _build_payment_gateway(settings: Settings) -> PaymentGateway:
     if settings.payment_provider == "fake":
         logger.info("payment gateway: FAKE (records, never charges) — no real money will move")
         return FakeGateway()
+    if settings.payment_provider == "lemonsqueezy":
+        # Names the adapter and nothing else — credentials are per-tenant and
+        # never reach Settings, so there is nothing here to leak. "TEST MODE" is
+        # in the line because it is the whole safety posture: production is a
+        # boot failure and every checkout asserts test mode on both sides.
+        logger.info(
+            "payment gateway: %s (TEST MODE ONLY — never a production path)",
+            LEMONSQUEEZY_PROVIDER,
+        )
+        return LemonSqueezyGateway()
     logger.info(
         "payment gateway NOT configured — gateway routes will answer 503 GATEWAY_NOT_CONFIGURED"
     )

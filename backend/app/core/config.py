@@ -130,9 +130,10 @@ class Settings(BaseSettings):
     # Both None -> UnconfiguredGateway + UnconfiguredSecretBox: no gateway is a
     # supported deployment where every gateway route answers 503 and deposits are
     # simply unavailable, exactly like the missing media bucket. "fake" is the
-    # dev/staging pair; a real provider literal arrives with its adapter, and
-    # "kms" arrives with KmsSecretBox.
-    payment_provider: Literal["fake"] | None = None
+    # dev/staging pair; "lemonsqueezy" is F18's TEST-MODE development engine and
+    # is forbidden in production below; a production provider literal arrives
+    # with its adapter, and "kms" arrives with KmsSecretBox.
+    payment_provider: Literal["fake", "lemonsqueezy"] | None = None
     gateway_secret_box: Literal["fake"] | None = None
     gateway_validate_max_per_tenant_window: int = 10
     gateway_validate_window_seconds: int = 3600
@@ -224,6 +225,16 @@ class Settings(BaseSettings):
         # _forbid_sms_test_paths_in_production shape.
         if self.app_env == "production" and self.payment_provider == "fake":
             raise ValueError("PAYMENT_PROVIDER must not be 'fake' when APP_ENV is 'production'")
+        # F18's guard 1, and the same shape on purpose. Lemon Squeezy is
+        # merchant-of-record: it would make MODRYN the seller of the bride's
+        # transaction, when the deposit is legally the boutique's and the
+        # boutique owes the Israeli receipt (architecture.md:13,
+        # e10-scale-polish.md:86). The adapter also hard-codes test mode, so in
+        # production it would take no money at all while reporting sessions.
+        if self.app_env == "production" and self.payment_provider == "lemonsqueezy":
+            raise ValueError(
+                "PAYMENT_PROVIDER must not be 'lemonsqueezy' when APP_ENV is 'production'"
+            )
         if self.app_env == "production" and self.gateway_secret_box == "fake":
             raise ValueError("GATEWAY_SECRET_BOX must not be 'fake' when APP_ENV is 'production'")
         # A MISSING gateway is never a boot failure — that is the supported
