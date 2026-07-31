@@ -179,10 +179,20 @@ def test_staging_may_use_the_fake_gateway_and_the_fake_box() -> None:
 
 
 def test_unknown_payment_provider_is_rejected() -> None:
-    # The Literal is what stops PAYMENT_PROVIDER=lemonsqueezy booting before its
-    # adapter and 0012's widened CHECK exist.
-    with pytest.raises(ValidationError):
-        Settings.model_validate({"app_env": "dev", "payment_provider": "lemonsqueezy"})
+    """The Literal is what stops a provider booting before its adapter and its
+    migration exist. 'lemonsqueezy' was this test's example until F18 shipped
+    both — which is exactly the sequence the Literal enforces — so the example
+    moves to a provider that still has neither.
+
+    `gateway_secret_box` is supplied and `match=` names the field, because
+    without either this test kept passing after F18 widened the Literal: the
+    unrelated "GATEWAY_SECRET_BOX is required when PAYMENT_PROVIDER is set"
+    guard fired instead, and the assertion proved nothing about the Literal it
+    claimed to be testing."""
+    with pytest.raises(ValidationError, match="payment_provider"):
+        Settings.model_validate(
+            {"app_env": "dev", "payment_provider": "grow", "gateway_secret_box": "fake"}
+        )
 
 
 def test_the_superseded_credential_retention_default_is_ninety_days() -> None:
