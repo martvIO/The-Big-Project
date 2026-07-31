@@ -164,6 +164,21 @@ queue:
     status: specing
     deps: [F7, F16, F17]
     spec_gate: user
+    gate_1_preauthorized: >-
+      USER RULING 2026-07-31, recorded late — this entry's `spec_gate: user` and
+      gateway-port.md's "re-asked at F19's Gate 1" both predate it, and a session
+      reading only those documents will reasonably conclude the gate is still
+      open. It is not. Asked directly how this run should treat the F18 and F19
+      payment gates, the user chose "Pre-authorize both", with the trade-off
+      stated in the question: the whole payment chain builds without stopping,
+      and F19's spec makes its money-behaviour calls (hold length, sweeper
+      timing, what the bride sees on failure) with nobody checking them. That was
+      accepted knowingly.
+      So F19's spec SELF-APPROVES and builds. It must still RECORD its money
+      decisions prominently — pre-authorization waived the pause, not the
+      scrutiny — and F21's audit re-derives them from the code. If a spec author
+      still believes a question genuinely needs the user, park that ONE question
+      and build the rest rather than stopping the feature.
     note: >-
       Q7: build hold / expiry sweeper / webhook→confirmed against the fake
       gateway. The race most likely to be wrong (hold expiry vs a late webhook)
@@ -172,7 +187,8 @@ queue:
     slug: lemonsqueezy-adapter
     epic: E4
     title: Lemon Squeezy payment sessions & webhooks (test-mode adapter)
-    status: specing
+    status: merged
+    pr: 31
     spec: .planning/specs/lemonsqueezy-adapter.md
     attempts: 1
     deps: [F17]
