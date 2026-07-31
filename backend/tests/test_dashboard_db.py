@@ -9,6 +9,11 @@ The window is taken from `history_window` itself rather than restated as
 hand-written instants: these two statements exist to feed that arithmetic, and
 a test carrying its own copy of the bounds would pass against a window the
 service never asks for.
+
+The service half below the statements is exercised HERE AND NOWHERE ELSE:
+`test_dashboard_api.py` swaps in a `FakeDashboardService`, so the
+three-reads-and-one-grid assembly inside a single `tenant_session` has no other
+proof anywhere.
 """
 
 import datetime
@@ -25,11 +30,19 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from app.dashboard.service import history_window
+from app.booking.validation import jerusalem_day_index
+from app.dashboard.service import (
+    FORWARD_WINDOW_DAYS,
+    HISTORY_WEEKS,
+    DashboardService,
+    history_window,
+)
+from app.db.repositories.availability import AvailabilityRulesRepository
 from app.db.repositories.bookings import BookingsRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.models.constants import BookingCancelledBy, BookingStatus
+from app.storefront.validation import BOUTIQUE_TIMEZONE
 
 pytestmark = pytest.mark.db
 
@@ -38,20 +51,64 @@ pytestmark = pytest.mark.db
 # [2026-05-03, 2026-07-26) as boutique-midnight instants.
 TODAY = datetime.date(2026, 7, 31)
 WINDOW = history_window(TODAY)
+# 09:00 in Jerusalem on TODAY, so `today_jerusalem(clock)` lands on TODAY and
+# every forward slot below is comfortably in the engine's future.
+NOW = datetime.datetime(2026, 7, 31, 6, 0, tzinfo=datetime.UTC)
 
 MICROSECOND = datetime.timedelta(microseconds=1)
 # Comfortably inside the window, and off every edge it is compared against.
+# 2026-06-15 is a Monday, so its Israeli week begins Sunday 2026-06-14.
 INSIDE = datetime.datetime(2026, 6, 15, 9, 0, tzinfo=datetime.UTC)
 LATER_INSIDE = datetime.datetime(2026, 6, 15, 10, 0, tzinfo=datetime.UTC)
+INSIDE_BUCKET = datetime.date(2026, 6, 14)
 # Before the floor by months, not microseconds: this is the row that makes
 # `history_by_customer` a second statement rather than a fold of the first.
 BEFORE_WINDOW = datetime.datetime(2025, 11, 4, 9, 0, tzinfo=datetime.UTC)
 ACCEPTED_AT = datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
 
+# The LAST day of the forward window, inclusive: today + 6, never today + 7.
+# The whole forward suite hangs its booked slot on this date specifically —
+# anywhere else in the window and the two off-by-one spellings both pass.
+FORWARD_END = TODAY + datetime.timedelta(days=FORWARD_WINDOW_DAYS - 1)
+# Seven consecutive days contain each weekday exactly once, so a rule on
+# FORWARD_END's weekday opens FORWARD_END and no other day of the window.
+FORWARD_DAY_INDEX = jerusalem_day_index(FORWARD_END)
+# 09:00–11:00 on a 30-minute grid is four starts; close_time is exclusive.
+FORWARD_OPEN = datetime.time(9, 0)
+FORWARD_CLOSE = datetime.time(11, 0)
+FORWARD_CAPACITY = 2
+FORWARD_STARTS = 4
+
+FITTING_ID = uuid.uuid4()
+CONSULT_ID = uuid.uuid4()
+
 
 def _factory(url: str) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     engine = create_async_engine(url, poolclass=NullPool)
     return engine, async_sessionmaker(engine, expire_on_commit=False)
+
+
+def _boutique(day: datetime.date, hour: int, minute: int = 0) -> datetime.datetime:
+    return datetime.datetime.combine(
+        day, datetime.time(hour, minute), tzinfo=BOUTIQUE_TIMEZONE
+    ).astimezone(datetime.UTC)
+
+
+def _service(factory: async_sessionmaker[AsyncSession]) -> DashboardService:
+    """A frozen clock, so `today_jerusalem` lands on TODAY and the fixture dates
+    below stay meaningful whatever day CI runs on."""
+    return DashboardService(factory, clock=lambda: NOW)
+
+
+async def _open_the_last_forward_day(session: AsyncSession, tenant_id: uuid.UUID) -> None:
+    await AvailabilityRulesRepository().insert(
+        session,
+        tenant_id=tenant_id,
+        day_of_week=FORWARD_DAY_INDEX,
+        open_time=FORWARD_OPEN,
+        close_time=FORWARD_CLOSE,
+        capacity=FORWARD_CAPACITY,
+    )
 
 
 async def _book(
@@ -306,5 +363,245 @@ async def test_history_short_circuits_on_an_empty_cohort_without_issuing_a_state
             )
             assert history == {}
             assert issued == []
+    finally:
+        await engine.dispose()
+
+
+# --- the forward panel, end to end -----------------------------------------
+
+
+async def test_a_slot_booked_to_capacity_on_the_last_forward_day_is_in_both_halves(
+    app_role_url: str,
+) -> None:
+    """Two assertions, two different off-by-ones, and both need the booked slot
+    on `today + 6` SPECIFICALLY — anywhere else in the window and each wrong
+    spelling still passes.
+
+    `capacity` is the DENOMINATOR assertion: the engine DROPS every slot where
+    `taken >= capacity` (`slots.py:149-152`), so a grid built from
+    `StorefrontService.list_slots` instead of `booked={}` would omit the
+    fully-booked 09:00 start and come back three starts short.
+
+    `booked` is the NUMERATOR assertion: `count_by_start` is half-open on the
+    right over instants, so its ceiling has to be boutique-midnight of
+    `today + 7`. Written as midnight of `today + 6` — which reads correct
+    against the sentence "the window is [today, today + 6]" — this day's
+    bookings vanish while its capacity stays in the denominator, understating
+    utilization by up to a seventh, permanently and silently.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    full_slot = _boutique(FORWARD_END, 9)
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            await _open_the_last_forward_day(session, tenant_id)
+            for seat in range(1, FORWARD_CAPACITY + 1):
+                await _book(session, tenant_id, starts_at=full_slot, seat_index=seat)
+
+        forward = (await _service(factory).dashboard(tenant_id)).forward
+
+        assert forward.from_date == TODAY
+        assert forward.to_date == FORWARD_END
+        assert forward.capacity == FORWARD_STARTS * FORWARD_CAPACITY
+        assert forward.booked == FORWARD_CAPACITY
+        assert forward.utilization == FORWARD_CAPACITY / (FORWARD_STARTS * FORWARD_CAPACITY)
+    finally:
+        await engine.dispose()
+
+
+async def test_a_booking_the_current_rules_no_longer_offer_contributes_nothing(
+    app_role_url: str,
+) -> None:
+    """A booking made under a weekly rule the owner has since deleted, or on a
+    date a later exception closed: the row exists and `count_by_start` counts it,
+    but it has no capacity behind it. Iterating the GRID rather than the mapping
+    is what keeps `booked <= capacity` and utilization at or below 100%."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            await _open_the_last_forward_day(session, tenant_id)
+            await _book(session, tenant_id, starts_at=_boutique(FORWARD_END, 9))
+            # Same forward window, no rule opens it: the day before FORWARD_END.
+            await _book(
+                session,
+                tenant_id,
+                starts_at=_boutique(FORWARD_END - datetime.timedelta(days=1), 10),
+            )
+            # On the opened day but after close_time, which is exclusive.
+            await _book(session, tenant_id, starts_at=_boutique(FORWARD_END, 12))
+
+        forward = (await _service(factory).dashboard(tenant_id)).forward
+
+        assert forward.capacity == FORWARD_STARTS * FORWARD_CAPACITY
+        assert forward.booked == 1
+        assert forward.booked <= forward.capacity
+    finally:
+        await engine.dispose()
+
+
+# --- the whole response, assembled from real rows --------------------------
+
+
+async def test_the_dashboard_assembles_every_panel_from_one_projection(
+    app_role_url: str,
+) -> None:
+    """The three-reads-and-one-grid assembly, which `test_dashboard_api.py`
+    cannot reach because it swaps in a fake.
+
+    Four brides, deliberately shaped so every fold answers something different:
+    ANNA came before the window (returning, lifetime 2), BETH twice inside it
+    (new, and a repeat), CARA once and did not show (new, not a repeat), and
+    DINA cancelled — so she is in no bucket, in no type count and in no cohort,
+    while her row still lands in `status_totals` and in the cancellation rate.
+
+    No availability rule at all, so the forward panel is the zero-hours boutique:
+    `capacity == 0` renders as NOT COMPUTABLE and never as 0%.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    anna, beth, cara, dina = (uuid.uuid4() for _ in range(4))
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            await _book(session, tenant_id, starts_at=BEFORE_WINDOW, customer_id=anna)
+            await _book(
+                session,
+                tenant_id,
+                starts_at=INSIDE,
+                customer_id=anna,
+                appointment_type_id=FITTING_ID,
+            )
+            await _book(
+                session,
+                tenant_id,
+                starts_at=LATER_INSIDE,
+                customer_id=beth,
+                appointment_type_id=FITTING_ID,
+            )
+            await _book(
+                session,
+                tenant_id,
+                starts_at=INSIDE + datetime.timedelta(hours=2),
+                customer_id=beth,
+                appointment_type_id=FITTING_ID,
+                status=BookingStatus.COMPLETED.value,
+            )
+            await _book(
+                session,
+                tenant_id,
+                starts_at=INSIDE + datetime.timedelta(hours=3),
+                customer_id=cara,
+                appointment_type_id=FITTING_ID,
+                status=BookingStatus.NO_SHOW.value,
+            )
+            await _book(
+                session,
+                tenant_id,
+                starts_at=INSIDE + datetime.timedelta(hours=4),
+                customer_id=dina,
+                appointment_type_id=CONSULT_ID,
+                appointment_type_name="ייעוץ",
+                status=BookingStatus.CANCELLED.value,
+                cancelled_by=BookingCancelledBy.CUSTOMER.value,
+            )
+
+        response = await _service(factory).dashboard(tenant_id)
+        history = response.history
+
+        assert response.generated_on == TODAY
+        assert history.from_date == WINDOW.first_week_start
+        assert history.to_date == WINDOW.current_week_start - datetime.timedelta(days=1)
+        assert len(history.weeks) == HISTORY_WEEKS
+        assert [week.week_start for week in history.weeks] == sorted(
+            week.week_start for week in history.weeks
+        )
+
+        # Five in-window rows; ANNA's pre-window booking is outside the scan.
+        assert history.status_totals.confirmed == 2
+        assert history.status_totals.cancelled == 1
+        assert history.status_totals.no_show == 1
+        assert history.status_totals.completed == 1
+
+        filled = {week.week_start: week.bookings for week in history.weeks if week.bookings}
+        assert filled == {INSIDE_BUCKET: 4}
+        assert sum(week.bookings for week in history.weeks) == (
+            history.status_totals.confirmed
+            + history.status_totals.no_show
+            + history.status_totals.completed
+        )
+
+        assert history.cancellation_rate == 1 / 5
+        assert history.cancelled_by_customer == 1
+        assert history.cancelled_by_owner == 0
+        assert history.no_show_rate == 1 / 2
+
+        # DINA's cancelled consultation raises no type count (C2), so the types
+        # sum can never exceed the bars above it.
+        assert [(row.appointment_type_id, row.bookings) for row in history.appointment_types] == [
+            (FITTING_ID, 4)
+        ]
+
+        assert history.customers.total == 3  # DINA cancelled, so she is no cohort member
+        assert history.customers.new == 2  # BETH and CARA
+        assert history.customers.returning == 1  # ANNA, whose first visit predates the window
+        assert history.customers.repeat_rate == 2 / 3  # ANNA and BETH hold two each
+
+        assert response.forward.capacity == 0
+        assert response.forward.booked == 0
+        assert response.forward.utilization is None
+    finally:
+        await engine.dispose()
+
+
+# --- RLS -------------------------------------------------------------------
+
+
+async def test_one_tenants_dashboard_never_counts_anothers_bookings(
+    app_role_url: str,
+) -> None:
+    """Asserted in BOTH directions in one test, and that is the whole point.
+
+    With no tenant context bound, `current_setting('app.tenant_id', true)::uuid`
+    is NULL, every comparison is NULL and every row is filtered out — a `by_id`
+    then 404s visibly, but an aggregate returns a perfectly plausible all-zeros
+    dashboard with nothing in the response and nothing in the logs to say so. A
+    test that only checked "B sees nothing" would pass against a service that
+    had lost `tenant_session` entirely, so A's own numbers are asserted non-zero
+    in the same run.
+
+    B has hours of her own and no bookings, so her zeros are about bookings
+    rather than about an empty tenant.
+    """
+    engine, factory = _factory(app_role_url)
+    mine, theirs = uuid.uuid4(), uuid.uuid4()
+    try:
+        async with tenant_session(factory, mine) as session:
+            await _open_the_last_forward_day(session, mine)
+            await _book(session, mine, starts_at=INSIDE, appointment_type_id=FITTING_ID)
+            await _book(session, mine, starts_at=LATER_INSIDE, appointment_type_id=FITTING_ID)
+            await _book(session, mine, starts_at=_boutique(FORWARD_END, 9))
+        async with tenant_session(factory, theirs) as session:
+            await _open_the_last_forward_day(session, theirs)
+
+        service = _service(factory)
+        ours = await service.dashboard(mine)
+        yours = await service.dashboard(theirs)
+
+        # Two of the three are in the history window; the third is a week out,
+        # which is what makes it the FORWARD panel's row and not this one's.
+        assert ours.history.status_totals.confirmed == 2
+        assert sum(week.bookings for week in ours.history.weeks) == 2
+        assert ours.history.customers.total == 2
+        assert ours.history.appointment_types
+        assert ours.forward.booked == 1
+
+        assert yours.history.status_totals.confirmed == 0
+        assert sum(week.bookings for week in yours.history.weeks) == 0
+        assert yours.history.customers.total == 0
+        assert yours.history.appointment_types == []
+        assert yours.history.cancellation_rate is None
+        assert yours.forward.booked == 0
+        # Her own hours are visible, so the zeros above are about BOOKINGS.
+        assert yours.forward.capacity == FORWARD_STARTS * FORWARD_CAPACITY
     finally:
         await engine.dispose()
