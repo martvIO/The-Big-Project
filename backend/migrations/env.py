@@ -11,7 +11,17 @@ from app.core.config import get_settings
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False, and NOT the alembic template's default of
+    # True: alembic.ini names root/sqlalchemy/alembic only, so the default sets
+    # `disabled = True` on every OTHER logger that already exists in the process
+    # — "app" among them, since app.* modules hold module-scope loggers. A
+    # disabled logger drops records inside isEnabledFor, before any handler, so
+    # the silence is total and permanent for the life of the process. Under
+    # pytest one `command.upgrade` in a db fixture used to mute every later
+    # assertion about an "app" log line for the rest of the session, which is
+    # why test_error_log_line_carries_only_status_and_code was green locally
+    # (db tests deselected) and red on CI (they are not).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Populated when models arrive (Feature 3: tenants). None = migrations are hand-written.
 target_metadata = None

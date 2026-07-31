@@ -83,6 +83,7 @@ from app.notifications.service import (
     OtpService,
     OtpThrottledError,
 )
+from app.notifications.twilio import TwilioSmsSender
 from app.notifications.unconfigured import UnconfiguredSmsSender
 from app.security_headers import SecurityHeadersMiddleware
 from app.storage.base import (
@@ -411,6 +412,18 @@ def _build_sms_sender(settings: Settings) -> SmsSender:
     if settings.sms_provider == "fake":
         logger.info("SMS sender: FAKE (in-memory outbox) — no real SMS will be sent")
         return FakeSmsSender()
+    if settings.sms_provider == "twilio":
+        sender = TwilioSmsSender(settings)
+        if sender.is_configured:
+            logger.info("SMS sender: TWILIO — real sends from %s", sender.from_number)
+        else:
+            # Incomplete credentials degrade to the same 503 as no provider, so
+            # without this line the only symptom is a silent boutique.
+            logger.warning(
+                "SMS sender: TWILIO selected but one or more TWILIO_* variables are "
+                "missing — OTP send will answer 503 SMS_NOT_CONFIGURED"
+            )
+        return sender
     logger.info("SMS sender NOT configured — OTP send will answer 503 SMS_NOT_CONFIGURED")
     return UnconfiguredSmsSender()
 

@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEV_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/boutique"
@@ -53,8 +53,22 @@ class Settings(BaseSettings):
     # length, TTLs, attempt cap) lives once in app/notifications/validation.py.
     # None → UnconfiguredSmsSender: no provider is a supported deployment where
     # OTP send answers 503, exactly like the missing media bucket. "fake" is the
-    # dev/staging adapter; the real provider literal is added with its adapter.
-    sms_provider: Literal["fake"] | None = None
+    # dev/staging adapter; "twilio" is the real one and the only value that makes
+    # production legal.
+    sms_provider: Literal["fake", "twilio"] | None = None
+    # These four ARE fields, unlike the AWS pair above, and the boto3 precedent
+    # does not transfer: boto3 reads the process environment ITSELF, whereas the
+    # Twilio adapter is hand-written and nothing else in the tree reads these
+    # names. Kept out of Settings they would be invisible whenever they arrive
+    # via `.env` — which is exactly where .env.example tells an operator to put
+    # them — and the adapter would report is_configured False while every OTP
+    # answered 503. As fields, pydantic-settings reads BOTH the `.env` file and
+    # real process env vars, so Railway is unaffected. SecretStr is what keeps
+    # them out of a repr, a log line and a traceback frame.
+    twilio_account_sid: SecretStr | None = None
+    twilio_api_key_sid: SecretStr | None = None
+    twilio_api_key_secret: SecretStr | None = None
+    twilio_from_number: SecretStr | None = None
     # Staging-only escape hatch: verify() also accepts this exact code. The
     # validator below makes it — and the fake sender — a BOOT FAILURE in
     # production, which is what keeps staging convenience from becoming a hole.
