@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
+current: F52                    # started 2026-07-31. F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
                                 # Queue reconciled 2026-07-30 for the finish-the-project run:
                                 # 32 features reachable, 0 unreachable, 3 parked (F18/F29 external, F32 subsumed).
                                 # Verified by simulating the pick rule to exhaustion — deps absent from this
@@ -250,8 +250,9 @@ queue:
     slug: kpi-dashboard
     epic: SMC
     title: "KPI dashboard (ops + customer)"
-    status: queued
+    status: specing
     deps: [F31]
+    attempts: 1
     note: >-
       SMC-3. GET /manage/dashboard, Jerusalem window, both roles: bookings/week
       (Sunday-start buckets), no-show + cancellation rates, busiest types,
