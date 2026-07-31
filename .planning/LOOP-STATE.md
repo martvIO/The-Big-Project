@@ -210,6 +210,43 @@ queue:
       re-derive it from the code at production scale rather than treat the
       acknowledgment as a closed finding.
 
+  # ---- Deploy: the frontends have never been hosted anywhere ----
+  - id: F55
+    slug: serve-spas-from-api
+    epic: cross
+    title: "FastAPI serves the built SPAs (same-origin hosting)"
+    status: queued
+    deps: []
+    note: >-
+      NEW 2026-07-31. The gap nobody had noticed: CI builds both React apps and
+      then throws them away. Only the API is deployed, so the console and the
+      storefront exist on developer machines and nowhere else. The domain is now
+      bought and the Railway wildcard is created, which makes this the last piece
+      between here and a URL a boutique can open.
+      USER RULING 2026-07-31 after a written trade-off review: the API serves the
+      built static files — SAME ORIGIN. Not a separate origin (Cloudflare Pages
+      style), and the reason is specific to this codebase rather than taste:
+      app/auth/cookies.py mints the session cookie with NO Domain attribute, so
+      the browser itself refuses to send boutique A's session to boutique B's
+      subdomain. A separate frontend origin forces Domain=.modryn.co.il to make
+      credentialed cross-origin calls work, and that single change hands every
+      tenant's cookie to every tenant's hostname — trading a browser-enforced
+      isolation guarantee for one we would have to re-implement and never get
+      wrong. It would also force dynamic wildcard CORS into a codebase that
+      documents "no CORS, ever".
+      Cloudflare stays available as a LATER pure addition, but only in front of
+      the same origin (edge static + proxy /manage and /storefront through) —
+      that costs no code change. Note for F20 if it ever happens: Cloudflare
+      terminates TLS, so bride PII would transit their edge, which the
+      il-central-1 data-residency decision has to account for.
+      Scope: mount StaticFiles for each app, SPA-fallback to index.html per host
+      (manage vs storefront is decided by which app the host maps to), leave every
+      /manage, /storefront and /health route ahead of the catch-all, keep the
+      security headers middleware outermost, and add a CI step that builds the
+      SPAs into the image the deploy uploads. Must not break the Vite dev proxy.
+      Watch: the storefront is anonymous and the console is not, so the fallback
+      must never serve the console shell on a storefront host.
+
   # ---- E3 carve-out: the SMS adapter F11 deliberately deferred ----
   - id: F54
     slug: sms-twilio-adapter
@@ -628,9 +665,9 @@ queue:
 user_actions:                   # only the human can clear these; every report re-nags
   # Rewritten 2026-07-31: the user supplied Lemon Squeezy + Twilio credentials,
   # which removed the two longest-standing blockers. What remains is smaller.
+  - "Add 3 DNS records at DomainTheNet (external-applications.md → 'DNS records to add') — the domain is BOUGHT and the Railway wildcard is created; these records are the only thing between here and a live https://{slug}.modryn.co.il"
   - "Send the Twilio ACCOUNT SID (AC…) and the phone number in E.164 (#4b) — the only two values F54 is missing; the API key pair alone names no account and a PN… SID is not a valid `From`"
-  - "Buy the modryn.co.il domain (#2) — now the TOP open item: it is the only thing between here and a public staging URL, and it gates the F21 rows that need a real host"
-  - "Rotate the Lemon Squeezy API key + webhook secret and the Twilio API key secret — all were pasted into a chat transcript on 2026-07-31"
+  - "ROTATE THREE SECRETS pasted into a chat transcript on 2026-07-31: the modryn.co.il domain-management password (highest priority — it controls nameservers and transfers), the Lemon Squeezy API key + webhook secret, and the Twilio API key secret"
   - "Choose the production Israeli PSP before live money (#3) — Grow/Tranzila/Cardcom; NOT urgent, LS test mode covers every E4 build, and the winner is one adapter file behind F17's port"
   - "Register SMS sender ID 'MODRYN' (#4) — required before PRODUCTION sends; development runs on the Twilio long-code number"
   - "Get counsel to review the F16 SMS bodies and the F20 privacy default before either goes live"
