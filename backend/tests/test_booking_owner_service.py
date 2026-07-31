@@ -45,7 +45,7 @@ from app.booking.service import BookingNotFoundError, SlotUnavailableError
 from app.booking.slots import Slot
 from app.booking.validation import BOOKING_LIST_DEFAULT_LIMIT, BOOKING_LIST_MAX_LIMIT
 from app.db.repositories.audit_log import AuditLogRepository
-from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.bookings import BookingsRepository, CheckInOutcome
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.errors import DomainValidationError
@@ -1830,3 +1830,321 @@ async def test_a_committed_correction_or_resend_spends_the_budget(
         await service.resend_link(TENANT_ID, booking.id, staff=STAFF)
 
     assert limiter.is_blocked(f"booking:owner_sms:{TENANT_ID}") is True
+
+
+# --- F34: check-in and its undo ---
+#
+# The concurrency proofs are the db-marked suite's (a fake cannot reproduce
+# `populate_existing` against a real identity map). What is worth testing HERE
+# is the branch: the service must map the repository's three-valued outcome onto
+# 200 / 409 / 404 and must never re-read the loaded object to decide.
+
+
+class _CheckInWrites:
+    def __init__(self) -> None:
+        self.order: list[str] = []
+        self.check_in: list[dict[str, Any]] = []
+        self.undo: list[uuid.UUID] = []
+        self.audit: list[dict[str, Any]] = []
+
+
+def _install_check_in(
+    monkeypatch: pytest.MonkeyPatch,
+    booking: Booking | None,
+    *,
+    outcome: CheckInOutcome = CheckInOutcome.WROTE,
+    stamps: dict[str, object] | None = None,
+    missing_row: bool = False,
+) -> _CheckInWrites:
+    """The refreshed row is derived INSIDE the fake writer, never at install
+    time, because `_derive` stamps its changes onto the loaded instance — which
+    is the identity-map fidelity this whole module is built on. Deriving early
+    would hand the service a booking that was already checked in before it ever
+    loaded it, and every step-2 assertion here would be testing the fake.
+
+    `stamps` defaults to what the real writer would have written on success. A
+    test that needs a refreshed row DISAGREEING with `outcome` passes it
+    explicitly — that is the whole point of the disagreement test below, which a
+    service re-reading `booking.checked_in_at` after the write would fail while
+    passing every other test in this block."""
+    writes = _CheckInWrites()
+
+    async def _by_id(
+        self: object, session: object, tenant_id: uuid.UUID, booking_id: uuid.UUID
+    ) -> Booking | None:
+        writes.order.append("by_id")
+        return booking
+
+    def _row(default: dict[str, object]) -> Booking | None:
+        if missing_row or booking is None:
+            return None
+        return _derive(booking, **(default if stamps is None else stamps))
+
+    async def _check_in(
+        self: object,
+        session: object,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        at: datetime.datetime,
+    ) -> tuple[CheckInOutcome, Booking | None]:
+        writes.order.append("check_in")
+        writes.check_in.append({"booking_id": booking_id, "at": at})
+        return outcome, _row({"checked_in_at": at})
+
+    async def _undo_check_in(
+        self: object, session: object, tenant_id: uuid.UUID, booking_id: uuid.UUID
+    ) -> tuple[CheckInOutcome, Booking | None]:
+        writes.order.append("undo_check_in")
+        writes.undo.append(booking_id)
+        return outcome, _row({"checked_in_at": None})
+
+    async def _record(
+        self: object,
+        session: object,
+        *,
+        tenant_id: uuid.UUID,
+        action: str,
+        actor_id: uuid.UUID | None = None,
+        entity: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        writes.order.append("audit")
+        # Same one line every audit-writing path pays: `audit_log.details` is
+        # JSONB and `session.add` type-checks nothing, so a datetime in there
+        # raises at FLUSH — which a fake-repo suite would otherwise never see.
+        json.dumps(details)
+        writes.audit.append(
+            {"action": action, "actor_id": actor_id, "entity": entity, "details": details}
+        )
+
+    monkeypatch.setattr(BookingsRepository, "by_id", _by_id)
+    monkeypatch.setattr(BookingsRepository, "check_in", _check_in)
+    monkeypatch.setattr(BookingsRepository, "undo_check_in", _undo_check_in)
+    monkeypatch.setattr(AuditLogRepository, "record", _record)
+    return writes
+
+
+async def test_check_in_on_a_confirmed_booking_writes_it_and_one_audit_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=PAST, checked_in_at=None)
+    writes = _install_check_in(monkeypatch, booking)
+
+    result = await _service().check_in(TENANT_ID, booking.id, staff=STAFF)
+
+    assert result.changed is True
+    assert result.booking.checked_in_at == NOW
+    assert writes.order == ["by_id", "check_in", "audit"]
+    assert writes.check_in[0]["at"] == NOW
+    assert writes.audit == [
+        {
+            "action": AuditAction.BOOKING_CHECKED_IN.value,
+            "actor_id": STAFF.id,
+            "entity": str(booking.id),
+            "details": {"checked_in_at": NOW.isoformat()},
+        }
+    ]
+
+
+async def test_a_repeat_check_in_is_a_200_with_no_audit_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 2 of the shipped transition shape: the Python pre-check is what makes
+    the answer honest in the UNCONTENDED case, so it short-circuits before the
+    write and the repository is never reached."""
+    already = datetime.datetime(2026, 7, 30, 8, 40, tzinfo=datetime.UTC)
+    booking = _booking(status=CONFIRMED, starts_at=PAST, checked_in_at=already)
+    writes = _install_check_in(monkeypatch, booking)
+
+    result = await _service().check_in(TENANT_ID, booking.id, staff=STAFF)
+
+    assert result.changed is False
+    # The FIRST staffer's timestamp, unmoved.
+    assert result.booking.checked_in_at == already
+    assert writes.order == ["by_id"]
+    assert writes.audit == []
+
+
+@pytest.mark.parametrize("status", [CANCELLED, NO_SHOW, COMPLETED])
+async def test_check_in_on_a_booking_that_is_not_confirmed_is_a_409(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    booking = _booking(status=status, starts_at=PAST, checked_in_at=None)
+    writes = _install_check_in(monkeypatch, booking)
+
+    with pytest.raises(BookingTransitionInvalidError):
+        await _service().check_in(TENANT_ID, booking.id, staff=STAFF)
+
+    assert writes.order == ["by_id"]
+    assert writes.audit == []
+
+
+async def test_a_repository_refusal_raises_before_any_audit_row_is_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancel landed between the read and the write, so the guarded UPDATE
+    matched zero rows for the OTHER reason. The raise rolls the transaction back
+    BEFORE the audit row, rather than committing evidence for a check-in that
+    did not happen — `_transition`'s rule, unchanged."""
+    booking = _booking(status=CONFIRMED, starts_at=PAST, checked_in_at=None)
+    writes = _install_check_in(monkeypatch, booking, outcome=CheckInOutcome.NOT_CONFIRMED)
+
+    with pytest.raises(BookingTransitionInvalidError):
+        await _service().check_in(TENANT_ID, booking.id, staff=STAFF)
+
+    assert writes.order == ["by_id", "check_in"]
+    assert writes.audit == []
+
+
+async def test_a_repository_miss_is_a_404_even_though_the_row_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=PAST, checked_in_at=None)
+    writes = _install_check_in(
+        monkeypatch, booking, outcome=CheckInOutcome.MISSING, missing_row=True
+    )
+
+    with pytest.raises(BookingNotFoundError):
+        await _service().check_in(TENANT_ID, booking.id, staff=STAFF)
+
+    assert writes.audit == []
+
+
+async def test_an_unknown_booking_is_a_404_before_the_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writes = _install_check_in(monkeypatch, None)
+    with pytest.raises(BookingNotFoundError):
+        await _service().check_in(TENANT_ID, uuid.uuid4(), staff=STAFF)
+    assert writes.order == ["by_id"]
+
+
+async def test_the_service_branches_on_the_outcome_and_never_on_the_row_it_got_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE test that fails if anybody re-introduces the poisoned read.
+
+    The fake hands back an outcome that DISAGREES with the row beside it: the
+    repository says NOT_CONFIRMED (zero rows, somebody cancelled her in the gap)
+    while the row it returns carries a timestamp. A service asking
+    `if booking.checked_in_at is not None` would answer a cheerful 200 here —
+    which is exactly the false success spec D4(5) describes, a check-mark on a
+    cancelled booking with no audit row behind it.
+
+    The mirror case is asserted too: ALREADY_CHECKED_IN beside a row reading
+    NULL must still be a 200-unchanged with no audit row."""
+    booking = _booking(status=CONFIRMED, starts_at=PAST, checked_in_at=None)
+    writes = _install_check_in(
+        monkeypatch,
+        booking,
+        outcome=CheckInOutcome.NOT_CONFIRMED,
+        stamps={"checked_in_at": NOW},
+    )
+    with pytest.raises(BookingTransitionInvalidError):
+        await _service().check_in(TENANT_ID, booking.id, staff=STAFF)
+    assert writes.audit == []
+
+    booking = _booking(status=CONFIRMED, starts_at=PAST, checked_in_at=None)
+    writes = _install_check_in(
+        monkeypatch,
+        booking,
+        outcome=CheckInOutcome.ALREADY_CHECKED_IN,
+        stamps={"checked_in_at": None},
+    )
+    result = await _service().check_in(TENANT_ID, booking.id, staff=STAFF)
+    assert result.changed is False
+    assert writes.audit == []
+
+
+async def test_check_in_takes_no_clock_bound_in_either_direction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bride arriving twenty minutes early is the ordinary case the board
+    exists for, and a `starts_at <= now` guard would refuse it. An early arrival
+    is not a lie, it is a fact with a timestamp (D5)."""
+    booking = _booking(status=CONFIRMED, starts_at=FUTURE, checked_in_at=None)
+    writes = _install_check_in(monkeypatch, booking)
+
+    result = await _service().check_in(TENANT_ID, booking.id, staff=STAFF)
+
+    assert result.changed is True
+    assert writes.order == ["by_id", "check_in", "audit"]
+
+
+async def test_undo_clears_it_and_the_audit_row_carries_the_value_it_destroyed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`previous_checked_in_at` is load-bearing: clearing the column destroys the
+    only copy of the arrival time and `bookings` has no history table.
+
+    It must be captured BEFORE the write, for exactly the reason `_transition`
+    captures `from_status` before the write — the repository's UPDATE stamps the
+    in-memory instance, so reading it afterwards would record `None`."""
+    arrived = datetime.datetime(2026, 7, 30, 8, 40, tzinfo=datetime.UTC)
+    booking = _booking(status=CONFIRMED, starts_at=PAST, checked_in_at=arrived)
+    writes = _install_check_in(monkeypatch, booking)
+
+    result = await _service().undo_check_in(TENANT_ID, booking.id, staff=STAFF)
+
+    assert result.changed is True
+    assert result.booking.checked_in_at is None
+    assert writes.order == ["by_id", "undo_check_in", "audit"]
+    assert writes.audit == [
+        {
+            "action": AuditAction.BOOKING_CHECK_IN_UNDONE.value,
+            "actor_id": STAFF.id,
+            "entity": str(booking.id),
+            "details": {"previous_checked_in_at": arrived.isoformat()},
+        }
+    ]
+
+
+async def test_undo_of_a_never_checked_in_booking_is_a_200_with_no_audit_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    booking = _booking(status=CONFIRMED, starts_at=PAST, checked_in_at=None)
+    writes = _install_check_in(monkeypatch, booking)
+
+    result = await _service().undo_check_in(TENANT_ID, booking.id, staff=STAFF)
+
+    assert result.changed is False
+    assert writes.order == ["by_id"]
+    assert writes.audit == []
+
+
+@pytest.mark.parametrize("status", [CANCELLED, NO_SHOW, COMPLETED])
+async def test_undo_has_no_status_guard_at_all(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """D5's ruling, asserted rather than inferred from an absent predicate: the
+    `/confirm` precedent — a mis-tap is correctable whenever it is noticed. A
+    bride checked in and then CANCELLED must still have it undoable, or a wrong
+    arrival record is permanent."""
+    arrived = datetime.datetime(2026, 7, 30, 8, 40, tzinfo=datetime.UTC)
+    booking = _booking(status=status, starts_at=PAST, checked_in_at=arrived)
+    writes = _install_check_in(monkeypatch, booking)
+
+    result = await _service().undo_check_in(TENANT_ID, booking.id, staff=STAFF)
+
+    assert result.changed is True
+    assert writes.order == ["by_id", "undo_check_in", "audit"]
+    assert writes.audit[0]["details"] == {"previous_checked_in_at": arrived.isoformat()}
+
+
+async def test_undo_of_an_unknown_booking_is_a_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    writes = _install_check_in(monkeypatch, None)
+    with pytest.raises(BookingNotFoundError):
+        await _service().undo_check_in(TENANT_ID, uuid.uuid4(), staff=STAFF)
+    assert writes.order == ["by_id"]
+
+
+async def test_a_repository_miss_on_the_undo_is_a_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    arrived = datetime.datetime(2026, 7, 30, 8, 40, tzinfo=datetime.UTC)
+    booking = _booking(status=CONFIRMED, starts_at=PAST, checked_in_at=arrived)
+    writes = _install_check_in(
+        monkeypatch, booking, outcome=CheckInOutcome.MISSING, missing_row=True
+    )
+    with pytest.raises(BookingNotFoundError):
+        await _service().undo_check_in(TENANT_ID, booking.id, staff=STAFF)
+    assert writes.audit == []
