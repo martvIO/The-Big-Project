@@ -5,6 +5,7 @@ import { api } from "./api";
 import type { Staff } from "./api";
 import { BookingsSection } from "./components/BookingsSection";
 import { CatalogSection } from "./components/CatalogSection";
+import { DashboardSection } from "./components/DashboardSection";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
 import { ProfileSection } from "./components/ProfileSection";
@@ -12,7 +13,15 @@ import { StaffSection } from "./components/StaffSection";
 import { TermsSection } from "./components/TermsSection";
 import { TypesSection } from "./components/TypesSection";
 
-type SectionKey = "profile" | "hours" | "types" | "terms" | "catalog" | "bookings" | "staff";
+type SectionKey =
+  | "dashboard"
+  | "profile"
+  | "hours"
+  | "types"
+  | "terms"
+  | "catalog"
+  | "bookings"
+  | "staff";
 
 const ALL = ["owner", "shift_manager"] as const;
 
@@ -33,6 +42,10 @@ interface NavItem {
 }
 
 const NAV: readonly NavItem[] = [
+  // FIRST, and reachable by both roles: the console lands here (D10), so this
+  // row's position is what makes the initial `section` below and the
+  // `reachable[0]` fallback agree.
+  { key: "dashboard", labelKey: "nav.dashboard", roles: ALL },
   { key: "profile", labelKey: "nav.profile", roles: ALL },
   { key: "hours", labelKey: "nav.hours", roles: ALL },
   { key: "types", labelKey: "nav.types", roles: ALL },
@@ -46,7 +59,12 @@ export function App() {
   const { t } = useTranslation();
   const [staff, setStaff] = useState<Staff | null>(null);
   const [bootstrapped, setBootstrapped] = useState(false);
-  const [section, setSection] = useState<SectionKey>("profile");
+  // The landing section. Was "profile" — the screen an owner configures once
+  // and never opens again, shown to her and to every shift manager on every
+  // login. An out-of-enum role reaches no NAV row at all, so the fallback below
+  // now lands it here rather than on a 200-ing Profile panel, and its one fetch
+  // 403s — which is why DashboardSection's outage copy covers any ApiError.
+  const [section, setSection] = useState<SectionKey>("dashboard");
 
   useEffect(() => {
     api
@@ -108,6 +126,7 @@ export function App() {
         activeKey={activeKey}
         onNavigate={(key) => setSection(key as SectionKey)}
       >
+        {activeKey === "dashboard" && <DashboardSection />}
         {activeKey === "profile" && <ProfileSection />}
         {activeKey === "hours" && <HoursSection />}
         {activeKey === "types" && <TypesSection />}
