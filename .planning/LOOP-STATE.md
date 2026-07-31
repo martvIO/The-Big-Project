@@ -134,7 +134,8 @@ queue:
     slug: gateway-port
     epic: E4
     title: Payment gateway port + credential management
-    status: specing
+    status: merged
+    pr: 29
     deps: [F7]
     attempts: 1
     spec_gate: user
@@ -171,7 +172,9 @@ queue:
     slug: lemonsqueezy-adapter
     epic: E4
     title: Lemon Squeezy payment sessions & webhooks (test-mode adapter)
-    status: queued
+    status: specing
+    spec: .planning/specs/lemonsqueezy-adapter.md
+    attempts: 1
     deps: [F17]
     spec_gate: user
     note: >-
