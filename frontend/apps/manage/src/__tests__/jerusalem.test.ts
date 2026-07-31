@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jerusalemDate, jerusalemTime, todayJerusalem } from "../lib/jerusalem";
+import { jerusalemDate, jerusalemTime, plainDate, todayJerusalem } from "../lib/jerusalem";
 
 // These assertions only mean something because apps/manage's `test` script pins
 // TZ=America/New_York (the storefront and packages/ui pin the same deliberately
@@ -26,6 +26,26 @@ describe("jerusalemDate / jerusalemTime", () => {
   it("pads the hour and keeps a 24h clock past noon", () => {
     expect(jerusalemTime("2026-08-04T04:05:00Z")).toBe("07:05");
     expect(jerusalemTime("2026-08-04T16:00:00Z")).toBe("19:00");
+  });
+});
+
+describe("plainDate", () => {
+  // The dashboard's generated_on, from_date and to_date are PLAIN Jerusalem
+  // calendar dates on the wire, not instants — so they must never meet a Date.
+  it("formats a wire date d.m.yyyy without constructing a Date", () => {
+    expect(plainDate("2026-05-03")).toBe("3.5.2026");
+    expect(plainDate("2026-07-25")).toBe("25.7.2026");
+  });
+
+  it("does not re-zone a date that was never in a zone", () => {
+    // This is the assertion with the bite, and the whole reason the helper
+    // exists. Under this suite's TZ=America/New_York, `new Date("2026-05-03")`
+    // is UTC midnight = 2 May at 20:00 local, so a device-clock read of the
+    // same string prints 2.5.2026 — and jerusalemDate would re-zone a date that
+    // was never in a zone. Route a wire date through a Date by either path and
+    // this line goes red.
+    expect(plainDate("2026-05-03")).toBe("3.5.2026");
+    expect(plainDate("2026-01-01")).toBe("1.1.2026");
   });
 });
 
