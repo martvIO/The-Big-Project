@@ -388,21 +388,60 @@ export function BookPage({ step, dressId }: BookPageProps) {
     };
   }, [dressId]);
 
+  // No dep array on purpose: the render that mounts a pending target is not one
+  // this effect can name in a dep list, so it has to get a look after every
+  // commit.
+  //
+  // Which is why the clear is CONDITIONAL on having resolved a node, and must
+  // stay that way. React runs passive effects in a task of their own, after
+  // paint, so any render that commits between the decision and this flush
+  // arrives while the target is still unmounted — the code field and the dead
+  // end are both mounted BY the state change that asks for them. Clearing there
+  // and calling `?.focus()` on the null ref LOSES the move permanently rather
+  // than delaying it, dropping her on a control that is about to disappear
+  // (WCAG 2.4.3). Declining costs one no-op pass and lets the render that does
+  // mount the node honour it.
   useEffect(() => {
     const target = pendingFocus.current;
     if (target === null) return;
-    pendingFocus.current = null;
     const node =
       target === "phone"
         ? phoneRef.current
         : target === "code"
           ? codeRef.current
           : deadEndRef.current;
-    node?.focus();
+    // Not mounted yet — KEEP the intent for a later commit.
+    if (node === null) return;
+    pendingFocus.current = null;
+    node.focus();
     // Selected, never cleared: clearing destroys the evidence of what she typed,
     // and on OTP_EXPIRED the digits were probably right.
     if (node instanceof HTMLInputElement) node.select();
   });
+
+  // One of the two bounds on keeping intents alive; the other is in the phone
+  // field's onChange, which drops a `code` intent she has typed past. All three
+  // destinations live in the verify step, so an intent that outlives a step
+  // change can only be honoured by a LATER arrival at verify — where it would
+  // yank focus on entry, a WCAG 3.2.1 defect of its own rather than a fix for
+  // one. No setter navigates (submit()'s navigating branches — validation,
+  // recoverSlot, recoverTerms — set no intent, and the branches that do set one
+  // return first), so this never drops a live intent; it only catches one
+  // stranded by a navigation that raced the flush (the Back button landing in
+  // the same paint gap). Declared AFTER the effect above so a commit that both
+  // mounts the node and changes the step still lands the move first.
+  //
+  // UNTESTED, and currently untestable — deleting this line leaves the whole
+  // suite green. Firing it requires a live intent whose target is unmounted at
+  // the instant the step changes, and no reachable sequence produces that:
+  // `deadEnd` and `phone` mount their target in the same batch that sets the
+  // intent, and the one route that did strand a `code` intent at verify is now
+  // closed by the onChange bound. It is kept as defence for a future setter
+  // that DOES navigate. If you write one, test this line with it — an
+  // intent-killer that no test can distinguish is how the bug above shipped.
+  useEffect(() => {
+    pendingFocus.current = null;
+  }, [step]);
 
   useEffect(() => {
     if (!cooling) return;
@@ -1215,6 +1254,18 @@ export function BookPage({ step, dressId }: BookPageProps) {
                     const next = event.target.value;
                     setPhone(next);
                     setPhoneError(undefined);
+                    // The bound on a `code` intent, and the reason the effect
+                    // above may hold one indefinitely. The code field mounts on
+                    // `codeSent`, which is derived from the LIVE phone — so a
+                    // send() or a verify() that resolves while she is editing
+                    // sets an intent whose target never mounts. Held, it fires
+                    // on whatever commit remounts the field, which is her own
+                    // next keystroke: focus jumps out of this input mid-edit
+                    // (WCAG 3.2.2). Typing here means she is driving, so the
+                    // deferred move is stale by definition. NOT inside the
+                    // reset below: that branch is skipped on exactly the edit
+                    // that restores the sent number and remounts the field.
+                    if (pendingFocus.current === "code") pendingFocus.current = null;
                     // Editing away from the number the code was minted for
                     // collapses the field. The TOKEN is deliberately left
                     // alone: deleting one digit and retyping it is a round

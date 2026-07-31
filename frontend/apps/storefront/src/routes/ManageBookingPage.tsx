@@ -181,14 +181,41 @@ export function ManageBookingPage({ token }: { token: string }) {
     void load();
   }, [load]);
 
+  // No dep array on purpose: the render that mounts a pending intent's target is
+  // not one this effect can name in a dep list, so it has to get a look after
+  // every commit.
+  //
+  // Which is exactly why the clear is CONDITIONAL on having a node, and must
+  // stay that way. React runs passive effects in a task of their own, after
+  // paint, so any render that commits between the tap and this flush arrives
+  // while the target is still unmounted. Clearing there and calling `?.focus()`
+  // on the null ref LOSES the move permanently — it does not delay it — and the
+  // bride is left on a button that no longer exists (WCAG 2.4.3). Declining
+  // costs one no-op pass and lets the render that does mount the node honour it.
+  //
+  // Deliberately unbounded, and safe for a narrower reason than "it cannot be
+  // stranded". It can: tapping `keep` while an act() is in flight sets
+  // `trigger`, a non-409 failure then swaps in the failed view and unmounts it,
+  // and Retry can bring the trigger back. What holds is that an intent is only
+  // ever honoured by a render that mounts the node SHE ASKED FOR, so the worst
+  // case is a delayed correct move, never a wrong one — in that path focus was
+  // on the Retry button that just unmounted, so the trigger is where it should
+  // go anyway. Contrast /book, where the code field's mount condition is
+  // derived from live input she keeps editing: there a held intent CAN become a
+  // steal, and it is bounded in two places. Weigh the two failures: a lost move
+  // ships silently and axe cannot see it; a delayed correct one is inert.
   useEffect(() => {
     const target = moveFocusTo.current;
     if (target === null) return;
+    const node = {
+      reveal: revealRef,
+      trigger: cancelTriggerRef,
+      done: doneRef,
+      cancelled: cancelledRef,
+    }[target].current;
+    if (node === null) return;
     moveFocusTo.current = null;
-    if (target === "reveal") revealRef.current?.focus();
-    if (target === "trigger") cancelTriggerRef.current?.focus();
-    if (target === "done") doneRef.current?.focus();
-    if (target === "cancelled") cancelledRef.current?.focus();
+    node.focus();
   });
 
   const act = async (

@@ -15,6 +15,8 @@ import { SizeChips } from "../components/booking/SizeChips";
 import { TypePicker } from "../components/booking/TypePicker";
 import { BookPage } from "../routes/BookPage";
 import { matchRoute, usePathname } from "../router";
+import { expectFocus } from "../test/focus";
+import { inPaintGap } from "../test/interleave";
 
 // Spread the real module so ApiError and errorMessage* keep their real
 // implementations — the load-failure copy under test is chosen by CODE mapping,
@@ -1329,11 +1331,127 @@ describe("BookPage verify step — one screen that grows", () => {
     // A mistyped number is the commonest OTP failure, and she can only SEE it if
     // the number is still on screen — so the form grows, it never swaps.
     expect(screen.getByLabelText(i18n.t("booking.phone"))).toHaveValue(TYPED_PHONE);
-    expect(document.activeElement).toBe(code);
+    await expectFocus(code);
     // R16: otpSent is the field's help text, spoken once by aria-describedby as
     // focus arrives. A live region here would double-announce it.
     expect(code).toHaveAccessibleDescription(new RegExp(i18n.t("booking.otpSent")));
     expect(screen.queryByText(i18n.t("booking.otpSent"))).not.toHaveAttribute("role", "status");
+  });
+
+  // --- the pending intent must survive a render it did not ask for ---------
+  //
+  // The step defers its focus moves to the effect below the render that mounts
+  // the target, because the code field and the dead-end block do not exist when
+  // send() decides on them. That effect CLEARS the intent before it knows the
+  // focus landed, so a render that commits in between discards the move for
+  // good: node?.focus() no-ops on a ref that is still null, and nothing tries
+  // again.
+  //
+  // React runs passive effects in a task of their own, after paint, so in a
+  // browser a response can land in that gap — see inPaintGap. act() has no such
+  // gap, which is why the defect passes every other test in this file.
+  //
+  // `phone` is deliberately not covered: its field is mounted in every render
+  // the verify form has, so an early flush moves the focus early rather than
+  // losing it. Nothing to reproduce.
+
+  it("keeps the code field's focus when the send lands in the gap after a paint", async () => {
+    // The layout's boutique read is the paint: it is in flight on entry to the
+    // flow and settles whenever the network says so — here, one microtask
+    // before the send it has nothing to do with.
+    const boutiqueRead = deferred<BoutiqueResponse>();
+    loadBoutique.mockReturnValue(boutiqueRead.promise);
+    const sent = deferred<undefined>();
+    sendOtp.mockReturnValue(sent.promise);
+
+    await walkToVerify();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: TYPED_PHONE },
+    });
+    fireEvent.click(resend());
+
+    await inPaintGap(
+      () => {
+        boutiqueRead.settle(boutique());
+      },
+      () => {
+        sent.settle(undefined);
+      },
+    );
+
+    // expectFocus, not a bare read: against the FIXED code the move genuinely is
+    // later — it lands on the commit that mounts the field — so a runner too
+    // loaded to drain the flush inside the gap's settle would fail on timing
+    // alone. Polling cannot rescue the defect this pins: a discarded intent
+    // never fires, so the unfixed code spends the whole timeout and still goes
+    // red. And expectFocus re-reads strictly after settling, so a later commit
+    // taking the focus away again is still caught.
+    await expectFocus(screen.getByLabelText(i18n.t("booking.otpCode")));
+  });
+
+  it("keeps the dead end's focus when the 429 lands in the gap after a paint", async () => {
+    // The costliest one to lose: the form is REPLACED, so focus is left on a
+    // control that no longer exists and a screen reader hears nothing about the
+    // exit she was just given.
+    const boutiqueRead = deferred<BoutiqueResponse>();
+    loadBoutique.mockReturnValue(boutiqueRead.promise);
+    let refuse: () => void = () => undefined;
+    sendOtp.mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        refuse = () => {
+          reject(THROTTLED);
+        };
+      }),
+    );
+
+    await walkToVerify();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: TYPED_PHONE },
+    });
+    fireEvent.click(resend());
+
+    await inPaintGap(
+      () => {
+        boutiqueRead.settle(boutique());
+      },
+      () => {
+        refuse();
+      },
+    );
+
+    await expectFocus(screen.getByText(i18n.t("errors.otpSendBudget")).closest("[tabindex]"));
+  });
+
+  // The other half of the contract above. Keeping an intent alive until its node
+  // exists is only safe while the node is still the one she asked for; an intent
+  // that outlives that is a focus STEAL waiting for a re-mount.
+  it("drops the code intent when she edits the phone while the send is in flight", async () => {
+    const sent = deferred<undefined>();
+    sendOtp.mockReturnValue(sent.promise);
+
+    await walkToVerify();
+    const phone = screen.getByLabelText(i18n.t("booking.phone"));
+    fireEvent.change(phone, { target: { value: TYPED_PHONE } });
+    fireEvent.click(resend());
+
+    // The field carries no `disabled`, so typing through the ~1s SMS round trip
+    // is an ordinary thing to do — a stray digit, a correction.
+    fireEvent.change(phone, { target: { value: `${TYPED_PHONE}8` } });
+    await act(async () => {
+      sent.settle(undefined);
+    });
+
+    // codeSentFor is the number send() captured, and the live phone is not it —
+    // so the code field never mounted and the "code" intent has no target.
+    expect(screen.queryByLabelText(i18n.t("booking.otpCode"))).toBeNull();
+
+    // She fixes the typo. The field appears, and must NOT pull focus out of the
+    // input she is typing in (WCAG 3.2.2 — no change of context on input).
+    phone.focus();
+    fireEvent.change(phone, { target: { value: TYPED_PHONE } });
+    await screen.findByLabelText(i18n.t("booking.otpCode"));
+
+    expect(document.activeElement).toBe(phone);
   });
 
   it("keeps the code in ONE field — no six-box widget at any width", async () => {
@@ -1421,7 +1539,7 @@ describe("BookPage verify step — the dead ends", () => {
     expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
     // Reached BY a focus move, so it is deliberately not an assertive region.
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(document.activeElement).toBe(block.closest("[tabindex]"));
+    await expectFocus(block.closest("[tabindex]"));
     // The h1 and the way back both stay: she is not trapped.
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(i18n.t("booking.stepOtp"));
     expect(screen.getByRole("link", { name: i18n.t("booking.backStep") })).toBeInTheDocument();
@@ -1500,7 +1618,7 @@ describe("BookPage verify step — the dead ends", () => {
       const block = await screen.findByText(i18n.t("errors.otpSendBudget"));
       expect(sendOtp).toHaveBeenCalledTimes(5);
       expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
-      expect(document.activeElement).toBe(block.closest("[tabindex]"));
+      await expectFocus(block.closest("[tabindex]"));
     } finally {
       vi.useRealTimers();
     }
@@ -1609,7 +1727,7 @@ describe("BookPage verify step — submit", () => {
     const code = screen.getByLabelText(i18n.t("booking.otpCode"));
     // Clearing it destroys the evidence of what she typed.
     expect(code).toHaveValue("111111");
-    expect(document.activeElement).toBe(code);
+    await expectFocus(code);
     // A burnt code is indistinguishable from a wrong one, so the only working
     // remedy must stay visible directly below the field.
     expect(resendControl()).toBeInTheDocument();
@@ -1665,9 +1783,7 @@ describe("BookPage verify step — submit", () => {
     expect(screen.queryByLabelText(i18n.t("booking.otpCode"))).toBeNull();
     const phone = screen.getByLabelText(i18n.t("booking.phone"));
     expect(phone).toHaveValue(TYPED_PHONE);
-    await waitFor(() => {
-      expect(document.activeElement).toBe(phone);
-    });
+    await expectFocus(phone);
 
     // A restart of IDENTITY is not a restart of INTENT: re-typing 500 characters
     // of "coming with my mother" to fix an OTP is the dead end this feature
