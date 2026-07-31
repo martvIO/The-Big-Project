@@ -22,8 +22,8 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # floor program: F34 MERGED (PR #32) 2026-07-31, iteration 1 of 10 done.
-                                # Next pick is F57 (floor-staff-roles) — F34's merge unblocked it.
+current: F57                    # floor program iteration 2 of 10, started 2026-07-31.
+                                # F34 MERGED (PR #32) 2026-07-31 — its merge unblocked this entry.
                                 # F56 merged (PR #30), F52 merged (PR #28) 2026-07-31.
                                 # RE-PRIORITISED 2026-07-31: the FLOOR-MANAGEMENT PROGRAM now sits at the top of
                                 # `queue:` and preempts everything. Next pick is F34, then F57, F36, F33, F58,
@@ -116,7 +116,7 @@ queue:
     slug: floor-staff-roles
     epic: E6
     title: "Floor roles (reception/sales_assistant/seamstress) + break status + staff cards"
-    status: queued
+    status: specing
     deps: [F51, F34]
     note: >-
       NEW 2026-07-31 (floor program). The brief's staff cards — name, role, live
