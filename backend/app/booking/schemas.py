@@ -117,6 +117,11 @@ class OwnerBookingRow(BaseModel):
     starts_at: datetime.datetime
     status: str
     attendance_confirmed_at: datetime.datetime | None
+    # F34: when a staffer recorded that she is physically here. On the ROW and
+    # not only the detail, because the shift board only ever reads the list.
+    # Orthogonal to `status` and to `attendance_confirmed_at` above — that one is
+    # the BRIDE saying she is coming, this one is a staffer saying she arrived.
+    checked_in_at: datetime.datetime | None
     customer_name: str
     appointment_type_name: str
     dress_name: str | None
