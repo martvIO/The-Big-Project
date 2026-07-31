@@ -16,6 +16,7 @@ import { TypePicker } from "../components/booking/TypePicker";
 import { BookPage } from "../routes/BookPage";
 import { matchRoute, usePathname } from "../router";
 import { expectFocus } from "../test/focus";
+import { inPaintGap } from "../test/interleave";
 
 // Spread the real module so ApiError and errorMessage* keep their real
 // implementations — the load-failure copy under test is chosen by CODE mapping,
@@ -1335,6 +1336,86 @@ describe("BookPage verify step — one screen that grows", () => {
     // focus arrives. A live region here would double-announce it.
     expect(code).toHaveAccessibleDescription(new RegExp(i18n.t("booking.otpSent")));
     expect(screen.queryByText(i18n.t("booking.otpSent"))).not.toHaveAttribute("role", "status");
+  });
+
+  // --- the pending intent must survive a render it did not ask for ---------
+  //
+  // The step defers its focus moves to the effect below the render that mounts
+  // the target, because the code field and the dead-end block do not exist when
+  // send() decides on them. That effect CLEARS the intent before it knows the
+  // focus landed, so a render that commits in between discards the move for
+  // good: node?.focus() no-ops on a ref that is still null, and nothing tries
+  // again.
+  //
+  // React runs passive effects in a task of their own, after paint, so in a
+  // browser a response can land in that gap — see inPaintGap. act() has no such
+  // gap, which is why the defect passes every other test in this file.
+  //
+  // `phone` is deliberately not covered: its field is mounted in every render
+  // the verify form has, so an early flush moves the focus early rather than
+  // losing it. Nothing to reproduce.
+
+  it("keeps the code field's focus when the send lands in the gap after a paint", async () => {
+    // The layout's boutique read is the paint: it is in flight on entry to the
+    // flow and settles whenever the network says so — here, one microtask
+    // before the send it has nothing to do with.
+    const boutiqueRead = deferred<BoutiqueResponse>();
+    loadBoutique.mockReturnValue(boutiqueRead.promise);
+    const sent = deferred<undefined>();
+    sendOtp.mockReturnValue(sent.promise);
+
+    await walkToVerify();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: TYPED_PHONE },
+    });
+    fireEvent.click(resend());
+
+    await inPaintGap(
+      () => {
+        boutiqueRead.settle(boutique());
+      },
+      () => {
+        sent.settle(undefined);
+      },
+    );
+
+    // Not expectFocus(): the move is lost, not late.
+    expect(document.activeElement).toBe(screen.getByLabelText(i18n.t("booking.otpCode")));
+  });
+
+  it("keeps the dead end's focus when the 429 lands in the gap after a paint", async () => {
+    // The costliest one to lose: the form is REPLACED, so focus is left on a
+    // control that no longer exists and a screen reader hears nothing about the
+    // exit she was just given.
+    const boutiqueRead = deferred<BoutiqueResponse>();
+    loadBoutique.mockReturnValue(boutiqueRead.promise);
+    let refuse: () => void = () => undefined;
+    sendOtp.mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        refuse = () => {
+          reject(THROTTLED);
+        };
+      }),
+    );
+
+    await walkToVerify();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.phone")), {
+      target: { value: TYPED_PHONE },
+    });
+    fireEvent.click(resend());
+
+    await inPaintGap(
+      () => {
+        boutiqueRead.settle(boutique());
+      },
+      () => {
+        refuse();
+      },
+    );
+
+    expect(document.activeElement).toBe(
+      screen.getByText(i18n.t("errors.otpSendBudget")).closest("[tabindex]"),
+    );
   });
 
   it("keeps the code in ONE field — no six-box widget at any width", async () => {

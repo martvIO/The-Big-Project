@@ -181,14 +181,36 @@ export function ManageBookingPage({ token }: { token: string }) {
     void load();
   }, [load]);
 
+  // No dep array on purpose: the render that mounts a pending intent's target is
+  // not one this effect can name in a dep list, so it has to get a look after
+  // every commit.
+  //
+  // Which is exactly why the clear is CONDITIONAL on having a node, and must
+  // stay that way. React runs passive effects in a task of their own, after
+  // paint, so any render that commits between the tap and this flush arrives
+  // while the target is still unmounted. Clearing there and calling `?.focus()`
+  // on the null ref LOSES the move permanently — it does not delay it — and the
+  // bride is left on a button that no longer exists (WCAG 2.4.3). Declining
+  // costs one no-op pass and lets the render that does mount the node honour it.
+  //
+  // Deliberately unbounded: a stranded intent here cannot surface as a stale
+  // move later. `done`/`cancelled` are set only on a SUCCESSFUL act(), and the
+  // views that would strand one are terminal — a cancelled or past booking never
+  // becomes actionable again — while `reveal`/`trigger` are re-set by the very
+  // tap that remounts their node. Weigh the two failures: a lost move ships
+  // silently and axe cannot see it; a pending one is inert.
   useEffect(() => {
     const target = moveFocusTo.current;
     if (target === null) return;
+    const node = {
+      reveal: revealRef,
+      trigger: cancelTriggerRef,
+      done: doneRef,
+      cancelled: cancelledRef,
+    }[target].current;
+    if (node === null) return;
     moveFocusTo.current = null;
-    if (target === "reveal") revealRef.current?.focus();
-    if (target === "trigger") cancelTriggerRef.current?.focus();
-    if (target === "done") doneRef.current?.focus();
-    if (target === "cancelled") cancelledRef.current?.focus();
+    node.focus();
   });
 
   const act = async (

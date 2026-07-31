@@ -5,6 +5,7 @@ import i18n from "../i18n";
 import { StorefrontLayout } from "../components/StorefrontLayout";
 import { ManageBookingPage } from "../routes/ManageBookingPage";
 import { expectFocus } from "../test/focus";
+import { inPaintGap } from "../test/interleave";
 
 // Spread the real module so ApiError keeps its real implementation — the page
 // branches on error CODE and STATUS, and a stubbed error class would make every
@@ -298,6 +299,74 @@ describe("the cancel two-step", () => {
     fireEvent.click(await screen.findByRole("button", { name: t("manage.cancelCta") }));
 
     await expectFocus(screen.getByText(t("manage.cancelQuestion")));
+  });
+
+  // --- the pending intent must survive a render it did not ask for ---------
+  //
+  // The page defers each focus move to the effect below the render that mounts
+  // its target, because the target does not exist when the tap decides on it.
+  // The effect CLEARS the intent before it knows the focus landed, so a render
+  // that commits in between discards the move for good — ?.focus() no-ops on a
+  // ref that is still null, and there is no second attempt.
+  //
+  // A browser reaches that in-between: React runs passive effects in a task of
+  // their own, after paint, and a tap on a busy device lands in the gap. Every
+  // other test here stays inside act(), where the gap does not exist — which is
+  // exactly why this defect ships green locally and failed CI run 30623316694
+  // on the reveal test below, with focus on <body>.
+
+  it("keeps the reveal's focus when the tap lands in the gap after a paint", async () => {
+    // The layout's boutique read is held so its arrival is the paint she taps
+    // through — the ordinary case, since it is in flight for every visit.
+    let settle: (value: BoutiqueResponse) => void = () => undefined;
+    loadBoutique.mockReturnValue(
+      new Promise<BoutiqueResponse>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    renderPage();
+    const trigger = await screen.findByRole("button", { name: t("manage.cancelCta") });
+
+    await inPaintGap(
+      () => {
+        settle(boutique());
+      },
+      () => {
+        trigger.click();
+      },
+    );
+
+    // Deliberately not expectFocus(): the move is lost, not late, so polling for
+    // it would only spend a timeout proving the same thing.
+    expect(document.activeElement).toBe(screen.getByText(t("manage.cancelQuestion")));
+  });
+
+  it("keeps the collapse's focus when the tap lands in the gap after a paint", async () => {
+    // Same window, the other intent: the trigger is UNMOUNTED while the reveal
+    // is open, so its ref is null in any render that commits before the
+    // collapse — and clearing there leaves her on a <p> that is about to go.
+    let settle: (value: BoutiqueResponse) => void = () => undefined;
+    loadBoutique.mockReturnValue(
+      new Promise<BoutiqueResponse>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: t("manage.cancelCta") }));
+    const keep = screen.getByRole("button", { name: t("manage.cancelKeep") });
+
+    await inPaintGap(
+      () => {
+        settle(boutique());
+      },
+      () => {
+        keep.click();
+      },
+    );
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: t("manage.cancelCta") }),
+    );
   });
 
   it("collapses on 'keep' and returns focus to the trigger", async () => {

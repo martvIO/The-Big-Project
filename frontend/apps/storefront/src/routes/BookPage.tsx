@@ -388,21 +388,48 @@ export function BookPage({ step, dressId }: BookPageProps) {
     };
   }, [dressId]);
 
+  // No dep array on purpose: the render that mounts a pending target is not one
+  // this effect can name in a dep list, so it has to get a look after every
+  // commit.
+  //
+  // Which is why the clear is CONDITIONAL on having resolved a node, and must
+  // stay that way. React runs passive effects in a task of their own, after
+  // paint, so any render that commits between the decision and this flush
+  // arrives while the target is still unmounted — the code field and the dead
+  // end are both mounted BY the state change that asks for them. Clearing there
+  // and calling `?.focus()` on the null ref LOSES the move permanently rather
+  // than delaying it, dropping her on a control that is about to disappear
+  // (WCAG 2.4.3). Declining costs one no-op pass and lets the render that does
+  // mount the node honour it.
   useEffect(() => {
     const target = pendingFocus.current;
     if (target === null) return;
-    pendingFocus.current = null;
     const node =
       target === "phone"
         ? phoneRef.current
         : target === "code"
           ? codeRef.current
           : deadEndRef.current;
-    node?.focus();
+    // Not mounted yet — KEEP the intent for a later commit.
+    if (node === null) return;
+    pendingFocus.current = null;
+    node.focus();
     // Selected, never cleared: clearing destroys the evidence of what she typed,
     // and on OTP_EXPIRED the digits were probably right.
     if (node instanceof HTMLInputElement) node.select();
   });
+
+  // The bound on keeping intents alive, and the only one this flow needs. All
+  // three destinations live in the verify step, so an intent that outlives a
+  // step change can only be honoured by a LATER arrival at verify — where it
+  // would yank focus on entry, a WCAG 3.2.1 defect of its own rather than a fix
+  // for one. No setter navigates, so this never drops a live intent; it only
+  // catches one stranded by a navigation that raced the flush (the Back button
+  // landing in the same paint gap). Declared AFTER the effect above so a commit
+  // that both mounts the node and changes the step still lands the move first.
+  useEffect(() => {
+    pendingFocus.current = null;
+  }, [step]);
 
   useEffect(() => {
     if (!cooling) return;
