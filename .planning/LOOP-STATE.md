@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F19 + F56              # F19 spec-only (spec_gate: user); F56 in parallel (CI flake, blocks all merges). F52 merged (PR #28) 2026-07-31. F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
+current: F56                    # F19 spec DONE + Gate 1 self-approved (874c2ef) — ready to BUILD, unclaimed. F52 merged (PR #28) 2026-07-31. F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
                                 # Queue reconciled 2026-07-30 for the finish-the-project run:
                                 # 32 features reachable, 0 unreachable, 3 parked (F18/F29 external, F32 subsumed).
                                 # Verified by simulating the pick rule to exhaustion — deps absent from this
@@ -161,7 +161,8 @@ queue:
     slug: deposit-booking-flow
     epic: E4
     title: Deposit booking flow
-    status: specing
+    status: queued
+    spec: .planning/specs/deposit-booking-flow.md
     deps: [F7, F16, F17]
     spec_gate: user
     gate_1_preauthorized: >-
@@ -756,6 +757,12 @@ user_actions:                   # only the human can clear these; every report r
   - "Meta business verification (#5) — user ruled 2026-07-31 this is the LAST step. Do not re-nag before F46."
 
 in_run_gates:                   # block a specific feature; the user clears them mid-run
+  # F19 MD3 — the ONLY user item this feature left open. It blocks TWO STRINGS,
+  # not the feature: F19 builds and ships with a neutral interim sentence.
+  - id: F19
+    what: "two Hebrew sentences for a bride who PAID a deposit and taps cancel (.planning/specs/deposit-booking-flow.md, MD3)"
+    asks: 1
+    sharpest: "The SHIPPED string he.ts:297 tells her cancelling is free. That sentence becomes FALSE the day F19 merges, and she has already read it. An engineer cannot invent consumer-facing money copy; a neutral interim ships until you approve the real wording."
   # OPEN NOW — artifacts written, reviewed and on disk. To clear one, say so in any
   # session; the next iteration records the approval in the spec header, drops the
   # entry's blocker, sets it back to `queued` and builds.
