@@ -494,13 +494,18 @@ async def test_two_concurrent_open_deposits_yield_one_row_and_one_session(
 
 
 def _signed(
-    *, session_id: str, transaction_id: str, amount_agorot: int, secret: str = SECRET
+    *,
+    session_id: str,
+    transaction_id: str,
+    amount_agorot: int,
+    secret: str = SECRET,
+    paid: bool = True,
 ) -> tuple[bytes, str]:
     body = fake_webhook_body(
         provider_session_id=session_id,
         provider_transaction_id=transaction_id,
         amount_agorot=amount_agorot,
-        paid=True,
+        paid=paid,
     )
     return body, sign_fake_webhook(webhook_secret=secret, body=body)
 
@@ -531,6 +536,88 @@ async def test_settle_marks_the_row_paid_once(app_role_url: str) -> None:
         # A sequential redelivery writes nothing (the cheap path).
         again = await payments.settle_from_webhook(tenant, body=body, signature=signature)
         assert again.newly_settled is False
+    finally:
+        await engine.dispose()
+
+
+async def test_a_declined_webhook_leaves_the_hold_pending_AND_leaves_evidence(
+    app_role_url: str,
+) -> None:
+    """A signed `paid=false` delivery is the decline/failure notification every
+    real PSP posts to the same URL as its successes. Settling it would confirm a
+    booking and fire F16's SMS against a charge that never happened.
+
+    Asserted the way the forged-signature test is — that the AUDIT ROW EXISTS
+    after the call, not merely that `newly_settled` came back False. The branch
+    returns rather than raises (a decline is a legitimate notification; raising
+    would make the provider retry it forever), so its evidence has to commit on
+    the way out of the transaction it was written in."""
+    engine, factory = _factory(app_role_url)
+    tenant, booking = uuid.uuid4(), uuid.uuid4()
+    gateway = FakeGateway()
+    try:
+        _, payments = await _connected(factory, tenant, gateway)
+        hold = await payments.open_deposit(
+            tenant,
+            booking_id=booking,
+            amount_agorot=15000,
+            hold_seconds=HOLD_SECONDS,
+            return_url=RETURN_URL,
+        )
+        session_id = hold.payment.provider_session_id
+        assert session_id is not None
+        body, signature = _signed(
+            session_id=session_id, transaction_id="txn-1", amount_agorot=15000, paid=False
+        )
+
+        settlement = await payments.settle_from_webhook(tenant, body=body, signature=signature)
+        assert settlement.newly_settled is False
+
+        assert AuditAction.GATEWAY_PAYMENT_DECLINED.value in await _actions(factory, tenant)
+        row = (await _payment_rows(factory, tenant))[0]
+        # The hold stays PENDING so F19's expiry sweeper frees the seat on its own
+        # clock — a decline is not a payment, and the bride must not be confirmed.
+        assert row.status == PaymentStatus.PENDING.value
+        assert row.paid_at is None
+        # Nothing was charged, so nothing carries a transaction id.
+        assert row.provider_transaction_id is None
+        assert row.error is not None and "declined" in row.error
+    finally:
+        await engine.dispose()
+
+
+async def test_a_decline_then_a_success_on_the_same_session_still_settles(
+    app_role_url: str,
+) -> None:
+    """The retried card. The decline must not have poisoned the hold: it left
+    `status` at 'pending' precisely so the next delivery can still settle it."""
+    engine, factory = _factory(app_role_url)
+    tenant, booking = uuid.uuid4(), uuid.uuid4()
+    gateway = FakeGateway()
+    try:
+        _, payments = await _connected(factory, tenant, gateway)
+        hold = await payments.open_deposit(
+            tenant,
+            booking_id=booking,
+            amount_agorot=15000,
+            hold_seconds=HOLD_SECONDS,
+            return_url=RETURN_URL,
+        )
+        session_id = hold.payment.provider_session_id
+        assert session_id is not None
+
+        declined, declined_signature = _signed(
+            session_id=session_id, transaction_id="txn-1", amount_agorot=15000, paid=False
+        )
+        await payments.settle_from_webhook(tenant, body=declined, signature=declined_signature)
+
+        body, signature = _signed(
+            session_id=session_id, transaction_id="txn-2", amount_agorot=15000
+        )
+        settlement = await payments.settle_from_webhook(tenant, body=body, signature=signature)
+        assert settlement.newly_settled is True
+        assert settlement.payment.status == PaymentStatus.PAID.value
+        assert settlement.payment.provider_transaction_id == "txn-2"
     finally:
         await engine.dispose()
 

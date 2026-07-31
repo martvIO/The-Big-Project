@@ -141,12 +141,19 @@ class AuditAction(StrEnum):
     GATEWAY_DISCONNECTED = "gateway_disconnected"
     GATEWAY_VALIDATED = "gateway_validated"
     GATEWAY_VALIDATION_FAILED = "gateway_validation_failed"
-    # The last three have NO actor — an unauthenticated caller reached them —
+    # The last four have NO actor — an unauthenticated caller reached them —
     # and are failure-path writes, so they must COMMIT BEFORE the raise or the
     # return (.memory/patterns/commit-before-raise-in-tenant-session.md, which
     # names "future booking/payment failure records" as exactly this class).
+    #
+    # GATEWAY_PAYMENT_DECLINED is the one that is NOT an anomaly: a signed
+    # `paid=false` delivery is the ordinary decline notification every PSP posts
+    # to the success URL. It is audited anyway because it is the only record that
+    # a charge was ATTEMPTED and refused — the row it describes stays 'pending'
+    # and is otherwise indistinguishable from a hold nobody ever paid.
     GATEWAY_WEBHOOK_REJECTED = "gateway_webhook_rejected"
     GATEWAY_AMOUNT_MISMATCH = "gateway_amount_mismatch"
+    GATEWAY_PAYMENT_DECLINED = "gateway_payment_declined"
     GATEWAY_LATE_SETTLEMENT = "gateway_late_settlement"
 
 

@@ -545,6 +545,9 @@ class PaymentService:
             if row is None:
                 raise GatewayWebhookInvalidError
 
+            if not event.paid:
+                return await self._record_decline(session, tenant_id, row, provider=provider)
+
             if event.amount_agorot == row.amount_agorot:
                 settled = await self._payments.settle(
                     session,
@@ -565,6 +568,39 @@ class PaymentService:
         # failure mode.
         await self._record_amount_mismatch(tenant_id, mismatch_id, provider=provider, event=event)
         raise GatewayWebhookInvalidError
+
+    async def _record_decline(
+        self, session: AsyncSession, tenant_id: UUID, row: Payment, *, provider: str
+    ) -> Settlement:
+        """`paid=false` — the decline, the abandoned hosted page, the failed
+        capture. Every real PSP posts these to the SAME url as its successes, so
+        a settler that branches only on the amount marks a refused card as
+        received: F19 gates the booking-confirm and F16's confirmation SMS on
+        `newly_settled`, and a bride would get a confirmation for money nobody
+        took.
+
+        Deliberately NOT a raise. A decline is a legitimate notification, not a
+        forgery; GatewayWebhookInvalidError would make the provider retry it
+        forever. So this mirrors the amount-mismatch branch instead — evidence
+        that commits, `status` left at 'pending', `newly_settled=False` — with
+        the difference that here the evidence commits on the way OUT of this
+        transaction rather than in one of its own, because nothing raises.
+
+        Leaving the hold pending is the point: F19's expiry sweeper frees the
+        seat on its own clock, and a retried card can still settle the same hold.
+        Writing 'failed' here would pre-empt that policy exactly as the mismatch
+        branch refuses to."""
+        marked = await self._payments.record_error(
+            session, tenant_id, row.id, error="declined: webhook reported the charge was not paid"
+        )
+        await self._audit.record(
+            session,
+            tenant_id=tenant_id,
+            action=AuditAction.GATEWAY_PAYMENT_DECLINED.value,
+            entity="payments",
+            details={"provider": provider, "payment_id": str(row.id)},
+        )
+        return Settlement(payment=marked if marked is not None else row, newly_settled=False)
 
     async def _explain_missed_settlement(
         self, session: AsyncSession, tenant_id: UUID, payment_id: UUID, provider: str
