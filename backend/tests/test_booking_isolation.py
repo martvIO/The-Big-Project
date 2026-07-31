@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.bookings import BookingsRepository, CheckInOutcome
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.tenant import tenant_session
@@ -188,5 +188,60 @@ async def test_scheduled_messages_are_invisible_and_unclaimable_across_tenants(
             [claimed] = await repo.claim_due(session, tenant_a, now=T0, limit=50)
             assert claimed.id == row_a.id
             assert claimed.manage_token == "a-live-token"
+    finally:
+        await engine.dispose()
+
+
+async def test_a_foreign_tenant_can_neither_read_nor_check_in_anothers_booking(
+    app_role_url: str,
+) -> None:
+    """F34's writers in the permanent isolation suite.
+
+    Under RLS the foreign booking is not merely refused, it is INVISIBLE — so the
+    outcome is `MISSING` and the service turns that into a 404 indistinguishable
+    from an id that was never real. That indistinguishability is the property:
+    a 403 here would confirm the booking exists to somebody who may not know it.
+
+    The check-in path needs its own case rather than inheriting the read one:
+    the guarded UPDATE and the `populate_existing` re-read are two separate
+    statements, and a policy that covered SELECT but not UPDATE would leave the
+    write reachable while the read stayed blind.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_a = uuid.uuid4()
+    tenant_b = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_a) as session:
+            customer_a = await customers.upsert(session, tenant_a, phone=PHONE, name="A")
+            booking_a = await bookings.insert(
+                session,
+                tenant_id=tenant_a,
+                customer_id=customer_a.id,
+                appointment_type_id=uuid.uuid4(),
+                starts_at=T0,
+                seat_index=1,
+                terms_version_accepted=1,
+                terms_accepted_at=ACCEPTED_AT,
+                appointment_type_name="מדידה",
+            )
+
+        async with tenant_session(factory, tenant_b) as session:
+            assert await bookings.by_id(session, tenant_b, booking_a.id) is None
+
+            outcome, row = await bookings.check_in(session, tenant_b, booking_a.id, at=T0)
+            assert outcome is CheckInOutcome.MISSING
+            assert row is None
+
+            outcome, row = await bookings.undo_check_in(session, tenant_b, booking_a.id)
+            assert outcome is CheckInOutcome.MISSING
+            assert row is None
+
+        async with tenant_session(factory, tenant_a) as session:
+            # …and nothing of A's moved.
+            own = await bookings.by_id(session, tenant_a, booking_a.id)
+            assert own is not None
+            assert own.checked_in_at is None
     finally:
         await engine.dispose()
