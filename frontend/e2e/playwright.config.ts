@@ -20,7 +20,9 @@ export default defineConfig({
     },
     {
       command: "pnpm --filter manage preview --port 4174 --strictPort",
-      url: "http://localhost:4174",
+      // /manage/, not /: apps/manage builds with base: "/manage/", so that is
+      // where preview serves the shell and the readiness probe must look.
+      url: "http://localhost:4174/manage/",
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
     },

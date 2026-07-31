@@ -3,7 +3,9 @@ import type { Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
 const STOREFRONT = "http://localhost:4173";
-const MANAGE = "http://localhost:4174";
+// Trailing /manage/ because apps/manage builds with base: "/manage/" — `vite
+// preview` serves it there, mirroring the API mount at {slug}.{domain}/manage.
+const MANAGE = "http://localhost:4174/manage/";
 
 // Nothing here intercepts the API, and that is the point. `vite preview` proxies
 // /storefront/* to :8000, where either nothing is listening or a backend that has

@@ -2,10 +2,15 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.routing import APIRoute
+from fastapi.staticfiles import StaticFiles
+from starlette.routing import Match
+from starlette.types import Scope
 
 from app.api.routes.health import router as health_router
 from app.auth.dependencies import NotAuthenticatedError, NotAuthorizedError
@@ -89,6 +94,7 @@ from app.storefront.router import router as storefront_router
 from app.storefront.service import StorefrontService
 from app.storefront.validation import StorefrontThrottledError
 from app.tenancy.middleware import (
+    EXEMPT_PATHS,
     TENANT_NOT_FOUND_BODY,
     TenantNotResolvedError,
     TenantResolutionMiddleware,
@@ -240,6 +246,125 @@ STAFF_SELF_MANAGE_BODY = {
         "message": "You cannot change your own role or deactivate your own account.",
     }
 }
+
+
+# The built SPAs: Frontend/apps/{manage,storefront}/dist copied to
+# app/static/{manage,storefront} by the deploy-staging job. NEVER committed, and
+# deliberately NOT listed in .gitignore either: `railway up` respects
+# .gitignore, so a gitignored static tree would be dropped from the upload with
+# no error at all. Keeping it untracked is the whole mechanism — it exists only
+# inside a CI runner, and a developer who builds locally excludes it via
+# .git/info/exclude rather than teaching git to hide it from Railway too. Same
+# reason the directory is `static/` and not `dist/` or `staticfiles/`:
+# .gitignore already ignores both names anywhere in the tree.
+STATIC_ROOT = Path(__file__).resolve().parent / "static"
+
+# The API owns these first path segments; the SPA fallback must never claim them.
+_RESERVED_SEGMENTS = frozenset({"manage", "storefront"})
+
+# Nothing here is content-hashed, so nothing here may be cached without asking.
+# ETag + Last-Modified alone make a response heuristically cacheable (RFC 9111
+# §4.2.2): a shell cached that way survives a deploy, then requests the hashed
+# bundle names it was built against, and the /assets Mount 404s them — a blank
+# page nobody can recover from but a hard reload. `no-cache` still allows the
+# 304, so the cost is a conditional request rather than the bytes. The hashed
+# files under /assets/ need no header: a new build gives them new names.
+_REVALIDATE = {"cache-control": "no-cache"}
+
+
+class _SpaFallbackRoute(APIRoute):
+    """The storefront catch-all, which DECLINES to match anything the API owns
+    rather than matching it and answering 404.
+
+    That distinction is the whole design. Starlette returns on the first FULL
+    match and remembers only the first PARTIAL one, so a catch-all that fully
+    matches `GET /storefront/otp/send` wins outright and the POST route's
+    partial — the thing that produces the 405 — is never handled. Answering 404
+    from inside the handler does not help: by then the 405 is already lost.
+    Returning Match.NONE leaves the partial as the only candidate, so the 405
+    survives.
+
+    `/docs` needs the same treatment for a different reason: declining lets the
+    request fall through to Starlette's own 404, which is what keeps "the docs
+    are dark outside dev" true instead of answering the storefront shell with a
+    200. The rstrip is for redirect_slashes — when nothing matches `/docs`,
+    Starlette retries `/docs/`, and an unnormalized comparison would let the
+    retry through.
+    """
+
+    def matches(self, scope: Scope) -> tuple[Match, Scope]:
+        path = str(scope.get("path", ""))
+        if path.rstrip("/") in EXEMPT_PATHS:
+            return Match.NONE, {}
+        if path.lstrip("/").split("/", 1)[0] in _RESERVED_SEGMENTS:
+            return Match.NONE, {}
+        return super().matches(scope)
+
+
+def _serve_file(app: FastAPI, url_path: str, file_path: Path) -> None:
+    """One exact route per file. HEAD is spelled out because FastAPI's APIRoute,
+    unlike Starlette's Route, does not add it to a GET route — without it every
+    document here 405s the uptime monitors and link-preview crawlers that reach
+    a public URL with HEAD first, while the /assets Mounts next door answer 200.
+    OPTIONS is still left to Starlette's 405 path, and a Mount is still the
+    wrong tool: it would match every method AND every path under it."""
+    if not file_path.is_file():
+        return
+
+    async def _endpoint() -> FileResponse:
+        return FileResponse(file_path, headers=_REVALIDATE)
+
+    app.add_api_route(url_path, _endpoint, methods=["GET", "HEAD"], include_in_schema=False)
+
+
+def _register_spas(app: FastAPI) -> None:
+    """Called LAST, after every include_router, so every API route wins first."""
+    manage = STATIC_ROOT / "manage"
+    storefront = STATIC_ROOT / "storefront"
+    if not (manage / "index.html").is_file() or not (storefront / "index.html").is_file():
+        # Absence is a supported state, never a boot failure: no dev machine has
+        # run `pnpm -r build`, and neither has the test suite. A deploy whose
+        # copy step failed then still answers /health, which is what makes it
+        # diagnosable rather than dead. CI asserts the files exist before
+        # `railway up` so this cannot go unnoticed in production.
+        logger.info("SPA bundles not found under %s — serving the API only", STATIC_ROOT)
+        return
+
+    for prefix, app_dir in (("/manage/assets", manage), ("/assets", storefront)):
+        assets = app_dir / "assets"
+        if assets.is_dir():
+            app.mount(prefix, StaticFiles(directory=assets), name=f"{app_dir.name}-assets")
+
+    # Vite copies public/ verbatim to the root of dist/, so the dist root IS the
+    # list — derived, never hardcoded. A hardcoded tuple drifts the moment
+    # anyone adds an og-image or the sitemap.xml F49 needs: on the storefront
+    # side an unlisted file falls to the catch-all and returns the HTML shell
+    # with a 200, which nosniff then makes the browser refuse. Silently dead.
+    # `base: "/manage/"` puts the console's copies under /manage/, which is what
+    # keeps the two trees disjoint.
+    for prefix, app_dir in (("/manage", manage), ("", storefront)):
+        for entry in sorted(app_dir.iterdir()):
+            if entry.is_file() and entry.name != "index.html":
+                _serve_file(app, f"{prefix}/{entry.name}", entry)
+
+    # Exact path, no subtree: apps/manage has no client-side router (App.tsx
+    # drives its sections from useState), so exactly one URL is the console and
+    # a subtree fallback would invent deep links the app cannot restore.
+    _serve_file(app, "/manage", manage / "index.html")
+
+    storefront_index = storefront / "index.html"
+
+    async def _storefront_shell(path: str) -> FileResponse:
+        return FileResponse(storefront_index, headers=_REVALIDATE)
+
+    # HEAD for the same reason as _serve_file. It cannot cost the API its 405s:
+    # `matches` declines EXEMPT_PATHS and the reserved segments before a method
+    # is ever looked at, so HEAD /manage/settings never reaches this route.
+    app.router.routes.append(
+        _SpaFallbackRoute(
+            "/{path:path}", _storefront_shell, methods=["GET", "HEAD"], include_in_schema=False
+        )
+    )
 
 
 def _validation_summary(exc: RequestValidationError) -> str:
@@ -700,6 +825,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # tokenized manage routes. Same anonymous posture as the OTP pair; asserted
     # in test_booking_api.py and test_booking_manage_api.py.
     app.include_router(booking_router)
+    # LAST, after every router: the mounts and the catch-all only ever see what
+    # no API route claimed.
+    _register_spas(app)
     return app
 
 
