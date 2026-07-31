@@ -1,10 +1,17 @@
-import type { InputHTMLAttributes, Ref } from "react";
+import type { InputHTMLAttributes, ReactNode, Ref } from "react";
 import { useId } from "react";
 import { cn, focusRing } from "../lib/styles";
 
 export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "id"> {
   // Label is required — a placeholder is never the label (tokens.md usage law 3).
-  label: string;
+  //
+  // ReactNode, not string: F17's gateway form renders a field name the platform
+  // has no translation for, and an untranslated LTR snake_case run inside an RTL
+  // Hebrew form needs `<bdi dir="ltr" lang="en">` around it — both the bidi
+  // isolation this repo already applies to non-numeric labels and the WCAG 3.1.2
+  // language mark. `label` is only ever rendered as children of the <label>, so
+  // this widening is backwards-compatible with every string caller.
+  label: ReactNode;
   error?: string;
   help?: string;
   ref?: Ref<HTMLInputElement>;

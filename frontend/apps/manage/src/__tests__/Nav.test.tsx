@@ -29,6 +29,7 @@ vi.mock("../api", async () => {
       // the nav rather than the dashboard, because the console now LANDS on
       // DashboardSection.
       getDashboard: pending,
+      gatewayStatus: pending,
     },
   };
 });
@@ -56,7 +57,10 @@ const NAV_LABELS = [
   "מדיניות ביטולים",
   "שמלות",
   "תורים",
+  // The two owner-only rows, last. Everything above is `roles: ALL`, which is
+  // what keeps the shift_manager assertions below a `.slice(0, 7)`.
   "צוות",
+  "סליקה ותשלומים",
 ];
 
 function navItems(): string[] {
@@ -72,19 +76,23 @@ beforeEach(() => {
 });
 
 describe("the console nav is role-filtered", () => {
-  it("shows an owner all eight sections including Staff", async () => {
+  it("shows an owner all nine sections including Staff and the gateway", async () => {
     me.mockResolvedValue(staff("owner"));
     render(<App />);
     await screen.findByRole("navigation");
     expect(navItems()).toEqual(NAV_LABELS);
   });
 
-  it("shows a shift manager seven sections and no Staff", async () => {
+  it("shows a shift manager seven sections and neither owner-only one", async () => {
     me.mockResolvedValue(staff("shift_manager"));
     render(<App />);
     await screen.findByRole("navigation");
     expect(navItems()).toEqual(NAV_LABELS.slice(0, 7));
     expect(screen.queryByRole("button", { name: "צוות" })).toBeNull();
+    // Cosmetics only — the control is the server's owner-only RoleGate, which
+    // refuses her on all four /manage/gateway routes with a 403. The filter
+    // exists so she is not shown a door that answers one.
+    expect(screen.queryByRole("button", { name: "סליקה ותשלומים" })).toBeNull();
   });
 
   it("does not white-screen on a role the enum does not know", async () => {

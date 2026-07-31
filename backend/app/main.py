@@ -85,6 +85,29 @@ from app.notifications.service import (
 )
 from app.notifications.twilio import TwilioSmsSender
 from app.notifications.unconfigured import UnconfiguredSmsSender
+from app.payments.base import (
+    GatewayCredentialsRejectedError,
+    GatewayNotConfiguredError,
+    GatewayNotConnectedError,
+    GatewayUnavailableError,
+    GatewayWebhookInvalidError,
+    PaymentAlreadyHeldError,
+    PaymentGateway,
+)
+from app.payments.fake import FakeGateway
+from app.payments.router import router as gateway_router
+from app.payments.secretbox import (
+    FakeSecretBox,
+    SecretBox,
+    SecretBoxNotConfiguredError,
+    SecretDecryptError,
+    UnconfiguredSecretBox,
+)
+from app.payments.service import (
+    GatewayCredentialService,
+    GatewayThrottledError,
+)
+from app.payments.unconfigured import UnconfiguredGateway
 from app.security_headers import SecurityHeadersMiddleware
 from app.storage.base import (
     MediaNotConfiguredError,
@@ -247,6 +270,37 @@ STAFF_SELF_MANAGE_BODY = {
     "error": {
         "code": "STAFF_SELF_MANAGE",
         "message": "You cannot change your own role or deactivate your own account.",
+    }
+}
+# F17's five. Fixed bodies: no provider name, merchant identifier, field value or
+# provider-supplied text may ever reach a user-facing message — the media/SMS
+# precedent, and it matters more here because the secret is in the object the
+# failing call was handed.
+GATEWAY_NOT_CONFIGURED_BODY = {
+    "error": {"code": "GATEWAY_NOT_CONFIGURED", "message": "Deposits are not available."}
+}
+GATEWAY_NOT_CONNECTED_BODY = {
+    "error": {"code": "GATEWAY_NOT_CONNECTED", "message": "Connect a payment account first."}
+}
+GATEWAY_CREDENTIALS_REJECTED_BODY = {
+    "error": {
+        "code": "GATEWAY_CREDENTIALS_REJECTED",
+        "message": "The payment account details were refused.",
+    }
+}
+GATEWAY_UNAVAILABLE_BODY = {
+    "error": {
+        "code": "GATEWAY_UNAVAILABLE",
+        "message": "The payment provider is temporarily unavailable.",
+    }
+}
+GATEWAY_WEBHOOK_INVALID_BODY = {
+    "error": {"code": "GATEWAY_WEBHOOK_INVALID", "message": "The webhook could not be verified."}
+}
+PAYMENT_ALREADY_HELD_BODY = {
+    "error": {
+        "code": "PAYMENT_ALREADY_HELD",
+        "message": "A deposit is already pending for this booking.",
     }
 }
 
@@ -428,6 +482,32 @@ def _build_sms_sender(settings: Settings) -> SmsSender:
     return UnconfiguredSmsSender()
 
 
+def _build_payment_gateway(settings: Settings) -> PaymentGateway:
+    """Mirrors _build_sms_sender: absence is a supported deployment that answers
+    503, and Settings.model_config is extra="ignore" — so a typo'd
+    PAYMENT_PROVDER degrades silently and this INFO line is what makes the
+    degradation observable."""
+    if settings.payment_provider == "fake":
+        logger.info("payment gateway: FAKE (records, never charges) — no real money will move")
+        return FakeGateway()
+    logger.info(
+        "payment gateway NOT configured — gateway routes will answer 503 GATEWAY_NOT_CONFIGURED"
+    )
+    return UnconfiguredGateway()
+
+
+def _build_secret_box(settings: Settings) -> SecretBox:
+    """Its own builder, never folded into the one above (D1): which provider
+    takes the money and which key manager protects the credential are orthogonal
+    axes, and a deployment can legitimately have one without the other — which
+    is exactly the misconfiguration the Settings validator boot-fails on."""
+    if settings.gateway_secret_box == "fake":
+        logger.info("secret box: FAKE (base64, NOT encryption) — never permitted in production")
+        return FakeSecretBox()
+    logger.info("secret box NOT configured — credential writes will answer 503")
+    return UnconfiguredSecretBox()
+
+
 def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     settings = get_settings()
     is_dev = settings.app_env == "dev"
@@ -590,6 +670,35 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             clock=time.monotonic,
         ),
     )
+
+    app.state.payment_gateway = _build_payment_gateway(settings)
+    app.state.secret_box = _build_secret_box(settings)
+    # TWO limiter instances, not one with two keys. max_attempts lives on the
+    # LIMITER, so a second key on an existing budget could never trip first —
+    # the rule main.py states four times above. The connect budget exists for a
+    # stronger reason than the validate one: rotation is insert-only on a table
+    # whose DELETE is revoked (D6, D7), so a loop on PUT is permanent,
+    # unreclaimable table growth plus unbounded KMS request spend. Verbatim why
+    # terms_creation_max_per_window exists.
+    app.state.gateway_credential_service = GatewayCredentialService(
+        get_session_factory(),
+        gateway=app.state.payment_gateway,
+        secret_box=app.state.secret_box,
+        connect_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.gateway_connect_max_per_tenant_window,
+            window_seconds=settings.gateway_connect_window_seconds,
+            clock=time.monotonic,
+        ),
+        validate_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.gateway_validate_max_per_tenant_window,
+            window_seconds=settings.gateway_validate_window_seconds,
+            clock=time.monotonic,
+        ),
+    )
+    # PaymentService is deliberately NOT on app.state: nothing reads it until
+    # F19 builds the deposit flow and the webhook route, and a wired singleton
+    # with no consumer is a thing a reviewer has to check rather than a thing
+    # that works.
 
     @app.exception_handler(TenantNotResolvedError)
     async def _tenant_not_resolved(request: Request, exc: TenantNotResolvedError) -> JSONResponse:
@@ -815,6 +924,85 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _staff_self_manage(request: Request, exc: StaffSelfManageError) -> JSONResponse:
         return JSONResponse(STAFF_SELF_MANAGE_BODY, status_code=409)
 
+    # F17's payment errors. Deliberately NOT registered here:
+    # GatewayNotFoundError subclasses DomainNotFoundError and is bound to the
+    # base above, and a bad credential shape is a DomainValidationError. Listing
+    # them would be a second, drifting spelling of the same binding — the F51
+    # note on DuplicateEmailError makes the same point.
+    #
+    # Raised by app/payments/, same containment as the media and SMS pairs: no
+    # provider name, merchant identifier or field value ever reaches a body.
+    @app.exception_handler(GatewayNotConfiguredError)
+    async def _gateway_not_configured(
+        request: Request, exc: GatewayNotConfiguredError
+    ) -> JSONResponse:
+        return JSONResponse(GATEWAY_NOT_CONFIGURED_BODY, status_code=503)
+
+    # The SAME code and body (D18): one operational fact to the owner
+    # ("deposits are unavailable") and one remedy (contact the operator). A
+    # second wire code for one fact is what booking-comms D10 declined as "a
+    # fourth spelling of too many attempts". The two stay distinguishable
+    # server-side, which is where the difference matters.
+    @app.exception_handler(SecretBoxNotConfiguredError)
+    async def _secret_box_not_configured(
+        request: Request, exc: SecretBoxNotConfiguredError
+    ) -> JSONResponse:
+        return JSONResponse(GATEWAY_NOT_CONFIGURED_BODY, status_code=503)
+
+    # 409, not 503: the platform is fine — THIS boutique has no valid
+    # credentials, and she is the one who can fix it.
+    @app.exception_handler(GatewayNotConnectedError)
+    async def _gateway_not_connected(
+        request: Request, exc: GatewayNotConnectedError
+    ) -> JSONResponse:
+        return JSONResponse(GATEWAY_NOT_CONNECTED_BODY, status_code=409)
+
+    # 400, not 409: the request is well-formed but its CONTENT is wrong, and the
+    # owner's remedy is to retype it — the reading MediaMismatchError applies in
+    # reverse.
+    @app.exception_handler(GatewayCredentialsRejectedError)
+    async def _gateway_credentials_rejected(
+        request: Request, exc: GatewayCredentialsRejectedError
+    ) -> JSONResponse:
+        return JSONResponse(GATEWAY_CREDENTIALS_REJECTED_BODY, status_code=400)
+
+    @app.exception_handler(GatewayUnavailableError)
+    async def _gateway_unavailable(request: Request, exc: GatewayUnavailableError) -> JSONResponse:
+        return JSONResponse(GATEWAY_UNAVAILABLE_BODY, status_code=503)
+
+    # A blob we cannot open is operationally identical to an unreachable
+    # provider — deposits are temporarily unavailable and the remedy is the
+    # operator's. It deliberately does NOT flip the credential to 'invalid'; see
+    # GatewayCredentialService._decrypt.
+    @app.exception_handler(SecretDecryptError)
+    async def _secret_decrypt_failed(request: Request, exc: SecretDecryptError) -> JSONResponse:
+        return JSONResponse(GATEWAY_UNAVAILABLE_BODY, status_code=503)
+
+    # 400, NEVER 503 (D25). An HMAC mismatch is an authentication failure, not a
+    # provider outage: 503 invites a retry of the forgery, buries the event among
+    # real outages in logs and alerting, and leaves the checklist row "webhook
+    # signature verification + replay protection" unprovable from outside. F19
+    # owns the webhook route; F17 owns the error that makes 400 the only sane
+    # mapping.
+    @app.exception_handler(GatewayWebhookInvalidError)
+    async def _gateway_webhook_invalid(
+        request: Request, exc: GatewayWebhookInvalidError
+    ) -> JSONResponse:
+        return JSONResponse(GATEWAY_WEBHOOK_INVALID_BODY, status_code=400)
+
+    # 409, not 400: the request is well-formed — the booking's existing hold is
+    # what refuses it. Mapped exactly as SlotUnavailableError maps the slot-seat
+    # collision, so a lost race is never an unhandled 500 (D23).
+    @app.exception_handler(PaymentAlreadyHeldError)
+    async def _payment_already_held(request: Request, exc: PaymentAlreadyHeldError) -> JSONResponse:
+        return JSONResponse(PAYMENT_ALREADY_HELD_BODY, status_code=409)
+
+    # Its own class like the other four throttles; the F21 reparenting note on
+    # StorefrontThrottledError covers this one too.
+    @app.exception_handler(GatewayThrottledError)
+    async def _gateway_throttled(request: Request, exc: GatewayThrottledError) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(boutique_router)
@@ -837,6 +1025,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # whichever was included first. The ROUTES table in test_dashboard_api.py is
     # what keeps that honest for this one.
     app.include_router(dashboard_router)
+    # The SEVENTH, after the dashboard one. Same hazard again, and the ROUTES
+    # table in test_payments_api.py is what keeps it honest — plus
+    # test_staff_role_gating.py imports that table, so these four rows also get
+    # a real end-to-end 403 assertion rather than only the structural one.
+    app.include_router(gateway_router)
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
     app.include_router(storefront_router)

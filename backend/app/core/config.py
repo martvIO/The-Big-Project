@@ -123,6 +123,31 @@ class Settings(BaseSettings):
     # claim is `send_after <= now()` rather than an exact-time match.
     worker_poll_interval_seconds: int = 60
 
+    # Payments carry deployment identity only (which adapter, which key
+    # manager); product policy — field caps, the KMS blob ceiling, the AAD
+    # purpose label — lives once in app/payments/validation.py.
+    #
+    # Both None -> UnconfiguredGateway + UnconfiguredSecretBox: no gateway is a
+    # supported deployment where every gateway route answers 503 and deposits are
+    # simply unavailable, exactly like the missing media bucket. "fake" is the
+    # dev/staging pair; a real provider literal arrives with its adapter, and
+    # "kms" arrives with KmsSecretBox.
+    payment_provider: Literal["fake"] | None = None
+    gateway_secret_box: Literal["fake"] | None = None
+    gateway_validate_max_per_tenant_window: int = 10
+    gateway_validate_window_seconds: int = 3600
+    # Its own budget, sized like the terms one it is copied from and for the
+    # same stated reason: rotation is insert-only on a table whose DELETE is
+    # revoked, so a loop on this path is permanent, unreclaimable table growth —
+    # plus unbounded KMS request spend.
+    gateway_connect_max_per_tenant_window: int = 10
+    gateway_connect_window_seconds: int = 3600
+    # D21's blanking clock, read by F20: superseded credential ciphertext stops
+    # being recoverable from our disk after this. A security number with no legal
+    # counterparty — long enough for an incident review, short enough that a
+    # leaked-then-rotated merchant secret does not live forever.
+    gateway_superseded_credential_retention_days: int = 90
+
     # Per-TENANT budget on the anonymous storefront reads: a runaway brake, not
     # a defence (see app/storefront/router.py._throttle for the full argument).
     # Env-tunable like every other rate limit here so it can be tightened during
@@ -187,6 +212,26 @@ class Settings(BaseSettings):
             raise ValueError("SMS_PROVIDER must not be 'fake' when APP_ENV is 'production'")
         if self.app_env == "production" and self.otp_dev_code:
             raise ValueError("OTP_DEV_CODE must not be set when APP_ENV is 'production'")
+        return self
+
+    @model_validator(mode="after")
+    def _forbid_fake_payment_paths_in_production(self) -> Self:
+        # The fake gateway reports money RECEIVED that was never charged, and
+        # F19's flow would confirm bookings off that: in production it is a
+        # silent revenue hole with a confirmed appointment on top of it. The fake
+        # secret box is base64, so a production merchant credential would sit on
+        # disk in plaintext. Fail at boot, loudly — the
+        # _forbid_sms_test_paths_in_production shape.
+        if self.app_env == "production" and self.payment_provider == "fake":
+            raise ValueError("PAYMENT_PROVIDER must not be 'fake' when APP_ENV is 'production'")
+        if self.app_env == "production" and self.gateway_secret_box == "fake":
+            raise ValueError("GATEWAY_SECRET_BOX must not be 'fake' when APP_ENV is 'production'")
+        # A MISSING gateway is never a boot failure — that is the supported
+        # 503-everywhere deployment. A gateway with NOWHERE TO PUT CREDENTIALS
+        # is a misconfiguration, not a deployment: this is the
+        # "MEDIA_REGION is required when MEDIA_BUCKET is set" case verbatim.
+        if self.payment_provider and not self.gateway_secret_box:
+            raise ValueError("GATEWAY_SECRET_BOX is required when PAYMENT_PROVIDER is set")
         return self
 
     @property

@@ -6,6 +6,7 @@ import type { Staff } from "./api";
 import { BookingsSection } from "./components/BookingsSection";
 import { CatalogSection } from "./components/CatalogSection";
 import { DashboardSection } from "./components/DashboardSection";
+import { GatewaySection } from "./components/GatewaySection";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
 import { ProfileSection } from "./components/ProfileSection";
@@ -21,7 +22,8 @@ type SectionKey =
   | "terms"
   | "catalog"
   | "bookings"
-  | "staff";
+  | "staff"
+  | "gateway";
 
 const ALL = ["owner", "shift_manager"] as const;
 
@@ -53,6 +55,10 @@ const NAV: readonly NavItem[] = [
   { key: "catalog", labelKey: "nav.catalog", roles: ALL },
   { key: "bookings", labelKey: "nav.bookings", roles: ALL },
   { key: "staff", labelKey: "nav.staff", roles: ["owner"] },
+  // Owner-only, the READ included: /manage/gateway is the first backend router
+  // that is owner-only in full, and whether the boutique can take money is
+  // itself disclosure.
+  { key: "gateway", labelKey: "nav.gateway", roles: ["owner"] },
 ];
 
 export function App() {
@@ -134,6 +140,7 @@ export function App() {
         {activeKey === "catalog" && <CatalogSection />}
         {activeKey === "bookings" && <BookingsSection />}
         {activeKey === "staff" && <StaffSection staffId={staff.id} />}
+        {activeKey === "gateway" && <GatewaySection />}
       </ConsoleShell>
     </ToastProvider>
   );

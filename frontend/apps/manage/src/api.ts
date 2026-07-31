@@ -364,6 +364,26 @@ export interface StaffMember {
   created_at: string;
 }
 
+// mirrors backend/app/payments/schemas.py::GatewayStatusResponse — the WHOLE
+// response, in every state. There is no ciphertext, no key_ref, no
+// validation_error and no field value on it, ever.
+//
+// `configured` is PLATFORM-level and `connected` is TENANT-level: two booleans
+// because the two facts have different owners and different remedies — the
+// operator fixes one, the boutique fixes the other.
+//
+// `credential_fields` is the adapter's own declared shape. Rendering the form
+// from it is what lets a future real-provider adapter change the field set with
+// NO frontend change at all.
+export interface GatewayStatus {
+  provider: string | null;
+  configured: boolean;
+  connected: boolean;
+  status: "valid" | "invalid" | null;
+  last_validated_at: string | null;
+  credential_fields: string[];
+}
+
 export interface CreateStaffRequest {
   email: string;
   display_name: string;
@@ -639,5 +659,22 @@ export const api = {
   // real clock, which is what keeps its date arithmetic total (spec D2).
   getDashboard(): Promise<DashboardResponse> {
     return apiFetch("/manage/dashboard");
+  },
+
+  // Owner-only, all four — the first router in the backend that is owner-only
+  // IN FULL, the read included: whether the boutique can take money is itself
+  // disclosure. There is deliberately NO read path for a credential value, so
+  // the form always starts empty and a save always sends the complete set.
+  gatewayStatus(): Promise<GatewayStatus> {
+    return apiFetch("/manage/gateway");
+  },
+  setGatewayCredentials(fields: Record<string, string>): Promise<GatewayStatus> {
+    return apiFetch("/manage/gateway/credentials", { method: "PUT", body: { fields } });
+  },
+  validateGateway(): Promise<GatewayStatus> {
+    return apiFetch("/manage/gateway/validate", { method: "POST" });
+  },
+  disconnectGateway(): Promise<GatewayStatus> {
+    return apiFetch("/manage/gateway/credentials", { method: "DELETE" });
   },
 };
