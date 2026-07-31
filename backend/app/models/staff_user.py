@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Text, text
+from sqlalchemy import TIMESTAMP, Text, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,4 +18,10 @@ class StaffUser(StandardColumns, Base):
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text(f"'{StaffRole.OWNER}'")
+    )
+    # The second half of F57's migration, and not optional: no model<->migration
+    # parity test exists anywhere in Backend/tests, so without this every line of
+    # the break writers and the floor read is an AttributeError.
+    break_started_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
     )

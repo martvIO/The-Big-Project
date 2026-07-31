@@ -7,11 +7,20 @@ class TenantStatus(StrEnum):
 
 
 class StaffRole(StrEnum):
-    # The DB pins this exact set (0011). Reception/seamstress/sales join when
-    # E6-proper gives them their first consumer — pre-adding speculative roles
-    # is the un-lazy thing (the ScheduledMessageKind rule).
+    # The DB pins this exact set (0011, widened by F57's migration), and
+    # test_the_floor_roles_migration_pins_the_widened_constraint_definition holds
+    # the deparsed literal so the next widening collides with a review.
+    #
+    # The floor program is the consumer 0011's comment demanded before the last
+    # three could be added — pre-adding speculative roles is the un-lazy thing
+    # (the ScheduledMessageKind rule), and this block is the record that the bar
+    # was MET rather than waived: the roles arrive in the same PR as the surface
+    # that reads them.
     OWNER = "owner"
     SHIFT_MANAGER = "shift_manager"
+    RECEPTION = "reception"
+    SALES_ASSISTANT = "sales_assistant"  # supersedes pre-decided #24's 'sales'
+    SEAMSTRESS = "seamstress"
 
 
 class AppointmentAudience(StrEnum):

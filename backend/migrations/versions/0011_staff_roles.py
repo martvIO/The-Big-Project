@@ -17,8 +17,12 @@ def upgrade() -> None:
     # the 'owner' default, so this cannot fail on live data. Both halves of that
     # claim are proven on a POPULATED table by
     # tests/test_migrations.py::test_adding_the_role_check_validates_existing_rows.
-    # Two values only: reception/seamstress/sales join when E6-proper gives them
-    # a consumer (the ScheduledMessageKind rule — no speculative kinds).
+    # Two values only at the time: reception/seamstress/sales were to join when
+    # E6-proper gave them a consumer (the ScheduledMessageKind rule — no
+    # speculative kinds). The floor program was that consumer and F57's migration
+    # widened this constraint to five, so the bar this comment set was MET rather
+    # than waived. Left in the past tense rather than deleted: it is the record
+    # of why the set was two for as long as it was.
     op.execute(
         "ALTER TABLE staff_users ADD CONSTRAINT staff_users_role_check "
         "CHECK (role IN ('owner', 'shift_manager'))"

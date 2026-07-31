@@ -522,11 +522,18 @@ def test_a_bad_body_is_a_house_shape_400_and_never_reaches_the_service(
 
 
 def test_an_unknown_role_never_reaches_the_database_check() -> None:
-    """`role` is typed as StaffRole, so 0011's CHECK is the second line of defence
-    and not the first — a 400 at the boundary, never a 500 from Postgres."""
+    """`role` is typed as StaffRole, so the DB's CHECK is the second line of
+    defence and not the first — a 400 at the boundary, never a 500 from Postgres.
+
+    ⚠ This probe was the literal 'reception' until F57, chosen because 0011 named
+    it as a role that did not exist yet. F57 added it, and the test went red
+    asserting the opposite of its own name — a real 400 became a real 201. That
+    is precisely the failure test_staff_role_gating.py's UNKNOWN_ROLE sentinel and
+    its tripwire exist to prevent, and the repair is to use the sentinel, which
+    this module already imports and uses two cases above."""
     fake = FakeStaffService()
     with _client(fake) as client:
-        resp = client.post(LIST_PATH, json={**CREATE_BODY, "role": "reception"})
+        resp = client.post(LIST_PATH, json={**CREATE_BODY, "role": UNKNOWN_ROLE})
     assert resp.status_code == 400
     assert fake.calls == []
 
