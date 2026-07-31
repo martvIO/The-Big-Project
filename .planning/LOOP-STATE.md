@@ -116,7 +116,8 @@ queue:
     slug: floor-staff-roles
     epic: E6
     title: "Floor roles (reception/sales_assistant/seamstress) + break status + staff cards"
-    status: specing
+    status: building
+    spec: .planning/specs/floor-staff-roles.md
     deps: [F51, F34]
     note: >-
       NEW 2026-07-31 (floor program). The brief's staff cards — name, role, live
