@@ -39,7 +39,7 @@ SectionHeading as="h2" ornament        dashboard.heading
                                        else    -> isolateLtr(dashboard.summary, total)
 <p role="alert">                       dashboard.loadFailed                        [outage only]
 <Skeleton variant="text" lines={6} />                                              [loading only]
-<p>                                    dashboard.firstRunNote     [loaded && the whole history is zero]
+<p>                                    dashboard.firstRunNote     [loaded && no booking anywhere on the screen]
 
 Card   forward
   <h3>   dashboard.forwardHeading
@@ -127,7 +127,7 @@ Three facts, three renderings: `0.0%` is a true zero, «פחות מ־0.1%» is a
 | Section | loading | `<Skeleton variant="text" lines={6} />` — **`variant="text"`, never the default `"block"`**, which is `h-full w-full` and collapses to zero height in a parent with no intrinsic height. One skeleton for the whole section, not five card-shaped ones: the panels' heights depend on data the skeleton does not have, and a skeleton that guesses a shape wrong is worse than a neutral one |
 | Section | load failure | one `<p role="alert" className="text-sm text-ink-muted">` — the **outage** register (`dashboard.loadFailed`), no retry control, no code→Hebrew map. The catch sets only `loadError` and deliberately leaves the data state `null`, so no zero-data content can stack under the alert (`BookingsSection.tsx:39-45`). A 403 from an out-of-enum role lands here too, and reads as an outage rather than an accusation |
 | Section | loaded | the five Cards, in the order above |
-| Section | loaded, whole history zero | the same five Cards, all values `0` or the not-computable sentence, **plus** `dashboard.firstRunNote` under the heading. **No `EmptyState`**, and nothing hidden — see below |
+| Section | loaded, no booking anywhere | the same five Cards, all values `0` or the not-computable sentence, **plus** `dashboard.firstRunNote` under the heading. **No `EmptyState`**, and nothing hidden — see below. **Amended in review:** the predicate is every `status_totals` at zero AND `forward.booked` at zero, not "every week bar zero". `weeks[]` counts only non-cancelled bookings and excludes the current in-progress week, so an all-zero `weeks[]` is also a boutique in her first week (all her bookings in the forward panel) and a quarter whose only bookings were cancelled — and the note renders above all five Cards, so «עד אז המספרים כאן הם אפס» would contradict the card on the next line |
 | Status line | loading | `dashboard.loading` |
 | Status line | outage | `""` — the alert already speaks; two announcements for one event is one too many |
 | Forward | `capacity === 0` | `dashboard.forwardNoHours`, which names **closed hours** and not zero demand, and **no bar** — a bar drawn for a value that does not exist is a lie |
@@ -143,7 +143,7 @@ A brand-new boutique is the state a pilot sees on her first login, so it gets th
 - **Nothing disappears.** Twelve week rows, five tiles, both range lines and the forward panel all render. A screen that sheds panels when data is thin teaches the user that something is wrong.
 - **The tracks draw.** Twelve empty hairline tracks read as an instrument at rest. Twelve absent bars read as a failed render.
 - **The forward panel is at the top and is usually not zero.** If she has set hours, it shows a real capacity and a real `0.0%` — a fact she can act on. If she has not, `dashboard.forwardNoHours` tells her which section to go set them in, in words.
-- **`dashboard.firstRunNote` is one muted `<p>`, not an `EmptyState`.** It hides nothing and replaces nothing; it removes itself the moment any week is non-zero.
+- **`dashboard.firstRunNote` is one muted `<p>`, not an `EmptyState`.** It hides nothing and replaces nothing; it removes itself the moment any booking exists — in the window, in any status, or in the forward panel.
 - **Zero and unknown are different, visibly.** `0.0%` and «אין עדיין מספיק נתונים לחישוב.» are different strings for different facts, and a day-one boutique sees both on one screen — a true `0.0%` cancellation count is impossible with no bookings, so all three rates read the sentence while the week counts read `0`.
 
 ## Edge cases

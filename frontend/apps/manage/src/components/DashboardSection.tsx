@@ -4,7 +4,7 @@ import { Card, SectionHeading, Skeleton } from "@boutique/ui";
 import { api } from "../api";
 import type { DashboardResponse } from "../api";
 import { isolateLtr } from "../lib/booking";
-import { plainDate } from "../lib/jerusalem";
+import { plainDate, plainDayMonth } from "../lib/jerusalem";
 
 // The console's landing section, for both roles. It has NO interactive control
 // of any kind — no picker, no filter, no retry, no link, no row that opens
@@ -15,15 +15,6 @@ import { plainDate } from "../lib/jerusalem";
 // today. NOTHING here bridges them — Risk 13's 0-6 uncovered days are real, and
 // a sentence implying continuity would be a lie the screen tells on the owner's
 // behalf. That is why the two range labels are deliberately different words.
-
-// The week-row label, d.m — narrow enough for 375px, and the year lives once
-// per panel in the range line. Splits the string exactly like plainDate and for
-// the same reason: `week_start` is a plain Jerusalem calendar date, and routing
-// one through a Date re-zones a date that was never in a zone.
-function dayMonth(iso: string): string {
-  const [, month, day] = iso.split("-");
-  return `${Number(day)}.${Number(month)}`;
-}
 
 // The one hand-built thing on this screen, and it stays inline markup here — no
 // new packages/ui component and no promotion (spec D10).
@@ -129,7 +120,8 @@ export function DashboardSection() {
       {data !== null && isFirstRun(data) && (
         // One muted line, never an EmptyState — that would hide the forward
         // panel, the one number a day-one boutique can act on. It removes
-        // itself the moment any week is non-zero.
+        // itself the moment any booking exists, in the window or in the
+        // forward panel.
         <p className="text-sm text-ink-muted">{t("dashboard.firstRunNote")}</p>
       )}
 
@@ -153,8 +145,27 @@ function totalOf(data: DashboardResponse): number {
   return data.history.weeks.reduce((sum, week) => sum + week.bookings, 0);
 }
 
+// The note claims «עד אז המספרים כאן הם אפס» — "until then the numbers here are
+// zero" — with no scope, and it renders ABOVE all five cards, so the predicate
+// has to be every booking number the screen prints.
+//
+// weeks[] is the wrong witness for that twice over: it counts only NON-cancelled
+// bookings (D5) and it excludes the current, in-progress week entirely (D2). So
+// an all-zero weeks[] is also the shape of a boutique in her literal first week
+// — every booking she has is in the excluded week and in the forward panel — and
+// of a quarter whose only bookings were cancelled, where the rates card two
+// lines below reads 100.0%. In both the note contradicts the card under it.
+//
+// status_totals covers all four CHECK-pinned statuses, so its sum is the number
+// of facts in the window; forward.booked is the only forward number that fills
+// as appointments are booked (capacity is her own hours, and the day-one state
+// deliberately shows a real one).
 function isFirstRun(data: DashboardResponse): boolean {
-  return data.history.weeks.every((week) => week.bookings === 0);
+  const totals = data.history.status_totals;
+  return (
+    totals.confirmed + totals.cancelled + totals.no_show + totals.completed === 0 &&
+    data.forward.booked === 0
+  );
 }
 
 // A <dt>/<dd> pair, wrapped in a <div> so the pairs can grid. Sub-lines live
@@ -289,7 +300,7 @@ function WeeksCard({ history }: { history: DashboardResponse["history"] }) {
           {history.weeks.map((week) => (
             <tr key={week.week_start}>
               <th scope="row" className="w-16 py-1 text-start text-sm font-normal text-ink">
-                <bdi dir="ltr">{dayMonth(week.week_start)}</bdi>
+                <bdi dir="ltr">{plainDayMonth(week.week_start)}</bdi>
               </th>
               <td className="py-1">
                 <span className="flex items-center gap-2">
@@ -393,7 +404,11 @@ function TypesCard({ history }: { history: DashboardResponse["history"] }) {
           <tbody>
             {types.map((type) => (
               <tr key={type.appointment_type_id}>
-                <th scope="row" className="py-1 text-start text-sm font-normal text-ink">
+                {/* w-16 like the weeks table's row header: with no preferred
+                    width, table-layout:auto hands the name column nearly
+                    everything — the value cell's max-content is a grow-only bar
+                    plus a two-digit count — and the bar collapses at 375px. */}
+                <th scope="row" className="w-16 py-1 text-start text-sm font-normal text-ink">
                   {/* Bare bdi: dir="ltr" on a Hebrew name is itself a bidi
                       defect. The name wraps; no truncation and no title. */}
                   <bdi>{type.name}</bdi>

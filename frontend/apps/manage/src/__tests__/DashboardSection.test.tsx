@@ -83,23 +83,24 @@ function response(
   };
 }
 
+const FIRST_RUN_NOTE = "המסך הזה מתמלא מעצמו ככל שנקבעים תורים. עד אז המספרים כאן הם אפס.";
+
+const ZERO_HISTORY: Partial<DashboardResponse["history"]> = {
+  weeks: weeks([]),
+  status_totals: { confirmed: 0, cancelled: 0, no_show: 0, completed: 0 },
+  cancellation_rate: null,
+  cancelled_by_customer: 0,
+  cancelled_by_owner: 0,
+  no_show_rate: null,
+  appointment_types: [],
+  customers: { total: 0, new: 0, returning: 0, repeat_rate: null },
+};
+
 // Day one: no bookings ever, but she HAS set her hours — so the forward panel
 // carries a real capacity and a real 0.0%, which is the load-bearing half of
 // the "no EmptyState" argument.
 function dayOne(): DashboardResponse {
-  return response(
-    {
-      weeks: weeks([]),
-      status_totals: { confirmed: 0, cancelled: 0, no_show: 0, completed: 0 },
-      cancellation_rate: null,
-      cancelled_by_customer: 0,
-      cancelled_by_owner: 0,
-      no_show_rate: null,
-      appointment_types: [],
-      customers: { total: 0, new: 0, returning: 0, repeat_rate: null },
-    },
-    { capacity: 12, booked: 0, utilization: 0 },
-  );
+  return response(ZERO_HISTORY, { capacity: 12, booked: 0, utilization: 0 });
 }
 
 // DashboardSection renders inside ConsoleShell's <main>, which owns the
@@ -235,17 +236,13 @@ describe("DashboardSection states", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       `סך התורים שלא בוטלו בתקופה: ${BUSY_TOTAL}`,
     );
-    expect(
-      screen.queryByText("המסך הזה מתמלא מעצמו ככל שנקבעים תורים. עד אז המספרים כאן הם אפס."),
-    ).toBeNull();
+    expect(screen.queryByText(FIRST_RUN_NOTE)).toBeNull();
   });
 
   it("renders the same five panels at zero, with the first-run note and no EmptyState", async () => {
     getDashboard.mockResolvedValue(dayOne());
     renderSection();
-    await screen.findByText(
-      "המסך הזה מתמלא מעצמו ככל שנקבעים תורים. עד אז המספרים כאן הם אפס.",
-    );
+    await screen.findByText(FIRST_RUN_NOTE);
 
     // Nothing disappears: a screen that sheds panels when data is thin teaches
     // the user that something is wrong.
@@ -260,6 +257,45 @@ describe("DashboardSection states", () => {
     expect(screen.getAllByText("אין עדיין מספיק נתונים לחישוב.")).toHaveLength(3);
     expect(within(panel(PANELS[0])).getByText("0.0%")).toBeInTheDocument();
     expect(screen.getByText("לא נקבעו תורים בתקופה הזו.")).toBeInTheDocument();
+  });
+
+  // «עד אז המספרים כאן הם אפס» — "until then the numbers here are zero" — is
+  // unscoped, and the note renders ABOVE all five cards. weeks[] is the wrong
+  // witness for it twice over: it counts only NON-cancelled bookings (D5) and
+  // it excludes the current in-progress week entirely (D2).
+  it("withholds the first-run note when the forward panel already carries bookings", async () => {
+    // A pilot boutique on Wednesday of her FIRST week. Every booking she has
+    // lives in the excluded in-progress week and in the next seven days, so all
+    // twelve bars are zero while the card under the note reads 12.
+    getDashboard.mockResolvedValue(
+      response(ZERO_HISTORY, { capacity: 84, booked: 12, utilization: 12 / 84 }),
+    );
+    renderSection();
+    await screen.findByRole("heading", { level: 3, name: PANELS[0] });
+
+    expect(within(tile("מקומות שנתפסו")).getByText("12")).toBeInTheDocument();
+    expect(screen.queryByText(FIRST_RUN_NOTE)).toBeNull();
+  });
+
+  it("withholds the first-run note when the window's only bookings were cancelled", async () => {
+    // Twelve zero bars, and a rates card two lines down reading 100.0%.
+    getDashboard.mockResolvedValue(
+      response(
+        {
+          ...ZERO_HISTORY,
+          status_totals: { confirmed: 0, cancelled: 5, no_show: 0, completed: 0 },
+          cancellation_rate: 1,
+          cancelled_by_customer: 5,
+        },
+        { capacity: 12, booked: 0, utilization: 0 },
+      ),
+    );
+    renderSection();
+    await screen.findByRole("heading", { level: 3, name: PANELS[0] });
+
+    expect(within(tile("שיעור הביטולים")).getByText("100.0%")).toBeInTheDocument();
+    expect(within(tile("ביטולים ביוזמת הלקוחה")).getByText("5")).toBeInTheDocument();
+    expect(screen.queryByText(FIRST_RUN_NOTE)).toBeNull();
   });
 });
 

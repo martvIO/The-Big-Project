@@ -76,15 +76,24 @@ SPEC_ERROR_CODES = {"NOT_AUTHENTICATED", "NOT_AUTHORIZED"}
 # The bare key `name` cannot be forbidden: appointment_types[].name is a TYPE
 # label, never a person's. The customer-name key, if one ever appeared, is
 # `customer_name`, and it is in the set below.
+#
+# The SHIPPED /manage spellings matter more than the plausible ones, because
+# this set is the tripwire for a future panel rather than for today's payload.
+# The bride's phone reaches this console as `customer_phone`
+# (`booking/schemas.py:154`), never as the bare `phone` — that one is a request
+# field on the anonymous create and lookup bodies. Both are in the set; so is
+# `dress_size`, which sits beside `dress_name` on the same owner detail.
 DASHBOARD_FORBIDDEN_KEYS = frozenset(
     {
         "customer_id",
         "phone",
+        "customer_phone",
         "customer_name",
         "notes",
         "manage_token_hash",
         "email",
         "dress_name",
+        "dress_size",
         "seat_index",
     }
 )

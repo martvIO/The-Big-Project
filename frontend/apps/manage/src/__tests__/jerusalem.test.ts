@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { jerusalemDate, jerusalemTime, plainDate, todayJerusalem } from "../lib/jerusalem";
+import {
+  jerusalemDate,
+  jerusalemTime,
+  plainDate,
+  plainDayMonth,
+  todayJerusalem,
+} from "../lib/jerusalem";
 
 // These assertions only mean something because apps/manage's `test` script pins
 // TZ=America/New_York (the storefront and packages/ui pin the same deliberately
@@ -46,6 +52,13 @@ describe("plainDate", () => {
     // this line goes red.
     expect(plainDate("2026-05-03")).toBe("3.5.2026");
     expect(plainDate("2026-01-01")).toBe("1.1.2026");
+  });
+
+  // The dashboard's week-row label, under the same never-an-instant rule and in
+  // the same file — the year lives once per panel in the range line.
+  it("drops the year for the week-row label, still without constructing a Date", () => {
+    expect(plainDayMonth("2026-05-03")).toBe("3.5");
+    expect(plainDayMonth("2026-01-01")).toBe("1.1");
   });
 });
 

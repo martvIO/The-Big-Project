@@ -232,7 +232,7 @@ async def history_by_customer(session, tenant_id, customer_ids, *, until_instant
                               ) -> dict[UUID, CustomerHistory]:   # (first_starts_at, bookings)
 ```
 
-Empty-input short-circuit, `select(Booking.customer_id, func.min(Booking.starts_at), func.count())`, `.where(tenant_id ==, customer_id.in_(…), status != 'cancelled', starts_at < until_instant, deleted_at.is_(None))`, `.group_by(Booking.customer_id)`. It rides `idx_bookings_tenant_customer`. The cohort ids come from D3's projection, so this is the request's **second and last** booking statement.
+Empty-input short-circuit, `select(Booking.customer_id, func.min(Booking.starts_at), func.count())`, `.where(tenant_id ==, customer_id.in_(…), status != 'cancelled', starts_at < until_instant, deleted_at.is_(None))`, `.group_by(Booking.customer_id)`. It rides `idx_bookings_tenant_customer`. The cohort ids come from D3's projection, so this is the request's **second of three** booking statements — the third is `count_by_start`, issued inside `forward_capacity` (D4).
 
 ### The API (D8)
 

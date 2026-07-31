@@ -308,7 +308,7 @@ def build_history(
 
 
 class DashboardService:
-    """The console's landing read: three statements and one grid, in one
+    """The console's landing read: five statements and one grid, in one
     tenant-scoped transaction.
 
     **Its own clock**, resolved with the house one-liner (`booking/owner.py`);
@@ -333,7 +333,13 @@ class DashboardService:
         return now.astimezone(datetime.UTC)
 
     async def dashboard(self, tenant_id: uuid.UUID) -> DashboardResponse:
-        """Two booking statements and one availability pair, then the folds.
+        """THREE statements against `bookings` plus the two availability reads.
+
+        The window projection and the cohort history are the two visible here;
+        the third is `count_by_start`, issued inside `forward_capacity`. Counting
+        it is the point — Risk 3's threshold is a per-request cost on the
+        console's most-hit read, and a docstring that undercounts it is what a
+        future maintainer would reason from.
 
         **No audit row.** No GET handler in this product writes one — not the
         booking day list, not the booking detail that renders a bride's phone
