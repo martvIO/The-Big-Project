@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from pathlib import Path
 
@@ -329,3 +330,34 @@ def test_migration_0012_round_trips(migrated_db: str) -> None:
         assert _tables_exist(migrated_db)
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+def test_running_env_py_does_not_disable_the_app_logger() -> None:
+    """Unmarked and offline (`sql=True` runs env.py and touches no database), so
+    this guard runs in the fast suite that the db-marked tests are deselected
+    from — the suite where the damage used to be invisible.
+
+    `fileConfig`'s default is disable_existing_loggers=True, and alembic.ini
+    names only root/sqlalchemy/alembic, so the default sets `disabled = True` on
+    "app". A disabled logger drops records inside isEnabledFor, before any
+    handler, so no amount of caplog or handler-attaching in a test can see past
+    it: one `command.upgrade` in a db fixture muted every "app" log assertion for
+    the rest of the session, which is how
+    test_error_log_line_carries_only_status_and_code was green locally and red
+    on CI. env.py passes disable_existing_loggers=False; this fails if it stops.
+    """
+    app_logger = logging.getLogger("app")
+    root = logging.getLogger()
+    # fileConfig REPLACES root's handlers and level. Restore them, or this test
+    # leaks the alembic console handler into every test that follows it.
+    previous_handlers, previous_level = root.handlers[:], root.level
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", "postgresql+asyncpg://u:p@localhost/unused")
+    try:
+        command.upgrade(cfg, "head", sql=True)
+        assert app_logger.disabled is False
+    finally:
+        root.handlers[:] = previous_handlers
+        root.setLevel(previous_level)
+        app_logger.disabled = False
