@@ -14,21 +14,32 @@ because a method needing `self` for nothing is what makes a pure test awkward.
 
 import dataclasses
 import datetime
+import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.booking.slots_io import forward_capacity
 from app.booking.validation import jerusalem_day_index
 from app.dashboard.schemas import (
     AppointmentTypeCount,
     CustomerMix,
+    DashboardResponse,
+    ForwardPanel,
     HistoryPanel,
     StatusTotals,
     WeekBucket,
 )
-from app.db.repositories.bookings import BookingFact, CustomerHistory
+from app.db.repositories.availability import (
+    AvailabilityExceptionsRepository,
+    AvailabilityRulesRepository,
+)
+from app.db.repositories.bookings import BookingFact, BookingsRepository, CustomerHistory
+from app.db.tenant import tenant_session
 from app.models.constants import BookingCancelledBy, BookingStatus
-from app.storefront.validation import BOUTIQUE_TIMEZONE
+from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock, today_jerusalem
 
 # One quarter, twelve bars — the smallest window that shows a season.
 HISTORY_WEEKS = 12
@@ -294,6 +305,89 @@ def build_history(
         appointment_types=top_types(in_window),
         customers=customer_mix(in_window, history, from_instant=window.from_instant),
     )
+
+
+class DashboardService:
+    """The console's landing read: three statements and one grid, in one
+    tenant-scoped transaction.
+
+    **Its own clock**, resolved with the house one-liner (`booking/owner.py`);
+    it never borrows `StorefrontService._clock`, and `create_app` wires none —
+    the parameter exists so the `db` suite can freeze the window.
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        clock: Clock | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._clock = clock
+        self._bookings = BookingsRepository()
+        self._rules = AvailabilityRulesRepository()
+        self._exceptions = AvailabilityExceptionsRepository()
+
+    def _now(self) -> datetime.datetime:
+        now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
+        return now.astimezone(datetime.UTC)
+
+    async def dashboard(self, tenant_id: uuid.UUID) -> DashboardResponse:
+        """Two booking statements and one availability pair, then the folds.
+
+        **No audit row.** No GET handler in this product writes one — not the
+        booking day list, not the booking detail that renders a bride's phone
+        and free-text notes, not the owner-only staff list. This is the
+        most-hit read in the console, and auditing it would put a write on
+        every page load (D9).
+        """
+        today = today_jerusalem(self._clock)
+        window = history_window(today)
+        # INCLUSIVE, so `today + 6` and never `today + 7`: the slot engine's
+        # window is inclusive on both ends (`slots.py:116-117, 134`), so seven
+        # days is six steps. `today + 7` would materialize eight days of
+        # capacity into a metric labelled seven and inflate the denominator by
+        # ~14% with nothing in the response to reveal the error. The +1 that
+        # turns this into `count_by_start`'s half-open ceiling lives inside
+        # `forward_capacity`, in one place, with the comment on it.
+        forward_end = today + datetime.timedelta(days=FORWARD_WINDOW_DAYS - 1)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            facts = await self._bookings.list_window_facts(
+                session,
+                tenant_id,
+                from_instant=window.from_instant,
+                until_instant=window.until_instant,
+            )
+            # The cohort `customer_mix` folds — distinct customer_id on
+            # non-cancelled facts — so the history read is called with exactly
+            # the ids it will be looked up by, and never with a wider set.
+            cohort_ids = sorted(
+                {fact.customer_id for fact in facts if fact.status != BookingStatus.CANCELLED.value}
+            )
+            history = await self._bookings.history_by_customer(
+                session, tenant_id, cohort_ids, until_instant=window.until_instant
+            )
+            forward = await forward_capacity(
+                session,
+                tenant_id=tenant_id,
+                window_start=today,
+                window_end=forward_end,
+                now=self._now(),
+                rules=self._rules,
+                exceptions=self._exceptions,
+                bookings=self._bookings,
+            )
+        return DashboardResponse(
+            generated_on=today,
+            history=build_history(window, facts, history),
+            forward=ForwardPanel(
+                from_date=today,
+                to_date=forward_end,
+                capacity=forward.capacity,
+                booked=forward.booked,
+                utilization=forward.utilization,
+            ),
+        )
 
 
 def _week_start_of(instant: datetime.datetime) -> datetime.date:
