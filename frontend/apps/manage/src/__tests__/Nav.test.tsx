@@ -157,6 +157,20 @@ describe("an unreachable section falls back to the first reachable one", () => {
   });
 });
 
+describe("the board section is wired to its nav row", () => {
+  it.each(["owner", "shift_manager"])("opens the board for a %s", async (role) => {
+    // The board's own suite covers its behaviour; this is the render branch,
+    // which nothing else would notice was missing.
+    me.mockResolvedValue(staff(role));
+    render(<App />);
+    await screen.findByRole("navigation");
+
+    fireEvent.click(screen.getByRole("button", { name: "לוח היום" }));
+    expect(screen.getByRole("heading", { name: "לוח היום" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("טוען את לוח היום…");
+  });
+});
+
 describe("the console lands on the dashboard", () => {
   it.each(["owner", "shift_manager"])(
     "puts a %s on «סקירה» on first render, with no click",

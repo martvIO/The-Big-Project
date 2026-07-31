@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ConsoleShell, ToastProvider } from "@boutique/ui";
 import { api } from "./api";
 import type { Staff } from "./api";
+import { BoardSection } from "./components/BoardSection";
 import { BookingsSection } from "./components/BookingsSection";
 import { CatalogSection } from "./components/CatalogSection";
 import { DashboardSection } from "./components/DashboardSection";
@@ -148,6 +149,7 @@ export function App() {
         {activeKey === "terms" && <TermsSection role={staff.role} />}
         {activeKey === "catalog" && <CatalogSection />}
         {activeKey === "bookings" && <BookingsSection />}
+        {activeKey === "board" && <BoardSection />}
         {activeKey === "staff" && <StaffSection staffId={staff.id} />}
         {activeKey === "gateway" && <GatewaySection />}
       </ConsoleShell>
