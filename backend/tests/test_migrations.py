@@ -248,32 +248,46 @@ def _tables_exist(url: str) -> bool:
     return asyncio.run(check())
 
 
-@pytest.mark.db
-def test_the_provider_check_admits_fake_and_rejects_a_real_provider(migrated_db: str) -> None:
-    """D8's security control, both halves. The negative half names 'lemonsqueezy'
-    explicitly so nobody later assumes F18's value is already allowed and ships
-    an adapter whose first INSERT is an IntegrityError — the CHECK widens in
-    F18's own migration, alongside the adapter, which is the whole point.
+def _provider_admitted(url: str, provider: str) -> bool:
+    """Probes the CHECK by attempting one INSERT and rolling it back. Nothing
+    leaks into the session-scoped container either way."""
 
-    Both probes roll back; nothing leaks into the shared container."""
-
-    async def check() -> None:
-        engine = create_async_engine(migrated_db)
+    async def check() -> bool:
+        engine = create_async_engine(url)
         try:
             async with engine.connect() as conn:
                 trans = await conn.begin()
-                await conn.execute(text(_CREDENTIAL_INSERT), {"provider": "fake"})
-                await trans.rollback()
-            for refused in ("lemonsqueezy", "grow"):
-                async with engine.connect() as conn:
-                    trans = await conn.begin()
-                    with pytest.raises(IntegrityError):
-                        await conn.execute(text(_CREDENTIAL_INSERT), {"provider": refused})
+                try:
+                    await conn.execute(text(_CREDENTIAL_INSERT), {"provider": provider})
+                except IntegrityError:
+                    return False
+                finally:
                     await trans.rollback()
+                return True
         finally:
             await engine.dispose()
 
-    asyncio.run(check())
+    return asyncio.run(check())
+
+
+@pytest.mark.db
+def test_the_provider_check_admits_exactly_fake_and_lemonsqueezy(migrated_db: str) -> None:
+    """D8's security control, both halves, at 0013's width.
+
+    Until F18 this test asserted 'lemonsqueezy' was REFUSED, so that nobody
+    could assume the value was already allowed and ship an adapter whose first
+    INSERT is an IntegrityError. 0013 widens the CHECK alongside the adapter,
+    which is exactly the discipline that assertion was protecting — so the value
+    moves from the negative half to the positive one and the negative half keeps
+    naming a provider with no adapter behind it.
+
+    The CHECK is what makes "no real merchant credential can be stored behind an
+    adapter that has not shipped" a property of the SCHEMA. It must widen by one
+    value per adapter, never pre-emptively."""
+    assert _provider_admitted(migrated_db, "fake")
+    assert _provider_admitted(migrated_db, "lemonsqueezy")
+    for refused in ("grow", "stripe", "LEMONSQUEEZY", ""):
+        assert not _provider_admitted(migrated_db, refused), refused
 
 
 @pytest.mark.db
@@ -328,6 +342,40 @@ def test_migration_0012_round_trips(migrated_db: str) -> None:
         assert not _tables_exist(migrated_db)
         command.upgrade(cfg, "head")
         assert _tables_exist(migrated_db)
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- 0013: the widened provider CHECK ---
+
+
+@pytest.mark.db
+def test_migration_0013_round_trips(migrated_db: str) -> None:
+    """downgrade() narrows the CHECK back to 'fake' alone; upgrade() re-widens
+    it. Runs as the migration owner (the app role cannot ALTER) and mutates the
+    live schema, so it is LAST in this file and owns no fixtures.
+
+    The finally is not decoration and this one is the quiet failure mode 0011's
+    docstring warns about: leaving the schema at 0012 does not DROP anything, so
+    nothing fails loudly — every payments db test that stores a lemonsqueezy
+    credential set would just start raising IntegrityError somewhere unrelated,
+    in a session-scoped container shared with the rest of the suite.
+
+    The probes here bracket the transition in BOTH directions rather than only
+    asserting the end state: a downgrade that silently no-ops would otherwise
+    leave this green while shipping a migration that cannot be rolled back."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    try:
+        assert _provider_admitted(migrated_db, "lemonsqueezy")
+        command.downgrade(cfg, "0012")
+        assert not _provider_admitted(migrated_db, "lemonsqueezy")
+        # …and the narrowed CHECK still admits what 0012 declared, so the
+        # downgrade restored the constraint rather than merely dropping it.
+        assert _provider_admitted(migrated_db, "fake")
+        command.upgrade(cfg, "head")
+        assert _provider_admitted(migrated_db, "lemonsqueezy")
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
 
