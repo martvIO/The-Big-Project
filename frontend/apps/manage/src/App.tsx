@@ -22,6 +22,7 @@ type SectionKey =
   | "terms"
   | "catalog"
   | "bookings"
+  | "board"
   | "staff"
   | "gateway";
 
@@ -54,6 +55,14 @@ const NAV: readonly NavItem[] = [
   { key: "terms", labelKey: "nav.terms", roles: ALL },
   { key: "catalog", labelKey: "nav.catalog", roles: ALL },
   { key: "bookings", labelKey: "nav.bookings", roles: ALL },
+  // The board sits AFTER «תורים» and not at the top, which is what keeps Q-5 =
+  // NO true structurally: the landing section is row 0 above, and nothing
+  // inserted below it can displace either the initial `section` or the
+  // `reachable[0]` fallback. `roles: ALL` because a board a shift manager
+  // cannot open is not a shift manager's board (spec D5) — and, as the note
+  // above says, this array is cosmetics: the control is the server's RoleGate,
+  // which is also why the board treats a 403 as terminal.
+  { key: "board", labelKey: "nav.board", roles: ALL },
   { key: "staff", labelKey: "nav.staff", roles: ["owner"] },
   // Owner-only, the READ included: /manage/gateway is the first backend router
   // that is owner-only in full, and whether the boutique can take money is

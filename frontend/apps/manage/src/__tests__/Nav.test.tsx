@@ -57,8 +57,13 @@ const NAV_LABELS = [
   "מדיניות ביטולים",
   "שמלות",
   "תורים",
+  // F34, after «תורים» and before the owner-only rows. A board a shift manager
+  // cannot open is not a shift manager's board (spec D5) — and inserting it
+  // HERE rather than at the top is what keeps Q-5 = NO true structurally: the
+  // landing section is NAV row 0 and nothing below it can displace it.
+  "לוח היום",
   // The two owner-only rows, last. Everything above is `roles: ALL`, which is
-  // what keeps the shift_manager assertions below a `.slice(0, 7)`.
+  // what keeps the shift_manager assertions below a `.slice(0, 8)`.
   "צוות",
   "סליקה ותשלומים",
 ];
@@ -76,18 +81,18 @@ beforeEach(() => {
 });
 
 describe("the console nav is role-filtered", () => {
-  it("shows an owner all nine sections including Staff and the gateway", async () => {
+  it("shows an owner all ten sections including Staff and the gateway", async () => {
     me.mockResolvedValue(staff("owner"));
     render(<App />);
     await screen.findByRole("navigation");
     expect(navItems()).toEqual(NAV_LABELS);
   });
 
-  it("shows a shift manager seven sections and neither owner-only one", async () => {
+  it("shows a shift manager eight sections and neither owner-only one", async () => {
     me.mockResolvedValue(staff("shift_manager"));
     render(<App />);
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 7));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 8));
     expect(screen.queryByRole("button", { name: "צוות" })).toBeNull();
     // Cosmetics only — the control is the server's owner-only RoleGate, which
     // refuses her on all four /manage/gateway routes with a 403. The filter
@@ -140,7 +145,7 @@ describe("an unreachable section falls back to the first reachable one", () => {
     fireEvent.click(screen.getByRole("button", { name: "כניסה" }));
 
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 7));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 8));
     // reachable[0] is now the dashboard, not «פרופיל והגדרות» — the fallback
     // lands her on the console's landing section rather than a settings form.
     await waitFor(() =>

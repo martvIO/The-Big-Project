@@ -251,5 +251,54 @@ export const ar = {
     "gateway.error.GATEWAY_NOT_CONNECTED": "צריך לחבר חשבון סליקה קודם.",
     "gateway.error.GATEWAY_UNAVAILABLE": "ספק הסליקה אינו זמין כרגע. אפשר לנסות שוב בעוד כמה דקות.",
     "gateway.error.TOO_MANY_ATTEMPTS": "יותר מדי ניסיונות. אפשר לנסות שוב מאוחר יותר.",
+
+    // --- F34, the live shift board ---
+    //
+    // Same 34 keys as he.ts, values standing in untranslated. NOTHING keeps
+    // these two files in sync — no parity guard exists in this repo and F34 does
+    // not invent one (Risk 6, inherited from F15) — so copy.md's table is the
+    // single source for both columns and this is one file to one file.
+    "nav.board": "לוח היום",
+    "board.heading": "לוח היום",
+    "board.dayLine": "היום · {{date}}",
+
+    "board.summary": "הגיעו {{ratio}}",
+    "board.updatedAt": "עודכן {{time}}",
+    "board.staleAt": "אין עדכון מאז {{time}}",
+    "board.staleBody": "ייתכן שהמידע אינו עדכני.",
+    "board.refresh": "רענון",
+
+    "board.pause": "השהיה",
+    "board.pauseAria": "השהיה — עדכון הלוח",
+    "board.resume": "חידוש",
+    "board.resumeAria": "חידוש — עדכון הלוח",
+    "board.pausedAt": "מושהה · עודכן {{time}}",
+    "board.paused": "העדכון מושהה. הלוח לא יתעדכן עד לחידוש.",
+    "board.idleStopped": "העדכון הופסק אחרי {{minutes}} דקות ללא פעילות.",
+    "board.resumed": "העדכון חודש.",
+
+    "board.checkIn": "הגיעה",
+    "board.checkInAria": "הגיעה — {{name}}, {{time}}",
+    "board.checkedInAt": "נרשמה הגעה · {{time}}",
+    "board.undo": "ביטול הרישום",
+    "board.undoAria": "ביטול הרישום — {{name}}, {{time}}",
+    "board.now": "עכשיו {{time}}",
+    "board.movedAway": "התור הועבר לתאריך אחר",
+
+    "board.checkedInCue": "נרשמה הגעה עבור {{name}}.",
+    "board.undoneCue": "הרישום בוטל עבור {{name}}.",
+
+    "board.loading": "טוען את לוח היום…",
+    "board.loadFailed": "לא הצלחנו לטעון את הלוח כרגע.",
+    "board.emptyTitle": "אין תורים היום",
+    "board.emptyBody":
+      "תורים שייקבעו להיום יופיעו כאן. לתאריכים אחרים אפשר לעבור למסך «תורים».",
+    "board.truncated":
+      "מוצגים {{count}} התורים הראשונים של היום. לרשימה המלאה אפשר לעבור למסך «תורים».",
+    "board.sessionEnded": "תוקף החיבור פג. צריך להתחבר מחדש.",
+    "board.accessEnded": "אין הרשאה לצפות בלוח כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+    "board.reload": "רענון הדף",
+
+    "board.error.transitionInvalid": "מצב התור השתנה. השורה תתוקן בעדכון הבא.",
   },
 } as const;
