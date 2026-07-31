@@ -33,10 +33,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.main import create_app
+from app.main import _SpaFallbackRoute, create_app
 from app.security_headers import SECURITY_HEADERS
 from app.storefront.service import StorefrontDressListView
 from app.storefront.validation import STOREFRONT_LIST_DEFAULT_LIMIT
@@ -124,10 +125,14 @@ def _build_static(root: Path) -> None:
     (root / "storefront" / "robots.txt").write_text("User-agent: *\n", encoding="utf-8")
 
 
-def _client(monkeypatch: pytest.MonkeyPatch, static_root: Path) -> TestClient:
+def _app(monkeypatch: pytest.MonkeyPatch, static_root: Path) -> FastAPI:
     monkeypatch.setattr("app.main.get_settings", _settings)
     monkeypatch.setattr("app.main.STATIC_ROOT", static_root)
-    app = create_app(resolver=_resolver)
+    return create_app(resolver=_resolver)
+
+
+def _client(monkeypatch: pytest.MonkeyPatch, static_root: Path) -> TestClient:
+    app = _app(monkeypatch, static_root)
     app.state.storefront_service = _EmptyStorefrontService()
     return TestClient(app, base_url=f"http://{HOST}")
 
@@ -231,6 +236,25 @@ def test_head_and_options_on_a_manage_route_stay_405(client: TestClient, method:
     Mount("/", StaticFiles(html=True)): a Mount matches EVERY method, so it would
     look for a file and answer 404 where test_staff_role_gating expects 405."""
     assert client.request(method, "/manage/settings").status_code == 405
+
+
+def test_the_fallback_is_the_last_route_create_app_registers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Starlette returns on the first FULL match, so anything registered after
+    the catch-all is unreachable — and it fails silently, answering 200
+    text/html (the storefront shell) rather than erroring. `_register_spas` is
+    the last statement of `create_app()` for that reason, and this is what keeps
+    it there: F17, F52 and F53 each append an `include_router` to that function,
+    and one added a line too far down would ship a storefront shell where an API
+    used to be, with nothing else going red.
+    """
+    static_root = tmp_path / "static"
+    _build_static(static_root)
+    routes = _app(monkeypatch, static_root).router.routes
+    assert isinstance(routes[-1], _SpaFallbackRoute), (
+        f"the SPA fallback must be registered last; {routes[-1]} comes after it"
+    )
 
 
 def test_a_real_get_api_route_still_answers_json(client: TestClient) -> None:
