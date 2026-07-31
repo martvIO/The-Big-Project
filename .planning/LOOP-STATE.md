@@ -22,7 +22,8 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # F56 merged (PR #30), F52 merged (PR #28) 2026-07-31.
+current: F34                    # floor program iteration 1 of 10, started 2026-07-31.
+                                # F56 merged (PR #30), F52 merged (PR #28) 2026-07-31.
                                 # RE-PRIORITISED 2026-07-31: the FLOOR-MANAGEMENT PROGRAM now sits at the top of
                                 # `queue:` and preempts everything. Next pick is F34, then F57, F36, F33, F58,
                                 # F59, F37, F41, F42, F60 — ten features, one PR each. F19 (spec done and
@@ -47,7 +48,7 @@ queue:
     slug: shift-board-checkin
     epic: SMC
     title: "Live board + check-in (5s poll)"
-    status: queued
+    status: specing
     deps: [F15, F31]
     spec: .planning/specs/shift-board-checkin.md
     prototype: .planning/design/screens/shift-board/prototype.html
