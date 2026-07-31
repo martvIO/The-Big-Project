@@ -236,11 +236,27 @@ class LemonSqueezyGateway:
                     # our side, so a bride could pay a checkout after the
                     # sweeper had already freed her seat.
                     "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+                    # TOP-LEVEL, a sibling of checkout_data — NOT nested inside
+                    # it. This is what bridges a catalog checkout to an
+                    # amount-driven port, and it is identity rather than a
+                    # conversion because the store is ILS.
+                    #
+                    # It shipped nested once and that was a money bug: LS drops
+                    # attributes it does not recognise, so the checkout would be
+                    # minted at the placeholder VARIANT'S OWN price. The bride is
+                    # charged the wrong sum, and F17's D14 amount assertion then
+                    # refuses to settle — so she pays wrongly AND loses the seat.
+                    # Both official SDKs put it here: the JS SDK's attributes are
+                    # {customPrice, expiresAt, preview, testMode, productOptions,
+                    # checkoutOptions, checkoutData} and its CheckoutData type has
+                    # no price field at all; the Go SDK's CheckoutAttributes has
+                    # CustomPrice beside CheckoutData, whose struct is only
+                    # Email/Name/BillingAddress/TaxNumber/DiscountCode/Custom.
+                    "custom_price": amount_agorot,
                     "checkout_data": {
-                        # What bridges a catalog checkout to an amount-driven
-                        # port. Identity, not a conversion — the store is ILS.
-                        "custom_price": amount_agorot,
-                        # The ONLY field LS echoes back on the webhook.
+                        # The ONLY field LS echoes back on the webhook, and
+                        # therefore the only key both halves of this adapter can
+                        # share (see the module docstring).
                         "custom": {REFERENCE_KEY: reference},
                     },
                     # A hosted page we redirect to, not an overlay we embed:
@@ -277,6 +293,43 @@ class LemonSqueezyGateway:
         if attributes is None or attributes.get("test_mode") is not True:
             raise GatewayCredentialsRejectedError(
                 "lemonsqueezy did not return a test-mode checkout"
+            )
+
+        # READ-BACK GUARD, and the general form of the test_mode one: require the
+        # provider to ECHO the money we asked it to charge. We can never call the
+        # live API from a test, so asserting the request shape only proves we
+        # sent what we MEANT to — never that LS understood it. LS silently drops
+        # attributes it does not recognise, which makes a misplaced field
+        # invisible until a bride is charged the wrong amount. Comparing the echo
+        # turns that entire class of bug into a loud failure on the FIRST real
+        # call, before any money moves.
+        #
+        # Rejected (400), not Unavailable (503), for the test_mode reason
+        # exactly: the wrongly-priced checkout ALREADY EXISTS at the provider and
+        # is payable, so 503's "temporarily unavailable" would invite a retry
+        # that mints another one. Nor is it transient — it is our bug or an API
+        # change, and it persists until code changes, so the one error class that
+        # means "refuse, do not retry" is the correct one.
+        #
+        # A missing or null price fails here too: "we could not confirm the
+        # price" and "the price is wrong" cost the same if we are wrong.
+        if attributes.get("custom_price") != amount_agorot:
+            raise GatewayCredentialsRejectedError(
+                "lemonsqueezy did not echo the requested checkout price"
+            )
+
+        # The same lens on IDENTITY, the other thing we send that has to survive
+        # the round trip: if `custom` were ever dropped the webhook would carry
+        # no reference, settle_from_webhook could never find the row, and we
+        # would learn only after the charge. Checked only when the echo is
+        # PRESENT — whether a create response populates checkout_data could not
+        # be verified against the live API, so absence must not fail a
+        # legitimate checkout, while a present-but-wrong value is unambiguous.
+        checkout_data = attributes.get("checkout_data")
+        echoed_custom = checkout_data.get("custom") if isinstance(checkout_data, Mapping) else None
+        if isinstance(echoed_custom, Mapping) and echoed_custom.get(REFERENCE_KEY) != reference:
+            raise GatewayCredentialsRejectedError(
+                "lemonsqueezy did not echo the checkout reference"
             )
 
         # The checkout id is still REQUIRED to be present and well-formed even

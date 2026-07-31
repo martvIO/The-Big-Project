@@ -117,10 +117,21 @@ def _store_payload(*, currency: str = STORE_CURRENCY) -> dict[str, Any]:
     }
 
 
-def _checkout_payload(*, test_mode: Any = True, **attribute_overrides: Any) -> dict[str, Any]:
+# `custom_price` and `checkout_data` are ECHOED here because the real checkout
+# object echoes them and the adapter reads both back — see
+# test_create_session_refuses_a_checkout_priced_differently_from_the_request.
+def _checkout_payload(
+    *,
+    test_mode: Any = True,
+    custom_price: Any = AMOUNT_AGOROT,
+    reference: Any = REFERENCE,
+    **attribute_overrides: Any,
+) -> dict[str, Any]:
     attributes: dict[str, Any] = {
         "url": CHECKOUT_URL,
         "test_mode": test_mode,
+        "custom_price": custom_price,
+        "checkout_data": {"custom": {"reference": reference}},
         "expires_at": "2026-07-31T12:00:00.000000Z",
         **attribute_overrides,
     }
@@ -139,6 +150,7 @@ def _webhook_body(
     status: str = "paid",
     refunded: bool = False,
     total: Any = AMOUNT_AGOROT,
+    subtotal: Any = None,
     custom: Any = None,
 ) -> bytes:
     return json.dumps(
@@ -156,7 +168,10 @@ def _webhook_body(
                     "identifier": "9c8b7a66-0000-4000-8000-000000000000",
                     "order_number": 12,
                     "currency": STORE_CURRENCY,
-                    "subtotal": total,
+                    # Defaults to `total`, the ordinary case for a custom-priced
+                    # checkout with no tax or discount. Pass it explicitly to
+                    # separate the two — see test_the_amount_is_the_total_not_the_subtotal.
+                    "subtotal": total if subtotal is None else subtotal,
                     "total": total,
                     "status": status,
                     "refunded": refunded,
@@ -320,7 +335,13 @@ async def test_create_session_posts_the_json_api_envelope_and_returns_id_and_url
     assert attributes["test_mode"] is True
     # custom_price is the mechanism that bridges LS's catalog checkout to F17's
     # amount-driven port. Identity, not a conversion — the store is ILS.
-    assert attributes["checkout_data"]["custom_price"] == AMOUNT_AGOROT
+    #
+    # TOP-LEVEL, a sibling of checkout_data. It shipped nested INSIDE
+    # checkout_data once, where LS silently drops it — minting the checkout at
+    # the placeholder variant's own price. Both assertions are here so the
+    # correct placement is pinned AND the wrong one cannot quietly return.
+    assert attributes["custom_price"] == AMOUNT_AGOROT
+    assert "custom_price" not in attributes["checkout_data"]
     # The opaque reference F19 passes (the booking id) has to survive the round
     # trip; `checkout_data.custom` is the only field LS echoes back on the webhook.
     assert attributes["checkout_data"]["custom"] == {"reference": REFERENCE}
@@ -377,6 +398,143 @@ async def test_create_session_refuses_a_checkout_that_is_not_in_test_mode(test_m
             return_url=RETURN_URL,
             expires_in=900,
         )
+
+
+@pytest.mark.parametrize(
+    "echoed_price",
+    [
+        # The exact fingerprint of the bug this guard exists for: LS drops the
+        # unrecognised nested key and mints at the variant's own price.
+        200000,
+        # A partial charge — the direction that costs the boutique money.
+        1,
+        # Null. "We could not confirm the price" gets the same answer as "the
+        # price is wrong", the test_mode argument verbatim.
+        None,
+        # A type change is not a match either: accepting a string here would
+        # mean trusting a field we no longer understand.
+        "15000",
+    ],
+)
+async def test_create_session_refuses_a_checkout_priced_differently_from_the_request(
+    echoed_price: Any,
+) -> None:
+    """THE read-back guard, and why it earns its place: we can never call the
+    live API from a test, so asserting the REQUEST shape only proves we sent
+    what we meant to — never that Lemon Squeezy understood it.
+
+    LS silently drops attributes it does not recognise. `custom_price` sent one
+    level too deep (inside checkout_data, where it does not belong) therefore
+    mints the checkout at the placeholder VARIANT'S own price, with a 201 and no
+    complaint: the bride is charged the wrong sum, and F17's D14 amount
+    assertion then refuses to settle, so she loses the seat too. Requiring the
+    provider to echo the price back turns that entire class of field-placement
+    bug into a loud failure on the first real call, before money moves.
+
+    Rejected (400), not Unavailable (503): the wrongly-priced checkout already
+    exists at the provider and is payable, so 503 would invite a retry that
+    mints another one — and the condition is not transient anyway."""
+    transport, _ = _mock(201, _checkout_payload(custom_price=echoed_price))
+
+    with pytest.raises(GatewayCredentialsRejectedError):
+        await _gateway(transport).create_session(
+            _credentials(),
+            amount_agorot=AMOUNT_AGOROT,
+            reference=REFERENCE,
+            return_url=RETURN_URL,
+            expires_in=900,
+        )
+
+
+async def test_create_session_refuses_a_checkout_that_echoes_no_price_at_all() -> None:
+    # Genuinely ABSENT, which is what a dropped attribute looks like on the wire
+    # — distinct from an explicit null, and the precise shape of the bug.
+    payload = _checkout_payload()
+    del payload["data"]["attributes"]["custom_price"]
+
+    with pytest.raises(GatewayCredentialsRejectedError):
+        await _gateway(_mock(201, payload)[0]).create_session(
+            _credentials(),
+            amount_agorot=AMOUNT_AGOROT,
+            reference=REFERENCE,
+            return_url=RETURN_URL,
+            expires_in=900,
+        )
+
+
+async def test_create_session_accepts_the_echoed_price_that_matches() -> None:
+    # The other half, so the guard cannot be satisfied by refusing everything.
+    transport, _ = _mock(201, _checkout_payload(custom_price=AMOUNT_AGOROT))
+
+    session = await _gateway(transport).create_session(
+        _credentials(),
+        amount_agorot=AMOUNT_AGOROT,
+        reference=REFERENCE,
+        return_url=RETURN_URL,
+        expires_in=900,
+    )
+
+    assert session.redirect_url == CHECKOUT_URL
+
+
+async def test_create_session_refuses_a_checkout_echoing_a_different_reference() -> None:
+    """The same lens on IDENTITY. If `custom` were dropped or rewritten the
+    webhook would carry no usable reference, settle_from_webhook could never
+    find the row, and we would learn about it only after the charge."""
+    transport, _ = _mock(201, _checkout_payload(reference="somebody-elses-booking"))
+
+    with pytest.raises(GatewayCredentialsRejectedError):
+        await _gateway(transport).create_session(
+            _credentials(),
+            amount_agorot=AMOUNT_AGOROT,
+            reference=REFERENCE,
+            return_url=RETURN_URL,
+            expires_in=900,
+        )
+
+
+async def test_create_session_refuses_a_checkout_that_echoes_an_empty_custom() -> None:
+    # `checkout_data` present with an EMPTY `custom` is not "did not echo" — it
+    # is LS saying it acknowledged checkout_data and carries no reference, which
+    # is the dropped-key fingerprint again. Refused, like a wrong one.
+    payload = _checkout_payload()
+    payload["data"]["attributes"]["checkout_data"] = {"custom": {}}
+
+    with pytest.raises(GatewayCredentialsRejectedError):
+        await _gateway(_mock(201, payload)[0]).create_session(
+            _credentials(),
+            amount_agorot=AMOUNT_AGOROT,
+            reference=REFERENCE,
+            return_url=RETURN_URL,
+            expires_in=900,
+        )
+
+
+@pytest.mark.parametrize("echo", [{}, {"custom": "not-an-object"}, "not-an-object", None])
+async def test_create_session_tolerates_a_response_that_does_not_echo_checkout_data(
+    echo: Any,
+) -> None:
+    """Deliberately asymmetric with the price guard, and the asymmetry is a
+    confidence statement rather than an oversight: whether a create response
+    populates `checkout_data` could NOT be verified against the live API (we are
+    forbidden from calling it), so treating absence as failure would refuse
+    every legitimate checkout on the first real call. A present-but-wrong value
+    is unambiguous and is refused above; an absent one is not evidence.
+
+    The reference round-trip stays covered end to end regardless, by
+    test_a_paid_webhook_finds_the_session_that_minted_it."""
+    payload = _checkout_payload()
+    payload["data"]["attributes"]["checkout_data"] = echo
+
+    session = await _gateway(_mock(201, payload)[0]).create_session(
+        _credentials(),
+        amount_agorot=AMOUNT_AGOROT,
+        reference=REFERENCE,
+        return_url=RETURN_URL,
+        expires_in=900,
+    )
+
+    assert session.provider_session_id == REFERENCE
 
 
 @pytest.mark.parametrize(
@@ -477,7 +635,7 @@ async def test_a_paid_webhook_finds_the_session_that_minted_it() -> None:
     identifiers to meet. Both halves drive off ONE value, so neither can be
     tuned to a fixture the other does not share."""
     booking_id = "0191b2c3-d4e5-4f60-8a71-b2c3d4e5f607"
-    transport, seen = _mock(201, _checkout_payload())
+    transport, seen = _mock(201, _checkout_payload(reference=booking_id))
 
     session = await _gateway(transport).create_session(
         _credentials(),
@@ -682,6 +840,26 @@ def test_the_paid_mapping(event_name: str, status: str, refunded: bool, expected
     assert event.provider_session_id == REFERENCE
     assert event.provider_transaction_id == ORDER_ID
     assert event.amount_agorot == AMOUNT_AGOROT
+
+
+def test_the_amount_is_the_total_not_the_subtotal() -> None:
+    """Pins decision (c), which every other webhook fixture leaves unverified
+    because it sets the two equal — the ordinary case for a custom-priced
+    checkout with no tax or discount.
+
+    `total` is the money that ACTUALLY MOVED; `subtotal` is the line-item sum
+    before tax and discount. Reading `subtotal` would silently settle a short
+    payment as though the full deposit had arrived — a real loss for the
+    boutique, and invisible. Reading `total` means a divergence instead trips
+    F17's D14 amount assertion in settle_from_webhook, which persists its
+    evidence and refuses: noisy, but the safe direction, and a divergence here
+    means something is misconfigured anyway."""
+    body = _webhook_body(total=17550, subtotal=AMOUNT_AGOROT)
+
+    event = LemonSqueezyGateway().verify_webhook(_credentials(), body=body, signature=_sign(body))
+
+    assert event.amount_agorot == 17550
+    assert event.amount_agorot != AMOUNT_AGOROT
 
 
 def test_a_failed_order_is_not_paid_even_though_it_is_a_valid_webhook() -> None:
