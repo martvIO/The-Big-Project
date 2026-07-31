@@ -1,11 +1,14 @@
 """Twilio behind the SmsSender port — one form-encoded POST, no vendor SDK.
 
-Credentials are read from the process environment and are deliberately NOT
-Settings fields, the precedent boto3 set for AWS (config.py:43-44): they never
-enter the config object, never appear in a repr and never reach a log line.
-Any one of the four missing means is_configured is False, which routes to the
-same 503 SMS_NOT_CONFIGURED as no provider at all — a half-configured
-deployment degrades instead of erroring on every send.
+Credentials arrive as SecretStr Settings fields, NOT via os.environ: unlike
+boto3, which reads the process environment itself, nothing but this file reads
+these four names, so reading only os.environ would silently ignore every
+deployment that supplies them through `.env` — the path .env.example documents.
+SecretStr is what preserves the property the boto3 precedent was protecting:
+they never appear in a repr, a log line or a traceback frame. Any one of the
+four missing means is_configured is False, which routes to the same 503
+SMS_NOT_CONFIGURED as no provider at all — a half-configured deployment
+degrades instead of erroring on every send.
 
 The raised message is CONSTRUCTED, never the response body. Twilio's 4xx
 payloads routinely quote the parameters that were submitted, body included, and
@@ -17,10 +20,11 @@ through. Nothing provider-supplied but an INTEGER error code leaves this file.
 """
 
 import logging
-import os
 
 import httpx
+from pydantic import SecretStr
 
+from app.core.config import Settings
 from app.notifications.base import SendResult, SmsNotConfiguredError, SmsSendError
 
 logger = logging.getLogger("app")
@@ -34,27 +38,27 @@ _MESSAGES_URL = "https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messag
 CONNECT_TIMEOUT_SECONDS = 3.0
 READ_TIMEOUT_SECONDS = 10.0
 
-_ENV_VARS = (
-    "TWILIO_ACCOUNT_SID",
-    "TWILIO_API_KEY_SID",
-    "TWILIO_API_KEY_SECRET",
-    "TWILIO_FROM_NUMBER",
-)
+
+def _credential(value: SecretStr | None) -> str:
+    """Unwrapped and trimmed. A value pasted into a Railway variable box or an
+    `.env` line arrives with a trailing newline or a stray space more often than
+    not, and `From=" "` would 400 on every single send instead of degrading to
+    the 503 that a missing credential gets."""
+    return value.get_secret_value().strip() if value is not None else ""
 
 
 class TwilioSmsSender:
     """Real sends. `transport` is a test seam only — production leaves it None."""
 
-    def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self, settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
         # Read once at construction: _build_sms_sender runs at boot, and a
         # credential appearing mid-process is not a state worth supporting.
-        account_sid, api_key_sid, api_key_secret, from_number = (
-            os.environ.get(name, "").strip() for name in _ENV_VARS
-        )
-        self._account_sid = account_sid
-        self._api_key_sid = api_key_sid
-        self._api_key_secret = api_key_secret
-        self._from_number = from_number
+        self._account_sid = _credential(settings.twilio_account_sid)
+        self._api_key_sid = _credential(settings.twilio_api_key_sid)
+        self._api_key_secret = _credential(settings.twilio_api_key_secret)
+        self._from_number = _credential(settings.twilio_from_number)
         self._transport = transport
 
     @property

@@ -286,7 +286,7 @@ def _build_sms_sender(settings: Settings) -> SmsSender:
         logger.info("SMS sender: FAKE (in-memory outbox) — no real SMS will be sent")
         return FakeSmsSender()
     if settings.sms_provider == "twilio":
-        sender = TwilioSmsSender()
+        sender = TwilioSmsSender(settings)
         if sender.is_configured:
             logger.info("SMS sender: TWILIO — real sends from %s", sender.from_number)
         else:
