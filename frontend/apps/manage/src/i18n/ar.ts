@@ -57,6 +57,7 @@ export const ar = {
     "booking.manageLink": "קישור ניהול",
     "booking.manageLinkIssued": "קישור ניהול פעיל",
     "booking.manageLinkMissing": "לא הונפק קישור ניהול",
+    "booking.checkedInAt": "נרשמה הגעה",
     "booking.cancelledAt": "בוטל בתאריך",
     "booking.cancelledBy": "בוטל על ידי",
     "booking.cancelledByOwner": "הבוטיק",

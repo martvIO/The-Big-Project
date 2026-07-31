@@ -239,6 +239,35 @@ describe("BookingDetail facts", () => {
     expect(await screen.findByText("לא הונפק קישור ניהול")).toBeInTheDocument();
   });
 
+  it("hides the arrival fact on a booking nobody has checked in", async () => {
+    mount();
+    await screen.findByText("הלקוחה");
+    expect(screen.queryByText("נרשמה הגעה")).toBeNull();
+  });
+
+  it("states the arrival as a FACT, and offers no control for it", async () => {
+    // The action lives on the board, one place; the detail states the fact.
+    // 06:24Z is 09:24 in Jerusalem, and the runner's TZ is New York.
+    mount({ checked_in_at: "2099-08-04T06:24:00Z" });
+    await screen.findByText("הלקוחה");
+
+    expect(screen.getByText("נרשמה הגעה")).toBeInTheDocument();
+    expect(screen.getByText("09:24")).toBeInTheDocument();
+    // No «הגיעה» and no «ביטול הרישום» here — any change to the control's
+    // placement in F15's detail screen is out of F34's scope.
+    expect(screen.queryByRole("button", { name: /^הגיעה/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /ביטול הרישום/ })).toBeNull();
+  });
+
+  it("reads a checked-in no_show as two true facts rather than a contradiction", async () => {
+    // D5: a status transition never touches checked_in_at, so this row is real.
+    mount({ status: "no_show", checked_in_at: "2099-08-04T06:24:00Z" });
+    await screen.findByText("הלקוחה");
+
+    expect(screen.getByTestId("booking-status")).toHaveTextContent("לא הגיעה");
+    expect(screen.getByText("נרשמה הגעה")).toBeInTheDocument();
+  });
+
   it("hides cancelled_at / cancelled_by on a live booking", async () => {
     mount();
     await screen.findByText("הלקוחה");

@@ -98,6 +98,11 @@ export const he = {
     "booking.manageLink": "קישור ניהול",
     "booking.manageLinkIssued": "קישור ניהול פעיל",
     "booking.manageLinkMissing": "לא הונפק קישור ניהול",
+    // F34's one addition to this namespace: the arrival FACT's label on the
+    // detail. The board's copy deck covers the board screen and carries no key
+    // for this row, so the wording follows the deck's own «נרשמה הגעה» — a
+    // record that was made — rather than inventing a third spelling.
+    "booking.checkedInAt": "נרשמה הגעה",
     "booking.cancelledAt": "בוטל בתאריך",
     "booking.cancelledBy": "בוטל על ידי",
     "booking.cancelledByOwner": "הבוטיק",
