@@ -239,5 +239,66 @@ export const he = {
     // The server's generic 403 body is ENGLISH and errorMessage() surfaces it
     // verbatim; this is the section's own Hebrew for a mid-session demotion.
     "staff.error.NOT_AUTHORIZED": "הפעולה הזו זמינה לבעלת הבוטיק בלבד.",
+    // --- F17 payment gateway (owner-only) ---
+    //
+    // FLAT dotted literals, appended, exactly like F15's and F51's blocks. The
+    // nested `nav:` object above is deliberately untouched: it is the file's
+    // merge-conflict zone while sibling features land, and i18next resolves
+    // "nav.gateway" through `ignoreJSONStructure` either way — proven by
+    // __tests__/i18n.test.ts.
+    "nav.gateway": "סליקה ותשלומים",
+
+    "gateway.heading": "חיבור לסליקה",
+    "gateway.loadError": "לא הצלחנו לטעון את מצב הסליקה. אפשר לרענן ולנסות שוב.",
+
+    // The PLATFORM has no gateway. No form, no buttons — nothing the owner can
+    // do about it, and offering her a form would be a lie.
+    "gateway.notConfigured": "גביית מקדמות אינה זמינה כרגע בפלטפורמה.",
+    "gateway.notConfiguredHelp": "אין מה לעשות מצדך. נעדכן כשהאפשרות תיפתח.",
+
+    "gateway.notConnected": "עדיין לא חובר חשבון סליקה.",
+    "gateway.connected": "חשבון הסליקה מחובר.",
+    "gateway.statusValid": "פעיל",
+    "gateway.statusInvalid": "נדחה",
+    "gateway.lastValidated": "נבדק לאחרונה",
+
+    // Staging runs the fake secret box, so a real merchant credential typed in
+    // here would be stored as base64 of plaintext. Both production boot guards
+    // key on APP_ENV=production and 0012's CHECK admits 'fake' everywhere, so
+    // this notice is the only thing standing between a helpful operator and a
+    // real key on a staging disk.
+    "gateway.testEnvNotice": "סביבת בדיקות — אין להזין פרטי סליקה אמיתיים",
+
+    "gateway.formHeading": "פרטי חשבון הסליקה",
+    "gateway.writeOnlyNotice": "מטעמי אבטחה הפרטים אינם ניתנים לצפייה לאחר השמירה. שמירה מחליפה את כל הפרטים.",
+    "gateway.saveCta": "שמירת פרטי הסליקה",
+    "gateway.validateCta": "בדיקה עכשיו",
+    "gateway.disconnectCta": "ניתוק חשבון הסליקה",
+    "gateway.disconnectConfirmTitle": "לנתק את חשבון הסליקה?",
+    "gateway.disconnectConfirmBody": "גביית מקדמות תיפסק לכל הבוטיק עד לחיבור מחדש.",
+    "gateway.disconnectConfirm": "ניתוק",
+    "gateway.cancelCta": "ביטול",
+
+    // The one cross-section fact the owner must see, composed from the two
+    // calls the console already makes rather than a derived field on the API.
+    "gateway.depositsWithoutGateway": "גביית מקדמות מופעלת בהגדרות, אבל אין חשבון סליקה מחובר.",
+    "gateway.depositsWithoutGatewayCta": "חיבור חשבון סליקה",
+
+    // Field labels for the fake adapter's declared shape. A field with no key
+    // here falls back to its raw name in <bdi dir="ltr" lang="en"> — asserted by
+    // __tests__/GatewaySection.test.tsx, not by the i18n suite, which cannot see
+    // a key it never renders.
+    "gateway.field.merchant_id": "מזהה סוחר",
+    "gateway.field.api_key": "מפתח API",
+    "gateway.field.webhook_secret": "סוד אימות התראות",
+
+    // The server's generic bodies are ENGLISH and errorMessage() surfaces them
+    // verbatim into a Hebrew console; these five are the section's own copy.
+    // Never a provider message — the API does not return one.
+    "gateway.error.GATEWAY_CREDENTIALS_REJECTED": "פרטי הסליקה נדחו. כדאי לבדוק אותם מול חשבון הסליקה ולנסות שוב.",
+    "gateway.error.GATEWAY_NOT_CONFIGURED": "גביית מקדמות אינה זמינה כרגע.",
+    "gateway.error.GATEWAY_NOT_CONNECTED": "צריך לחבר חשבון סליקה קודם.",
+    "gateway.error.GATEWAY_UNAVAILABLE": "ספק הסליקה אינו זמין כרגע. אפשר לנסות שוב בעוד כמה דקות.",
+    "gateway.error.TOO_MANY_ATTEMPTS": "יותר מדי ניסיונות. אפשר לנסות שוב מאוחר יותר.",
   },
 } as const;

@@ -25,7 +25,11 @@ const HE_F15 = entries(
   (key) => key === "nav.bookings" || key.startsWith("booking."),
 );
 const HE_F51 = entries(he.translation, (key) => key === "nav.staff" || key.startsWith("staff."));
-const HE = [...HE_F15, ...HE_F51];
+// F17's own constant for the reason the comment above gives: folding these into
+// an existing list would let that feature's rows shrink by this many and still
+// pass. Every block gets its own floor.
+const HE_F17 = entries(he.translation, (key) => key === "nav.gateway" || key.startsWith("gateway."));
+const HE = [...HE_F15, ...HE_F51, ...HE_F17];
 
 describe("F15 keys resolve", () => {
   it("carries the whole copy deck", () => {
@@ -79,6 +83,38 @@ describe("F51 staff keys resolve", () => {
 
   it("interpolates the deactivated staffer's name into the confirm body", () => {
     expect(i18n.t("staff.deactivateBody", { name: "דנה" })).toContain("דנה");
+  });
+});
+
+describe("F17 gateway keys resolve", () => {
+  it("carries the whole block", () => {
+    expect(HE_F17.length).toBeGreaterThan(25);
+  });
+
+  it("resolves the eighth nav item beside the nested nav object", () => {
+    expect(i18n.t("nav.gateway")).toBe("סליקה ותשלומים");
+  });
+
+  it("resolves the five error codes the section maps to Hebrew", () => {
+    for (const code of [
+      "GATEWAY_CREDENTIALS_REJECTED",
+      "GATEWAY_NOT_CONFIGURED",
+      "GATEWAY_NOT_CONNECTED",
+      "GATEWAY_UNAVAILABLE",
+      "TOO_MANY_ATTEMPTS",
+    ]) {
+      const key = `gateway.error.${code}`;
+      expect(i18n.t(key)).not.toBe(key);
+    }
+  });
+
+  it("resolves a field label but MISSES an unkeyed field name", () => {
+    // Both halves. The miss is what GatewaySection's fallback branches on, and
+    // asserting it here keeps that branch reachable — but the RENDERING of the
+    // fallback (<bdi dir="ltr" lang="en">) is GatewaySection.test.tsx's job:
+    // this suite cannot see a key it never renders.
+    expect(i18n.t("gateway.field.api_key")).toBe("מפתח API");
+    expect(i18n.t("gateway.field.store_id")).toBe("gateway.field.store_id");
   });
 });
 
