@@ -76,6 +76,28 @@ UNCONFIGURED = GatewayStatus(
     last_validated_at=None,
     credential_fields=[],
 )
+# The two MIXED states, and they are the ones that carry the assertion weight:
+# `configured` and `connected` are deliberately distinct facts with different
+# owners and different remedies, and True/True plus False/False alone cannot tell
+# them apart — a `connected=status.configured` mutant survives the rest of this
+# file. These are also the two states the service-level assertions live in
+# test_payments_service.py for, which is db-marked and therefore CI-only.
+CONFIGURED_NOT_CONNECTED = GatewayStatus(
+    provider="fake",
+    configured=True,
+    connected=False,
+    status=None,
+    last_validated_at=None,
+    credential_fields=["api_key", "merchant_id", "webhook_secret"],
+)
+INVALID = GatewayStatus(
+    provider="fake",
+    configured=True,
+    connected=False,
+    status="invalid",
+    last_validated_at=VALIDATED_AT,
+    credential_fields=["api_key", "merchant_id", "webhook_secret"],
+)
 
 
 class FakeGatewayService:
@@ -229,6 +251,28 @@ def test_no_response_body_ever_contains_the_secret() -> None:
     assert bodies, "the sweep collected nothing — it would pass vacuously"
     for body_text in bodies:
         assert SECRET_SENTINEL not in body_text
+
+
+@pytest.mark.parametrize(
+    "status",
+    [CONNECTED, UNCONFIGURED, CONFIGURED_NOT_CONNECTED, INVALID],
+    ids=["connected", "unconfigured", "configured-not-connected", "invalid"],
+)
+def test_get_is_200_in_every_state_and_renders_it_verbatim(status: GatewayStatus) -> None:
+    """"200 in EVERY state" is the invariant, and the route is a flat passthrough
+    — so what this pins is the MAPPING, not the status code. Each of the four
+    fields is read off the status it was given, which is what a mutant that
+    sources `connected` from `configured` fails."""
+    fake = FakeGatewayService(status=status)
+    client = _client(fake)
+    with client:
+        resp = client.get("/manage/gateway")
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["provider"] == status.provider
+    assert payload["configured"] is status.configured
+    assert payload["connected"] is status.connected
+    assert payload["status"] == status.status
 
 
 def test_get_is_200_in_the_unconfigured_state_never_503() -> None:
