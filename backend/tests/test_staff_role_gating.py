@@ -25,6 +25,7 @@ from test_boutique_api import (
 )
 from test_catalog_api import ROUTES as CATALOG_ROUTES
 from test_catalog_api import FakeCatalogService
+from test_payments_api import ROUTES as GATEWAY_ROUTES
 
 from app.auth.dependencies import (
     NotAuthorizedError,
@@ -51,12 +52,31 @@ STAFF_CREATE = ("POST", "/manage/staff")
 STAFF_PATCH = ("PATCH", "/manage/staff/{staff_id}")
 STAFF_DELETE = ("DELETE", "/manage/staff/{staff_id}")
 
+# F17's four. The first router in the repo that is owner-only IN FULL (D13): a
+# shift manager has no relationship to the boutique's merchant account, and the
+# READ itself discloses whether the business can take money — which is why even
+# GET is here.
+GATEWAY_GET = ("GET", "/manage/gateway")
+GATEWAY_SET = ("PUT", "/manage/gateway/credentials")
+GATEWAY_VALIDATE = ("POST", "/manage/gateway/validate")
+GATEWAY_DISCONNECT = ("DELETE", "/manage/gateway/credentials")
+
 # The routes a shift_manager must NOT reach — the spec's permission matrix,
-# pinned. F51's staff router added its four rows; adding an owner-only
-# tightening anywhere else fails test_route_table_matches_the_permission_matrix,
-# so narrowing the shift manager's surface stays a deliberate, reviewed act.
-# The SMC epic's locked table names exactly these two surfaces.
-OWNER_ONLY = {TERMS_PUBLISH, STAFF_LIST, STAFF_CREATE, STAFF_PATCH, STAFF_DELETE}
+# pinned. F51's staff router added its four rows and F17's gateway router adds
+# these four; adding an owner-only tightening anywhere else fails
+# test_route_table_matches_the_permission_matrix, so narrowing the shift
+# manager's surface stays a deliberate, reviewed act.
+OWNER_ONLY = {
+    TERMS_PUBLISH,
+    STAFF_LIST,
+    STAFF_CREATE,
+    STAFF_PATCH,
+    STAFF_DELETE,
+    GATEWAY_GET,
+    GATEWAY_SET,
+    GATEWAY_VALIDATE,
+    GATEWAY_DISCONNECT,
+}
 
 # The probe for "a role the enum does not know", shared verbatim by
 # test_catalog_api and test_migrations. Deliberately NOT 'reception' (or
@@ -302,14 +322,22 @@ def _client(
 
 
 def test_shift_manager_is_admitted_everywhere_except_terms_publishing() -> None:
-    # BOTH route tables, so this is symmetric with the unknown-role walk below:
-    # the spec's matrix grants the shift manager the catalog surface, and without
-    # the catalog half an accidental owner-only catalog router would only be
-    # caught structurally.
+    # ALL THREE route tables, so this is symmetric with the unknown-role walk
+    # below: the spec's matrix grants the shift manager the catalog surface, and
+    # without the catalog half an accidental owner-only catalog router would only
+    # be caught structurally.
+    #
+    # GATEWAY_ROUTES is here for the opposite reason — all four are in
+    # OWNER_ONLY, so this walk is what gives them a real end-to-end 403. Adding
+    # the OWNER_ONLY rows alone would silence the structural test while leaving
+    # the HTTP wiring unproven, which is exactly the gap this import closes. No
+    # gateway fake is wired, deliberately: the gate raises during dependency
+    # solving, so reaching the real (unconfigured) service would blow this up
+    # rather than quietly pass.
     fake = FakeBoutiqueService()
     client, _ = _client(fake, "shift_manager", catalog=FakeCatalogService())
     with client:
-        for method, path, body in [*ROUTES, *CATALOG_ROUTES]:
+        for method, path, body in [*ROUTES, *CATALOG_ROUTES, *GATEWAY_ROUTES]:
             resp = client.request(method, path, json=body)
             if (method, path) in OWNER_ONLY:
                 assert resp.status_code == 403, (method, path, resp.text)
@@ -340,7 +368,7 @@ def test_unknown_role_is_403_on_every_gated_route() -> None:
     fake = FakeBoutiqueService()
     client, _ = _client(fake, UNKNOWN_ROLE)
     with client:
-        for method, path, body in [*ROUTES, *CATALOG_ROUTES]:
+        for method, path, body in [*ROUTES, *CATALOG_ROUTES, *GATEWAY_ROUTES]:
             resp = client.request(method, path, json=body)
             assert resp.status_code == 403, (method, path, resp.text)
             assert resp.json() == NOT_AUTHORIZED_BODY

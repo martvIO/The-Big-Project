@@ -134,3 +134,30 @@ def test_encryption_context_purpose_is_a_single_label() -> None:
     # The AAD label. A second purpose gets its own constant; this one is never
     # widened, because widening it makes two ciphertext classes interchangeable.
     assert ENCRYPTION_CONTEXT_PURPOSE == "gateway_credentials"
+
+
+def test_no_rejection_message_ever_names_a_value() -> None:
+    """The source-level half of the API containment sweep.
+
+    Every DomainValidationError this module raises reaches the owner verbatim
+    through the house 400 handler (it echoes str(exc) by design), so a message
+    that interpolated a VALUE instead of a field NAME would put a merchant
+    secret in an HTTP response body. Every rejection path is driven here with
+    the values set to sentinels.
+    """
+    sentinel = "SUPER-SECRET-MERCHANT-KEY-8f3a"
+    over = sentinel + "x" * MAX_CREDENTIAL_FIELD_VALUE_LENGTH
+    cases: list[dict[str, str]] = [
+        {**GOOD, "extra": sentinel},  # unknown key
+        {"merchant_id": sentinel, "api_key": sentinel},  # missing key
+        {**GOOD, "api_key": "   "},  # blank value
+        {**GOOD, "api_key": over},  # over-length value
+        {key: over for key in EXPECTED},  # over-size blob
+    ]
+    seen = 0
+    for case in cases:
+        with pytest.raises(DomainValidationError) as exc:
+            validate_credential_fields(case, expected=EXPECTED)
+        assert sentinel not in str(exc.value), case
+        seen += 1
+    assert seen == len(cases), "a case stopped raising — the sweep went vacuous"
