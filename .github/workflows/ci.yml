@@ -124,6 +124,50 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+      # The SPAs ride INSIDE the backend upload. `railway up` runs with
+      # working-directory: backend and sends only that tree, so the built apps
+      # have to be copied into it before the deploy — app/static/{manage,storefront}
+      # is where app/main.py mounts them from. Same pnpm/node setup as the
+      # `frontend` job; that job proves the build is green, this one needs the
+      # artifacts, and a runner keeps nothing between jobs.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install (frozen lockfile)
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Build SPAs
+        working-directory: frontend
+        run: pnpm -r build
+      # NOT `dist/` and NOT `staticfiles/`: .gitignore ignores both names
+      # anywhere in the tree, `railway up` respects .gitignore, and an ignored
+      # copy is dropped from the upload with NO error — green CI, 404s in
+      # production. `static/` is ignored by neither, and the next step proves it
+      # rather than trusting this comment.
+      - name: Copy the SPAs into the backend upload
+        run: |
+          rm -rf backend/app/static
+          mkdir -p backend/app/static
+          cp -R frontend/apps/manage/dist backend/app/static/manage
+          cp -R frontend/apps/storefront/dist backend/app/static/storefront
+      - name: Assert the SPAs are actually in the upload
+        # The failure mode this exists for is silent: a renamed outDir, a
+        # mistyped path or a new .gitignore rule leaves a green build and a
+        # production origin that serves nothing but JSON. Fail here, before
+        # `railway up`, where the cause is one step away.
+        run: |
+          for f in backend/app/static/manage/index.html backend/app/static/storefront/index.html; do
+            test -s "$f" || { echo "::error::missing or empty: $f"; exit 1; }
+            if git check-ignore -q "$f"; then
+              echo "::error::$f is gitignored — railway up would silently drop it"
+              exit 1
+            fi
+          done
       - name: Install Railway CLI
         # Pinned deliberately: the next steps run this binary with RAILWAY_TOKEN in
         # scope, so an unpinned `latest` would auto-adopt a compromised publish on
