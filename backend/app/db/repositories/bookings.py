@@ -1,6 +1,7 @@
 import dataclasses
 from collections.abc import Sequence
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -8,6 +9,38 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.booking import Booking
 from app.models.constants import BookingStatus
+
+
+class CheckInOutcome(StrEnum):
+    """What F34's two check-in writers answer, because a bare `Booking | None`
+    cannot express three things (spec D4(5)).
+
+    Deliberately NOT in `app/models/constants.py`: every enum there is a
+    PERSISTED value, and this one is never written anywhere. Putting it there
+    would make it the first non-persisted member and would invite a future
+    migration author to widen a CHECK for it. It lives beside the writers that
+    return it, following this module's own precedent for non-persisted return
+    contracts — `BookingFact` and `CustomerHistory` above.
+    """
+
+    # The predicate matched: THIS request wrote it. Read off the `.returning()`
+    # scalar and nowhere else.
+    WROTE = "wrote"
+    # Zero rows, and the predicate's TARGET STATE already holds. It reads two
+    # ways and both are 200-unchanged: for `check_in` it is "she is already
+    # checked in", for `undo_check_in` it is "it is already clear". What the
+    # member names is the target state holding, which is exactly what makes 200
+    # the honest answer rather than 409 — the outcome the caller wanted is the
+    # outcome that holds, so refusing would be a lie told to the person who was
+    # right.
+    ALREADY_CHECKED_IN = "already_checked_in"
+    # Zero rows because the row is no longer `confirmed` — somebody cancelled her
+    # in the gap. 409. `undo_check_in` carries no status guard, so it can never
+    # answer this one.
+    NOT_CONFIRMED = "not_confirmed"
+    # The row is gone or soft-deleted (or was never this tenant's, which RLS
+    # makes the same thing). 404.
+    MISSING = "missing"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -263,6 +296,137 @@ class BookingsRepository:
         )
         await session.execute(stmt)
         return await self.by_id(session, tenant_id, booking_id)
+
+    async def check_in(
+        self, session: AsyncSession, tenant_id: UUID, booking_id: UUID, *, at: datetime
+    ) -> tuple[CheckInOutcome, Booking | None]:
+        """F34: record that this person is physically in the boutique.
+
+        Idempotent by predicate, `confirm_attendance`'s shape verbatim: `IS NULL`
+        means a second staffer's tap keeps the FIRST arrival time rather than
+        moving it. What is NOT copied from `confirm_attendance` is its ANSWER —
+        it never returns None for zero rows and its caller renders whatever comes
+        back, because a bride re-tapping her own link has exactly one possible
+        meaning. Check-in has two, and they mean opposite things:
+
+          * already checked in            -> 200 unchanged, no audit row
+          * no longer confirmed (a cancel landed in the gap) -> 409
+
+        So this must discriminate, and `cancel`'s rule above is the governing
+        precedent: the `.returning()` scalar is the ONLY honest "did I write?".
+        The re-read cannot answer it, because this UPDATE is ORM-enabled DML
+        whose default `evaluate` synchronization stamps `checked_in_at = :at`
+        onto the identity-mapped instance WHATEVER the database matched, the
+        factory is built `expire_on_commit=False`, and `by_id` hands that same
+        poisoned object back. A caller doing `if booking.checked_in_at is not
+        None` after the write is reading the value it just wrote in memory: the
+        409 branch becomes unreachable, a check-in that lost to a concurrent
+        cancel answers a false 200 on a `cancelled` row with no audit trail
+        behind it, and the render carries the LOSING staffer's timestamp —
+        contradicting the one guarantee this case exists to make.
+
+        Hence step 2's `populate_existing=True`: it overwrites the
+        identity-mapped instance's attributes from the row the database actually
+        holds, undoing the stamp, and under READ COMMITTED that statement sees
+        the other transaction's commit. One statement and one documented flag,
+        fixing the discrimination and the rendering together. A column-only Core
+        `select(Booking.status, Booking.checked_in_at)` would answer the branch
+        equally well but leaves the entity poisoned for RENDERING, so it needs a
+        second re-read anyway; `session.refresh()` is the same statement with
+        more surface.
+
+        No advisory lock. F15 takes one for the reschedule because that PICKS A
+        SEAT FROM A COUNT (see `insert` above); this reads and writes one column
+        on one row and has no cross-row invariant to serialise. Taking it would
+        serialise every check-in in the boutique against every public booking
+        create, for nothing.
+        """
+        wrote = await session.execute(
+            update(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.id == booking_id,
+                Booking.checked_in_at.is_(None),
+                Booking.status == BookingStatus.CONFIRMED.value,
+                Booking.deleted_at.is_(None),
+            )
+            .values(checked_in_at=at)
+            .returning(Booking.id)
+        )
+        refreshed = await self._refreshed(session, tenant_id, booking_id)
+        if wrote.scalar_one_or_none() is not None:
+            return CheckInOutcome.WROTE, refreshed
+        if refreshed is None:
+            return CheckInOutcome.MISSING, None
+        # The two zero-row causes, separated by what the DATABASE now says and
+        # never by the object this request mutated.
+        if refreshed.checked_in_at is not None:
+            return CheckInOutcome.ALREADY_CHECKED_IN, refreshed
+        return CheckInOutcome.NOT_CONFIRMED, refreshed
+
+    async def undo_check_in(
+        self, session: AsyncSession, tenant_id: UUID, booking_id: UUID
+    ) -> tuple[CheckInOutcome, Booking | None]:
+        """The undo of a mis-tapped check-in — and it carries NO status guard at
+        all (spec D5), the `/confirm` precedent: a mis-tap is correctable
+        whenever it is noticed. A bride checked in and then cancelled must still
+        have it undoable, or a wrong arrival record is permanent on a surface
+        where the tap is one finger wide.
+
+        So its only failure is MISSING, and `ALREADY_CHECKED_IN` here reads as
+        "it is already clear". It uses the same refreshed read as `check_in`, for
+        the same reason: a concurrent undo must render the database's NULL and
+        not this request's own stamp.
+        """
+        wrote = await session.execute(
+            update(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.id == booking_id,
+                Booking.checked_in_at.is_not(None),
+                Booking.deleted_at.is_(None),
+            )
+            .values(checked_in_at=None)
+            .returning(Booking.id)
+        )
+        refreshed = await self._refreshed(session, tenant_id, booking_id)
+        if wrote.scalar_one_or_none() is not None:
+            return CheckInOutcome.WROTE, refreshed
+        if refreshed is None:
+            return CheckInOutcome.MISSING, None
+        # Zero rows with the row still present can only mean `checked_in_at` is
+        # already NULL — there is no status guard to fail. So the undo
+        # structurally cannot answer NOT_CONFIRMED, and the target state holding
+        # is read as "it is already clear".
+        return CheckInOutcome.ALREADY_CHECKED_IN, refreshed
+
+    async def _refreshed(
+        self, session: AsyncSession, tenant_id: UUID, booking_id: UUID
+    ) -> Booking | None:
+        """The re-read that defeats the identity map. Both check-in writers
+        classify off THIS row and off their own `.returning()` scalar — never off
+        an object the caller loaded earlier.
+
+        `populate_existing=True` is the whole mechanism and it is not a spare
+        keyword to drop: without it this SELECT returns the instance already in
+        the identity map WITHOUT overwriting its attributes — i.e. the object the
+        UPDATE's `evaluate` synchronization just stamped — so the branch above it
+        would read this request's own intent instead of the database's answer,
+        which is exactly the bug the writers' docstrings describe. Under READ
+        COMMITTED this statement also sees a concurrent transaction's commit,
+        which is what makes the losing writer render the WINNER's timestamp.
+        """
+        return (
+            await session.execute(
+                select(Booking)
+                .where(
+                    Booking.tenant_id == tenant_id,
+                    Booking.id == booking_id,
+                    Booking.deleted_at.is_(None),
+                )
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
 
     async def set_status(
         self,
