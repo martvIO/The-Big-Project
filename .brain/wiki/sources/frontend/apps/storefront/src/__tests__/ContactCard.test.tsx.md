@@ -42,7 +42,7 @@ Nothing imports a test file.
 
 ## Concepts
 
-- [[Hebrew RTL Bidi]]
+- [[RTL And Bidi Isolation]]
 
 ## Notes
 

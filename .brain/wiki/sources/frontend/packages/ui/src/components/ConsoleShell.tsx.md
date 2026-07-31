@@ -48,7 +48,7 @@ Nothing here is stateful: `activeKey` and every callback are the app's. Focus is
 
 ## Concepts
 
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 
 ## Tests
 

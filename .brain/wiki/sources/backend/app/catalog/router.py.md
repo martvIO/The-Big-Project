@@ -72,7 +72,7 @@ The response builders exist because only `VariantResponse` is a pure ORM project
 
 ## Concepts
 
-- [[Staff Role Gating]]
+- [[Role Based Access Control]]
 - [[Tenant Resolution]]
 - [[Media Upload Pipeline]]
 

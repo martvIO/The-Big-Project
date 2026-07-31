@@ -56,7 +56,7 @@ Nothing imports a test file.
 
 ## Concepts
 
-- [[Media Storage]] · [[Hebrew RTL Bidi]] · [[IS 5568 Accessibility]]
+- [[Media Storage]] · [[RTL And Bidi Isolation]] · [[Accessibility Compliance]]
 
 ## Notes
 

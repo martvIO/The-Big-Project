@@ -46,7 +46,7 @@ The component holds no Hebrew and no formatter: `dayLabels`, `closedLabel` and `
 
 ## Concepts
 
-- [[RTL Bidi Isolation]]
+- [[RTL And Bidi Isolation]]
 
 ## Tests
 

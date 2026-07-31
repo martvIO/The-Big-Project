@@ -54,7 +54,7 @@ Versions are pinned by [[frontend/pnpm-lock.yaml]]; the ranges here are caret ra
 ## Concepts
 
 - [[Jerusalem Time]]
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 
 ## Notes
 

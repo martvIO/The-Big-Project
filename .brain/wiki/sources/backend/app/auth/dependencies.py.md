@@ -57,7 +57,7 @@ Both exception classes live here rather than in a domain module because every `/
 
 - [[Role Based Access Control]]
 - [[Fail Closed Defaults]]
-- [[Session Authentication]]
+- [[Owner Authentication]]
 - [[Tenant Isolation]]
 
 ## Tests

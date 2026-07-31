@@ -43,8 +43,8 @@ applicability: active
 
 ## Concepts
 
-- [[Account Enumeration Resistance]]
-- [[Session Authentication]]
+- [[Enumeration Resistance]]
+- [[Owner Authentication]]
 
 ## Tests
 

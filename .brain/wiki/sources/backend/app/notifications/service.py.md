@@ -73,7 +73,7 @@ applicability: active
 - [[One Time Passcode]]
 - [[Rate Limiting]]
 - [[Row Level Security]]
-- [[Evidence Trail]]
+- [[Audit Trail]]
 
 ## Tests
 

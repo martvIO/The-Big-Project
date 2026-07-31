@@ -21,7 +21,7 @@ applicability: active
 
 Order is not cosmetic. `@import "tailwindcss"` must come first so that `@boutique/ui/theme.css`'s `@theme` block is processed as a Tailwind theme extension — that is what makes `bg-bg`, `text-ink`, `text-gold-text` and the rest resolve to real utilities. Swapping the two lines, or dropping the second, silently degrades every token utility in the app to an unknown class that emits no CSS.
 
-The file's emptiness is the enforcement point for the storefront's brand rule: the boutique's look is the tokens, and there is no app-level escape hatch to override them per screen. A rule added here would also be futile at a call site — `cn()` is a plain join with no class-merge, so a consumer utility does not reliably beat a `@boutique/ui` component's own class; same-specificity rules resolve by stylesheet order. `frontend/scripts/qa-greps.sh` separately bans raw hex colours across `apps/storefront/src`.
+The file's emptiness is the enforcement point for the storefront's brand rule: the boutique's look is the tokens, and there is no app-level escape hatch to override them per screen. A rule added here would also be futile at a call site — `cn()` is a plain join with no class-merge, so a consumer utility does not reliably beat a `@boutique/ui` component's own class; same-specificity rules resolve by stylesheet order. [[frontend/scripts/qa-greps.sh]] separately bans raw hex colours across `apps/storefront/src`.
 
 Same git blob as [[frontend/apps/manage/src/index.css]] — both apps consume the identical two lines.
 

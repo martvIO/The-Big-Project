@@ -51,7 +51,7 @@ The two `<bdi>` assertions across this file and [[frontend/packages/ui/src/__tes
 
 ## Concepts
 
-- [[RTL Bidi Isolation]]
+- [[RTL And Bidi Isolation]]
 - [[Accessibility Compliance]]
 
 ## Tests

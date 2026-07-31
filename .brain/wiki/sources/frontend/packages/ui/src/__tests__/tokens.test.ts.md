@@ -52,7 +52,7 @@ Nothing imports a test file.
 ## Concepts
 
 - [[Design Tokens]]
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 
 ## Tests
 

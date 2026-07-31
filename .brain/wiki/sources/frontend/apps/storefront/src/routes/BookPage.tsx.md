@@ -62,8 +62,8 @@ Two register rules run throughout: failures that are *hers* (a mistyped phone) a
 
 - [[Jerusalem Time]]
 - [[Accessibility Compliance]]
-- [[IS 5568 Accessibility]]
-- [[Hebrew RTL Bidi]]
+- [[Accessibility Compliance]]
+- [[RTL And Bidi Isolation]]
 
 ## Tests
 

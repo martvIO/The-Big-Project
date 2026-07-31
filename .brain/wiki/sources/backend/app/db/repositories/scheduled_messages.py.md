@@ -51,7 +51,7 @@ The queue's idempotency key is not code, it is `idx_scheduled_messages_pending_u
 
 - [[Row Level Security]]
 - [[Tenant Isolation]]
-- [[Partial Unique Index Claims]]
+- [[Partial Unique Index]]
 
 ## Tests
 

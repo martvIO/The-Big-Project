@@ -49,7 +49,7 @@ The file lives under `app/` rather than `tests/` for a type-checking reason: `my
 
 ## Concepts
 
-- [[Media Storage Port]]
+- [[Media Storage]]
 
 ## Tests
 

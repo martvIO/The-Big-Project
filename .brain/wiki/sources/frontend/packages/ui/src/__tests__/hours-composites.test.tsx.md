@@ -49,7 +49,7 @@ Nothing imports a test file.
 
 ## Concepts
 
-- [[RTL Bidi Isolation]]
+- [[RTL And Bidi Isolation]]
 - [[Design Tokens]]
 
 ## Tests

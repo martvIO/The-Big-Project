@@ -60,7 +60,7 @@ Responses that are pure ORM projections use `model_validate(row)` directly (`App
 
 ## Concepts
 
-- [[Staff Role Gating]]
+- [[Role Based Access Control]]
 - [[Tenant Resolution]]
 - [[Append Only Terms Versions]]
 

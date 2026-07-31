@@ -46,7 +46,7 @@ What the stubs deliberately do **not** reproduce is the browser's modal semantic
 
 ## Concepts
 
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 
 ## Notes
 

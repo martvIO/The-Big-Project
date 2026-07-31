@@ -47,7 +47,7 @@ Two absences are intentional. `<bdi>` around `{name}` is **bare** — a Latin-on
 
 ## Concepts
 
-- [[RTL Bidi Isolation]]
+- [[RTL And Bidi Isolation]]
 - [[Media Storage]]
 
 ## Tests

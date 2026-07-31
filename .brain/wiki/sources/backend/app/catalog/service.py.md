@@ -77,7 +77,7 @@ Three invariants hold the module together, and each closes a specific failure.
 ## Concepts
 
 - [[Media Upload Pipeline]]
-- [[Advisory Lock Serialization]]
+- [[Advisory Lock]]
 - [[Row Level Security]]
 - [[Tenant Isolation]]
 - [[Fail Closed Defaults]]

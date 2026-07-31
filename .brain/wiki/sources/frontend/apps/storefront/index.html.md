@@ -51,8 +51,8 @@ Omitting `user-scalable=no`/`maximum-scale=1` satisfies WCAG 1.4.4: pinch zoom *
 
 ## Concepts
 
-- [[Hebrew RTL Bidi]]
-- [[IS 5568 Accessibility]]
+- [[RTL And Bidi Isolation]]
+- [[Accessibility Compliance]]
 
 ## Tests
 

@@ -41,7 +41,7 @@ Chosen over `None` for one reason: a `None` storage would grow a null check at e
 
 ## Concepts
 
-- [[Media Storage Port]]
+- [[Media Storage]]
 - [[Fail Closed Defaults]]
 
 ## Tests

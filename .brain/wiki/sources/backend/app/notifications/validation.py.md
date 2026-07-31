@@ -56,7 +56,7 @@ The 5-attempt cap, not the hash, is the real brute-force control: a 6-digit code
 ## Concepts
 
 - [[One Time Passcode]]
-- [[Deployment Identity Vs Product Policy]]
+- [[Product Policy Vs Deployment Identity]]
 - [[Hebrew First UX]]
 
 ## Tests

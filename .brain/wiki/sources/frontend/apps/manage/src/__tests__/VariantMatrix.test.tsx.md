@@ -53,7 +53,7 @@ Nothing imports a test file. The constants it exercises are asserted against the
 
 ## Concepts
 
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 
 ## Notes
 

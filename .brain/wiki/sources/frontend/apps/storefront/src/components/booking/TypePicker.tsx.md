@@ -51,7 +51,7 @@ The duration numeral is isolated with `<bdi dir="ltr">` at this call site, becau
 ## Concepts
 
 - [[Accessibility Compliance]]
-- [[Hebrew RTL Bidi]]
+- [[RTL And Bidi Isolation]]
 - [[Design Tokens]]
 
 ## Tests

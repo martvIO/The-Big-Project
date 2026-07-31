@@ -68,7 +68,7 @@ Nothing imports a test file.
 
 ## Concepts
 
-- [[Jerusalem Time]] · [[Hebrew RTL Bidi]] · [[IS 5568 Accessibility]]
+- [[Jerusalem Time]] · [[RTL And Bidi Isolation]] · [[Accessibility Compliance]]
 
 ## Notes
 

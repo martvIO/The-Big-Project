@@ -47,7 +47,7 @@ The exceptions list is this component's own. Each row is closed-all-day when eit
 ## Concepts
 
 - [[Jerusalem Time]]
-- [[Hebrew RTL Bidi]]
+- [[RTL And Bidi Isolation]]
 - [[Accessibility Compliance]]
 
 ## Tests

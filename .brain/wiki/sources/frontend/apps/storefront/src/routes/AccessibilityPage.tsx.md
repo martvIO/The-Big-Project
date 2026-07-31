@@ -49,9 +49,9 @@ The coordinator block is a `<dl>` rather than paragraphs — the label/value pai
 
 ## Concepts
 
-- [[IS 5568 Accessibility]]
 - [[Accessibility Compliance]]
-- [[Hebrew RTL Bidi]]
+- [[Accessibility Compliance]]
+- [[RTL And Bidi Isolation]]
 
 ## Tests
 

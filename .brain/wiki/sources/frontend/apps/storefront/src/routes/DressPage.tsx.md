@@ -55,7 +55,7 @@ The `identity` `<h1>` (boutique name, `catalog.essenceFallback` when unknown) is
 
 - [[Media Storage]]
 - [[Accessibility Compliance]]
-- [[Hebrew RTL Bidi]]
+- [[RTL And Bidi Isolation]]
 
 ## Tests
 

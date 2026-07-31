@@ -108,3 +108,39 @@ Stale 2→0. 646 files still have no page and none are orphaned — the backlog 
 added files, and it needs a dedicated /brain-ingest pass rather than an epic-boundary chore; largest
 unbuilt clusters remain .claude/commands/spartan (vendored) and backend/tests. Queue at 385 entries — no
 rotation (threshold 500).
+
+## [2026-07-31] ingest | Wave 1 — the application layers (264 source + 49 directory + 53 topic pages)
+Scope chosen by the user: `backend/app/**` (99 files) and `frontend/{apps,packages,e2e}/**` (155) — the
+code actually written here, deliberately excluding the 209 vendored `.claude`/`.agents` files, the 78
+`.planning` docs and `backend/tests`. Coverage went 13 pages → 277. Every one verified CURRENT.
+
+Run as 26 parallel leaf-writing batches (10 backend, 16 frontend), then a 4-agent topic wave, with the
+index, the log and all 49 `_index.md` files written by the orchestrator alone, per writing rule 10.
+
+**Directory pages are generated from the leaf pages, not re-derived.** Each `_index.md` extracts its
+per-file one-liner from that page's own `**Role.**` sentence, so an index entry cannot drift from the page
+it points at; only the `**Purpose.**` line is hand-authored. `blob` is `git ls-files -s <dir> | shasum`,
+so adding or removing a file marks the directory stale.
+
+**Synonym collapse.** Parallel writers independently coined competing names for the same idea — `Advisory
+Lock` / `Advisory Locks` / `Advisory Lock Serialization`, `Partial Unique Index` / `…Claims`, `RTL And
+Bidi Isolation` / `RTL Bidi Isolation` / `Hebrew RTL Bidi`, `Audit Log` / `Audit Trail`, `boto3` / `Boto3`
+and seven more. 14 aliases were merged into canonical titles across 72 pages before any topic page was
+written; without that step the wiki would have shipped with a dozen near-duplicate concepts. **This is the
+predictable failure mode of a parallel ingest and the next wave should expect to repeat the pass.**
+
+New concepts (33) and entities (20) are grounded in this repo rather than generic: `Advisory Lock` names
+the four distinct `hashtext` key spaces and the three writers that deliberately take no lock; `Partial
+Unique Index` records that nothing ties `seat_index` to its slot's capacity (0008's CHECK is a flat
+1..1000 and capacity is enforced in Python only); `Rate Limiting` states the one-budget-one-instance trap
+and login's legitimate two-keys-on-one-instance exception; `Tailwind CSS` records that `cn()` is a plain
+join with no class-merge, so a call-site utility override does not reliably win.
+
+Two things landed mid-wave and were reconciled by hand afterwards: F51 merged (PR #25), mounting a fifth
+`/manage` router and re-staling `backend/app/main.py`, which now carries its three new error bodies and
+the `StaffService`-beside-`AuthService` reasoning.
+
+402 files still have no page — `.claude`/`.agents` (209, vendored), `.planning` (78), `backend/tests`
+(56), `backend/migrations` and assorted roots. The 167 remaining lint lines are all `page-not-built`
+forward links into that set, which is the correct state, not a defect. Zero stale, zero orphans, zero dead
+topic links, zero broken file links. Queue at 385 entries — no rotation (threshold 500).

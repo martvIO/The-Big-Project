@@ -47,7 +47,7 @@ The container is **shared across the whole session and never truncated between t
 - [[backend/migrations/env.py]] — the migration environment `alembic upgrade head` executes
 - [[backend/migrations/versions/0002_tenants_app_role.py]] — creates the `app_user` group role that `boutique_app` is granted
 - [[backend/pyproject.toml]] — declares the `db` marker and `asyncio_mode = "auto"`
-- [[pytest]] · [[Testcontainers]] · [[Docker]] · [[SQLAlchemy]] · [[Alembic]] · [[PostgreSQL]] · [[MinIO]] · [[boto3]]
+- [[pytest]] · [[Testcontainers]] · [[Docker]] · [[SQLAlchemy]] · [[Alembic]] · [[PostgreSQL]] · [[MinIO]] · [[Boto3]]
 
 ## Covers
 

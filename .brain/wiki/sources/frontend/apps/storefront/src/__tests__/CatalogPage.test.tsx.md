@@ -59,7 +59,7 @@ Nothing imports a test file.
 
 ## Concepts
 
-- [[Jerusalem Time]] · [[Media Storage]] · [[IS 5568 Accessibility]]
+- [[Jerusalem Time]] · [[Media Storage]] · [[Accessibility Compliance]]
 
 ## Notes
 

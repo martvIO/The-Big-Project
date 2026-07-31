@@ -49,8 +49,8 @@ Some copy is deliberately *narrower* than it could be. `booking.rescheduleConseq
 
 ## Concepts
 
-- [[RTL Bidi Isolation]]
-- [[IS 5568 Accessibility]]
+- [[RTL And Bidi Isolation]]
+- [[Accessibility Compliance]]
 
 ## Tests
 

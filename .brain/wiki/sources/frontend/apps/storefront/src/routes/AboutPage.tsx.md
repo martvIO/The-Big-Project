@@ -50,7 +50,7 @@ This is the **only** storefront screen with no fixed booking bar at any width (q
 ## Concepts
 
 - [[Accessibility Compliance]]
-- [[Hebrew RTL Bidi]]
+- [[RTL And Bidi Isolation]]
 - [[Jerusalem Time]]
 
 ## Tests

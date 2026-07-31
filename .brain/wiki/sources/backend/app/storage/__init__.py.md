@@ -35,7 +35,7 @@ Implicitly every importer of `app.storage.*`.
 
 ## Concepts
 
-- [[Media Storage Port]]
+- [[Media Storage]]
 
 ## Tests
 

@@ -56,7 +56,7 @@ Nothing imports a test file. The nav-side half of the same role gate is in [[fro
 
 ## Concepts
 
-- [[Hebrew RTL Bidi]] · [[IS 5568 Accessibility]] · [[Fail Closed Defaults]]
+- [[RTL And Bidi Isolation]] · [[Accessibility Compliance]] · [[Fail Closed Defaults]]
 
 ## Notes
 

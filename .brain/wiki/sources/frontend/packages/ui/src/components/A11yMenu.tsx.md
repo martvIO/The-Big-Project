@@ -48,7 +48,7 @@ Positioning carries two distinct fixes. **PRE-1**: the trigger is `fixed` at `in
 
 ## Concepts
 
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 - [[Design Tokens]]
 
 ## Tests

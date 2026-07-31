@@ -52,7 +52,7 @@ Nothing imports a test file. Every other suite in this directory asserts Hebrew 
 
 ## Concepts
 
-- [[Hebrew RTL Bidi]]
+- [[RTL And Bidi Isolation]]
 
 ## Notes
 

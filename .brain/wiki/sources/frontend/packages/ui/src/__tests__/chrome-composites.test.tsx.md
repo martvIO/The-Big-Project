@@ -51,7 +51,7 @@ Nothing imports a test file. It runs via `pnpm --filter @boutique/ui test`.
 
 ## Concepts
 
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 - [[Design Tokens]]
 
 ## Tests

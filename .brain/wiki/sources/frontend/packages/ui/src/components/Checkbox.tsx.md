@@ -46,7 +46,7 @@ The `<label htmlFor>` wraps the box and the label text at `min-h-11` with a `siz
 
 ## Concepts
 
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 
 ## Tests
 

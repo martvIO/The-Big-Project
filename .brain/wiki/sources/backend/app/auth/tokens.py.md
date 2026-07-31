@@ -42,7 +42,7 @@ Three lines with one deliberate cryptographic choice behind them: a **fast** one
 
 ## Concepts
 
-- [[Session Authentication]]
+- [[Owner Authentication]]
 - [[Opaque Token Hashing]]
 
 ## Tests

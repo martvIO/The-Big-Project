@@ -54,7 +54,7 @@ Nothing imports a test file. [[frontend/apps/manage/src/__tests__/BookingDetail.
 
 ## Concepts
 
-- [[Hebrew RTL Bidi]] · [[Jerusalem Time]] · [[IS 5568 Accessibility]]
+- [[RTL And Bidi Isolation]] · [[Jerusalem Time]] · [[Accessibility Compliance]]
 
 ## Notes
 

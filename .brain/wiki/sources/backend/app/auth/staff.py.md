@@ -67,8 +67,8 @@ The lock key is **namespaced** (`'staff:' || tenant_id`) rather than the bare `h
 ## Concepts
 
 - [[Role Based Access Control]]
-- [[Advisory Locks]]
-- [[Audit Log]]
+- [[Advisory Lock]]
+- [[Audit Trail]]
 - [[Row Level Security]]
 
 ## Tests

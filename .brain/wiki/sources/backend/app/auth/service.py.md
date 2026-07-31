@@ -61,10 +61,10 @@ Three branches share one exit. Unknown email calls `verify_password_dummy` so th
 
 ## Concepts
 
-- [[Session Authentication]]
-- [[Audit Log]]
+- [[Owner Authentication]]
+- [[Audit Trail]]
 - [[Row Level Security]]
-- [[Account Enumeration Resistance]]
+- [[Enumeration Resistance]]
 
 ## Tests
 

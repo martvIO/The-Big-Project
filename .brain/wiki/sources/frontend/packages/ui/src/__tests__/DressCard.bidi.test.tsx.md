@@ -46,7 +46,7 @@ The file's own header comment records the scope argument: the dress page's `<h1>
 
 ## Concepts
 
-- [[RTL Bidi Isolation]]
+- [[RTL And Bidi Isolation]]
 
 ## Tests
 

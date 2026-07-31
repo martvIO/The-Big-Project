@@ -49,8 +49,8 @@ The title is the console half of the F30 branding rule: MODRYN brands the *platf
 
 ## Concepts
 
-- [[Hebrew RTL Bidi]]
-- [[IS 5568 Accessibility]]
+- [[RTL And Bidi Isolation]]
+- [[Accessibility Compliance]]
 
 ## Tests
 

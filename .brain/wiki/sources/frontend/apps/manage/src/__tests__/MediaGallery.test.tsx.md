@@ -55,7 +55,7 @@ Nothing imports a test file. The wire-level half of the same flow is covered by 
 
 ## Concepts
 
-- [[Media Storage]] · [[IS 5568 Accessibility]]
+- [[Media Storage]] · [[Accessibility Compliance]]
 
 ## Notes
 

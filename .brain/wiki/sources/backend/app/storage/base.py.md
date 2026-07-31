@@ -48,7 +48,7 @@ Nothing at runtime — `dataclasses` and `typing.Protocol` only.
 
 ## Concepts
 
-- [[Media Storage Port]]
+- [[Media Storage]]
 - [[Fail Closed Defaults]]
 
 ## Tests

@@ -53,9 +53,9 @@ The `oxlint-disable react/only-export-components` at the top is intentional: the
 ## Concepts
 
 - [[Accessibility Compliance]]
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 - [[Design Tokens]]
-- [[Hebrew RTL Bidi]]
+- [[RTL And Bidi Isolation]]
 
 ## Tests
 

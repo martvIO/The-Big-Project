@@ -67,7 +67,7 @@ The three `IntegrityError` catches are all narrowings of the same idea: validati
 
 - [[Row Level Security]]
 - [[Tenant Isolation]]
-- [[Advisory Lock Serialization]]
+- [[Advisory Lock]]
 - [[Append Only Terms Versions]]
 
 ## Tests

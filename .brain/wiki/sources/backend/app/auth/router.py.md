@@ -56,9 +56,9 @@ The order of operations is the other thing to read before editing: `is_blocked` 
 
 ## Concepts
 
-- [[Session Authentication]]
+- [[Owner Authentication]]
 - [[Rate Limiting]]
-- [[Account Enumeration Resistance]]
+- [[Enumeration Resistance]]
 
 ## Tests
 

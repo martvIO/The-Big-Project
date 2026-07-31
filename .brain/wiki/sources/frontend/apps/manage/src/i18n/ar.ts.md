@@ -44,7 +44,7 @@ Nothing — a plain object literal.
 
 ## Concepts
 
-- [[RTL Bidi Isolation]]
+- [[RTL And Bidi Isolation]]
 
 ## Tests
 

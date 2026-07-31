@@ -13,7 +13,7 @@ applicability: active
 
 # frontend/apps/storefront/src/api.ts
 
-**Role.** The storefront's whole backend contract in one file: a `fetch` wrapper that normalises the house error envelope into `ApiError`, two error→i18n-key mappers, the TypeScript mirror of every `/storefront/*` response shape, the thirteen endpoint calls, and a one-promise memo for the boutique read. Hand-written on purpose — [[frontend/packages/api-client]] is an empty stub and this app declines codegen.
+**Role.** The storefront's whole backend contract in one file: a `fetch` wrapper that normalises the house error envelope into `ApiError`, two error→i18n-key mappers, the TypeScript mirror of every `/storefront/*` response shape, the thirteen endpoint calls, and a one-promise memo for the boutique read. Hand-written on purpose — [[frontend/packages/api-client/src/index.ts]] is a deliberately empty stub and this app declines codegen.
 
 **Module.** [[frontend/apps/storefront/src/_index]] · **Layer.** api
 
@@ -44,7 +44,7 @@ applicability: active
 
 **The wire types encode a field allowlist, and the absences are spec requirements.** `price_agorot: number | null` collapses "the owner hid it" and "never set" into one indistinguishable null — the storefront renders both as "מחיר בתיאום" and could not tell them apart if it wanted to. `SizeChip.available` is a boolean, never a count. `SlotRow` carries `starts_at` and nothing else — no capacity, no remaining, because every slot the engine returns is bookable by construction and a `remaining` field would equal capacity exactly on an empty calendar. `HoursRow` is **one row per window, not per day**, so a lunch break survives; grouping is [[frontend/apps/storefront/src/lib/hoursText.ts]]'s job. The `ManageBooking*` block deliberately omits the booking id, the customer's name and phone, the seat index and the notes: the manage link is possession-auth, so the payload carries the appointment's facts and no PII beyond them. The header comment lists the manage-only fields that must stay absent (`price_visible`, `quantity`, `out_of_stock`, `total_quantity`, `variant_count`, `archived`, `capacity`, `sort_order`, timestamps, `toggles`) — the backend never even computes the stock ones.
 
-**`listSlots` sends no window by default, on purpose.** The server defaults to today..+14d in Jerusalem; a client-computed window would read the device clock, which is the class of bug `frontend/scripts/qa-greps.sh` bans mechanically.
+**`listSlots` sends no window by default, on purpose.** The server defaults to today..+14d in Jerusalem; a client-computed window would read the device clock, which is the class of bug [[frontend/scripts/qa-greps.sh]] bans mechanically.
 
 **The three manage calls take the token in the POST body, and all three answer the same shape.** POST even for the lookup: a GET would put a live credential in the query string and from there into every access log, proxy trace and `Referer` header on the path. One response type means the page re-renders every state from one branch.
 

@@ -46,7 +46,7 @@ The toggle carries both `aria-expanded` and `aria-controls` pointing at the `use
 ## Concepts
 
 - [[Accessibility Compliance]]
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 - [[Design Tokens]]
 
 ## Tests

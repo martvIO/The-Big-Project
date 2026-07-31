@@ -47,8 +47,8 @@ The class strings are split so that **each branch carries its border and its `pa
 ## Concepts
 
 - [[Accessibility Compliance]]
-- [[IS 5568 Accessibility]]
-- [[Hebrew RTL Bidi]]
+- [[Accessibility Compliance]]
+- [[RTL And Bidi Isolation]]
 - [[Design Tokens]]
 
 ## Tests

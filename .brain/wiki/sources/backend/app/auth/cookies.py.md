@@ -41,7 +41,7 @@ Both functions mutate a Starlette `Response` in place and return nothing; neithe
 
 ## Concepts
 
-- [[Session Authentication]]
+- [[Owner Authentication]]
 - [[Tenant Isolation]]
 
 ## Tests

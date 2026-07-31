@@ -57,7 +57,7 @@ Nothing imports a test file. [[frontend/apps/storefront/src/__tests__/router.tes
 ## Concepts
 
 - [[Accessibility Compliance]]
-- [[IS 5568 Accessibility]]
+- [[Accessibility Compliance]]
 
 ## Notes
 

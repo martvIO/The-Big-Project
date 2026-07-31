@@ -62,7 +62,7 @@ The staff block is load-bearing beyond convenience: the staff forms render one f
 
 ## Concepts
 
-- [[RTL Bidi Isolation]]
+- [[RTL And Bidi Isolation]]
 
 ## Tests
 

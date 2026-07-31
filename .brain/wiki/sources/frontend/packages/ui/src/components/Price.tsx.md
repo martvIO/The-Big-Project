@@ -49,7 +49,7 @@ The output is wrapped in `<bdi dir="ltr">` — correct here, and only here, beca
 
 ## Concepts
 
-- [[RTL Bidi Isolation]]
+- [[RTL And Bidi Isolation]]
 
 ## Tests
 

@@ -55,9 +55,9 @@ Nothing imports a test file. The browser-level counterpart is [[frontend/e2e/a11
 
 ## Concepts
 
-- [[IS 5568 Accessibility]]
 - [[Accessibility Compliance]]
-- [[RTL Bidi Isolation]]
+- [[Accessibility Compliance]]
+- [[RTL And Bidi Isolation]]
 
 ## Notes
 
