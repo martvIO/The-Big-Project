@@ -134,8 +134,15 @@ def test_missing_payment_provider_is_not_a_boot_failure() -> None:
 
 def test_production_with_the_fake_gateway_fails_fast() -> None:
     """The fake gateway reports money RECEIVED that was never charged; in
-    production that is a silent revenue hole with a confirmed booking on top."""
-    with pytest.raises(ValidationError):
+    production that is a silent revenue hole with a confirmed booking on top.
+
+    `match=` is what ISOLATES this guard. Both fake values have to be passed
+    together — `gateway_secret_box` is `Literal["fake"] | None`, so leaving it
+    unset trips the "required when PAYMENT_PROVIDER is set" guard instead — and a
+    bare `pytest.raises` therefore stays green with this guard deleted, satisfied
+    by whichever guard is left. Verified by deleting it: without `match=` the
+    whole suite passes."""
+    with pytest.raises(ValidationError, match="PAYMENT_PROVIDER"):
         _production(payment_provider="fake", gateway_secret_box="fake")
 
 
