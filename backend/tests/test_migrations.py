@@ -199,10 +199,13 @@ def test_migration_0011_round_trips(migrated_db: str) -> None:
     vacuously, and the container is session-scoped and shared with
     test_staff_role_gating_integration.py.
 
-    Ceiling: downgrade("0010") today unwinds only 0011 and touches no rows. Once a
-    0012 exists this also unwinds that, and if 0012 is destructive this test starts
-    destroying data for whatever runs after it — the same ceiling
-    test_catalog_integration's 0006 round-trip already carries."""
+    Ceiling, and it is no longer hypothetical: 0012 exists and IS destructive
+    (it DROPs tenant_gateway_credentials and payments), so downgrade("0010") now
+    unwinds it too and empties both. Nothing in the suite is harmed today —
+    pytest collects this file before test_payments_*, and the upgrade back to
+    head recreates both tables — but the day a payments db test has to run
+    before this one, this is the test that has to grow a `0011` target instead
+    of `0010`. Same ceiling test_catalog_integration's 0006 round-trip carries."""
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
     cfg.set_main_option("sqlalchemy.url", migrated_db)
@@ -212,5 +215,117 @@ def test_migration_0011_round_trips(migrated_db: str) -> None:
         assert not _role_check_exists(migrated_db)
         command.upgrade(cfg, "head")
         assert _role_check_exists(migrated_db)
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- 0012: the two payments tables ---
+
+_PAYMENT_TABLES = ("tenant_gateway_credentials", "payments")
+_TABLE_EXISTS = "SELECT to_regclass(:name) IS NOT NULL"
+_CREDENTIAL_INSERT = (
+    "INSERT INTO tenant_gateway_credentials "
+    "(tenant_id, provider, ciphertext, key_ref, last_validated_at, created_by) "
+    "VALUES (uuid_generate_v4(), :provider, 'blob', 'fake', now(), uuid_generate_v4())"
+)
+
+
+def _tables_exist(url: str) -> bool:
+    async def check() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                found = []
+                for name in _PAYMENT_TABLES:
+                    result = await conn.execute(text(_TABLE_EXISTS), {"name": name})
+                    found.append(bool(result.scalar_one()))
+                assert len(set(found)) == 1, f"0012 left a half-applied schema: {found}"
+                return found[0]
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(check())
+
+
+@pytest.mark.db
+def test_the_provider_check_admits_fake_and_rejects_a_real_provider(migrated_db: str) -> None:
+    """D8's security control, both halves. The negative half names 'lemonsqueezy'
+    explicitly so nobody later assumes F18's value is already allowed and ships
+    an adapter whose first INSERT is an IntegrityError — the CHECK widens in
+    F18's own migration, alongside the adapter, which is the whole point.
+
+    Both probes roll back; nothing leaks into the shared container."""
+
+    async def check() -> None:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                await conn.execute(text(_CREDENTIAL_INSERT), {"provider": "fake"})
+                await trans.rollback()
+            for refused in ("lemonsqueezy", "grow"):
+                async with engine.connect() as conn:
+                    trans = await conn.begin()
+                    with pytest.raises(IntegrityError):
+                        await conn.execute(text(_CREDENTIAL_INSERT), {"provider": refused})
+                    await trans.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+@pytest.mark.db
+def test_the_app_role_cannot_delete_from_either_payments_table(app_role_url: str) -> None:
+    """D7's revoked DELETE is REAL, not a comment: a hard DELETE of a payment row
+    destroys financial evidence and of a credential row destroys the rotation
+    trail. 0002's ALTER DEFAULT PRIVILEGES auto-granted full CRUD, so without
+    0012's REVOKE-before-GRANT this passes silently.
+
+    Shaped like the app-role UPDATE probe above: connect as the non-owner role
+    (the container superuser bypasses grants) and assert the refusal reason, not
+    merely that something raised. Each DELETE aborts its own transaction, so
+    each gets its own session."""
+
+    async def check() -> None:
+        engine = create_async_engine(app_role_url, poolclass=NullPool)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        tenant_id = uuid.uuid4()
+        try:
+            for table in _PAYMENT_TABLES:
+                with pytest.raises(DBAPIError) as exc:
+                    async with tenant_session(factory, tenant_id) as session:
+                        await session.execute(text(f"DELETE FROM {table}"))
+                assert "permission denied" in str(exc.value).lower(), table
+            # …and the grants it DOES need are intact, so the revoke was
+            # surgical rather than a blanket lockout.
+            async with tenant_session(factory, tenant_id) as session:
+                for table in _PAYMENT_TABLES:
+                    await session.execute(text(f"SELECT count(*) FROM {table}"))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+@pytest.mark.db
+def test_migration_0012_round_trips(migrated_db: str) -> None:
+    """downgrade() drops both tables; upgrade() puts them back. Runs as the
+    migration owner (the app role cannot DROP) and mutates the live schema, so
+    it is LAST in this file and owns no fixtures.
+
+    The finally is not decoration and it is stricter here than for 0011: leaving
+    the schema at 0011 would make every payments db test in the suite fail with
+    UndefinedTable rather than with anything diagnostic, and the container is
+    session-scoped and shared."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    try:
+        assert _tables_exist(migrated_db)
+        command.downgrade(cfg, "0011")
+        assert not _tables_exist(migrated_db)
+        command.upgrade(cfg, "head")
+        assert _tables_exist(migrated_db)
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
