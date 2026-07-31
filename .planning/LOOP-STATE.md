@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # F52 merged (PR #28) 2026-07-31. F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
+current: F19                    # spec-only iteration (spec_gate: user). F52 merged (PR #28) 2026-07-31. F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
                                 # Queue reconciled 2026-07-30 for the finish-the-project run:
                                 # 32 features reachable, 0 unreachable, 3 parked (F18/F29 external, F32 subsumed).
                                 # Verified by simulating the pick rule to exhaustion — deps absent from this
@@ -161,7 +161,7 @@ queue:
     slug: deposit-booking-flow
     epic: E4
     title: Deposit booking flow
-    status: queued
+    status: specing
     deps: [F7, F16, F17]
     spec_gate: user
     note: >-
