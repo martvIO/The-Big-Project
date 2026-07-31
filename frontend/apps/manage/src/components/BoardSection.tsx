@@ -71,6 +71,7 @@ export function BoardSection() {
   const [rowError, setRowError] = useState<{ id: string; text: string } | null>(null);
 
   const cueRef = useRef<HTMLParagraphElement>(null);
+  const movedRef = useRef<HTMLSpanElement>(null);
   const dividerRef = useRef<HTMLLIElement>(null);
   const scrolledRef = useRef(false);
   // The timer always calls the LATEST tick, so the loop reads current state
@@ -163,7 +164,9 @@ export function BoardSection() {
     }
     rowsRef.current = next;
     setRows(next);
-    setStranded(held.map((item) => item.id));
+    if (held.length > 0 || stranded.length > 0) {
+      setStranded(held.map((item) => item.id));
+    }
   };
 
   const load = async (targetDay: string) => {
@@ -278,6 +281,16 @@ export function BoardSection() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    // Keeping the departing row is only half the repair: the control we just
+    // replaced WAS the focused element, so without this focus lands on <body>
+    // anyway. Moving it to the note is a move inside the row she was already
+    // in, not a jump — and it is the sentence she needs to read.
+    if (stranded.length > 0 && document.activeElement === document.body) {
+      movedRef.current?.focus();
+    }
+  }, [stranded]);
 
   useEffect(() => {
     // Into view on the FIRST load and never again: scrolling the page under a
@@ -555,7 +568,16 @@ export function BoardSection() {
 
                 let control: ReactNode = null;
                 if (stranded.includes(booking.id)) {
-                  control = <span className="text-sm text-ink-muted">{t("board.movedAway")}</span>;
+                  control = (
+                    <span
+                      ref={movedRef}
+                      tabIndex={-1}
+                      data-testid="board-moved"
+                      className="text-sm text-ink-muted"
+                    >
+                      {t("board.movedAway")}
+                    </span>
+                  );
                 } else if (arrival !== null) {
                   // Always visible, never time-boxed: the server takes no clock
                   // bound and no status guard on the undo, so a control that

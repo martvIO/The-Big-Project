@@ -953,6 +953,35 @@ describe("F-8 — a tick may not repaint under a finger", () => {
   });
 });
 
+describe("a row that leaves the day while it holds focus", () => {
+  it("is kept and says why, rather than dropping focus to <body>", async () => {
+    await mountBoard(
+      day([row({ id: "b1" }), row({ id: "b2", customer_name: "נועה כהן" })]),
+    );
+    const control = screen.getAllByRole("button", { name: /^הגיעה/ })[0];
+    control.focus();
+
+    // The only way a row leaves the day is a reschedule to another date;
+    // cancelled rows stay.
+    listBookings.mockResolvedValue(day([row({ id: "b2", customer_name: "נועה כהן" })]));
+    await advance(POLL);
+
+    // Replacing the control unmounts the focused element, so keeping the row is
+    // only half the repair — focus moves to the note in the same row rather
+    // than to <body>, which is where it would otherwise land for something the
+    // user did not do.
+    expect(screen.getByTestId("board-moved")).toHaveTextContent("התור הועבר לתאריך אחר");
+    expect(document.activeElement).toBe(screen.getByTestId("board-moved"));
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+
+    // Removed on the first tick after focus moves.
+    pauseButton().focus();
+    await advance(POLL);
+    expect(screen.queryByTestId("board-moved")).toBeNull();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+});
+
 describe("BoardSection accessibility", () => {
   it("passes axe with zero violations on the loaded board", async () => {
     // EXPLICITLY NOT SUFFICIENT: axe has no SC 2.2.2 rule, so the pause and
