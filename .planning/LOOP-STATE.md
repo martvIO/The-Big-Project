@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F56                    # F19 spec DONE + Gate 1 self-approved (874c2ef) — ready to BUILD, unclaimed. F52 merged (PR #28) 2026-07-31. F51 merged (PR #25). F15 merged (PR #24); E3 DONE — boundary QA passed 2026-07-30
+current: null                   # F56 merged (PR #30), F52 merged (PR #28) 2026-07-31. F19 spec done + self-approved — ready to BUILD, unclaimed.
                                 # Queue reconciled 2026-07-30 for the finish-the-project run:
                                 # 32 features reachable, 0 unreachable, 3 parked (F18/F29 external, F32 subsumed).
                                 # Verified by simulating the pick rule to exhaustion — deps absent from this
@@ -423,7 +423,8 @@ queue:
     slug: storefront-focus-flake
     epic: cross
     title: "Fix the flaky storefront focus assertions (CI merge blocker)"
-    status: building
+    status: merged
+    pr: 30
     deps: []
     note: >-
       FOUND BY F52's CI run 2026-07-31, and it is NOT an F52 regression — F52
@@ -436,8 +437,32 @@ queue:
       assertion shape (`<p tabindex="-1">` that time, `<div>` on F52's run).
       Re-running the identical commit turned it green. This is a GATING job, so
       the flake blocks an arbitrary fraction of ALL merges and cost F52 one full
-      CI cycle. Likely fix: await the focus move (findBy*/waitFor) instead of
-      asserting synchronously. Small, but it taxes every feature until done.
+      SHIPPED as PR #30, merged 2026-07-31. THE TRIAGE WAS WRONG AND CI CAUGHT IT.
+      Round 1 did the obvious thing — wrap the assertions in waitFor — and CI failed
+      AGAIN on a site that was ALREADY wrapped. waitFor polling for a full timeout and
+      still seeing <body> is only possible if the focus was never coming, so it was
+      never a test-timing bug at all.
+      THE REAL DEFECT WAS IN SHIPPED PRODUCT CODE, in BOTH storefront routes. The
+      focus effects (BookPage ~line 400, ManageBookingPage ~line 184) have NO dependency
+      array, so they run after every render, and both CLEARED THE PENDING INTENT BEFORE
+      CONFIRMING THE FOCUS LANDED: `ref.current = null` then `node?.focus()`, where node
+      is null whenever its conditionally-rendered element has not mounted yet. Any
+      interleaving render — a data promise settling, an unrelated setState — discarded
+      the intent permanently. A bride cancels an appointment, the confirmation block
+      appears, focus never moves into it, and a screen-reader user is left on a button
+      that no longer exists. WCAG focus management; axe cannot see a move that never
+      happened, which is why every a11y gate passed over it.
+      Fix: resolve the node first, return KEEPING the intent if it is not mounted, only
+      then clear and focus. Adversarial review then caught that the fix's own persisting
+      intent could steal focus mid-typing, so two bounds were added (reset on [step]
+      change, and drop a stale `code` intent when she edits the phone). 5 regression
+      tests, storefront 728 -> 733.
+      TWO THINGS FOR A LATER READER. (1) The negative assertion at router.test.tsx is
+      deliberately NOT wrapped in waitFor — polling a negative passes on the first tick
+      and stops detecting a focus grab that lands later, turning a real assertion into a
+      tautology. (2) src/test/focus.ts (expectFocus) and src/test/interleave.ts exist for
+      this class; a comment in BookPage warns that an intent-killer no test can
+      distinguish is how the original bug shipped.
   - id: F53
     slug: customers-crm
     epic: SMC
