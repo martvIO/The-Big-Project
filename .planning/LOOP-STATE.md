@@ -260,7 +260,8 @@ queue:
     slug: sms-twilio-adapter
     epic: E3-carveout
     title: Twilio SMS adapter (real sends)
-    status: specing
+    status: merged
+    pr: 27
     deps: [F11]
     attempts: 1
     note: >-
@@ -761,6 +762,20 @@ rulings_2026_07_30:             # taken in the finish-the-project planning sessi
   - "Build order: finish the SMC console before E5. Queue reordered to match."
   - "F33 QR check-in is KEPT (builds after F20), resolving the SMC epic's self-contradiction."
   - "F15 phone-correction without OTP is ACKNOWLEDGED as shipped for owner AND shift_manager."
+
+known_flaky:                    # nondeterministic tests — they gate every merge, so treat as debt
+  - test: "frontend/apps/storefront/src/__tests__/ManageBookingPage.test.tsx :: the cancel two-step :: moves focus into the revealed block, onto the question itself"
+    seen: "2026-07-31 on PR #27, whose diff touched ZERO frontend files"
+    evidence: >-
+      The same commit failed then passed on a plain re-run. The element it waits
+      for IS in the DOM dump; document.activeElement is <body> instead. A jsdom
+      focus/timing race, not a regression.
+    why_it_matters: >-
+      merge-gate.sh blocks on the Frontend job, so a flaky test can park a
+      perfectly good feature — and worse, it trains whoever is watching to
+      re-run red CI without reading it, which is how a real failure gets waved
+      through. Fix the wait, do not raise the timeout.
+    owner: unassigned — pick up at the E4 boundary or sooner if it recurs
 
 rulings_2026_07_31:             # the user supplied credentials; E4 unblocked
   - "PAYMENTS: Lemon Squeezy TEST MODE is E4's engine behind F17's port. It is a development engine only — LS is merchant-of-record and the deposit is legally the boutique's money, so it can never carry live deposits. The production Israeli PSP is deferred to before-live-money and is one adapter file."
