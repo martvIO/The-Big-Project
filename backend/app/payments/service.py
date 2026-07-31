@@ -172,7 +172,15 @@ class GatewayCredentialService:
         rejected credential set must leave the boutique's previous WORKING one
         untouched: she typed a typo, she did not ask to be disconnected. And the
         NotificationService.send_sms split applies too — a provider hang must
-        never hold a DB transaction open."""
+        never hold a DB transaction open.
+
+        The supersede and the insert then run under the open_deposit /
+        create_booking advisory lock, same key: a double-submit would otherwise
+        have both callers' UPDATE match nothing and both INSERTs race
+        idx_tenant_gateway_credentials_active_unique, and the loser's
+        IntegrityError is an unhandled 500 on an owner-only route. Under the
+        lock the loser simply supersedes the winner, which is what a PUT should
+        do anyway. Note the lock is taken AFTER the ping, not around it."""
         provider = self._require_provider()
         key = f"gateway:connect:{tenant_id}"
         if self._connect_limiter.is_blocked(key):
@@ -185,29 +193,50 @@ class GatewayCredentialService:
         ciphertext = await self._encrypt(tenant_id, cleaned)
 
         now = self._clock()
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            await self._credentials.soft_delete_active(
-                session, tenant_id, provider=provider, now=now
-            )
-            await self._credentials.insert(
-                session,
-                tenant_id=tenant_id,
-                provider=provider,
-                ciphertext=ciphertext,
-                key_ref=self._secret_box.key_ref,
-                last_validated_at=now,
-                created_by=actor_id,
-            )
-            # FIELD NAMES ONLY, never values — the containment rule that matters
-            # more here than anywhere else in the codebase.
-            await self._audit.record(
-                session,
-                tenant_id=tenant_id,
-                action=AuditAction.GATEWAY_CONNECTED.value,
-                actor_id=actor_id,
-                entity="tenant_gateway_credentials",
-                details={"provider": provider, "fields": sorted(cleaned)},
-            )
+        try:
+            # The try wraps the WHOLE block, the staff.create shape: an
+            # IntegrityError may surface at flush or at commit, and catching
+            # inside would try to raise from an aborted transaction.
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                # ponytail: one lock per tenant serializes every credential
+                # write, the create_booking key verbatim; nothing here is hot
+                # enough to want a finer key.
+                await session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await self._credentials.soft_delete_active(
+                    session, tenant_id, provider=provider, now=now
+                )
+                await self._credentials.insert(
+                    session,
+                    tenant_id=tenant_id,
+                    provider=provider,
+                    ciphertext=ciphertext,
+                    key_ref=self._secret_box.key_ref,
+                    last_validated_at=now,
+                    created_by=actor_id,
+                )
+                # FIELD NAMES ONLY, never values — the containment rule that
+                # matters more here than anywhere else in the codebase.
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.GATEWAY_CONNECTED.value,
+                    actor_id=actor_id,
+                    entity="tenant_gateway_credentials",
+                    details={"provider": provider, "fields": sorted(cleaned)},
+                )
+        except IntegrityError as exc:
+            # The backstop for a writer that skips the lock above — open_deposit
+            # maps its own the same way, and for the same reason: never an
+            # unhandled 500. Unavailable rather than a new error class, because
+            # the condition is transient by construction (the retry supersedes)
+            # and 503 already tells the owner to try again. D4 still holds: the
+            # transaction rolled back whole, so her previous working credential
+            # is untouched.
+            logger.warning("concurrent gateway connect for tenant %s", tenant_id, exc_info=exc)
+            raise GatewayUnavailableError from exc
         return await self.status(tenant_id)
 
     async def revalidate(self, tenant_id: UUID, *, actor_id: UUID) -> GatewayStatus:

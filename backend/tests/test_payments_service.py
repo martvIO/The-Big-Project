@@ -219,6 +219,43 @@ async def test_rotation_supersedes_and_the_new_set_is_what_credentials_for_retur
         await engine.dispose()
 
 
+async def test_two_concurrent_connects_converge_on_one_active_row(app_role_url: str) -> None:
+    """A double-submit, a client retry, two tabs. `connect` supersedes and then
+    inserts, and idx_tenant_gateway_credentials_active_unique refuses a second
+    ACTIVE row for one (tenant, provider) — so without the per-tenant advisory
+    lock the loser's UPDATE matched nothing, its INSERT hit the index, and an
+    unhandled IntegrityError surfaced as a 500 on an owner-only route.
+
+    Two asyncio.gathered calls on separate connections, for the reason the
+    open_deposit test gives: a sequential loop passes while this is broken,
+    because sequentially the second call's UPDATE does find the first row."""
+    engine, factory = _factory(app_role_url)
+    tenant, actor = uuid.uuid4(), uuid.uuid4()
+    rotated = {**GOOD, "api_key": "k-2"}
+    try:
+        service = _service(factory)
+        statuses = list(
+            await asyncio.gather(
+                service.connect(tenant, fields=GOOD, actor_id=actor),
+                service.connect(tenant, fields=rotated, actor_id=actor),
+            )
+        )
+        assert [status.connected for status in statuses] == [True, True]
+
+        rows = await _credential_rows(factory, tenant)
+        assert len(rows) == 2  # both wrote; the loser superseded the winner
+        assert sum(1 for row in rows if row.deleted_at is None) == 1
+        # A PUT supersedes rather than conflicts, so either set may be the
+        # survivor — what must not happen is a crash or two live rows.
+        assert (await service.credentials_for(tenant)).fields in (GOOD, rotated)
+        assert await _actions(factory, tenant) == [
+            AuditAction.GATEWAY_CONNECTED.value,
+            AuditAction.GATEWAY_CONNECTED.value,
+        ]
+    finally:
+        await engine.dispose()
+
+
 async def test_revalidate_flips_valid_to_invalid_and_audits_with_a_real_actor(
     app_role_url: str,
 ) -> None:
