@@ -48,7 +48,7 @@ queue:
     slug: shift-board-checkin
     epic: SMC
     title: "Live board + check-in (5s poll)"
-    status: specing
+    status: building
     deps: [F15, F31]
     spec: .planning/specs/shift-board-checkin.md
     prototype: .planning/design/screens/shift-board/prototype.html
