@@ -78,6 +78,30 @@ class ScheduledMessageStatus(StrEnum):
     FAILED = "failed"
 
 
+class GatewayCredentialStatus(StrEnum):
+    # The DB pins this exact set (0012). There is deliberately no 'unvalidated':
+    # credentials are pinged BEFORE they are stored (D4), so an unvalidated
+    # stored credential is not a state the schema can represent — and
+    # last_validated_at NOT NULL is the same decision spelled in the DDL.
+    VALID = "valid"
+    INVALID = "invalid"
+
+
+class PaymentStatus(StrEnum):
+    # The DB pins this exact set (0012). Recorded departure from the
+    # ScheduledMessageKind "no speculative values" rule (Risk 6): F17 ships a
+    # writer for PENDING and PAID only, and F19's brief names every remaining
+    # transition — sweeper expiry, refund-due, forfeit, manual refund. If F19
+    # renames one the correction is a single migration.
+    PENDING = "pending"
+    PAID = "paid"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    REFUND_DUE = "refund_due"
+    REFUNDED = "refunded"
+    FORFEITED = "forfeited"
+
+
 class AuditAction(StrEnum):
     LOGIN = "login"
     LOGIN_FAILED = "login_failed"
@@ -104,6 +128,26 @@ class AuditAction(StrEnum):
     STAFF_ROLE_CHANGED = "staff_role_changed"
     STAFF_PASSWORD_RESET = "staff_password_reset"
     STAFF_DEACTIVATED = "staff_deactivated"
+    # F17's payment gateway. Same fact as the two blocks above: audit_log.action
+    # is plain TEXT with no CHECK (0003), so these need no migration.
+    #
+    # The first four carry a real actor_id and commit in the SAME tenant_session
+    # as the write they describe. GATEWAY_VALIDATED exists because the
+    # invalid -> valid flip is the transition that RE-ENABLES money movement for
+    # the boutique (D26) — auditing only the failure would leave the recovery,
+    # the state change an incident review most wants to place in time, with no
+    # row at all.
+    GATEWAY_CONNECTED = "gateway_connected"
+    GATEWAY_DISCONNECTED = "gateway_disconnected"
+    GATEWAY_VALIDATED = "gateway_validated"
+    GATEWAY_VALIDATION_FAILED = "gateway_validation_failed"
+    # The last three have NO actor — an unauthenticated caller reached them —
+    # and are failure-path writes, so they must COMMIT BEFORE the raise or the
+    # return (.memory/patterns/commit-before-raise-in-tenant-session.md, which
+    # names "future booking/payment failure records" as exactly this class).
+    GATEWAY_WEBHOOK_REJECTED = "gateway_webhook_rejected"
+    GATEWAY_AMOUNT_MISMATCH = "gateway_amount_mismatch"
+    GATEWAY_LATE_SETTLEMENT = "gateway_late_settlement"
 
 
 class PlatformAuditAction(StrEnum):
