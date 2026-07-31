@@ -27,21 +27,37 @@ from app.booking.comms import BookingCommsService, CommsTenant, DrainResult
 from app.core.config import Settings, get_settings
 from app.db.repositories.tenants import TenantsRepository
 from app.db.session import ensure_safe_database_role, get_session_factory
+from app.notifications.base import SmsSender
 from app.notifications.fake import FakeSmsSender
 from app.notifications.service import NotificationService
+from app.notifications.twilio import TwilioSmsSender
 from app.notifications.unconfigured import UnconfiguredSmsSender
 
 logger = logging.getLogger("worker")
 
 
-def build_sender(settings: Settings) -> FakeSmsSender | UnconfiguredSmsSender:
+def build_sender(settings: Settings) -> SmsSender:
     """Mirrors `main._build_sms_sender`, including the observability line: no
     provider is a SUPPORTED state here (due rows are simply left pending until an
     adapter lands), and `Settings.model_config` is extra="ignore", so a typo'd
-    SMS_PROVDER would otherwise degrade in silence."""
+    SMS_PROVDER would otherwise degrade in silence.
+
+    This process needs the SAME dispatch as the API, not a subset: reminders and
+    confirmations drain here, so a `twilio` deployment wired only in main.py
+    would send OTPs while every scheduled message sat pending forever."""
     if settings.sms_provider == "fake":
         logger.info("SMS sender: FAKE (in-memory outbox) — no real SMS will be sent")
         return FakeSmsSender()
+    if settings.sms_provider == "twilio":
+        sender = TwilioSmsSender()
+        if sender.is_configured:
+            logger.info("SMS sender: TWILIO — real sends from %s", sender.from_number)
+        else:
+            logger.warning(
+                "SMS sender: TWILIO selected but one or more TWILIO_* variables are "
+                "missing — due reminders will be left pending"
+            )
+        return sender
     logger.info("SMS sender NOT configured — due reminders will be left pending")
     return UnconfiguredSmsSender()
 

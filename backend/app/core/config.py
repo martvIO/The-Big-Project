@@ -53,8 +53,10 @@ class Settings(BaseSettings):
     # length, TTLs, attempt cap) lives once in app/notifications/validation.py.
     # None → UnconfiguredSmsSender: no provider is a supported deployment where
     # OTP send answers 503, exactly like the missing media bucket. "fake" is the
-    # dev/staging adapter; the real provider literal is added with its adapter.
-    sms_provider: Literal["fake"] | None = None
+    # dev/staging adapter; "twilio" is the real one and the only value that makes
+    # production legal. Its credentials are NOT fields here — the adapter reads
+    # them from the process environment, same as boto3 above.
+    sms_provider: Literal["fake", "twilio"] | None = None
     # Staging-only escape hatch: verify() also accepts this exact code. The
     # validator below makes it — and the fake sender — a BOOT FAILURE in
     # production, which is what keeps staging convenience from becoming a hole.

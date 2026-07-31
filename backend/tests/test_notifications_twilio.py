@@ -290,8 +290,8 @@ async def test_timeouts_are_explicit_on_the_client(monkeypatch: pytest.MonkeyPat
         assert client.timeout.connect == CONNECT_TIMEOUT_SECONDS
         assert client.timeout.read == READ_TIMEOUT_SECONDS
     default = httpx.Timeout(5.0)
-    assert CONNECT_TIMEOUT_SECONDS != default.connect
-    assert READ_TIMEOUT_SECONDS != default.read
+    assert default.connect != CONNECT_TIMEOUT_SECONDS
+    assert default.read != READ_TIMEOUT_SECONDS
 
 
 # --- wiring ---
