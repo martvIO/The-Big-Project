@@ -92,15 +92,18 @@ class TwilioSmsSender:
                 data={"To": phone, "From": self._from_number, "Body": body},
             )
         if not response.is_success:
-            # The full payload goes to the server log — that stream is not the
-            # forever-table, and an operator debugging a 21610 needs it. It does
-            # NOT go into the exception.
-            logger.warning(
-                "twilio refused a send: status=%s code=%s",
-                response.status_code,
-                _error_code(response),
-            )
-            raise SmsSendError(f"twilio {response.status_code}: {_error_code(response)}")
+            # Status and code, and DELIBERATELY nothing else — the payload is
+            # withheld from this line just as firmly as from the exception. Do
+            # not "restore" `response.text` here: Twilio's 4xx quotes the
+            # parameters it was handed, body included, so logging it would
+            # relocate the echoed OTP into the process log stream rather than
+            # prevent it, and fake.py refuses to log a body for exactly that
+            # reason (that stream is widely readable). An operator who needs the
+            # message text has it in Twilio's own console, against this code.
+            # test_error_log_line_carries_only_status_and_code pins this.
+            code = _error_code(response)
+            logger.warning("twilio refused a send: status=%s code=%s", response.status_code, code)
+            raise SmsSendError(f"twilio {response.status_code}: {code}")
         return SendResult(provider_message_id=_message_sid(response))
 
 

@@ -8,6 +8,7 @@ The three tests that deliberately exercise those two sources say so in their nam
 
 import base64
 import contextlib
+import logging
 import os
 import urllib.parse
 import uuid
@@ -147,7 +148,33 @@ async def test_successful_send_posts_the_form_and_returns_the_sid() -> None:
     }
 
 
-# --- what reaches the wire ---
+# --- what the failure writes to the log ---
+
+
+async def test_error_log_line_carries_only_status_and_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pins the WARNING verbatim, because the comment above it is the whole
+    security argument of that file. An edit that "helpfully" adds `response.text`
+    would relocate the echoed OTP into the process log stream — readable by
+    anyone with log access — rather than prevent it. Equality, not containment:
+    a substring assertion would pass with the payload appended."""
+    code = "483920"
+    body = otp_sms_body(code)
+    transport, _ = _mock(400, _echoing_error_payload(body=body))
+
+    with caplog.at_level(logging.DEBUG, logger="app"), pytest.raises(SmsSendError):
+        await TwilioSmsSender(_settings(), transport=transport).send(phone=TO_NUMBER, body=body)
+
+    emitted = [record.getMessage() for record in caplog.records if record.name == "app"]
+    assert emitted == ["twilio refused a send: status=400 code=21610"]
+    rendered = " ".join(emitted)
+    assert code not in rendered
+    assert body not in rendered
+    for token in body.split():
+        assert token not in rendered
+    for secret in SECRETS:
+        assert secret not in rendered
 
 
 async def test_padded_credentials_are_trimmed_before_they_reach_the_wire() -> None:
