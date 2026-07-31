@@ -31,7 +31,7 @@ from app.notifications.twilio import (
 )
 from app.notifications.unconfigured import UnconfiguredSmsSender
 from app.notifications.validation import mask_otp_body, otp_sms_body
-from app.worker import build_sender
+from app.worker import build_sender, configure_logging
 
 ACCOUNT_SID = "AC00000000000000000000000000000001"
 API_KEY_SID = "SK00000000000000000000000000000002"
@@ -370,6 +370,28 @@ def test_worker_build_sender_dispatches_on_the_provider() -> None:
     assert isinstance(build_sender(_settings(sms_provider="twilio")), TwilioSmsSender)
     assert isinstance(build_sender(_settings(sms_provider="fake")), FakeSmsSender)
     assert isinstance(build_sender(_settings(sms_provider=None)), UnconfiguredSmsSender)
+
+
+def test_worker_logging_keeps_the_account_sid_out_of_the_httpx_access_line() -> None:
+    # httpx logs "HTTP Request: POST https://…/Accounts/<ACCOUNT_SID>/Messages.json"
+    # at INFO, and this process is the one that calls basicConfig(INFO), so the
+    # account identifier would otherwise be stamped into the log on every send.
+    #
+    # The assertion is on the logger's OWN level, not its effective one: under
+    # pytest the root logger already has handlers, so basicConfig is a no-op and
+    # an effective-level assertion would read WARNING off the default root and
+    # pass with the silencing deleted.
+    root = logging.getLogger()
+    httpx_logger = logging.getLogger("httpx")
+    previous_root, previous_httpx = root.level, httpx_logger.level
+    try:
+        configure_logging()
+        assert httpx_logger.level == logging.WARNING
+        root.setLevel(logging.INFO)
+        assert httpx_logger.getEffectiveLevel() == logging.WARNING
+    finally:
+        root.setLevel(previous_root)
+        httpx_logger.setLevel(previous_httpx)
 
 
 def test_incomplete_credentials_degrade_to_503_rather_than_booting_dark() -> None:

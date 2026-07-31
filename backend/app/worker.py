@@ -124,6 +124,17 @@ async def main() -> None:
         await asyncio.sleep(settings.worker_poll_interval_seconds)
 
 
-if __name__ == "__main__":
+def configure_logging() -> None:
+    """httpx logs a request line per send at INFO and the Twilio Account SID is
+    in the URL path, so left at INFO this process stamps an account identifier
+    into the log on every reminder — the one place a credential-shaped value
+    reaches a log line, in a stream that needs it for nothing. The API process
+    is already clear (uvicorn leaves root at WARNING with no handler); this one
+    calls basicConfig, so it has to say so itself."""
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+if __name__ == "__main__":
+    configure_logging()
     asyncio.run(main())
