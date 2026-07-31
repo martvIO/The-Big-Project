@@ -25,11 +25,17 @@ const HE_F15 = entries(
   (key) => key === "nav.bookings" || key.startsWith("booking."),
 );
 const HE_F51 = entries(he.translation, (key) => key === "nav.staff" || key.startsWith("staff."));
-// F17's own constant for the reason the comment above gives: folding these into
-// an existing list would let that feature's rows shrink by this many and still
-// pass. Every block gets its own floor.
+const HE_F52 = entries(
+  he.translation,
+  (key) => key === "nav.dashboard" || key.startsWith("dashboard."),
+);
+// Folded in, not just declared: without this the resolve check, BOTH register
+// guards and the `ar` parity guard silently skip every F52 key.
+// F17 gets its own constant for the reason the comment above gives: folding
+// these into an existing list would let that feature's rows shrink by this many
+// and still pass. Every block keeps its own floor.
 const HE_F17 = entries(he.translation, (key) => key === "nav.gateway" || key.startsWith("gateway."));
-const HE = [...HE_F15, ...HE_F51, ...HE_F17];
+const HE = [...HE_F15, ...HE_F51, ...HE_F52, ...HE_F17];
 
 describe("F15 keys resolve", () => {
   it("carries the whole copy deck", () => {
@@ -86,12 +92,39 @@ describe("F51 staff keys resolve", () => {
   });
 });
 
+describe("F52 dashboard keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    expect(HE_F52.length).toBeGreaterThan(40);
+  });
+
+  it("resolves the eighth nav item beside the nested nav object", () => {
+    expect(i18n.t("nav.dashboard")).toBe("סקירה");
+  });
+
+  it("resolves the three strings that keep zero, unknown and too-small apart", () => {
+    // Three facts, three strings (copy.md §0 rule 3). `0.0%` is rendered
+    // arithmetic and has no key; these two are the other two facts, and a
+    // screen that collapsed them would tell a boutique it had no cancellations
+    // when it had one.
+    expect(i18n.t("dashboard.notEnoughData")).toBe("אין עדיין מספיק נתונים לחישוב.");
+    expect(i18n.t("dashboard.rateUnderFloor")).toBe("פחות מ־0.1%");
+  });
+
+  it("interpolates the announced total through the base key", () => {
+    // {{count}} is i18next's plural trigger. It resolves through the base key
+    // because no dashboard.summary_one/_other exist — the shape booking.dayCount
+    // already ships. Suffixed variants must NOT be added: Hebrew's dual would
+    // then need a third and the announced sentence would fork.
+    expect(i18n.t("dashboard.summary", { count: 23 })).toBe("סך התורים שלא בוטלו בתקופה: 23");
+  });
+});
+
 describe("F17 gateway keys resolve", () => {
   it("carries the whole block", () => {
     expect(HE_F17.length).toBeGreaterThan(25);
   });
 
-  it("resolves the eighth nav item beside the nested nav object", () => {
+  it("resolves the ninth nav item beside the nested nav object", () => {
     expect(i18n.t("nav.gateway")).toBe("סליקה ותשלומים");
   });
 

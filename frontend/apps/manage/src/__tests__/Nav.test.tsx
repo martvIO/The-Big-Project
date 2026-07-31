@@ -24,6 +24,11 @@ vi.mock("../api", async () => {
       listDresses: pending,
       listBookings: pending,
       listStaff: pending,
+      // Without this every one of the nav tests below red-fails on mount with
+      // `TypeError: api.getDashboard is not a function` — an error that names
+      // the nav rather than the dashboard, because the console now LANDS on
+      // DashboardSection.
+      getDashboard: pending,
       gatewayStatus: pending,
     },
   };
@@ -42,7 +47,10 @@ function staff(role: string): Staff {
   };
 }
 
+// Order-sensitive, compared with toEqual. «סקירה» is FIRST: it is the section
+// the console lands on, for both roles (spec D10).
 const NAV_LABELS = [
+  "סקירה",
   "פרופיל והגדרות",
   "שעות פעילות",
   "סוגי תורים",
@@ -50,7 +58,7 @@ const NAV_LABELS = [
   "שמלות",
   "תורים",
   // The two owner-only rows, last. Everything above is `roles: ALL`, which is
-  // what keeps the shift_manager assertions below a `.slice(0, 6)`.
+  // what keeps the shift_manager assertions below a `.slice(0, 7)`.
   "צוות",
   "סליקה ותשלומים",
 ];
@@ -68,18 +76,18 @@ beforeEach(() => {
 });
 
 describe("the console nav is role-filtered", () => {
-  it("shows an owner all eight sections including Staff and the gateway", async () => {
+  it("shows an owner all nine sections including Staff and the gateway", async () => {
     me.mockResolvedValue(staff("owner"));
     render(<App />);
     await screen.findByRole("navigation");
     expect(navItems()).toEqual(NAV_LABELS);
   });
 
-  it("shows a shift manager six sections and neither owner-only one", async () => {
+  it("shows a shift manager seven sections and neither owner-only one", async () => {
     me.mockResolvedValue(staff("shift_manager"));
     render(<App />);
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 6));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 7));
     expect(screen.queryByRole("button", { name: "צוות" })).toBeNull();
     // Cosmetics only — the control is the server's owner-only RoleGate, which
     // refuses her on all four /manage/gateway routes with a 403. The filter
@@ -132,12 +140,33 @@ describe("an unreachable section falls back to the first reachable one", () => {
     fireEvent.click(screen.getByRole("button", { name: "כניסה" }));
 
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 6));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 7));
+    // reachable[0] is now the dashboard, not «פרופיל והגדרות» — the fallback
+    // lands her on the console's landing section rather than a settings form.
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "פרופיל והגדרות" })).toHaveAttribute(
+      expect(screen.getByRole("button", { name: "סקירה" })).toHaveAttribute(
         "aria-current",
         "page",
       ),
     );
   });
+});
+
+describe("the console lands on the dashboard", () => {
+  it.each(["owner", "shift_manager"])(
+    "puts a %s on «סקירה» on first render, with no click",
+    async (role) => {
+      me.mockResolvedValue(staff(role));
+      render(<App />);
+      await screen.findByRole("navigation");
+
+      // First in the nav, and the initial section — the useState default and
+      // the reachable[0] fallback now agree for both roles.
+      expect(navItems()[0]).toBe("סקירה");
+      expect(screen.getByRole("button", { name: "סקירה" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    },
+  );
 });

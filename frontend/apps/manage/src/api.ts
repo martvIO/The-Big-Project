@@ -407,6 +407,82 @@ function staffPath(staffId: string): string {
   return `/manage/staff/${encodeURIComponent(staffId)}`;
 }
 
+// --- dashboard wire types (mirror backend/app/dashboard/schemas.py) ---
+//
+// Mirrored field-for-field in SNAKE_CASE. There is no case-conversion layer in
+// this repo (see the header above): a camelCase interface compiles fine and
+// reads `undefined` at runtime on every field.
+//
+// `generated_on`, `from_date` and `to_date` are PLAIN Jerusalem calendar dates
+// ("2026-05-03"), never instants — they go through lib/jerusalem.ts's
+// plainDate(), which is the one helper there that builds no Date.
+//
+// Nullable rates mirror `float | None`. `null` means NOT COMPUTABLE, never
+// zero, and the console renders the two differently (spec D5, D10). The wire
+// carries the UNROUNDED quotient; all rounding is the console's.
+
+export interface WeekBucket {
+  week_start: string;
+  // The seat-slots the boutique HELD — every status except `cancelled`, so a
+  // no-show is in this count. The Hebrew label says exactly that.
+  bookings: number;
+}
+
+export interface StatusTotals {
+  // Over a window entirely in the past, `confirmed` is the UNCLASSIFIED count —
+  // an appointment whose outcome the owner never recorded — and it renders
+  // beside no_show_rate for that reason.
+  confirmed: number;
+  cancelled: number;
+  no_show: number;
+  completed: number;
+}
+
+export interface AppointmentTypeCount {
+  appointment_type_id: string;
+  // An appointment TYPE label, never a person's name.
+  name: string;
+  bookings: number;
+}
+
+export interface CustomerMix {
+  total: number;
+  new: number;
+  returning: number;
+  repeat_rate: number | null;
+}
+
+export interface HistoryPanel {
+  from_date: string;
+  to_date: string;
+  weeks: WeekBucket[];
+  status_totals: StatusTotals;
+  cancellation_rate: number | null;
+  // These two can sum to LESS than status_totals.cancelled: a row cancelled
+  // before migration 0010 added the column carries NULL and is in neither.
+  // Rendered as two independent tiles, never as a partition.
+  cancelled_by_customer: number;
+  cancelled_by_owner: number;
+  no_show_rate: number | null;
+  appointment_types: AppointmentTypeCount[];
+  customers: CustomerMix;
+}
+
+export interface ForwardPanel {
+  from_date: string;
+  // INCLUSIVE, matching the slot engine's window.
+  to_date: string;
+  capacity: number;
+  booked: number;
+  utilization: number | null;
+}
+
+export interface DashboardResponse {
+  generated_on: string;
+  history: HistoryPanel;
+  forward: ForwardPanel;
+}
+
 // --- endpoints ---
 
 export const api = {
@@ -577,6 +653,12 @@ export const api = {
   },
   deactivateStaff(staffId: string): Promise<OkResponse> {
     return apiFetch(staffPath(staffId), { method: "DELETE" });
+  },
+
+  // Both roles. No parameters at all — the window is derived server-side from a
+  // real clock, which is what keeps its date arithmetic total (spec D2).
+  getDashboard(): Promise<DashboardResponse> {
+    return apiFetch("/manage/dashboard");
   },
 
   // Owner-only, all four — the first router in the backend that is owner-only

@@ -239,6 +239,134 @@ export const he = {
     // The server's generic 403 body is ENGLISH and errorMessage() surfaces it
     // verbatim; this is the section's own Hebrew for a mid-session demotion.
     "staff.error.NOT_AUTHORIZED": "הפעולה הזו זמינה לבעלת הבוטיק בלבד.",
+
+    // --- F52, the KPI dashboard ---
+    //
+    // Transcribed row-for-row from
+    // .planning/design/screens/manage-dashboard/copy.md as DOTTED LITERAL keys,
+    // so the deck and this block diff against each other line by line.
+    // __tests__/i18n.test.ts proves every one of them resolves and enforces the
+    // deck's two mechanical rules — no exclamation mark, and no string that
+    // claims, implies or hedges that anything was sent.
+    //
+    // That second rule bites HERE for a reason F15 and F51 did not have: F52
+    // sends nothing at all, but «בדרך» is a natural Hebrew word for a rising
+    // trend and would trip a guard whose message is about SMS. The deck is
+    // written around it (§0 rule 2) — that is why §5 says «נספרים תורים…» and
+    // why no string anywhere describes a direction of travel.
+    //
+    // The section is READ-ONLY: no success message, no confirmation, no
+    // validation string, no destructive-action copy, and no error-code→Hebrew
+    // map. One sentence covers every ApiError (§2).
+    "nav.dashboard": "סקירה",
+    "dashboard.heading": "סקירה",
+    // Labels a value that came off the wire — the console renders no "as of" it
+    // computed itself (spec D8).
+    "dashboard.generatedOnLabel": "נכון לתאריך:",
+
+    // Section states.
+    "dashboard.loading": "טוענים את הנתונים.",
+    // {{count}} renders inside <bdi dir="ltr"> via isolateLtr. States the
+    // predicate again so the ANNOUNCED number cannot be heard as attendance.
+    "dashboard.summary": "סך התורים שלא בוטלו בתקופה: {{count}}",
+    // The outage register: recoverable, unblaming, no technical words and no
+    // retry control. A 403 from an out-of-enum role lands here too.
+    "dashboard.loadFailed": "לא הצלחנו לטעון את הנתונים כרגע.",
+    // Day one, as one muted line under the heading — never an EmptyState, which
+    // would hide the forward panel (spec D10, Risk 1).
+    "dashboard.firstRunNote":
+      "המסך הזה מתמלא מעצמו ככל שנקבעים תורים. עד אז המספרים כאן הם אפס.",
+
+    // Zero, unknown and too-small-to-show are THREE facts and get three
+    // strings (§0 rule 3). `0.0%` is rendered arithmetic and has no key.
+    // «עדיין» is load-bearing: the number is missing, not impossible.
+    "dashboard.notEnoughData": "אין עדיין מספיק נתונים לחישוב.",
+    // Spelled in words, NOT as `<0.1%`: a bare `<` inside an RTL paragraph
+    // mirrors and reads as a bracket, and this string sits unisolated in
+    // running Hebrew text.
+    "dashboard.rateUnderFloor": "פחות מ־0.1%",
+
+    // The forward panel — first on the screen, and the only one with a real
+    // number on a boutique's first day.
+    "dashboard.forwardHeading": "תפוסה בשבעת הימים הקרובים",
+    // «הטווח» deliberately differs from the weeks panel's «התקופה», so the two
+    // spans cannot read as one (§0 rule 6 / Risk 13).
+    "dashboard.forwardRange": "הטווח:",
+    "dashboard.forwardValueLabel": "אחוז התפוסה",
+    // «מקומות» — a seat-slot, which is what capacity means here. Never «שעות»:
+    // the grid has no duration (Risk 7).
+    "dashboard.forwardCapacityLabel": "סך המקומות בטווח",
+    "dashboard.forwardBookedLabel": "מקומות שנתפסו",
+    // Closes Risk 6 in copy: the number moves through the day with no booking
+    // changing, because the engine drops every start time that has passed.
+    "dashboard.forwardHelp":
+      "הספירה כוללת רק מועדים שאפשר עדיין להציע מהרגע הזה. מועדים שכבר חלפו היום אינם נכללים בה.",
+    // capacity == 0. Names CLOSED HOURS, not zero demand — the remedy is a
+    // different console section and the sentence has to point at it.
+    "dashboard.forwardNoHours": "אין שעות פעילות פתוחות בטווח הזה, ולכן אין כאן מה לחשב.",
+
+    // The weekly table.
+    "dashboard.weeksHeading": "תורים לפי שבוע",
+    "dashboard.weeksRange": "התקופה:",
+    // The §0 rule 4 line. States the predicate, then says out loud that
+    // no-shows are counted in it — without the second half the bar and the
+    // no-show tile on the same screen contradict each other.
+    "dashboard.weeksHelp": "נספרים תורים שנקבעו ולא בוטלו, כולל תורים שהלקוחה לא הגיעה אליהם.",
+    "dashboard.weeksTableCaption": "תורים שלא בוטלו, לפי שבוע",
+    // The cell shows a START date, and the header has to say so.
+    "dashboard.weekColumn": "תחילת שבוע",
+    // REUSED as the appointment-types table's count header: the two counts
+    // state the same predicate, or the screen carries two meanings of one word.
+    "dashboard.bookingsColumn": "תורים שלא בוטלו",
+
+    // Cancellations and no-shows. The two attribution counts are independent
+    // labelled values, NEVER a partition — a row cancelled before migration
+    // 0010 carries NULL and is in neither (Risk 11).
+    "dashboard.ratesHeading": "ביטולים ואי־הגעה",
+    "dashboard.cancellationRateLabel": "שיעור הביטולים",
+    // «בכל סטטוס» is the exact fact: this rate is over all four statuses,
+    // unlike the one below it.
+    "dashboard.cancellationHelp": "מתוך כל התורים שנקבעו בתקופה, בכל סטטוס.",
+    "dashboard.cancelledByCustomerLabel": "ביטולים ביוזמת הלקוחה",
+    // Without this pair a boutique that closed for a week and cancelled twenty
+    // appointments itself reads its own closure as customer flakiness.
+    "dashboard.cancelledByOwnerLabel": "ביטולים ביוזמת הבוטיק",
+    "dashboard.noShowRateLabel": "שיעור אי־ההגעה",
+    // The sharp denominator, in words (§0 rule 5). «בלבד» is the sentence's
+    // whole job: the rate is not over all her appointments.
+    "dashboard.noShowHelp": "מתוך התורים שסומנו כהתקיימו או כאי־הגעה בלבד.",
+    "dashboard.unclassifiedLabel": "תורים שעברו ולא סומנו",
+    // The Risk 5 bound, made visible: an owner who marks three no-shows and
+    // nothing else reads 100%, and this line is what tells her the denominator
+    // was three.
+    "dashboard.unclassifiedHelp":
+      "תורים שכבר עברו ולא סומנו כהתקיימו או כאי־הגעה. הם אינם נכללים בשיעור אי־ההגעה.",
+
+    // Customers.
+    "dashboard.customersHeading": "לקוחות בתקופה",
+    // The cohort definition (spec D6). Without the predicate «סך הלקוחות»
+    // reads as everyone in the address book.
+    "dashboard.customersHelp": "נספרות לקוחות עם תור אחד לפחות בתקופה שלא בוטל.",
+    "dashboard.customersTotalLabel": "סך הלקוחות",
+    "dashboard.customersNewLabel": "לקוחות חדשות",
+    "dashboard.customersReturningLabel": "לקוחות חוזרות",
+    "dashboard.repeatRateLabel": "שיעור החזרה",
+    // «אי פעם» is the lifetime scope, and it is what makes a bride who booked
+    // twice inside the window both NEW and part of this rate.
+    "dashboard.repeatRateHelp": "חלקן של הלקוחות בתקופה שקבעו בבוטיק יותר מתור אחד אי פעם.",
+
+    // Appointment types.
+    "dashboard.typesHeading": "סוגי התורים המבוקשים",
+    // Honest at any list length (Risk 14): says the list is the most-booked
+    // types, never claims completeness, and names no number, so it mirrors no
+    // server constant.
+    "dashboard.typesHelp": "מוצגים סוגי התורים שנקבעו הכי הרבה פעמים בתקופה.",
+    "dashboard.typesTableCaption": "סוגי תורים לפי מספר התורים בתקופה",
+    // The count column reuses dashboard.bookingsColumn.
+    "dashboard.typeColumn": "סוג תור",
+    // One muted line replacing the table. The day-one explanation is
+    // dashboard.firstRunNote's job and it is already on screen.
+    "dashboard.typesEmpty": "לא נקבעו תורים בתקופה הזו.",
     // --- F17 payment gateway (owner-only) ---
     //
     // FLAT dotted literals, appended, exactly like F15's and F51's blocks. The

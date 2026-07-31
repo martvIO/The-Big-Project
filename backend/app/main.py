@@ -69,6 +69,8 @@ from app.catalog.service import (
 from app.catalog.validation import PENDING_MEDIA_TTL_SECONDS
 from app.core.config import Settings, get_settings
 from app.csrf import CsrfOriginMiddleware
+from app.dashboard.router import router as dashboard_router
+from app.dashboard.service import DashboardService
 from app.db.session import ensure_safe_database_role, get_session_factory
 from app.errors import DomainNotFoundError, DomainValidationError
 from app.notifications.base import SmsNotConfiguredError, SmsSender, SmsSendError
@@ -531,6 +533,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # verifies credentials and issues sessions, and folding administration in
     # would put the login path's fake into every staff CRUD test.
     app.state.staff_service = StaffService(get_session_factory())
+    # No clock wired: the parameter exists so the db suite can freeze the
+    # window, and production reads a real one (D8).
+    app.state.dashboard_service = DashboardService(get_session_factory())
     app.state.login_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.login_max_attempts,
         window_seconds=settings.login_window_seconds,
@@ -1002,12 +1007,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # silently shadow whichever was included first. The ROUTES table in
     # test_staff_api.py is what keeps that honest for this one.
     app.include_router(staff_router)
-    # The SIXTH /manage router, after the staff one. Same hazard, now with six
+    # The sixth /manage router, after the staff one. Same hazard, now with six
     # surfaces on one prefix: a duplicated (method, path) would silently shadow
-    # whichever was included first. The ROUTES table in test_payments_api.py is
-    # what keeps that honest for this one — and test_staff_role_gating.py
-    # imports it, so these four rows also get a real end-to-end 403 assertion
-    # rather than only the structural one.
+    # whichever was included first. The ROUTES table in test_dashboard_api.py is
+    # what keeps that honest for this one.
+    app.include_router(dashboard_router)
+    # The SEVENTH, after the dashboard one. Same hazard again, and the ROUTES
+    # table in test_payments_api.py is what keeps it honest — plus
+    # test_staff_role_gating.py imports that table, so these four rows also get
+    # a real end-to-end 403 assertion rather than only the structural one.
     app.include_router(gateway_router)
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
