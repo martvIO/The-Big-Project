@@ -23,9 +23,11 @@ run of this suite has never built the SPAs; `create_app()` must boot and
 `/health` must answer, so a mis-built deploy is diagnosable rather than dead.
 """
 
+import re
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,6 +40,11 @@ from app.storefront.validation import STOREFRONT_LIST_DEFAULT_LIMIT
 from app.tenancy.middleware import EXEMPT_PATHS, TenantContext
 
 HOST = "bella.boutique.example"
+
+# Spelled lowercase because git tracks it lowercase; macOS resolves it
+# case-insensitively and Linux CI checks it out that way
+# (test_frontend_constant_parity.py's precedent).
+MANAGE_VITE_CONFIG = Path(__file__).resolve().parents[2] / "frontend/apps/manage/vite.config.ts"
 
 TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="בלה כלות", settings={})
 
@@ -247,6 +254,52 @@ def test_the_app_boots_and_health_answers_without_a_static_dir(bare_client: Test
 @pytest.mark.parametrize("path", ["/", "/manage", "/about"])
 def test_nothing_is_registered_without_a_static_dir(bare_client: TestClient, path: str) -> None:
     assert bare_client.get(path).status_code == 404, path
+
+
+# --- the dev proxy has to know the same route table ---
+
+
+def _leaf_routes(node: Any) -> Iterator[Any]:
+    """FastAPI wraps an included router in `_IncludedRouter` rather than
+    flattening it — recurse through `original_router`, or the walker sees only
+    the docs routes and passes vacuously."""
+    for route in getattr(node, "routes", []):
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            yield from _leaf_routes(inner)
+            continue
+        yield route
+
+
+def test_the_manage_dev_proxy_names_every_manage_api_segment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`base: "/manage/"` puts the console's own shell and assets under the same
+    prefix as its API, and Vite's proxy middleware runs before the static and
+    transform middlewares — so apps/manage/vite.config.ts can no longer proxy a
+    bare "/manage" (it would forward the app itself to the backend) and instead
+    names the API's second path segments explicitly.
+
+    That list is a copy of the backend's route table, so it can drift: add a
+    tenth /manage router and the console keeps working in production, in this
+    suite and in CI, and breaks only on a developer's machine — the slowest
+    possible way to find out. Derived from the live route table here for the
+    same reason test_frontend_constant_parity.py exists.
+
+    Read as text so this stays in the fast, no-Node suite.
+    """
+    monkeypatch.setattr("app.main.get_settings", _settings)
+    expected = {
+        route.path.split("/")[2]
+        for route in _leaf_routes(create_app(resolver=_resolver))
+        if getattr(route, "path", "").startswith("/manage/")
+    }
+    assert expected, "no /manage API route was discovered — the walker is broken"
+
+    source = MANAGE_VITE_CONFIG.read_text(encoding="utf-8")
+    match = re.search(r'"\^/manage/\(([a-z|-]+)\)"', source)
+    assert match is not None, f"no ^/manage/(...) proxy key found in {MANAGE_VITE_CONFIG}"
+    assert set(match.group(1).split("|")) == expected
 
 
 # --- documented expectation, not a fix ---
