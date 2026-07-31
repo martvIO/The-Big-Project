@@ -37,6 +37,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
+from app.main import STATIC_ROOT as REAL_STATIC_ROOT
 from app.main import _SpaFallbackRoute, create_app
 from app.security_headers import SECURITY_HEADERS
 from app.storefront.service import StorefrontDressListView
@@ -45,10 +46,13 @@ from app.tenancy.middleware import EXEMPT_PATHS, TenantContext
 
 HOST = "bella.boutique.example"
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 # Spelled lowercase because git tracks it lowercase; macOS resolves it
 # case-insensitively and Linux CI checks it out that way
 # (test_frontend_constant_parity.py's precedent).
-MANAGE_VITE_CONFIG = Path(__file__).resolve().parents[2] / "frontend/apps/manage/vite.config.ts"
+MANAGE_VITE_CONFIG = REPO_ROOT / "frontend/apps/manage/vite.config.ts"
+CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 
 TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="בלה כלות", settings={})
 
@@ -394,6 +398,27 @@ def test_the_manage_dev_proxy_names_every_manage_api_segment(
     match = re.search(r'"\^/manage/\(([a-z|-]+)\)"', source)
     assert match is not None, f"no ^/manage/(...) proxy key found in {MANAGE_VITE_CONFIG}"
     assert set(match.group(1).split("|")) == expected
+
+
+def test_the_ci_copy_target_is_exactly_static_root() -> None:
+    """`STATIC_ROOT`'s real value is read by nothing else under test — every
+    test here patches it to a tmp_path, and so does conftest. So renaming the
+    directory (`static` -> `spa`, say) leaves this whole file green, leaves
+    ruff and mypy green, leaves the CI copy and its assert green (they hardcode
+    `backend/app/static/` and would still find the files they put there), lets
+    `railway up` succeed and lets Railway's healthcheck pass on /health — while
+    every HTML request in production 404s. That is precisely the silent-failure
+    class F55 exists to close, and the copy step's own assert does not cover
+    this half of it.
+
+    Pinned by text, so the two literals cannot drift apart. Same technique and
+    same reason as test_frontend_constant_parity.py.
+    """
+    targets = set(re.findall(r"cp -R \S+ (\S+)/(?:manage|storefront)\b", CI_WORKFLOW.read_text()))
+    assert targets, f"no SPA copy step found in {CI_WORKFLOW}"
+    # .lower() because git tracks `backend/` lowercase while the directory on
+    # disk is `Backend/` — the same casing trap MANAGE_VITE_CONFIG documents.
+    assert targets == {REAL_STATIC_ROOT.relative_to(REPO_ROOT).as_posix().lower()}
 
 
 # --- documented expectation, not a fix ---
