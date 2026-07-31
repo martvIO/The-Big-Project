@@ -72,6 +72,7 @@ export function BoardSection() {
 
   const cueRef = useRef<HTMLParagraphElement>(null);
   const movedRef = useRef<HTMLSpanElement>(null);
+  const rowAlertRef = useRef<HTMLParagraphElement>(null);
   const dividerRef = useRef<HTMLLIElement>(null);
   const scrolledRef = useRef(false);
   // The timer always calls the LATEST tick, so the loop reads current state
@@ -183,6 +184,11 @@ export function BoardSection() {
       setUpdatedAt(new Date().toISOString());
       setStale(false);
       setLoadFailed(false);
+      // The row alert promises «השורה תתוקן בעדכון הבא» and this is the update
+      // that keeps it. Without this the 409 line outlives the repaint that
+      // already corrected the row — and on a row that repainted to `cancelled`
+      // the control matrix leaves no way to clear it from that row at all.
+      setRowError(null);
       backoffRef.current = POLL_INTERVAL_MS;
     } catch (error) {
       if (generation !== generationRef.current) {
@@ -242,6 +248,13 @@ export function BoardSection() {
   useEffect(() => {
     void load(dayRef.current);
     return () => {
+      // clearTick() alone cancels only the timer armed RIGHT NOW. A request in
+      // flight at unmount still reaches its .finally() and arms a fresh one, and
+      // nothing in tick -> load -> finally -> schedule touches React state, so
+      // the loop would outlive the component forever — one orphan per nav-away.
+      // This is also what makes "at most one poll in flight per tab by
+      // construction" true rather than merely intended.
+      runningRef.current = false;
       clearTick();
       clearIdle();
     };
@@ -292,16 +305,32 @@ export function BoardSection() {
     }
   }, [stranded]);
 
+  // The symmetric half of the rescue at the end of mutate(): both controls carry
+  // loading={busy}, and Button is disabled={disabled || loading}, so the browser
+  // blurs the tapped control the instant the request starts. The success path
+  // moves focus to the cue; on failure focus sat on <body> and the alert she
+  // needs to read was never where her focus was (WCAG 2.4.3). Keyed on rowError
+  // rather than raised in the catch, because the alert node does not exist yet
+  // when setRowError runs — same shape as BookingDetail.tsx.
+  useEffect(() => {
+    if (rowError !== null) {
+      rowAlertRef.current?.focus();
+    }
+  }, [rowError]);
+
   useEffect(() => {
     // Into view on the FIRST load and never again: scrolling the page under a
     // user who is reading it is the cardinal sin of a self-updating screen, and
-    // the divider moving down the list as the day passes is enough.
-    if (scrolledRef.current || dividerRef.current === null) {
+    // the divider moving down the list as the day passes is enough. Armed by the
+    // first rows arriving, NOT by the divider mounting: a board opened before
+    // the day's first appointment renders no divider, and gating on the node
+    // left the one shot loaded for whenever the clock later crossed a row.
+    if (scrolledRef.current || rows === null) {
       return;
     }
     scrolledRef.current = true;
-    dividerRef.current.scrollIntoView?.({ block: "center" });
-  });
+    dividerRef.current?.scrollIntoView?.({ block: "center" });
+  }, [rows]);
 
   const pause = () => {
     runningRef.current = false;
@@ -682,7 +711,12 @@ export function BoardSection() {
                           {rowError !== null && rowError.id === booking.id && (
                             // In the row, because a page-level error on a
                             // forty-row board names no bride.
-                            <p role="alert" tabIndex={-1} className="text-sm text-danger">
+                            <p
+                              role="alert"
+                              tabIndex={-1}
+                              ref={rowAlertRef}
+                              className="text-sm text-danger"
+                            >
                               {rowError.text}
                             </p>
                           )}

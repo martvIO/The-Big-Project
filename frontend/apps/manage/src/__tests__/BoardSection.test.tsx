@@ -175,6 +175,30 @@ describe("D4(1) — the loop is schedule-after-settle, never setInterval", () =>
     await advance(POLL);
     expect(listBookings).toHaveBeenCalledTimes(3);
   });
+
+  it("stops for good on unmount, even with a request still in flight", async () => {
+    // App.tsx renders the board only while the nav sits on it, so switching
+    // section is a real unmount — and the mount effect fires load() at once,
+    // which makes "open the board, immediately click elsewhere" the wide window.
+    // The cleanup can only cancel the timer armed right now; the arming site is
+    // this request's .finally(), which runs AFTER the cleanup. Nothing in
+    // tick -> load -> finally -> schedule touches React state, so an orphaned
+    // loop cannot be broken by unmounting and runs until a 401 or a closed tab.
+    const pending = deferred<OwnerBookingListResponse>();
+    listBookings.mockReturnValue(pending.promise);
+    const { unmount } = render(<BoardSection />);
+    await flush();
+    expect(listBookings).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await act(async () => {
+      pending.resolve(day([row()]));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    await advance(POLL * 10);
+    expect(listBookings).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("D4(2) — one monotonic generation", () => {
@@ -370,6 +394,12 @@ describe("D4(4b) — the suppressed tick is re-armed from the mutation's .finall
 
     await advance(POLL);
     expect(listBookings).toHaveBeenCalledTimes(after + 1);
+
+    // And the tick that re-armed also KEEPS the alert's promise: the row was
+    // repainted from the server, so the red line has nothing left to warn about
+    // and a role="alert" may not outlive the state that raised it.
+    const item = screen.getByText("מיכל לוי").closest("li");
+    expect(within(item as HTMLElement).queryByRole("alert")).toBeNull();
   });
 });
 
@@ -762,6 +792,12 @@ describe("the board's states", () => {
     const alert = within(item as HTMLElement).getByRole("alert");
     expect(alert).toHaveTextContent("מצב התור השתנה. השורה תתוקן בעדכון הבא.");
     expect(alert).toHaveClass("text-danger");
+    // The tapped control carries loading={busy} and Button is
+    // disabled={disabled || loading}, so the browser blurred it the moment the
+    // request started. The success path moves focus to the cue; without the
+    // symmetric rescue here a FAILED check-in leaves focus on <body> and the
+    // one sentence she needs to read is nowhere near it (WCAG 2.4.3).
+    expect(document.activeElement).toBe(alert);
   });
 
   it("B-404 — an unmapped code falls through to the shared helper unchanged", async () => {
@@ -911,6 +947,32 @@ describe("the row", () => {
   it("omits the divider when it would mark nothing", async () => {
     await mountBoard(day([row({ starts_at: "2026-08-04T06:30:00Z" })]));
     expect(screen.queryByTestId("board-now")).toBeNull();
+  });
+
+  it("never scrolls the divider into view after the first load, even if it appears later", async () => {
+    // jsdom has no scrollIntoView, which is why the call site guards with ?.()
+    // and why nothing else in this file would catch a late scroll.
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      // A board opened BEFORE the day's first appointment: nothing is behind
+      // «עכשיו», so no divider renders and the one-shot guard has no node to be
+      // armed by. Gated on the node, the shot stays loaded until the clock
+      // crosses a row — and then yanks the viewport under a reader mid-list.
+      await mountBoard(
+        day([
+          row({ id: "b1", starts_at: "2026-08-04T11:08:00Z", customer_name: "א" }),
+          row({ id: "b2", starts_at: "2026-08-04T11:20:00Z", customer_name: "ב" }),
+        ]),
+      );
+      expect(screen.queryByTestId("board-now")).toBeNull();
+
+      await advance(90_000);
+      expect(screen.getByTestId("board-now")).toBeInTheDocument();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
   });
 });
 
