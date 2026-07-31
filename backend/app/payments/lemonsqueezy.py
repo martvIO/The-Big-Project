@@ -27,26 +27,33 @@ variant's price, so one placeholder variant serves every amount and its id is
 simply another declared credential field (D5) — which is why F18 needs no
 frontend change.
 
-READ THIS BEFORE WIRING THE WEBHOOK ROUTE (F19). `provider_session_id` is NOT
-the same value on both halves of this adapter, and it cannot be:
+`provider_session_id` IS THE REFERENCE ON BOTH HALVES, deliberately, and this
+is the single most important thing to know before touching either one:
 
-  create_session  -> the LS CHECKOUT id (`data.id`)
-  verify_webhook  -> the REFERENCE we round-tripped through
-                     `checkout_data.custom` -> `meta.custom_data`
+  create_session  -> `reference`   (NOT the LS checkout id)
+  verify_webhook  -> `reference`   (read back out of `meta.custom_data`)
 
-An LS ORDER carries no checkout id, so the checkout id is unrecoverable from
-the webhook; `custom` is the only field LS echoes back, and it is fixed at
-create time, before the checkout id exists. Both spellings are what F18 was
-specified to return, and they are individually right — but F17's
-`open_deposit` stores `PaymentSession.provider_session_id` while
-`settle_from_webhook` looks the row up with `by_provider_session_id(session_id
-= event.provider_session_id)`, so composing them as they stand matches no row.
+The port defines one identifier space — `PaymentSession.provider_session_id` is
+what `open_deposit` stores on `payments.provider_session_id`, and
+`WebhookEvent.provider_session_id` is what `settle_from_webhook` looks that row
+up by (`by_provider_session_id`). Whatever this adapter puts in the first, it
+must be able to produce in the second.
 
-F19 has to close this, one of two ways, and either is a one-line change:
-store the reference (`str(booking_id)`, which `open_deposit` already passes)
-in `payments.provider_session_id`, or resolve the settle path by booking id
-instead. Nothing here should be "fixed" in isolation — changing one half
-alone silently breaks the other.
+The LS checkout id cannot satisfy that. An LS ORDER carries no checkout id, so
+it is unrecoverable from a webhook, and `checkout_data.custom` — the only
+payload LS echoes back — is fixed at create time, before the checkout id
+exists. The reference is therefore the ONLY key present on both sides.
+
+Returning the checkout id instead is a money bug, not a cosmetic mismatch: the
+stored value and the lookup value come from different spaces and can never
+match, so a verified, genuinely-paid webhook finds no row. The charge succeeds,
+the payment stays `pending`, the sweeper frees the seat, and the bride has paid
+and lost her appointment. `test_the_two_halves_agree_on_provider_session_id`
+and the end-to-end composition test pin this; do not change one half alone.
+
+The checkout id is not discarded — `create_session` still requires it to be
+present and logs it at INFO, because an operator needs it to find the checkout
+in the LS dashboard.
 """
 
 import datetime
@@ -272,9 +279,14 @@ class LemonSqueezyGateway:
                 "lemonsqueezy did not return a test-mode checkout"
             )
 
-        session_id = _string_member(_resource(response), "id")
+        # The checkout id is still REQUIRED to be present and well-formed even
+        # though it is not what identifies the session to us: a 201 without one
+        # is a reply we do not understand, and accepting it would mean trusting
+        # the `url` beside it. It is logged (not a secret, and an operator needs
+        # it to find the checkout in the LS dashboard) and then dropped.
+        checkout_id = _string_member(_resource(response), "id")
         redirect_url = _string_attribute(attributes, "url")
-        if session_id is None or redirect_url is None:
+        if checkout_id is None or redirect_url is None:
             # Past the guard, an unreadable field is a parse problem again.
             raise GatewayUnavailableError("lemonsqueezy checkout response is unreadable")
 
@@ -285,10 +297,13 @@ class LemonSqueezyGateway:
         logger.info(
             "%s test-mode checkout %s minted for %d agorot",
             LEMONSQUEEZY_PROVIDER,
-            session_id,
+            checkout_id,
             amount_agorot,
         )
-        return PaymentSession(provider_session_id=session_id, redirect_url=redirect_url)
+        # THE reference, not the checkout id — see the module docstring. This is
+        # the value F17 stores on `payments.provider_session_id`, and it is the
+        # only one a webhook can produce.
+        return PaymentSession(provider_session_id=reference, redirect_url=redirect_url)
 
     def verify_webhook(
         self, credentials: GatewayCredentials, *, body: bytes, signature: str
@@ -385,9 +400,10 @@ def _parse(body: bytes) -> WebhookEvent:
         if not isinstance(attributes, Mapping) or not isinstance(custom, Mapping):
             raise TypeError("webhook attributes/custom_data are not objects")
         return WebhookEvent(
-            # See the module docstring's closing note and F18's report: this is
-            # the reference we put into checkout_data.custom, because an LS
-            # order carries no checkout id to map back to.
+            # The reference we put into checkout_data.custom, which is exactly
+            # what create_session returned — see the module docstring. An LS
+            # order carries no checkout id, so this is the only key that can
+            # appear on both halves.
             provider_session_id=str(custom[REFERENCE_KEY]),
             provider_transaction_id=str(data["id"]),
             # `total`, not `subtotal`: the money that actually MOVED. If a tax

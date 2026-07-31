@@ -299,7 +299,9 @@ async def test_create_session_posts_the_json_api_envelope_and_returns_id_and_url
         expires_in=900,
     )
 
-    assert session == PaymentSession(provider_session_id=CHECKOUT_ID, redirect_url=CHECKOUT_URL)
+    # provider_session_id is the REFERENCE, not the LS checkout id — see
+    # test_the_two_halves_agree_on_provider_session_id for the money argument.
+    assert session == PaymentSession(provider_session_id=REFERENCE, redirect_url=CHECKOUT_URL)
     assert len(seen) == 1
     request = seen[0]
     assert request.method == "POST"
@@ -428,18 +430,27 @@ async def test_create_session_reports_a_confirmed_test_checkout_it_cannot_read_a
         )
 
 
-async def test_the_two_halves_spell_provider_session_id_differently() -> None:
-    """PINS the seam the module docstring opens with, so F19 meets it as a
-    failing expectation rather than as a webhook that matches no row.
+async def test_the_two_halves_agree_on_provider_session_id() -> None:
+    """THE test in this file, and it guards a money bug rather than a naming
+    nicety.
 
-    create_session returns the LS CHECKOUT id; verify_webhook returns the
-    REFERENCE. That is not sloppiness — an LS order carries no checkout id, and
-    `checkout_data.custom` (the only field LS echoes back) is fixed before the
-    checkout id exists, so the checkout id is unrecoverable from a webhook.
+    The port defines ONE identifier space: `open_deposit` stores
+    `PaymentSession.provider_session_id` on `payments.provider_session_id`, and
+    `settle_from_webhook` finds that row with `by_provider_session_id(session_id
+    = event.provider_session_id)`. Whatever this adapter puts in the first it
+    must be able to produce in the second.
 
-    F17's open_deposit stores the first and settle_from_webhook looks up by the
-    second, so F19 must reconcile them. This test fails the moment either half
-    changes, which is the point: fixing one alone silently breaks the other."""
+    An earlier draft returned the LS CHECKOUT id from `create_session` — which
+    is unrecoverable from a webhook, because an LS order carries no checkout id
+    and `checkout_data.custom` (the only field LS echoes back) is fixed before
+    the checkout id exists. Stored and looked-up values then came from different
+    spaces and could never match: a verified, genuinely-paid webhook finds no
+    row, the charge succeeds, the payment stays `pending`, the sweeper frees the
+    seat, and the bride has paid and lost her appointment.
+
+    So both halves are the reference, and this asserts EQUALITY across the two
+    calls rather than each half against a literal — the shape that fails if
+    either one drifts. Changing one alone silently breaks the other."""
     transport, _ = _mock(201, _checkout_payload())
 
     session = await _gateway(transport).create_session(
@@ -452,9 +463,39 @@ async def test_the_two_halves_spell_provider_session_id_differently() -> None:
     body = _webhook_body()
     event = LemonSqueezyGateway().verify_webhook(_credentials(), body=body, signature=_sign(body))
 
-    assert session.provider_session_id == CHECKOUT_ID
-    assert event.provider_session_id == REFERENCE
-    assert session.provider_session_id != event.provider_session_id
+    assert session.provider_session_id == event.provider_session_id
+    assert session.provider_session_id == REFERENCE
+    # The LS checkout id is deliberately NOT it. Named here so a future edit
+    # that "restores" it has to delete this line and read the docstring first.
+    assert session.provider_session_id != CHECKOUT_ID
+
+
+async def test_a_paid_webhook_finds_the_session_that_minted_it() -> None:
+    """The composition that would have caught the bug: mint a session with a
+    reference nothing else in this file uses, then verify a webhook carrying
+    that same reference back through `meta.custom_data`, and require the two
+    identifiers to meet. Both halves drive off ONE value, so neither can be
+    tuned to a fixture the other does not share."""
+    booking_id = "0191b2c3-d4e5-4f60-8a71-b2c3d4e5f607"
+    transport, seen = _mock(201, _checkout_payload())
+
+    session = await _gateway(transport).create_session(
+        _credentials(),
+        amount_agorot=AMOUNT_AGOROT,
+        reference=booking_id,
+        return_url=RETURN_URL,
+        expires_in=900,
+    )
+
+    # What LS was actually told to carry — read off the wire, not re-asserted
+    # from the constant, so a create_session that stopped sending `custom` fails
+    # here instead of passing on a hand-built body.
+    sent = json.loads(seen[0].content)["data"]["attributes"]["checkout_data"]["custom"]
+    body = _webhook_body(custom=sent)
+    event = LemonSqueezyGateway().verify_webhook(_credentials(), body=body, signature=_sign(body))
+
+    assert event.provider_session_id == session.provider_session_id == booking_id
+    assert event.paid is True
 
 
 @pytest.mark.parametrize(
