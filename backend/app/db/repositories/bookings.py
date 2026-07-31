@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import datetime
 from uuid import UUID
 
@@ -6,6 +7,45 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.booking import Booking
 from app.models.constants import BookingStatus
+
+
+@dataclasses.dataclass(frozen=True)
+class BookingFact:
+    """One row of F52's narrow window projection — seven scalar columns, never
+    `select(Booking)`.
+
+    `notes` (free customer text), `manage_token_hash` (a credential hash) and
+    `dress_name` must not enter a process that only COUNTS, and seven columns is
+    smaller as well as disclosure-minimizing.
+
+    `created_at` earns its place as the seventh: `appointment_type_name` is
+    snapshotted when the booking is written (`models/booking.py:19-22`), so the
+    newest snapshot of a renamed type belongs to the booking with the greatest
+    `created_at`, not the greatest `starts_at`. In a boutique where brides book
+    months ahead those two orders disagree routinely (D6).
+
+    `appointment_type_id` and `appointment_type_name` are NOT NULL on the table
+    (`0008_bookings.py:63, 71`), so they are non-optional here — a nullable fact
+    would put an unproducible `None` into D6's sort key.
+    """
+
+    starts_at: datetime
+    created_at: datetime
+    status: str
+    cancelled_by: str | None
+    customer_id: UUID
+    appointment_type_id: UUID
+    appointment_type_name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class CustomerHistory:
+    """One cohort member's lifetime, as of the window's right edge — the read
+    that cannot fold into the window projection, because it needs rows OUTSIDE
+    the window (D7)."""
+
+    first_starts_at: datetime
+    bookings: int
 
 
 class BookingsRepository:
