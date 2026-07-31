@@ -358,6 +358,11 @@ describe("Router document title, focus and scroll", () => {
 
   it("does not steal focus on first paint — the skip link is the first stop", () => {
     renderRoute("/");
+    // Deliberately NOT wrapped in expectFocus()/waitFor(): this is a negative
+    // assertion, and polling one passes the instant it is first evaluated —
+    // which would stop it noticing a focus grab that lands a tick later. The
+    // synchronous read is the strict version. render() has already flushed
+    // effects, so there is no race to lose here anyway.
     expect(document.activeElement).not.toBe(mainElement());
   });
 

@@ -15,6 +15,7 @@ import { SizeChips } from "../components/booking/SizeChips";
 import { TypePicker } from "../components/booking/TypePicker";
 import { BookPage } from "../routes/BookPage";
 import { matchRoute, usePathname } from "../router";
+import { expectFocus } from "../test/focus";
 
 // Spread the real module so ApiError and errorMessage* keep their real
 // implementations — the load-failure copy under test is chosen by CODE mapping,
@@ -1329,7 +1330,7 @@ describe("BookPage verify step — one screen that grows", () => {
     // A mistyped number is the commonest OTP failure, and she can only SEE it if
     // the number is still on screen — so the form grows, it never swaps.
     expect(screen.getByLabelText(i18n.t("booking.phone"))).toHaveValue(TYPED_PHONE);
-    expect(document.activeElement).toBe(code);
+    await expectFocus(code);
     // R16: otpSent is the field's help text, spoken once by aria-describedby as
     // focus arrives. A live region here would double-announce it.
     expect(code).toHaveAccessibleDescription(new RegExp(i18n.t("booking.otpSent")));
@@ -1421,7 +1422,7 @@ describe("BookPage verify step — the dead ends", () => {
     expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
     // Reached BY a focus move, so it is deliberately not an assertive region.
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(document.activeElement).toBe(block.closest("[tabindex]"));
+    await expectFocus(block.closest("[tabindex]"));
     // The h1 and the way back both stay: she is not trapped.
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(i18n.t("booking.stepOtp"));
     expect(screen.getByRole("link", { name: i18n.t("booking.backStep") })).toBeInTheDocument();
@@ -1500,7 +1501,7 @@ describe("BookPage verify step — the dead ends", () => {
       const block = await screen.findByText(i18n.t("errors.otpSendBudget"));
       expect(sendOtp).toHaveBeenCalledTimes(5);
       expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
-      expect(document.activeElement).toBe(block.closest("[tabindex]"));
+      await expectFocus(block.closest("[tabindex]"));
     } finally {
       vi.useRealTimers();
     }
@@ -1609,7 +1610,7 @@ describe("BookPage verify step — submit", () => {
     const code = screen.getByLabelText(i18n.t("booking.otpCode"));
     // Clearing it destroys the evidence of what she typed.
     expect(code).toHaveValue("111111");
-    expect(document.activeElement).toBe(code);
+    await expectFocus(code);
     // A burnt code is indistinguishable from a wrong one, so the only working
     // remedy must stay visible directly below the field.
     expect(resendControl()).toBeInTheDocument();
@@ -1665,9 +1666,7 @@ describe("BookPage verify step — submit", () => {
     expect(screen.queryByLabelText(i18n.t("booking.otpCode"))).toBeNull();
     const phone = screen.getByLabelText(i18n.t("booking.phone"));
     expect(phone).toHaveValue(TYPED_PHONE);
-    await waitFor(() => {
-      expect(document.activeElement).toBe(phone);
-    });
+    await expectFocus(phone);
 
     // A restart of IDENTITY is not a restart of INTENT: re-typing 500 characters
     // of "coming with my mother" to fix an OTP is the dead end this feature

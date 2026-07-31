@@ -4,6 +4,7 @@ import type { BoutiqueResponse, ManageBookingResponse } from "../api";
 import i18n from "../i18n";
 import { StorefrontLayout } from "../components/StorefrontLayout";
 import { ManageBookingPage } from "../routes/ManageBookingPage";
+import { expectFocus } from "../test/focus";
 
 // Spread the real module so ApiError keeps its real implementation — the page
 // branches on error CODE and STATUS, and a stubbed error class would make every
@@ -241,9 +242,7 @@ describe("state L2 — attendance confirmed", () => {
     fireEvent.click(await screen.findByRole("button", { name: t("manage.attendanceCta") }));
 
     const done = await findVisible(t("manage.attendanceDone"));
-    await waitFor(() => {
-      expect(document.activeElement).toBe(done);
-    });
+    await expectFocus(done);
   });
 
   it("keeps cancel available after attendance is confirmed", async () => {
@@ -298,9 +297,7 @@ describe("the cancel two-step", () => {
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: t("manage.cancelCta") }));
 
-    await waitFor(() => {
-      expect(document.activeElement).toBe(screen.getByText(t("manage.cancelQuestion")));
-    });
+    await expectFocus(screen.getByText(t("manage.cancelQuestion")));
   });
 
   it("collapses on 'keep' and returns focus to the trigger", async () => {
@@ -310,11 +307,7 @@ describe("the cancel two-step", () => {
 
     expect(screen.queryByText(t("manage.cancelQuestion"))).toBeNull();
     expect(cancelBooking).not.toHaveBeenCalled();
-    await waitFor(() => {
-      expect(document.activeElement).toBe(
-        screen.getByRole("button", { name: t("manage.cancelCta") }),
-      );
-    });
+    await expectFocus(screen.getByRole("button", { name: t("manage.cancelCta") }));
   });
 
   it("shows the window from HER accepted policy, isolated as an LTR run", async () => {
@@ -396,9 +389,7 @@ describe("state C — cancelled", () => {
     fireEvent.click(screen.getByRole("button", { name: t("manage.cancelConfirm") }));
 
     const line = await findVisible(t("manage.cancelled"));
-    await waitFor(() => {
-      expect(document.activeElement).toBe(line);
-    });
+    await expectFocus(line);
   });
 });
 
