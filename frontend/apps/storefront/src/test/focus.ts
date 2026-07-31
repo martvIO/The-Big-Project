@@ -15,8 +15,20 @@ import { expect } from "vitest";
 //
 // Only for POSITIVE assertions. Wrapping a negative ("focus did NOT move here")
 // would pass on the first tick and stop detecting a move that happens later.
+//
+// waitFor stops at the first tick its callback passes, so on its own it also
+// stops watching the moment focus ARRIVES — blind to a move that lands one
+// commit later and takes it away again. That is the defect class this file
+// exists for (a held intent firing on an unrelated render), so the wait is
+// followed by a settling task and one strict synchronous re-read. Polling to
+// find the move, then asserting to keep it.
 export async function expectFocus(node: Element | null): Promise<void> {
+  // A selector that quietly returned null would otherwise degrade a real
+  // assertion into a confusing full-timeout wait for focus on nothing.
+  if (node === null) throw new Error("expectFocus: no node — the selector matched nothing.");
   await waitFor(() => {
     expect(document.activeElement).toBe(node);
   });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(document.activeElement).toBe(node);
 }

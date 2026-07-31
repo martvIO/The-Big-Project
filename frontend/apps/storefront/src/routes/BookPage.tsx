@@ -419,14 +419,26 @@ export function BookPage({ step, dressId }: BookPageProps) {
     if (node instanceof HTMLInputElement) node.select();
   });
 
-  // The bound on keeping intents alive, and the only one this flow needs. All
-  // three destinations live in the verify step, so an intent that outlives a
-  // step change can only be honoured by a LATER arrival at verify — where it
-  // would yank focus on entry, a WCAG 3.2.1 defect of its own rather than a fix
-  // for one. No setter navigates, so this never drops a live intent; it only
-  // catches one stranded by a navigation that raced the flush (the Back button
-  // landing in the same paint gap). Declared AFTER the effect above so a commit
-  // that both mounts the node and changes the step still lands the move first.
+  // One of the two bounds on keeping intents alive; the other is in the phone
+  // field's onChange, which drops a `code` intent she has typed past. All three
+  // destinations live in the verify step, so an intent that outlives a step
+  // change can only be honoured by a LATER arrival at verify — where it would
+  // yank focus on entry, a WCAG 3.2.1 defect of its own rather than a fix for
+  // one. No setter navigates (submit()'s navigating branches — validation,
+  // recoverSlot, recoverTerms — set no intent, and the branches that do set one
+  // return first), so this never drops a live intent; it only catches one
+  // stranded by a navigation that raced the flush (the Back button landing in
+  // the same paint gap). Declared AFTER the effect above so a commit that both
+  // mounts the node and changes the step still lands the move first.
+  //
+  // UNTESTED, and currently untestable — deleting this line leaves the whole
+  // suite green. Firing it requires a live intent whose target is unmounted at
+  // the instant the step changes, and no reachable sequence produces that:
+  // `deadEnd` and `phone` mount their target in the same batch that sets the
+  // intent, and the one route that did strand a `code` intent at verify is now
+  // closed by the onChange bound. It is kept as defence for a future setter
+  // that DOES navigate. If you write one, test this line with it — an
+  // intent-killer that no test can distinguish is how the bug above shipped.
   useEffect(() => {
     pendingFocus.current = null;
   }, [step]);
@@ -1242,6 +1254,18 @@ export function BookPage({ step, dressId }: BookPageProps) {
                     const next = event.target.value;
                     setPhone(next);
                     setPhoneError(undefined);
+                    // The bound on a `code` intent, and the reason the effect
+                    // above may hold one indefinitely. The code field mounts on
+                    // `codeSent`, which is derived from the LIVE phone — so a
+                    // send() or a verify() that resolves while she is editing
+                    // sets an intent whose target never mounts. Held, it fires
+                    // on whatever commit remounts the field, which is her own
+                    // next keystroke: focus jumps out of this input mid-edit
+                    // (WCAG 3.2.2). Typing here means she is driving, so the
+                    // deferred move is stale by definition. NOT inside the
+                    // reset below: that branch is skipped on exactly the edit
+                    // that restores the sent number and remounts the field.
+                    if (pendingFocus.current === "code") pendingFocus.current = null;
                     // Editing away from the number the code was minted for
                     // collapses the field. The TOKEN is deliberately left
                     // alone: deleting one digit and retyping it is a round

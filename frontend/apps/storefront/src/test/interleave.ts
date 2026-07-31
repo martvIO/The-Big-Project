@@ -20,8 +20,10 @@ const flag = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
 export async function inPaintGap(commit: () => void, then: () => void): Promise<void> {
   const previous = flag.IS_REACT_ACT_ENVIRONMENT;
   flag.IS_REACT_ACT_ENVIRONMENT = false;
+  let fired = false;
   const observer = new MutationObserver(() => {
     observer.disconnect();
+    fired = true;
     then();
   });
   try {
@@ -33,10 +35,18 @@ export async function inPaintGap(commit: () => void, then: () => void): Promise<
     });
     commit();
     // Long enough for the deferred effect flush, the render it preempted and
-    // any focus move either of them makes.
+    // any focus move either of them makes. Not load-bearing for the assertion:
+    // callers poll with expectFocus afterwards, so a slow flush is absorbed
+    // there rather than by this constant.
     await new Promise((resolve) => setTimeout(resolve, 50));
   } finally {
     observer.disconnect();
     flag.IS_REACT_ACT_ENVIRONMENT = previous;
   }
+  // Without this, a `commit` that stops mutating the DOM makes `then` silently
+  // never run — the interleaving under test would not happen, and the caller's
+  // assertion would pass against broken code with no signal at all. An
+  // exception thrown inside a MutationObserver callback is swallowed, so the
+  // flag is checked out here.
+  if (!fired) throw new Error("inPaintGap: commit() produced no observed mutation — no gap.");
 }

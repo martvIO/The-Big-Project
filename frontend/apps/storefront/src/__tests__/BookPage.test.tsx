@@ -1379,8 +1379,14 @@ describe("BookPage verify step — one screen that grows", () => {
       },
     );
 
-    // Not expectFocus(): the move is lost, not late.
-    expect(document.activeElement).toBe(screen.getByLabelText(i18n.t("booking.otpCode")));
+    // expectFocus, not a bare read: against the FIXED code the move genuinely is
+    // later — it lands on the commit that mounts the field — so a runner too
+    // loaded to drain the flush inside the gap's settle would fail on timing
+    // alone. Polling cannot rescue the defect this pins: a discarded intent
+    // never fires, so the unfixed code spends the whole timeout and still goes
+    // red. And expectFocus re-reads strictly after settling, so a later commit
+    // taking the focus away again is still caught.
+    await expectFocus(screen.getByLabelText(i18n.t("booking.otpCode")));
   });
 
   it("keeps the dead end's focus when the 429 lands in the gap after a paint", async () => {
@@ -1413,9 +1419,39 @@ describe("BookPage verify step — one screen that grows", () => {
       },
     );
 
-    expect(document.activeElement).toBe(
-      screen.getByText(i18n.t("errors.otpSendBudget")).closest("[tabindex]"),
-    );
+    await expectFocus(screen.getByText(i18n.t("errors.otpSendBudget")).closest("[tabindex]"));
+  });
+
+  // The other half of the contract above. Keeping an intent alive until its node
+  // exists is only safe while the node is still the one she asked for; an intent
+  // that outlives that is a focus STEAL waiting for a re-mount.
+  it("drops the code intent when she edits the phone while the send is in flight", async () => {
+    const sent = deferred<undefined>();
+    sendOtp.mockReturnValue(sent.promise);
+
+    await walkToVerify();
+    const phone = screen.getByLabelText(i18n.t("booking.phone"));
+    fireEvent.change(phone, { target: { value: TYPED_PHONE } });
+    fireEvent.click(resend());
+
+    // The field carries no `disabled`, so typing through the ~1s SMS round trip
+    // is an ordinary thing to do — a stray digit, a correction.
+    fireEvent.change(phone, { target: { value: `${TYPED_PHONE}8` } });
+    await act(async () => {
+      sent.settle(undefined);
+    });
+
+    // codeSentFor is the number send() captured, and the live phone is not it —
+    // so the code field never mounted and the "code" intent has no target.
+    expect(screen.queryByLabelText(i18n.t("booking.otpCode"))).toBeNull();
+
+    // She fixes the typo. The field appears, and must NOT pull focus out of the
+    // input she is typing in (WCAG 3.2.2 — no change of context on input).
+    phone.focus();
+    fireEvent.change(phone, { target: { value: TYPED_PHONE } });
+    await screen.findByLabelText(i18n.t("booking.otpCode"));
+
+    expect(document.activeElement).toBe(phone);
   });
 
   it("keeps the code in ONE field — no six-box widget at any width", async () => {

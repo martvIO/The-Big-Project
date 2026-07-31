@@ -336,9 +336,13 @@ describe("the cancel two-step", () => {
       },
     );
 
-    // Deliberately not expectFocus(): the move is lost, not late, so polling for
-    // it would only spend a timeout proving the same thing.
-    expect(document.activeElement).toBe(screen.getByText(t("manage.cancelQuestion")));
+    // expectFocus, not a bare read: against the FIXED code the move genuinely is
+    // later — it lands on the commit that mounts the block — so a runner too
+    // loaded to drain the flush inside the gap's settle would fail on timing
+    // alone, which is the very failure mode this branch exists to delete.
+    // Polling cannot rescue the defect being pinned: a discarded intent never
+    // fires, so the unfixed code spends the whole timeout and still goes red.
+    await expectFocus(screen.getByText(t("manage.cancelQuestion")));
   });
 
   it("keeps the collapse's focus when the tap lands in the gap after a paint", async () => {
@@ -364,9 +368,7 @@ describe("the cancel two-step", () => {
       },
     );
 
-    expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: t("manage.cancelCta") }),
-    );
+    await expectFocus(screen.getByRole("button", { name: t("manage.cancelCta") }));
   });
 
   it("collapses on 'keep' and returns focus to the trigger", async () => {

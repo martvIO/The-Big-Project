@@ -193,12 +193,17 @@ export function ManageBookingPage({ token }: { token: string }) {
   // bride is left on a button that no longer exists (WCAG 2.4.3). Declining
   // costs one no-op pass and lets the render that does mount the node honour it.
   //
-  // Deliberately unbounded: a stranded intent here cannot surface as a stale
-  // move later. `done`/`cancelled` are set only on a SUCCESSFUL act(), and the
-  // views that would strand one are terminal — a cancelled or past booking never
-  // becomes actionable again — while `reveal`/`trigger` are re-set by the very
-  // tap that remounts their node. Weigh the two failures: a lost move ships
-  // silently and axe cannot see it; a pending one is inert.
+  // Deliberately unbounded, and safe for a narrower reason than "it cannot be
+  // stranded". It can: tapping `keep` while an act() is in flight sets
+  // `trigger`, a non-409 failure then swaps in the failed view and unmounts it,
+  // and Retry can bring the trigger back. What holds is that an intent is only
+  // ever honoured by a render that mounts the node SHE ASKED FOR, so the worst
+  // case is a delayed correct move, never a wrong one — in that path focus was
+  // on the Retry button that just unmounted, so the trigger is where it should
+  // go anyway. Contrast /book, where the code field's mount condition is
+  // derived from live input she keeps editing: there a held intent CAN become a
+  // steal, and it is bounded in two places. Weigh the two failures: a lost move
+  // ships silently and axe cannot see it; a delayed correct one is inert.
   useEffect(() => {
     const target = moveFocusTo.current;
     if (target === null) return;
