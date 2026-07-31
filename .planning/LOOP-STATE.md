@@ -258,8 +258,9 @@ queue:
     slug: sms-twilio-adapter
     epic: E3-carveout
     title: Twilio SMS adapter (real sends)
-    status: queued
+    status: specing
     deps: [F11]
+    attempts: 1
     note: >-
       NEW 2026-07-31. F11 shipped the SmsSender port with fake + unconfigured
       adapters and recorded (sms-foundation.md:148-163) that "the Twilio adapter
