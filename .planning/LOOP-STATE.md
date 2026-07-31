@@ -215,8 +215,14 @@ queue:
     slug: serve-spas-from-api
     epic: cross
     title: "FastAPI serves the built SPAs (same-origin hosting)"
-    status: queued
+    status: specing
     deps: []
+    attempts: 1
+    claimed_by: >-
+      Parallel build run started 2026-07-31, running BESIDE the F52 loop rather
+      than through it. `current:` stays F52 and is not this run's to write —
+      claims here are status-only. Run order: F55, F54, F17, F18, F19. F53 is
+      deliberately left to the F52 session's loop.
     note: >-
       NEW 2026-07-31. The gap nobody had noticed: CI builds both React apps and
       then throws them away. Only the API is deployed, so the console and the
