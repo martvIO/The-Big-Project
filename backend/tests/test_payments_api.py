@@ -259,10 +259,10 @@ def test_no_response_body_ever_contains_the_secret() -> None:
     ids=["connected", "unconfigured", "configured-not-connected", "invalid"],
 )
 def test_get_is_200_in_every_state_and_renders_it_verbatim(status: GatewayStatus) -> None:
-    """"200 in EVERY state" is the invariant, and the route is a flat passthrough
-    — so what this pins is the MAPPING, not the status code. Each of the four
-    fields is read off the status it was given, which is what a mutant that
-    sources `connected` from `configured` fails."""
+    """200 in EVERY state is the invariant, and the route is a flat passthrough —
+    so what this actually pins is the MAPPING, not the status code. Each field is
+    read off the status it was given, which is what a mutant that sources
+    `connected` from `configured` fails."""
     fake = FakeGatewayService(status=status)
     client = _client(fake)
     with client:

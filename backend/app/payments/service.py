@@ -558,7 +558,13 @@ class PaymentService:
                 )
                 if settled is not None:
                     return Settlement(payment=settled, newly_settled=True)
-                return await self._explain_missed_settlement(session, tenant_id, row.id, provider)
+                return await self._explain_missed_settlement(
+                    session,
+                    tenant_id,
+                    row.id,
+                    provider,
+                    transaction_id=event.provider_transaction_id,
+                )
             mismatch_id = row.id
 
         # Outside the transaction above, so the evidence COMMITS (D14): the
@@ -603,18 +609,56 @@ class PaymentService:
         return Settlement(payment=marked if marked is not None else row, newly_settled=False)
 
     async def _explain_missed_settlement(
-        self, session: AsyncSession, tenant_id: UUID, payment_id: UUID, provider: str
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        payment_id: UUID,
+        provider: str,
+        *,
+        transaction_id: str,
     ) -> Settlement:
-        """The guarded UPDATE did not fire, and the TWO reasons are not the same
-        event (D24)."""
+        """The guarded UPDATE did not fire, and the THREE reasons are not the
+        same event (D24)."""
         row = await self._payments.by_id(session, tenant_id, payment_id)
         if row is None:  # pragma: no cover — it was read one statement ago
             raise GatewayWebhookInvalidError
         if row.status == PaymentStatus.PAID.value:
-            # A concurrent delivery won the race. Exactly one of two concurrent
-            # redeliveries can transition the row, because the guard is evaluated
-            # by the database under the row lock, not by us.
-            return Settlement(payment=row, newly_settled=False)
+            if row.provider_transaction_id == transaction_id:
+                # A concurrent delivery won the race. Exactly one of two
+                # concurrent redeliveries can transition the row, because the
+                # guard is evaluated by the database under the row lock, not by
+                # us.
+                return Settlement(payment=row, newly_settled=False)
+            # A DIFFERENT transaction against a row that is already paid: not a
+            # redelivery but a SECOND charge on one hosted-checkout session — a
+            # retried card that succeeded twice, a provider duplicate capture, or
+            # the decline-then-success pair. `newly_settled=False` is still the
+            # right answer (F19 must not double-confirm) and the row is still
+            # right (paid once, by the FIRST txn) — but silence is not: the
+            # second charge would exist only in the provider's ledger, with
+            # nothing here to reconcile it against.
+            marked = await self._payments.record_error(
+                session,
+                tenant_id,
+                payment_id,
+                error=(
+                    f"duplicate transaction: {transaction_id} arrived for a row "
+                    f"already settled by {row.provider_transaction_id}"
+                ),
+            )
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.GATEWAY_DUPLICATE_TRANSACTION.value,
+                entity="payments",
+                details={
+                    "provider": provider,
+                    "payment_id": str(payment_id),
+                    "transaction_id": transaction_id,
+                    "settled_transaction_id": row.provider_transaction_id,
+                },
+            )
+            return Settlement(payment=marked if marked is not None else row, newly_settled=False)
         # The hold already expired: REAL MONEY was taken against a hold that no
         # longer exists. Durable and distinguishable is F17's whole obligation
         # here — Gate 1 Q4 rules it HONOURED, and F19 owns the rebind-or-alert.

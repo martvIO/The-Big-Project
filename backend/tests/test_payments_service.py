@@ -655,11 +655,69 @@ async def test_two_concurrent_redeliveries_produce_exactly_one_transition(
             payments.settle_from_webhook(tenant, body=body, signature=signature),
         )
         assert sorted([first.newly_settled, second.newly_settled]) == [False, True]
+        # The loser lost a RACE with the same txn id — not a second charge. The
+        # comparison that makes a distinct txn evidence must not fire here.
+        assert AuditAction.GATEWAY_DUPLICATE_TRANSACTION.value not in await _actions(
+            factory, tenant
+        )
         rows = await _payment_rows(factory, tenant)
         assert len(rows) == 1
         assert rows[0].status == PaymentStatus.PAID.value
         assert rows[0].paid_at == NOW
         assert rows[0].provider_transaction_id == "txn-1"
+    finally:
+        await engine.dispose()
+
+
+async def test_a_second_distinct_transaction_against_a_paid_row_leaves_evidence(
+    app_role_url: str,
+) -> None:
+    """Two DIFFERENT provider transactions for one hosted-checkout session is a
+    double charge — a retried card that both times succeeded, a provider
+    duplicate capture. The transition is already right (the row is paid, once,
+    by the first txn) but silence is not: the second charge exists only in the
+    provider's ledger and nothing here would ever show it.
+
+    A redelivery carries the SAME txn id and is genuinely nothing; the
+    comparison is the whole difference between the two."""
+    engine, factory = _factory(app_role_url)
+    tenant, booking = uuid.uuid4(), uuid.uuid4()
+    gateway = FakeGateway()
+    try:
+        _, payments = await _connected(factory, tenant, gateway)
+        hold = await payments.open_deposit(
+            tenant,
+            booking_id=booking,
+            amount_agorot=15000,
+            hold_seconds=HOLD_SECONDS,
+            return_url=RETURN_URL,
+        )
+        session_id = hold.payment.provider_session_id
+        assert session_id is not None
+
+        body, signature = _signed(
+            session_id=session_id, transaction_id="txn-1", amount_agorot=15000
+        )
+        assert (
+            await payments.settle_from_webhook(tenant, body=body, signature=signature)
+        ).newly_settled is True
+
+        second, second_signature = _signed(
+            session_id=session_id, transaction_id="txn-2", amount_agorot=15000
+        )
+        settlement = await payments.settle_from_webhook(
+            tenant, body=second, signature=second_signature
+        )
+        assert settlement.newly_settled is False
+
+        assert AuditAction.GATEWAY_DUPLICATE_TRANSACTION.value in await _actions(factory, tenant)
+        row = (await _payment_rows(factory, tenant))[0]
+        assert row.status == PaymentStatus.PAID.value
+        # The FIRST transaction is what this row records; the second is evidence,
+        # not a re-settlement.
+        assert row.provider_transaction_id == "txn-1"
+        assert row.paid_at == NOW
+        assert row.error is not None and "txn-2" in row.error
     finally:
         await engine.dispose()
 

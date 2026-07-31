@@ -154,6 +154,11 @@ class AuditAction(StrEnum):
     GATEWAY_WEBHOOK_REJECTED = "gateway_webhook_rejected"
     GATEWAY_AMOUNT_MISMATCH = "gateway_amount_mismatch"
     GATEWAY_PAYMENT_DECLINED = "gateway_payment_declined"
+    # A SECOND, distinct provider transaction against a row already paid — two
+    # real charges for one booking. Its own value rather than a flavour of
+    # LATE_SETTLEMENT because it is the one row a reconciliation actually
+    # searches for, and one WHERE action = … is the whole point of the split.
+    GATEWAY_DUPLICATE_TRANSACTION = "gateway_duplicate_transaction"
     GATEWAY_LATE_SETTLEMENT = "gateway_late_settlement"
 
 
