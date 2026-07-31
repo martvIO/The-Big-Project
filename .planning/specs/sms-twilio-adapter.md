@@ -50,7 +50,7 @@ No `twilio` SDK. The call is one form-encoded POST; the SDK would add a large sy
 
 ### The call
 
-`POST https://api.twilio.com/2010-04-01/Accounts/{ACCOUNT_SID}/Messages.json`, HTTP basic auth with the API key pair, form body `To` / `From` / `Body`. Success (201) returns JSON with `sid` → `SendResult(provider_message_id=sid)`. Any non-2xx raises, carrying Twilio's `code`/`message` for the log only.
+`POST https://api.twilio.com/2010-04-01/Accounts/{ACCOUNT_SID}/Messages.json`, HTTP basic auth with the API key pair, form body `To` / `From` / `Body`. Success (201) returns JSON with `sid` → `SendResult(provider_message_id=sid)`. Any non-2xx raises, carrying Twilio's numeric `code` and the HTTP status — and nothing else. `message` is deliberately NOT budgeted for the log either: Twilio's 4xx quotes the parameters it was handed, body included, so logging it would relocate an echoed OTP into the process log stream (widely readable — `fake.py` refuses to log a body for that same reason) rather than prevent it. Status and code identify the failure; the text is in Twilio's own console. `test_error_log_line_carries_only_status_and_code` pins the log line so a future edit cannot quietly widen it.
 
 ### The hazard this feature must actively defend
 
@@ -65,8 +65,14 @@ Twilio is exactly that shape: its error payloads routinely quote the submitted p
 
 ### Wiring
 
-`config.py:57` — `sms_provider: Literal["fake"] | None` widens to `Literal["fake", "twilio"] | None`.
-`main.py:280-288` — one `elif settings.sms_provider == "twilio":` branch returning `TwilioSmsSender()`, with an INFO line that names the provider and the sender number but never a credential, matching the existing two branches.
+`config.py:57` — `sms_provider: Literal["fake"] | None` widens to `Literal["fake", "twilio"] | None`, and the four credentials join it as `SecretStr | None` fields. They are NOT process-env-only: the boto3 precedent (which the AWS block relies on) does not transfer, because boto3 reads the environment itself while this adapter is hand-written and nothing else in the tree reads these names — left out of `Settings`, the four values an operator puts in `.env` per `.env.example` would be parsed by pydantic-settings and never reach `os.environ`, so the adapter would report `is_configured False` and every OTP would answer 503. As fields they are read from BOTH `.env` and real process env vars, so Railway is unchanged; `SecretStr` keeps them out of any repr or log line.
+
+**Three dispatch sites, not two.** Both process entrypoints branch on `settings.sms_provider` independently:
+- `main.py:280-288` — the API. One `elif settings.sms_provider == "twilio":` branch returning `TwilioSmsSender(settings)`, with an INFO line that names the provider and the sender number but never a credential, matching the existing two branches.
+- `worker.py:build_sender` — the scheduled-message poller, and mandatory rather than optional. F16's confirmations and 24h reminders (named as consumers in this spec's Goal) drain ONLY through the worker, so a twilio deployment wired in `main.py` alone would send OTPs while every scheduled message sat pending forever. `test_worker_build_sender_dispatches_on_the_provider` fails if the branch is dropped. F18's gateway has the same two-process shape and needs the same treatment.
+
+`worker.py` also silences httpx's own INFO access log: the account SID sits in the request path, and this process (unlike uvicorn) calls `logging.basicConfig(level=INFO)`, so the identifier would otherwise be stamped into the log on every send.
+
 The production boot guard (`config.py:172`) already forbids `fake` in production and needs no change — `twilio` is the value that makes production legal.
 
 ## Non-goals
