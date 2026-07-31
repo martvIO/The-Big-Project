@@ -18,9 +18,12 @@ the handler still destroys the 405 — the partial never gets handled. The route
 class in app/main.py returns `Match.NONE` for exactly this reason, and
 `test_a_post_only_api_path_keeps_its_405` is what pins it.
 
-**No static directory is a supported deployment.** Every dev machine and every
-run of this suite has never built the SPAs; `create_app()` must boot and
-`/health` must answer, so a mis-built deploy is diagnosable rather than dead.
+**No static directory is a supported deployment.** A dev box that has not run
+`pnpm -r build` has none; `create_app()` must boot and `/health` must answer, so
+a mis-built deploy is diagnosable rather than dead. Every test here builds its
+own tree under `tmp_path` and never reads the real `app/static/` — conftest's
+autouse `spa_static_absent` guarantees that for the rest of the suite too, which
+is what makes the whole suite identical with and without a local SPA build.
 """
 
 import re
@@ -308,9 +311,12 @@ def test_the_manage_dev_proxy_names_every_manage_api_segment(
 def test_the_console_shell_is_intentionally_ungated(client: TestClient) -> None:
     """RECORD, not a guard. test_staff_role_gating.test_every_manage_route_is_role_gated
     walks routes that carry a `dependant`, and it never sees the two StaticFiles
-    Mounts at all — a Mount has no dependant. It also never sees `GET /manage`,
-    because that route only exists when app/static/ does, which is never during
-    that suite. So NOTHING in the gating suite covers what this asserts.
+    Mounts at all — a Mount has no dependant. It also never sees `GET /manage`:
+    conftest's autouse `spa_static_absent` points STATIC_ROOT at an empty
+    directory for every test that does not build its own, so `_register_spas`
+    registers nothing there. (Before that fixture this was an environment
+    accident — the gating walker went red on any machine that had run
+    `pnpm -r build`.) So NOTHING in the gating suite covers what this asserts.
 
     And what it asserts is correct: the console shell is public HTML. It renders
     a login form, and every API call behind it is authenticated and role-gated

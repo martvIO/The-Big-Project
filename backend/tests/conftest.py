@@ -29,6 +29,26 @@ APP_ROLE_NAME = "boutique_app"
 APP_ROLE_PASSWORD = "test-only-app-role-pw"
 
 
+@pytest.fixture(autouse=True)
+def spa_static_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Every `create_app()` in this suite sees NO built SPAs, whether or not this
+    machine has run `pnpm -r build`.
+
+    Without this the suite is environment-dependent: `app/static/` is untracked,
+    so it exists on any dev box that built the apps (and in the deploy job), and
+    its presence adds `GET /manage`, the public-file routes and the catch-all to
+    the live route table. Three suites derive their expectations FROM that table
+    — test_staff_role_gating's default-deny walker, test_spa_serving's dev-proxy
+    parity walker, and test_middleware's `_probe_app`, which registers `/whoami`
+    after `create_app()` and would get the storefront shell instead. All five
+    tests went red on a machine that had built the SPAs.
+
+    test_spa_serving overrides this with its own populated tmp tree — it patches
+    the same attribute later in the same `monkeypatch`, so the last write wins.
+    """
+    monkeypatch.setattr("app.main.STATIC_ROOT", tmp_path / "no-spa-build")
+
+
 def _docker_running() -> bool:
     if shutil.which("docker") is None:
         return False
