@@ -134,8 +134,9 @@ queue:
     slug: gateway-port
     epic: E4
     title: Payment gateway port + credential management
-    status: queued
+    status: specing
     deps: [F7]
+    attempts: 1
     spec_gate: user
     spec: .planning/specs/gateway-port.md
     note: >-
@@ -215,7 +216,8 @@ queue:
     slug: serve-spas-from-api
     epic: cross
     title: "FastAPI serves the built SPAs (same-origin hosting)"
-    status: specing
+    status: merged
+    pr: 26
     deps: []
     attempts: 1
     claimed_by: >-
