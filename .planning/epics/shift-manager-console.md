@@ -43,8 +43,8 @@ Full plan: authored in-session 2026-07-30; phases below.
 | SMC-1 | F31 | staff-roles-gating | role enum + CHECK, `require_role`, default-deny gating on every `/manage` route, CI route-walker proof | — (F15 swap on rebase) | **done** (PR #22, hardening #23) |
 | SMC-2 | F51 | staff-management | staff CRUD API + owner-only Staff section, role-filtered nav | F31 | **done** (PR #25) |
 | SMC-3 | F52 | kpi-dashboard | `/manage/dashboard` aggregates + landing section | F31 | **done** (PR #28) |
-| SMC-4 | F53 | customers-crm | search/detail/notes/tags + SMS log | F31 | queued — **next, and unblocked** |
-| SMC-5 | F34 | shift-board-checkin | `checked_in_at`, check-in/undo endpoints, 5s-poll board — **prototype design gate** | F15, F31 | parked — awaiting USER prototype review |
+| SMC-4 | F53 | customers-crm | search/detail/notes/tags + SMS log | F31 | queued — unblocked, but now **behind the floor program** in file order |
+| SMC-5 | F34 | shift-board-checkin | `checked_in_at`, check-in/undo endpoints, 5s-poll board | F15, F31 | queued — **design gate SELF-APPROVED 2026-07-31; first pick of the floor program** |
 | SMC-6 | F50 | walk-in-bookings | walk-in create from board (F50's safe half; remote owner-create stays open) | F34 | queued — blocked behind SMC-5 |
 
-Three of six shipped. The epic's remaining critical path runs through **SMC-5's design gate, which only the user can clear** (`.planning/design/screens/shift-board/prototype.html`) — SMC-6 sits behind it. SMC-4 is the only SMC work the loop can pick up unattended.
+Three of six shipped. **Re-ordered 2026-07-31**: the user self-approved SMC-5's design gate, so the board is no longer parked — it is the **first pick of the floor-management program** (`LOOP-STATE.md` → `rulings_2026_07_31`) and the shell every floor panel attaches to (F57 staff cards, F36 rooms, F58 waitlist + dispatch, F37 SOS centre). SMC-6 (F50) unblocks the moment SMC-5 merges. SMC-4 is not cancelled — it simply sits below the floor block now, and the loop reaches it automatically once that block is exhausted.

@@ -6,6 +6,8 @@
 **Owner**: team
 **PRD**: §7 (walk-in queue), §8 (shift-manager live board), §11.3 core (staff records, roles, per-staff logins)
 
+> **AMENDED 2026-07-31 — the floor-management program.** `LOOP-STATE.md`'s `rulings_2026_07_31` and its `queue:` notes GOVERN this file wherever the two disagree. Three features are added to E6 (**F57** floor roles + staff cards, **F58** waitlist + dispatch, **F59** public wall board) and two are re-scoped: **F33 is revived at full scope** — QR check-in *and* live position *and* the wall board — with its **F20 dependency dropped** (it adds the consent column itself, as the F33 trip-wire below already pre-authorised; only the collection-notice *wording* is parked as a user question), and **F34's design gate is self-approved**, so it no longer parks and is now the program's first pick. The forced order below (#37) is superseded by the floor block's order. Staff sign-in is **email + password**, not phone OTP — SMC ruling 1 settled that and F31 shipped it. Language scope for this program is **Hebrew only**; no switcher.
+
 ---
 
 ## Why
@@ -38,9 +40,12 @@ E6 stops at queue + dispatch (pre-decided #28): the manager assigns a named staf
 |---|---------|--------|------|------|------------|
 | 31 | Staff records, roles & phone-OTP staff login | todo | — | — | F3, F5, F9, F11 |
 | 32 | Live-update substrate (versioned board state + polling) | todo | — | — | F31 |
-| 33 | QR walk-in check-in | todo | — | — | F5, F9, F10, F13, F20 |
-| 34 | Shift-manager live board + dispatch | todo | — | — | F31, F32, F33 · **prototype at design gate (Q2)** |
-| 35 | Staff in-app notification bell | todo | — | — | F31, F32, F34 |
+| 33 | QR self-check-in + queue tickets + live position | todo | — | — | F5, F9, F10, F13 · *F20 dep dropped 2026-07-31* |
+| 34 | Shift-manager live board + dispatch | todo | `.planning/specs/shift-board-checkin.md` | — | F15, F31 · *design gate self-approved 2026-07-31* |
+| 35 | Staff in-app notification bell | todo | — | — | F31, F34 |
+| 57 | Floor roles (reception/sales_assistant/seamstress) + break status + staff cards | todo | — | — | F51, F34 |
+| 58 | Waitlist panel + dispatch (take-next, push-assign, finish, skip) | todo | — | — | F33, F36, F57 |
+| 59 | Public wall-screen queue board (`/queue`) | todo | — | — | F33 |
 
 **The order is forced, not preferred** (pre-decided #37). F31 is the identity layer everything else authorises against. F32 needs a signed-in staffer with a role before a board-state read can be authorised at all. F34 needs both plus something to show. F35's only producer in this epic is F34's dispatch, so a bell built first would have nothing to ring about. **F33 is the one that could float** — a public check-in form is technically independent of F31 and F32 — but its only consumer is F34's board, so building it third keeps it one poll away from being visible instead of dead data.
 

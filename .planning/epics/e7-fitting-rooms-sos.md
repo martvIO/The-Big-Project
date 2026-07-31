@@ -5,6 +5,8 @@
 **Owner**: team
 **PRD**: §9 (fitting rooms, staff↔client assignment, SOS paging)
 
+> **AMENDED 2026-07-31 — the floor-management program.** `LOOP-STATE.md`'s `rulings_2026_07_31` and its `queue:` notes GOVERN this file wherever the two disagree. Both features are pulled forward and **F37 is amended on three points**: a 30-second unacknowledged **auto-escalation to the shift manager is reinstated** (overriding pre-decided #29's "no escalation timer"); targeting is a **specific signed-in colleague or the shift-manager role**, not a role fanout (the two were incompatible — escalating to the shift manager means nothing if the first page already reached every shift manager); and delivery is a **full-screen in-app overlay on its own alerts poll**, so **F35's bell is dropped from F37's deps**. Escalation is *derived at read time*, not stamped by the worker. What survives from #29: first-accept-owns, and a page is never silently dropped. The prototype's device-identity picker is **not** ported — MODRYN has real sessions. F36 additionally gains a **second** partial unique index on `(tenant_id, staff_user_id)`, so one worker holds at most one room.
+
 ---
 
 ## Why
@@ -31,8 +33,8 @@ The epic's technical centre is one index. Pre-decided #31 fixes fitting-room occ
 
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
-| 36 | Fitting-room registry + staff↔client↔room↔dress assignment | todo | — | — | F8, F13, F31, F32, F34 |
-| 37 | SOS paging: role-targeted page, live alert, resolution | todo | — | — | F31, F32, F35, F36 |
+| 36 | Fitting-room registry + staff↔client↔room↔dress assignment | todo | — | — | F8, F13, F31, F34, F57 |
+| 37 | SOS: targeted page, full-screen alert, ack/resolve, **30s escalation** | todo | — | — | F31, F36, F57 · *F35 dep dropped 2026-07-31* |
 
 **Order is F36 → F37 and it is forced, not chosen** (pre-decided #37). F37 attaches the raiser's current room to the alert so the responder knows where to go — that field is F36's assignment row, and without it an SOS says "help" without saying "here". Neither feature's design comes to the user: Q2 named only the staff shift board (F34) and the seamstress capacity matrix (F42) as novel patterns, so E7's screens assemble from F34's board shell and self-approve at the design gate.
 

@@ -6,6 +6,8 @@
 
 Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutique live end-to-end). Every feature goes through its own `/spartan:spec` → `/spartan:plan` → `/spartan:build` cycle with TDD, a security pass, and gate review — no feature skips the pipeline.
 
+> **BUILD ORDER OVERRIDE, 2026-07-31 — the floor-management program.** The epic order below still describes the *dependency* graph, but it is no longer the *build* order. By user ruling (`LOOP-STATE.md` → `rulings_2026_07_31`) a ten-feature floor-management program sits at the top of the queue and preempts the rest: **F34 → F57 → F36 → F33 → F58 → F59 → F37 → F41 → F42 → F60**, drawing from E6, E7 and E9 at once. It delivers the manager's floor terminal — live staff cards, fitting rooms, waitlist with atomic dispatch, SOS with a 30-second escalation, the atelier kanban with capacity load bars, QR self-check-in and a public queue wall board. Three features are new (**F57**, **F58**, **F59** in E6) plus **F60** (cross-cutting guide overlay). Remaining E4/E5/SMC work is *not* cancelled — the loop picks by file order, so F19, F53 and the rest resume automatically once the floor block is exhausted. **LOOP-STATE.md governs** wherever it and this file disagree.
+
 ---
 
 ## Program order

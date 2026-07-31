@@ -6,6 +6,8 @@
 **Owner**: team
 **PRD**: §11.1 (job intake + lifecycle), §11.2 (capacity, bride-date priority, manual reallocation), §11.4 (workshop board + throughput analytics)
 
+> **AMENDED 2026-07-31 — the floor-management program.** `LOOP-STATE.md`'s `rulings_2026_07_31` and its `queue:` notes GOVERN this file wherever the two disagree. **F41 and F42 are pulled forward** out of E9's dependency position and build now. Three amendments: the five states are relabelled **intake → in_progress → qc → ready → delivered** (E9 had no QC state; **pre-decided #39's mechanism is untouched** — five nullable `TIMESTAMPTZ` columns, no status enum, no event table); the date key is **`due_date`**, subsuming `wedding_date`, because an evening gown has no wedding; and **F42 ships a simplified capacity model** — `weekly_capacity_hours` per seamstress, load = sum of effort over undelivered tickets, bar red when over — with its **F40 roster dependency dropped**, since F40 is an E8 feature nowhere near being built. The F40 projection stays the recorded upgrade path, which this epic's own degradation clause already anticipated. **F42's design gate is self-approved** for this run. Q13's five effort bands and pre-decided #40's advisory-only rule are unchanged.
+
 ---
 
 ## Why
@@ -35,8 +37,8 @@ Two identity facts are settled and shape the dependency graph (pre-decided #41):
 
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
-| 41 | Job intake + 5-state timestamped lifecycle + effort estimate | todo | — | — | F8, F13, F31, F34 |
-| 42 | Seamstress capacity model, deadline-aware overload alerts, manual reallocation matrix | todo | — | — | F31, F40, F41 · **design gate = clickable prototype to the user (Q2)** |
+| 41 | Ticket intake + 5-state timestamped lifecycle + effort estimate | todo | — | — | F8, F13, F31, F34, F57 |
+| 42 | Seamstress capacity hours + load bars + balanced assignment | todo | — | — | F41, F57 · *F40 dep dropped, design gate self-approved 2026-07-31* |
 | 43 | Multi-fitting scheduling on the E3 slot engine | todo | — | — | F12, F13, F16, F24, F41 |
 | 44 | Live workshop board + owner throughput analytics | todo | — | — | F32, F41, F42 |
 

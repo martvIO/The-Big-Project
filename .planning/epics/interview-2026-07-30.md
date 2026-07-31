@@ -96,6 +96,14 @@ Every feature from here on adds Arabic resource keys alongside Hebrew, left untr
 
 Full text below. These bind the loop exactly as answered questions do. Where one names `*.ourbrand.co.il`, read `*.modryn.co.il` — the placeholder was retired by F30.
 
+> **SUPERSEDED 2026-07-31 by the floor-management program** (`LOOP-STATE.md` → `rulings_2026_07_31`). Read these four rows through that ruling, and do not treat the rows below as still binding on the points named:
+> - **#29** (SOS: role fanout, *no escalation timer*, no name picker) — **overridden**. A 30-second unacknowledged escalation to the shift manager is reinstated, and targeting is a specific colleague *or* the shift-manager role. First-accept-owns and never-silently-dropped survive.
+> - **#27** (a reception tablet is just one more signed-in device; kiosk board "a small follow-up if the pilot asks") — the **public wall board is now in scope**. The device-identity half of #27 *stands*: no device picker, everyone signs in as herself.
+> - **#39** (five state names received/measured/in_work/ready/collected) — the **labels** are replaced by intake/in_progress/qc/ready/delivered. The **mechanism** (five nullable timestamps, no enum) is untouched.
+> - **#24** (`sales` role slug) — the slug is **`sales_assistant`**.
+>
+> Also settled the same day and not a row here: **Q2's design gates for F34 and F42 are self-approved for this run**, and the program's language scope is **Hebrew only** (Q3/E10 unchanged — `ar` keys keep shipping untranslated, and English is not planned).
+
 | # | Topic | Decision | Basis |
 |---|-------|----------|-------|
 | 1 | Auto-merge policy for the remaining run (was a question) | Keep the existing pipeline exactly: a feature PR merges when the three blocking CI jobs are green AND a second agent's code review passes. No merge on CI alone; no waiting on the owner's inbox. | This is the process that produced all 16 merged PRs in this repo, so it is proven here rather than assumed — and it is the only option that compensates for main having no branch protection. Verified in .github/workflows/ci.yml: 'Backend (lint, types, tests)', 'Frontend (lint, types, build)' and 'Frontend E2E (Playwright + axe)' are the only blocking jobs. |

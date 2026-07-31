@@ -22,13 +22,282 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # F56 merged (PR #30), F52 merged (PR #28) 2026-07-31. F19 spec done + self-approved — ready to BUILD, unclaimed.
-                                # Queue reconciled 2026-07-30 for the finish-the-project run:
-                                # 32 features reachable, 0 unreachable, 3 parked (F18/F29 external, F32 subsumed).
-                                # Verified by simulating the pick rule to exhaustion — deps absent from this
-                                # queue (F3-F14) are historical merged features, which is how the loop reads them.
+current: null                   # F56 merged (PR #30), F52 merged (PR #28) 2026-07-31.
+                                # RE-PRIORITISED 2026-07-31: the FLOOR-MANAGEMENT PROGRAM now sits at the top of
+                                # `queue:` and preempts everything. Next pick is F34, then F57, F36, F33, F58,
+                                # F59, F37, F41, F42, F60 — ten features, one PR each. F19 (spec done and
+                                # self-approved) and F53 are NOT cancelled: they resume automatically the moment
+                                # the floor block is exhausted, because the loop picks by file order.
+                                # Queue reconciled 2026-07-30 for the finish-the-project run and re-simulated
+                                # after the re-order: 0 unreachable, 2 parked (F20 legal gate, F32 subsumed).
+                                # Deps absent from this queue (F3-F14) are historical merged features, which is
+                                # how the loop reads them.
 
 queue:
+  # ==================================================================
+  # ==== FLOOR-MANAGEMENT PROGRAM (2026-07-31) — BUILDS FIRST      ====
+  # ==== Position IS priority: the loop picks the first eligible    ====
+  # ==== entry in FILE order, so this block preempts F19 and F53,   ====
+  # ==== which resume automatically once it is exhausted. Ten       ====
+  # ==== iterations, one PR each. See rulings_2026_07_31.           ====
+  # ==== F34/F36/F33/F37/F41/F42 were MOVED here from their epic    ====
+  # ==== blocks below — do not look for a second copy.              ====
+  # ==================================================================
+  - id: F34
+    slug: shift-board-checkin
+    epic: SMC
+    title: "Live board + check-in (5s poll)"
+    status: queued
+    deps: [F15, F31]
+    spec: .planning/specs/shift-board-checkin.md
+    prototype: .planning/design/screens/shift-board/prototype.html
+    note: >-
+      SMC-5. DESIGN GATE SELF-APPROVED by user ruling 2026-07-31 — this entry no
+      longer parks; build from the finished spec. The spec's design-gate section
+      lists deck/prototype revisions (D14 pause + idle-stop control, the {401,403}
+      terminal state, the backoff copy); those are BUILD TASKS now, not review
+      preconditions. Prototype questions Q-1..Q-4 resolve to the spec's stated
+      defaults (5s beat, no row navigation, undo always visible, one chronological
+      list); Q-5 resolves NO — the board does not become the landing section, F52's
+      dashboard stays. Everything else per the spec verbatim: one migration
+      (bookings.checked_in_at TIMESTAMPTZ, NOT a fifth status), two endpoints on
+      F15's owner router, BoardSection with the six D4 poll mechanisms.
+      This board is the shell every floor panel below attaches to (F57 staff cards,
+      F36 rooms, F58 waitlist, F37 SOS centre), which is why it goes first.
+      Pre-decided #28 still bounds it: done at queue + dispatch, no waiting-time
+      analytics. F32 stays subsumed. F33 is NOT a dep (they meet at F58).
+  - id: F57
+    slug: floor-staff-roles
+    epic: E6
+    title: "Floor roles (reception/sales_assistant/seamstress) + break status + staff cards"
+    status: queued
+    deps: [F51, F34]
+    note: >-
+      NEW 2026-07-31 (floor program). The brief's staff cards — name, role, live
+      status — plus the roles that make them mean anything. Migration widens
+      0011's role CHECK and StaffRole to
+      owner/shift_manager/reception/sales_assistant/seamstress ('sales_assistant'
+      supersedes pre-decided #24's 'sales' slug, user ruling) and adds
+      staff_users.break_started_at TIMESTAMPTZ NULL.
+      DO NOT REBUILD STAFF CRUD — F51 shipped add/edit/delete; this feature only
+      widens its role select. F31's route walker default-denies the three new roles
+      on every existing /manage route; they are admitted surface by surface, and
+      this feature admits them to exactly two things: the floor read and their own
+      break toggle.
+      Ships GET /manage/floor (app/floor/) rendering a staff-cards panel on F34's
+      board, with its OWN poll loop copying F34's D4 mechanisms per D13. This is
+      the SECOND poll caller in the codebase, so the shared usePoll hook gets
+      extracted here (apps/manage/src/lib/) — that is what makes it reviewable.
+      Status derivation: break if break_started_at is set; occupied arrives with
+      F36 and is never true until then; else available. Toggle break/available:
+      owner + shift_manager on anyone, any staffer on herself.
+  - id: F36
+    slug: fitting-rooms
+    epic: E7
+    title: "Fitting-room registry + assignment (rooms panel)"
+    status: queued
+    deps: [F8, F13, F31, F34, F57]
+    note: >-
+      Substance unchanged from the e7 brief; pulled forward and given its floor
+      surface. fitting_rooms CRUD (add/remove rooms — the brief's prerequisite for
+      any assignment) + fitting_room_assignments where released_at IS the whole
+      occupancy model, plus the dress-bindings child table.
+      TWO partial unique indexes, both WHERE released_at IS NULL AND deleted_at IS
+      NULL: (tenant_id, fitting_room_id) — pre-decided #31, one active assignment
+      per room — and NEW (tenant_id, staff_user_id), one active room per worker,
+      which is what makes the card's "occupied" a fact rather than a guess.
+      INDEX, NOT LOCK (the e7 ruling, and the F51 advisory lock is NOT the
+      precedent to copy — that expressed "at least one", which no index can say;
+      this is "at most one", which is exactly what an index says). The claim is one
+      INSERT; IntegrityError becomes a 409 naming the current occupant.
+      Rooms + occupancy EXTEND F57's /manage/floor payload — do not add a second
+      poll loop for them. Staff cards gain occupied (client + room). The client
+      label is resolved at read time and never snapshotted onto the assignment
+      (e7's PII rule).
+  - id: F33
+    slug: qr-walkin-queue
+    epic: E6
+    title: "QR self-check-in + queue tickets + live position"
+    status: queued
+    deps: [F5, F9, F10, F13]
+    note: >-
+      REVIVED AT FULL SCOPE by user ruling 2026-07-31, overriding the SMC ruling
+      that "F33 is not built". The F20 DEP IS DROPPED: F33 adds
+      customers.marketing_opt_in_at itself, which e6-instore-realtime.md:71
+      pre-authorised in as many words. What F20 owns that F33 cannot invent is the
+      collection-notice WORDING — privacy-law text, the Q1 user-only class — so
+      that ONE string is parked in in_run_gates and a neutral interim sentence
+      ships meanwhile. This is the F19 precedent exactly: park the question, build
+      the feature.
+      Scope: queue_tickets (status CHECK waiting/in_service/done/removed,
+      called_at, requeued_at, skip_count) — a queue ticket is NOT a booking, which
+      is what keeps it distinct from F50's walk-in. POSITION IS COMPUTED ON READ,
+      ordering by COALESCE(requeued_at, created_at): that keeps pre-decided #30's
+      no-stored-position rule AND makes the brief's skip-to-back a one-column
+      write instead of a renumbering pass.
+      Public storefront /checkin route, 3 fields (name, phone, bride/evening).
+      The POST goes on a NEW mutating router — app/storefront/router.py is
+      contractually GET-only — with its OWN FixedWindowRateLimiter instances,
+      per-tenant and per-phone. One budget = one instance: never reuse the OTP or
+      booking limiters, or a busy bride morning locks the door queue.
+      Dedup on (tenant, phone, day). Live-position view polls its own public GET
+      keyed by the ticket UUID (the id is the capability; the response carries
+      position + ahead-count + status and echoes no PII). One static printed QR per
+      boutique (#30), rendered in manage. Auto-delete days after the visit stays
+      F20's retention job's second consumer. Hebrew only; ar keys untranslated.
+  - id: F58
+    slug: floor-dispatch
+    epic: E6
+    title: "Waitlist panel + dispatch (take-next, push-assign, finish, skip)"
+    status: queued
+    deps: [F33, F36, F57]
+    note: >-
+      NEW 2026-07-31 (floor program) — the atomic heart of the brief, and the one
+      entry where getting the concurrency wrong is visible to a customer. No new
+      table: it acts on F33's queue_tickets and F36's assignments. The waitlist
+      panel joins the /manage/floor payload (arrival order, wait time computed on
+      read) with per-entry call / assign / skip / done.
+      TAKE-NEXT is ONE transaction: claim the earliest waiting ticket with
+      UPDATE queue_tickets SET status='in_service' WHERE id = (SELECT id ...
+      WHERE status='waiting' ORDER BY COALESCE(requeued_at, created_at) LIMIT 1
+      FOR UPDATE SKIP LOCKED) RETURNING — the worker's drain pattern, so two
+      managers pressing it at the same instant get two DIFFERENT customers or one
+      gets a clean "queue empty", never the same customer twice — then INSERT the
+      fitting_room_assignment in the same transaction, where F36's two partial
+      unique indexes make a double-assign structurally impossible. A lost race
+      rolls BOTH back, so the ticket is left `waiting`, not stranded in_service.
+      PUSH-ASSIGN: same insert against an explicit ticket id, guarded by the
+      conditional UPDATE ... WHERE status='waiting' (rowcount 0 -> 409).
+      FINISH ("סיימתי עם הלקוחה"): release the assignment and close the ticket in
+      one transaction — the worker frees and the entry closes together or not at all.
+      SKIP: requeued_at=now(), skip_count+1; skip_count >= 2 -> removed (the
+      brief's second-skip rule). CALL: stamps called_at, which is what F59's wall
+      board highlights.
+      Race tests to the F13/F51 standard: forced-interleave pairs, db-marked, never
+      a bare asyncio.gather for the deterministic branch. THIS FEATURE ALSO BUILDS
+      THE /manage/** Playwright interception harness (login + floor payload stubs),
+      which the console has never had — recorded as a gap in F34's spec Risk 8.
+  - id: F59
+    slug: public-queue-board
+    epic: E6
+    title: "Public wall-screen queue board (/queue)"
+    status: queued
+    deps: [F33]
+    note: >-
+      NEW 2026-07-31 (floor program), authorised with the full-queue ruling that
+      also revived F33 — pre-decided #27 had deferred the kiosk as "a small
+      follow-up if the pilot asks for it", and the user asked.
+      Storefront /queue: one matchRoute entry, the day's waiting queue, POSITION +
+      FIRST NAME ONLY (that display is named for F20's eventual notice — it is the
+      one place a customer's name is shown to a room full of strangers), called
+      entries highlighted from F58's called_at, big-type layout legible at TV
+      distance. Public GET on the queue router, tenant from Host, no auth,
+      Cache-Control: no-store.
+      Own 5s poll loop (D4 mechanisms copied per D13) and its OWN SC 2.2.2 pause
+      control — a permanently-mounted auto-updating wall screen is the single most
+      literal instance of that criterion in the product, and axe cannot see it, so
+      the pause control needs a named frontend test the way F34's does.
+  - id: F37
+    slug: sos-paging
+    epic: E7
+    title: "SOS: targeted page, full-screen alert, ack/resolve, 30s escalation"
+    status: queued
+    deps: [F31, F36, F57]
+    note: >-
+      AMENDED BY THREE USER RULINGS 2026-07-31. (1) 30s auto-escalation is
+      REINSTATED, overriding pre-decided #29's "no escalation timer". (2) Targeting
+      follows the brief — a SPECIFIC signed-in colleague OR the shift-manager role
+      — overriding #29's role-fanout-and-no-name-picker; the two were incompatible,
+      since escalate-to-shift-manager is meaningless if the first page already went
+      to every shift manager. (3) Delivery is a FULL-SCREEN red overlay in the
+      manage app fed by the SOS poll, so the F35 dep is DROPPED (the bell stays
+      queued as a later durable upgrade). Still in-app only — #32 stands, no
+      browser push, no APNs/FCM, no SMS. What SURVIVES from #29: first-accept-owns,
+      and an alert is never silently dropped.
+      THE DEVICE-IDENTITY PICKER IS NOT PORTED. It existed in the prototype only
+      because that prototype had no auth; MODRYN has real sessions, so sender and
+      target are staff_users identities and "the targeted device" is simply where
+      that staffer is signed in.
+      sos_alerts: raised_by, target_staff_user_id NULLABLE (null = the
+      shift-manager role), fitting_room_assignment_id nullable, note, status CHECK
+      open/accepted/resolved/cancelled, acknowledged_at. Accept/ack is an atomic
+      conditional UPDATE ... WHERE status='open' — rowcount 0 becomes a 409 naming
+      the owner (e7's shape, kept).
+      ESCALATION IS DERIVED AT READ TIME, not written by the worker: the alerts
+      query also returns, to any shift manager, every open alert unacknowledged for
+      more than 30 seconds. Justification, because the alternative looks tempting —
+      app/worker.py ticks at 60s, so a worker-stamped escalation would arrive up to
+      a full minute late (twice the requirement) and would introduce a write that
+      races a concurrent ack. The read-time predicate adds zero latency beyond the
+      poll, cannot race, and is the house compute-on-read pattern (#30 queue
+      positions, F43 fitting ordinals). A durable escalated_at is the recorded
+      upgrade path if history ever needs it.
+      The alerts poll runs APP-LEVEL in manage so the overlay can render over any
+      section; a ~2s tick while an alert is open is pre-authorised in the e7 Risks.
+      SOS-centre panel on the board lists active alerts with ack/resolve. Raise
+      control is reachable from a room card. Screen-reader announcement of an
+      incoming alert is a gate condition, not a nicety (e7 Risks).
+  - id: F41
+    slug: alteration-tickets
+    epic: E9
+    title: "Atelier tickets + kanban (intake/in_progress/qc/ready/delivered)"
+    status: queued
+    deps: [F8, F13, F31, F34, F57]
+    note: >-
+      PULLED FORWARD from E9 by the floor program, and AMENDED: the kanban states
+      are the brief's intake -> in_progress -> qc -> ready -> delivered. Those
+      LABELS supersede pre-decided #39's five names (received/measured/in_work/
+      ready/collected) — #39's MECHANISM is untouched and non-negotiable: five
+      nullable TIMESTAMPTZ columns, no status enum, current state = the latest
+      stamped one. Note E9 had no QC state; the brief adds one.
+      due_date SUBSUMES E9's wedding_date — an evening gown has no wedding — and
+      when an F28 rental reservation exists it can prefill, later.
+      Row: customer, dress snapshot (0008's snapshot discipline), due_date,
+      effort_minutes from Q13's five preset bands (mapping in tenant settings),
+      assigned seamstress (staff_users, seamstress role from F57), notes.
+      Kanban section in manage with its own poll endpoint + loop (D13). Advancing
+      a state stamps a column and is audited. RLS isolation-suite probes for the
+      new tenant table are non-negotiable. Retention is flagged for F20/F21 as e9
+      records. No pricing, no photos.
+  - id: F42
+    slug: seamstress-capacity
+    epic: E9
+    title: "Seamstress capacity hours + load bars + balanced assignment"
+    status: queued
+    deps: [F41, F57]
+    note: >-
+      DESIGN GATE SELF-APPROVED by user ruling 2026-07-31 (Q2 had marked it novel)
+      — build through it, do not park.
+      SIMPLIFIED CAPACITY MODEL per the brief, and the F40 dep is DROPPED for this
+      run: staff_users.weekly_capacity_hours with a tenant default, load =
+      SUM(effort_minutes) over tickets not yet delivered, load bar turns red when
+      load exceeds capacity. E9's own degradation clause blesses a roster-free
+      fallback; the F40 published-roster projection (hourly capacity walked back
+      from the due date) is the recorded upgrade path, NOT this build — F40 is E8
+      and is nowhere near.
+      Seamstress directory panel. The ticket-assignment surface sorts seamstresses
+      by remaining capacity, but overload only FLAGS and never blocks — pre-decided
+      #40 stands, every reallocation is a human action.
+      A11y: overload is never colour-only (the bar carries text), and the grid is
+      keyboard-navigable (e9 Risks).
+  - id: F60
+    slug: guide-walkthrough
+    epic: cross
+    title: "Per-page guided walkthrough (Guide button)"
+    status: queued
+    deps: [F34]
+    note: >-
+      NEW 2026-07-31, deliberately LAST in the floor block — it is the brief's
+      lowest-priority item and the only one that ships no capability. A «מדריך»
+      button in the console shell opens a per-section step overlay, steps keyed by
+      SectionKey, copy in i18n he with untranslated ar per Q3. One hint step on the
+      storefront /checkin page too.
+      Frontend only: no migration, no endpoint, and NO new dependency — a
+      hand-rolled overlay, not a tour library. Focus trap and Esc-to-close are the
+      real work here.
+      IF THE RUN HAS TO STOP EARLY, THIS IS THE ENTRY TO LEAVE QUEUED.
+  # ==================== end floor-management program ====================
+
   # ---- cross-cutting ----
   - id: F30
     slug: modryn-branding
@@ -309,30 +578,9 @@ queue:
       Also: Twilio joins the F20 sub-processor disclosure list.
 
   # ---- SMC console finish (moved here 2026-07-30: user ruled SMC before E5) ----
-  # F34 sits first so its prototype gate reaches the user on the very next
-  # iteration and its review runs on the user's clock while F51-F53 build.
-  - id: F34
-    slug: shift-board-checkin
-    epic: SMC
-    title: "Live board + check-in (5s poll)"
-    status: parked
-    deps: [F15, F31]
-    blocker: "Design gate — clickable prototype awaiting USER review (Interview Q2, novel pattern). Gate 1 self-approved; only the design gate is open."
-    spec: .planning/specs/shift-board-checkin.md
-    prototype: .planning/design/screens/shift-board/prototype.html
-    note: >-
-      SMC-5. Q2: NOVEL pattern — design gate requires a user-reviewed clickable
-      prototype; does NOT self-approve. Pre-decided #28: done at queue + dispatch,
-      no waiting-time analytics. Re-scoped by the SMC epic (2026-07-30): F32
-      subsumed (client 5s poll of GET /manage/bookings?date=, no version field,
-      pause on document.hidden); F33 no longer a dep (walk-ins become real
-      bookings via F50) though F33 itself is still built later per the 2026-07-30
-      ruling. Check-in = bookings.checked_in_at TIMESTAMPTZ column,
-      NOT a fifth status — the CHECK, both partial unique indexes and E4's
-      pending_payment widening stay untouched. Endpoints land on F15's owner router.
-      Sequencing note: spec + prototype are authored, then the entry PARKS on the
-      user's prototype review. It does not self-approve. Build resumes when the
-      user says so; F51-F53 fill the wait.
+  # F34 MOVED 2026-07-31 into the FLOOR-MANAGEMENT block at the top of this file.
+  # Its design gate is self-approved by user ruling, so it no longer parks — it is
+  # the floor program's first pick and the shell every floor panel attaches to.
   - id: F51
     slug: staff-management
     epic: SMC
@@ -541,14 +789,17 @@ queue:
     slug: pre-scale-gate
     epic: E5
     title: "Pre-scale gate: refund automation, k6, Redis caching"
-    status: parked
+    status: queued
     deps: [F18, F21]
     spec_gate: user
-    blocker: "refund automation needs a gateway adapter with a refunds API (F18) — UNBLOCKED 2026-07-31: Lemon Squeezy test mode has one, so this can build once F18 lands. Set back to queued when F18 merges."
     note: >-
       Pre-decided #21/#22: tenant-scoped cache keys plus a bounded negative
       cache; k6 targets derived from staging metrics at the 50-tenant horizon.
       The caching and load halves could be split out early if F18 stays blocked.
+      UNPARKED 2026-07-31 by its own standing instruction: the blocker read
+      "set back to queued when F18 merges", and F18 merged as PR #31. The refunds
+      API it needed exists in Lemon Squeezy test mode. Still unpickable until F21
+      merges, which is correct — the dep, not a blocker, is what holds it now.
 
   # ---- E6..E10 (F31-F49). E7 precedes E8 per Interview Q12.
   # Slugs are placeholders until each spec names its own.
@@ -602,24 +853,9 @@ queue:
   # block on 2026-07-30 — the user's build-order ruling is "finish SMC first", and
   # the loop picks the first eligible entry in FILE order, so priority has to be
   # expressed as position. Do not re-sort this file by epic.
-  - id: F33
-    slug: f33-placeholder
-    epic: E6
-    title: "QR walk-in check-in"
-    status: queued
-    deps: [F5, F9, F10, F13, F20]
-    note: >-
-      Pre-decided #26: queue ticket by default, auto-deleted days after the visit, one
-      opt-in marketing checkbox. #30: one static printed QR per boutique. Soft handoff
-      with F20 on the consent column.
-      KEPT by user ruling 2026-07-30. The SMC epic contradicted itself — ruling 3 said
-      "F33 is not built" while ruling 2 said E6-proper's QR queue "stays queued" — and
-      the user resolved it in favour of building. Read the two as complementary, not
-      alternatives: F50 makes a walk-in the STAFF books a real booking; F33 is the
-      self-service QR at the door that captures a lead before anyone is free to serve
-      her, with a queue ticket that is NOT a booking. Builds after F20 (needs its
-      consent column). If F34's board makes the queue-ticket model redundant in
-      practice, say so then — do not silently skip it.
+  # F33 MOVED 2026-07-31 into the FLOOR-MANAGEMENT block at the top of this file,
+  # revived at full scope (QR + queue tickets + live position) with its F20 dep
+  # dropped. Pre-decided #26/#30 still bound it; the note there carries them.
   - id: F35
     slug: f35-placeholder
     epic: E6
@@ -628,27 +864,14 @@ queue:
     deps: [F31, F34]
     note: >-
       Pre-decided #32: in-app only. No browser push, no APNs/FCM.
+      2026-07-31: DROPPED from F37's deps. SOS ships its own full-screen overlay
+      and its own alerts poll, so the bell is no longer on the critical path — it
+      remains queued as the later durable notification surface.
 
   # ---- E7 fitting rooms & SOS (before E8, per Interview Q12) ----
-  - id: F36
-    slug: f36-placeholder
-    epic: E7
-    title: "Fitting-room registry + staff/client/room/dress assignment"
-    status: queued
-    deps: [F8, F13, F31, F34]
-    note: >-
-      Pre-decided #31: one active assignment per room via a partial unique index — same
-      concurrency discipline as the F13 slot claim.
-  - id: F37
-    slug: f37-placeholder
-    epic: E7
-    title: "SOS paging: role-targeted page, live alert, resolution"
-    status: queued
-    deps: [F31, F35, F36]
-    note: >-
-      Pre-decided #29: she picks a ROLE; every on-shift staffer with it is paged; first to
-      accept owns it. Rides F34's 5s poll (F32 subsumed) — the latency tradeoff is
-      recorded in the epic's Risks.
+  # F36 and F37 MOVED 2026-07-31 into the FLOOR-MANAGEMENT block at the top of this
+  # file. F37 is amended there: 30s escalation reinstated, person-or-role targeting,
+  # full-screen overlay instead of F35's bell. Pre-decided #31 still governs F36.
 
   # ---- E8 weekly scheduler & full HR ----
   - id: F38
@@ -680,25 +903,10 @@ queue:
       the cutover and the no-roster-published week.
 
   # ---- E9 alterations workshop ----
-  - id: F41
-    slug: f41-placeholder
-    epic: E9
-    title: "Job intake + 5-state lifecycle + effort estimate"
-    status: queued
-    deps: [F8, F13, F31, F34]
-    note: >-
-      Q13: effort stored as minutes from five preset bands. Pre-decided #39: five states
-      as nullable timestamp columns, not a status enum.
-  - id: F42
-    slug: f42-placeholder
-    epic: E9
-    title: "Seamstress capacity model + overload alerts + reallocation"
-    status: queued
-    deps: [F31, F40, F41]
-    note: >-
-      Q2: NOVEL pattern — design gate requires a user-reviewed clickable prototype; does
-      NOT self-approve. Q13: hourly capacity walked back from wedding_date. Pre-decided
-      #40: advisory only, every reallocation stays a human action.
+  # F41 and F42 MOVED 2026-07-31 into the FLOOR-MANAGEMENT block at the top of this
+  # file, and amended there: the brief's five status labels supersede #39's names
+  # (#39's nullable-timestamp MECHANISM stands), due_date subsumes wedding_date, and
+  # F42 ships the simplified weekly-capacity model with its F40 dep dropped.
   - id: F43
     slug: f43-placeholder
     epic: E9
@@ -797,17 +1005,19 @@ in_run_gates:                   # block a specific feature; the user clears them
     what: ".planning/specs/ppl-compliance.md — Gate 1 approval (legal surface)"
     asks: 5
     sharpest: "retention_enabled now defaults FALSE, so two security-checklist rows merge amber rather than green. Accept, or overrule back to default-on with no backup to undo an irreversible mass-delete."
-  - id: F34
-    what: ".planning/design/screens/shift-board/prototype.html — design gate (Interview Q2, novel)"
-    asks: 8
-    sharpest: "Open it in a browser and press «השהיה». That pause control is what makes the board lawful under WCAG 2.0 SC 2.2.2 — a Level A criterion axe-core cannot detect, so CI would have shipped green without it."
+  # F33 — like F19's MD3, this blocks ONE STRING, not the feature. F33 builds and
+  # ships with a neutral interim sentence in the notice slot.
+  - id: F33
+    what: "the one-paragraph Hebrew collection notice shown on the public check-in form (privacy-law text, the Q1 user-only class)"
+    asks: 1
+    sharpest: "The form takes a name and a phone from a member of the public standing in the doorway, and Amendment 13 wants notice at the moment of collection — but no notice text exists anywhere in the product until F20 clears its own gate, so F33 would otherwise collect PII behind silence. Name the boutique, the purpose (queue position + being called), and the retention window."
+  # CLEARED 2026-07-31 by user ruling: F34's prototype design gate and F42's
+  # capacity-matrix prototype gate are BOTH self-approved for this run. The
+  # prototype's open questions resolve to the spec defaults, recorded in the
+  # entries and in rulings_2026_07_31.
   # LATER — not yet authored, listed so the run's shape is legible.
-  - id: F19
-    what: "deposit flow — spec written once F17 merges, then Gate 1 (payments)"
   - id: F48
     what: "billing — Gate 1 when E10 is reached (money surface)"
-  - id: F42
-    what: "seamstress capacity matrix — clickable prototype (Q2 novel)"
 
 rulings_2026_07_30:             # taken in the finish-the-project planning session
   - "Build order: finish the SMC console before E5. Queue reordered to match."
@@ -834,6 +1044,15 @@ rulings_2026_07_31:             # the user supplied credentials; E4 unblocked
   - "SMS: Twilio credentials supplied; the adapter F11 deferred becomes F54. Two values still missing (Account SID, E.164 number) — they gate a live send, not the build."
   - "Meta/WhatsApp verification is the LAST step by user ruling. F46 waits on its clock at the end rather than overlapping it."
   - "Grow is NOT cancelled — it is demoted from 'the blocker' to 'one candidate for the production PSP decision', which now sits after E4 rather than before it."
+  # ---- the floor-management program, ruled the same day ----
+  - "FLOOR PROGRAM: the real-time floor-management program builds NOW, ahead of F19 and F53. The queue is re-ordered — the FLOOR block at the top of `queue:` IS the build order, ten features, one PR each. The old Firebase prototype the brief describes (project temp-4d508, RTDB, 24 public Cloud Functions) does NOT exist in this repo and is a BEHAVIOUR reference only: everything builds on the MODRYN stack. No Firebase, no realtime vendor — the recorded 5s poll is what 'live on every device, no refresh' means here, and Pusher stays the pilot-evidence escape hatch it always was."
+  - "SOS ESCALATION REINSTATED: 30 seconds unacknowledged auto-escalates to the shift manager, overriding pre-decided #29's 'no escalation timer'. TARGETING follows the brief too — a SPECIFIC signed-in colleague or the shift-manager role — overriding #29's role-fanout and its ban on a name picker. The two rulings were incompatible: escalating to the shift manager is meaningless if the first page already went to every shift manager. First-accept-owns and never-silently-dropped survive unchanged."
+  - "SOS DEVICE IDENTITY: the prototype's localStorage 'who am I' picker is NOT ported. It existed only because that prototype had no auth. Sender and target are staff_users identities; 'the targeted device' is just wherever that staffer is signed in. Delivery is a full-screen in-app overlay fed by the SOS poll — F35's bell is DROPPED from F37's deps and stays queued for later. In-app only still (#32): no browser push, no APNs/FCM, no SMS."
+  - "CUSTOMER QUEUE, FULL SCOPE: QR self-check-in, live position, and the public wall board all build NOW — overriding the SMC ruling that 'F33 is not built' and pre-decided #27's deferral of the kiosk board. F33 drops its F20 dependency and adds the consent column itself, which e6-instore-realtime.md:71 pre-authorised. The collection-notice WORDING is privacy-law text and stays the user's: it is parked as a single in_run_gates question while a neutral interim sentence ships. That is the F19 precedent — park the question, build the feature."
+  - "LANGUAGES: Hebrew only for now. No language switcher, no en/ar toggle — the brief's tri-lingual top bar is deferred. Q3 and E10 are unchanged: every feature keeps shipping ar keys untranslated, and English is not in the plan at all."
+  - "DESIGN GATES SELF-APPROVED for this run: F34 (the shift board) and F42 (the capacity matrix) build through their Q2 novel-pattern gates without pausing. F34's spec-listed deck revisions (the D14 pause + idle-stop control, the {401,403} terminal state, the backoff copy) become BUILD TASKS rather than review preconditions; prototype questions Q-1..Q-4 resolve to the spec's stated defaults; Q-5 resolves NO — the board does not become the landing section, F52's dashboard stays."
+  - "ROLES: StaffRole widens to reception / sales_assistant / seamstress. Their first consumer is the floor program, which is the bar pre-decided #24 and constants.py both set for adding a role. 'sales_assistant' supersedes #24's 'sales' slug. F31's route walker default-denies all three on every existing /manage route; each floor feature admits them explicitly to its own surface, and F51's staff CRUD is NOT rebuilt — only its role select widens."
+  - "ATELIER: the kanban states are the brief's intake -> in_progress -> qc -> ready -> delivered. Those LABELS supersede pre-decided #39's five names, and E9 had no QC state; #39's MECHANISM is untouched — five nullable TIMESTAMPTZ columns, no status enum. The date key is due_date, subsuming E9's wedding_date, because an evening gown has no wedding. F42 ships the SIMPLIFIED capacity model (weekly_capacity_hours per seamstress, load bar red when the sum of undelivered effort exceeds it) and its F40 roster dependency is DROPPED for this run — the roster projection is the recorded upgrade path, and F40 is an E8 feature nowhere near being built."
 ```
 
 ## Run report
