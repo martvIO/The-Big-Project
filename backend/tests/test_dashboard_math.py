@@ -10,6 +10,8 @@ feature can be silently wrong.
 import datetime
 import uuid
 
+from app.booking.slots import Slot
+from app.booking.slots_io import grid_totals
 from app.booking.validation import jerusalem_day_index
 from app.dashboard.schemas import WeekBucket
 from app.dashboard.service import (
@@ -758,3 +760,85 @@ def test_the_cohort_is_scored_against_the_windows_own_floor() -> None:
 
     assert (panel.customers.total, panel.customers.new, panel.customers.returning) == (2, 1, 1)
     assert panel.customers.repeat_rate == 0.5
+
+
+# --- forward utilization ------------------------------------------------------
+#
+# `grid_totals` takes a grid and a mapping, so it needs no session. The grid it
+# is handed comes from `materialize_slots(booked={})`: the engine DROPS full
+# slots rather than marking them, so a grid built any other way omits precisely
+# the fully-booked instants — the ones that make utilization high (D4).
+
+SLOT_ONE = _utc(2026, 8, 3, 10, 0)
+SLOT_TWO = _utc(2026, 8, 3, 10, 30)
+SLOT_THREE = _utc(2026, 8, 4, 10, 0)
+OFF_GRID = _utc(2026, 8, 5, 15, 0)
+
+
+def _slot(starts_at: datetime.datetime, capacity: int) -> Slot:
+    # booked=0 on every slot, because that is what `booked={}` produces. If
+    # `grid_totals` read `slot.booked` instead of the mapping it would answer 0
+    # everywhere, so these fixtures pin the mapping as the numerator's source.
+    return Slot(starts_at=starts_at, capacity=capacity, booked=0)
+
+
+def test_the_grid_is_the_denominator_and_the_mapping_only_the_numerator() -> None:
+    grid = [_slot(SLOT_ONE, 2), _slot(SLOT_TWO, 2), _slot(SLOT_THREE, 2)]
+
+    totals = grid_totals(grid, {SLOT_ONE: 1})
+
+    assert totals.capacity == 6
+    assert totals.booked == 1
+    assert totals.utilization == 1 / 6
+
+
+def test_an_overbooked_instant_clamps_to_its_own_capacity() -> None:
+    # A data anomaly, and reporting a utilization above 100% would be a second
+    # bug on top of the first — the same posture Slot.remaining takes.
+    grid = [_slot(SLOT_ONE, 2)]
+
+    totals = grid_totals(grid, {SLOT_ONE: 5})
+
+    assert totals.booked == 2
+    assert totals.booked <= totals.capacity
+    assert totals.utilization == 1.0
+
+
+def test_an_instant_the_grid_no_longer_offers_contributes_nothing() -> None:
+    # A booking made under a weekly rule the owner has since deleted, or on a
+    # date a later exception closed: the row exists and count_by_start counts
+    # it, but there is no capacity behind it.
+    #
+    # THIS is the case that red-fails if anyone ships sum(mapping.values()) as
+    # forward.booked — that spelling answers 5, and 5 > capacity.
+    grid = [_slot(SLOT_ONE, 2)]
+
+    totals = grid_totals(grid, {SLOT_ONE: 1, OFF_GRID: 4})
+
+    assert totals.booked == 1
+    assert totals.capacity == 2
+    assert totals.booked <= totals.capacity
+
+
+def test_a_boutique_with_no_open_hours_has_no_utilization() -> None:
+    # Not 0%: closed hours and zero demand are different facts, and the copy
+    # deck gives them different strings.
+    totals = grid_totals([], {SLOT_ONE: 3})
+
+    assert (totals.capacity, totals.booked) == (0, 0)
+    assert totals.utilization is None
+
+
+def test_booked_never_exceeds_capacity_and_utilization_is_their_quotient() -> None:
+    cases: list[tuple[list[Slot], dict[datetime.datetime, int]]] = [
+        ([_slot(SLOT_ONE, 1)], {}),
+        ([_slot(SLOT_ONE, 1)], {SLOT_ONE: 1}),
+        ([_slot(SLOT_ONE, 3), _slot(SLOT_TWO, 3)], {SLOT_ONE: 3, SLOT_TWO: 1}),
+        ([_slot(SLOT_ONE, 3), _slot(SLOT_TWO, 3)], {SLOT_ONE: 9, OFF_GRID: 9}),
+    ]
+
+    for grid, booked_by_instant in cases:
+        totals = grid_totals(grid, booked_by_instant)
+
+        assert totals.booked <= totals.capacity
+        assert totals.utilization == totals.booked / totals.capacity
