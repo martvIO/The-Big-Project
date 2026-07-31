@@ -1,6 +1,6 @@
 # Spec: Feature 17 — Payment gateway port + credential management (Epic E4)
 
-**Created**: 2026-07-30 · **Revised**: 2026-07-30 (adversarial review — 18 findings, 3 BLOCKER; see "Response to the adversarial review") · **Status**: **Gate 1 PENDING USER APPROVAL — F17 is on Interview Q1's stop-list (payments surface); 4 open questions below** · **Epic**: E4 (first E4 feature to build) · **Effort**: **M** (the epic sizes it S; revised at spec time — S was written when the feature was one credentials table, before Interview Q7 made the port and its fake adapter the deliverable and before the `payments` table entered scope)
+**Created**: 2026-07-30 · **Revised**: 2026-07-31 (Gate 1 approved; provider ruling) · **Status**: **Gate 1 APPROVED 2026-07-31 — all 4 open questions answered by the user; see "Gate 1 resolutions" below** · **Epic**: E4 (first E4 feature to build) · **Effort**: **M** (the epic sizes it S; revised at spec time — S was written when the feature was one credentials table, before Interview Q7 made the port and its fake adapter the deliverable and before the `payments` table entered scope)
 **Depends on**: F7 (owner settings — `tenants.settings` JSONB, the atomic `merge_settings`, the `deposits_enabled` toggle), F31 (`require_role`, the default-deny walker this feature must satisfy), F11 (not a code dependency — the port shape this feature copies) · **Feeds**: F19 (deposit booking flow — every method here is one of its seams), F18 (the real Grow adapter drops in behind this port), F26 (invite-code signup's gateway-connect onboarding step)
 
 ---
@@ -491,7 +491,27 @@ Frontend: **`GatewaySection.test.tsx`** — all three status renderings, the wri
 8. **Both gateway limiters are in-process** — they reset on deploy and do not aggregate across replicas, the standing single-instance pilot posture (F11 Risk 2, login and presign throttles). *Owner: team. Trigger: F21.*
 9. **`FakeGateway.credential_fields` is a guess, and the console renders its form from it.** When F18 declares Grow's real field set, the form changes with no frontend edit — which is the design working — but any Hebrew label keyed to a fake field name becomes dead. Labels therefore fall back to the raw field name when no `gateway.field.*` key exists — wrapped in `<bdi dir="ltr" lang="en">`, since that raw name is an LTR snake_case run inside RTL Hebrew. **`GatewaySection.test.tsx` is what asserts the fallback**, not `i18n.test.ts`: the previous draft claimed the i18n test covered it, and that test cannot see a key it never renders. *Owner: team. Trigger: F18.*
 
-## Open questions — Gate 1, the user's call
+## Gate 1 resolutions (user, 2026-07-31)
+
+Approved. All four questions below are answered; the answers are binding on F18 and F19.
+
+**Provider ruling — Grow is no longer E4's engine.** The user supplied working **Lemon Squeezy** credentials and ruled that LS **test mode** powers the deposit flow now, behind this unchanged port. This is deliberately a *development* engine, not the production processor:
+
+- LS is **merchant-of-record**. The money in the deposit flow is legally the boutique's (`architecture.md:13` locks per-tenant merchant accounts; `e10-scale-polish.md:86` explicitly forbids platform collection of boutique deposits), and the boutique owes the Israeli receipt. MODRYN cannot be MoR for a boutique's customers without becoming a different business.
+- So LS occupies exactly the seat `FakeGateway` was built for, with real network I/O and a real signature scheme. **The production Israeli PSP is an open decision** (`external-applications.md` row 3) and drops in as one adapter file — which is what D5's adapter-declared `credential_fields` bought.
+- Consequence for this spec: every "Grow" reference below reads as "the production PSP, TBD". F18 becomes the **Lemon Squeezy test-mode adapter**. Migration 0012's `CHECK (provider IN ('fake'))` widens to include `'lemonsqueezy'` in F18's migration, and the production boot guard extends to it: `APP_ENV=production` + `payment_provider='lemonsqueezy'` is a boot failure until a production-PSP ruling exists.
+
+**Q1 — deposits on, no gateway connected → option (a), book without deposit.** The storefront hides the deposit line entirely and books as if deposits were off. Bookings keep flowing; the owner-side `PolicyBlockerBanner` is the nudge. Rationale: silently not collecting is recoverable, a dead calendar is not. F19 implements; re-asked at its Gate 1 only if the flow contradicts it.
+
+**Q2 — KMS unchecked at merge → accepted, deferred per D3.** Nothing is exposed: production boot-fails on the fake secret box and the `provider` CHECK admits no real credential. The ship-gate row stands unchecked through F17, carried by Risks 2 and 3, and closes when `KmsSecretBox` lands.
+
+**Q3 — `payments` retention → 7 years**, matching pre-decided #10's `bookings` row. Stated position, not an inherited default. F20 scrubs on that clock.
+
+**Q4 — verified webhook against an expired hold → HONOUR IT, and alert the owner.** The deposit is marked paid. If the slot is still free, the booking rebinds to it; if it is not, the booking surfaces to the owner as needing a new time, with the money already taken and recorded. Rationale: the port ships no `refund()` (D12) and adding one is a new failure surface; money taken and silently dropped is the worse outcome; and the owner already has F15's console tools to rebook. F17's job is unchanged — make the event durable and distinguishable (`GATEWAY_LATE_SETTLEMENT` + `payments.error`, `newly_settled=False`); **F19 owns the rebind-or-alert behaviour.**
+
+---
+
+## Open questions — Gate 1, the user's call *(ANSWERED — see resolutions above; kept for the reasoning)*
 
 F17 is on Interview Q1's stop-list (payments surface), which is what these are for. Each is a money, product or legal decision with no codebase-consistent default; none of them blocks writing the code, and each names what the spec does in the meantime so an unanswered question is a stated posture rather than a gap.
 

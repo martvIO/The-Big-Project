@@ -134,15 +134,27 @@ queue:
     slug: gateway-port
     epic: E4
     title: Payment gateway port + credential management
-    status: parked
+    status: queued
     deps: [F7]
     spec_gate: user
-    blocker: "Gate 1 — spec written 2026-07-30 and awaiting USER approval (payments surface, Interview Q1). 4 questions; Q4 (late settlement on an expired hold) has no safe default."
     spec: .planning/specs/gateway-port.md
     note: >-
       Q7 unparked this: build the provider-agnostic port plus a FAKE gateway
-      now, exactly as F11 did for SMS. Real Grow credential validation waits
-      for the merchant account, but the interface and its tests do not.
+      now, exactly as F11 did for SMS. The interface and its tests never needed
+      a merchant account.
+      GATE 1 APPROVED 2026-07-31 — all four questions answered, recorded in the
+      spec's "Gate 1 resolutions" section. Q1 deposits-on-no-gateway: option (a),
+      the storefront HIDES the deposit and books anyway (a dead calendar is worse
+      than silently not collecting); F19 implements. Q2 KMS: accepted unchecked
+      at merge, deferred per D3. Q3 payments retention: 7 years, matching
+      pre-decided #10. Q4 late settlement on an expired hold: HONOUR the money and
+      alert the owner — rebind if the seat is free, surface it to her if not;
+      no refund() is added (D12 stands), F19 owns the rebind-or-alert behaviour.
+      PROVIDER RULING same date: Grow is no longer E4's engine. Lemon Squeezy TEST
+      MODE takes the seat FakeGateway was built for (see F18). Every "Grow" in the
+      spec now reads "the production PSP, TBD" — that decision is deferred to
+      before-live-money and is one adapter file, which is exactly what D5's
+      adapter-declared credential_fields bought.
   - id: F19
     slug: deposit-booking-flow
     epic: E4
@@ -155,13 +167,30 @@ queue:
       gateway. The race most likely to be wrong (hold expiry vs a late webhook)
       does not depend on Grow, so it gets built and race-tested now.
   - id: F18
-    slug: grow-adapter
+    slug: lemonsqueezy-adapter
     epic: E4
-    title: Grow payment sessions & webhooks (real adapter)
-    status: parked
+    title: Lemon Squeezy payment sessions & webhooks (test-mode adapter)
+    status: queued
     deps: [F17]
     spec_gate: user
-    blocker: "Grow merchant account not filed — external-applications.md #3, user-only"
+    note: >-
+      UNPARKED 2026-07-31. Was "Grow adapter, blocked on a merchant account nobody
+      had". The user supplied working Lemon Squeezy credentials and ruled LS TEST
+      MODE is E4's engine behind F17's port, so this feature is now buildable with
+      no Israeli merchant account.
+      Scope: app/payments/lemonsqueezy.py implementing the F17 PaymentGateway
+      protocol — create_session against the LS checkouts API, verify_webhook over
+      the X-Signature HMAC-SHA256 header, validate_credentials as an authenticated
+      store fetch. Migration widens 0012's CHECK to ('fake','lemonsqueezy').
+      TWO BOUNDS THAT ARE NOT NEGOTIABLE. (1) TEST MODE ONLY: LS is
+      merchant-of-record and the deposit is legally the BOUTIQUE's money
+      (architecture.md:13 per-tenant merchants; e10-scale-polish.md:86 forbids
+      platform collection of boutique deposits), so APP_ENV=production +
+      payment_provider='lemonsqueezy' must be a boot failure until a production-PSP
+      ruling exists — same shape as the fake-gateway guard. (2) The spec phase MUST
+      verify LS's actual API shapes, signature header and error envelope against
+      live docs (WebFetch), not from memory.
+      Also: LS joins the F20 sub-processor disclosure list (ppl-compliance.md:334).
   - id: F21
     slug: hardening-audits-uat
     epic: E4
@@ -180,6 +209,37 @@ queue:
       new phone, with no OTP. The user acknowledged this for the pilot; F21 must
       re-derive it from the code at production scale rather than treat the
       acknowledgment as a closed finding.
+
+  # ---- E3 carve-out: the SMS adapter F11 deliberately deferred ----
+  - id: F54
+    slug: sms-twilio-adapter
+    epic: E3-carveout
+    title: Twilio SMS adapter (real sends)
+    status: queued
+    deps: [F11]
+    note: >-
+      NEW 2026-07-31. F11 shipped the SmsSender port with fake + unconfigured
+      adapters and recorded (sms-foundation.md:148-163) that "the Twilio adapter
+      lands as its own small commit once the account and registered sender exist".
+      The user supplied Twilio credentials 2026-07-31, so it lands now.
+      Scope is genuinely small — the protocol is two members (is_configured,
+      async send(phone, body) -> SendResult). app/notifications/twilio.py over the
+      REST API with httpx (currently a DEV-only dep — promote it), widen
+      settings.sms_provider's Literal to ["fake","twilio"], one elif in
+      _build_sms_sender, and the production boot guard's parity case.
+      Credentials follow the boto3 precedent: read from the process environment,
+      never into Settings (.env.example documents the names).
+      TWO VALUES STILL MISSING (external-applications.md row 4b): the Account SID
+      (AC…) — the REST path is /Accounts/{AccountSid}/Messages.json so the API key
+      pair authenticates but names no account — and the number in E.164, because a
+      PN… resource SID is not accepted as `From`. Build against a faked transport
+      regardless; the values only gate a live send.
+      NOTE the hazard already anticipated: NotificationService._scrub exists
+      because "several SMS SDKs echo the failing request — including the message
+      body — in their exception". Twilio is exactly that shape; the scrub must be
+      tested against a real Twilio error payload, not a synthetic one.
+      Dev default stays SMS_PROVIDER=fake — real keys mean real SMS and real cost.
+      Also: Twilio joins the F20 sub-processor disclosure list.
 
   # ---- SMC console finish (moved here 2026-07-30: user ruled SMC before E5) ----
   # F34 sits first so its prototype gate reaches the user on the very next
@@ -340,7 +400,7 @@ queue:
     status: parked
     deps: [F18, F21]
     spec_gate: user
-    blocker: "refund automation needs the real Grow adapter (F18)"
+    blocker: "refund automation needs a gateway adapter with a refunds API (F18) — UNBLOCKED 2026-07-31: Lemon Squeezy test mode has one, so this can build once F18 lands. Set back to queued when F18 merges."
     note: >-
       Pre-decided #21/#22: tenant-scoped cache keys plus a bounded negative
       cache; k6 targets derived from staging metrics at the 50-tenant horizon.
@@ -566,25 +626,27 @@ queue:
       #48: calendar layered over the existing bookings list API.
 
 user_actions:                   # only the human can clear these; every report re-nags
-  - "Buy the modryn.co.il domain (external-applications.md #2) — unblocks F2 staging and the F21 rows that need it"
-  - "File the Grow merchant application (#3) — the longest lead time left; unblocks F18, then F29"
-  - "Register SMS sender ID 'MODRYN' (#4) — required before any real SMS, including staff OTP login (Q11)"
-  - "File Meta business verification for WhatsApp (pre-decided #42) — long lead time, needed before F46"
+  # Rewritten 2026-07-31: the user supplied Lemon Squeezy + Twilio credentials,
+  # which removed the two longest-standing blockers. What remains is smaller.
+  - "Send the Twilio ACCOUNT SID (AC…) and the phone number in E.164 (#4b) — the only two values F54 is missing; the API key pair alone names no account and a PN… SID is not a valid `From`"
+  - "Buy the modryn.co.il domain (#2) — now the TOP open item: it is the only thing between here and a public staging URL, and it gates the F21 rows that need a real host"
+  - "Rotate the Lemon Squeezy API key + webhook secret and the Twilio API key secret — all were pasted into a chat transcript on 2026-07-31"
+  - "Choose the production Israeli PSP before live money (#3) — Grow/Tranzila/Cardcom; NOT urgent, LS test mode covers every E4 build, and the winner is one adapter file behind F17's port"
+  - "Register SMS sender ID 'MODRYN' (#4) — required before PRODUCTION sends; development runs on the Twilio long-code number"
   - "Get counsel to review the F16 SMS bodies and the F20 privacy default before either goes live"
   - "Find a human Arabic reviewer for legal/policy copy before F45 goes live"
+  - "Meta business verification (#5) — user ruled 2026-07-31 this is the LAST step. Do not re-nag before F46."
 
 in_run_gates:                   # block a specific feature; the user clears them mid-run
-  # OPEN NOW — all three artifacts are written, reviewed and on disk (2026-07-30).
-  # To clear one, say so in any session; the next iteration records the approval in
-  # the spec header, drops the entry's blocker, sets it back to `queued` and builds.
+  # OPEN NOW — artifacts written, reviewed and on disk. To clear one, say so in any
+  # session; the next iteration records the approval in the spec header, drops the
+  # entry's blocker, sets it back to `queued` and builds.
+  # CLEARED 2026-07-31: F17 — Gate 1 approved, all four answers in the spec's
+  # "Gate 1 resolutions"; the entry is `queued` and E4 is unblocked.
   - id: F20
     what: ".planning/specs/ppl-compliance.md — Gate 1 approval (legal surface)"
     asks: 5
     sharpest: "retention_enabled now defaults FALSE, so two security-checklist rows merge amber rather than green. Accept, or overrule back to default-on with no backup to undo an irreversible mass-delete."
-  - id: F17
-    what: ".planning/specs/gateway-port.md — Gate 1 approval (payments surface)"
-    asks: 4
-    sharpest: "A verified webhook landing on an EXPIRED hold with real money taken — honour it or refund it. The one question with no safe default; guessing is worse than waiting."
   - id: F34
     what: ".planning/design/screens/shift-board/prototype.html — design gate (Interview Q2, novel)"
     asks: 8
@@ -601,6 +663,13 @@ rulings_2026_07_30:             # taken in the finish-the-project planning sessi
   - "Build order: finish the SMC console before E5. Queue reordered to match."
   - "F33 QR check-in is KEPT (builds after F20), resolving the SMC epic's self-contradiction."
   - "F15 phone-correction without OTP is ACKNOWLEDGED as shipped for owner AND shift_manager."
+
+rulings_2026_07_31:             # the user supplied credentials; E4 unblocked
+  - "PAYMENTS: Lemon Squeezy TEST MODE is E4's engine behind F17's port. It is a development engine only — LS is merchant-of-record and the deposit is legally the boutique's money, so it can never carry live deposits. The production Israeli PSP is deferred to before-live-money and is one adapter file."
+  - "F17 Gate 1 APPROVED. Q1 no-gateway → hide the deposit and book anyway. Q2 KMS → deferred, accepted unchecked. Q3 payments retention → 7 years. Q4 expired-hold webhook → HONOUR the money and alert the owner; no refund() is added."
+  - "SMS: Twilio credentials supplied; the adapter F11 deferred becomes F54. Two values still missing (Account SID, E.164 number) — they gate a live send, not the build."
+  - "Meta/WhatsApp verification is the LAST step by user ruling. F46 waits on its clock at the end rather than overlapping it."
+  - "Grow is NOT cancelled — it is demoted from 'the blocker' to 'one candidate for the production PSP decision', which now sits after E4 rather than before it."
 ```
 
 ## Run report
