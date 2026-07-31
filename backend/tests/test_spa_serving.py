@@ -111,6 +111,12 @@ class _EmptyStorefrontService:
         return StorefrontDressListView(items=[], total=0, offset=offset, limit=limit)
 
 
+# A dist-root file that app/main.py has never heard of. Vite copies public/
+# verbatim, so this is what "someone adds an og-image" looks like from the
+# backend's side — see test_a_public_file_the_backend_never_heard_of_is_served.
+DRIFT_FILE = "og-image.png"
+
+
 def _build_static(root: Path) -> None:
     """The exact shape `pnpm -r build` + the CI copy leave behind: each app's
     `dist/` contents at `app/static/{app}/`, manage's assets under its own
@@ -120,7 +126,7 @@ def _build_static(root: Path) -> None:
         (app_dir / "assets").mkdir(parents=True)
         (app_dir / "index.html").write_text(html, encoding="utf-8")
         (app_dir / "assets" / f"index-{name}.js").write_text("export {};\n", encoding="utf-8")
-        for public in ("favicon.svg", "favicon-32.png", "apple-touch-icon.png"):
+        for public in ("favicon.svg", "favicon-32.png", "apple-touch-icon.png", DRIFT_FILE):
             (app_dir / public).write_bytes(b"\x00binary\x00")
     (root / "storefront" / "robots.txt").write_text("User-agent: *\n", encoding="utf-8")
 
@@ -199,6 +205,38 @@ def test_public_files_are_served(client: TestClient, path: str) -> None:
     assert client.get(path).status_code == 200, path
 
 
+@pytest.mark.parametrize("path", [f"/{DRIFT_FILE}", f"/manage/{DRIFT_FILE}"])
+def test_a_public_file_the_backend_never_heard_of_is_served(client: TestClient, path: str) -> None:
+    """The dist-root files are DERIVED from the built tree, never listed in
+    app/main.py. A hardcoded list drifts the moment anyone drops a file into
+    either app's `public/`: on the storefront side the unlisted file falls to
+    the catch-all and comes back 200 `text/html` — the shell — which nosniff
+    then makes the browser refuse, so the asset is silently dead with no error
+    anywhere. F49 will add a sitemap.xml, and it must not need a backend commit.
+    """
+    resp = client.get(path)
+    assert resp.status_code == 200, path
+    assert not resp.headers["content-type"].startswith("text/html"), path
+
+
+@pytest.mark.parametrize(
+    "path", ["/", "/about", "/manage", "/favicon.svg", "/robots.txt", "/manage/favicon.svg"]
+)
+def test_the_shells_and_public_files_must_be_revalidated(client: TestClient, path: str) -> None:
+    """These responses carry ETag and Last-Modified and nothing else, which
+    RFC 9111 §4.2.2 makes heuristically cacheable — browsers use ~10% of the
+    document's age. A shell cached that way outlives a deploy and then asks for
+    the hashed bundle names it was built against; the `/assets` Mount is a FULL
+    match, so it answers a hard 404 and the bride gets a blank page with no
+    recovery short of a manual hard reload. `no-cache` still permits the 304 on
+    an unchanged ETag, so the cost is one conditional request, not the bytes.
+
+    The hashed files under `/assets/` are deliberately NOT covered: their names
+    change with their contents, so heuristic caching cannot serve a stale one.
+    """
+    assert client.get(path).headers["cache-control"] == "no-cache", path
+
+
 # --- the guards ---
 
 
@@ -232,10 +270,39 @@ def test_a_post_only_api_path_keeps_its_405(client: TestClient) -> None:
 
 @pytest.mark.parametrize("method", ["HEAD", "OPTIONS"])
 def test_head_and_options_on_a_manage_route_stay_405(client: TestClient, method: str) -> None:
-    """The reason the fallback is a FastAPI @app.get and never a
-    Mount("/", StaticFiles(html=True)): a Mount matches EVERY method, so it would
-    look for a file and answer 404 where test_staff_role_gating expects 405."""
+    """The reason the fallback is a FastAPI route and never a
+    Mount("/", StaticFiles(html=True)): a Mount matches EVERY method and every
+    path, so it would look for a file and answer 404 where
+    test_staff_role_gating.py:519 expects 405. What keeps this 405 is the
+    reserved-segment guard in `_SpaFallbackRoute.matches`, which declines
+    `manage/...` before methods are ever consulted — so the fallback carrying
+    HEAD (see the test below) cannot reach this path either way.
+    """
     assert client.request(method, "/manage/settings").status_code == 405
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/about",
+        "/manage",
+        "/favicon.svg",
+        "/robots.txt",
+        "/manage/favicon.svg",
+        MANAGE_JS,
+        STOREFRONT_JS,
+    ],
+)
+def test_head_answers_wherever_get_serves_a_document(client: TestClient, path: str) -> None:
+    """FastAPI's APIRoute — unlike Starlette's Route — does NOT add HEAD to a
+    GET route, so every route here answered 405 to HEAD while the two
+    StaticFiles Mounts in the same function answered 200: one origin, two
+    answers. RFC 9110 §9.3.2 says a server supporting GET should support HEAD,
+    and the storefront root is a public URL that uptime monitors, CDN origin
+    checks and link-preview crawlers all reach with HEAD first.
+    """
+    assert client.head(path).status_code == 200, path
 
 
 def test_the_fallback_is_the_last_route_create_app_registers(

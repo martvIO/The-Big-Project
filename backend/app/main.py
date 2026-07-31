@@ -261,9 +261,15 @@ STATIC_ROOT = Path(__file__).resolve().parent / "static"
 
 # The API owns these first path segments; the SPA fallback must never claim them.
 _RESERVED_SEGMENTS = frozenset({"manage", "storefront"})
-# Vite copies public/ to the root of dist/. `base: "/manage/"` puts the console's
-# copies under /manage/, which is what keeps the two trees disjoint.
-_PUBLIC_FILES = ("favicon.svg", "favicon-32.png", "apple-touch-icon.png")
+
+# Nothing here is content-hashed, so nothing here may be cached without asking.
+# ETag + Last-Modified alone make a response heuristically cacheable (RFC 9111
+# §4.2.2): a shell cached that way survives a deploy, then requests the hashed
+# bundle names it was built against, and the /assets Mount 404s them — a blank
+# page nobody can recover from but a hard reload. `no-cache` still allows the
+# 304, so the cost is a conditional request rather than the bytes. The hashed
+# files under /assets/ need no header: a new build gives them new names.
+_REVALIDATE = {"cache-control": "no-cache"}
 
 
 class _SpaFallbackRoute(APIRoute):
@@ -296,16 +302,19 @@ class _SpaFallbackRoute(APIRoute):
 
 
 def _serve_file(app: FastAPI, url_path: str, file_path: Path) -> None:
-    """One exact GET route per file. A GET route carries methods == {"GET"}
-    exactly, which is what leaves HEAD and OPTIONS to Starlette's 405 path; a
-    Mount would match every method and take those 405s away."""
+    """One exact route per file. HEAD is spelled out because FastAPI's APIRoute,
+    unlike Starlette's Route, does not add it to a GET route — without it every
+    document here 405s the uptime monitors and link-preview crawlers that reach
+    a public URL with HEAD first, while the /assets Mounts next door answer 200.
+    OPTIONS is still left to Starlette's 405 path, and a Mount is still the
+    wrong tool: it would match every method AND every path under it."""
     if not file_path.is_file():
         return
 
     async def _endpoint() -> FileResponse:
-        return FileResponse(file_path)
+        return FileResponse(file_path, headers=_REVALIDATE)
 
-    app.add_api_route(url_path, _endpoint, methods=["GET"], include_in_schema=False)
+    app.add_api_route(url_path, _endpoint, methods=["GET", "HEAD"], include_in_schema=False)
 
 
 def _register_spas(app: FastAPI) -> None:
@@ -326,10 +335,17 @@ def _register_spas(app: FastAPI) -> None:
         if assets.is_dir():
             app.mount(prefix, StaticFiles(directory=assets), name=f"{app_dir.name}-assets")
 
-    for name in _PUBLIC_FILES:
-        _serve_file(app, f"/manage/{name}", manage / name)
-        _serve_file(app, f"/{name}", storefront / name)
-    _serve_file(app, "/robots.txt", storefront / "robots.txt")
+    # Vite copies public/ verbatim to the root of dist/, so the dist root IS the
+    # list — derived, never hardcoded. A hardcoded tuple drifts the moment
+    # anyone adds an og-image or the sitemap.xml F49 needs: on the storefront
+    # side an unlisted file falls to the catch-all and returns the HTML shell
+    # with a 200, which nosniff then makes the browser refuse. Silently dead.
+    # `base: "/manage/"` puts the console's copies under /manage/, which is what
+    # keeps the two trees disjoint.
+    for prefix, app_dir in (("/manage", manage), ("", storefront)):
+        for entry in sorted(app_dir.iterdir()):
+            if entry.is_file() and entry.name != "index.html":
+                _serve_file(app, f"{prefix}/{entry.name}", entry)
 
     # Exact path, no subtree: apps/manage has no client-side router (App.tsx
     # drives its sections from useState), so exactly one URL is the console and
@@ -339,11 +355,14 @@ def _register_spas(app: FastAPI) -> None:
     storefront_index = storefront / "index.html"
 
     async def _storefront_shell(path: str) -> FileResponse:
-        return FileResponse(storefront_index)
+        return FileResponse(storefront_index, headers=_REVALIDATE)
 
+    # HEAD for the same reason as _serve_file. It cannot cost the API its 405s:
+    # `matches` declines EXEMPT_PATHS and the reserved segments before a method
+    # is ever looked at, so HEAD /manage/settings never reaches this route.
     app.router.routes.append(
         _SpaFallbackRoute(
-            "/{path:path}", _storefront_shell, methods=["GET"], include_in_schema=False
+            "/{path:path}", _storefront_shell, methods=["GET", "HEAD"], include_in_schema=False
         )
     )
 
