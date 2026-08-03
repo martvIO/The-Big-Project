@@ -372,6 +372,35 @@ class AuditAction(StrEnum):
     # cannot say what.
     FITTING_ROOM_DELETED = "fitting_room_deleted"
 
+    # F41's atelier board (D11). Same fact as every block above: audit_log.action
+    # is plain TEXT with no CHECK (0003), so these six need no migration.
+    #
+    # ONE STAGE_ADVANCED VALUE RATHER THAN FIVE, and the split rule is followed
+    # rather than broken. The questions this table gets asked here are "who moved
+    # this ticket, and when" — both one WHERE action = … plus the row's own
+    # `details`. The question a per-stage split would serve, "how many tickets
+    # reached delivered", is answered from the five TIMESTAMP COLUMNS and never
+    # from audit_log, which is the whole point of the derived-state mechanism.
+    # Five values would buy a query nobody runs.
+    #
+    # ⚠ STAGE_UNDONE carries `previous_stamp` and it is LOAD-BEARING in a way
+    # `previous_break_started_at` was not: the five timestamps ARE the trail, so
+    # an un-stamp is the one write in this feature that DESTROYS history, and
+    # this row is the only place it survives. It must be captured into a local
+    # BEFORE the write — the ORM's `evaluate` synchronization stamps NULL onto
+    # the very instance the reader is about to read.
+    #
+    # TICKET_UPDATED's `details` carries changed key NAMES AND NEVER VALUES:
+    # `notes` may hold a bride's measurements, and audit_log has a different
+    # retention clock from the row it describes. Same asymmetry, same reason as
+    # CUSTOMER_UPDATED directly above.
+    ATELIER_TICKET_CREATED = "atelier_ticket_created"
+    ATELIER_TICKET_UPDATED = "atelier_ticket_updated"
+    ATELIER_TICKET_ASSIGNED = "atelier_ticket_assigned"
+    ATELIER_TICKET_STAGE_ADVANCED = "atelier_ticket_stage_advanced"
+    ATELIER_TICKET_STAGE_UNDONE = "atelier_ticket_stage_undone"
+    ATELIER_TICKET_DELETED = "atelier_ticket_deleted"
+
 
 class PlatformAuditAction(StrEnum):
     TENANT_PROVISIONED = "tenant_provisioned"
