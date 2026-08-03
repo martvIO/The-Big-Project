@@ -36,3 +36,11 @@ export const ROLE_LABEL_KEY: Record<StaffRole, string> = {
 export function roleLabelKey(role: string): string | null {
   return role in ROLE_LABEL_KEY ? ROLE_LABEL_KEY[role as StaffRole] : null;
 }
+
+/**
+ * The order the two role `<select>`s offer. Derived from the record's keys so a
+ * sixth role appears in both dropdowns the day it is added — the alternative is
+ * a hand-maintained array that silently omits it, which is the same class of bug
+ * as the ternary this module replaced.
+ */
+export const ROLE_OPTIONS = Object.keys(ROLE_LABEL_KEY) as StaffRole[];

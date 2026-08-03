@@ -4,6 +4,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { Badge, Button, Card, Input, Modal, Select, Skeleton } from "@boutique/ui";
 import { api, ApiError, errorMessage } from "../api";
 import type { CreateStaffRequest, StaffMember, StaffRole, UpdateStaffRequest } from "../api";
+import { ROLE_LABEL_KEY, ROLE_OPTIONS } from "../lib/roles";
 import { validateStaffDraft } from "../validation";
 
 // The four codes this section speaks Hebrew for. Everything else — including
@@ -96,8 +97,13 @@ export function StaffSection({ staffId }: { staffId: string }) {
       ? t(`staff.error.${error.code}`)
       : errorMessage(error);
 
-  const roleWord = (role: StaffRole): string =>
-    role === "owner" ? t("staff.roleOwner") : t("staff.roleShiftManager");
+  // ⚠ Was `role === "owner" ? roleOwner : roleShiftManager`, which returns
+  // «אחראית משמרת» for ANYTHING that is not owner. F57 widened StaffRole to five,
+  // so left alone this labels every seamstress a shift manager on this screen —
+  // the frontend form of "widening the enum widens nothing", and a defect this
+  // feature CREATES rather than inherits. ROLE_LABEL_KEY is Record<StaffRole,
+  // string>, so a sixth role added without a label is a compile error here.
+  const roleWord = (role: StaffRole): string => t(ROLE_LABEL_KEY[role]);
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -239,8 +245,11 @@ export function StaffSection({ staffId }: { staffId: string }) {
                         setEditDraft({ ...editDraft, role: event.target.value as StaffRole })
                       }
                     >
-                      <option value="owner">{t("staff.roleOwner")}</option>
-                      <option value="shift_manager">{t("staff.roleShiftManager")}</option>
+                      {ROLE_OPTIONS.map((value) => (
+                        <option key={value} value={value}>
+                          {t(ROLE_LABEL_KEY[value])}
+                        </option>
+                      ))}
                     </Select>
                   )}
                   <Input
@@ -370,8 +379,11 @@ export function StaffSection({ staffId }: { staffId: string }) {
                 setCreateDraft({ ...createDraft, role: event.target.value as StaffRole })
               }
             >
-              <option value="owner">{t("staff.roleOwner")}</option>
-              <option value="shift_manager">{t("staff.roleShiftManager")}</option>
+              {ROLE_OPTIONS.map((value) => (
+                <option key={value} value={value}>
+                  {t(ROLE_LABEL_KEY[value])}
+                </option>
+              ))}
             </Select>
             <Input
               label={t("staff.passwordLabel")}
