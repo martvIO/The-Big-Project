@@ -46,6 +46,20 @@ MAX_CUSTOMER_NOTES_LENGTH = 2000
 # ILIKE-pattern knob on a role-gated but session-cheap route.
 MAX_SEARCH_TERM_LENGTH = 80
 
+# The booking-history panel's ceiling, and the UI says so when it truncates.
+BOOKING_HISTORY_LIMIT = 50
+
+# STOREFRONT/CATALOG/BOOKING's bounds, RESTATED rather than imported from
+# app.booking — `booking/owner.py:52-58` shows restatement is the house call for
+# exactly this, and the reason MAX_LIST_OFFSET exists at all travels with it:
+# `offset` reaches the driver as `OFFSET $n::BIGINT`, so an unbounded Python int
+# never becomes a 400 — it dies in asyncpg's `int8_encode` as a DataError with
+# no handler above it, i.e. a 500. Clamped in the service, below the router's
+# Query bound, so a non-router caller cannot reach the encoder either.
+MAX_LIST_OFFSET = 1_000_000
+CUSTOMER_LIST_DEFAULT_LIMIT = 50
+CUSTOMER_LIST_MAX_LIMIT = 200
+
 
 def normalize_tags(tags: list[str]) -> list[str]:
     """Trim, drop empties, reject control characters and over-long elements,
