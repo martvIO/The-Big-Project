@@ -131,8 +131,47 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Narrowing a CHECK is refused by Postgres while ANY row holds the value
+    being removed — `ADD CONSTRAINT` validates the whole table. So a downgrade
+    that only swaps constraints back is not a downgrade at all: it works exactly
+    until the feature has been used once, which is precisely when a rollback is
+    wanted. The data has to move first, and each mapping below is chosen to be
+    TRUE in the old schema rather than merely legal.
+
+    Found by running the db suite locally: two leaked `cancelled_by = 'expired'`
+    rows turned SEVEN unrelated round-trip tests red with a check-violation
+    pointing at no test in particular.
+    """
     op.execute("DROP INDEX IF EXISTS idx_bookings_pending_payment")
-    _swap_check("message_log", _MESSAGE_KIND, "kind", _MESSAGE_KINDS_BEFORE)
     op.execute("ALTER TABLE payments DROP COLUMN IF EXISTS redirect_url")
+
+    # `cancelled_by` is NULLABLE, and NULL is the honest answer once 'expired'
+    # stops existing: we no longer have a value that says who cancelled it, and
+    # mapping it to 'customer' would assert something false about a bride who
+    # never touched the booking — the exact misattribution MD5 exists to prevent.
+    op.execute("UPDATE bookings SET cancelled_by = NULL WHERE cancelled_by = 'expired'")
     _swap_check("bookings", _CANCELLED_BY, "cancelled_by", _CANCELLED_BY_BEFORE)
+
+    # A held seat cannot be represented at all in the old schema, and leaving
+    # these rows 'confirmed' would silently promote unpaid holds into real
+    # appointments — the worst available outcome. 'cancelled' frees the seat,
+    # which is what an un-completable hold means. COALESCE so a row that somehow
+    # already carries a cancel timestamp keeps its own.
+    op.execute(
+        "UPDATE bookings SET status = 'cancelled', "
+        "cancelled_at = COALESCE(cancelled_at, now()) "
+        "WHERE status = 'pending_payment'"
+    )
     _swap_check("bookings", _STATUS, "status", _STATUSES_BEFORE)
+
+    # message_log.kind is DELIBERATELY LEFT WIDE, and this is the one place this
+    # downgrade is not a true inverse.
+    #
+    # message_log is an append-only record of messages actually sent. Narrowing
+    # its CHECK would require deleting every 'payment_received_no_slot' row —
+    # destroying evidence that a real SMS reached a real customer, to satisfy
+    # schema symmetry. A CHECK left one value wider permits a value nothing
+    # writes and costs nothing; deleted delivery evidence cannot be recovered.
+    #
+    # Re-running upgrade() after this downgrade is safe: _swap_check drops before
+    # it adds, so the wider constraint is simply replaced by itself.
