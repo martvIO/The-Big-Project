@@ -719,7 +719,7 @@ async def test_a_second_late_delivery_neither_rebinds_nor_texts_again(app_role_u
 # --- the poll ---------------------------------------------------------------
 
 
-async def test_the_poll_answers_the_three_facts_across_the_transition(app_role_url: str) -> None:
+async def test_the_poll_answers_the_four_facts_across_the_transition(app_role_url: str) -> None:
     engine, rig = await _rig(app_role_url)
     try:
         claim, outcome = await _hold(rig)
@@ -729,6 +729,10 @@ async def test_the_poll_answers_the_three_facts_across_the_transition(app_role_u
         assert before.booking_status == BookingStatus.PENDING_PAYMENT.value
         assert before.payment_status == PaymentStatus.PENDING.value
         assert before.paid_at is None
+        # An untouched hold and a declined one share a status; only this field
+        # tells them apart, so it has to be False here for it to mean anything
+        # when it is True below.
+        assert before.declined is False
 
         await rig.settle(session_id=outcome.payment_session_id, transaction_id="txn-1")
 
@@ -738,7 +742,45 @@ async def test_the_poll_answers_the_three_facts_across_the_transition(app_role_u
         assert after.booking_status == BookingStatus.CONFIRMED.value
         assert after.payment_status == PaymentStatus.PAID.value
         assert after.paid_at is not None
+        assert after.declined is False
         assert claim.booking.id is not None
+    finally:
+        await _purge(rig.factory, rig.tenant_id)
+        await engine.dispose()
+
+
+async def test_the_poll_reports_a_decline_the_status_column_cannot_report(
+    app_role_url: str,
+) -> None:
+    """The whole path, because the halves prove nothing apart: `_record_decline`
+    writes `DECLINE_ERROR` and leaves the status at 'pending', and this is the
+    read that turns that column back into the return page's declined screen. A
+    fast test can pin either end; only the real engine proves the string survives
+    the round trip and that the hold is still hers to retry when it does."""
+    engine, rig = await _rig(app_role_url)
+    try:
+        claim, outcome = await _hold(rig)
+        await rig.settle(session_id=outcome.payment_session_id, transaction_id="txn-1", paid=False)
+
+        facts = await rig.deposits.payment_status(
+            rig.tenant_id, provider_session_id=outcome.payment_session_id
+        )
+        assert facts.declined is True
+        # The seat is STILL HERS: the screen may offer the same checkout link,
+        # and a retried card settles this very hold rather than a second one.
+        assert facts.booking_status == BookingStatus.PENDING_PAYMENT.value
+        assert facts.payment_status == PaymentStatus.PENDING.value
+        assert facts.paid_at is None
+        assert claim.booking.id is not None
+
+        # And it stops being a decline the moment the retry lands, without any
+        # writer clearing `error`.
+        await rig.settle(session_id=outcome.payment_session_id, transaction_id="txn-2")
+        retried = await rig.deposits.payment_status(
+            rig.tenant_id, provider_session_id=outcome.payment_session_id
+        )
+        assert retried.declined is False
+        assert retried.payment_status == PaymentStatus.PAID.value
     finally:
         await _purge(rig.factory, rig.tenant_id)
         await engine.dispose()

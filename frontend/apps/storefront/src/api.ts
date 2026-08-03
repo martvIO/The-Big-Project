@@ -328,6 +328,11 @@ export interface PaymentStatusResponse {
   // "pending" | "paid" | "failed" | "expired" | …
   payment_status: string;
   paid_at: string | null;
+  // Her card was refused and the hold is still hers to retry. Its own field
+  // because `payment_status` cannot carry it: a declined hold is left `pending`
+  // on purpose, so the seat stays held until the sweeper's own clock frees it
+  // and a retried card settles the same hold rather than opening a second one.
+  declined: boolean;
 }
 
 // --- manage wire types (mirror backend/app/booking/schemas.py) ---

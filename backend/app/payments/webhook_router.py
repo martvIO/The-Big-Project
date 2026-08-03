@@ -58,7 +58,12 @@ from app.models.constants import AuditAction, BookingStatus, PaymentStatus
 from app.models.payment import Payment
 from app.notifications.service import WallClock
 from app.payments.base import GatewayNotConfiguredError, WebhookEvent
-from app.payments.service import GatewayCredentialService, PaymentService, Settlement
+from app.payments.service import (
+    DECLINE_ERROR,
+    GatewayCredentialService,
+    PaymentService,
+    Settlement,
+)
 from app.storefront.validation import BOUTIQUE_TIMEZONE
 from app.tenancy.middleware import TenantContext, get_current_tenant
 
@@ -118,6 +123,26 @@ def deposit_reaction(settlement: Settlement) -> DepositReaction:
     return DepositReaction.IGNORE
 
 
+def is_declined(payment: Payment) -> bool:
+    """Her card was refused and the hold is still hers to retry.
+
+    **The discriminator is `error`, not `status`, and that is not a shortcut.**
+    F17 leaves a declined hold at 'pending' on purpose — `_record_decline` says
+    why at length — so `status` cannot tell "she was declined" apart from "she
+    has not paid yet", and the only value that ever means declined ('failed') is
+    written solely by `record_unavailable`, which leaves `provider_session_id`
+    NULL by construction and so can never be reached by this poll's lookup at
+    all. `DECLINE_ERROR` is the one fact on the row that carries the answer.
+
+    `record_error` OVERWRITES the column on every event, which is exactly right
+    here: the field means "the last thing that happened to this hold". A decline
+    followed by an amount mismatch is no longer a decline, and the equality
+    against the constant — rather than a substring — is what keeps the mismatch,
+    duplicate-transaction and late-settlement writers out of this answer.
+    """
+    return payment.status == PaymentStatus.PENDING.value and payment.error == DECLINE_ERROR
+
+
 @dataclasses.dataclass(frozen=True)
 class PaymentStatusFacts:
     """What the return page polls for, and deliberately nothing else: no name,
@@ -127,6 +152,7 @@ class PaymentStatusFacts:
     booking_status: str
     payment_status: str
     paid_at: datetime.datetime | None
+    declined: bool
 
 
 class PaymentStatusRequest(BaseModel):
@@ -151,6 +177,7 @@ class PaymentStatusResponse(BaseModel):
     booking_status: str
     payment_status: str
     paid_at: datetime.datetime | None
+    declined: bool
 
 
 class DepositBookingService:
@@ -220,6 +247,7 @@ class DepositBookingService:
                 booking_status=booking.status,
                 payment_status=payment.status,
                 paid_at=payment.paid_at,
+                declined=is_declined(payment),
             )
 
     # --- the confirm transaction (D3, D12, D13) ----------------------------
@@ -547,4 +575,5 @@ async def payment_status(
         booking_status=facts.booking_status,
         payment_status=facts.payment_status,
         paid_at=facts.paid_at,
+        declined=facts.declined,
     )

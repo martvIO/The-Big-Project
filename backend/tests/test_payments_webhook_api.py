@@ -35,12 +35,13 @@ from app.main import create_app
 from app.models.constants import BookingStatus, PaymentStatus
 from app.models.payment import Payment
 from app.payments.base import GatewayWebhookInvalidError
-from app.payments.service import Settlement
+from app.payments.service import DECLINE_ERROR, Settlement
 from app.payments.webhook_router import (
     SIGNATURE_HEADER,
     DepositReaction,
     PaymentStatusFacts,
     deposit_reaction,
+    is_declined,
 )
 from app.payments.webhook_router import (
     router as webhook_router,
@@ -64,7 +65,9 @@ RAW_BODY = b'{"provider_transaction_id":"txn-9",   "paid": true,"provider_sessio
 SIGNATURE = "0f" * 32
 
 
-def _payment(status: str, *, paid_at: datetime.datetime | None = None) -> Payment:
+def _payment(
+    status: str, *, paid_at: datetime.datetime | None = None, error: str | None = None
+) -> Payment:
     return Payment(
         id=uuid.uuid4(),
         tenant_id=TENANT.id,
@@ -74,6 +77,7 @@ def _payment(status: str, *, paid_at: datetime.datetime | None = None) -> Paymen
         status=status,
         provider_session_id=SESSION_ID,
         paid_at=paid_at,
+        error=error,
     )
 
 
@@ -89,6 +93,7 @@ class StubDeposits:
             booking_status=BookingStatus.CONFIRMED.value,
             payment_status=PaymentStatus.PAID.value,
             paid_at=PAID_AT,
+            declined=False,
         )
 
     async def settle(self, tenant: Any, *, body: bytes, signature: str) -> None:
@@ -188,6 +193,39 @@ def test_a_paid_row_confirms_even_when_nothing_was_newly_settled() -> None:
     that is already confirmed."""
     stranded = Settlement(payment=_payment(PaymentStatus.PAID.value), newly_settled=False)
     assert deposit_reaction(stranded) == DepositReaction.CONFIRM
+
+
+# --- the decline discriminator, also with no I/O -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "expected"),
+    [
+        (PaymentStatus.PENDING.value, DECLINE_ERROR, True),
+        # Still pending, but the last thing that happened was NOT a decline.
+        # `record_error` overwrites the column on every event, so these three
+        # share the row shape and only the string tells them apart.
+        (PaymentStatus.PENDING.value, "amount mismatch: webhook claimed 1", False),
+        (PaymentStatus.PENDING.value, "late settlement: hold was expired", False),
+        (PaymentStatus.PENDING.value, None, False),
+        # A retried card settled the same hold. `settle` does not clear `error`,
+        # so the string survives and the STATUS is what must win here.
+        (PaymentStatus.PAID.value, DECLINE_ERROR, False),
+        # The sweeper freed the seat: the screen owes her the expired answer and
+        # its rebook link, never a retry link onto a hold that no longer exists.
+        (PaymentStatus.EXPIRED.value, DECLINE_ERROR, False),
+    ],
+)
+def test_a_decline_is_read_off_the_error_column_because_the_status_cannot_say_it(
+    status: str, error: str | None, expected: bool
+) -> None:
+    """F17 leaves a declined hold at `pending` deliberately — the sweeper frees
+    the seat on its own clock and a retried card can still settle the same hold
+    — so `status` cannot distinguish "she was declined" from "she has not paid
+    yet". `error` is the only fact on the row that can, and pinning the exact
+    string to `DECLINE_ERROR` is what stops the amount-mismatch and late-
+    settlement writers from being read as declines."""
+    assert is_declined(_payment(status, error=error)) is expected
 
 
 # --- D9's status contract ---------------------------------------------------
@@ -303,7 +341,7 @@ def test_the_webhook_is_not_under_manage() -> None:
 # --- the poll ---------------------------------------------------------------
 
 
-def test_the_poll_answers_the_three_facts_and_no_pii() -> None:
+def test_the_poll_answers_the_four_facts_and_no_pii() -> None:
     client, deposits = _client()
     with client:
         resp = client.post(STATUS_PATH, json={"payment_session_id": SESSION_ID})
@@ -312,8 +350,28 @@ def test_the_poll_answers_the_three_facts_and_no_pii() -> None:
         "booking_status": BookingStatus.CONFIRMED.value,
         "payment_status": PaymentStatus.PAID.value,
         "paid_at": "2026-08-03T09:30:00Z",
+        "declined": False,
     }
     assert deposits.status_calls == [(TENANT.id, SESSION_ID)]
+
+
+def test_the_poll_carries_the_decline_the_status_column_cannot_carry() -> None:
+    """Without this field the return page has no reachable declined state at
+    all: a declined hold stays `pending`, so the screen would show the confirming
+    skeleton for its whole attempt budget and then hand her the phone — while the
+    retry link it withheld is the recovery that would actually have worked."""
+    stub = StubDeposits()
+    stub.facts = PaymentStatusFacts(
+        booking_status=BookingStatus.PENDING_PAYMENT.value,
+        payment_status=PaymentStatus.PENDING.value,
+        paid_at=None,
+        declined=True,
+    )
+    client, _ = _client(stub)
+    with client:
+        resp = client.post(STATUS_PATH, json={"payment_session_id": SESSION_ID})
+    assert resp.status_code == 200
+    assert resp.json()["declined"] is True
 
 
 def test_the_poll_is_keyed_on_the_session_id_not_the_manage_token() -> None:

@@ -57,6 +57,14 @@ def _utc_now() -> datetime.datetime:
     return datetime.datetime.now(datetime.UTC)
 
 
+# `_record_decline` writes this and `is_declined` reads it, and they must be the
+# SAME string: a declined hold deliberately stays `pending` (see the docstring
+# there), so this column is the only place the row records that her card was
+# refused. Two hand-typed copies would silently stop the return page from ever
+# reaching its declined state.
+DECLINE_ERROR = "declined: webhook reported the charge was not paid"
+
+
 class GatewayThrottledError(Exception):
     """The connect or validate budget tripped. Its own class like every other
     throttle in this codebase; the F21 reparenting note on StorefrontThrottledError
@@ -746,10 +754,14 @@ class PaymentService:
         Leaving the hold pending is the point: F19's expiry sweeper frees the
         seat on its own clock, and a retried card can still settle the same hold.
         Writing 'failed' here would pre-empt that policy exactly as the mismatch
-        branch refuses to."""
-        marked = await self._payments.record_error(
-            session, tenant_id, row.id, error="declined: webhook reported the charge was not paid"
-        )
+        branch refuses to.
+
+        Which makes `DECLINE_ERROR` load-bearing rather than a log line: because
+        the status stays 'pending', this column is the ONLY fact on the row that
+        says her card was refused, and `webhook_router.is_declined` reads it back
+        to serve the return page's declined screen. Change the string in one
+        place and that screen silently stops rendering."""
+        marked = await self._payments.record_error(session, tenant_id, row.id, error=DECLINE_ERROR)
         await self._audit.record(
             session,
             tenant_id=tenant_id,

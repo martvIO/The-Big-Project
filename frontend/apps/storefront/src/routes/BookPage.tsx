@@ -178,7 +178,12 @@ function payOutcomeOf(facts: PaymentStatusResponse): PayOutcome {
   // crash window a redelivery repairs — confirming an appointment the server
   // has not confirmed is exactly the claim this screen must not make.
   if (facts.booking_status === "confirmed") return "paid";
-  if (facts.payment_status === "failed") return "declined";
+  // NOT a status value, because no status value can say it. A declined hold is
+  // deliberately left `pending` server-side so the sweeper owns the seat and a
+  // retried card settles the SAME hold — which is the retry this screen offers.
+  // `payment_status: "failed"` exists but is written only where no provider
+  // session was ever minted, so it can never reach this poll at all.
+  if (facts.declined) return "declined";
   if (facts.payment_status === "expired" || facts.booking_status === "cancelled") return "expired";
   return "awaiting";
 }

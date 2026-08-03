@@ -179,7 +179,13 @@ function depositBooking(overrides: Partial<BookingCreateResponse> = {}): Booking
 function payFacts(
   overrides: Partial<Awaited<ReturnType<typeof api.paymentStatus>>> = {},
 ): Awaited<ReturnType<typeof api.paymentStatus>> {
-  return { booking_status: "pending_payment", payment_status: "pending", paid_at: null, ...overrides };
+  return {
+    booking_status: "pending_payment",
+    payment_status: "pending",
+    paid_at: null,
+    declined: false,
+    ...overrides,
+  };
 }
 
 function pending<T>(): Promise<T> {
@@ -2547,7 +2553,15 @@ describe("BookPage pay step", () => {
   it("offers the SAME link on a decline, and promises no fresh attempt or new price", async () => {
     // D11b/D8: a retry converges onto the same hold and returns the same link,
     // so the copy may not imply a second booking or a second amount.
-    paymentStatus.mockResolvedValue(payFacts({ payment_status: "failed" }));
+    //
+    // The payload is the one the BACKEND actually emits, and the distinction is
+    // the whole reason this state was unreachable in review: a declined hold
+    // stays `pending` on purpose so the sweeper owns the seat and a retried card
+    // settles the same hold. `payment_status: "failed"` is written only by
+    // `record_unavailable`, which leaves `provider_session_id` NULL and so can
+    // never be found by this poll at all — driving the screen from it pinned a
+    // shape no server response can have.
+    paymentStatus.mockResolvedValue(payFacts({ declined: true }));
     await bookDeposit();
 
     await findVisiblePay(i18n.t("booking.payDeclined"));
@@ -2658,7 +2672,7 @@ describe("BookPage pay step", () => {
   });
 
   it("never prints a raw status value onto a Hebrew screen", async () => {
-    paymentStatus.mockResolvedValue(payFacts({ payment_status: "failed" }));
+    paymentStatus.mockResolvedValue(payFacts({ declined: true }));
     await bookDeposit();
 
     await findVisiblePay(i18n.t("booking.payDeclined"));
