@@ -805,3 +805,390 @@ def test_no_surname_reaches_the_wire(app_role_url: str) -> None:
             await engine.dispose()
 
     asyncio.run(check())
+
+
+# --- F58's five writers, the refusal projection and the panel's two reads -----
+#
+# ⚠ WHAT THIS MODULE CAN AND CANNOT SEE — mutations RUN, not reasoned about.
+#
+# Every test here is single-threaded, so it proves the STATEMENT and never the
+# INTERLEAVE. `AND skip_count = :seen_skip_count` does red here (a test can hand
+# it a stale count deliberately) but what it red-flags is only that the conjunct
+# is spelled; the DAMAGE it prevents — a woman removed by two ordinary single
+# taps with the confirm never rendered — needs two transactions and is
+# `test_queue_dispatch_db.py`'s. `skip_count = skip_count + 1` cannot lose an
+# update here at all, and is pinned there too.
+#
+# The plan predicted the `seen_skip_count` mutation would stay GREEN in this
+# module. It was wrong, and in the safe direction.
+
+
+def test_claim_by_id_takes_the_named_ticket_and_refuses_every_other_state(
+    app_role_url: str,
+) -> None:
+    """D4's conditional UPDATE. Rowcount 0 — spelled `None` — on a non-`waiting`,
+    soft-deleted, foreign-tenant or missing ticket, which is what makes the
+    service's refusal read the ONLY place those four are told apart."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        other_tenant = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                waiting = await _seed(session, tenant_id, created_at=T1)
+                served = await _seed(
+                    session, tenant_id, created_at=T2, status=QueueTicketStatus.IN_SERVICE.value
+                )
+                deleted = await _seed(session, tenant_id, created_at=T3, deleted_at=T3)
+
+                taken = await repo.claim_by_id(session, tenant_id, waiting.id)
+                assert taken is not None
+                assert (taken.id, taken.name, taken.visit_type, taken.called_at) == (
+                    waiting.id,
+                    "נועה",
+                    VisitType.BRIDE.value,
+                    None,
+                )
+                assert await repo.claim_by_id(session, tenant_id, waiting.id) is None
+                assert await repo.claim_by_id(session, tenant_id, served.id) is None
+                assert await repo.claim_by_id(session, tenant_id, deleted.id) is None
+                assert await repo.claim_by_id(session, tenant_id, uuid.uuid4()) is None
+                assert await repo.claim_by_id(session, other_tenant, waiting.id) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_close_moves_an_in_service_ticket_to_done_and_never_resurrects_a_removed_one(
+    app_role_url: str,
+) -> None:
+    """⚠ `AND status = 'in_service'` is the conjunct, and the removed row is what
+    proves it. A manager who removed a woman mid-fitting must not have that
+    removal rewritten as `done` when the staffer frees the room, and rowcount 0
+    there raises nothing — the room is free, which is what she asked for."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                served = await _seed(
+                    session, tenant_id, created_at=T1, status=QueueTicketStatus.IN_SERVICE.value
+                )
+                removed = await _seed(
+                    session, tenant_id, created_at=T2, status=QueueTicketStatus.REMOVED.value
+                )
+
+                assert await repo.close(session, tenant_id, served.id) is True
+                assert await repo.close(session, tenant_id, served.id) is False
+                assert await repo.close(session, tenant_id, removed.id) is False
+
+                await session.refresh(served)
+                await session.refresh(removed)
+                assert served.status == QueueTicketStatus.DONE.value
+                assert removed.status == QueueTicketStatus.REMOVED.value
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_the_first_skip_requeues_her_and_clears_the_call_and_the_second_removes_her(
+    app_role_url: str,
+) -> None:
+    """D6, in one statement, and three of its parts are asserted here.
+
+    ⚠ `called_at = NULL` is the one a reader is most likely to think decorative:
+    she was called and did not come — that is WHY she is being skipped — so
+    leaving the stamp would highlight her on F59's public wall board at the BACK
+    of the queue and leave her own page reading «אפשר לגשת לדלפק» indefinitely.
+
+    ⚠ The `CASE` reads the PRE-update `skip_count`, because every SET expression
+    in one UPDATE is evaluated against the old row. `skip_count + 1 >=
+    SKIP_LIMIT` therefore means "this is her second skip", which is the rule.
+    """
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                ticket = await _seed(session, tenant_id, created_at=T1, called_at=CALLED_AT)
+
+                first = await repo.skip(
+                    session, tenant_id, ticket.id, now=REQUEUED, seen_skip_count=0
+                )
+                assert first is not None
+                assert (first.skip_count, first.status) == (1, QueueTicketStatus.WAITING.value)
+                await session.refresh(ticket)
+                assert ticket.requeued_at == REQUEUED
+                assert ticket.called_at is None
+
+                second = await repo.skip(session, tenant_id, ticket.id, now=T5, seen_skip_count=1)
+                assert second is not None
+                assert (second.skip_count, second.status) == (2, QueueTicketStatus.REMOVED.value)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_a_skip_sending_a_stale_count_writes_nothing(app_role_url: str) -> None:
+    """⚠ THE CONJUNCT THAT STOPS TWO ORDINARY SINGLE TAPS REMOVING A CUSTOMER.
+
+    Single-threaded, this only shows that the predicate is spelled at all — the
+    race it exists for is `test_queue_dispatch_db.py`'s
+    `test_a_concurrent_second_first_skip_is_refused_rather_than_removing_her`,
+    where dropping the conjunct removes a woman with the confirm never shown.
+    """
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                ticket = await _seed(session, tenant_id, created_at=T1)
+
+                assert (
+                    await repo.skip(session, tenant_id, ticket.id, now=REQUEUED, seen_skip_count=1)
+                    is None
+                )
+                await session.refresh(ticket)
+                assert ticket.skip_count == 0
+                assert ticket.requeued_at is None
+                assert ticket.status == QueueTicketStatus.WAITING.value
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_a_second_call_keeps_the_first_timestamp_and_leaves_her_waiting(
+    app_role_url: str,
+) -> None:
+    """⚠ `status` IS NOT TOUCHED, and F59's spec records that its board breaks if
+    it is: D3's predicate there is `status == 'waiting'`, so flipping the status
+    at call time drops the called row off the wall board the instant it is
+    called — the opposite of the feature. The one contract F59 could not enforce
+    for itself.
+
+    `called_at IS NULL` in the predicate is `release()`'s shipped idempotence one
+    table over: a re-call keeps the FIRST stamp rather than moving it.
+    """
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                ticket = await _seed(session, tenant_id, created_at=T1)
+
+                first = await repo.call(session, tenant_id, ticket.id, now=CALLED_AT)
+                assert first is not None
+                assert first.called_at == CALLED_AT
+                assert await repo.call(session, tenant_id, ticket.id, now=T5) is None
+
+                await session.refresh(ticket)
+                assert ticket.called_at == CALLED_AT
+                assert ticket.status == QueueTicketStatus.WAITING.value
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_remove_writes_removed_once_and_only_from_waiting(app_role_url: str) -> None:
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                ticket = await _seed(session, tenant_id, created_at=T1)
+                served = await _seed(
+                    session, tenant_id, created_at=T2, status=QueueTicketStatus.IN_SERVICE.value
+                )
+
+                assert await repo.remove(session, tenant_id, ticket.id) is True
+                assert await repo.remove(session, tenant_id, ticket.id) is False
+                assert await repo.remove(session, tenant_id, served.id) is False
+
+                await session.refresh(ticket)
+                await session.refresh(served)
+                assert ticket.status == QueueTicketStatus.REMOVED.value
+                assert served.status == QueueTicketStatus.IN_SERVICE.value
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_status_of_answers_the_pair_the_three_refusal_tables_need(app_role_url: str) -> None:
+    """A PROJECTION and never `by_id`, and the reason is not the answer — the two
+    return the same facts. `by_id` is a `select(QueueTicket)` ENTITY read, so it
+    would pull `phone` and `marketing_opt_in_at` into the same session as an
+    ORM-enabled UPDATE and put a `QueueTicket` in the identity map at exactly the
+    moment `_refreshed`'s docstring says this repo has been bitten three times.
+
+    ⚠ MUTATION PERFORMED, and it did NOT come back the way the plan predicted.
+    Reimplementing `status_of` as `by_id(...)` → `(row.status, row.skip_count)`
+    reds the last two lines — `('waiting', 0)` for a ticket that has just been
+    skipped to 1. The entity read hands back the instance already in the identity
+    map, which `synchronize_session=False` deliberately did not refresh, so the
+    refusal read would answer the PRE-skip count and `skip` would refuse a caller
+    who sent the value it had just been told. The minimisation argument was the
+    stated reason for the projection; this is the second one, and it is a live
+    defect rather than a policy.
+    """
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                ticket = await _seed(session, tenant_id, created_at=T1)
+                deleted = await _seed(session, tenant_id, created_at=T2, deleted_at=T2)
+
+                assert await repo.status_of(session, tenant_id, ticket.id) == (
+                    QueueTicketStatus.WAITING.value,
+                    0,
+                )
+                assert await repo.status_of(session, tenant_id, deleted.id) is None
+                assert await repo.status_of(session, tenant_id, uuid.uuid4()) is None
+                assert await repo.status_of(session, uuid.uuid4(), ticket.id) is None
+
+                await repo.skip(session, tenant_id, ticket.id, now=REQUEUED, seen_skip_count=0)
+                assert await repo.status_of(session, tenant_id, ticket.id) == (
+                    QueueTicketStatus.WAITING.value,
+                    1,
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_the_panel_read_is_the_boards_rows_in_the_boards_order(app_role_url: str) -> None:
+    """⚠ `_live_waiting()` and `_sort_key()` CALLED, never re-spelled — the same
+    noise the board's own agreement test seeds, for the same reason: a one-sided
+    widening has to SHIFT a position, and an all-waiting seed makes the assertion
+    blind. Every noise row is earlier than «אלף».
+
+    The `phone` column IS selected and never leaves this list: it is the key
+    D9's duplicate flag groups on, computed in the service, and no wire shape
+    carries it.
+    """
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                await _seed(session, tenant_id, created_at=T3, name="גימל")
+                await _seed(session, tenant_id, created_at=T1, name="אלף", called_at=CALLED_AT)
+                await _seed(session, tenant_id, created_at=T2, name="בית")
+                await _seed(
+                    session,
+                    tenant_id,
+                    created_at=Y1,
+                    status=QueueTicketStatus.DONE.value,
+                    name="סיימה",
+                )
+                await _seed(
+                    session,
+                    tenant_id,
+                    created_at=Y1,
+                    status=QueueTicketStatus.IN_SERVICE.value,
+                    name="בטיפול",
+                )
+                await _seed(session, tenant_id, created_at=Y1, deleted_at=T1, name="נמחקה")
+                await _seed(session, tenant_id, created_at=Y2, queue_day=YESTERDAY, name="אתמול")
+
+                rows = await repo.waiting_for_panel(session, tenant_id, TODAY, limit=100)
+
+                assert [row.name for row in rows] == ["אלף", "בית", "גימל"]
+                assert [row.called_at for row in rows] == [CALLED_AT, None, None]
+                assert [row.skip_count for row in rows] == [0, 0, 0]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_the_panel_read_is_capped_and_the_cap_is_what_truncated_is_derived_from(
+    app_role_url: str,
+) -> None:
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                for index in range(4):
+                    await _seed(
+                        session,
+                        tenant_id,
+                        created_at=T1 + datetime.timedelta(minutes=index),
+                        name=f"ממתינה {index}",
+                    )
+
+                assert len(await repo.waiting_for_panel(session, tenant_id, TODAY, limit=3)) == 3
+                assert len(await repo.waiting_for_panel(session, tenant_id, TODAY, limit=9)) == 4
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_the_in_service_projection_is_todays_phones_and_nothing_else(app_role_url: str) -> None:
+    """⚠ `_live_waiting` CANNOT be reused here and that is the whole point of the
+    second statement: its third predicate is `status == 'waiting'` and these are
+    the rows that are NOT. A phone-only projection — no name, no id, nothing that
+    could be rendered by accident."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            served, waiting_phone, yesterday, swept = (_phone() for _ in range(4))
+            async with tenant_session(factory, tenant_id) as session:
+                await _seed(
+                    session,
+                    tenant_id,
+                    created_at=T1,
+                    status=QueueTicketStatus.IN_SERVICE.value,
+                    phone=served,
+                )
+                await _seed(session, tenant_id, created_at=T2, phone=waiting_phone)
+                await _seed(
+                    session,
+                    tenant_id,
+                    created_at=Y1,
+                    queue_day=YESTERDAY,
+                    status=QueueTicketStatus.IN_SERVICE.value,
+                    phone=yesterday,
+                )
+                await _seed(
+                    session,
+                    tenant_id,
+                    created_at=T3,
+                    status=QueueTicketStatus.IN_SERVICE.value,
+                    deleted_at=T3,
+                    phone=swept,
+                )
+
+                assert await repo.in_service_phones(session, tenant_id, TODAY) == {served}
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
