@@ -98,6 +98,7 @@ from app.payments.base import (
     PaymentGateway,
 )
 from app.payments.fake import FakeGateway
+from app.payments.fake_pay import FakePayService, register_fake_pay
 from app.payments.lemonsqueezy import LEMONSQUEEZY_PROVIDER, LemonSqueezyGateway
 from app.payments.router import router as gateway_router
 from app.payments.secretbox import (
@@ -742,6 +743,12 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         credentials=app.state.gateway_credential_service,
         comms=app.state.booking_comms_service,
     )
+    # Built unconditionally, REGISTERED conditionally: the guard is one place
+    # (register_fake_pay), and two references cost nothing on a deployment that
+    # never routes to them. F18 deletes this line with the module.
+    app.state.fake_pay_service = FakePayService(
+        get_session_factory(), credentials=app.state.gateway_credential_service
+    )
 
     @app.exception_handler(TenantNotResolvedError)
     async def _tenant_not_resolved(request: Request, exc: TenantNotResolvedError) -> JSONResponse:
@@ -1107,6 +1114,14 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # burst would turn a transient outage into permanently unconfirmed bookings
     # and unrecorded money.
     app.include_router(webhook_router)
+    # F19 D21, and a dev harness rather than a surface: FakeGateway redirects to
+    # /fake-pay and posts no webhook of its own, so without this page every
+    # staging deposit lands on a 404 and is swept into `cancelled` one tick
+    # later. Registered ONLY when the fake gateway is the configured provider,
+    # which Settings._forbid_fake_payment_paths_in_production already makes
+    # impossible in production. F18 DELETES this line and app/payments/fake_pay.py
+    # when a real adapter's hosted page replaces it.
+    register_fake_pay(app, settings)
     # LAST, after every router: the mounts and the catch-all only ever see what
     # no API route claimed.
     _register_spas(app)
