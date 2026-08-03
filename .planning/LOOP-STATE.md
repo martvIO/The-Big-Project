@@ -22,8 +22,21 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F57                    # floor program iteration 2 of 10, started 2026-07-31.
+current: F57                    # floor program iteration 2 of 10 — MID-FLIGHT, interrupted 2026-07-31.
                                 # F34 MERGED (PR #32) 2026-07-31 — its merge unblocked this entry.
+                                # INTERRUPTED BY A USAGE LIMIT, NOT BY A FAILURE. Do not increment
+                                # `attempts` and do not reset to `queued` — the branch has real work.
+                                # RESUME AT PLAN TASK 3. State on feature/floor-staff-roles:
+                                #   1a90ac7  docs(planning): F57 spec amendments (Task 0)
+                                #   727550d  feat(auth): widen StaffRole + break_started_at (Task 2)
+                                # Task 1 (deck reconciliation) was folded into 1a90ac7.
+                                # UNCOMMITTED in the worktree, half-written, DO NOT TRUST AS DONE:
+                                #   backend/tests/test_floor_db.py  (new, Task 3/8, incomplete)
+                                #   backend/tests/conftest.py       (modified — inspect before keeping)
+                                # Read both before continuing; finish or discard them deliberately.
+                                # Then Tasks 3-8 (backend), 9-12 (frontend), 13 (gates).
+                                # Migration 0015 is already written and committed in 727550d —
+                                # verify with `alembic heads` rather than re-deriving it.
                                 # F56 merged (PR #30), F52 merged (PR #28) 2026-07-31.
                                 # RE-PRIORITISED 2026-07-31: the FLOOR-MANAGEMENT PROGRAM now sits at the top of
                                 # `queue:` and preempts everything. Next pick is F34, then F57, F36, F33, F58,
