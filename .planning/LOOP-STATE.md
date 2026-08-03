@@ -1483,6 +1483,41 @@ queue:
       Pre-decided #46: build-time prerender + sitemap + per-tenant robots.txt, not SSR.
       #48: calendar layered over the existing bookings list API.
 
+deployment_gates:               # MERGED code that must NOT be switched on yet, and what clears it.
+                                # Added 2026-08-03 because this was recorded only inside a spec, and
+                                # "merged" was reading as "launchable" in this file. It is not the
+                                # same thing, and the run report has to say so.
+  - feature: F33
+    gate: "merges and is fully tested, but is NOT enabled for a live pilot tenant"
+    cleared_by: F58
+    why: >-
+      Ruling 4, qr-walkin-queue.md:13 and its «Deployment ordering» section. Three
+      findings collapse into one ordering constraint: F33 writes queue tickets that
+      NO SHIPPED SURFACE RENDERS; a duplicate ticket is a normal outcome under
+      Ruling 3 and NOTHING in F33 can merge or remove one; and the position page's
+      success terminal is unreachable because nothing in F33 writes `done` or
+      `removed`. F58's waitlist panel is the first surface that can see the queue,
+      and therefore the first that can fix it.
+  - feature: F59
+    gate: "merges, but the TV does not go on a wall"
+    cleared_by: F58
+    why: >-
+      Inherits F33's gate rather than adding a second one (public-queue-board.md
+      D10(4)). Sharper here, and it is a PRIVACY point as much as a usefulness one:
+      with no writer for `called_at` or the status column, nothing is ever
+      highlighted, the board only grows, and because the order is arrival order and
+      the cap is five rows, THE FIVE NAMES ON THE SCREEN ARE THE DAY'S FIVE EARLIEST
+      CHECK-INS AND NEVER CHANGE FROM ABOUT 09:15 TO MIDNIGHT. A woman who arrived at
+      09:00 and left at 10:00 is still on a public screen at 17:00. Publishing that
+      all day on an unauthenticated URL is not «לצורך ניהול התור בלבד», which is the
+      purpose limitation the shipped check-in notice promises her.
+      Also: the kiosk runs ONE full-screen tab with screen-blanking disabled — the
+      poll stops on `document.hidden` by design, which is right for a phone and wrong
+      for a wall.
+  # WHAT THIS MEANS FOR THE RUN: F58 is not just the next floor feature, it is the
+  # CRITICAL PATH — two already-merged features are inert until it lands. It is
+  # blocked only on F36, which is building now.
+
 user_actions:                   # only the human can clear these; every report re-nags
   # Rewritten 2026-07-31: the user supplied Lemon Squeezy + Twilio credentials,
   # which removed the two longest-standing blockers. What remains is smaller.
