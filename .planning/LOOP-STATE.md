@@ -22,15 +22,32 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F57, F33               # TWO FEATURES IN FLIGHT, in two sessions, in two worktrees.
+current: F57, F33, F19          # THREE FEATURES IN FLIGHT, in three sessions, in three worktrees.
                                 # F33 was started 2026-08-03 by a SECOND session, deliberately, because
                                 # F36 — the next entry in file order — deps on F57 and cannot run beside
                                 # it. F33's deps [F5,F9,F10,F13] are all merged history, so it is the
                                 # loop's own pick (first queued entry whose deps are all merged).
-                                # THE ONE COUPLING IS THE MIGRATION NUMBER. main's head is 0014; F57's
-                                # branch holds 0015. F33 therefore lands 0016/down_revision 0015 and
-                                # MUST NOT OPEN ITS PR BEFORE F57 MERGES — CI tests the merge result and
-                                # two 0015s is an alembic multiple-heads error that reads as a mystery.
+                                # F19 was started 2026-08-03 by a THIRD session on the same reasoning:
+                                # every remaining floor-block entry (F36, F37, F41, F42, F58, F59) deps
+                                # on F57 or F33, and F60 — the only floor entry that does not — is the
+                                # brief's lowest-priority item and wants a hint step on F33's own
+                                # /checkin page. F19's deps [F7,F16,F17] are all merged, its spec is
+                                # already written and adversarially reviewed, and its Gate 1 is
+                                # pre-authorized (see this entry's gate_1_preauthorized field), so the
+                                # session goes straight to Gate 2. It touches the payments/booking
+                                # modules and neither sibling's files.
+                                # THE ONE COUPLING IS THE MIGRATION NUMBER, and it is now three-way.
+                                # main's head is 0014; F57's branch holds 0015; F33 takes 0016. F19
+                                # therefore lands 0017/down_revision 0016 and MUST NOT OPEN ITS PR
+                                # BEFORE F57 AND F33 MERGE — CI tests the merge result, and two files
+                                # claiming one revision id is an alembic multiple-heads error that git
+                                # cannot see (the filenames differ) and that reads as a mystery.
+                                # F19 BUILDS AGAINST 0015/down_revision 0014 so its own branch is
+                                # self-coherent and its db tests can run, then RENUMBERS at rebase time
+                                # — two literals and a filename. F19 also adds the fast, no-DB
+                                # single-head guard that makes the collision fail loudly in `make test`
+                                # instead of as a CI mystery; it is a permanent guard, not scaffolding.
+                                # Worktree: .worktrees/deposit-booking-flow on feature/deposit-booking-flow.
                                 # Worktree: .worktrees/qr-walkin-queue on feature/qr-walkin-queue.
                                 # ---- F57 ----
                                 # floor program iteration 2 of 10 — MID-FLIGHT, interrupted 2026-07-31.
@@ -516,10 +533,38 @@ queue:
     slug: deposit-booking-flow
     epic: E4
     title: Deposit booking flow
-    status: queued
+    status: building
+    attempts: 1
     spec: .planning/specs/deposit-booking-flow.md
+    plan: .planning/plans/deposit-booking-flow.md
     deps: [F7, F16, F17]
     spec_gate: user
+    started: >-
+      2026-08-03, in PARALLEL with F57 and F33, in its own worktree
+      (.worktrees/deposit-booking-flow on feature/deposit-booking-flow). Picked
+      because every remaining floor-block entry deps on F57 or F33, and F60 —
+      the only one that does not — is the brief's lowest-priority item and wants
+      a hint step on F33's unbuilt /checkin page. F19's deps are all merged, so
+      it is an eligible pick by the loop's own rule.
+      GATE 1 WAS ALREADY CLEARED: see gate_1_preauthorized below. The spec is
+      written and adversarially reviewed (32 findings, 9 BLOCKER, all applied,
+      0 rejected), so this session starts at GATE 2 — the plan — not the spec.
+      SEVEN CORRECTIONS were found against the spec by a code recon at pick time
+      and are applied in plan Task 0. The load-bearing one is the migration
+      number: the spec says "Migration 0014" throughout, but 0014 is F34's
+      shipped 0014_booking_check_in and F57/F33 hold 0015/0016. F19 builds
+      against 0015/down_revision 0014 so its branch is self-coherent, then
+      RENUMBERS to 0017/down_revision 0016 at rebase time. Do not open the PR
+      before F57 and F33 merge. The other six are shifted line citations in
+      db/repositories/bookings.py and dashboard/service.py (F34 moved them),
+      main.py's PaymentService placeholder at :709-712, constants.py being a
+      live merge surface F57 is also editing, the late-settlement test seam at
+      test_payments_service.py:921-925 that must not be copied, and
+      bookings.source not existing (it is F50's, unbuilt).
+      MD3 STAYS PARKED and its in_run_gates entry stays open — it blocks two
+      strings, not the feature, and the neutral interim ships meanwhile. The
+      SHIPPED manage.cancelConsequenceFree sentence must not survive the merge
+      either way; that is the one frontend edit F19 cannot ship without.
     gate_1_preauthorized: >-
       USER RULING 2026-07-31, recorded late — this entry's `spec_gate: user` and
       gateway-port.md's "re-asked at F19's Gate 1" both predate it, and a session
