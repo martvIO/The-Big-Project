@@ -1,10 +1,48 @@
 from collections.abc import Sequence
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
+from app.customers.validation import phone_search_term
 from app.models.customer import Customer
+
+
+def _search_where(tenant_id: UUID, q: str | None) -> list[ColumnElement[bool]]:
+    """The predicate the page and the total share, so the two can never drift.
+
+    Two things here are the difference between a working search box and a broken
+    one, and neither is obvious from the call site:
+
+    **The phone leg runs on `phone_search_term(term)`, never on the term.**
+    `customers.phone` only ever holds strict E.164 — `normalize_israeli_mobile`
+    rewrites a typed `05X…` to `972` + the rest before either writer stores it —
+    so the leading `0` a human reads off a card has been destroyed before
+    storage. `'+972501234567' ILIKE '%0501234567%'` is false, and so is `%050%`:
+    the stored string contains no `0`,`5`,`0` run at all. Both of the natural
+    desk actions would answer "no results" for a customer who demonstrably
+    exists. The name leg deliberately stays on the RAW term — a name is not
+    digits — and a term with no digits at all skips the phone leg entirely.
+
+    **`autoescape=True` on both legs.** Without it the term is interpolated
+    straight into a LIKE pattern, so a typed `_` or `%` returns the whole
+    tenant. Hand-rolling `f"%{term}%"` ships exactly that bug.
+    """
+    criteria: list[ColumnElement[bool]] = [
+        Customer.tenant_id == tenant_id,
+        Customer.deleted_at.is_(None),
+    ]
+    term = (q or "").strip()
+    if not term:
+        return criteria
+    legs = [Customer.name.icontains(term, autoescape=True)]
+    phone_term = phone_search_term(term)
+    if phone_term is not None:
+        legs.append(Customer.phone.icontains(phone_term, autoescape=True))
+    criteria.append(or_(*legs))
+    return criteria
 
 
 class CustomersRepository:
@@ -68,6 +106,75 @@ class CustomersRepository:
                 Customer.deleted_at.is_(None),
             )
             .values(phone=phone)
+            .returning(Customer.id)
+        )
+        if (await session.execute(stmt)).scalar_one_or_none() is None:
+            return None
+        return await self.by_id(session, tenant_id, customer_id)
+
+    async def search(
+        self, session: AsyncSession, tenant_id: UUID, *, q: str | None, offset: int, limit: int
+    ) -> list[Customer]:
+        """The console's customer list (D2). A blank or whitespace-only `q` is
+        not a filter — it drops the predicate rather than searching for the
+        empty string, because "she cleared the box" means "show me everyone".
+
+        `ORDER BY name, id`: the `id` tiebreak is what makes OFFSET paging
+        stable. Two customers named «מיכל לוי» under one boutique is not
+        hypothetical, and with `ORDER BY name` alone Postgres may return them in
+        either order across plans — so page 1 and page 2 can show the same row
+        and hide the other.
+
+        No index, deliberately: a btree cannot serve an unanchored `%term%` at
+        all, and the only thing that helps is a `pg_trgm` GIN pair whose upgrade
+        path is recorded in 0018's comment.
+        """
+        stmt = (
+            select(Customer)
+            .where(*_search_where(tenant_id, q))
+            .order_by(Customer.name, Customer.id)
+            .offset(offset)
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
+    async def count_search(self, session: AsyncSession, tenant_id: UUID, *, q: str | None) -> int:
+        stmt = select(func.count()).select_from(Customer).where(*_search_where(tenant_id, q))
+        return (await session.execute(stmt)).scalar_one()
+
+    async def set_notes_and_tags(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        customer_id: UUID,
+        *,
+        notes: str | None = None,
+        tags: list[str] | None = None,
+    ) -> Customer | None:
+        """The CRM write, as one UPDATE — `set_phone`'s shape above.
+
+        `None` means NOT SUPPLIED, never "clear it": `""` and `[]` are values the
+        owner can write and they clear the field. The console's notes box and
+        its tag chips are two independent controls, so a tags-only patch must
+        leave notes alone. Supplying neither is a legal no-op that still answers
+        the live row, so the service's diff can decide not to write without
+        needing a second read path. `None` means no live row by that id.
+        """
+        values: dict[str, Any] = {}
+        if notes is not None:
+            values["notes"] = notes
+        if tags is not None:
+            values["tags"] = tags
+        if not values:
+            return await self.by_id(session, tenant_id, customer_id)
+        stmt = (
+            update(Customer)
+            .where(
+                Customer.tenant_id == tenant_id,
+                Customer.id == customer_id,
+                Customer.deleted_at.is_(None),
+            )
+            .values(**values)
             .returning(Customer.id)
         )
         if (await session.execute(stmt)).scalar_one_or_none() is None:
