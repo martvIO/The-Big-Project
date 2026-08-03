@@ -13,6 +13,7 @@ import { LoginForm } from "./components/LoginForm";
 import { ProfileSection } from "./components/ProfileSection";
 import { StaffSection } from "./components/StaffSection";
 import { TermsSection } from "./components/TermsSection";
+import { FloorPanel } from "./components/FloorPanel";
 import { TypesSection } from "./components/TypesSection";
 
 type SectionKey =
@@ -168,7 +169,16 @@ export function App() {
         {activeKey === "terms" && <TermsSection role={staff.role} />}
         {activeKey === "catalog" && <CatalogSection />}
         {activeKey === "bookings" && <BookingsSection />}
-        {activeKey === "board" && <BoardSection />}
+        {/* The panel goes AFTER the board, never before: above it, the panel
+            grows as breaks start and pushes the board's one-shot scrollIntoView
+            target — the «עכשיו» divider — back out of view. */}
+        {activeKey === "board" && (
+          <div className="space-y-6">
+            <BoardSection />
+            <FloorPanel selfId={staff.id} role={staff.role} />
+          </div>
+        )}
+        {activeKey === "floor" && <FloorPanel selfId={staff.id} role={staff.role} />}
         {activeKey === "staff" && <StaffSection staffId={staff.id} />}
         {activeKey === "gateway" && <GatewaySection />}
       </ConsoleShell>

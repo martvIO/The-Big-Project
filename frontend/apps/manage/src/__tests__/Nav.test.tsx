@@ -29,6 +29,11 @@ vi.mock("../api", async () => {
       // the nav rather than the dashboard, because the console now LANDS on
       // DashboardSection.
       getDashboard: pending,
+      // Same reason, one feature later: the three floor roles LAND on the floor
+      // section, so <App/> mounts FloorPanel, which calls api.getFloor(). Without
+      // this row every case below red-fails naming the nav rather than the floor
+      // — the exact trap the comment above documents.
+      getFloor: pending,
       gatewayStatus: pending,
     },
   };
@@ -100,6 +105,37 @@ describe("the console nav is role-filtered", () => {
     expect(screen.queryByRole("button", { name: "סליקה ותשלומים" })).toBeNull();
   });
 
+  it.each(["reception", "sales_assistant", "seamstress"])(
+    "shows %s exactly one row and lands her on the floor",
+    async (role) => {
+      // ⚠ The count is the assertion, not a detail. F57 ADDED a row rather than
+      // widening `board`'s roles to all five, and this is what makes that a test
+      // instead of a preference: under the widening she would see «לוח היום»
+      // instead, land on a board the server refuses her, and BoardSection's own
+      // terminalOf would correctly blank the screen.
+      //
+      // Landing works with NO edit to useState("dashboard"): `dashboard` is
+      // unreachable for her, so `reachable[0]?.key ?? section` picks her single
+      // row (App.tsx's activeKey).
+      me.mockResolvedValue(staff(role));
+      render(<App />);
+      await screen.findByRole("navigation");
+
+      expect(navItems()).toEqual(["הצוות בקומה"]);
+      expect(screen.queryByRole("button", { name: "לוח היום" })).toBeNull();
+      // She is ON the floor section, not merely able to reach it.
+      expect(screen.getByRole("heading", { name: "צוות בקומה" })).toBeInTheDocument();
+    },
+  );
+
+  it("keeps the owner's ten and the shift manager's eight free of the floor row", () => {
+    // The floor panel reaches those two roles UNDER «לוח היום», never as a
+    // second nav row — spec D11, and the reason there is no eleventh label in
+    // NAV_LABELS above.
+    expect(NAV_LABELS).not.toContain("הצוות בקומה");
+    expect(NAV_LABELS).toHaveLength(10);
+  });
+
   it("does not white-screen on a role the enum does not know", async () => {
     // GET /manage/auth/me echoes staff_users.role verbatim with no allowlist,
     // so an out-of-enum string CAN reach this component. Every row is then
@@ -167,7 +203,13 @@ describe("the board section is wired to its nav row", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "לוח היום" }));
     expect(screen.getByRole("heading", { name: "לוח היום" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("טוען את לוח היום…");
+    // Scoped by testid since F57: the board screen now carries TWO role="status"
+    // regions, because FloorPanel renders beneath the board for these two roles
+    // and owns its own cue. An unscoped getByRole("status") is ambiguous, and
+    // that ambiguity is the design (D11 forbids sharing state between the two
+    // panels) rather than something to collapse.
+    expect(screen.getByTestId("board-cue")).toHaveTextContent("טוען את לוח היום…");
+    expect(screen.getByTestId("floor-cue")).toBeInTheDocument();
   });
 });
 
