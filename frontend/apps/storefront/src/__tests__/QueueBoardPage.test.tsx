@@ -481,6 +481,31 @@ describe("the wall board carries a working pause control (SC 2.2.2)", () => {
     expect(freshnessLine()).toBeInTheDocument();
   });
 
+  it("honours a retry pressed while paused — the ONE state where both controls render", async () => {
+    // F33's page gates its pause row on `live`, so retry and pause can never be
+    // on screen together there. F59 dropped that gate (the loop has no terminal)
+    // and inherited a retry() that goes through tick(), which returns at once
+    // while the loop is stopped: a labelled, enabled, focusable button that did
+    // nothing. A manual press is not auto-updating content, so serving it does
+    // not weaken the 2.2.2 pause — and the pause must SURVIVE, because cancelling
+    // it silently would undo something she explicitly asked for.
+    getQueueBoard.mockRejectedValue(new ApiError(503, "UNKNOWN", "down"));
+    await mountPage();
+    await click(pauseButton());
+    const before = getQueueBoard.mock.calls.length;
+
+    getQueueBoard.mockResolvedValue(board(2));
+    await click(screen.getByRole("button", { name: t("checkin.retry") }));
+    expect(getQueueBoard).toHaveBeenCalledTimes(before + 1);
+    expect(rows()).toHaveLength(2);
+
+    // Still paused: no loop rearmed, and the sentence still says so.
+    expect(resumeButton()).toBeInTheDocument();
+    expect(freshnessLine()).toHaveTextContent(t("checkin.pausedAt"));
+    await advance(POLL * 6);
+    expect(getQueueBoard).toHaveBeenCalledTimes(before + 1);
+  });
+
   it("is absent before the first response — a pause offered then is a lie about the page", async () => {
     getQueueBoard.mockReturnValue(new Promise(() => undefined));
     renderPage();
@@ -522,6 +547,31 @@ describe("D12 — the freshness line", () => {
     await click(pauseButton());
     expect(freshnessLine()).toHaveTextContent(t("checkin.pausedAt"));
     expect(freshnessLine()).not.toHaveTextContent(t("checkin.staleAt"));
+  });
+
+  it("states NOTHING before the first success — «עודכן» with no time is a false claim", async () => {
+    // The kiosk boots while the API is down: view is `failed`, so updatedAt has
+    // never been written and there is no time to state. All three sentences are
+    // LEADS followed by a time in its own <bdi> (he.ts:507-509), so the lead
+    // alone renders «עודכן » — the page's one honesty signal asserting an update
+    // that never happened, at 59px, on a wall. The row still renders, and with
+    // it the pause control, because the loop is alive and 2.2.2 still applies;
+    // only the SENTENCE waits. FloorPanel.tsx:378-381 is the shipped form of the
+    // same guard, in the app one directory over.
+    getQueueBoard.mockRejectedValue(new ApiError(503, "UNKNOWN", "down"));
+    await mountPage();
+    expect(freshnessLine().textContent).toBe("");
+    expect(pauseButton()).toBeInTheDocument();
+
+    // Pausing in that arm must not invent one either.
+    await click(pauseButton());
+    expect(freshnessLine().textContent).toBe("");
+
+    // And the moment a response lands, the sentence arrives with its time.
+    getQueueBoard.mockResolvedValue(board(2));
+    await click(resumeButton());
+    expect(freshnessLine()).toHaveTextContent(t("checkin.updatedAt"));
+    expect(freshnessLine()).toHaveTextContent(NOW_JERUSALEM);
   });
 
   it("stays OUTSIDE every announced region and is never aria-hidden", async () => {
@@ -685,6 +735,24 @@ describe("the rendered board", () => {
     expect(within(calledRow).getByText("מיכל")).toHaveClass("text-ink");
     // An uncalled row carries none of it.
     expect(rows()[0]).not.toHaveClass("border-s-8");
+  });
+
+  it("gives the loading skeleton a DEFINITE height, so the band is not a blank screen", async () => {
+    // `variant="block"` is `h-full w-full`, and h-full against an auto-height
+    // containing block resolves to 0 — the wrapper's own `flex-1` distributes
+    // nothing inside a content-sized column flex container, so the shipped
+    // skeleton measured 0px tall at 1920x1080 and at 375x667. The television
+    // showed the heading, the gold rule and nothing else: the exact "broken or
+    // empty" ambiguity W-load/F-10 designed the band to remove. `min-h-` does
+    // not fix it either — min-height leaves the containing block indefinite, so
+    // the bar stays 0 inside a reserved box. jsdom has no layout engine, so the
+    // class is the only guard available.
+    getQueueBoard.mockReturnValue(new Promise(() => undefined));
+    const { container } = renderPage();
+    await flush();
+    const shimmer = container.querySelector(".animate-skeleton");
+    expect(shimmer).not.toBeNull();
+    expect(shimmer?.parentElement).toHaveClass("h-[567px]");
   });
 
   it("renders the recoverable failure with a retry, and the retry heals the board", async () => {

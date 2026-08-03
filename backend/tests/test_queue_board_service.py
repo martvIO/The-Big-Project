@@ -118,7 +118,7 @@ def test_the_row_cap_is_a_server_side_bound() -> None:
 def test_a_board_entry_carries_exactly_three_fields_and_no_ticket_id() -> None:
     """The ticket id IS F33's capability, issued exactly once at creation and by
     no other server path ever. A board that returned ids would hand every
-    passer-by a live, pollable capability over every woman's visit, six at a
+    passer-by a live, pollable capability over every woman's visit, five at a
     time, every five seconds, forever.
 
     Pydantic introspection rather than a source grep, so it fails the moment

@@ -256,18 +256,47 @@ export function QueueBoardPage() {
   const retry = () => {
     generationRef.current += 1;
     clearTick();
-    tickRef.current();
+    // load() and NOT tickRef.current(): tick() returns at once while the loop is
+    // stopped, and the error arm is the one place in the product where the retry
+    // button and the pause control render together — the shipped page gates its
+    // pause row on `live`, so it cannot produce the pair. Going through tick()
+    // there gave a labelled, enabled, focusable button that did nothing.
+    //
+    // The pause SURVIVES rather than being cleared: cancelling it would undo
+    // something she explicitly asked for. A manual press is not auto-updating
+    // content, so honouring it does not weaken the 2.2.2 mechanism, and load()'s
+    // finally() still no-ops through schedule() while the loop is stopped.
+    void load();
   };
 
   const board = view.kind === "board" ? view.board : null;
   const hidden = board !== null ? board.waiting_total - board.entries.length : 0;
 
-  const freshTime = updatedAt === null ? "" : TIME.format(new Date(updatedAt));
+  // ⚠ NULL until the first success, and that is a correctness guard rather than
+  // a formatting nicety. All three strings are LEADS, each followed by the time
+  // in its own <bdi> (he.ts:507-509), so with no time to state the lead alone
+  // renders «עודכן » — the page's only honesty signal claiming an update that
+  // never happened, at the name scale, on a wall, for as long as the server is
+  // down. No fourth sentence is minted: the alert line beside it already says
+  // the board could not be shown. The ROW still renders, so the pause control
+  // survives in the error arm; only the sentence waits.
+  // FloorPanel.tsx:378-390 is the shipped form of the same guard.
+  //
   // Precedence in the one slot: paused beats stale, because a stopped loop
   // cannot fail a tick — the stop is the cause in force and the resume control
   // is the remedy. Three distinguishable SENTENCES rather than one sentence and
   // a colour, which is the defect this rule exists to catch.
-  const freshKey = paused ? "checkin.pausedAt" : stale ? "checkin.staleAt" : "checkin.updatedAt";
+  const freshness = () => {
+    if (updatedAt === null) {
+      return null;
+    }
+    const key = paused ? "checkin.pausedAt" : stale ? "checkin.staleAt" : "checkin.updatedAt";
+    return (
+      <>
+        {t(key)} <bdi dir="ltr">{TIME.format(new Date(updatedAt))}</bdi>
+      </>
+    );
+  };
 
   return (
     <div data-testid="queue-board" className={pageClass}>
@@ -289,7 +318,15 @@ export function QueueBoardPage() {
           {/* ONE block skeleton, not variant="text": h-4 bars on a screen whose
               rows are 115px tall are wrong twice over, and that variant's three
               pulses would be the page's entire motion budget spent at boot. */}
-          <div className="flex-1">
+          {/* A DEFINITE height, not flex-1 and not min-h: variant="block" is
+              h-full w-full, and h-full against an auto-height containing block
+              resolves to 0 — flex-1 inside this content-sized column flex
+              container distributes nothing, and min-height leaves the block
+              indefinite, so the bar stays 0 inside a reserved box. Measured at
+              1920x1080 and 375x667: 0px both ways, i.e. a heading and a gold
+              rule on an otherwise blank cream television. 567px is the rows
+              band (design.md:148). */}
+          <div className="h-[567px]">
             <Skeleton variant="block" />
           </div>
         </>
@@ -321,7 +358,7 @@ export function QueueBoardPage() {
             // carried by three distinguishable sentences.
             className={cn("text-ink", NAME_SCALE, (paused || stale) && "font-semibold")}
           >
-            {t(freshKey)} <bdi dir="ltr">{freshTime}</bdi>
+            {freshness()}
           </span>
           {/* The clamp goes on a DESCENDANT and never on the Button: sizes.md
               bakes text-base into the component and cn() is a plain join with no
