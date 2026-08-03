@@ -52,6 +52,12 @@ const HE_F33 = entries(
   he.translation,
   (key) => key === "nav.checkinQr" || key.startsWith("checkinQr."),
 );
+// F36. NO `nav.` term in this selector, and that is an assertion rather than an
+// omission — the rooms are content of the floor, not a twelfth console section,
+// so F36 adds no nav row. `floor.statusOccupied` is likewise absent: it is
+// `floor.`-namespaced and rides in HE_F57 by prefix, inheriting that block's
+// digit guard and its `> 28` floor for free.
+const HE_F36 = entries(he.translation, (key) => key.startsWith("rooms."));
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -61,6 +67,7 @@ const HE = [
   ...HE_F57,
   ...HE_F53,
   ...HE_F33,
+  ...HE_F36,
 ];
 
 describe("F15 keys resolve", () => {
@@ -328,8 +335,10 @@ describe("F53 customers keys resolve", () => {
 // that has to dodge its own guard is copy that is one edit away from lying.
 describe("F57 floor keys resolve", () => {
   it("carries the whole copy deck", () => {
-    // 29 `floor.*` keys plus `nav.floor`; the other three of the deck's 32 are
-    // `staff.role*` and land in HE_F51.
+    // 30 `floor.*` keys plus `nav.floor`; the other three of the deck's 32 are
+    // `staff.role*` and land in HE_F51. The thirtieth is F36's
+    // `floor.statusOccupied` — the namespace names the payload, not the feature
+    // that added the key, so it rides here by prefix.
     expect(HE_F57.length).toBeGreaterThan(28);
   });
 
@@ -407,6 +416,105 @@ describe("F57 floor keys resolve", () => {
   });
 });
 
+describe("F36 fitting-room keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // copy.md's 68 `rooms.*` rows plus DC-8's two paused variants of the two
+    // 404s. `floor.statusOccupied` is the deck's sixty-ninth key and is NOT
+    // counted here — it rides in HE_F57 by prefix.
+    expect(HE_F36.length).toBeGreaterThanOrEqual(70);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // ⚠ Declaring the constant and forgetting the spread is the failure the
+    // comment above HE_F17 records, and for this block it is the whole of the
+    // design critic's DC-3: without the fold the resolve check, BOTH register
+    // guards and the `ar` guards silently skip all seventy hand-transcribed
+    // strings and stay green. Nothing else in this file notices.
+    expect(HE.map(([key]) => key)).toContain("rooms.heading");
+  });
+
+  it("adds no nav row, and that is an assertion rather than an omission", () => {
+    // The rooms are content of the floor, not a destination: F36 adds no
+    // console section, no route and no nav item (spec D15). Every other
+    // feature's selector opens `key === "nav.x" || …`; this one does not, and
+    // this is the one-line proof that the omission was chosen.
+    expect(HE_F36.filter(([key]) => key.startsWith("nav."))).toEqual([]);
+    expect("nav.rooms" in he.translation).toBe(false);
+  });
+
+  it("names no literal digit anywhere in the namespace", () => {
+    // DC-3. The shipped guard at the end of the F57 block is `HE_F57`-scoped,
+    // so before this line there was NO digit guard over `rooms.*` at all and
+    // copy.md §11's «0» row for rule 4 was a hand-count wearing a citation.
+    // No exemption is needed: every number on this panel is an interpolation,
+    // and a literal one would be a retry interval or a server-owned limit the
+    // screen cannot keep true.
+    const values = HE_F36.map(([, value]) => value);
+    expect(values.filter((value) => /\d/.test(value))).toEqual([]);
+  });
+
+  it("starts each accessible name with its visible label (WCAG 2.5.3)", () => {
+    // Five tiles all offering a button named «שחרור» is a screen-reader dead
+    // end, so each *Aria appends the room (or the dress) after an em-dash — but
+    // it must still OPEN with the visible word, or a speech-input user saying
+    // what she can see matches nothing.
+    for (const name of ["claim", "release", "handover", "addDress"]) {
+      expect(i18n.t(`rooms.${name}Aria`, { room: "חדר 2" })).toMatch(
+        new RegExp(`^${i18n.t(`rooms.${name}`)}`),
+      );
+    }
+    expect(i18n.t("rooms.removeDressAria", { dress: "ורוניק" })).toMatch(
+      new RegExp(`^${i18n.t("rooms.removeDress")}`),
+    );
+  });
+
+  it("spells the ROOM's occupancy masculine and the STAFFER's feminine", () => {
+    // Two different subjects one line apart. «תפוס» agrees with «חדר» and
+    // «תפוסה» with a woman; collapsing them into one word would make the tile
+    // and the card look like one fact inflected by accident.
+    expect(i18n.t("rooms.free")).toBe("פנוי");
+    expect(i18n.t("rooms.occupied")).toBe("תפוס");
+    expect(i18n.t("floor.statusOccupied")).toBe("תפוסה");
+    expect(i18n.t("floor.statusAvailable")).toBe("פנויה");
+  });
+
+  it("ships a paused variant of both 404s that promises no next update", () => {
+    // DC-8. `pause()` stops the loop and nothing else — a claim stays fully
+    // available while paused — so «הרשימה תתוקן בעדכון הבא» is a promise the
+    // screen will not keep. §0 rule 4 was written against durations; this is
+    // the same failure in the EVENT form. The paused pair points at «חידוש»,
+    // which is the control that is actually on screen.
+    for (const key of ["rooms.error.notFound", "rooms.error.assignmentGone"]) {
+      expect(i18n.t(key)).toContain("בעדכון הבא");
+      expect(i18n.t(`${key}Paused`)).not.toContain("בעדכון הבא");
+      expect(i18n.t(`${key}Paused`)).toContain(i18n.t("floor.resume"));
+    }
+  });
+
+  it("gives each 409 code a sentence AND an unknown-occupant twin", () => {
+    // `details` is optional on both codes, so each needs two strings: the
+    // occupant can release between the index violation and the occupant read,
+    // and «{{name}} כבר בחדר הזה.» rendering with an empty interpolation on a
+    // legally binding surface is worse than a sentence that admits it does not
+    // know.
+    expect(i18n.t("rooms.error.ROOM_OCCUPIED", { name: "דנה" })).toContain("דנה");
+    expect(i18n.t("rooms.error.STAFF_OCCUPIED", { room: "חדר 5" })).toContain("חדר 5");
+    expect(i18n.t("rooms.error.deleteOccupied", { name: "דנה" })).toContain("דנה");
+    for (const key of [
+      "rooms.error.roomOccupiedUnknown",
+      "rooms.error.staffOccupiedUnknown",
+      "rooms.error.deleteOccupiedUnknown",
+    ]) {
+      expect(i18n.t(key)).not.toContain("{{");
+    }
+    // The unknown-occupant form is a strict PREFIX of the named one, so the two
+    // can never read as two different facts.
+    expect(i18n.t("rooms.error.STAFF_OCCUPIED", { room: "חדר 5" })).toContain(
+      i18n.t("rooms.error.staffOccupiedUnknown").replace(/\.$/, ""),
+    );
+  });
+});
+
 describe("F33 check-in QR keys resolve", () => {
   it("carries the whole block", () => {
     // nav.checkinQr plus nine under checkinQr.*.
@@ -467,5 +575,19 @@ describe("the ar bundle", () => {
   it("carries every key both features added to he.ts", () => {
     const missing = HE.map(([key]) => key).filter((key) => !(key in ar.translation));
     expect(missing).toEqual([]);
+  });
+
+  it("carries the approved Hebrew VALUE for every rooms key, not merely the key", () => {
+    // DC-3 / AC13. The presence guard above cannot see a WRONG value, and the
+    // empty-string guard passes on an English string, a `TODO`, or a different
+    // Hebrew wording — a live hazard when seventy keys are transcribed by hand
+    // into two files with no he/ar parity guard anywhere in this repo. The rule
+    // is `ar[key] === he[key]` and it is scoped to this namespace deliberately:
+    // widening it would be a different feature's decision to take.
+    const arTranslation = ar.translation as Record<string, string>;
+    const drifted = HE_F36.filter(([key, value]) => arTranslation[key] !== value).map(
+      ([key]) => key,
+    );
+    expect(drifted).toEqual([]);
   });
 });

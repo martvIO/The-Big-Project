@@ -28,14 +28,22 @@ class StaffCardStatus(StrEnum):
     # on read from `staff_users.break_started_at` (D2 adds no status column and no
     # break history table), so there is no stored value for a CHECK to constrain.
     #
-    # 'occupied' is coming and is deliberately NOT here. F36 gives it a writer —
-    # an open `fitting_room_assignments` row — and widens this in the SAME PR, the
-    # ScheduledMessageKind rule. Shipping the literal now would put a status on
-    # the wire that nothing in the product can ever produce, and the set-equality
-    # assertion in test_floor_service.py is what makes that structurally
-    # impossible rather than merely currently-unreached.
+    # F36 GAVE 'occupied' ITS WRITER and widened this in the same PR — the
+    # ScheduledMessageKind rule MET rather than waived. Its producer is an open
+    # `fitting_room_assignments` row, derived on read exactly like the other two,
+    # and the set-equality assertions in test_floor_service.py and
+    # test_floor_api.py are what keep the next value honest the same way.
+    #
+    # ⚠ 'occupied' BEATS 'break'. A staffer standing in a fitting room with a
+    # client is not «בהפסקה» — the break is a stale toggle nobody cleared, and a
+    # shift manager looking for help would be told something she can see is
+    # false. `break_started_at` stays on the wire regardless, so a card can still
+    # say she forgot to end one. Declined a fourth combined status: two
+    # orthogonal facts in one enum is the shape that forces the impossible-tuple
+    # conversation later.
     AVAILABLE = "available"
     BREAK = "break"
+    OCCUPIED = "occupied"
 
 
 class AppointmentAudience(StrEnum):
@@ -294,6 +302,37 @@ class AuditAction(StrEnum):
     # retention policy and platform operators read across tenants, so copying a
     # bride's notes here would export them out of the tenant that owns them.
     CUSTOMER_UPDATED = "customer_updated"
+    # F36's fitting rooms (D13). The SEVENTH block to rely on the same fact:
+    # audit_log.action is plain TEXT with no CHECK (0003), so these need no
+    # migration.
+    #
+    # FOUR values and not six. FITTING_ROOM_CREATED / _UPDATED are declined —
+    # both are non-destructive, both are visible on the screen that performed
+    # them, and created_at / updated_at already time them. The trail is still
+    # write-only in v1, so every action added now is a line with no reader; these
+    # four earn it because they are the only record of a destructive or an
+    # occupancy-changing act.
+    #
+    # FITTING_DRESS_ADDED / _REMOVED are declined too, and on a different
+    # ground: the binding ROW is the record. It is soft-deleted rather than
+    # dropped, so it survives with `deleted_at` AND `removed_by` stamped and
+    # answers what was in the room, when it left and who took it out — from the
+    # table itself, at a volume (a dozen per fitting) that would swamp these four.
+    #
+    # A NO-OP WRITES NO ROW: a second release, a claim that resolved to the
+    # caller's own existing assignment, and a duplicate dress add all changed
+    # nothing, and a row asserting otherwise would be a lie about a person.
+    FITTING_ROOM_CLAIMED = "fitting_room_claimed"
+    FITTING_ROOM_RELEASED = "fitting_room_released"
+    # `details` carries {"from", "to"} — STAFF_ROLE_CHANGED's shape — because the
+    # handover's single UPDATE DESTROYS the only copy of who held the room. `from`
+    # must be captured into a local before the writer runs.
+    FITTING_ROOM_HANDED_OVER = "fitting_room_handed_over"
+    # Carries the LABEL and not only the id, for previous_break_started_at's
+    # reason: the row it names is soft-deleted and its label may be re-typed onto
+    # a new room tomorrow, so an id alone records that something was removed and
+    # cannot say what.
+    FITTING_ROOM_DELETED = "fitting_room_deleted"
 
 
 class PlatformAuditAction(StrEnum):

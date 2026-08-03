@@ -446,6 +446,149 @@ describe("the floor client", () => {
   });
 });
 
+// --- the fitting rooms (Feature 36) ---
+
+const ROOM_ID = "aaaaaaaa-1111-2222-3333-444444444444";
+const ASSIGNMENT_ID = "bbbbbbbb-1111-2222-3333-444444444444";
+const BINDING_ID = "cccccccc-1111-2222-3333-444444444444";
+const DRESS_ID = "dddddddd-1111-2222-3333-444444444444";
+const STAFF_ID = "eeeeeeee-1111-2222-3333-444444444444";
+
+describe("the fitting-room client", () => {
+  it("hits all ten routes with their verb, their path and their body verbatim", async () => {
+    // No case-conversion layer in this app: every body below is the backend's
+    // own snake_case spelling, sent as written. Ten rows, one per route in
+    // floor/router.py's F36 half.
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.createRoom({ label: "חדר 2", sort_order: 0 });
+    await api.updateRoom(ROOM_ID, { label: "הבמה", sort_order: -1, is_active: false });
+    await api.deleteRoom(ROOM_ID);
+    await api.claimRoom(ROOM_ID, { booking_id: BOOKING_ID });
+    await api.releaseAssignment(ASSIGNMENT_ID);
+    await api.handoverAssignment(ASSIGNMENT_ID, { staff_user_id: STAFF_ID });
+    await api.addAssignmentDress(ASSIGNMENT_ID, { dress_id: DRESS_ID, size_label: "38" });
+    await api.removeAssignmentDress(ASSIGNMENT_ID, BINDING_ID);
+    await api.listFloorDresses();
+    await api.listFloorClients();
+
+    const calls = fetchMock.mock.calls.map((call) => {
+      const [path, init] = call as [string, RequestInit];
+      return [
+        init.method,
+        path,
+        init.body === undefined ? undefined : JSON.parse(init.body as string),
+      ];
+    });
+    expect(calls).toEqual([
+      ["POST", "/manage/floor/rooms", { label: "חדר 2", sort_order: 0 }],
+      [
+        "PATCH",
+        `/manage/floor/rooms/${ROOM_ID}`,
+        { label: "הבמה", sort_order: -1, is_active: false },
+      ],
+      ["DELETE", `/manage/floor/rooms/${ROOM_ID}`, undefined],
+      ["POST", `/manage/floor/rooms/${ROOM_ID}/claim`, { booking_id: BOOKING_ID }],
+      ["POST", `/manage/floor/assignments/${ASSIGNMENT_ID}/release`, undefined],
+      [
+        "POST",
+        `/manage/floor/assignments/${ASSIGNMENT_ID}/handover`,
+        { staff_user_id: STAFF_ID },
+      ],
+      [
+        "POST",
+        `/manage/floor/assignments/${ASSIGNMENT_ID}/dresses`,
+        { dress_id: DRESS_ID, size_label: "38" },
+      ],
+      [
+        "DELETE",
+        `/manage/floor/assignments/${ASSIGNMENT_ID}/dresses/${BINDING_ID}`,
+        undefined,
+      ],
+      ["GET", "/manage/floor/dresses", undefined],
+      ["GET", "/manage/floor/clients", undefined],
+    ]);
+  });
+
+  it("sends an EMPTY object for the anonymous claim, never no body at all", async () => {
+    // The route's body model is required (`body: ClaimRoomRequest`, no default),
+    // so the one-tap anonymous claim — the default path, and the only one
+    // available before the day's first arrival — has to send `{}`.
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.claimRoom(ROOM_ID, {});
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toBe("{}");
+    expect(init.headers).toMatchObject({ "Content-Type": "application/json" });
+  });
+
+  it("encodes every id it puts in a path", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.removeAssignmentDress("a b/c", "d e/f");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/manage/floor/assignments/a%20b%2Fc/dresses/d%20e%2Ff",
+    );
+  });
+
+  it("carries a 409's details onto the ApiError so the tile can name the occupant", async () => {
+    // D14. The `details` object is a real extension of an envelope every other
+    // body treats as a two-field constant, and it exists on exactly these two
+    // codes: the ruling requires the 409 to NAME the current occupant, and a
+    // second GET would race the release it describes.
+    stubFetch(() =>
+      jsonResponse(409, {
+        error: {
+          code: "ROOM_OCCUPIED",
+          message: "This fitting room is already claimed.",
+          details: { staff_display_name: "דנה" },
+        },
+      }),
+    );
+    await expect(api.claimRoom(ROOM_ID, {})).rejects.toMatchObject({
+      status: 409,
+      code: "ROOM_OCCUPIED",
+      details: { staff_display_name: "דנה" },
+    });
+
+    stubFetch(() =>
+      jsonResponse(409, {
+        error: {
+          code: "STAFF_OCCUPIED",
+          message: "That staff member is already in a fitting room.",
+          details: { room_label: "חדר 5" },
+        },
+      }),
+    );
+    await expect(
+      api.handoverAssignment(ASSIGNMENT_ID, { staff_user_id: STAFF_ID }),
+    ).rejects.toMatchObject({ status: 409, code: "STAFF_OCCUPIED", details: { room_label: "חדר 5" } });
+  });
+
+  it("leaves details UNDEFINED, never null, on a 409 that names nobody", async () => {
+    // ⚠ The occupant can release between the index violation and the occupant
+    // read, so the server omits `details` entirely rather than shipping
+    // {"staff_display_name": null}. `undefined` is what lets the panel select
+    // rooms.error.roomOccupiedUnknown instead of interpolating an empty name
+    // into a Hebrew sentence on a legally binding surface.
+    stubFetch(() =>
+      jsonResponse(409, {
+        error: { code: "ROOM_OCCUPIED", message: "This fitting room is already claimed." },
+      }),
+    );
+    const failure: unknown = await api.claimRoom(ROOM_ID, {}).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).details).toBeUndefined();
+    expect((failure as ApiError).code).toBe("ROOM_OCCUPIED");
+  });
+
+  it("leaves details undefined on every error body that carries none", async () => {
+    stubFetch(() => jsonResponse(404, { error: { code: "NOT_FOUND", message: "gone" } }));
+    const failure: unknown = await api
+      .releaseAssignment(ASSIGNMENT_ID)
+      .catch((error: unknown) => error);
+    expect((failure as ApiError).status).toBe(404);
+    expect((failure as ApiError).details).toBeUndefined();
+  });
+});
+
 // --- customers CRM (Feature 53) ---
 
 const CUSTOMER_ID = "33333333-4444-5555-6666-777777777777";

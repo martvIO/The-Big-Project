@@ -847,6 +847,49 @@ class BookingsRepository:
             ) in (await session.execute(stmt)).all()
         ]
 
+    async def list_checked_in_between(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        *,
+        from_instant: datetime,
+        until_instant: datetime,
+        limit: int,
+    ) -> list[Booking]:
+        """The people physically IN THE BUILDING — the floor's client picker
+        (F36 D16), and the only thing in the console that can supply a
+        `booking_id` to a fitting-room claim.
+
+        `checked_in_at IS NOT NULL` is the whole filter that makes this the
+        arrivals rather than the day book, which is the minimisation argument
+        that lets the floor router answer it for all five roles when
+        `/manage/bookings` admits only two. `list_day` deliberately includes
+        cancellations because a cancelled row is the owner's evidence that the
+        slot re-opened; here a cancelled booking is somebody who is not being
+        walked to a fitting room, so it is out on the same terms every occupancy
+        query uses.
+
+        `[from_instant, until_instant)` — half-open on the right so the caller
+        passes start-of-next-day. The bounds are a JERUSALEM calendar day
+        computed by the caller, because "today" is a local-calendar fact and a
+        UTC date would drop or keep an arrival for the three hours either side
+        of midnight in Israel. One range scan on idx_bookings_tenant_starts.
+        """
+        stmt = (
+            select(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.starts_at >= from_instant,
+                Booking.starts_at < until_instant,
+                Booking.checked_in_at.is_not(None),
+                Booking.status != BookingStatus.CANCELLED.value,
+                Booking.deleted_at.is_(None),
+            )
+            .order_by(Booking.starts_at, Booking.seat_index, Booking.id)
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
     async def history_by_customer(
         self,
         session: AsyncSession,

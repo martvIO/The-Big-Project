@@ -1,4 +1,5 @@
-"""The floor: one read and two break toggles on /manage.
+"""The floor: the read, the two break toggles, the room registry, the claim and
+its dress bindings, and the two one-shot pickers — thirteen routes on /manage.
 
 **A SEVENTH router on /manage.** Registered after dashboard_router in
 create_app(), carrying the same shadowing warning the other six includes carry —
@@ -9,12 +10,44 @@ a duplicated (method, path) would silently win or lose on include order, and
 feature's module and this docstring carries the new count.)
 
 **ALL FIVE ROLES at router level, and this is the only router in the codebase
-that admits more than two.** The floor payload carries ZERO customer data — a
-name, a role and a status for each member of staff — which is exactly what makes
-it safe to widen and is why D11 refuses to merge it into the board's poll
-instead. Router-level so a route added here later cannot forget the gate, and
-because test_staff_role_gating's default-deny walker reads `allowed_roles` off
-the router: a /manage router without one is a red build.
+that admits more than two.** Router-level so a route added here later cannot
+forget the gate, and because test_staff_role_gating's default-deny walker reads
+`allowed_roles` off the router: a /manage router without one is a red build.
+
+⚠ **The justification for that widening changed in F36 and the sentence that
+used to stand here is now false.** It said the floor payload carries ZERO
+customer data. It carries a client label — on each occupied room, and on the
+holder's staff card. What is true, and what the widening actually rests on:
+**the floor payload carries the minimum customer datum required by the person
+standing on the floor — at most one name per occupied room, for the duration of
+the fitting, never the day's customer book.** On a surface this feature's own
+spec calls legally sensitive, leaving the widest role gate in the product
+justified by a claim that is no longer true would be worse than never having
+written one.
+
+The distinction that keeps D11's conclusion right — two loops stay two loops:
+
+    GET /manage/bookings?date=   the DAY BOOK. Every customer booked today, with
+                                 her appointment type, dress, size, notes,
+                                 status, arrival and manage-token surface, for
+                                 the whole day, to anyone who opens the section.
+                                 Owner and shift_manager. F36 puts none of this
+                                 anywhere.
+    GET /manage/floor            the ≤3 PEOPLE PHYSICALLY IN FITTING ROOMS RIGHT
+                                 NOW. One name each, and nothing else about her,
+                                 for the duration of the fitting.
+    GET /manage/floor/clients    today's arrivals — checked in and still in the
+                                 building. A name and an appointment time,
+                                 fetched when the panel mounts and after a
+                                 claim, never on the tick.
+
+**Four routes NARROW that gate to owner + shift_manager**, per-route, composing
+by intersection (`auth/dependencies.py:44-45`): the three registry verbs, and
+`handover`. The registry is configuration — a seamstress renaming the boutique's
+rooms is not a capability anything asks for. `handover` is there rather than in
+the service because its predicate depends on nothing about the target, which is
+precisely what `RoleGate` is; the claim's and the release's are target-dependent
+(self OR elevated) and genuinely cannot live in a gate.
 
 **Why a new module rather than a route on an existing router — structural, not
 stylistic.** `RoleGate` composes by INTERSECTION (`auth/dependencies.py:44-45`)
@@ -36,10 +69,18 @@ paths (`dashboard/router.py:17-26` argues this at length).
 points the dependency arrow backwards to save three lines;
 `auth/staff_router.py:22-27` records the decision.
 
-**No rate limiter**: no /manage router carries one and F57 does not introduce the
-first. The two POSTs ARE fenced by CsrfOriginMiddleware (`csrf.py:48` gates on
-`request.method in MUTATING_METHODS`); the GET is not, and its protection is the
-session cookie and the role gate, alone.
+**No rate limiter**: no /manage router carries one and F36 does not introduce the
+first. The TEN mutating routes ARE fenced by CsrfOriginMiddleware (`csrf.py:48`
+gates on `request.method in MUTATING_METHODS`, a method test rather than a path
+list, so the eight F36 adds are fenced by construction); the THREE GETs are not,
+and their protection is the session cookie and the role gate, alone.
+
+**Every path's second segment is `floor`, so `vite.config.ts` needs no edit** —
+`test_spa_serving.py` asserts SET EQUALITY between the live route table's second
+segments and the manage dev proxy's alternation, and a mismatch breaks only a
+developer's machine while production, CI and the whole suite stay green. Mounting
+the registry at `/manage/rooms` would have cost that edit; `/manage/floor/rooms`
+costs nothing and reads better anyway.
 
 **Real HTTP verbs and a path parameter for the target.** The `.claude/rules` RPC
 / `@QueryValue` guidance is Kotlin boilerplate for another codebase; the shipped
@@ -53,9 +94,21 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from app.auth.dependencies import get_current_staff, require_role
 from app.auth.service import StaffContext
-from app.floor.schemas import FloorResponse, StaffCard
-from app.floor.service import FloorService
+from app.floor.schemas import (
+    AddDressRequest,
+    ClaimRoomRequest,
+    CreateRoomRequest,
+    FloorClientList,
+    FloorDressList,
+    FloorResponse,
+    HandoverRequest,
+    Room,
+    StaffCard,
+    UpdateRoomRequest,
+)
+from app.floor.service import FloorService, RoomRead
 from app.models.constants import StaffRole
+from app.schemas import OkResponse
 from app.tenancy.middleware import get_current_tenant
 
 NO_STORE = "no-store"
@@ -94,15 +147,194 @@ async def start_break(
     """`staff` is the ACTING identity and comes from the session cookie;
     `staff_id` is the TARGET and comes from the path. The service's two-axis
     check is what keeps the second from ever standing in for the first."""
-    return StaffCard.from_row(
-        await service.start_break(get_current_tenant(request).id, staff_id, actor=staff)
+    row, occupancy = await service.start_break(
+        get_current_tenant(request).id, staff_id, actor=staff
     )
+    return StaffCard.from_row(row, occupancy=occupancy)
 
 
 @router.post("/floor/staff/{staff_id}/break/end")
 async def end_break(
     request: Request, staff_id: uuid.UUID, service: Service, staff: Staff
 ) -> StaffCard:
-    return StaffCard.from_row(
-        await service.end_break(get_current_tenant(request).id, staff_id, actor=staff)
+    """The occupancy the service hands back is the SECOND half of the card, not
+    a decoration: if this staffer is standing in a fitting room the card must say
+    `occupied`, or it contradicts the panel it lands in five seconds later."""
+    row, occupancy = await service.end_break(get_current_tenant(request).id, staff_id, actor=staff)
+    return StaffCard.from_row(row, occupancy=occupancy)
+
+
+# --- F36: the registry (owner + shift_manager) --------------------------------
+#
+# `ELEVATED` is spelled once and hung on four routes. It composes by INTERSECTION
+# with the router's five, so it can only narrow — which is exactly what these
+# four need, and why widening the catalog or bookings routers was never the
+# alternative for the two pickers below.
+ELEVATED = Depends(require_role(StaffRole.OWNER, StaffRole.SHIFT_MANAGER))
+
+
+def _room(read: RoomRead) -> Room:
+    """Every mutation answers the SAME shape the payload's `rooms[]` elements
+    carry, so the panel patches one tile in place from the server's own row and
+    cannot disagree with itself. There is deliberately no separate `RoomCard`."""
+    return Room.from_row(read.row, read.bindings)
+
+
+@router.post("/floor/rooms", dependencies=[ELEVATED])
+async def create_room(
+    request: Request, service: Service, staff: Staff, body: CreateRoomRequest
+) -> Room:
+    return _room(
+        await service.create_room(
+            get_current_tenant(request).id,
+            label=body.label,
+            sort_order=body.sort_order,
+            actor=staff,
+        )
     )
+
+
+@router.patch("/floor/rooms/{room_id}", dependencies=[ELEVATED])
+async def update_room(
+    request: Request,
+    room_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+    body: UpdateRoomRequest,
+) -> Room:
+    return _room(
+        await service.update_room(
+            get_current_tenant(request).id,
+            room_id,
+            label=body.label,
+            sort_order=body.sort_order,
+            is_active=body.is_active,
+            actor=staff,
+        )
+    )
+
+
+@router.delete("/floor/rooms/{room_id}", dependencies=[ELEVATED])
+async def delete_room(
+    request: Request, room_id: uuid.UUID, service: Service, staff: Staff
+) -> OkResponse:
+    """The one route here that does not answer a `Room` — there is no tile left
+    to render. The service refuses an OCCUPIED room with a 409 naming her."""
+    await service.delete_room(get_current_tenant(request).id, room_id, actor=staff)
+    return OkResponse()
+
+
+# --- F36: the claim, the release, the handover --------------------------------
+
+
+@router.post("/floor/rooms/{room_id}/claim")
+async def claim_room(
+    request: Request,
+    room_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+    body: ClaimRoomRequest,
+) -> Room:
+    """⚠ `body.staff_user_id` is the TARGET and is passed as one. The acting
+    identity is `staff`, resolved from the session cookie — the same two-axis
+    separation the break routes have, on the first body in the product that
+    carries a target staff id."""
+    return _room(
+        await service.claim(
+            get_current_tenant(request).id,
+            room_id,
+            staff_user_id=body.staff_user_id,
+            booking_id=body.booking_id,
+            actor=staff,
+        )
+    )
+
+
+@router.post("/floor/assignments/{assignment_id}/release")
+async def release_assignment(
+    request: Request, assignment_id: uuid.UUID, service: Service, staff: Staff
+) -> Room:
+    """No body: the target is the assignment and there is nothing to say about
+    it. The two axes apply but cannot run first — whose assignment it is can only
+    be learned by reading the row — so the refusal is a 404, not a 403."""
+    return _room(await service.release(get_current_tenant(request).id, assignment_id, actor=staff))
+
+
+@router.post("/floor/assignments/{assignment_id}/handover", dependencies=[ELEVATED])
+async def handover_assignment(
+    request: Request,
+    assignment_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+    body: HandoverRequest,
+) -> Room:
+    """⚠ The role check for this route is the `ELEVATED` gate above and NOWHERE
+    ELSE — the service carries a comment pointing here rather than a second
+    check. Two costs decided it: `FLOOR_OPEN` would have to assert that a
+    seamstress may reach a route she always 403s on, and a 403 is TERMINAL for
+    the whole floor screen, so a rendered-but-refused control blanks her only
+    screen."""
+    return _room(
+        await service.handover(
+            get_current_tenant(request).id,
+            assignment_id,
+            new_staff_id=body.staff_user_id,
+            actor=staff,
+        )
+    )
+
+
+# --- F36: the dress bindings (all five, no ownership check — D4) ---------------
+
+
+@router.post("/floor/assignments/{assignment_id}/dresses")
+async def add_dress(
+    request: Request,
+    assignment_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+    body: AddDressRequest,
+) -> Room:
+    return _room(
+        await service.add_dress(
+            get_current_tenant(request).id,
+            assignment_id,
+            dress_id=body.dress_id,
+            size_label=body.size_label,
+            actor=staff,
+        )
+    )
+
+
+@router.delete("/floor/assignments/{assignment_id}/dresses/{binding_id}")
+async def remove_dress(
+    request: Request,
+    assignment_id: uuid.UUID,
+    binding_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+) -> Room:
+    """`actor` is not decoration on this one: the soft delete stamps `removed_by`
+    from it, and that pair IS the audit record for a binding — which is what
+    keeps the deliberate absence of an ownership check accountable."""
+    return _room(
+        await service.remove_dress(
+            get_current_tenant(request).id, assignment_id, binding_id, actor=staff
+        )
+    )
+
+
+# --- F36: the two one-shot pickers (D16) --------------------------------------
+
+
+@router.get("/floor/dresses")
+async def list_dresses(request: Request, service: Service) -> FloorDressList:
+    """Fetched when the dress dialog opens, never on the poll."""
+    return FloorDressList.from_read(await service.dresses(get_current_tenant(request).id))
+
+
+@router.get("/floor/clients")
+async def list_clients(request: Request, service: Service) -> FloorClientList:
+    """The ONLY producer of `booking_id` anywhere in the console. Today's
+    arrivals — checked in and still in the building — never the day book."""
+    return FloorClientList.from_read(await service.clients(get_current_tenant(request).id))

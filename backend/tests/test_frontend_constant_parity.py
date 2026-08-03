@@ -39,6 +39,7 @@ from app.booking import validation as booking_validation
 from app.booking.validation import jerusalem_day_index
 from app.catalog import validation as catalog_validation
 from app.customers import validation as customers_validation
+from app.floor import validation as floor_validation
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANAGE_VALIDATION_TS = REPO_ROOT / "frontend/apps/manage/src/validation.ts"
@@ -97,6 +98,16 @@ MIRRORS = (
             "MAX_SEARCH_TERM_LENGTH",
         ),
         id="manage-customers",
+    ),
+    # F36's one. The registry dialog caps its label input at this length, so
+    # without the mirror an owner types a 41st character, the row saves, the API
+    # answers a house 400 carrying an ENGLISH message, and the Hebrew dialog
+    # renders it — for an input error that fails identically on every retry.
+    pytest.param(
+        MANAGE_VALIDATION_TS,
+        floor_validation,
+        ("MAX_ROOM_LABEL_LENGTH",),
+        id="manage-floor",
     ),
     pytest.param(
         STOREFRONT_VALIDATION_TS,

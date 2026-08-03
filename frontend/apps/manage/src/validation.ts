@@ -431,3 +431,14 @@ export function validateCustomerNotes(notes: string): string | null {
   }
   return null;
 }
+
+// --- fitting rooms (Feature 36) ---
+//
+// Mirror of backend/app/floor/validation.py. backend/tests/
+// test_frontend_constant_parity.py fails if it drifts.
+//
+// Applied as maxLength on the registry dialog's label input. The backend strips
+// BEFORE it bounds, so a label typed with a trailing space is legal there and a
+// maxLength here is the tighter of the two — which is the right direction: the
+// owner simply cannot type the 41st character.
+export const MAX_ROOM_LABEL_LENGTH = 40;

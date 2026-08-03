@@ -9,12 +9,24 @@ export const FALLBACK_ERROR_MESSAGE = "אירעה שגיאה בלתי צפויה
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  // F36 / D14. Set on the two occupancy 409s and NOWHERE ELSE — the ruling
+  // requires the refusal to name the current occupant, and a second GET would
+  // race the release it describes.
+  //
+  // ⚠ Typed `| undefined`, never `| null`, so the {"staff_display_name": null}
+  // shape cannot be constructed at all: the occupant can release between the
+  // index violation and the occupant read, and «{{name}} כבר בחדר הזה.»
+  // rendering with an empty interpolation on a legally binding surface is worse
+  // than a sentence that admits it does not know. The panel selects the
+  // *Unknown string on the absence.
+  readonly details?: Record<string, string>;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, details?: Record<string, string>) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -22,7 +34,9 @@ export function errorMessage(error: unknown): string {
   return error instanceof ApiError ? error.message : FALLBACK_ERROR_MESSAGE;
 }
 
-function extractError(body: unknown): { code: string; message: string } | null {
+function extractError(
+  body: unknown,
+): { code: string; message: string; details?: Record<string, string> } | null {
   if (typeof body !== "object" || body === null) {
     return null;
   }
@@ -30,11 +44,22 @@ function extractError(body: unknown): { code: string; message: string } | null {
   if (typeof envelope !== "object" || envelope === null) {
     return null;
   }
-  const { code, message } = envelope as { code?: unknown; message?: unknown };
+  const { code, message, details } = envelope as {
+    code?: unknown;
+    message?: unknown;
+    details?: unknown;
+  };
   if (typeof message !== "string") {
     return null;
   }
-  return { code: typeof code === "string" ? code : "UNKNOWN", message };
+  return {
+    code: typeof code === "string" ? code : "UNKNOWN",
+    message,
+    details:
+      typeof details === "object" && details !== null
+        ? (details as Record<string, string>)
+        : undefined,
+  };
 }
 
 export async function apiFetch<T>(
@@ -49,7 +74,7 @@ export async function apiFetch<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
-    let extracted: { code: string; message: string } | null = null;
+    let extracted: ReturnType<typeof extractError> = null;
     try {
       extracted = extractError(await response.json());
     } catch {
@@ -59,6 +84,7 @@ export async function apiFetch<T>(
       response.status,
       extracted?.code ?? "UNKNOWN",
       extracted?.message ?? FALLBACK_ERROR_MESSAGE,
+      extracted?.details,
     );
   }
   return (await response.json()) as T;
@@ -368,6 +394,17 @@ function mediaPath(dressId: string, mediaId: string): string {
   return `${dressPath(dressId)}/media/${encodeURIComponent(mediaId)}`;
 }
 
+// Every F36 path's second segment is `floor`, which is why vite.config.ts's
+// manage proxy alternation needs no edit — mounting the registry at
+// /manage/rooms would have cost one.
+function roomPath(roomId: string): string {
+  return `/manage/floor/rooms/${encodeURIComponent(roomId)}`;
+}
+
+function assignmentPath(assignmentId: string): string {
+  return `/manage/floor/assignments/${encodeURIComponent(assignmentId)}`;
+}
+
 // --- staff wire types (mirror backend/app/auth/schemas.py) ---
 
 // F57 widened this to five. StaffMember, CreateStaffRequest and
@@ -384,10 +421,13 @@ export type StaffRole =
 
 // --- floor wire types (mirror backend/app/floor/schemas.py) ---
 
-// Derived on read from break_started_at, never stored. 'occupied' arrives with
-// F36, which gives it a writer in the same PR — the backend's set-equality test
-// is what keeps it off the wire until then.
-export type StaffCardStatus = "available" | "break";
+// Derived on read, never stored. `break` comes from break_started_at and
+// `occupied` from a live fitting-room assignment, and F36's D12 makes OCCUPIED
+// WIN: a staffer standing in room 2 who forgot to end a break reads «תפוסה».
+//
+// ⚠ `status` is therefore a DISPLAY PRECEDENCE and not the break fact. The
+// break fact is `break_started_at !== null` — see FloorPanel's `onBreak`.
+export type StaffCardStatus = "available" | "break" | "occupied";
 
 export interface StaffCard {
   id: string;
@@ -395,12 +435,133 @@ export interface StaffCard {
   role: string;
   status: StaffCardStatus;
   break_started_at: string | null;
+  // Non-null EXACTLY when `status` is "occupied" — the two are derived from one
+  // argument server-side, so they cannot disagree. Denormalised onto the card on
+  // purpose: the alternative is a client-side join of `staff` against `rooms`,
+  // which would couple the card renderer to a panel it is otherwise independent
+  // of.
+  occupancy: Occupancy | null;
 }
 
 // An ENVELOPE, not a bare array: F36 adds rooms and F58 the waitlist to this
 // same payload, so an array would make the first of them a breaking change.
 export interface FloorResponse {
   staff: StaffCard[];
+  // EVERY live room, active and inactive, in (sort_order, created_at) order. An
+  // inactive room ships so the panel can grey it: a room a staffer cannot find
+  // is worse than one she can see is out of service.
+  rooms: Room[];
+  // The server's own instant at serialisation. Elapsed minutes are computed
+  // against THIS and not against the device clock, so only the delta of a
+  // boutique tablet's clock is trusted and never its absolute value.
+  server_now: string;
+}
+
+// --- F36: the rooms -----------------------------------------------------------
+
+export interface DressBinding {
+  id: string;
+  dress_id: string;
+  // SNAPSHOTS carried on the binding row, not a live catalog read: the owner may
+  // rename or archive a dress mid-fitting and the tile must render what actually
+  // went into the room.
+  dress_name: string;
+  dress_size: string | null;
+}
+
+export interface RoomAssignment {
+  id: string;
+  staff_user_id: string;
+  // null is D11's GHOST HOLDER — a staffer soft-deleted while holding a room.
+  // The tile says so rather than lying about who is in there.
+  staff_display_name: string | null;
+  staff_role: string | null;
+  // null is an anonymous visit, which is the DEFAULT and not an edge case: a
+  // staffer prepping a room, a swept booking, or an erased customer.
+  client_label: string | null;
+  booking_id: string | null;
+  assigned_at: string;
+  dresses: DressBinding[];
+}
+
+// ONE shape for a room, and there is deliberately no RoomCard: every mutation
+// answers exactly what the payload's rooms[] elements carry, so a tile patches
+// in place from the server's own row and cannot disagree with itself.
+export interface Room {
+  id: string;
+  label: string;
+  sort_order: number;
+  is_active: boolean;
+  assignment: RoomAssignment | null;
+}
+
+// The staff card's half of the same fact.
+export interface Occupancy {
+  assignment_id: string;
+  fitting_room_id: string;
+  room_label: string;
+  client_label: string | null;
+  assigned_at: string;
+}
+
+// --- F36: the two one-shot pickers, fetched on open and never on the tick -----
+
+export interface FloorDress {
+  id: string;
+  name: string;
+  sizes: string[];
+}
+
+export interface FloorDressList {
+  dresses: FloorDress[];
+  // The dialog renders one line saying the list is partial. It names no count
+  // and no limit — both are the server's to change without a copy edit.
+  truncated: boolean;
+}
+
+export interface FloorClient {
+  booking_id: string;
+  client_label: string | null;
+  starts_at: string;
+}
+
+export interface FloorClientList {
+  clients: FloorClient[];
+  truncated: boolean;
+}
+
+// --- F36: the request bodies (the backend's snake_case, sent verbatim) --------
+
+export interface CreateRoomRequest {
+  label: string;
+  sort_order?: number;
+}
+
+// Every field optional, and an omitted key means UNCHANGED — never "clear it".
+// The dialog's three controls are independent, so a reorder must leave the label
+// alone.
+export interface UpdateRoomRequest {
+  label?: string;
+  sort_order?: number;
+  is_active?: boolean;
+}
+
+// ⚠ `staff_user_id` is the TARGET and only ever the target. The acting identity
+// is the session cookie, and no code path may read this field as one. Both
+// omitted is the one-tap anonymous claim on herself.
+export interface ClaimRoomRequest {
+  staff_user_id?: string;
+  booking_id?: string;
+}
+
+export interface HandoverRequest {
+  staff_user_id: string;
+}
+
+export interface AddDressRequest {
+  dress_id: string;
+  // Omitted for a sample gown carried in before a size is chosen.
+  size_label?: string;
 }
 
 export interface StaffMember {
@@ -784,6 +945,55 @@ export const api = {
     return apiFetch(`/manage/floor/staff/${encodeURIComponent(staffId)}/break/end`, {
       method: "POST",
     });
+  },
+
+  // F36's ten. Eight of them answer the SAME `Room` the payload's rooms[]
+  // elements carry, so a tile patches in place from the server's own row; the
+  // delete answers the shipped OkResponse because there is no tile left to
+  // render, and the two pickers are one-shot reads fetched when a dialog opens
+  // and never on the tick.
+  //
+  // The three registry verbs and the handover are owner + shift_manager
+  // server-side; the client renders no control a caller may not use, which is
+  // what keeps the terminal 403 unreachable by design rather than by luck.
+  createRoom(body: CreateRoomRequest): Promise<Room> {
+    return apiFetch("/manage/floor/rooms", { method: "POST", body });
+  },
+  // Partial by design — an omitted key means "unchanged", so a reorder leaves
+  // the label alone.
+  updateRoom(roomId: string, body: UpdateRoomRequest): Promise<Room> {
+    return apiFetch(roomPath(roomId), { method: "PATCH", body });
+  },
+  deleteRoom(roomId: string): Promise<OkResponse> {
+    return apiFetch(roomPath(roomId), { method: "DELETE" });
+  },
+  // The body always travels, even when it is `{}`: the route's model is
+  // required, and `{}` IS the one-tap anonymous claim on herself — the default
+  // path, and the only one available before the day's first arrival.
+  claimRoom(roomId: string, body: ClaimRoomRequest): Promise<Room> {
+    return apiFetch(`${roomPath(roomId)}/claim`, { method: "POST", body });
+  },
+  // No body: the target is the assignment and there is nothing to say about it.
+  releaseAssignment(assignmentId: string): Promise<Room> {
+    return apiFetch(`${assignmentPath(assignmentId)}/release`, { method: "POST" });
+  },
+  handoverAssignment(assignmentId: string, body: HandoverRequest): Promise<Room> {
+    return apiFetch(`${assignmentPath(assignmentId)}/handover`, { method: "POST", body });
+  },
+  addAssignmentDress(assignmentId: string, body: AddDressRequest): Promise<Room> {
+    return apiFetch(`${assignmentPath(assignmentId)}/dresses`, { method: "POST", body });
+  },
+  removeAssignmentDress(assignmentId: string, bindingId: string): Promise<Room> {
+    return apiFetch(
+      `${assignmentPath(assignmentId)}/dresses/${encodeURIComponent(bindingId)}`,
+      { method: "DELETE" },
+    );
+  },
+  listFloorDresses(): Promise<FloorDressList> {
+    return apiFetch("/manage/floor/dresses");
+  },
+  listFloorClients(): Promise<FloorClientList> {
+    return apiFetch("/manage/floor/clients");
   },
   rescheduleBooking(bookingId: string, startsAt: string): Promise<OwnerBookingDetail> {
     return apiFetch(`${bookingPath(bookingId)}/reschedule`, {

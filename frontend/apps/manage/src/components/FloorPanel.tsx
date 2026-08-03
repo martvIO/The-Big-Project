@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Skeleton } from "@boutique/ui";
+import type { BadgeVariant } from "@boutique/ui";
 import { api, ApiError } from "../api";
-import type { StaffCard } from "../api";
+import type { Room, StaffCard, StaffCardStatus } from "../api";
 import { isolateBidi, isolateLtr } from "../lib/booking";
+import { elapsedLine } from "../lib/elapsed";
 import { jerusalemTime } from "../lib/jerusalem";
 import { roleLabelKey } from "../lib/roles";
 import { IDLE_STOP_MINUTES, usePoll } from "../lib/usePoll";
 import type { TickOutcome } from "../lib/usePoll";
+import { RoomsPanel } from "./RoomsPanel";
 
 // F57. The floor's staff cards: a name, a role and a live status, plus the break
 // toggle the status is derived from.
@@ -34,6 +37,21 @@ interface FloorPanelProps {
 
 const ELEVATED = new Set(["owner", "shift_manager"]);
 
+// The WORD carries the state; the colour never does. THREE-WAY since F36: it
+// replaced a binary ternary that fell to its else branch on `occupied` and
+// printed «פנויה» about a staffer standing in room 2.
+//
+// ⚠ A `Record<StaffCardStatus, …>` on purpose, with NO fallback: a fourth
+// status is a COMPILE error here rather than a wrong word that ships silently —
+// the argument lib/roles.ts makes for ROLE_LABEL_KEY, and the reason the binary
+// ternary was a latent bug rather than a safety net. The wire cannot carry a
+// value outside the union: the backend asserts the three literals set-equal.
+const STATUS_BADGE: Record<StaffCardStatus, { variant: BadgeVariant; labelKey: string }> = {
+  available: { variant: "success", labelKey: "floor.statusAvailable" },
+  break: { variant: "warning", labelKey: "floor.statusBreak" },
+  occupied: { variant: "neutral", labelKey: "floor.statusOccupied" },
+};
+
 // Whether the focused element sits inside a card that the incoming list drops.
 // BoardSection's `holdsFocus` shape, asking the question one card at a time.
 function departingCardHoldsFocus(incoming: readonly StaffCard[]): boolean {
@@ -52,7 +70,22 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   const { t } = useTranslation();
 
   const [cards, setCards] = useState<StaffCard[] | null>(null);
+  // F36's half of the same payload. It lives HERE and not in RoomsPanel for the
+  // same reason the cards do not live in BoardSection: the rooms and the staff
+  // arrive in one response, so two owners would be two freshness claims that can
+  // disagree by an interval with no way to tell which to believe.
+  const [rooms, setRooms] = useState<Room[] | null>(null);
+  // How many ticks have SUCCEEDED. RoomsPanel's tile alert promises «הרשימה
+  // תתוקן בעדכון הבא» and a child cannot clear it imperatively from inside
+  // `load` the way the card alert below is cleared — so the fact that an update
+  // happened travels as its own monotonic signal rather than being inferred from
+  // the payload, which a byte-equal answer would not carry.
+  const [fetchCount, setFetchCount] = useState(0);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  // The SERVER's instant at serialisation, from the payload. Elapsed minutes are
+  // computed against it and it only moves on a successful poll, which is what
+  // freezes «כבר 42 דק'» exactly when the panel freezes.
+  const [serverNow, setServerNow] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // The cue carries its interpolated NAME alongside its text, because the name
@@ -85,6 +118,12 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   // break: a remote break starting on card 2 grows it ~20px and slides every
   // control below it, and at 375 the control is on its own line, i.e. exactly
   // the thing that moves.
+  //
+  // ⚠ F36 makes the same mechanism carry far more than ~20px. A remote claim
+  // adds an occupancy line to a staff card, and a room being claimed grows its
+  // tile by a holder line, a role line, a client line, an elapsed line, a dress
+  // list and two more controls — directly above the tile a finger is already
+  // travelling toward.
   const holdRef = useRef(false);
   const tickRef = useRef<() => TickOutcome>(() => {});
 
@@ -107,6 +146,9 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
       focusHeadingRef.current = departingCardHoldsFocus(result.staff);
       cardsRef.current = result.staff;
       setCards(result.staff);
+      setRooms(result.rooms);
+      setFetchCount((count) => count + 1);
+      setServerNow(result.server_now);
       // The freshness claim changes ONLY on a success, which is what makes it a
       // claim the panel can keep.
       setUpdatedAt(new Date().toISOString());
@@ -267,6 +309,24 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
     }
   }, [cards]);
 
+  // A room mutation's own response is the truth for its tile, and the freshness
+  // stamp moves with it — the same contract `toggle` keeps for a card.
+  //
+  // ⚠ AN UPDATER, not a value, and this is the whole of review round 1's
+  // MAJOR. The earlier shape took a finished list, so each caller rebuilt it
+  // from the `rooms` PROP captured in the render that created its handler. The
+  // loop issues no tick while a mutation is in flight — true, and the reason
+  // the old comment here said no mirror was needed — but the collision is
+  // MUTATION-vs-MUTATION, not tick-vs-mutation: `busy` is per room and `mutate`
+  // counts rather than latches, so a claim on one tile and a release on another
+  // overlap by design, and the second response to land rebuilt the list from a
+  // base that predated the first. A claimed room rendered «פנוי» with a live
+  // claim control, under a freshness stamp reset to now, until the next tick.
+  const applyRooms = (update: (current: Room[]) => Room[]) => {
+    setRooms((current) => update(current ?? []));
+    setUpdatedAt(new Date().toISOString());
+  };
+
   const pause = () => {
     poll.pause();
     setCue({ text: t("floor.paused"), name: null });
@@ -277,18 +337,64 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
     poll.resume();
   };
 
-  const toggle = async (card: StaffCard) => {
-    const onBreak = card.status === "break";
-    setBusyIds((current) => [...current, card.id]);
-    setCardError(null);
-    restoreFocusRef.current = card.id;
+  /**
+   * The poll bookkeeping every mutation on this panel needs IDENTICALLY.
+   *
+   * Extracted from `toggle` in F36 rather than copied into the rooms panel: six
+   * room actions would be six chances to drop the re-arm, which is the mistake
+   * whose F34 form was "the loop survived unmount" and whose F57 form the
+   * comment below names.
+   *
+   * ⚠ THE RE-ARM LIVES IN THE `.finally()`, not the success path: a REFUSED
+   * action must not park the loop either, or the panel silently stops
+   * converging the first time anybody acts.
+   *
+   * P-6 is handled here and nowhere else: a mutation answering 401 or 403 is
+   * TERMINAL for the whole panel, on the same {401,403} rule the ticks use. The
+   * alternative is an in-card alert plus a loop that keeps polling with a role
+   * the server just refused — the panel disagreeing with itself for five
+   * seconds and then doing the same thing anyway.
+   *
+   * Returns `null` when the call succeeded OR was terminal (both mean the
+   * caller has nothing left to render), and the error otherwise: a break
+   * toggle's 404 and a room claim's 404 are different Hebrew sentences, so
+   * mapping one is the caller's job and never this helper's.
+   */
+  const mutate = async (run: () => Promise<void>): Promise<unknown> => {
     mutationsRef.current += 1;
-    // The loop issues no tick while a mutation is in flight, so the card cannot
-    // be repainted underneath the request; the bump discards the one poll that
+    // The loop issues no tick while a mutation is in flight, so nothing can be
+    // repainted underneath the request; the bump discards the one poll that
     // could still be in the air.
     poll.clearTick();
     poll.bump();
     try {
+      await run();
+      return null;
+    } catch (error) {
+      if (poll.fail(error)) {
+        return null;
+      }
+      return error;
+    } finally {
+      mutationsRef.current -= 1;
+      if (mutationsRef.current === 0) {
+        poll.reschedule();
+      }
+    }
+  };
+
+  const toggle = async (card: StaffCard) => {
+    // ⚠ The break fact is `break_started_at`, NOT `status`. F36 makes
+    // `occupied` win the status while the timestamp stays on the wire, so
+    // deriving it from `status` leaves a staffer who forgot to end a break and
+    // then claimed a room unable to end it from this screen at all: the control
+    // would read «להפסקה», the tap would be a 200 no-op keeping the first
+    // timestamp, and it would stay that way until she released the room.
+    const onBreak = card.break_started_at !== null;
+    setBusyIds((current) => [...current, card.id]);
+    setCardError(null);
+    restoreFocusRef.current = card.id;
+    const failure = await mutate(async () => {
       const patched = onBreak
         ? await api.endStaffBreak(card.id)
         : await api.startStaffBreak(card.id);
@@ -311,32 +417,18 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
         }),
         name: patched.display_name,
       });
-    } catch (error) {
-      // P-6: a toggle answering 403 is TERMINAL, on the same {401,403} rule the
-      // ticks use. The alternative is an in-card alert plus a loop that keeps
-      // polling with a role the server just refused — the panel disagreeing
-      // with itself for five seconds and then doing the same thing anyway.
-      if (poll.fail(error)) {
-        return;
-      }
+    });
+    setBusyIds((current) => current.filter((id) => id !== card.id));
+    if (failure !== null) {
       // A 404 is NOT terminal: a colleague vanishing is a fact about her, not
       // about the viewer's access.
       setCardError({
         id: card.id,
         text:
-          error instanceof ApiError && error.status === 404
+          failure instanceof ApiError && failure.status === 404
             ? t("floor.error.notFound")
             : t("staff.loadFailed"),
       });
-    } finally {
-      mutationsRef.current -= 1;
-      setBusyIds((current) => current.filter((id) => id !== card.id));
-      // THE RE-ARM, in the .finally() rather than the success path: a refused
-      // toggle must not park the loop either, or the panel silently stops
-      // converging the first time anybody acts.
-      if (mutationsRef.current === 0) {
-        poll.reschedule();
-      }
     }
   };
 
@@ -510,6 +602,23 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
         </div>
       )}
 
+      {/* ABOVE the staff list (spec D15): a staffer opens this screen to find a
+          free room, so the staff cards are the reference and the rooms are the
+          act. A CHILD and not a sibling — it rides this poll, this pause control
+          and this announced region, and adds no second one of any of them. */}
+      <RoomsPanel
+        rooms={rooms}
+        staff={cards}
+        serverNow={serverNow}
+        fetchCount={fetchCount}
+        selfId={selfId}
+        role={role}
+        paused={stopped}
+        mutate={mutate}
+        onRooms={applyRooms}
+        onCue={setCue}
+      />
+
       {cards !== null && (
         <Card>
           {cards.length === 0 ? (
@@ -520,7 +629,12 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
                place. */
             <ul className="divide-y divide-border">
               {cards.map((card) => {
-                const onBreak = card.status === "break";
+                // ⚠ THE BREAK FACT, and it is NOT `card.status` — see `toggle`.
+                // `status` is a display precedence that F36 makes `occupied`
+                // win; `break_started_at` is what says a break is open, and
+                // both the control and the since-line follow it.
+                const onBreak = card.break_started_at !== null;
+                const badge = STATUS_BADGE[card.status];
                 const isSelf = card.id === selfId;
                 // Which control EXISTS is the rendered form of D6's two axes.
                 // A non-elevated staffer sees a name, a role and a status on a
@@ -553,14 +667,42 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
                             muted words, so the card's single pill means one
                             thing. The WORD carries the state; the colour never
                             does. */}
-                        <Badge variant={onBreak ? "warning" : "success"}>
-                          {t(onBreak ? "floor.statusBreak" : "floor.statusAvailable")}
-                        </Badge>
+                        <Badge variant={badge.variant}>{t(badge.labelKey)}</Badge>
                       </div>
                       <p className="text-sm text-ink-muted">
                         <bdi>{labelKey === null ? card.role : t(labelKey)}</bdi>
                       </p>
-                      {/* The since-line renders ONLY on a break. It is what
+                      {/* THREE FRAGMENTS, each its own element, separated by the
+                          console's existing «·» — never one interpolated
+                          sentence. «בחדר {{room}}» would render «בחדר חדר 2»
+                          against the boutique's own labels, and the string would
+                          need two bidi isolations plus a numeric one from
+                          helpers that cannot be chained.
+
+                          The client's name is LABELLED rather than left bare:
+                          a name one line under another name, separated by a
+                          character most screen readers do not voice, is not a
+                          readable value. */}
+                      {card.occupancy !== null && serverNow !== null && (
+                        <p className="text-sm text-ink">
+                          <bdi>{card.occupancy.room_label}</bdi>
+                          {" · "}
+                          {card.occupancy.client_label === null ? (
+                            t("rooms.anonymous")
+                          ) : (
+                            <>
+                              <span className="text-ink-muted">{t("rooms.clientLabel")}</span>{" "}
+                              <bdi>{card.occupancy.client_label}</bdi>
+                            </>
+                          )}
+                          {" · "}
+                          {elapsedLine(t, serverNow, card.occupancy.assigned_at)}
+                        </p>
+                      )}
+                      {/* The since-line renders ONLY on an open break, which
+                          F36 makes reachable on an OCCUPIED card for the first
+                          time — the only place a screen can tell a shift
+                          manager that a break was never closed. It is what
                           makes a forgotten break legible rather than silent,
                           since nothing but a tap ever ends one (D7). */}
                       {onBreak && card.break_started_at !== null && (
