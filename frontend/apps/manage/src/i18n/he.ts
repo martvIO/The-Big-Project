@@ -749,5 +749,33 @@ export const he = {
     // would be a guess the server never made.
     "customers.error.NOT_AUTHORIZED":
       "אין הרשאה לצפות בכרטיסי הלקוחות כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+    // F33 — the printable check-in code. Two audiences in one block, which is
+    // the only unusual thing about it: `heading`, `intro`, `printCta` and
+    // `loadFailed` are read by the owner in the console; `posterLine`,
+    // `urlLabel` and `urlHint` are read by a woman standing at the door, off a
+    // sheet of paper, with no way to ask a follow-up question.
+    //
+    // Nothing here promises a message. F20 will add a queue SMS; until then a
+    // string implying one would be a lie the product cannot keep — which is
+    // also why the i18n suite's send guard covers this block.
+    "nav.checkinQr": "קוד סריקה",
+    "checkinQr.heading": "קוד סריקה לרישום לתור",
+    "checkinQr.intro":
+      "אפשר להדפיס את הדף הזה ולתלות אותו בכניסה. מי שסורקת את הקוד מגיעה ישירות לטופס הרישום לתור.",
+
+    // The poster itself. Feminine plural imperative is the storefront's register
+    // («טוענות את פרטי הבוטיק»), and the sentence names the OUTCOME rather than
+    // the technology — «QR» appears only in the alt text, where it is the one
+    // useful word.
+    "checkinQr.posterLine": "לרישום לתור אפשר לסרוק את הקוד",
+    "checkinQr.imageAlt": "קוד QR שמוביל לטופס הרישום לתור",
+    // The address in legible text, because a camera that will not focus is the
+    // ordinary failure of a printed code and the poster is the only copy she
+    // holds.
+    "checkinQr.urlLabel": "כתובת הרישום:",
+    "checkinQr.urlHint": "אפשר גם להקליד את הכתובת בדפדפן.",
+
+    "checkinQr.printCta": "הדפסה",
+    "checkinQr.loadFailed": "לא הצלחנו לטעון את קוד הסריקה כרגע.",
   },
 } as const;

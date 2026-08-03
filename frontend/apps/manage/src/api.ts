@@ -431,6 +431,16 @@ export interface GatewayStatus {
   credential_fields: string[];
 }
 
+// F33's printable check-in code. Two strings and nothing secret — the URL is
+// the one printed on a sign in the shop window, which is why the route admits
+// both console roles.
+export interface CheckinQrResponse {
+  checkin_url: string;
+  // The SVG SOURCE, not a URL to an image: `apiFetch` unconditionally .json()s,
+  // and CheckinQrSection renders it through a `data:` URI in an <img>.
+  qr_svg: string;
+}
+
 export interface CreateStaffRequest {
   email: string;
   display_name: string;
@@ -866,5 +876,12 @@ export const api = {
   },
   disconnectGateway(): Promise<GatewayStatus> {
     return apiFetch("/manage/gateway/credentials", { method: "DELETE" });
+  },
+
+  // Both roles, and no parameters: the answer is a total function of the
+  // tenant's own slug, which the server takes from the Host header. `slug`
+  // appears nowhere in this app, so composing the URL here was never an option.
+  getCheckinQr(): Promise<CheckinQrResponse> {
+    return apiFetch("/manage/checkin-qr");
   },
 };
