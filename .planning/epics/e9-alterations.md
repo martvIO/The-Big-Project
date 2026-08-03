@@ -37,7 +37,7 @@ Two identity facts are settled and shape the dependency graph (pre-decided #41):
 
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
-| 41 | Ticket intake + 5-state timestamped lifecycle + effort estimate | todo | — | — | F8, F13, F31, F34, F57 |
+| 41 | Ticket intake + 5-state timestamped lifecycle + effort estimate | **done (PR #39)** | `.planning/specs/alteration-tickets.md` | `.planning/plans/alteration-tickets.md` | F8, F13, F31, F34, F57 |
 | 42 | Seamstress capacity hours + load bars + balanced assignment | todo | — | — | F41, F57 · *F40 dep dropped, design gate self-approved 2026-07-31* |
 | 43 | Multi-fitting scheduling on the E3 slot engine | todo | — | — | F12, F13, F16, F24, F41 |
 | 44 | Live workshop board + owner throughput analytics | todo | — | — | F32, F41, F42 |

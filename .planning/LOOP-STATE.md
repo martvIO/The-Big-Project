@@ -517,8 +517,39 @@ queue:
     slug: floor-dispatch
     epic: E6
     title: "Waitlist panel + dispatch (take-next, push-assign, finish, skip)"
-    status: queued
+    status: building
+    attempts: 1
     deps: [F33, F36, F57]
+    spec: .planning/specs/floor-dispatch.md
+    plan: .planning/plans/floor-dispatch.md
+    started: >-
+      2026-08-03 22:00, worktree .worktrees/floor-dispatch. THE CRITICAL PATH — see
+      deployment_gates; F33 and F59 are both merged-but-not-launchable until this ships.
+      SPEC REVIEW: 33 findings from 3 lenses, 32 applied. Two blockers were defects in
+      the PROOF rather than the design, which is the rarer and more dangerous kind:
+      (1) D3a's stranding proof was misdiagnosed and ITS MUTATION WAS VACUOUS.
+      tenant_session is `async with session_factory() as session, session.begin()`, so
+      a propagating exception ALREADY rolls back — the claim that a raised 409 would
+      let the enclosing session commit is false, the named mutation came back GREEN,
+      and A8 (the single test on which F33's deployment gate is discharged) asserted
+      NOTHING. Restated truly: every refusal RAISES; nothing may `return` after the
+      ticket UPDATE, because a return is the one construct that commits. F36's
+      idempotence `return` is the real mutation, and A8b forbids the branch returning.
+      (2) TWO CONCURRENT FIRST SKIPS irreversibly REMOVED a customer with the confirm
+      bypassed: B's EvalPlanQual re-check passes on A's new tuple, reads skip_count 1
+      and jumps to `removed`, while both clients rendered 0 and showed no confirm. The
+      old acceptance criterion asserted that outcome AS THE PASS CONDITION. Fixed with
+      an `AND skip_count = :seen` conjunct and a third conflict code.
+      (3) Four announced cues would have put a CUSTOMER'S NAME into FloorPanel's
+      PERSISTENT role="status" region on the five-role screen — worse than the case F36
+      explicitly declined, since a removed woman's name would outlive every other trace
+      of her. All four now name the act.
+      Also: "F58 needs no migration" is FALSE (0019's own DDL comment says F58 adds
+      queue_ticket_id alongside its writer); FINISH extends FloorService.release rather
+      than adding a sixth route, so F36's shipped release cannot free a room and strand
+      a ticket in_service; and a three-role gate is structurally forbidden by a shipped
+      walker test that names F58 — so reception cannot skip or remove, recorded as a
+      product limitation with an upgrade path rather than worked around.
     note: >-
       NEW 2026-07-31 (floor program) — the atomic heart of the brief, and the one
       entry where getting the concurrency wrong is visible to a customer. No new
@@ -631,6 +662,37 @@ queue:
     title: "SOS: targeted page, full-screen alert, ack/resolve, 30s escalation"
     status: queued
     deps: [F31, F36, F57]
+    spec: .planning/specs/sos-paging.md
+    plan: .planning/plans/sos-paging.md
+    gates_done: >-
+      Gates 1 and 2 cleared 2026-08-03; deps became merged history when F36 landed.
+      SPEC REVIEW: 33 findings from 3 lenses, 33 applied, 0 rejected. Five blockers,
+      and EVERY ONE of them was a way an emergency page could be silently lost — which
+      is the only defect class that actually matters in this feature:
+      (1) AN ACCEPTED ALERT WHOSE RESPONDER VANISHES was lost forever while the raiser
+      was actively told help was coming: _escalated short-circuited on status != OPEN,
+      so the first «אני מגיעה» stopped every mechanism permanently. Fixed with a second
+      READ-TIME boolean (_stalled, 2 minutes) using the identical zero-write mechanism
+      — one constant, one branch, one payload field, no column, no worker.
+      (2) A TERMINAL POLL KILLED THE EMERGENCY CHANNEL WITH ZERO SIGNAL, and the spec's
+      stated mitigation DID NOT EXIST — App.tsx has no fetch interceptor and onNavigate
+      is just setSection, so "App will show the login form on her next navigation" was
+      simply false. Fixed with an onSessionEnded wire and a persistent channel-down
+      strip, because the overlay is the only app-level surface on the eleven sections
+      that poll nothing else.
+      (3) DISMISSING ON A NON-FLOOR SECTION HID A LIVE EMERGENCY PERMANENTLY. SosCentre
+      is a child of FloorPanel and so mounts on 2 of 13 sections; on the other eleven
+      the dismiss set was the only state. Fixed by keying the set on
+      `${id}:${escalated}:${stalled}` so a safety net re-raises a dismissed card once,
+      plus a persistent affordance while any live alert is dismissed.
+      (4) THE ALERT WAS ANNOUNCED PERFECTLY TO A KEYBOARD USER WHO COULD NOT REACH THE
+      ACK CONTROL — for a user mid-form, «אני מגיעה» sat behind a Shift+Tab run past her
+      whole section and the console chrome. Fixed with a document-level capture keydown.
+      Also found: «בדרך» is BANNED by i18n.test.ts, which the natural copy would have
+      used; and the epic's "every on-shift staffer" has NO REFERENT in the shipped
+      schema — there is no on-shift column anywhere — so targeting reads a live
+      `sessions` row instead, which is literally what the device-identity ruling
+      describes and cannot go stale.
     note: >-
       AMENDED BY THREE USER RULINGS 2026-07-31. (1) 30s auto-escalation is
       REINSTATED, overriding pre-decided #29's "no escalation timer". (2) Targeting
@@ -669,7 +731,8 @@ queue:
     slug: alteration-tickets
     epic: E9
     title: "Atelier tickets + kanban (intake/in_progress/qc/ready/delivered)"
-    status: building
+    status: merged
+    pr: 39
     attempts: 1
     deps: [F8, F13, F31, F34, F57]
     spec: .planning/specs/alteration-tickets.md
@@ -703,8 +766,68 @@ queue:
       NO DRAG-AND-DROP AT ALL, by ruling: a drag-only kanban is unusable by keyboard
       and screen reader, and a11y here is legal, not preference. The board moves by
       explicit controls with five named focus destinations.
-      MIGRATION: build at head+1 (0019 today), renumber at rebase. F36 is building in
-      parallel and may land first, making this 0020.
+      MIGRATION: built at 0019, renumbered to 0020 when F36 took 0019.
+    shipped: >-
+      MERGED 2026-08-03 as PR #39, migration 0020_alteration_tickets — but ON THE
+      THIRD CI RUN, and it is the only feature this run that CI turned back. Both
+      red runs are worth reading, because one was a real defect and one was not, and
+      they looked identical from the outside (a red "Frontend (lint, types, build)"
+      on a branch whose every local gate was green).
+      RED 1 — A REAL PRODUCT DEFECT THAT EVERY LOCAL GATE MISSED. Test 5a asserted
+      focus follows a card that a colleague moves under you, and CI read <body>.
+      Local full-suite PASSED, local isolated FAILED, CI full-suite FAILED — three
+      behaviours, and any explanation covering one is wrong. Instrumentation found
+      the cause: the restore effect has NO DEPENDENCY ARRAY, so React queues it after
+      EVERY commit, and React's first act on a new render pass is to flush the
+      PREVIOUS commit's passive effects. So the effect ran once BEFORE the repaint it
+      was waiting for, read the intent, CLEARED IT UNCONDITIONALLY, failed its own
+      precondition and returned — and the real repaint arrived one commit later with
+      nothing left to restore. THE LOCAL/CI DIFFERENCE IS EXACTLY ONE EVENT-LOOP TURN
+      (an A/B probe: zero extra turns strands focus, one extra turn restores it), so
+      local green was luck, not correctness. It reproduces with REAL timers and no
+      `act` on a 150-card board, which is what makes it a product defect and not a
+      harness artifact: a seamstress tabbed onto a card control has her focus dropped
+      to <body> five seconds after a colleague touches that ticket from another
+      phone, the screen reader goes silent, and her next Tab restarts at the top of
+      the document. Test 5b was latently broken too; CI just happened to report 5a.
+      This is the FIFTH instance of this bug class here (F56, F34, F57, F57's vacuous
+      focus test, now this) and the SECOND of the exact clear-before-confirm shape.
+      ⚠ THE FIRST FIX WAS WRONG AND AN ADVERSARIAL VERIFIER CAUGHT IT. It kept the
+      intent whenever focus was still inside the captured card — which CREATES A NEW
+      FOCUS STEAL in the other direction, measured: she tabs out of the document
+      herself, the next poll FAILS (the catch path never re-captures), and the stale
+      intent fires and yanks focus back onto the card. A WCAG 3.2.x defect newly
+      created by an a11y fix. The verifier also caught that the fix's justifying
+      comment cited BookPage/ManageBookingPage/MediaGallery as precedent when their
+      pattern is different in kind (they key on WHETHER THE TARGET NODE IS MOUNTED and
+      carry no activeElement guard, so a held intent can only ever be honoured by the
+      render that mounts the node she asked for — "a delayed correct move, never a
+      wrong one"). Those three were left untouched, correctly.
+      THE SHIPPED FIX stamps each intent with the board-commit COUNT it was recorded
+      at and expires it on the first commit past that: stale passes never reach the
+      clear, and commits no payload preceded (setStale, the pause toggle, a keystroke)
+      never reach it either. Both directions are pinned, both mutations demonstrated
+      red, and a third mutation (keep-until-consumed) reds them too — so the tests pin
+      the PRINCIPLE, not one predicate. 5d additionally pins the `<=` boundary, which
+      was unpinned until a verifier noticed `<` left all 96 tests green.
+      RED 2 — NOT A DEFECT AT ALL: 5c and 5d TIMED OUT at the 5s default. They render
+      150 cards deliberately, because that is what makes React exceed its 5ms frame
+      budget and yield between commit and passive flush — the mechanism itself.
+      Shrinking the board to fit the timeout would have deleted the defect rather than
+      the delay, so the timeout moved to 20s instead and the mutation was re-verified
+      after the change. WORTH GENERALISING: a test whose SIZE is load-bearing needs an
+      explicit timeout, because the default is sized for typical tests and CI's
+      contended two-core runner is several times slower than this machine.
+      SPEC-REVIEW BLOCKERS (32 findings, all applied) are in `started:` above; the
+      sharpest was an "impossible" state-machine branch that a zero-row UPDATE's
+      missing lock makes reachable under READ COMMITTED.
+      MUTATION CHECKS FOUND THREE TESTS THAT COULD NOT FAIL, all closed: a missing SQL
+      LIMIT was invisible behind a Python slice (the SELECT materialised the whole
+      table every 5s and the response was byte-identical); populate_existing=True
+      survived removal because a single-writer test can never show it (it only bites a
+      STALE identity map); and an undo's later-columns clause survived because the
+      test's target column was already NULL so `IS NOT NULL` refused the write
+      single-handed.
     note: >-
       PULLED FORWARD from E9 by the floor program, and AMENDED: the kanban states
       are the brief's intake -> in_progress -> qc -> ready -> delivered. Those
