@@ -1270,12 +1270,16 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # impossible in production. F18 DELETES this line and app/payments/fake_pay.py
     # when a real adapter's hosted page replaces it.
     register_fake_pay(app, settings)
-    # The FIFTH /storefront sibling: F33's walk-in check-in and its position
-    # read, both POSTs. Same anonymous posture as the other three, asserted in
-    # test_checkin_api.py. Same shadowing hazard as every router above — a
-    # duplicated (method, path) would silently win or lose on include order —
-    # and the explicit /storefront path literal in test_storefront_api.py is
-    # what keeps this pair honest.
+    # The FIFTH /storefront sibling — still the fifth, because F59 added a third
+    # ROUTE to it rather than a sixth router: F33's walk-in check-in, its
+    # position read and F59's public board, all three POSTs. Same anonymous
+    # posture as the other three siblings, asserted in test_checkin_api.py and
+    # test_queue_board_api.py. The board's POST is argued from the DERIVED
+    # ROUTES table in test_storefront_api.py and NOT from F33's capability
+    # rule — its request carries no id and no body at all. Same shadowing hazard
+    # as every router above — a duplicated (method, path) would silently win or
+    # lose on include order — and the explicit /storefront path literal in
+    # test_storefront_api.py is what keeps all three honest.
     app.include_router(queue_router)
     # LAST, after every router: the mounts and the catch-all only ever see what
     # no API route claimed.

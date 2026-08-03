@@ -35,8 +35,9 @@ BOARD_NAME_MAX = 12
 
 
 class CheckinThrottledError(Exception):
-    """One of the three check-in budgets is spent; main.py maps it to a 429
-    carrying the shared TOO_MANY_ATTEMPTS body.
+    """One of the four queue budgets is spent — F33's three check-in ones or
+    F59's board one; main.py maps it to a 429 carrying the shared
+    TOO_MANY_ATTEMPTS body.
 
     Its own class rather than a reuse of StorefrontThrottledError, for the
     reason that class's own docstring gives: unrelated budgets, keys and
@@ -45,9 +46,10 @@ class CheckinThrottledError(Exception):
     Reparenting every throttle error onto one base is F21's behaviour-neutral
     cleanup.
 
-    All three keys it can carry are about a boutique or about a ticket the
-    caller already holds — never about a person. That is what makes ONE shared
-    429 safe here where the OTP surface needed two different answers.
+    All four keys it can carry are about a boutique or about a ticket the caller
+    already holds — never about a person. That is what makes ONE shared 429 safe
+    here where the OTP surface needed two different answers, and it is why the
+    board's key is the tenant and not the viewer.
     """
 
 

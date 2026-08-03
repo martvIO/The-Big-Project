@@ -81,6 +81,10 @@ SHELL_PATHS = [
     # /q/{ticket_id} is what the printed QR's response sends her to.
     "/checkin",
     "/q/tick3t",
+    # F59's public wall board. Typed into a kiosk browser once, on a screen that
+    # then stays mounted for months — so arriving as a 404 is a failure nobody in
+    # the room is in a position to diagnose.
+    "/queue",
     "/anything-a-stale-link-points-at",
 ]
 
