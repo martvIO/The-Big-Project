@@ -127,7 +127,7 @@ class CustomersRepository:
 
         No index, deliberately: a btree cannot serve an unanchored `%term%` at
         all, and the only thing that helps is a `pg_trgm` GIN pair whose upgrade
-        path is recorded in 0018's comment.
+        path is recorded in 0017's comment.
         """
         stmt = (
             select(Customer)

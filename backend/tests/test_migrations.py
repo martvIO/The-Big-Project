@@ -983,7 +983,7 @@ def test_the_deposit_migration_round_trips(migrated_db: str) -> None:
         command.upgrade(cfg, "head")
 
 
-# --- 0018: the customer CRM columns ---
+# --- 0017: the customer CRM columns ---
 
 _CUSTOMER_CRM_COLUMNS = (
     "SELECT column_name, data_type, is_nullable, column_default, udt_name "
@@ -991,7 +991,7 @@ _CUSTOMER_CRM_COLUMNS = (
     "WHERE table_name = 'customers' AND column_name IN ('notes', 'tags') "
     "ORDER BY column_name"
 )
-# Spelled as POSTGRES deparses them, not as 0018 wrote them, and captured from a
+# Spelled as POSTGRES deparses them, not as 0017 wrote them, and captured from a
 # real 16.x cluster rather than transcribed. `data_type` is the bare string
 # ARRAY for EVERY array column, which is what makes `udt_name` load-bearing
 # rather than padding — without it text[] and int[] are indistinguishable. And
@@ -1022,7 +1022,7 @@ def _customer_crm_columns(url: str) -> dict[str, tuple[str, str, str | None, str
 
 
 @pytest.mark.db
-def test_migration_0018_round_trips(migrated_db: str) -> None:
+def test_migration_0017_round_trips(migrated_db: str) -> None:
     """upgrade() adds a nullable TEXT and a NOT NULL TEXT[] DEFAULT '{}';
     downgrade() drops both. Runs as the migration owner (the app role cannot
     ALTER) and mutates the live session-scoped schema.

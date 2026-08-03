@@ -18,7 +18,7 @@ class Customer(StandardColumns, Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     phone: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    # CRM fields the owner console writes (0018). `tags` carries the server
+    # CRM fields the owner console writes (0017). `tags` carries the server
     # default so an untouched row reads [] and never None.
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[list[str]] = mapped_column(

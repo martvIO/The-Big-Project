@@ -1,20 +1,26 @@
 """customer CRM: the notes the owner writes and the tags she files a bride under
 
-Revision ID: 0018
+Revision ID: 0017
 Revises: 0014
 """
 
 from alembic import op
 
-# 0015 is claimed TWICE in flight right now — 0015_floor_roles.py and
-# 0015_deposit_flow.py, different filenames, so git merges both cleanly and
-# alembic then reports multiple heads at runtime. F53 declines to be the third
-# claimant. A non-contiguous id is valid: alembic follows the linked list, not
-# the sequence (`alembic history` prints `0014 -> 0018 (head)`), so only
-# down_revision moves at rebase. Re-resolve BOTH from `alembic heads` on the
-# rebased branch — never from the plan document.
-revision = "0018"
-down_revision = "0014"
+# Resolved from `alembic heads` on the REBASED branch, which is the only source
+# this repo trusts for a revision id — never a planning document, which is
+# written before the race it describes has run.
+#
+# The race was real. This file was built as 0018/down_revision 0014 while FOUR
+# features were in flight, because 0015 was claimed TWICE at the time
+# (0015_floor_roles.py and 0015_deposit_flow.py). Both have since merged, in
+# that order, and F19 renumbered itself to 0016 — so head is 0016 and this is
+# 0017. THE HAZARD THAT MADE THAT WORTH DESIGNING AROUND IS STILL LIVE: the
+# filenames differ, so git merges two same-revision migrations with no conflict
+# at all, and the only symptom is alembic reporting multiple heads at runtime,
+# far from the change that caused it. F33 is carrying 0016_queue_tickets.py
+# against a main whose 0016 is already taken, and will hit exactly this.
+revision = "0017"
+down_revision = "0016"
 branch_labels = None
 depends_on = None
 
