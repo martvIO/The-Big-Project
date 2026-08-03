@@ -169,9 +169,56 @@ queue:
     slug: floor-staff-roles
     epic: E6
     title: "Floor roles (reception/sales_assistant/seamstress) + break status + staff cards"
-    status: building
+    status: pr-open
+    pr: 33
     spec: .planning/specs/floor-staff-roles.md
     deps: [F51, F34]
+    shipped: >-
+      PR #33 opened 2026-08-03, ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN
+      and merge-gate.sh reports GATE PASS. Built from the mid-flight resume point
+      (plan Task 3); Tasks 3-13 complete. NOT MERGED — this ran as /spartan:build,
+      whose contract ends at the PR, so the merge is the loop's to take.
+      Local gates: 1277 backend fast, 369 db AGAINST A LOCAL POSTGRES 16 CLUSTER
+      (not debuting on CI — the F34 precedent, and it is why CI was green first
+      time), 488 manage / 733 storefront / 104 ui frontend, 69 e2e, axe zero,
+      qa-greps byte-identical to baseline. `git diff main -- backend/app/auth/`
+      is EMPTY, which is Task 7's whole claim.
+      THREE THINGS A LATER READER NEEDS.
+      (1) THE PLAN WAS WRONG ABOUT vite.config.ts AND A PRE-WRITTEN GUARD CAUGHT
+      IT. Task 10 says "/manage/floor* is under /manage, already proxied". It is
+      not — the dev proxy names second path segments in an explicit alternation,
+      because base:"/manage/" means a bare "/manage" proxy would forward the
+      console's own shell to the API. test_spa_serving.py derives that list from
+      the LIVE route table and went red naming 'floor'. THIRD time a pre-written
+      guard has caught a clean-rebase/plan collision here (ruff F811 on F15/F31,
+      this same test on F52) and the nastiest failure mode of the three:
+      production, CI and the suite all stay green while only a developer's
+      machine breaks, serving the SPA shell where the API should be.
+      (2) TWO MUTATION CHECKS CHANGED THE WORK. With only Task 3's seven db tests
+      present, removing populate_existing=True changed NOTHING — each opens a
+      fresh session, so the identity map is empty and the flag is a no-op. The
+      forced-interleave race is what actually pins it. Separately, moving
+      end_break's previous-value capture after the write reddens one db test and
+      leaves ALL 17 fast tests green, because monkeypatched repositories never
+      stamp anything. Both mechanisms would have shipped unproven.
+      (3) REVIEW FOUND FIVE REAL DEFECTS IN THIS BRANCH'S OWN CODE (5 lenses ->
+      11 findings -> 10 adversarially verified -> 5 survived), all fixed and each
+      pinned by a mutation. Two MAJOR: a successful poll unmounted the FOCUSED
+      in-card alert and dropped focus to <body> five seconds later with no user
+      action (WCAG 2.4.3 — the bug class that has now been caught three times in
+      this repo), and the success-path focus test was VACUOUS because jsdom does
+      not blur a disabled element, so the whole restore effect could be deleted
+      with the suite green. One fix — usePoll's mount effect not being idempotent
+      under StrictMode — is a bug INHERITED FROM BoardSection ON main, so the
+      extraction is what makes one line fix both callers. A second review round
+      caught two more, both against the commit message's own claims rather than
+      the code; the message is amended to be true.
+      CARRIED: Risk 10 hands F20 a staff-break privacy entry; Risk 2 hands F29 the
+      number (~17 -> ~28 round trips per 5s per device on the board screen); Risk 1
+      says test_the_floor_roles_reach_exactly_the_floor_routes classifies on the
+      INTERSECTION of a route's gates and must never be relaxed to a subset check —
+      F36 and F58 both extend this router and `any(...)` would red-fail a correctly
+      tightened route.
     note: >-
       NEW 2026-07-31 (floor program). The brief's staff cards — name, role, live
       status — plus the roles that make them mean anything. Migration widens
