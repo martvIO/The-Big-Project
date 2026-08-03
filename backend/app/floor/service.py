@@ -59,6 +59,8 @@ from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
 from app.floor.validation import (
     RoomOccupiedError,
+    SosAlreadyAcceptedError,
+    SosClosedError,
     SosValidationError,
     StaffOccupiedError,
     normalize_room_label,
@@ -68,6 +70,7 @@ from app.models.booking import Booking
 from app.models.constants import (
     AuditAction,
     BookingStatus,
+    SosStatus,
     StaffCardStatus,
     StaffRole,
 )
@@ -935,6 +938,95 @@ class FloorService:
             )
             return RaisedSos(alert=alert, rerouted=rerouted)
 
+    async def accept_sos(self, tenant_id: UUID, alert_id: UUID, *, actor: StaffContext) -> SosAlert:
+        """«אני מגיעה» — and the ORDER of these steps IS the first-accept-owns
+        guarantee.
+
+        read (no status filter) -> visibility 404 -> permission 404 ->
+        IDEMPOTENCE -> the conditional UPDATE -> rowcount-0 discriminator.
+
+        ⚠ **Both refusals are 404 and byte-identical to a missing id.** Whose
+        alert it is can only be learned by READING it, so a 403 on a real id and
+        a 404 on a fake one would discriminate existence and let any staffer
+        enumerate the tenant's alerts.
+
+        ⚠ **IDEMPOTENCE IS RESOLVED BEFORE THE 409, keyed on the REQUEST.** She
+        tapped twice, or two of her devices did. Resolved after the 409 instead,
+        a double-tap tells her — by name — that SHE has it, as an error. Every
+        single-accept test stays green either way, which is why the ordering is
+        spelled out rather than left to the reader.
+
+        The raiser may not accept her own page: she has resolve and cancel.
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._sos.by_id(session, tenant_id, alert_id)
+            if row is None or not _visible_to(row, actor=actor):
+                raise DomainNotFoundError("sos_alert")
+            if not (row.target_staff_user_id == actor.id or actor.role in ELEVATED_ROLES):
+                raise DomainNotFoundError("sos_alert")
+            if row.status == SosStatus.ACCEPTED and row.accepted_by == actor.id:
+                return row
+
+            wrote, after = await self._sos.accept(
+                session, tenant_id, alert_id, actor_id=actor.id, at=at
+            )
+            if wrote:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.SOS_ACCEPTED,
+                    actor_id=actor.id,
+                    entity=str(alert_id),
+                    details={"alert": str(alert_id), "raised_by": str(row.raised_by)},
+                )
+                if after is None:
+                    raise RuntimeError("sos accept wrote a row it cannot read back")
+                return after
+
+            if after is None:
+                raise DomainNotFoundError("sos_alert")
+            return await self._refuse_accept(session, tenant_id, after)
+
+    async def _refuse_accept(
+        self, session: AsyncSession, tenant_id: UUID, row: SosAlert
+    ) -> SosAlert:
+        """Rowcount 0 -> discriminate on the CURRENT status, which is the only
+        discriminator this feature has: there is no index, therefore no
+        constraint name to read.
+
+        ⚠ **The `open` branch is genuinely unreachable and STILL raises.** A
+        zero-row UPDATE takes no lock and the repo runs READ COMMITTED, so a
+        concurrent write can move the row between the UPDATE and the re-read —
+        but nothing moves a row BACK to `open`, and `uuid_generate_v4()` makes
+        delete-and-recreate-with-the-same-id impossible. It is spelled as a raise
+        rather than as a comment claiming impossibility because F41's review
+        found exactly that shape: an "impossible" branch with no `else` returns
+        `None` and 500s with no message.
+        """
+        if row.status in (SosStatus.RESOLVED, SosStatus.CANCELLED):
+            raise SosClosedError
+        if row.status == SosStatus.ACCEPTED:
+            raise SosAlreadyAcceptedError(await self._name_of(session, tenant_id, row.accepted_by))
+        raise RuntimeError(f"sos accept matched no row but reads back {row.status!r}")
+
+    async def _name_of(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID | None
+    ) -> dict[str, str] | None:
+        """The 409's `details`, and it is OPTIONAL — the key is ABSENT rather
+        than null when there is nobody to name.
+
+        `accepted_by` points at a `staff_users` row that staff removal can
+        soft-delete at any time, and the acceptor can be removed between her
+        accept and this read. «{{name}} כבר מגיעה.» rendering with an empty
+        interpolation on a legally binding surface is worse than a sentence that
+        admits it does not know.
+        """
+        if staff_id is None:
+            return None
+        row = await self._staff.by_id(session, tenant_id, staff_id)
+        return {"staff_display_name": row.display_name} if row is not None else None
+
     @staticmethod
     def _authorize(staff_id: UUID, actor: StaffContext) -> None:
         """The acting identity is `StaffContext`, resolved from the session
@@ -957,3 +1049,21 @@ def _isoformat(value: datetime.datetime | None) -> str | None:
 
 def _str_or_none(value: UUID | None) -> str | None:
     return str(value) if value is not None else None
+
+
+def _visible_to(row: SosAlert, *, actor: StaffContext) -> bool:
+    """D7's audience rule, applied to ONE row that was read by id.
+
+    An elevated caller sees every alert in her tenant from the instant it is
+    raised — «never silently dropped» requires it, and she is the fallback.
+    Everybody else sees only the three alerts that are hers: the one she raised
+    (so she can see the accept), the one she was named on, and the one she owns.
+
+    ⚠ This is VISIBILITY and not RISING. Whether the full-screen overlay appears
+    on her device is a separate, narrower predicate — otherwise a shift manager
+    would get a red interruption for every seamstress-to-seamstress page in the
+    boutique and would learn within a day to dismiss them unread.
+    """
+    if actor.role in ELEVATED_ROLES:
+        return True
+    return actor.id in (row.raised_by, row.target_staff_user_id, row.accepted_by)

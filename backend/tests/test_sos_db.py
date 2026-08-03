@@ -45,7 +45,9 @@ from app.db.repositories.fitting_rooms import FittingRoomsRepository
 from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
+from app.errors import DomainNotFoundError
 from app.floor.service import FloorService
+from app.floor.validation import SosAlreadyAcceptedError, SosClosedError
 from app.models.audit_log import AuditLog
 from app.models.constants import AuditAction, SosStatus, StaffRole
 from app.models.sos_alert import SosAlert
@@ -350,5 +352,193 @@ async def test_a_second_page_by_the_same_raiser_is_admitted(app_role_url: str) -
             actor=actor,
         )
         assert first.alert.id != second.alert.id
+    finally:
+        await engine.dispose()
+
+
+# --- VERB 2: accept ----------------------------------------------------------
+
+
+async def _raise(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    raiser: uuid.UUID,
+    *,
+    target: uuid.UUID | None = None,
+) -> uuid.UUID:
+    result = await _service(factory).raise_sos(
+        tenant_id,
+        target_staff_user_id=target,
+        fitting_room_assignment_id=None,
+        note=None,
+        actor=_actor(raiser, tenant_id, StaffRole.OWNER),
+    )
+    return result.alert.id
+
+
+async def test_an_accept_stamps_the_owner_and_writes_one_audit_row(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        dana = await _seed_staff(factory, tenant_id, display_name="Dana")
+        alert_id = await _raise(factory, tenant_id, raiser)
+
+        row = await _service(factory).accept_sos(
+            tenant_id, alert_id, actor=_actor(dana, tenant_id, StaffRole.SHIFT_MANAGER)
+        )
+        assert row.status == SosStatus.ACCEPTED
+        assert row.accepted_by == dana
+        assert row.acknowledged_at == NOW
+
+        rows = await _audit_rows(factory, tenant_id, AuditAction.SOS_ACCEPTED)
+        assert len(rows) == 1
+        assert rows[0].actor_id == dana
+        assert rows[0].entity == str(alert_id)
+        assert rows[0].details == {"alert": str(alert_id), "raised_by": str(raiser)}
+    finally:
+        await engine.dispose()
+
+
+async def test_a_second_accept_is_refused_and_names_the_owner(app_role_url: str) -> None:
+    """⚠ **THE MUTATION TARGET for `AND status = 'open'`.** Drop the conjunct and
+    the second responder OVERWRITES the first: `accepted_by` flips, the first is
+    never told, and two people walk to one curtain while a third emergency goes
+    unanswered. Every test that accepts once stays green.
+
+    The name comes from a REAL `staff_users` read, which is why this assertion
+    cannot live in the fast suite."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        dana = await _seed_staff(factory, tenant_id, display_name="דנה כהן")
+        rina = await _seed_staff(factory, tenant_id, display_name="רינה")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        service = _service(factory)
+
+        await service.accept_sos(
+            tenant_id, alert_id, actor=_actor(dana, tenant_id, StaffRole.SHIFT_MANAGER)
+        )
+        with pytest.raises(SosAlreadyAcceptedError) as raised:
+            await service.accept_sos(
+                tenant_id, alert_id, actor=_actor(rina, tenant_id, StaffRole.SHIFT_MANAGER)
+            )
+        assert raised.value.details == {"staff_display_name": "דנה כהן"}
+
+        async with tenant_session(factory, tenant_id) as session:
+            stored = await session.scalar(select(SosAlert).where(SosAlert.id == alert_id))
+        assert stored is not None
+        assert stored.accepted_by == dana
+        assert len(await _audit_rows(factory, tenant_id, AuditAction.SOS_ACCEPTED)) == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_an_accept_whose_winner_was_removed_does_not_name_nobody(
+    app_role_url: str,
+) -> None:
+    """⚠ `details` is OPTIONAL and the key is ABSENT, never `null`. Make it
+    required and this path either raises building the body or ships
+    `{"staff_display_name": null}` and the console renders «{{name}} כבר מגיעה.»
+    with an empty interpolation. Every other 409 test has an owner to read."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        dana = await _seed_staff(factory, tenant_id, display_name="Dana")
+        rina = await _seed_staff(factory, tenant_id, display_name="Rina")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        service = _service(factory)
+
+        await service.accept_sos(
+            tenant_id, alert_id, actor=_actor(dana, tenant_id, StaffRole.SHIFT_MANAGER)
+        )
+        async with tenant_session(factory, tenant_id) as session:
+            await session.execute(
+                update(StaffUser).where(StaffUser.id == dana).values(deleted_at=NOW)
+            )
+
+        with pytest.raises(SosAlreadyAcceptedError) as raised:
+            await service.accept_sos(
+                tenant_id, alert_id, actor=_actor(rina, tenant_id, StaffRole.SHIFT_MANAGER)
+            )
+        assert raised.value.details is None
+    finally:
+        await engine.dispose()
+
+
+async def test_a_re_accept_by_the_owner_writes_no_audit_row(app_role_url: str) -> None:
+    """The second tap must not stamp a second `acknowledged_at` and must not
+    write a second trail row.
+
+    ⚠ **What this does NOT pin, said plainly: the ORDER.** Resolving idempotence
+    after the 409 instead of before leaves this test green — the writer returns
+    `(False, accepted-by-me)` either way and no audit row is written either way.
+    The ordering is pinned by `test_sos_service.py`'s
+    `test_a_re_accept_by_the_current_owner_is_a_200_with_no_write`, whose
+    assertion is that the WRITER WAS NEVER REACHED, which only a call sequence
+    can say. Mutation performed in both directions."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        dana = await _seed_staff(factory, tenant_id, display_name="Dana")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        service = _service(factory)
+        actor = _actor(dana, tenant_id, StaffRole.SHIFT_MANAGER)
+
+        first = await service.accept_sos(tenant_id, alert_id, actor=actor)
+        again = await service.accept_sos(tenant_id, alert_id, actor=actor)
+        assert again.status == SosStatus.ACCEPTED
+        assert again.accepted_by == dana
+        assert again.acknowledged_at == first.acknowledged_at == NOW
+        assert len(await _audit_rows(factory, tenant_id, AuditAction.SOS_ACCEPTED)) == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_accepting_a_closed_alert_is_a_409_with_no_name(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        dana = await _seed_staff(factory, tenant_id, display_name="Dana")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        async with tenant_session(factory, tenant_id) as session:
+            await session.execute(
+                update(SosAlert).where(SosAlert.id == alert_id).values(status=SosStatus.RESOLVED)
+            )
+
+        with pytest.raises(SosClosedError) as raised:
+            await _service(factory).accept_sos(
+                tenant_id, alert_id, actor=_actor(dana, tenant_id, StaffRole.SHIFT_MANAGER)
+            )
+        assert raised.value.details is None
+        assert await _audit_rows(factory, tenant_id, AuditAction.SOS_ACCEPTED) == []
+    finally:
+        await engine.dispose()
+
+
+async def test_another_tenants_alert_is_a_404_and_is_never_touched(app_role_url: str) -> None:
+    """RLS plus the by-id read: an alert in another boutique is byte-identical to
+    an alert that does not exist."""
+    engine, factory = _factory(app_role_url)
+    mine, theirs = uuid.uuid4(), uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, theirs, display_name="Noa")
+        alert_id = await _raise(factory, theirs, raiser)
+        intruder = await _seed_staff(factory, mine, display_name="Intruder")
+
+        with pytest.raises(DomainNotFoundError):
+            await _service(factory).accept_sos(
+                mine, alert_id, actor=_actor(intruder, mine, StaffRole.OWNER)
+            )
+
+        async with tenant_session(factory, theirs) as session:
+            stored = await session.scalar(select(SosAlert).where(SosAlert.id == alert_id))
+        assert stored is not None
+        assert stored.status == SosStatus.OPEN
+        assert stored.accepted_by is None
     finally:
         await engine.dispose()

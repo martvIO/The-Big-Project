@@ -29,8 +29,14 @@ from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.sos_alerts import SosAlertsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
+from app.errors import DomainNotFoundError
 from app.floor.service import FloorService
-from app.floor.validation import MAX_SOS_NOTE_LENGTH, SosValidationError
+from app.floor.validation import (
+    MAX_SOS_NOTE_LENGTH,
+    SosAlreadyAcceptedError,
+    SosClosedError,
+    SosValidationError,
+)
 from app.models.constants import AuditAction, SosStatus, StaffRole
 from app.models.fitting_room_assignment import FittingRoomAssignment
 from app.models.sos_alert import SosAlert
@@ -435,3 +441,220 @@ async def test_a_role_targeted_raise_records_no_requested_target(
     # No target was named, so neither read was issued at all.
     assert "staff_by_id" not in recorder.order
     assert "has_live_session" not in recorder.order
+
+
+# --- VERB 2: accept ----------------------------------------------------------
+
+
+# The writer's re-read is a THIRD value, independent of the row the service
+# first read: `(False, None)` is gone and `(False, row)` is conflicted, and a
+# helper that collapsed the two would make the 404 branch untestable.
+_UNSET = cast(SosAlert, object())
+
+
+def _install_accept(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    row: SosAlert | None,
+    wrote: bool = True,
+    after: SosAlert | None = _UNSET,
+    acceptor: StaffUser | None = None,
+) -> _Recorder:
+    recorder = _Recorder()
+
+    async def _by_id(
+        _self: object, _session: object, _tenant_id: uuid.UUID, _alert_id: uuid.UUID
+    ) -> SosAlert | None:
+        recorder.order.append("by_id")
+        return row
+
+    async def _accept(
+        _self: object,
+        _session: object,
+        _tenant_id: uuid.UUID,
+        alert_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID,
+        at: datetime.datetime,
+    ) -> tuple[bool, SosAlert | None]:
+        recorder.order.append("accept")
+        recorder.accepted.append({"alert_id": alert_id, "actor_id": actor_id, "at": at})
+        return wrote, (row if after is _UNSET else after)
+
+    async def _staff_by_id(
+        _self: object, _session: object, _tenant_id: uuid.UUID, staff_id: uuid.UUID
+    ) -> StaffUser | None:
+        recorder.order.append("staff_by_id")
+        return acceptor
+
+    monkeypatch.setattr(SosAlertsRepository, "by_id", _by_id)
+    monkeypatch.setattr(SosAlertsRepository, "accept", _accept)
+    monkeypatch.setattr(StaffUsersRepository, "by_id", _staff_by_id)
+    _install_audit(monkeypatch, recorder)
+    return recorder
+
+
+async def test_the_named_target_may_accept(monkeypatch: pytest.MonkeyPatch) -> None:
+    actor = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(target_staff_user_id=actor.id)
+    accepted = _alert(
+        id=row.id,
+        target_staff_user_id=actor.id,
+        status=SosStatus.ACCEPTED,
+        accepted_by=actor.id,
+        acknowledged_at=NOW,
+    )
+    recorder = _install_accept(monkeypatch, row=row, wrote=True, after=accepted)
+    result = await _service().accept_sos(TENANT_ID, row.id, actor=actor)
+    assert result.status == SosStatus.ACCEPTED
+    assert result.accepted_by == actor.id
+    assert recorder.accepted[0]["at"] == NOW
+    assert recorder.audit[0]["action"] == AuditAction.SOS_ACCEPTED
+    assert recorder.audit[0]["details"] == {"alert": str(row.id), "raised_by": str(row.raised_by)}
+
+
+@pytest.mark.parametrize("role", ELEVATED)
+async def test_an_elevated_caller_may_accept_anything(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    """The shift manager is the universal fallback and may accept anything,
+    regardless of her own role — the e7 brief's phrase, preserved."""
+    actor = _actor(role)
+    row = _alert(target_staff_user_id=uuid.uuid4())
+    accepted = _alert(id=row.id, status=SosStatus.ACCEPTED, accepted_by=actor.id)
+    _install_accept(monkeypatch, row=row, wrote=True, after=accepted)
+    assert (await _service().accept_sos(TENANT_ID, row.id, actor=actor)).accepted_by == actor.id
+
+
+async def test_a_refused_accept_is_a_404_and_never_reaches_the_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ **404 and not 403, byte-identical to a missing id.** Whose alert it is
+    can only be learned by READING it, so a 403 on a real id and a 404 on a fake
+    one would discriminate existence and let a seamstress enumerate the tenant's
+    alerts.
+
+    And the assertion that matters is `"accept" not in order`: "an error was
+    raised" would still hold if the permission check ran AFTER the UPDATE, and a
+    stranger's accept would have silently succeeded."""
+    stranger = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(target_staff_user_id=uuid.uuid4())
+    recorder = _install_accept(monkeypatch, row=row)
+    with pytest.raises(DomainNotFoundError):
+        await _service().accept_sos(TENANT_ID, row.id, actor=stranger)
+    assert "accept" not in recorder.order
+    assert recorder.audit == []
+
+
+async def test_the_raiser_may_not_accept_her_own_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """She has resolve and cancel. Accepting her own page would put her name on
+    the card the boutique reads as «somebody is going», which is the one claim
+    this feature must never make falsely."""
+    actor = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(raised_by=actor.id, target_staff_user_id=None)
+    recorder = _install_accept(monkeypatch, row=row)
+    with pytest.raises(DomainNotFoundError):
+        await _service().accept_sos(TENANT_ID, row.id, actor=actor)
+    assert "accept" not in recorder.order
+
+
+async def test_an_unknown_alert_is_a_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _install_accept(monkeypatch, row=None)
+    with pytest.raises(DomainNotFoundError):
+        await _service().accept_sos(TENANT_ID, uuid.uuid4(), actor=_actor(StaffRole.OWNER))
+    assert "accept" not in recorder.order
+
+
+async def test_a_re_accept_by_the_current_owner_is_a_200_with_no_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ **IDEMPOTENCE FIRST, keyed on the REQUEST, and the ORDER is the rule.**
+    She tapped twice, or two of her devices did. Resolved after the 409 instead
+    of before, a double-tap tells her — by name — that SHE has it, as an error.
+    Every single-accept test stays green either way, which is why this one
+    exists."""
+    actor = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(
+        target_staff_user_id=actor.id,
+        status=SosStatus.ACCEPTED,
+        accepted_by=actor.id,
+        acknowledged_at=NOW,
+    )
+    recorder = _install_accept(monkeypatch, row=row)
+    result = await _service().accept_sos(TENANT_ID, row.id, actor=actor)
+    assert result is row
+    assert "accept" not in recorder.order
+    assert recorder.audit == []
+
+
+async def test_a_losing_accept_is_a_409_that_names_the_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ruling's «a 409 NAMING THE OWNER», and it is why `accepted_by` is a
+    column: neither `status` nor `acknowledged_at` can answer it."""
+    winner = _staff_user("דנה כהן")
+    row = _alert(status=SosStatus.ACCEPTED, accepted_by=winner.id, acknowledged_at=NOW)
+    recorder = _install_accept(monkeypatch, row=row, wrote=False, after=row, acceptor=winner)
+    with pytest.raises(SosAlreadyAcceptedError) as raised:
+        await _service().accept_sos(TENANT_ID, row.id, actor=_actor(StaffRole.SHIFT_MANAGER))
+    assert raised.value.details == {"staff_display_name": "דנה כהן"}
+    assert recorder.audit == []
+
+
+async def test_an_accept_whose_winner_was_removed_does_not_name_nobody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ `accepted_by` names a `staff_users` row that staff removal can
+    soft-delete at any time, and the acceptor can be removed between her accept
+    and this read. `details` is therefore OPTIONAL and the key is ABSENT — never
+    `{"staff_display_name": null}`, which would render «{{name}} כבר מגיעה.» with
+    an empty interpolation on a legally binding surface."""
+    row = _alert(status=SosStatus.ACCEPTED, accepted_by=uuid.uuid4(), acknowledged_at=NOW)
+    _install_accept(monkeypatch, row=row, wrote=False, after=row, acceptor=None)
+    with pytest.raises(SosAlreadyAcceptedError) as raised:
+        await _service().accept_sos(TENANT_ID, row.id, actor=_actor(StaffRole.OWNER))
+    assert raised.value.details is None
+
+
+@pytest.mark.parametrize("status", [SosStatus.RESOLVED, SosStatus.CANCELLED])
+async def test_accepting_a_closed_alert_is_its_own_409(
+    monkeypatch: pytest.MonkeyPatch, status: SosStatus
+) -> None:
+    """Two codes and not one with a discriminating `details`: two causes, two
+    Hebrew sentences, two remedies (go somewhere else / there is nothing to do).
+    And SOS_CLOSED never carries `details` — there is nobody to name."""
+    row = _alert(status=status)
+    _install_accept(monkeypatch, row=row, wrote=False, after=row)
+    with pytest.raises(SosClosedError) as raised:
+        await _service().accept_sos(TENANT_ID, row.id, actor=_actor(StaffRole.OWNER))
+    assert raised.value.details is None
+
+
+async def test_a_zero_row_accept_that_reads_back_open_raises_rather_than_returning_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ **The unreachable branch is genuinely unreachable and must STILL have an
+    `else: raise`.** A zero-row UPDATE takes no lock and the repo runs READ
+    COMMITTED, so a concurrent write can move the row between the UPDATE and the
+    re-read — but nothing moves a row BACK to `open`, and `uuid_generate_v4()`
+    makes delete-and-recreate-with-the-same-id impossible.
+
+    It is spelled as a raise rather than as a comment claiming impossibility
+    because F41's review found exactly that: an "impossible" branch with no
+    `else` returns `None` and 500s with no message."""
+    row = _alert(status=SosStatus.OPEN)
+    _install_accept(monkeypatch, row=row, wrote=False, after=row)
+    with pytest.raises(RuntimeError):
+        await _service().accept_sos(TENANT_ID, row.id, actor=_actor(StaffRole.OWNER))
+
+
+async def test_a_zero_row_accept_whose_row_vanished_is_a_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`(False, None)` from the writer is gone, not conflicted."""
+    row = _alert()
+    _install_accept(monkeypatch, row=row, wrote=False, after=None)
+    with pytest.raises(DomainNotFoundError):
+        await _service().accept_sos(TENANT_ID, row.id, actor=_actor(StaffRole.OWNER))
