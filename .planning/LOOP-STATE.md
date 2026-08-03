@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F33, F53               # F57 MERGED (PR #33) and F19 MERGED (PR #34), both 2026-08-03.
+current: F33                    # F57 (PR #33), F19 (PR #34) and F53 (PR #35) ALL MERGED 2026-08-03.
                                 # MAIN'S HEAD IS NOW MIGRATION 0016 (F19). The MIGRATION CHAIN
                                 # block below is still the rule; its "head is 0015" line moved once
                                 # more, which is exactly why the rule replaced the grid.
@@ -1025,9 +1025,53 @@ queue:
     slug: customers-crm
     epic: SMC
     title: "Customers CRM + notes/tags + SMS log"
-    status: specing
+    status: merged
+    pr: 35
     attempts: 1
     deps: [F31]
+    shipped: >-
+      SHIPPED as PR #35, merged 2026-08-03. ALL THREE GATING JOBS GREEN ON THE
+      FIRST CI RUN, on a feature with 98 db-marked tests. Not luck: Postgres
+      16.14 is installed on this machine, so the whole db suite ran locally
+      before the push via main's TEST_POSTGRES_SUPERUSER_URL hatch. THE "no
+      Docker locally, db tests debut on CI" PREAMBLE IS STALE — stop budgeting a
+      red first round for it. The migration's column row was CAPTURED from a
+      live cluster (ARRAY / '{}'::text[] / _text) rather than transcribed, and
+      atthasmissing = t confirmed the PG11+ lazy default, so the NOT NULL DEFAULT
+      is a catalog-only ALTER with no table rewrite.
+      REVIEW: spec 4 lenses -> 22 findings, 0 blockers, 21 fixed + 1 rejected in
+      writing; code 5 lenses, every major judged by an independent skeptic ->
+      1 survived, 3 refuted, 8 minors, all 9 fixed.
+      FOUR THINGS A LATER READER NEEDS.
+      (1) THE SMS-LOG PHONE LEG IS FENCED WITH `AND booking_id IS NULL` AND THAT
+      IS THE FEATURE. message_log has no customer_id, so a row is attributable by
+      booking_id or by phone. Phones are corrected (set_phone) AND recycled by
+      carriers. Unfenced: bride A books on phone X, owner corrects A to Y, bride
+      B later registers with X, and B's detail renders A's confirmation bodies —
+      which carry A's name and appointment time. Cross-customer disclosure inside
+      one tenant, invisible to RLS and to every isolation test in the repo. The
+      residual (a masked OTP row, no name, no digits) is accepted and named.
+      (2) THE PHONE SEARCH WAS BROKEN AS FIRST SPECIFIED, and invisibly so.
+      customers.phone only ever holds strict E.164 — normalize_israeli_mobile
+      rewrites a typed 05X… to 972+rest — so '+972501234567' ILIKE '%0501234567%'
+      is FALSE, and so is '%050%'. Reading the number off a card or typing the
+      050 prefix would both have returned "no results" for a customer who
+      demonstrably exists. The phone leg runs on a digit-normalized term; the
+      name leg stays raw; autoescape=True on both.
+      (3) TWO GUARDS BROKE BY BEING LANDED ON TOP OF, neither a defect in F53.
+      test_the_deposit_migration_round_trips derived its downgrade target from
+      head.down_revision — true only while F19's migration WAS head — so 0017
+      made it stop one revision short and reddened a payments test from a feature
+      touching no payments file. It now resolves the revision by its own message.
+      And Nav.test.tsx asserted toHaveLength(10) against an 11-row nav: adding a
+      `roles: ALL` row is FIVE coordinated edits (labels, length, owner count,
+      shift-manager slice, and the test names that spell both in words).
+      (4) A CLEAN REBASE STILL SHIPPED A SILENT BREAK. Resolving a conflict whose
+      boundary cut mid-block left api.test.ts with two missing braces. esbuild
+      answers `Transform failed` and vitest prints `Tests no tests` — ONE line,
+      not sixty — so every api-client test in apps/manage was unexecuted until it
+      was caught. Parse every resolved file, in every language, not just the ones
+      whose parser you happen to run.
     started: >-
       2026-08-03, in PARALLEL with F57, F33 and F19, in its own worktree
       (.worktrees/customers-crm). Picked on USER INSTRUCTION for a feature
