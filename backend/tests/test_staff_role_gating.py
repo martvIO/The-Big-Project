@@ -281,7 +281,7 @@ def test_the_floor_roles_reach_exactly_the_floor_routes() -> None:
             seen.add((method, path))
             if effective & FLOOR_ROLES:
                 admits_floor.add((method, path))
-                if not FLOOR_ROLES <= effective:
+                if not effective >= FLOOR_ROLES:
                     partial.append((method, path, effective))
 
     assert seen, "no /manage route was discovered — the walker is broken"
