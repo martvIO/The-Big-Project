@@ -135,3 +135,41 @@ export function bookingErrorText(error: unknown, t: (key: string) => string): st
   }
   return errorMessage(error);
 }
+
+// F53's map, and it lives beside bookingErrorText for the same reason that one
+// does: CustomersSection imports CustomerDetail and both need this, which is
+// exactly the cycle this file was created to avoid.
+//
+// Kept BY HAND and pinned by nothing — a code renamed server-side falls
+// silently through to the English message rather than failing a build. That is
+// the correction F51's review forced onto StaffSection's MAPPED_CODES, recorded
+// here rather than discovered again.
+const CUSTOMER_ERROR_KEYS = new Map<string, string>([
+  // A 404 and another tenant's id are indistinguishable by design under RLS, so
+  // they read the same.
+  ["NOT_FOUND", "customers.notFound"],
+  ["NOT_AUTHORIZED", "customers.error.NOT_AUTHORIZED"],
+]);
+
+// `fallbackKey` is the register for every code this map does not own, and the
+// two kinds of caller want different ones. The READ paths pass their outage key
+// — a 500 on a list is an outage and the owner needs a Hebrew sentence, not the
+// server's English one. The SAVE path passes nothing and falls through to
+// errorMessage(error) deliberately: the only unmapped code it can produce is
+// VALIDATION_ERROR, whose message is computed per field and cannot be
+// reproduced client-side — and which the client is responsible for never
+// producing at all, because every bound the server checks is mirrored in
+// validation.ts and checked first.
+export function customerErrorText(
+  error: unknown,
+  t: (key: string) => string,
+  fallbackKey: string | null = null,
+): string {
+  if (error instanceof ApiError) {
+    const key = CUSTOMER_ERROR_KEYS.get(error.code);
+    if (key !== undefined) {
+      return t(key);
+    }
+  }
+  return fallbackKey === null ? errorMessage(error) : t(fallbackKey);
+}
