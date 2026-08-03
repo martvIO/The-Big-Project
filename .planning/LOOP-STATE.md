@@ -348,11 +348,59 @@ queue:
     slug: qr-walkin-queue
     epic: E6
     title: "QR self-check-in + queue tickets + live position"
-    status: building
+    status: merged
+    pr: 36
     attempts: 1
     deps: [F5, F9, F10, F13]
     spec: .planning/specs/qr-walkin-queue.md
     plan: .planning/plans/qr-walkin-queue.md
+    shipped: >-
+      MERGED 2026-08-03 as PR #36. ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN,
+      merge-gate.sh exit 0. Migration 0018_queue_tickets. Gates run locally on the
+      exact pushed tree: lint clean, 1548 backend fast, 481 backend db AGAINST REAL
+      POSTGRES 16.14, frontend 104 ui / 943 storefront / 598 manage, 74 e2e (69
+      before) with axe at zero, alembic heads printing exactly one head.
+      FOUR THINGS A LATER READER NEEDS.
+      (1) THE PLAN WAS STALE AND THE BUILDERS CAUGHT IT. The spec gained RULING 3
+      after the plan was written, and both were committed in one commit so git shows
+      no ordering. Ruling 3 DELETES server-side dedup entirely — no unique index, no
+      advisory lock, no pre-check, no IntegrityError path, no {"ticket": null}
+      branch, no CheckinCreateResponse envelope, no per-phone limiter. Building the
+      plan as written would have shipped the exact defect the ruling removes. The
+      builders built to the SPEC and said so; the plan on main has since been
+      replaced with the corrected version (C1-C23).
+      (2) WHY DEDUP IS GONE, because it looks like a regression and is not. Two
+      holes, and the second is the bad one. THE ORACLE: with dedup, submitting a
+      phone that IS in the queue returned a distinguishable answer — free, silent,
+      unbounded, no row written, no evidence anywhere — so anyone could test whether
+      a named woman was standing in a named bridal boutique. THE DENIAL: the dedup
+      key was freed only by a status change or a soft delete and F33 ships a writer
+      for NEITHER (that is F58), so ONE anonymous POST with a known mobile denied
+      that woman a queue slot for the rest of the boutique day with no remedy
+      anywhere in the product. The create now always creates and always returns a
+      full TicketView, so the response is IDENTICAL whether or not that phone is
+      queued — that identity IS the security property. A duplicate ticket is a real,
+      expected outcome and F58 merges or removes it. Re-scan comfort moved to a
+      sessionStorage pointer that dies with the tab and is NOT a security control.
+      (3) THE MIGRATION COLLISION HAPPENED, exactly as the rule predicted. The branch
+      was built at 0016/down 0015; F19 shipped 0016_deposit_flow while it was
+      building. Two files claiming one revision id MERGE WITH NO GIT CONFLICT because
+      the filenames differ. Review caught it as a BLOCKER and it shipped as
+      0018/down 0017. This is the third time in this program that a pre-written
+      guard or an adversarial reviewer caught a clean-rebase collision.
+      (4) TWO DEFECTS THE TOOLING CAUSED, not the design. Three build agents died
+      mid-task on API 529s. One died having created three storefront modules and
+      NEVER `git add`ed them, while committed code imported them: HEAD was broken and
+      the working tree looked perfect. There is now a permanent guard,
+      backend/tests/test_frontend_imports_are_tracked.py — any later feature whose
+      agent dies the same way fails loudly instead of merging a broken HEAD. Review
+      also caught a global print stylesheet (`@media print { body * { visibility:
+      hidden } }` in index.css, imported unconditionally) that would have made every
+      OTHER console section print a blank page; it is now scoped to the QR sheet.
+      CARRIED: the collection-notice wording stays OPEN in in_run_gates — it blocks
+      two strings, not the feature, and a neutral interim ships meanwhile. F58 now
+      owns merging or removing duplicate tickets, and it is the feature that gives
+      the status column its first writer.
     resumed: >-
       2026-08-03 12:50 by a NEW session, after the session that wrote the spec and
       plan stopped without committing them — both sat UNTRACKED in the main
