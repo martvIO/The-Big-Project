@@ -285,9 +285,35 @@ class PaymentsRepository:
     async def by_id(
         self, session: AsyncSession, tenant_id: UUID, payment_id: UUID
     ) -> Payment | None:
-        stmt = select(Payment).where(
-            Payment.tenant_id == tenant_id,
-            Payment.id == payment_id,
-            Payment.deleted_at.is_(None),
+        """`populate_existing=True` is load-bearing, and F19's race suite is what
+        proved it — the same identity-map trap F34 documents on
+        `BookingsRepository._refreshed`, reached here by a different route.
+
+        Every caller of this method is reading back a row that may have been
+        moved by a statement — or by ANOTHER TRANSACTION — since the session
+        first loaded it. Without this option SQLAlchemy returns the instance
+        already in the identity map and leaves its loaded attributes alone, so
+        the read answers with what this session remembers rather than with what
+        the database holds.
+
+        The failure it caused was not theoretical. In `settle_from_webhook`,
+        `by_provider_session_id` loads the row while the hold is still `pending`;
+        the sweeper then expires it in a concurrent transaction; `settle`'s
+        guarded UPDATE correctly matches nothing; and `_explain_missed_settlement`
+        re-read the SAME stale instance and reported `pending`. F19's
+        `deposit_reaction` branches on that status and reads `pending` as "a
+        decline — do nothing", so a bride whose money arrived late had her
+        payment left `expired`, her booking cancelled, and NOBODY alerted. It
+        reproduced roughly one run in three under `asyncio.gather` and was
+        invisible to every sequential test.
+        """
+        stmt = (
+            select(Payment)
+            .where(
+                Payment.tenant_id == tenant_id,
+                Payment.id == payment_id,
+                Payment.deleted_at.is_(None),
+            )
+            .execution_options(populate_existing=True)
         )
         return (await session.execute(stmt)).scalar_one_or_none()
