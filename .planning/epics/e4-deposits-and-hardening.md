@@ -29,7 +29,7 @@ Deposits are the boutique's no-show defense and a locked v1 requirement. This ep
 |---|---------|--------|------|------|------------|
 | 17 | Gateway credential management | todo | — | — | E1 #2, E2 #7 |
 | 18 | Grow payment sessions & webhooks | todo | — | — | #17 |
-| 19 | Deposit booking flow | todo | — | — | E2 #7, E3 #16, #18 |
+| 19 | Deposit booking flow | **done (PR #34)** | `.planning/specs/deposit-booking-flow.md` | `.planning/plans/deposit-booking-flow.md` | E2 #7, E3 #16, #18 |
 | 20 | PPL compliance build | todo | — | — | E3 #13 |
 | 21 | Hardening, audits & pilot UAT | todo | — | — | all v1 |
 

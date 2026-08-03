@@ -22,14 +22,19 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F19, F33, F53          # F57 MERGED 2026-08-03 (PR #33) — see the MIGRATION CHAIN block
-                                # below, whose numbers CHANGED with that merge.
-                                # THREE FEATURES IN FLIGHT. F53 belongs to ANOTHER SESSION and is
-                                # not this loop's to touch (user instruction 2026-08-03). F19 and
-                                # F33 are this session's, run one after the other.
+current: F33, F53               # F57 MERGED (PR #33) and F19 MERGED (PR #34), both 2026-08-03.
+                                # MAIN'S HEAD IS NOW MIGRATION 0016 (F19). The MIGRATION CHAIN
+                                # block below is still the rule; its "head is 0015" line moved once
+                                # more, which is exactly why the rule replaced the grid.
+                                # TWO FEATURES IN FLIGHT. F53 belongs to ANOTHER SESSION and is
+                                # not this loop's to touch (user instruction 2026-08-03).
                                 #
                                 # ==== MIGRATION CHAIN — NOW A RULE, NOT A FIXED GRID ====
-                                # main's head is 0015 (F57, merged 2026-08-03). Every fixed number
+                                # main's head is 0016 (F19, merged 2026-08-03; it took the next
+                                # free number rather than reserving 0017 behind F33, because a
+                                # migration whose down_revision does not yet exist cannot pass CI
+                                # at all — reserving blocks a finished feature on an unfinished
+                                # one). Every fixed number
                                 # this file previously assigned (F33=0016, F19=0017, F53=0018) was
                                 # derived from a head of 0014 and is now OFF BY ONE. Do not read
                                 # them as current. THE RULE THAT REPLACES THEM:
@@ -653,12 +658,66 @@ queue:
     slug: deposit-booking-flow
     epic: E4
     title: Deposit booking flow
-    status: building
+    status: merged
+    pr: 34
     attempts: 1
     spec: .planning/specs/deposit-booking-flow.md
     plan: .planning/plans/deposit-booking-flow.md
     deps: [F7, F16, F17]
     spec_gate: user
+    shipped: >-
+      SHIPPED as PR #34, merged 2026-08-03. ALL THREE GATING JOBS GREEN ON THE
+      FIRST CI RUN. MIGRATION 0016, down_revision 0015 — so main's head is now
+      0016 and F33/F53 resolve from there, not from the numbers this file
+      assigned earlier.
+      IT TOOK THE NEXT FREE NUMBER RATHER THAN RESERVING 0017 BEHIND F33, and
+      that correction matters for whoever lands next: a migration numbered 0017
+      with down_revision 0016 CANNOT PASS CI UNTIL 0016 EXISTS, so reserving
+      would have blocked a finished feature on an unfinished one indefinitely.
+      "Resolve from `alembic heads` immediately before your rebase" is the rule;
+      a fixed grid is not.
+      THE SINGLE-HEAD GUARD EARNED ITSELF ON ITS FIRST REAL COLLISION. The
+      rebase onto merged-F57 produced two files declaring revision "0015" —
+      different filenames, textually clean merge, nothing wrong-looking in
+      review. test_exactly_one_migration_head failed in `make test` in under a
+      second and named both heads; renumbering was two literals and a filename.
+      Without it the first symptom is every db test erroring at CI fixture setup
+      on a branch that was green an hour earlier, with a diff touching no
+      migration. It is permanent, not scaffolding.
+      THREE BUGS WERE FOUND BY RUNNING THE db SUITE LOCALLY (throwaway Postgres
+      16, no Docker) INSTEAD OF LETTING IT DEBUT ON CI — which is why the first
+      CI run was green rather than the usual one-red-run-and-a-fix-commit:
+        (1) A LATE PAYMENT WAS SILENTLY DROPPED, in shipped F17 code.
+            PaymentsRepository.by_id returned the identity-mapped instance
+            without refreshing, so after the sweeper expired a row in a
+            concurrent transaction, _explain_missed_settlement re-read the SAME
+            STALE OBJECT and reported 'pending'. deposit_reaction reads pending
+            as "a decline — do nothing", so a bride whose money arrived late had
+            her payment left expired, her booking cancelled and NOBODY alerted —
+            the exact outcome F17's Gate 1 Q4 ruled must never happen. It
+            reproduced ~1 run in 3 under asyncio.gather and was invisible to
+            every sequential test. Fixed with populate_existing=True, the same
+            trap F34 documents on BookingsRepository._refreshed.
+        (2) THE SWEEPER'S ORPHAN CLAIM COULD CANCEL A PAID BOOKING. The spec's
+            own SQL excluded only `pending` payments, so race row #11 — the
+            crash between settle's commit and the confirm — got its booking
+            cancelled, and the redelivery that would have repaired it then
+            matched nothing. Any provider whose retry backoff exceeds the hold
+            length triggers it every time. Predicate is now pending OR paid.
+        (3) THE DOWNGRADE ONLY WORKED UNTIL THE FEATURE HAD BEEN USED. Postgres
+            validates ADD CONSTRAINT against the whole table, so narrowing a
+            CHECK is refused once a row holds the value. Data now moves first.
+      GATE 3.5: 12 findings across three lenses, each adversarially verified;
+      10 refuted, 2 confirmed and fixed — the declined payment state was
+      UNREACHABLE (it branched on a status the backend never writes on that path
+      and its test pinned a fiction), and D18/MD4's action-needed marker rendered
+      only in the detail panel, not in "the list the owner already loads every
+      morning" — which MD4's own audit note had predicted would be the part most
+      likely dropped, because it is the only part with no test that fails loudly
+      without it.
+      MD3 REMAINS PARKED and its in_run_gates entry STAYS OPEN. The neutral
+      interim shipped; the shipped manage.cancelConsequenceFree did NOT survive
+      the merge — it is now conditioned on the booking having no deposit.
     started: >-
       2026-08-03, in PARALLEL with F57 and F33, in its own worktree
       (.worktrees/deposit-booking-flow on feature/deposit-booking-flow). Picked
