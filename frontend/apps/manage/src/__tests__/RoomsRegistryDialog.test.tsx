@@ -502,6 +502,13 @@ describe("AC25 — the dialog lives inside a component that repaints every five 
 
 describe("focus — the return is ours, not the platform's", () => {
   it("returns focus to «ניהול חדרים» on close", async () => {
+    // ⚠ THIS ONE ASSERTS THE OUTCOME, NOT OUR MECHANISM, and it is labelled so
+    // rather than left to look stronger than it is: jsdom implements the
+    // <dialog> close focusing steps, so deleting the [openDialog] restore effect
+    // leaves this GREEN — verified by running that mutation. The effect earns
+    // its keep on the path the platform CANNOT serve, where the trigger has gone
+    // with its assignment; the non-vacuous tests for it are the MOVE 5 pair and
+    // the registry's DC-10 case, and all three red when it is deleted.
     mount();
     await screen.findByText("הבמה");
     const trigger = screen.getByRole("button", { name: "ניהול חדרים" });

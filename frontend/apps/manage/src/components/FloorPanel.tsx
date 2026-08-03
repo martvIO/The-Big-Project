@@ -599,6 +599,7 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
           and this announced region, and adds no second one of any of them. */}
       <RoomsPanel
         rooms={rooms}
+        staff={cards}
         serverNow={serverNow}
         fetchCount={fetchCount}
         selfId={selfId}

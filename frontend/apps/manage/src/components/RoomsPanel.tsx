@@ -3,11 +3,13 @@ import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Select } from "@boutique/ui";
 import type { BadgeVariant } from "@boutique/ui";
 import { api, ApiError } from "../api";
-import type { FloorClient, Room, RoomAssignment } from "../api";
+import type { FloorClient, Room, RoomAssignment, StaffCard } from "../api";
 import { isolateBidi } from "../lib/booking";
 import { elapsedLine } from "../lib/elapsed";
 import { jerusalemTime } from "../lib/jerusalem";
 import { roleLabelKey } from "../lib/roles";
+import { RoomDressDialog } from "./RoomDressDialog";
+import { RoomHandoverDialog } from "./RoomHandoverDialog";
 import { RoomsRegistryDialog } from "./RoomsRegistryDialog";
 
 // F36. One tile per fitting room, inside FloorPanel and UNDER ITS POLL.
@@ -82,6 +84,12 @@ interface TileError {
 interface RoomsPanelProps {
   /** Every live room, active and inactive, in the server's own order. */
   rooms: Room[] | null;
+  /**
+   * The same payload's staff cards. The handover's colleague list is built from
+   * THIS and not from a second request — no new endpoint, no second fetch, and
+   * no second thing that can be a tick out of date.
+   */
+  staff: StaffCard[] | null;
   /** The envelope's own instant — the elapsed anchor, never the device clock. */
   serverNow: string | null;
   /**
@@ -105,6 +113,7 @@ interface RoomsPanelProps {
 
 export function RoomsPanel({
   rooms,
+  staff,
   serverNow,
   fetchCount,
   selfId,
@@ -127,6 +136,13 @@ export function RoomsPanel({
   const [busyIds, setBusyIds] = useState<readonly string[]>([]);
   const [tileError, setTileError] = useState<TileError | null>(null);
   const [openDialog, setOpenDialog] = useState<DialogTarget | null>(null);
+  // The handover's residual 409 lives INSIDE its dialog rather than on the tile:
+  // the shift manager has to pick somebody else, and closing would make her
+  // reopen it to do that.
+  const [handoverError, setHandoverError] = useState<{
+    text: string;
+    value: string | null;
+  } | null>(null);
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const tileAlertRef = useRef<HTMLParagraphElement>(null);
@@ -267,6 +283,23 @@ export function RoomsPanel({
   }, [rooms]);
 
   useEffect(() => {
+    // MOVE 5 — a poll tick that removes the OPEN dialog's assignment. The loop
+    // is only SUPPRESSED while a mutation is in flight, never while a dialog is
+    // merely open, so a colleague releasing the room unmounts the tile and the
+    // dialog under the user's hands with focus inside — F57's own shipped MAJOR
+    // reproduced one level deeper, and axe sees none of it. Closing here hands
+    // the next effect the job of putting focus somewhere real.
+    if (openDialog === null || openDialog.kind === "registry" || rooms === null) {
+      return;
+    }
+    const room = rooms.find((item) => item.id === openDialog.roomId);
+    if (room?.assignment?.id === openDialog.assignmentId) {
+      return;
+    }
+    setOpenDialog(null);
+  }, [rooms, openDialog]);
+
+  useEffect(() => {
     // MOVE 4 — closing a dialog returns focus to the tile's trigger, falling
     // back to the h3 when that trigger is gone (F51's shipped isConnected
     // shape, StaffSection.tsx:80-92). The native <dialog>'s own return fires
@@ -357,6 +390,26 @@ export function RoomsPanel({
     onRooms((rooms ?? []).map((item) => (item.id === next.id ? next : item)));
   };
 
+  // A dialog's write settles differently from a tile control's: focus goes back
+  // to the TRIGGER (move 4) rather than to the tile's primary control (move 2),
+  // so these two paths deliberately do not go through `act`.
+  const dialogDone = (next: Room, cue: { text: string; name: string | null }) => {
+    patch(next);
+    onCue(cue);
+    setOpenDialog(null);
+  };
+
+  // ⚠ THE 404 COLLISION, resolved explicitly. `setTileError` and
+  // `setOpenDialog(null)` land in one commit, and the [tileError] effect is
+  // declared BEFORE the [openDialog] one — so move 1 focuses the alert and move
+  // 4 then finds activeElement off <body> and stands down. The native <dialog>'s
+  // own focus return fires earlier still, inside Modal's effect, and would
+  // otherwise win.
+  const dialogFailed = (roomId: string, error: unknown) => {
+    setTileError({ id: roomId, ...describe(error, "assignment") });
+    setOpenDialog(null);
+  };
+
   const claim = (room: Room) => {
     const booking = clientPick[room.id] ?? "";
     void act(room.id, "room", async () => {
@@ -393,7 +446,59 @@ export function RoomsPanel({
     });
   };
 
+  const addDress = (room: Room, assignmentId: string, dressId: string, sizeLabel: string | null) => {
+    setBusyIds((current) => [...current, room.id]);
+    void mutate(async () => {
+      const patched = await api.addAssignmentDress(assignmentId, {
+        dress_id: dressId,
+        ...(sizeLabel === null ? {} : { size_label: sizeLabel }),
+      });
+      const bound = patched.assignment?.dresses.find((item) => item.dress_id === dressId);
+      // A concurrent double-add is a 200 and not a 409 (spec D4): two staffers
+      // tapping «ורוניק» at the same instant both wanted the dress in the room,
+      // and the dress is in the room.
+      dialogDone(patched, {
+        text: t("rooms.dressAddedCue", { dress: bound?.dress_name ?? "" }),
+        name: bound?.dress_name ?? null,
+      });
+    }).then((failure) => {
+      setBusyIds((current) => current.filter((id) => id !== room.id));
+      if (failure !== null) {
+        dialogFailed(room.id, failure);
+      }
+    });
+  };
+
+  const handover = (room: Room, assignmentId: string, staffId: string, displayName: string) => {
+    setBusyIds((current) => [...current, room.id]);
+    setHandoverError(null);
+    void mutate(async () => {
+      const patched = await api.handoverAssignment(assignmentId, { staff_user_id: staffId });
+      dialogDone(patched, {
+        text: t("rooms.handedOverCue", { name: displayName }),
+        name: displayName,
+      });
+    }).then((failure) => {
+      setBusyIds((current) => current.filter((id) => id !== room.id));
+      if (failure === null) {
+        return;
+      }
+      if (failure instanceof ApiError && failure.status === 409) {
+        // The race the exclusion cannot close. The dialog STAYS.
+        const label = failure.details?.room_label;
+        setHandoverError(
+          label === undefined
+            ? { text: t("rooms.error.staffOccupiedUnknown"), value: null }
+            : { text: t("rooms.error.STAFF_OCCUPIED", { room: label }), value: label },
+        );
+        return;
+      }
+      dialogFailed(room.id, failure);
+    });
+  };
+
   const openFrom = (event: { currentTarget: HTMLButtonElement }, target: DialogTarget) => {
+    setHandoverError(null);
     dialogTriggerRef.current = event.currentTarget;
     setOpenDialog(target);
   };
@@ -427,6 +532,15 @@ export function RoomsPanel({
   if (rooms === null) {
     return null;
   }
+
+  // Both dialogs act on ONE tile, so they are rendered from the target rather
+  // than per tile: five mounted RoomDressDialogs would be five catalog fetches
+  // waiting to happen.
+  const target =
+    openDialog === null || openDialog.kind === "registry"
+      ? null
+      : (rooms.find((room) => room.id === openDialog.roomId) ?? null);
+  const targetAssignment = target?.assignment ?? null;
 
   const registry = (
     <RoomsRegistryDialog
@@ -753,6 +867,31 @@ export function RoomsPanel({
       </Card>
 
       {registry}
+
+      {target !== null && targetAssignment !== null && (
+        <>
+          <RoomDressDialog
+            open={openDialog?.kind === "dress"}
+            room={target}
+            busy={busyIds.includes(target.id)}
+            onClose={() => setOpenDialog(null)}
+            onAdd={(dressId, sizeLabel) =>
+              addDress(target, targetAssignment.id, dressId, sizeLabel)
+            }
+          />
+          <RoomHandoverDialog
+            open={openDialog?.kind === "handover"}
+            assignment={targetAssignment}
+            staff={staff ?? []}
+            error={handoverError}
+            busy={busyIds.includes(target.id)}
+            onClose={() => setOpenDialog(null)}
+            onConfirm={(staffId, displayName) =>
+              handover(target, targetAssignment.id, staffId, displayName)
+            }
+          />
+        </>
+      )}
     </div>
   );
 }
