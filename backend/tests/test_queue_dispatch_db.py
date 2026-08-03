@@ -22,10 +22,33 @@ verbatim; the fourth is F58's own.
    assert the contested resource reads FREE — which is what makes the gap
    *observable* rather than assumed — commit the winner in a NESTED
    `tenant_session`, then call the service. No tasks, no `Event`, no hang.
-   `asyncio.Event` + `HOLD_SECONDS` is reserved for a statement that must
-   genuinely BLOCK on uncommitted work, which here is THREE tests and no others:
-   the `SKIP LOCKED` timing one, the headline lost-room one, and A15's concurrent
-   first skip.
+
+   `asyncio.Event` + `HOLD_SECONDS` is reserved for **a statement that must
+   genuinely contend with UNCOMMITTED work** — it is a criterion, not a quota,
+   and an earlier revision of this docstring enumerated the three tests that
+   then existed as though it were one. Seven tests meet it, each named here so
+   an eighth has to argue for itself:
+
+   * `..._does_not_wait_behind_a_locked_ticket` — `SKIP LOCKED` refusing to wait;
+   * `..._that_loses_the_room_leaves_the_ticket_waiting` — the INSERT blocked on
+     an uncommitted index key, the feature's headline;
+   * `..._concurrent_second_first_skip_is_refused...` — EvalPlanQual FAILING the
+     `skip_count` conjunct on the new tuple;
+   * `..._push_assign_blocked_by_a_take_next...` — EvalPlanQual failing
+     `claim_by_id`'s `status` conjunct;
+   * `..._skip_blocked_by_a_call...` — the same re-check PASSING, which is the
+     branch the other four never reach;
+
+   and two that hold uncommitted work in order to prove the loser does NOT
+   contend with it — an assertion that needs the hold just as much:
+
+   * `..._released_underneath_it...` — a plain SELECT reading the PRE-IMAGE of an
+     uncommitted release, the only way push-assign's ROOM-branch rollback is
+     reachable at all;
+   * `..._finish_and_a_stale_skip_never_contend...` — an UPDATE whose predicate
+     excludes the row at scan time, so it never takes the lock at all.
+
+   Every other case here commits its winner first, deliberately.
 4. **⚠ F58's OWN: every waiting ticket in an ordering test is inserted in its own
    `tenant_session`.** `0018_queue_tickets.py` gives `created_at` a
    `DEFAULT now()`, and Postgres's `now()` is TRANSACTION-START, so tickets
@@ -1263,6 +1286,360 @@ async def test_a_bride_who_booked_and_scanned_resolves_to_her_customer_record(
         read = await _service(factory).floor(tenant_id)
 
         assert [row.client_label for row in read.room_rows] == ["נועה בר"]
+    finally:
+        await engine.dispose()
+
+
+# --- the CROSS-VERB interleaves: two staffers, two verbs, one row -------------
+#
+# Everything above races a verb against ITSELF. These four race it against a
+# DIFFERENT verb on the same ticket or the same room, which is the shape the
+# floor actually produces: five roles, one panel, a payload up to one tick old,
+# and nothing in the product that reserves a row for the manager looking at it.
+# Each holds its winner UNCOMMITTED, because a committed winner is refused by a
+# predicate the loser evaluates at plan time and proves nothing about the
+# re-check.
+
+
+async def test_a_push_assign_blocked_by_a_take_next_refuses_rather_than_serving_her_twice(
+    app_role_url: str,
+) -> None:
+    """⚠ ONE woman, two managers, two rooms, TWO DIFFERENT VERBS — and the loser
+    is the one whose statement cannot skip.
+
+    A taps «הבאה בתור» on חדר 1; B, looking at the same tick, taps «שבצי» on נועה
+    for חדר 2. A's `claim_next` takes the row lock and moves her to `in_service`,
+    uncommitted. B's `claim_by_id` has NO `SKIP LOCKED` and no `FOR UPDATE` of
+    its own — it is a bare conditional UPDATE, so it BLOCKS on A's lock. When A
+    commits, READ COMMITTED's EvalPlanQual re-evaluates B's predicate against the
+    NEW tuple, `status = 'waiting'` no longer holds, and B's rowcount is 0.
+
+    That is A10's conjunct, but A10 serialises the two calls and therefore only
+    proves the predicate is written down. This proves it survives the re-check —
+    the only moment at which two managers can actually both be mid-statement on
+    one customer.
+
+    The elapsed assertion is not decoration: it is the witness that B genuinely
+    WAITED rather than being refused on a snapshot it took before A wrote. Drop
+    it and this test would still pass with `claim_by_id` re-planned to skip
+    locked rows, which is a different — and worse — feature.
+
+    ⚠ MUTATION: drop `AND status = 'waiting'` from `claim_by_id` → B's re-check
+    passes on the updated tuple, both writes land, and one woman is expected in
+    two fitting rooms at once by two staffers who each believe they are alone.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        taken = await _seed_room(factory, tenant_id, label="חדר 1", sort_order=0)
+        pushed = await _seed_room(factory, tenant_id, label="חדר 2", sort_order=1)
+        taking = await _seed_staff(factory, tenant_id, display_name="דנה")
+        pushing = await _seed_staff(factory, tenant_id, display_name="רות")
+        ticket_id = await _seed_ticket(factory, tenant_id, name="נועה בר")
+        claimed = asyncio.Event()
+
+        async def _uncommitted_take_next() -> None:
+            async with tenant_session(factory, tenant_id) as session:
+                head = await TICKETS.claim_next(session, tenant_id, day=TODAY)
+                assert head is not None
+                await ASSIGNMENTS.claim(
+                    session,
+                    tenant_id,
+                    room_id=taken,
+                    staff_id=taking,
+                    booking_id=None,
+                    queue_ticket_id=head.id,
+                )
+                claimed.set()
+                await asyncio.sleep(HOLD_SECONDS)
+
+        winner = asyncio.create_task(_uncommitted_take_next())
+        await claimed.wait()
+        await asyncio.sleep(ISSUE_SECONDS)
+
+        started = time.monotonic()
+        with pytest.raises(QueueTicketNotWaitingError) as refused:
+            await _service(factory).assign(
+                tenant_id,
+                pushed,
+                queue_ticket_id=ticket_id,
+                staff_user_id=pushing,
+                actor=_actor(tenant_id, pushing),
+            )
+        blocked_for = time.monotonic() - started
+        await winner
+
+        assert blocked_for > HOLD_SECONDS / 2, (
+            f"the push-assign was refused after {blocked_for:.3f}s — it never blocked on the "
+            "take-next's row lock, so the EvalPlanQual re-check this test names never ran"
+        )
+        assert refused.value.details == {"status": QueueTicketStatus.IN_SERVICE.value}
+        rows = await _assignments_of(factory, tenant_id)
+        assert [(row.fitting_room_id, row.queue_ticket_id) for row in rows] == [(taken, ticket_id)]
+        assert await _dispatch_audit(factory, tenant_id) == []
+    finally:
+        await engine.dispose()
+
+
+async def test_a_push_assign_into_a_room_released_underneath_it_refuses_and_keeps_her_waiting(
+    app_role_url: str,
+) -> None:
+    """⚠ **PUSH-ASSIGN'S ROLLBACK — D3a's guarantee reached through the ROOM
+    branch instead of the blocked INSERT, and this is its only witness.** Every
+    other stranding test in this module drives take-next.
+
+    רות is in חדר 1 and finishing. Her release has run but NOT committed. דנה,
+    on a tile one tick old, push-assigns נועה into that room. `occupant_of_room`
+    is a plain SELECT: at READ COMMITTED it reads the PRE-IMAGE and truthfully
+    reports the room occupied, so דנה is refused — a 409 that was already stale
+    when it was written, which is unavoidable and is not the point.
+
+    **The point is what the refusal did NOT do.** נועה is still `waiting`, still
+    position 1, `requeued_at` still null, and no audit row claims a dispatch. The
+    retry a second later — after רות's release commits — simply works, which is
+    what makes the 409 transient rather than a state the design cannot leave.
+
+    ⚠ **THE MUTATION THIS TEST WAS FIRST WRITTEN AGAINST CAME BACK GREEN**, and
+    the correction is the interesting part. «Move `claim_by_id` ABOVE the
+    occupant read» changes NOTHING observable: the refusal RAISES out of
+    `tenant_session`, which rolls the claim back, exactly as `take_next`'s
+    docstring promises. Step 2b's ORDER is therefore not what protects her here —
+    what 2b buys is the fast path, and (on take-next, whose step 3 consumes the
+    HEAD rather than a named ticket) a real customer's ticket not being claimed
+    and discarded at all; its only witness is the fast suite's structural
+    «`claim_next` is never called». **The rollback is what protects her**, so
+    that is what this test names.
+
+    ⚠ MUTATION RUN, RED, and this test is the only thing in the db suite that
+    reds on it: give `claim_by_id` its own `tenant_session` inside `assign` — the
+    faithful shape of «commit the claim first, the room check is next anyway» —
+    and the refused attempt leaves נועה `in_service` in NO ROOM, with the retry
+    then refused as `QUEUE_TICKET_NOT_WAITING`. Recovery needs psql.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        room_id = await _seed_room(factory, tenant_id)
+        leaving = await _seed_staff(factory, tenant_id, display_name="רות")
+        pushing = await _seed_staff(factory, tenant_id, display_name="דנה")
+        ticket_id = await _seed_ticket(factory, tenant_id, name="נועה בר")
+        async with tenant_session(factory, tenant_id) as session:
+            held = await ASSIGNMENTS.claim(
+                session, tenant_id, room_id=room_id, staff_id=leaving, booking_id=None
+            )
+        released = asyncio.Event()
+
+        async def _uncommitted_release() -> None:
+            async with tenant_session(factory, tenant_id) as session:
+                wrote, _ = await ASSIGNMENTS.release(session, tenant_id, held.id, at=NOW)
+                assert wrote is True
+                released.set()
+                await asyncio.sleep(HOLD_SECONDS)
+
+        finisher = asyncio.create_task(_uncommitted_release())
+        await released.wait()
+        await asyncio.sleep(ISSUE_SECONDS)
+
+        service = _service(factory)
+        with pytest.raises(RoomOccupiedError) as refused:
+            await service.assign(
+                tenant_id,
+                room_id,
+                queue_ticket_id=ticket_id,
+                staff_user_id=pushing,
+                actor=_actor(tenant_id, pushing),
+            )
+        assert refused.value.details == {"staff_display_name": "רות"}
+        ticket = await _ticket(factory, tenant_id, ticket_id)
+        assert ticket.status == QueueTicketStatus.WAITING.value
+        assert ticket.requeued_at is None
+        assert await _position(factory, tenant_id, ticket_id) == 1
+        assert await _dispatch_audit(factory, tenant_id) == []
+        await finisher
+
+        # …and now the same tap, one tick later, against the room she just left.
+        await service.assign(
+            tenant_id,
+            room_id,
+            queue_ticket_id=ticket_id,
+            staff_user_id=pushing,
+            actor=_actor(tenant_id, pushing),
+        )
+
+        rows = await _assignments_of(factory, tenant_id)
+        assert [(row.staff_user_id, row.queue_ticket_id) for row in rows] == [(pushing, ticket_id)]
+        assert (await _ticket(factory, tenant_id, ticket_id)).status == (
+            QueueTicketStatus.IN_SERVICE.value
+        )
+        assert [row.details["mode"] for row in await _dispatch_audit(factory, tenant_id)] == [
+            "assign"
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def test_a_finish_and_a_stale_skip_never_contend_and_she_is_never_requeued(
+    app_role_url: str,
+) -> None:
+    """⚠ **FINISH-VS-SKIP IS NOT A BLOCKING RACE, AND THE PLAN'S FRAMING OF IT
+    WAS WRONG.** Written the way it was briefed — the finish holds the row lock,
+    the skip blocks, EvalPlanQual re-checks against a `done` tuple — this test
+    FAILED: `assert {'status': 'in_service'} == {'status': 'done'}`. Recorded
+    here rather than fixed by weakening the assertion, because the reason is the
+    property worth pinning.
+
+    An UPDATE only locks rows its qualification scan MATCHES. `skip` requires
+    `status = 'waiting'`; a ticket a finish can act on is `in_service`. The two
+    verbs' predicates are DISJOINT on `status`, so the skip's scan excludes the
+    row at snapshot time, never takes the lock, never waits, and answers rowcount
+    0 immediately. There is no re-check to test because there is no contention —
+    and that disjointness is itself the guarantee: a manager finishing in חדר 1
+    can never stall a colleague's «דלגי» on a different tablet, which on a
+    five-role panel matters more than the race that does not exist.
+
+    So the shape is the same forced interleave and the assertions are what
+    actually holds. Both refusals are probed — the one issued while the finish is
+    still uncommitted, which reads the PRE-IMAGE `in_service`, and the one after
+    it commits, which reads `done` — and neither touches her.
+
+    ⚠ MUTATION: drop `AND status = 'waiting'` from `QueueTicketsRepository.skip`
+    → the FIRST press requeues a woman who is standing in a fitting room, so she
+    is on a tile and back on the live waitlist at once; the second does it to a
+    woman whose fitting is over. `skip_count` 1, `requeued_at` stamped, and the
+    `CASE` writes `status = 'waiting'` back over `in_service`/`done` — she
+    reappears on F59's public wall board and her own page reopens.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        room_id = await _seed_room(factory, tenant_id)
+        staff_id = await _seed_staff(factory, tenant_id)
+        ticket_id = await _seed_ticket(factory, tenant_id, name="נועה בר")
+        service = _service(factory)
+        dispatched = await service.take_next(
+            tenant_id, room_id, staff_user_id=None, actor=_actor(tenant_id, staff_id)
+        )
+        assignment_id = dispatched.room.row.assignment_id
+        assert assignment_id is not None
+        closing = asyncio.Event()
+
+        async def _uncommitted_finish() -> None:
+            async with tenant_session(factory, tenant_id) as session:
+                wrote, row = await ASSIGNMENTS.release(session, tenant_id, assignment_id, at=NOW)
+                assert wrote is True
+                assert row is not None
+                assert row.queue_ticket_id is not None
+                await TICKETS.close(session, tenant_id, row.queue_ticket_id)
+                closing.set()
+                await asyncio.sleep(HOLD_SECONDS)
+
+        finisher = asyncio.create_task(_uncommitted_finish())
+        await closing.wait()
+        await asyncio.sleep(ISSUE_SECONDS)
+
+        started = time.monotonic()
+        with pytest.raises(QueueTicketNotWaitingError) as mid_finish:
+            await service.skip(
+                tenant_id, ticket_id, seen_skip_count=0, actor=_actor(tenant_id, staff_id)
+            )
+        waited = time.monotonic() - started
+        await finisher
+
+        assert waited < HOLD_SECONDS / 2, (
+            f"the skip waited {waited:.3f}s behind an uncommitted finish — `skip` has picked up "
+            "a predicate that matches an in-service row, so the two verbs now contend"
+        )
+        assert mid_finish.value.details == {"status": QueueTicketStatus.IN_SERVICE.value}
+
+        with pytest.raises(QueueTicketNotWaitingError) as after_finish:
+            await service.skip(
+                tenant_id, ticket_id, seen_skip_count=0, actor=_actor(tenant_id, staff_id)
+            )
+
+        assert after_finish.value.details == {"status": QueueTicketStatus.DONE.value}
+        ticket = await _ticket(factory, tenant_id, ticket_id)
+        assert ticket.status == QueueTicketStatus.DONE.value
+        assert ticket.skip_count == 0
+        assert ticket.requeued_at is None
+        assert ticket.called_at is None
+        assert await _position(factory, tenant_id, ticket_id) is None
+        assert await _audit_rows(factory, tenant_id, AuditAction.QUEUE_TICKET_SKIPPED) == []
+        assert await _assignments_of(factory, tenant_id) == []
+    finally:
+        await engine.dispose()
+
+
+async def test_a_skip_blocked_by_a_call_clears_the_summons_it_could_not_have_seen(
+    app_role_url: str,
+) -> None:
+    """⚠ The SAME re-check as A15's, taking the branch A15 cannot reach — it
+    PASSES — and `called_at = NULL` is what makes the outcome coherent.
+
+    One manager calls נועה forward; she is not at the counter, so a colleague
+    skips her. The call commits while the skip is blocked on its row lock. The
+    skip's predicate names `status`, `deleted_at` and `skip_count` and NONE of
+    them changed, so the re-check passes and the skip writes — over a
+    `called_at` its client never rendered and could not have sent.
+
+    Both verbs "won", and the single state that leaves is the only coherent one:
+    at the BACK of the queue and NOT called. Without `called_at = NULL` in the
+    SET list the two writes compose into a state neither manager asked for — נועה
+    highlighted as «נקראה» on the public wall board while standing last in line,
+    with no verb in the feature able to clear it and her own page reading
+    «אפשר לגשת לדלפק» until closing.
+
+    A13 owns the serial version of this SET column. What is added here is that
+    the clearing survives a call that lands INSIDE the skip's statement.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        first = await _seed_ticket(factory, tenant_id, name="נועה")
+        second = await _seed_ticket(factory, tenant_id, name="מיכל")
+        # Both arrivals pushed BEFORE the frozen service clock — A13's note
+        # verbatim: the seeds take `created_at` from the DATABASE host's real
+        # `now()`, so a requeue stamped with this suite's frozen `NOW` would
+        # otherwise land EARLIER than the arrival it is meant to follow.
+        async with tenant_session(factory, tenant_id) as session:
+            for ticket_id, arrived in (
+                (first, NOW - timedelta(hours=2)),
+                (second, NOW - timedelta(hours=1)),
+            ):
+                row = await TICKETS.by_id(session, tenant_id, ticket_id)
+                assert row is not None
+                row.created_at = arrived
+        called = asyncio.Event()
+
+        async def _uncommitted_call() -> None:
+            async with tenant_session(factory, tenant_id) as session:
+                summoned = await TICKETS.call(session, tenant_id, first, now=NOW)
+                assert summoned is not None
+                called.set()
+                await asyncio.sleep(HOLD_SECONDS)
+
+        caller = asyncio.create_task(_uncommitted_call())
+        await called.wait()
+        await asyncio.sleep(ISSUE_SECONDS)
+
+        started = time.monotonic()
+        waitlist = await _service(factory).skip(
+            tenant_id, first, seen_skip_count=0, actor=_actor(tenant_id, staff_id)
+        )
+        blocked_for = time.monotonic() - started
+        await caller
+
+        assert blocked_for > HOLD_SECONDS / 2, (
+            f"the skip returned after {blocked_for:.3f}s — it never blocked on the call's row "
+            "lock, so it cleared a summons that was not yet written and proves nothing"
+        )
+        ticket = await _ticket(factory, tenant_id, first)
+        assert ticket.status == QueueTicketStatus.WAITING.value
+        assert ticket.called_at is None
+        assert ticket.skip_count == 1
+        assert [entry.name for entry in waitlist.entries] == ["מיכל", "נועה"]
+        assert [entry.called for entry in waitlist.entries] == [False, False]
+        assert await _position(factory, tenant_id, first) == 2
     finally:
         await engine.dispose()
 
