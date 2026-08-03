@@ -3,12 +3,14 @@ import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Skeleton } from "@boutique/ui";
 import type { BadgeVariant } from "@boutique/ui";
 import { api, ApiError } from "../api";
-import type { StaffCard, StaffCardStatus } from "../api";
+import type { Room, StaffCard, StaffCardStatus } from "../api";
 import { isolateBidi, isolateLtr } from "../lib/booking";
+import { elapsedLine } from "../lib/elapsed";
 import { jerusalemTime } from "../lib/jerusalem";
 import { roleLabelKey } from "../lib/roles";
 import { IDLE_STOP_MINUTES, usePoll } from "../lib/usePoll";
 import type { TickOutcome } from "../lib/usePoll";
+import { RoomsPanel } from "./RoomsPanel";
 
 // F57. The floor's staff cards: a name, a role and a live status, plus the break
 // toggle the status is derived from.
@@ -50,20 +52,6 @@ const STATUS_BADGE: Record<StaffCardStatus, { variant: BadgeVariant; labelKey: s
   occupied: { variant: "neutral", labelKey: "floor.statusOccupied" },
 };
 
-// Arithmetic on two ISO instants. No timezone is involved and no date library
-// is needed — "elapsed time" invites one and it must not.
-//
-// Computed against the ENVELOPE's server_now, so only the delta of a boutique
-// tablet's clock is trusted and never its absolute value, and it is frozen
-// exactly when the panel freezes: nothing advances it on an interval.
-//
-// Clamped at zero because `created_at` comes from the DATABASE clock while
-// `server_now` comes from the service's Python one, so assignedAt > serverNow is
-// representable and a raw subtraction can go negative.
-function elapsedMinutes(serverNow: string, assignedAt: string): number {
-  return Math.max(0, Math.floor((Date.parse(serverNow) - Date.parse(assignedAt)) / 60_000));
-}
-
 // Whether the focused element sits inside a card that the incoming list drops.
 // BoardSection's `holdsFocus` shape, asking the question one card at a time.
 function departingCardHoldsFocus(incoming: readonly StaffCard[]): boolean {
@@ -82,6 +70,17 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   const { t } = useTranslation();
 
   const [cards, setCards] = useState<StaffCard[] | null>(null);
+  // F36's half of the same payload. It lives HERE and not in RoomsPanel for the
+  // same reason the cards do not live in BoardSection: the rooms and the staff
+  // arrive in one response, so two owners would be two freshness claims that can
+  // disagree by an interval with no way to tell which to believe.
+  const [rooms, setRooms] = useState<Room[] | null>(null);
+  // How many ticks have SUCCEEDED. RoomsPanel's tile alert promises «הרשימה
+  // תתוקן בעדכון הבא» and a child cannot clear it imperatively from inside
+  // `load` the way the card alert below is cleared — so the fact that an update
+  // happened travels as its own monotonic signal rather than being inferred from
+  // the payload, which a byte-equal answer would not carry.
+  const [fetchCount, setFetchCount] = useState(0);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   // The SERVER's instant at serialisation, from the payload. Elapsed minutes are
   // computed against it and it only moves on a successful poll, which is what
@@ -147,6 +146,8 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
       focusHeadingRef.current = departingCardHoldsFocus(result.staff);
       cardsRef.current = result.staff;
       setCards(result.staff);
+      setRooms(result.rooms);
+      setFetchCount((count) => count + 1);
       setServerNow(result.server_now);
       // The freshness claim changes ONLY on a success, which is what makes it a
       // claim the panel can keep.
@@ -308,6 +309,15 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
     }
   }, [cards]);
 
+  // A room mutation's own response is the truth for its tile, and the freshness
+  // stamp moves with it — the same contract `toggle` keeps for a card. There is
+  // no ref mirror because the loop issues no tick while a mutation is in flight,
+  // so `rooms` cannot move underneath the handler that read it.
+  const applyRooms = (next: Room[]) => {
+    setRooms(next);
+    setUpdatedAt(new Date().toISOString());
+  };
+
   const pause = () => {
     poll.pause();
     setCue({ text: t("floor.paused"), name: null });
@@ -411,18 +421,6 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
             : t("staff.loadFailed"),
       });
     }
-  };
-
-  // «כבר 42 דק'», or «זה עתה» for the first minute of every fitting — «כבר 0
-  // דק'» is bad Hebrew and the clamp above makes it reachable. No hours branch
-  // and no plural: «דק'» is invariant, so one key covers 1 and 95 and this must
-  // not become the console's first i18next plural rule.
-  const elapsedLine = (now: string, assignedAt: string) => {
-    const minutes = elapsedMinutes(now, assignedAt);
-    if (minutes < 1) {
-      return t("rooms.elapsedJustNow");
-    }
-    return isolateLtr(t("rooms.elapsed", { minutes }), String(minutes));
   };
 
   const heading = (
@@ -595,6 +593,22 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
         </div>
       )}
 
+      {/* ABOVE the staff list (spec D15): a staffer opens this screen to find a
+          free room, so the staff cards are the reference and the rooms are the
+          act. A CHILD and not a sibling — it rides this poll, this pause control
+          and this announced region, and adds no second one of any of them. */}
+      <RoomsPanel
+        rooms={rooms}
+        serverNow={serverNow}
+        fetchCount={fetchCount}
+        selfId={selfId}
+        role={role}
+        paused={stopped}
+        mutate={mutate}
+        onRooms={applyRooms}
+        onCue={setCue}
+      />
+
       {cards !== null && (
         <Card>
           {cards.length === 0 ? (
@@ -672,7 +686,7 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
                             </>
                           )}
                           {" · "}
-                          {elapsedLine(serverNow, card.occupancy.assigned_at)}
+                          {elapsedLine(t, serverNow, card.occupancy.assigned_at)}
                         </p>
                       )}
                       {/* The since-line renders ONLY on an open break, which

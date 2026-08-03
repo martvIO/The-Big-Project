@@ -15,6 +15,10 @@ vi.mock("../api", async () => {
       getFloor: vi.fn(),
       startStaffBreak: vi.fn(),
       endStaffBreak: vi.fn(),
+      // F36: the panel now renders RoomsPanel, whose one-shot client picker
+      // fires on mount. Infrastructure, not an expectation — every assertion
+      // below is untouched (spec D15).
+      listFloorClients: vi.fn(),
     },
   };
 });
@@ -23,6 +27,7 @@ const { api, ApiError } = await import("../api");
 const getFloor = vi.mocked(api.getFloor);
 const startStaffBreak = vi.mocked(api.startStaffBreak);
 const endStaffBreak = vi.mocked(api.endStaffBreak);
+const listFloorClients = vi.mocked(api.listFloorClients);
 
 // 11:07Z is 14:07 in Jerusalem (IDT, UTC+3) and 07:07 in New York — and the test
 // script pins TZ=America/New_York, so an unzoned read prints 07:07 and every
@@ -80,6 +85,8 @@ beforeEach(() => {
   getFloor.mockReset();
   startStaffBreak.mockReset();
   endStaffBreak.mockReset();
+  listFloorClients.mockReset();
+  listFloorClients.mockResolvedValue({ clients: [], truncated: false });
 });
 
 afterEach(() => {
@@ -851,13 +858,21 @@ describe("accessibility", () => {
     expect(control).toHaveTextContent("להפסקה");
   });
 
-  it("renders exactly one h2 and no h3", async () => {
+  it("renders exactly one h2 and exactly one h3 — the rooms subsection", async () => {
+    // ⚠ THE ONE SHIPPED EXPECTATION F36 EDITS, and it is edited because its
+    // PREMISE was falsified rather than because the extraction drifted. F57's
+    // deck justified having no h3 with «the panel has no groups»; F36 gives it
+    // one, and the h3 is also the rooms panel's focus-rescue target (deck F-1,
+    // DC-10), so it renders in EVERY state including the empty one — which is
+    // exactly what this fixture, with its defaulted `rooms: []`, exercises.
+    // Nothing else in this file moves.
     getFloor.mockResolvedValue(floor([card()]));
     mount();
     await screen.findByText("נועה לוי");
 
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
-    expect(screen.queryAllByRole("heading", { level: 3 })).toHaveLength(0);
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 3 })).toHaveTextContent("חדרי מדידה");
   });
 
   it("passes axe with zero violations", async () => {

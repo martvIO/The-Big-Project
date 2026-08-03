@@ -43,6 +43,14 @@ vi.mock("../api", async () => {
       // this row every case below red-fails naming the nav rather than the floor
       // — the exact trap the comment above documents.
       getFloor: pending,
+      // Same reason, one feature further on: FloorPanel now renders RoomsPanel,
+      // whose one-shot client picker fires on mount. Without this row every case
+      // below red-fails with `TypeError: api.listFloorClients is not a function`
+      // — again naming the nav rather than the floor. NOTHING ELSE in this file
+      // moves: F36 adds no nav row, so `NAV_LABELS`, the owner count, the
+      // shift-manager slice and the floor-roles count all stay exactly where F53
+      // left them, and that is spec AC15's assertion.
+      listFloorClients: pending,
       gatewayStatus: pending,
     },
   };
