@@ -170,6 +170,31 @@ class Settings(BaseSettings):
     storefront_read_max_per_window: int = 6000
     storefront_read_window_seconds: int = 60
 
+    # F33's three check-in budgets. THREE limiter instances, never three keys on
+    # one: max_attempts lives on the LIMITER, so a shared instance is a shared
+    # ceiling and two of these would trip each other.
+    #
+    # The runaway brake on the create, and the ONLY bound on it — there is no
+    # per-phone budget, because a 429 on a phone key is a fact about one person
+    # disclosed to anyone who submits her number, and a flooder varies the
+    # number for free anyway. A pilot boutique sees tens of walk-ins a DAY, so
+    # 200/hour cannot fire on organic traffic and still stops a scripted flood.
+    checkin_create_max_per_window: int = 200
+    checkin_create_window_seconds: int = 3600
+    # The per-client control on the position poll, keyed on the ticket id the
+    # caller already holds — so a 429 on it discloses nothing. A 5-second poll
+    # is 12/60s, so 30 is 2.5x headroom and one leaked loop stops at its own
+    # ceiling rather than at the boutique's.
+    checkin_position_max_per_ticket_window: int = 30
+    checkin_position_ticket_window_seconds: int = 60
+    # The anti-walk brake, charged on position reads that MISSED and nothing
+    # else. A flood of guessed ids then denies only reads no legitimate client
+    # makes; hits keep answering 200. 120/60s is far above the miss rate of a
+    # real client (one, once, when her ticket is swept) and far below a useful
+    # rate against a 122-bit id space.
+    checkin_position_max_misses_per_window: int = 120
+    checkin_position_miss_window_seconds: int = 60
+
     @property
     def secure_cookies(self) -> bool:
         return self.app_env != "dev"

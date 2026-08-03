@@ -70,6 +70,23 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _CONTROL_CHARS_EXCEPT_WS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
+def validate_customer_name(name: str) -> None:
+    """The one customer-name rule in the product. Extracted from
+    `validate_booking_request` when F33's check-in form needed it: a queue
+    ticket carries the same name, reaches the same SMS templates and has the
+    same NUL problem, and a second copy of three lines is a second place for
+    the bound to drift. Callers outside booking get `BookingValidationError`
+    on purpose — it is a `DomainValidationError`, so the platform handler maps
+    it to the same house-shape 400 either way, and renaming it would be a wire
+    change for no gain."""
+    if not name.strip():
+        raise BookingValidationError("name must not be blank")
+    if len(name) > MAX_CUSTOMER_NAME_LENGTH:
+        raise BookingValidationError("name is too long")
+    if _CONTROL_CHARS.search(name):
+        raise BookingValidationError("name contains invalid characters")
+
+
 def validate_booking_request(
     *,
     name: str,
@@ -81,12 +98,7 @@ def validate_booking_request(
     active variants, or the slot is real are SERVICE questions (404/409, and
     they need the database); everything here is answerable from the request
     alone and maps to 400."""
-    if not name.strip():
-        raise BookingValidationError("name must not be blank")
-    if len(name) > MAX_CUSTOMER_NAME_LENGTH:
-        raise BookingValidationError("name is too long")
-    if _CONTROL_CHARS.search(name):
-        raise BookingValidationError("name contains invalid characters")
+    validate_customer_name(name)
     if notes is not None:
         if len(notes) > MAX_BOOKING_NOTES_LENGTH:
             raise BookingValidationError("notes is too long")
