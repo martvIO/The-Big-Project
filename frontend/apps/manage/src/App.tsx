@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ConsoleShell, ToastProvider } from "@boutique/ui";
 import { api } from "./api";
 import type { Staff } from "./api";
+import { AtelierSection } from "./components/AtelierSection";
 import { BoardSection } from "./components/BoardSection";
 import { BookingsSection } from "./components/BookingsSection";
 import { CatalogSection } from "./components/CatalogSection";
@@ -237,6 +238,10 @@ export function App() {
           </div>
         )}
         {activeKey === "floor" && <FloorPanel selfId={staff.id} role={staff.role} />}
+        {/* ALONE in #console-main and never beneath another section: it owns its
+            own usePoll instance, and the console renders one section at a time
+            precisely so a workroom phone is not running two loops. */}
+        {activeKey === "atelier" && <AtelierSection selfId={staff.id} role={staff.role} />}
         {activeKey === "checkinQr" && <CheckinQrSection />}
         {activeKey === "staff" && <StaffSection staffId={staff.id} />}
         {activeKey === "gateway" && <GatewaySection />}

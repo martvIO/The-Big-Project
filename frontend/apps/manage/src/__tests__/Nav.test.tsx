@@ -51,6 +51,11 @@ vi.mock("../api", async () => {
       // shift-manager slice and the floor-roles count all stay exactly where F53
       // left them, and that is spec AC15's assertion.
       listFloorClients: pending,
+      // Same reason, one feature later: clicking «תפירה» mounts AtelierSection,
+      // which calls api.getAtelierBoard() on mount. Without this row the render
+      // branch test below red-fails with `TypeError: api.getAtelierBoard is not
+      // a function` — an error naming the nav rather than the atelier.
+      getAtelierBoard: pending,
       gatewayStatus: pending,
       // Same reason again, one feature later. This is the ONE read here that
       // SETTLES, and deliberately: the QR section's loading state is an
@@ -304,6 +309,26 @@ describe("the customers section is wired to its nav row", () => {
     expect(screen.getByRole("heading", { name: "לקוחות" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("טוען את רשימת הלקוחות…");
   });
+});
+
+describe("the atelier is wired to its nav row", () => {
+  it.each(["owner", "shift_manager", "seamstress"])(
+    "opens the alteration board for a %s",
+    async (role) => {
+      // The section's own suite covers its behaviour; this is the RENDER BRANCH,
+      // which nothing else would notice was missing — App.tsx can carry the
+      // SectionKey, the NAV row, the label and ATELIER_ROLES and still render
+      // nothing. All three admitted roles, because this is the one section a
+      // seamstress reaches that is not the floor.
+      me.mockResolvedValue(staff(role));
+      render(<App />);
+      await screen.findByRole("navigation");
+
+      fireEvent.click(screen.getByRole("button", { name: "תפירה" }));
+      expect(screen.getByRole("heading", { name: "לוח התפירה" })).toBeInTheDocument();
+      expect(screen.getByTestId("atelier-cue")).toHaveTextContent("טוען את לוח התפירה…");
+    },
+  );
 });
 
 describe("the check-in code is wired to its nav row", () => {
