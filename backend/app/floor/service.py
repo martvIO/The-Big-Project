@@ -52,10 +52,16 @@ from app.db.repositories.fitting_room_assignments import (
     violated_index,
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
+from app.db.repositories.queue_tickets import QueueTicketsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
-from app.floor.validation import RoomOccupiedError, StaffOccupiedError, normalize_room_label
+from app.floor.validation import (
+    QueueEmptyError,
+    RoomOccupiedError,
+    StaffOccupiedError,
+    normalize_room_label,
+)
 from app.models.booking import Booking
 from app.models.constants import AuditAction, BookingStatus, StaffCardStatus, StaffRole
 from app.models.dress import Dress
@@ -174,6 +180,7 @@ class FloorService:
         self._dresses = DressesRepository()
         self._variants = DressVariantsRepository()
         self._customers = CustomersRepository()
+        self._tickets = QueueTicketsRepository()
         self._clock = clock or (lambda: datetime.datetime.now(datetime.UTC))
 
     async def floor(self, tenant_id: UUID) -> FloorRead:
@@ -409,6 +416,161 @@ class FloorService:
                 await self._held_room_details(session, tenant_id, target_staff_id)
             ) from error
         raise error
+
+    async def take_next(
+        self, tenant_id: UUID, room_id: UUID, *, staff_user_id: UUID | None, actor: StaffContext
+    ) -> RoomRead:
+        """The head of today's queue into this room, in ONE transaction (D3).
+
+        ⚠ **NOTHING INSIDE THE `async with` MAY `return` AFTER THE TICKET UPDATE
+        HAS RUN, AND EVERY REFUSAL RAISES.** `db/tenant.py:25` is
+        `async with session_factory() as session, session.begin():`, so an
+        exception propagating out of that block ROLLS BACK and a `return` from
+        inside it COMMITS. That is the whole guarantee, and it is narrower than
+        the one an earlier draft of the spec named: a raised 409 rolls the ticket
+        write back with or without a savepoint, so the savepoint is not what
+        protects the customer — the absence of a `return` is.
+
+        What a `return` would cost, concretely: the ticket UPDATE has run, the
+        INSERT failed, the block returns, `tenant_session` commits — and the
+        woman is `in_service` with no room. Gone from the waitlist, gone from the
+        public board, on no tile, her own phone reading «התור שלך התחיל» for the
+        rest of the day, recoverable only with psql. No verb in this feature can
+        reach that state to undo it.
+
+        **There is NO savepoint and NO idempotence branch**, and both absences
+        are the design rather than an economy. No savepoint because nothing after
+        the conflict needs the transaction alive — the occupant read moves to a
+        second, short, read-only session paid only on a refusal — so the `try`
+        wraps the `async with` ITSELF. No idempotence branch because the
+        transaction that would have made a 200 true is gone: every
+        `IntegrityError` out of here is a refusal, and answering 200 would report
+        a dispatch that claimed nobody while consuming the head of the queue.
+        That is the exact inverse of `claim`, where a re-claim IS a true 200.
+
+        Ordered exactly:
+
+        1. **Authorize, before any read** — a 403 raised after a read is an
+           existence oracle (module docstring).
+        2. **Room `FOR UPDATE`**, then **2b: the occupant read** — a FAST PATH,
+           not the guarantee. `has_active_for_room`'s shipped docstring is the
+           authority for why a read issued after that lock sees the committed
+           claim; `occupant_of_room` is the same predicate returning the row the
+           409 needs anyway, so it is one read and not two. Without 2b the
+           feature's most likely collision (two managers on one free tile inside
+           one 5s tick) claims a real customer's ticket and throws it away, and a
+           third take-next SKIP-LOCKs past her — out-of-order service
+           MANUFACTURED by the design rather than forced by it.
+        3. The ticket, 4. the empty-queue refusal, 5. the INSERT (which RAISES),
+           6. the audit row IN THE SAME TRANSACTION so a lost race cannot leave a
+           trail claiming a dispatch that did not happen, 7. the room read.
+
+        ⚠ The answer is the ROOM only. D2's waitlist half of `DispatchResult`
+        arrives with `QueueTicketsRepository.waiting_for_panel`; nothing here
+        renders a queue yet.
+        """
+        target_staff_id = staff_user_id or actor.id
+        self._authorize(target_staff_id, actor)
+        try:
+            async with tenant_session(self._sessions, tenant_id) as session:
+                room = await self._rooms.by_id_for_update(session, tenant_id, room_id)
+                if room is None or not room.is_active:
+                    raise DomainNotFoundError("fitting_room")
+                occupant = await self._assignments.occupant_of_room(session, tenant_id, room_id)
+                if occupant is not None:
+                    raise RoomOccupiedError(
+                        await self._occupant_details(session, tenant_id, occupant)
+                    )
+                ticket = await self._tickets.claim_next(session, tenant_id, day=self._today())
+                if ticket is None:
+                    raise QueueEmptyError
+                assignment = await self._assignments.claim(
+                    session,
+                    tenant_id,
+                    room_id=room_id,
+                    staff_id=target_staff_id,
+                    booking_id=None,
+                    queue_ticket_id=ticket.id,
+                )
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.QUEUE_TICKET_DISPATCHED,
+                    actor_id=actor.id,
+                    entity=str(ticket.id),
+                    details={
+                        "ticket": str(ticket.id),
+                        "room": str(room_id),
+                        "assignment": str(assignment.id),
+                        "staff": str(target_staff_id),
+                        "mode": "take_next",
+                    },
+                )
+                return await self._room_read(session, tenant_id, room_id)
+        except IntegrityError as error:
+            # ⚠ THE TRANSACTION IS ALREADY GONE — the exception left the
+            # `async with`, which rolled it back. The ticket is `waiting` again
+            # at its original position (`requeued_at` was never touched) and no
+            # audit row was written.
+            raise await self._occupied_error(tenant_id, room_id, target_staff_id, error) from error
+
+    async def _occupied_error(
+        self, tenant_id: UUID, room_id: UUID, target_staff_id: UUID, error: IntegrityError
+    ) -> Exception:
+        """Returns the exception to raise; the caller does `raise ... from error`.
+
+        ⚠ **NO IDEMPOTENCE BRANCH.** `active_for` is deliberately NOT consulted.
+        On the dispatch verbs the ticket write is live and a `return` would
+        commit it (see `take_next`), so the shipped analogue's FIRST branch
+        (`_resolve_claim_conflict`, above) — correct there — strands a customer
+        here. A dispatch that violated either index dispatched NOBODY and must
+        refuse.
+
+        ⚠ **The ROOM is resolved FIRST and WITHOUT the constraint name.** F36's
+        rule applied to a case its own branch ORDER cannot cover: a write
+        violating BOTH indexes reports whichever has the lower OID — migration
+        creation order, which flips after any REINDEX CONCURRENTLY or pg_repack.
+        Reading the occupant first makes the answer deterministic. (Step 2b
+        already refuses the committed-occupant case before the INSERT, so this
+        runs only for a winner that had not yet committed when 2b read — but it
+        must still be right.)
+
+        ⚠ **An UNRECOGNISED constraint RE-RAISES**, unchanged from F36: a 500 on
+        a violation nobody predicted is correct, and silently mapping it to
+        ROOM_OCCUPIED would tell a staffer a lie about furniture. This is why the
+        helper RETURNS an exception rather than raising one — `return error` is
+        how that branch is expressible at all.
+
+        A SECOND `tenant_session`, and F36 was right to decline one for its claim
+        ("another pool checkout, another set_config, another BEGIN/COMMIT and a
+        second place for the tenant id to be wrong") — it had a savepoint
+        available. Here the savepoint is not available and would not help, so the
+        second checkout is the price of correctness and is paid only on a
+        refusal. The tenant id is an argument, so there is no second place for it
+        to be wrong.
+        """
+        async with tenant_session(self._sessions, tenant_id) as session:
+            occupant = await self._assignments.occupant_of_room(session, tenant_id, room_id)
+            if occupant is not None:
+                return RoomOccupiedError(await self._occupant_details(session, tenant_id, occupant))
+            held = await self._assignments.room_of_staff(session, tenant_id, target_staff_id)
+            if held is not None:
+                return StaffOccupiedError(
+                    await self._held_room_details(session, tenant_id, target_staff_id)
+                )
+        # ⚠ MEMBERSHIP, not `is None`. The spec's D3a snippet writes
+        # `if violated_index(error) is None: return error`, which is WEAKER than
+        # the F36 rule the same docstring says it keeps: a violation carrying an
+        # unrecognised NAME — any unique index a later feature adds to this
+        # table — would fall through to ROOM_OCCUPIED, which is exactly the lie
+        # about furniture F36 declined to tell. `not in (…)` covers both the
+        # unnamed and the unknown-named case. Caught by the parametrised
+        # re-raise test, which copies F36's shipped [None, "idx_something…"].
+        if violated_index(error) not in (ROOM_ACTIVE_INDEX, STAFF_ACTIVE_INDEX):
+            return error
+        # A recognised violation with nobody left to name: the winner released in
+        # the gap. «החדר נתפס זה עתה. נסי שוב.»
+        return RoomOccupiedError(None)
 
     async def release(
         self, tenant_id: UUID, assignment_id: UUID, *, actor: StaffContext
@@ -716,6 +878,13 @@ class FloorService:
 
     # --- F36: shared helpers ---------------------------------------------------
 
+    def _today(self) -> datetime.date:
+        """Today's Jerusalem calendar day, and `_today_window()` calls it rather
+        than re-deriving it — so the dispatch day and the client picker's window
+        cannot drift apart, which is the argument `_today_window` already makes
+        one level down."""
+        return today_jerusalem(self._clock)
+
     def _today_window(self) -> tuple[datetime.datetime, datetime.datetime]:
         """Today's Jerusalem calendar day as a half-open UTC range.
 
@@ -724,7 +893,7 @@ class FloorService:
         would be a control that does nothing, and two transcriptions of the same
         arithmetic are two chances for that.
         """
-        today = today_jerusalem(self._clock)
+        today = self._today()
         return (
             datetime.datetime.combine(today, datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE),
             datetime.datetime.combine(

@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, Row, func, select
+from sqlalchemy import ColumnElement, Row, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.constants import QueueTicketStatus
@@ -81,6 +81,79 @@ class QueueTicketsRepository:
         await session.flush()
         await session.refresh(row)
         return row
+
+    async def claim_next(
+        self, session: AsyncSession, tenant_id: UUID, *, day: datetime.date
+    ) -> Row[tuple[UUID, str, str, datetime.datetime | None]] | None:
+        """Take the head of today's queue and move it to `in_service`, in ONE
+        statement. `None` means nobody is waiting, and it writes nothing.
+
+        ⚠ **`FOR UPDATE` on the SUBQUERY is what makes two managers get two
+        different customers; `SKIP LOCKED` is what makes the loser NOT WAIT.**
+        They are different properties and each has its own test. The inner plan
+        is `Limit → LockRows → Sort → Scan`, with LockRows BELOW the Limit: with
+        plain `FOR UPDATE` the loser blocks on the row lock, and when the winner
+        commits, LockRows runs an EvalPlanQual re-check against the updated
+        tuple, the `status = 'waiting'` qual now fails, the row is discarded and
+        LockRows pulls the NEXT row from the sort and locks that one. So the row
+        lock plus the `status` qual is what makes one woman unreachable twice;
+        `SKIP LOCKED` only stops a take-next waiting behind an unrelated
+        transaction that happens to hold a queue row (a call or a skip does too).
+
+        ⚠ **SKIP LOCKED can therefore serve OUT OF ORDER**, and that is accepted
+        rather than overlooked: if the winner rolls back (D3a) the loser has
+        already taken the next ticket, and the head is served after her. The
+        window is one statement long, and the alternative it buys is two managers
+        walking two brides to the same curtain with one ticket between them.
+
+        The two OUTER conjuncts are **redundant by construction** — the
+        subquery's `FOR UPDATE` holds the row for the whole transaction, so
+        nothing can change between the two statements. They are there for the
+        reader: every other predicate in this feature leads with `tenant_id`, and
+        this is the one statement in the product that moves a named customer into
+        a fitting room. It is the statement someone will study, and the one that
+        silently loses its tenant scoping if `tenant_session` is ever refactored.
+
+        The predicates and the sort key are `_live_waiting()` and `_sort_key()`
+        CALLED, never re-spelled — `_live_waiting`'s own docstring names "F58
+        widening one status filter, say" as the hazard it exists to prevent.
+
+        A COLUMN PROJECTION and not the entity, for `board`'s reason and one
+        more: an ORM-enabled UPDATE plus `select(QueueTicket)` would put a
+        `QueueTicket` carrying a phone and a consent timestamp into the identity
+        map at exactly the moment `_refreshed`'s docstring says this repo has
+        been bitten three times.
+
+        `synchronize_session=False` because this WHERE cannot be evaluated in
+        Python (a locking scalar subquery least of all) and no caller reads an
+        identity-mapped instance afterwards. `updated_at` is not in the SET list
+        — the shipped trigger owns it.
+        """
+        head = (
+            select(QueueTicket.id)
+            .where(*_live_waiting(tenant_id, day))
+            .order_by(_sort_key().asc(), QueueTicket.id.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+            .scalar_subquery()
+        )
+        stmt = (
+            update(QueueTicket)
+            .where(
+                QueueTicket.tenant_id == tenant_id,
+                QueueTicket.status == QueueTicketStatus.WAITING.value,
+                QueueTicket.id == head,
+            )
+            .values(status=QueueTicketStatus.IN_SERVICE.value)
+            .returning(
+                QueueTicket.id,
+                QueueTicket.name,
+                QueueTicket.visit_type,
+                QueueTicket.called_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return (await session.execute(stmt)).one_or_none()
 
     async def by_id(
         self, session: AsyncSession, tenant_id: UUID, ticket_id: UUID

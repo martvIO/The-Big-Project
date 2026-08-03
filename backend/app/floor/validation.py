@@ -61,6 +61,23 @@ class _OccupiedError(Exception):
         self.details = details
 
 
+class QueueEmptyError(Exception):
+    """Take-next found nobody waiting. A 409, and it follows `_OccupiedError`'s
+    PATTERN rather than its class: it is deliberately NOT a
+    `DomainValidationError` subclass, because Starlette resolves a handler by
+    walking `type(exc).__mro__` and parenting it onto the domain-400 base would
+    make the shipped 400 handler answer first and leave this 409's handler
+    unreachable. It carries no `details` and never will — there is nobody to
+    name — so it needs none of `_OccupiedError`'s machinery either.
+
+    Not a 404: that would mean the ROOM is missing, which the panel renders as
+    «החדר כבר לא זמין» about a room that is fine. Not an unchanged 200 either,
+    which leaves the manager wondering whether the tap registered. And not an
+    outage register on the client: the queue emptying between the render and the
+    tap is an ordinary five-second race.
+    """
+
+
 class RoomOccupiedError(_OccupiedError):
     """Somebody else holds this room — a claim that violated
     `idx_fitting_room_assignments_room_active`, or a delete refused because the

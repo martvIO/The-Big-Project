@@ -333,6 +333,27 @@ class AuditAction(StrEnum):
     # a new room tomorrow, so an id alone records that something was removed and
     # cannot say what.
     FITTING_ROOM_DELETED = "fitting_room_deleted"
+    # F58's floor dispatch (D13). No migration, same as every block above.
+    #
+    # ONE value for both dispatch verbs, with the mode in `details`, and that is
+    # CUSTOMER_UPDATED's split criterion rather than BOOKING_*'s: the question
+    # this table gets asked is "who put whom in which room", and nobody will
+    # ever ask it "who used the take-next button but not the assign one". The
+    # row already names the ticket, the room, the assignment and the staffer, so
+    # a second action value would carry no information the first does not.
+    #
+    # ⚠ A dispatch writes THIS row and NOT a second FITTING_ROOM_CLAIMED: the
+    # claim row's whole content is a subset of this one's, and two rows for one
+    # act is the noise D13 declined FITTING_ROOM_CREATED over.
+    #
+    # A NO-OP WRITES NO ROW, and on this path that is not a guard but a
+    # consequence: `_audit.record` is inside the transaction, so a lost race
+    # rolls the row back with the ticket write (D3a). The trail cannot claim a
+    # dispatch that did not happen.
+    #
+    # NO NAME AND NO PHONE in `details`, ever. audit_log has no retention policy
+    # and platform operators read across tenants.
+    QUEUE_TICKET_DISPATCHED = "queue_ticket_dispatched"
 
 
 class PlatformAuditAction(StrEnum):

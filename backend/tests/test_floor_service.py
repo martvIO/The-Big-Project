@@ -39,6 +39,7 @@ from app.db.repositories.fitting_room_assignments import (
     FittingRoomAssignmentsRepository,
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
+from app.db.repositories.queue_tickets import QueueTicketsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.errors import DomainNotFoundError
 from app.floor.service import (
@@ -47,7 +48,12 @@ from app.floor.service import (
     FloorService,
     card_status,
 )
-from app.floor.validation import FloorValidationError, RoomOccupiedError, StaffOccupiedError
+from app.floor.validation import (
+    FloorValidationError,
+    QueueEmptyError,
+    RoomOccupiedError,
+    StaffOccupiedError,
+)
 from app.models.booking import Booking
 from app.models.constants import AuditAction, BookingStatus, StaffCardStatus, StaffRole
 from app.models.customer import Customer
@@ -576,6 +582,8 @@ class _Rig:
         self.handover_error: IntegrityError | None = None
         self.has_active = False
         self.occupancy: RoomRow | None = None
+        # F58. `None` is an empty queue, which is a 409 and not an empty 200.
+        self.next_ticket: Any = _Ticket()
         self.dress_added = True
         self.dress_removed = True
 
@@ -1582,3 +1590,363 @@ async def test_the_client_picker_window_is_the_one_the_claim_admits(
         service._is_claimable(_booking(starts_at=asked["until_instant"], checked_in_at=NOW))
         is False
     )
+
+
+# =============================================================================
+# F58 — TAKE-NEXT. The branches; the mechanisms are test_queue_dispatch_db.py's.
+#
+# ⚠ WHAT THIS MODULE CAN AND CANNOT SEE — mutations RUN, not reasoned about,
+# and the plan's predictions corrected where they were wrong.
+#
+#   * `_authorize` moved below the room read → RED here (3 cases). `_Rig.order`
+#     records the SEQUENCE rather than the outcome, which is the only way to
+#     state that the 403 precedes the read.
+#   * the unrecognised-constraint re-raise dropped → RED here (2 cases).
+#   * step 2b deleted → **RED here (1 case)**, and the plan predicted GREEN. It
+#     was wrong: `_Rig.occupant` stages a committed occupant, so the fast suite
+#     does see the branch. What it CANNOT see is the branch's whole point — a
+#     real customer's ticket claimed and thrown away, and a third take-next
+#     SKIP-LOCKing past her. That needs a real server.
+#   * F36's idempotence RETURN added around the INSERT → **RED here (1 case)**,
+#     and the plan predicted GREEN across every fast test. Also wrong, and for a
+#     reason worth keeping: the assertion is STRUCTURAL — `active_for` is never
+#     called on any take-next path — rather than behavioural. What it cannot see
+#     is the DEFECT: the commit that strands a woman `in_service` with no room.
+#     `test_queue_dispatch_db.py` owns that one and it is the feature's headline.
+#   * reusing the aborted session in `_occupied_error` instead of opening a
+#     second one stays GREEN here — the fake session never aborts, so there is
+#     no `PendingRollbackError` to raise. Pinned in the db module.
+# =============================================================================
+
+TICKET_ID = uuid.uuid4()
+
+
+@dataclasses.dataclass(frozen=True)
+class _Ticket:
+    """`claim_next`'s four RETURNING columns. A projection, never the entity —
+    `phone` and `marketing_opt_in_at` do not enter the process on this path."""
+
+    id: uuid.UUID = TICKET_ID
+    name: str = "נועה בר"
+    visit_type: str = "bride"
+    called_at: datetime.datetime | None = None
+
+
+def _install_tickets(monkeypatch: pytest.MonkeyPatch, rig: _Rig) -> _Rig:
+    async def _claim_next(_s: Any, _sess: Any, _t: Any, *, day: Any) -> Any:
+        rig.order.append("claim_next")
+        rig.calls.append({"call": "claim_next", "day": day})
+        return rig.next_ticket
+
+    monkeypatch.setattr(QueueTicketsRepository, "claim_next", _claim_next)
+    return _install_rooms(monkeypatch, rig)
+
+
+# --- take-next's authorization matrix (D3 step 1) -----------------------------
+
+
+@pytest.mark.parametrize("role", ELEVATED)
+async def test_an_elevated_role_may_take_next_for_anybody(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    rig = _install_tickets(monkeypatch, _Rig())
+    target = uuid.uuid4()
+
+    read = await _service().take_next(TENANT_ID, ROOM_ID, staff_user_id=target, actor=_actor(role))
+
+    assert read.row.room_id == ROOM_ID
+    assert rig.calls[-1] == {
+        "call": "claim",
+        "room_id": ROOM_ID,
+        "staff_id": target,
+        "booking_id": None,
+        "queue_ticket_id": TICKET_ID,
+    }
+
+
+@pytest.mark.parametrize("role", FLOOR)
+async def test_a_floor_role_may_take_next_for_herself(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    rig = _install_tickets(monkeypatch, _Rig())
+    actor = _actor(role)
+
+    await _service().take_next(TENANT_ID, ROOM_ID, staff_user_id=None, actor=actor)
+
+    assert rig.calls[-1]["staff_id"] == actor.id
+
+
+@pytest.mark.parametrize("role", FLOOR)
+async def test_a_floor_role_taking_next_for_a_colleague_is_refused_without_reading_anything(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    """The empty `order` is the assertion, not the exception: a 403 raised after
+    a read is an existence oracle for room ids, and `_authorize` is take-next's
+    first statement for exactly that reason (`service.py:19-24`).
+
+    ⚠ MUTATION PERFORMED: move `self._authorize(...)` below the room read →
+    `rig.order` is `["room_for_update"]` and this reds. It is the only one of
+    take-next's five mechanisms this module can see.
+    """
+    rig = _install_tickets(monkeypatch, _Rig())
+
+    with pytest.raises(NotAuthorizedError):
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=uuid.uuid4(), actor=_actor(role)
+        )
+
+    assert rig.order == []
+    assert rig.audit == []
+
+
+# --- take-next's reads, in order ----------------------------------------------
+
+
+@pytest.mark.parametrize("room", [None, _room(is_active=False)])
+async def test_take_next_on_a_missing_or_INACTIVE_room_is_one_indistinguishable_404(
+    monkeypatch: pytest.MonkeyPatch, room: FittingRoom | None
+) -> None:
+    """The room lock comes first, so the common refusal — a room that vanished
+    or was deactivated — costs no ticket write at all."""
+    rig = _Rig()
+    rig.room = room
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(DomainNotFoundError):
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert "claim_next" not in rig.order
+    assert rig.audit == []
+
+
+async def test_take_next_into_an_occupied_room_refuses_before_touching_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ STEP 2b, and what it buys is a CUSTOMER rather than a round-trip.
+
+    Two managers tapping «קחי את הבאה» on the same free tile inside one 5s tick
+    is the most likely collision in the feature. Without this read the loser
+    claims a real customer's ticket and then throws it away on the INSERT — and
+    for the window in which she held it, a third take-next SKIP-LOCKs past her
+    and serves the woman behind her. With it, the serialised same-room case
+    touches no ticket at all.
+
+    ⚠ MUTATION PERFORMED: delete step 2b → this test RED and nothing else, so it
+    is the only fast witness. The plan predicted GREEN here; it was wrong,
+    because `_Rig.occupant` stages the committed occupant a fake normally would
+    not. What stays invisible here is the CONSEQUENCE — the ticket claimed and
+    discarded — which `test_queue_dispatch_db.py` pins.
+    """
+    rig = _Rig()
+    rig.occupant = _assignment(uuid.uuid4())
+    rig.occupant_staff = _staff_user(display_name="דנה")
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(RoomOccupiedError) as refused:
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert refused.value.details == {"staff_display_name": "דנה"}
+    assert "claim_next" not in rig.order
+    assert "claim" not in rig.order
+    assert rig.audit == []
+
+
+async def test_an_empty_queue_is_a_409_that_claims_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its own code rather than a 404 or an unchanged 200: a 404 would mean the
+    ROOM is missing, which the panel renders as «החדר כבר לא זמין» about a room
+    that is fine, and a 200 leaves the manager wondering whether the tap
+    registered. The queue emptying between the render and the tap is an ordinary
+    five-second race, so it is not an outage register either."""
+    rig = _Rig()
+    rig.next_ticket = None
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(QueueEmptyError):
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert "claim" not in rig.order
+    assert rig.audit == []
+
+
+async def test_take_next_claims_the_queue_for_TODAY(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_today()` is `today_jerusalem(self._clock)` and is the SAME derivation
+    `_today_window()` uses, so the waitlist day, the take-next day and the client
+    picker's window cannot drift apart. NOW is 11:20 UTC on 2026-08-02, i.e.
+    14:20 in Jerusalem — the same calendar day, which is what makes this
+    assertion about the timezone rather than about UTC."""
+    rig = _install_tickets(monkeypatch, _Rig())
+
+    await _service().take_next(
+        TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+    )
+
+    assert rig.calls[1] == {"call": "claim_next", "day": datetime.date(2026, 8, 2)}
+
+
+async def test_take_next_records_one_dispatch_row_naming_no_person(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ONE value for both dispatch verbs with the mode in `details`, and NO
+    second FITTING_ROOM_CLAIMED — the claim row's whole content is a subset of
+    this one's. No name and no phone in `details`: audit_log has no retention
+    policy and platform operators read across tenants."""
+    rig = _install_tickets(monkeypatch, _Rig())
+    actor = _actor(StaffRole.SHIFT_MANAGER)
+
+    await _service().take_next(TENANT_ID, ROOM_ID, staff_user_id=None, actor=actor)
+
+    assert rig.audit == [
+        {
+            "action": AuditAction.QUEUE_TICKET_DISPATCHED.value,
+            "actor_id": actor.id,
+            "entity": str(TICKET_ID),
+            "details": {
+                "ticket": str(TICKET_ID),
+                "room": str(ROOM_ID),
+                "assignment": str(ASSIGNMENT_ID),
+                "staff": str(actor.id),
+                "mode": "take_next",
+            },
+        }
+    ]
+    assert "נועה בר" not in str(rig.audit)
+
+
+# --- _occupied_error: every branch, and the two it must NOT have --------------
+
+
+async def test_a_take_next_room_conflict_names_the_occupant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ THE ROOM IS RESOLVED FIRST AND WITHOUT THE CONSTRAINT NAME, which is
+    F36's rule applied to a case its own branch order cannot cover: a claim
+    violating BOTH indexes reports whichever has the lower OID — migration
+    creation order, which flips after any REINDEX CONCURRENTLY or pg_repack.
+    Both parametrisations answer the same thing."""
+    for reported in (ROOM_ACTIVE_INDEX, STAFF_ACTIVE_INDEX):
+        rig = _Rig()
+        rig.claim_error = _integrity_error(reported)
+        rig.occupant = _assignment(uuid.uuid4())
+        rig.occupant_staff = _staff_user(display_name="דנה")
+        _install_tickets(monkeypatch, rig)
+
+        with pytest.raises(RoomOccupiedError) as refused:
+            await _service().take_next(
+                TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+            )
+
+        assert refused.value.details == {"staff_display_name": "דנה"}
+        assert rig.audit == []
+
+
+async def test_a_take_next_staff_conflict_names_the_room_she_is_already_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = _Rig()
+    rig.claim_error = _integrity_error(STAFF_ACTIVE_INDEX)
+    rig.staff_room = _assignment(uuid.uuid4())
+    rig.occupied_room = _room(label="חדר 2")
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(StaffOccupiedError) as refused:
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert refused.value.details == {"room_label": "חדר 2"}
+    assert rig.audit == []
+
+
+async def test_a_take_next_whose_winner_released_in_the_gap_does_not_name_nobody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nobody to name and a recognised constraint: «החדר נתפס זה עתה. נסי שוב.»
+    A 409 that admits it does not know beats one interpolating an empty name."""
+    rig = _Rig()
+    rig.claim_error = _integrity_error(ROOM_ACTIVE_INDEX)
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(RoomOccupiedError) as refused:
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert refused.value.details is None
+
+
+@pytest.mark.parametrize("reported", [None, "idx_something_nobody_predicted"])
+async def test_an_unrecognised_violation_on_take_next_is_re_raised(
+    monkeypatch: pytest.MonkeyPatch, reported: str | None
+) -> None:
+    """A8c. Unchanged from F36: a 500 on a violation nobody predicted is correct,
+    and silently mapping it to ROOM_OCCUPIED would tell a staffer a lie about
+    furniture. This is why `_occupied_error` RETURNS an exception rather than
+    raising one — `return error` is how this branch is expressible at all.
+
+    ⚠ MUTATION PERFORMED: `return RoomOccupiedError(None)` unconditionally at the
+    end of the helper → both parametrisations red.
+    """
+    rig = _Rig()
+    rig.claim_error = _integrity_error(reported)
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(IntegrityError):
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert rig.audit == []
+
+
+async def test_take_next_never_consults_the_idempotence_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ A8b's FAST HALF, and it is STRUCTURAL: `active_for` is never called on
+    any take-next path.
+
+    F36's `_resolve_claim_conflict` resolves idempotence with
+    `active_for` → `return await self._room_read(...)`, which is correct there
+    and catastrophic here. `db/tenant.py:25` is
+    `async with session_factory() as session, session.begin():`, so a RETURN from
+    inside that block COMMITS — a transaction in which the ticket has already
+    gone to `in_service` and no assignment was created. The woman is then
+    `in_service` with no room: gone from the waitlist, gone from the public
+    board, on no tile, her own phone reading «התור שלך התחיל» for the rest of the
+    day, recoverable only with psql.
+
+    Asserting the absence STRUCTURALLY is what stops it being added back here,
+    since the DEFECT it causes — the commit — needs a real Postgres to observe
+    (`test_queue_dispatch_db.py`).
+
+    ⚠ MUTATION PERFORMED: wrap the INSERT in `except IntegrityError:` →
+    `active_for` → `return await self._room_read(...)` inside the `async with`
+    → this test RED. The plan predicted GREEN across every fast test and was
+    wrong; the structural assertion is what makes the difference.
+    """
+    expected: list[tuple[str | None, type[Exception]]] = [
+        (ROOM_ACTIVE_INDEX, RoomOccupiedError),
+        (STAFF_ACTIVE_INDEX, RoomOccupiedError),
+        (None, IntegrityError),
+    ]
+    for reported, error in expected:
+        rig = _Rig()
+        rig.claim_error = _integrity_error(reported)
+        # The idempotence read is armed with a HIT, so a branch that consulted it
+        # would take it. It is never consulted.
+        rig.idempotent = _assignment(uuid.uuid4())
+        _install_tickets(monkeypatch, rig)
+
+        with pytest.raises(error):
+            await _service().take_next(
+                TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+            )
+
+        assert "active_for" not in rig.order
