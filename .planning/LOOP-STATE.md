@@ -568,8 +568,42 @@ queue:
     slug: alteration-tickets
     epic: E9
     title: "Atelier tickets + kanban (intake/in_progress/qc/ready/delivered)"
-    status: queued
+    status: building
+    attempts: 1
     deps: [F8, F13, F31, F34, F57]
+    spec: .planning/specs/alteration-tickets.md
+    plan: .planning/plans/alteration-tickets.md
+    started: >-
+      2026-08-03 17:40, worktree .worktrees/alteration-tickets, in PARALLEL with F36.
+      Eligible because F57's merge made every dep merged history. Gates 1 and 2
+      self-approved; design gate too.
+      SPEC REVIEW: 32 findings from 3 lenses, 32 applied, 0 rejected outright.
+      FOUR BLOCKERS, and THREE OF THEM WERE ONE SHAPE — a state machine whose
+      "impossible" branch was reachable. Worth reading before touching this code:
+      (1) THE ADVANCE'S UNREACHABLE BRANCH IS REACHABLE. D3 documented
+      `stage_of(row) < target` as impossible after a zero-row UPDATE. But a zero-row
+      UPDATE TAKES NO LOCK and the repo runs READ COMMITTED, so a concurrent undo can
+      clear the target column between the write and the re-read; `elif stage > target`
+      with no else then returns None and 500s. The discriminator is now ONE EQUALITY
+      AND ONE ELSE (== target -> 200, anything else -> 409), and the identical hole is
+      closed in undo and assign. A forced-interleave db test pins it.
+      (2) THE WALKER RESTRUCTURE HANDED seamstress THE DELETE ROUTE that the same
+      section takes away, so the test would have failed against CORRECT code — on the
+      one test F57's Risk 1 declares untouchable. ATELIER_DELETE is now its own
+      constant outside the non-elevated reach set.
+      (3) THE STAGE-SKIP SELECT FIRED AN IRREVERSIBLE WRITE ON `change`. A keyboard
+      user arrowing to the last stage would fire three advances, three audit rows and
+      three focus moves — WCAG 3.2.2 Level A, and it would have been the first Select
+      in this console to mutate on change. Both selects now set draft state and a
+      sibling button commits, which is how every other Select here already works.
+      (4) TWO ROUTES SHIPPED A SERVER WITH NO CLIENT: POST /update and POST /delete had
+      no affordance, no states, no copy, no focus destination and no test — and delete
+      is destructive, un-undoable and elevated-only.
+      NO DRAG-AND-DROP AT ALL, by ruling: a drag-only kanban is unusable by keyboard
+      and screen reader, and a11y here is legal, not preference. The board moves by
+      explicit controls with five named focus destinations.
+      MIGRATION: build at head+1 (0019 today), renumber at rebase. F36 is building in
+      parallel and may land first, making this 0020.
     note: >-
       PULLED FORWARD from E9 by the floor program, and AMENDED: the kanban states
       are the brief's intake -> in_progress -> qc -> ready -> delivered. Those
