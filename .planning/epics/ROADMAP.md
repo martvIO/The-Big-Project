@@ -1,8 +1,11 @@
 # Epic Roadmap — Bridal Boutique Multi-Tenant SaaS
 
 **Created**: 2026-07-21 (rev 2 — post three-critic verification pass)
-**Status**: awaiting v1 confirmation
+**Status**: **building** — v1 confirmed and in flight. 12 features merged, 1 in flight, 31 queued, 2 parked (last synced 2026-07-31).
 **Source**: 11-section PRD + approved pressure-test plan (ported to `.planning/architecture.md`)
+
+> **This file is the dependency map and the v1 contract. It is NOT the build queue.**
+> `.planning/LOOP-STATE.md` is the single source of truth for what is built, what is next, and in what order — it is written by the loop at every checkpoint, this file is not. Where the two disagree, LOOP-STATE governs. The progress table below is a hand-synced snapshot; regenerate it from LOOP-STATE rather than editing it in place.
 
 Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutique live end-to-end). Every feature goes through its own `/spartan:spec` → `/spartan:plan` → `/spartan:build` cycle with TDD, a security pass, and gate review — no feature skips the pipeline.
 
@@ -24,6 +27,50 @@ Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutiq
 | E8 | Workforce: Weekly Scheduler & HR Directory (full) | 10, 11.3 (full) | E6 | — |
 | E9 | Alterations Workshop & Capacity | 11.1, 11.2, 11.4 | E5, E7, E8 | — |
 | E10 | Scale & Polish: Arabic, WhatsApp channel, Video, Billing | cross-cutting | E5+ | — |
+
+---
+
+## Progress — snapshot 2026-07-31
+
+**12 merged · 1 building · 31 queued · 2 parked.** Regenerate from `LOOP-STATE.md`; do not maintain by hand.
+
+### Shipped
+
+| Feature | Epic | PR | What landed |
+|---|---|---|---|
+| F30 | cross | #20 | MODRYN platform branding |
+| F31 | SMC | #22 | Staff roles + default-deny `/manage` gating, proven by a CI route walker |
+| F16 | E3 | #21 | Booking comms lifecycle |
+| F15 | E3 | #24 | Owner booking management |
+| F51 | SMC | #25 | Staff management section (owner CRUD) |
+| F55 | cross | #26 | FastAPI serves both SPAs same-origin — the frontends had never been hosted anywhere |
+| F54 | E3-carveout | #27 | Twilio SMS adapter (real sends) |
+| F52 | SMC | #28 | KPI dashboard (ops + customer) |
+| F17 | E4 | #29 | Payment gateway port + credential management |
+| F56 | cross | #30 | The "flaky" storefront focus test — which turned out to be a real shipped a11y bug |
+| F18 | E4 | #31 | Lemon Squeezy test-mode adapter (sessions + webhooks) |
+| **F34** | SMC | **#32** | **Live shift board + check-in (5s poll)** — floor program iteration 1 |
+
+### In flight
+
+**F57** `floor-staff-roles` — floor program iteration 2. Spec, design deck and plan are written and merged; the branch carries the `StaffRole` widening and migration `0015`. **Interrupted mid-build at plan Task 3** (usage limit, not a failure) — LOOP-STATE's `current:` block carries the exact resume point and names two uncommitted half-written files that must not be trusted as done.
+
+### Parked — only the user can clear these
+
+| Feature | Why |
+|---|---|
+| F20 `ppl-compliance` | Gate 1 awaiting USER approval — legal surface (Interview Q1), 5 questions at the spec's head. **This is the roadmap's widest blocker**: F21, F29, F38, F39, F40 and F45 are all unreachable behind it. |
+| F32 | Subsumed into F34 (SMC ruling 3) — never build. Kept for the record. |
+
+### The floor-management program (preempts everything, 2026-07-31)
+
+`F34 ✅ → F57 ◐ → F36 → F33 → F58 → F59 → F37 → F41 → F42 → F60`
+
+Eight features remain. Detail in the FLOOR-MANAGEMENT block at the top of `LOOP-STATE.md`'s `queue:`, with per-feature spec-time guidance in `.planning/floor-program-review-2026-07-31.md`.
+
+### Still outside the loop's reach — user actions
+
+Three DNS records at DomainTheNet are the only thing between staging and a live `{slug}.modryn.co.il`. Also open: rotate the three secrets pasted into a chat transcript on 2026-07-31, and send the Twilio Account SID + E.164 number. Full list in `LOOP-STATE.md` → `user_actions`.
 
 ---
 
