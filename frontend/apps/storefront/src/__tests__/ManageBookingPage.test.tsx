@@ -64,6 +64,9 @@ function answer(overrides: {
       appointment_type_name: "מדידה ראשונה",
       dress_name: null,
       dress_size: null,
+      // F19 A3. The default is the whole F16-era estate: no deposit was ever
+      // taken, so `cancelConsequenceFree` is still true for every fixture above.
+      deposit_taken: false,
       ...overrides.booking,
     },
     policy:
@@ -461,6 +464,96 @@ describe("state C — cancelled", () => {
 
     const line = await findVisible(t("manage.cancelled"));
     await expectFocus(line);
+  });
+});
+
+// --- state W: awaiting payment --------------------------------------------
+
+describe("state W — an unpaid deposit hold", () => {
+  it("says the appointment is waiting for payment and offers NEITHER action", async () => {
+    // F19 A2/D14. Left alone this page renders a `pending_payment` hold as an
+    // appointment that stands, with a live cancel button — and both verbs 409
+    // BOOKING_AWAITING_PAYMENT on the server. Suppressed, not disabled: a
+    // disabled control still promises an action, and there is nothing to word.
+    lookup.mockResolvedValue(answer({ booking: { status: "pending_payment" } }));
+    renderPage();
+
+    expect(await screen.findByText(t("manage.awaitingPayment"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("manage.attendanceCta") })).toBeNull();
+    expect(screen.queryByRole("button", { name: t("manage.cancelCta") })).toBeNull();
+    // The facts stay — she opened the link to read them.
+    expect(screen.getByText(t("booking.confirmWhen"))).toBeInTheDocument();
+    // The contact block is the whole of the way forward, because the lookup
+    // payload carries no checkout link to offer her.
+    expect(document.querySelector('a[href^="tel:"]')).not.toBeNull();
+  });
+
+  it("is not the cancelled state, and says nothing about a cancellation", async () => {
+    // Its own branch, not a reuse: an unpaid hold is neither cancelled nor
+    // standing, and telling a bride mid-checkout her appointment was cancelled
+    // is the exact defect the server's separate 409 code exists to prevent.
+    lookup.mockResolvedValue(answer({ booking: { status: "pending_payment" } }));
+    renderPage();
+
+    await screen.findByText(t("manage.awaitingPayment"));
+    expect(screen.queryByText(t("manage.cancelled"))).toBeNull();
+    expect(screen.queryByRole("link", { name: t("manage.rebookCta") })).toBeNull();
+  });
+
+  it("prefers the awaiting state over the past state for a hold whose time has gone", async () => {
+    lookup.mockResolvedValue(
+      answer({ booking: { starts_at: ALREADY_PASSED, status: "pending_payment" } }),
+    );
+    renderPage();
+
+    expect(await screen.findByText(t("manage.awaitingPayment"))).toBeInTheDocument();
+    expect(screen.queryByText(t("manage.past"))).toBeNull();
+  });
+});
+
+// --- MD3: what a bride who paid a deposit is told about cancelling ---------
+
+describe("MD3 — the cancel consequence follows the deposit, not the status", () => {
+  it("renders the deposit sentence and NOT the free one once a deposit was taken", async () => {
+    // The hard constraint F19 may not merge without: the shipped sentence tells
+    // a bride who paid a deposit that cancelling is free, and it becomes false the
+    // day this merges — for a bride who has ALREADY READ IT.
+    lookup.mockResolvedValue(answer({ booking: { deposit_taken: true } }));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: t("manage.cancelCta") }));
+
+    expect(screen.getByText(t("manage.cancelConsequenceDeposit"))).toBeInTheDocument();
+    expect(screen.queryByText(t("manage.cancelConsequenceFree"))).toBeNull();
+  });
+
+  it("branches on the deposit fact, not on the status — a CONFIRMED booking paid weeks ago", async () => {
+    // A3, stated as a test: `status` alone cannot answer this, which is the
+    // whole reason `deposit_taken` is on the wire at all.
+    lookup.mockResolvedValue(
+      answer({ booking: { status: "confirmed", deposit_taken: true } }),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: t("manage.cancelCta") }));
+
+    expect(screen.getByText(t("manage.cancelConsequenceDeposit"))).toBeInTheDocument();
+  });
+
+  it("keeps the free sentence where no deposit exists", async () => {
+    // `cancelConsequenceFree` survives — conditionally. Every F16-era booking is
+    // deposit-free, and replacing its sentence everywhere would make the product
+    // vaguer for the estate that is genuinely free.
+    lookup.mockResolvedValue(answer({ booking: { deposit_taken: false } }));
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: t("manage.cancelCta") }));
+
+    expect(screen.getByText(t("manage.cancelConsequenceFree"))).toBeInTheDocument();
+    expect(screen.queryByText(t("manage.cancelConsequenceDeposit"))).toBeNull();
+  });
+
+  it("names no sum and no entitlement — the two real sentences are the parked item", async () => {
+    // The interim is true under every possible answer to the parked question. A
+    // numeral in it would be the product answering that question by itself.
+    expect(t("manage.cancelConsequenceDeposit")).not.toMatch(/\d/);
   });
 });
 

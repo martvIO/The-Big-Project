@@ -155,6 +155,14 @@ describe("errorMessage", () => {
     ["PHONE_NOT_VERIFIED", "Phone not verified.", "errors.phoneNotVerified"],
     ["SMS_NOT_CONFIGURED", "SMS is not configured.", "errors.smsUnavailable"],
     ["SMS_UNAVAILABLE", "SMS provider unavailable.", "errors.smsUnavailable"],
+    // F19. Its OWN code rather than a reuse of BOOKING_CANCELLED: an unpaid hold
+    // is neither cancelled nor standing, and the cancelled copy would tell a
+    // bride mid-checkout that her appointment is gone.
+    [
+      "BOOKING_AWAITING_PAYMENT",
+      "This appointment is waiting for payment.",
+      "errors.bookingAwaitingPayment",
+    ],
   ])("renders Hebrew for %s and never the server's English", (code, english, key) => {
     const rendered = errorMessage(new ApiError(400, code, english), t);
 
@@ -299,6 +307,27 @@ describe("storefront endpoints", () => {
       notes: null,
     });
     expect(created.appointment_type_name).toBe("מדידה");
+  });
+
+  it("polls the payment by session id, in the BODY and never a query string", async () => {
+    // D13: keyed on the provider session id, not the manage token — the token is
+    // not in the create response, the SMS that would carry it is suppressed on
+    // the deposit path, and the confirm rotates its hash, so a token-keyed poll
+    // would 404 at precisely the moment it should answer `paid`. POST for a read
+    // is the /booking/lookup precedent: a GET puts the id into every access log.
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, {
+        booking_status: "confirmed",
+        payment_status: "paid",
+        paid_at: "2026-08-04T07:02:00Z",
+      }),
+    );
+    const facts = await api.paymentStatus("ps_abc123");
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/storefront/booking/payment-status");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ payment_session_id: "ps_abc123" });
+    expect(facts.payment_status).toBe("paid");
   });
 });
 

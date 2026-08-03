@@ -71,6 +71,12 @@ export function errorMessageKey(error: unknown): string {
     case "SMS_NOT_CONFIGURED":
     case "SMS_UNAVAILABLE":
       return "errors.smsUnavailable";
+    // A confirm-attendance or cancel against an unpaid deposit hold. Its own
+    // code on the wire rather than a reuse of BOOKING_CANCELLED, so it gets its
+    // own string here: an unpaid hold is neither cancelled nor standing, and the
+    // cancelled copy would tell a bride mid-checkout her appointment is gone.
+    case "BOOKING_AWAITING_PAYMENT":
+      return "errors.bookingAwaitingPayment";
     default:
       return "errors.unknown";
   }
@@ -291,10 +297,37 @@ export interface BookingCreateRequest {
 export interface BookingCreateResponse {
   id: string;
   starts_at: string;
+  // "confirmed" | "pending_payment" — `pending_payment` EXACTLY when
+  // `deposit_due`, a seat held with the money not yet in.
   status: string;
   appointment_type_name: string;
   dress_name: string | null;
   dress_size: string | null;
+  // Is money owed, and where does she pay it. Both nullable fields stay null
+  // unless a deposit is due — including on the path where the gateway was
+  // unreachable and the booking stands with no deposit taken, which is why the
+  // flow branches on `deposit_due` and never on `deposit_required`.
+  deposit_due: boolean;
+  redirect_url: string | null;
+  // The POLL credential, deliberately NOT the manage token: the token is not in
+  // this response, the deposit path suppresses the SMS that would carry it, and
+  // confirming rotates its hash — so a token-keyed poll would start 404-ing at
+  // precisely the moment it should answer "paid". This id is already
+  // client-visible by construction (it is embedded in the hosted-page URL the
+  // browser is about to visit) and possession of it authorises nothing but a
+  // status read.
+  payment_session_id: string | null;
+}
+
+export interface PaymentStatusResponse {
+  // The BOOKING's status is what makes the confirmation screen true. The
+  // webhook settles `payments` in one transaction and confirms the booking in a
+  // second, so `payment_status: "paid"` with the booking still held is a real,
+  // recoverable state and not a confirmation.
+  booking_status: string;
+  // "pending" | "paid" | "failed" | "expired" | …
+  payment_status: string;
+  paid_at: string | null;
 }
 
 // --- manage wire types (mirror backend/app/booking/schemas.py) ---
@@ -305,14 +338,22 @@ export interface BookingCreateResponse {
 
 export interface ManageBookingFacts {
   starts_at: string;
-  // "confirmed" | "cancelled" | "no_show" | "completed". The page branches on
-  // cancelled and treats everything else as an appointment that stands.
+  // "confirmed" | "cancelled" | "no_show" | "completed" | "pending_payment".
+  // The page branches on cancelled and on pending_payment — an unpaid hold is
+  // neither of the other two, and rendering it as an appointment that stands
+  // put a live cancel button on a booking the server 409s every verb on.
   status: string;
   // null until she taps אישור הגעה; set once and never moved.
   attendance_confirmed_at: string | null;
   appointment_type_name: string;
   dress_name: string | null;
   dress_size: string | null;
+  // Whether this appointment took a deposit. A BOOLEAN and never the sum — the
+  // payload is possession-authed and carries no money fact about a person it
+  // refuses to name. It is what the cancel consequence branches on, because
+  // `status` cannot answer it: a CONFIRMED booking paid weeks ago has a deposit
+  // too, and "cancelling is free" is false for it.
+  deposit_taken: boolean;
 }
 
 export interface ManagePolicy {
@@ -375,6 +416,15 @@ export const api = {
   },
   createBooking(body: BookingCreateRequest): Promise<BookingCreateResponse> {
     return apiFetch("/storefront/bookings", { method: "POST", body });
+  },
+  // The pay step's poll. POST for a read, the /booking/lookup precedent: a GET
+  // would put the session id into every access log, proxy trace and Referer
+  // header on the path.
+  paymentStatus(paymentSessionId: string): Promise<PaymentStatusResponse> {
+    return apiFetch("/storefront/booking/payment-status", {
+      method: "POST",
+      body: { payment_session_id: paymentSessionId },
+    });
   },
 
   // All three take the manage token in the BODY and answer the SAME shape, so

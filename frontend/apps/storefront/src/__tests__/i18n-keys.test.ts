@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import i18n from "../i18n";
+import { ar } from "../i18n/ar";
 import { he } from "../i18n/he";
 
 // i18next answers a miss with the bare key, so a deleted or renamed entry
@@ -38,7 +39,7 @@ function keysIn(source: string): string[] {
     .filter((key) => SECTIONS.has(key.split(".")[0]));
 }
 
-function resolve(key: string): unknown {
+function resolve(key: string, bundle: object = he.translation): unknown {
   return key
     .split(".")
     .reduce<unknown>(
@@ -46,7 +47,7 @@ function resolve(key: string): unknown {
         typeof node === "object" && node !== null
           ? (node as Record<string, unknown>)[segment]
           : undefined,
-      he.translation,
+      bundle,
     );
 }
 
@@ -96,5 +97,45 @@ describe("i18n keys used by the app", () => {
 
     expect(resolved).not.toBe(key);
     if (!Array.isArray(value)) expect(typeof resolved).toBe("string");
+  });
+});
+
+// pre-decided #47: every feature from F16 on ships its `ar` keys beside its
+// Hebrew, left untranslated, so the eventual launch is a translation job rather
+// than a retrofit across ~28 features. Enumerated mechanically off he.ts so a
+// tenth pay string cannot be added to one bundle and forgotten in the other.
+const F19_KEYS = [
+  ...Object.keys(he.translation.booking)
+    .filter((name) => name.startsWith("pay"))
+    .map((name) => `booking.${name}`),
+  "manage.awaitingPayment",
+  "manage.cancelConsequenceDeposit",
+  "errors.bookingAwaitingPayment",
+];
+
+describe("the ar bundle", () => {
+  it("carries every key F19 added to he.ts", () => {
+    // A scanner that matched nothing would make the assertion below vacuous.
+    expect(F19_KEYS.length).toBeGreaterThanOrEqual(12);
+    const missing = F19_KEYS.filter((key) => typeof resolve(key, ar.translation) !== "string");
+    expect(missing).toEqual([]);
+  });
+
+  it("carries no empty string at any depth", () => {
+    // i18next's returnEmptyString default renders "" rather than falling back to
+    // `he`, so an empty placeholder would BLANK the page rather than show
+    // Hebrew — which is why every value here is the approved Hebrew standing in.
+    const empty: string[] = [];
+    const walk = (node: object, path: string) => {
+      for (const [name, value] of Object.entries(node)) {
+        if (typeof value === "string") {
+          if (value.trim() === "") empty.push(`${path}${name}`);
+        } else if (typeof value === "object" && value !== null) {
+          walk(value as object, `${path}${name}.`);
+        }
+      }
+    };
+    walk(ar.translation, "");
+    expect(empty).toEqual([]);
   });
 });

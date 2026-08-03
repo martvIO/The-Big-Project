@@ -23,8 +23,10 @@ import { ManageBookingPage } from "./routes/ManageBookingPage";
 export type RouteName = "catalog" | "dress" | "about" | "accessibility" | "book" | "manage";
 
 // A closed set, which is what lets /book/{step} and /book/{step}/{dressId}
-// share a shape: no dress id can ever be read as a step.
-export const BOOK_STEPS = ["slot", "details", "terms", "verify", "confirm"] as const;
+// share a shape: no dress id can ever be read as a step. `pay` joins it in flow
+// order — it sits between the commit and the confirmation, and is reached only
+// when a deposit is actually due.
+export const BOOK_STEPS = ["slot", "details", "terms", "verify", "pay", "confirm"] as const;
 
 export type BookStep = (typeof BOOK_STEPS)[number];
 
@@ -148,6 +150,27 @@ export function navigate(to: string, options: { replace?: boolean } = {}): void 
   }
   window.dispatchEvent(new Event(NAVIGATION_EVENT));
 }
+
+/**
+ * The hand-off OUT of the app — the payment provider's hosted page. A document
+ * navigation, not a history push, which is why it is not `navigate`.
+ *
+ * An object with a method rather than a bare exported function, for two reasons
+ * that are not style. `window.location`'s members are [LegacyUnforgeable] own
+ * properties, so `vi.spyOn(window.location, "assign")` throws and jsdom refuses
+ * the navigation outright — the call has to be replaceable somewhere. And this
+ * module sits in an import CYCLE with the page that calls it (router imports
+ * BookPage imports router), which makes `vi.mock`'s live binding resolve to the
+ * real function inside the factory's own `importActual` — silently, so the test
+ * passes its render assertions and simply never sees the redirect. A property
+ * needs neither trick. A hand-off on a money surface that no test can observe
+ * is one nobody notices breaking.
+ */
+export const handOff = {
+  leave(url: string): void {
+    window.location.assign(url);
+  },
+};
 
 /**
  * Whether a click on `anchor` should become a client navigation.

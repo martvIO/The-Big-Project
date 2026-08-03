@@ -14,7 +14,7 @@ import { StorefrontLayout } from "../components/StorefrontLayout";
 import { SizeChips } from "../components/booking/SizeChips";
 import { TypePicker } from "../components/booking/TypePicker";
 import { BookPage } from "../routes/BookPage";
-import { matchRoute, usePathname } from "../router";
+import { handOff, matchRoute, usePathname } from "../router";
 import { expectFocus } from "../test/focus";
 import { inPaintGap } from "../test/interleave";
 
@@ -34,12 +34,26 @@ vi.mock("../api", async () => {
       sendOtp: vi.fn(),
       verifyOtp: vi.fn(),
       createBooking: vi.fn(),
+      paymentStatus: vi.fn(),
     },
     getBoutiqueOnce: vi.fn(),
   };
 });
 
 const { ApiError, api, getBoutiqueOnce } = await import("../api");
+const paymentStatus = vi.mocked(api.paymentStatus);
+
+// The document hand-off, stubbed for the whole file: jsdom refuses a real
+// navigation, and a test that let one through would be asserting against a
+// page the runner had already abandoned.
+//
+// A property spy rather than vi.mock("../router"), deliberately. router.tsx and
+// BookPage.tsx are an import CYCLE, so the factory's own importActual resolves
+// BookPage's `handOff` binding to the REAL module — the render assertions still
+// pass and the redirect assertion silently sees zero calls. clearAllMocks()
+// below clears the calls and keeps the implementation, which is what makes one
+// module-scope spy enough.
+const handOffSpy = vi.spyOn(handOff, "leave").mockImplementation(() => undefined);
 const getTerms = vi.mocked(api.getTerms);
 const listTypes = vi.mocked(api.listAppointmentTypes);
 const listSlots = vi.mocked(api.listSlots);
@@ -135,8 +149,37 @@ function booking(overrides: Partial<BookingCreateResponse> = {}): BookingCreateR
     appointment_type_name: "מדידה ראשונה",
     dress_name: null,
     dress_size: null,
+    // F19's ordinary shape: no deposit due, so the flow still ends at the
+    // confirmation screen and every test above is unchanged by this feature.
+    deposit_due: false,
+    redirect_url: null,
+    payment_session_id: null,
     ...overrides,
   };
+}
+
+// The provider's hosted page and the poll credential. The session id is already
+// client-visible by construction — it is embedded in the checkout URL the
+// browser is about to visit — which is what lets it key the poll (D13).
+const CHECKOUT = "https://pay.example.test/checkout/abc";
+const SESSION = "ps_abc123";
+
+function depositBooking(overrides: Partial<BookingCreateResponse> = {}): BookingCreateResponse {
+  return booking({
+    // `status` is pending_payment EXACTLY when deposit_due — a seat held with
+    // the money not yet in.
+    status: "pending_payment",
+    deposit_due: true,
+    redirect_url: CHECKOUT,
+    payment_session_id: SESSION,
+    ...overrides,
+  });
+}
+
+function payFacts(
+  overrides: Partial<Awaited<ReturnType<typeof api.paymentStatus>>> = {},
+): Awaited<ReturnType<typeof api.paymentStatus>> {
+  return { booking_status: "pending_payment", payment_status: "pending", paid_at: null, ...overrides };
 }
 
 function pending<T>(): Promise<T> {
@@ -274,6 +317,7 @@ beforeEach(() => {
     expires_at: "2026-08-04T07:10:00Z",
   });
   createBooking.mockResolvedValue(booking());
+  paymentStatus.mockResolvedValue(payFacts());
   window.history.replaceState(null, "", "/book/slot");
 });
 
@@ -290,6 +334,9 @@ describe("BookPage shell", () => {
     // R14: rendered cold, confirm has no 201 to show and may not claim one, so
     // its heading is the flow's own name rather than "the appointment is booked".
     ["confirm", "document.book"],
+    // ONE static h1 over all five payment states: an h1 that changed with the
+    // poll's answer would rewrite the page's own name under a screen reader.
+    ["pay", "booking.payTitle"],
   ] as const)("titles the %s step with its own h1", (step, key) => {
     renderBook(step);
 
@@ -2273,5 +2320,348 @@ describe("BookPage confirmation", () => {
       expect(window.location.pathname).toBe("/book/confirm");
     });
     expect(screen.getByText(i18n.t("booking.confirmKeepScreen"))).toBeInTheDocument();
+  });
+});
+
+// The deposit hand-off. Five states, and the one most likely to be forgotten is
+// the sixth thing here: what she sees when the bounded poll runs out WITHOUT a
+// terminal answer, on the one surface where her money has already moved.
+describe("BookPage pay step", () => {
+  /**
+   * The VISIBLE occurrences of a string.
+   *
+   * Every headline on this step is rendered twice by design — once on the page
+   * and once inside the one visually-hidden status region that announces it —
+   * so a bare getByText matches both. Filtering by `.sr-only` ancestry keeps
+   * these assertions about what she SEES, with the announcement asserted
+   * separately through role="status".
+   */
+  function visiblePay(value: string): HTMLElement[] {
+    return screen.queryAllByText(value).filter((node) => node.closest(".sr-only") === null);
+  }
+
+  async function findVisiblePay(value: string): Promise<HTMLElement> {
+    await waitFor(() => {
+      expect(visiblePay(value)).toHaveLength(1);
+    });
+    return visiblePay(value)[0];
+  }
+
+  async function bookDeposit(overrides: Partial<BookingCreateResponse> = {}) {
+    createBooking.mockResolvedValue(depositBooking(overrides));
+    const result = await walkToVerify();
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+    // The URL, not a string: with a terminal poll answer already mocked the
+    // hand-off copy may never render, and waiting on it would make the state
+    // tests below unreachable.
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/pay");
+    });
+    return result;
+  }
+
+  it("routes a deposit-due booking to the pay step, never to the confirmation", async () => {
+    // D11: the booking is written FIRST, as `pending_payment`. Landing her on
+    // the confirmation screen would tell her an appointment is confirmed before
+    // a single agora is taken — which is also why the router suppresses the SMS.
+    await bookDeposit();
+
+    expect(screen.queryByText(i18n.t("booking.confirmKeepScreen"))).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(i18n.t("booking.payTitle"));
+    // Not a step of the stepper: the four dots end at verify.
+    expect(screen.queryByRole("list", { name: i18n.t("booking.stepsLabel") })).toBeNull();
+  });
+
+  it("still ends a no-deposit booking at the confirmation screen", async () => {
+    createBooking.mockResolvedValue(booking());
+    await walkToVerify();
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByText(i18n.t("booking.confirmKeepScreen"))).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/book/confirm");
+    expect(handOffSpy).not.toHaveBeenCalled();
+  });
+
+  // --- state A: the hand-off ----------------------------------------------
+
+  it("hands off to the provider AND leaves a manual link for a browser that blocked it", async () => {
+    await bookDeposit();
+
+    await findVisiblePay(i18n.t("booking.payHandoff"));
+    expect(handOffSpy).toHaveBeenCalledWith(CHECKOUT);
+    // The fallback is not decoration. A blocked automatic redirect leaves this
+    // link as the ONLY way to the money, so it ships with the state, not after
+    // a timeout that a stalled tab never reaches.
+    const link = screen.getByRole("link", { name: i18n.t("booking.payManualCta") });
+    expect(link).toHaveAttribute("href", CHECKOUT);
+    // rel=external, because the dev gateway's page is SAME-ORIGIN
+    // ("/fake-pay?session=…") and the app's delegated click handler would
+    // otherwise swallow it into a client navigation that matches no route.
+    expect(link).toHaveAttribute("rel", "external");
+    expect(screen.getByText(i18n.t("booking.payManualHint"))).toBeInTheDocument();
+  });
+
+  it("carries the poll credential in the URL, so a reload does not lose her payment", async () => {
+    // Device storage is banned on this surface and the create response lives in
+    // memory alone. Without this the whole awaiting state is unreachable after
+    // any reload — and a reload is exactly what a hand-off out of the app is.
+    await bookDeposit();
+
+    expect(new URLSearchParams(window.location.search).get("session")).toBe(SESSION);
+  });
+
+  it("issues the hand-off once, however many times the step re-renders", async () => {
+    // The poll re-renders this step on its own clock. Re-issuing the redirect
+    // there traps her in a loop between the boutique and the provider — and a
+    // back navigation out of the hosted page is the common case, not the rare
+    // one.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await bookDeposit();
+      await findVisiblePay(i18n.t("booking.payHandoff"));
+      for (let tick = 0; tick < 3; tick += 1) {
+        await act(async () => {
+          vi.advanceTimersByTime(3_000);
+        });
+      }
+      expect(handOffSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses a checkout URL that is not http(s) or root-relative", async () => {
+    // The URL comes back from a third party. React does NOT neutralise a
+    // javascript: href, and this one is both navigated to and rendered.
+    await bookDeposit({ redirect_url: "javascript:alert(1)" });
+
+    expect(handOffSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole("link", { name: i18n.t("booking.payManualCta") })).toBeNull();
+  });
+
+  // --- state B: returned, awaiting the webhook -----------------------------
+
+  it("polls the session on a cold return and says it is confirming, not that it is done", async () => {
+    // THE WEBHOOK IS AUTHORITATIVE, NOT THE RETURN REDIRECT. Coming back from
+    // the hosted page proves she pressed a button, not that money moved.
+    renderFlow(`/book/pay?session=${SESSION}`);
+
+    // Twice by design: the visible line and the visually-hidden status region
+    // that announces it. Both, because aria-busy on a plain div is announced by
+    // neither VoiceOver nor NVDA.
+    await findVisiblePay(i18n.t("booking.payAwaiting"));
+    await waitFor(() => {
+      expect(paymentStatus).toHaveBeenCalledWith(SESSION);
+    });
+    // No link to hand off to on this path, and nothing to redirect.
+    expect(handOffSpy).not.toHaveBeenCalled();
+    expect(screen.queryByText(i18n.t("booking.confirmKeepScreen"))).toBeNull();
+    // R30: aria-busy on a plain div is announced by neither VoiceOver nor NVDA.
+    expect(screen.getByRole("status")).toHaveTextContent(i18n.t("booking.payAwaiting"));
+  });
+
+  it("spends an attempt on a failed read and keeps asking", async () => {
+    // A 429, a dropped connection and a session the server has not written yet
+    // are all "no answer yet". One of them must not end the poll.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      paymentStatus.mockRejectedValue(THROTTLED);
+      renderFlow(`/book/pay?session=${SESSION}`);
+      await findVisiblePay(i18n.t("booking.payAwaiting"));
+
+      await act(async () => {
+        vi.advanceTimersByTime(6_000);
+      });
+
+      expect(paymentStatus.mock.calls.length).toBeGreaterThan(1);
+      expect(visiblePay(i18n.t("booking.payAwaiting"))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // --- state C: paid -------------------------------------------------------
+
+  it("stops the poll on the confirmed booking and shows the EXISTING confirmation screen", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      paymentStatus.mockResolvedValue(payFacts());
+      await bookDeposit();
+      await findVisiblePay(i18n.t("booking.payHandoff"));
+      paymentStatus.mockResolvedValue(
+        payFacts({ booking_status: "confirmed", payment_status: "paid", paid_at: AUG4_1000 }),
+      );
+
+      await act(async () => {
+        vi.advanceTimersByTime(3_000);
+      });
+
+      await waitFor(() => {
+        expect(window.location.pathname).toBe("/book/confirm");
+      });
+      // Unchanged, not redesigned: the same card, the same keep-the-screen line.
+      expect(screen.getByText(i18n.t("booking.confirmKeepScreen"))).toBeInTheDocument();
+      expect(screen.getByText(i18n.t("booking.confirmWhen"))).toBeInTheDocument();
+
+      // TERMINAL: the interval is gone, not merely ignored.
+      const settled = paymentStatus.mock.calls.length;
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(paymentStatus).toHaveBeenCalledTimes(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps asking while the money is in but the booking is not yet confirmed", async () => {
+    // D3's crash window: `settle_from_webhook` commits `payments -> paid` in its
+    // own transaction and the booking confirm is a SECOND one. Confirming the
+    // appointment here would claim something the server has not written; a
+    // redelivery is the repair, so the honest move is to keep asking.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      paymentStatus.mockResolvedValue(
+        payFacts({ booking_status: "pending_payment", payment_status: "paid", paid_at: AUG4_1000 }),
+      );
+      renderFlow(`/book/pay?session=${SESSION}`);
+      await findVisiblePay(i18n.t("booking.payAwaiting"));
+
+      await act(async () => {
+        vi.advanceTimersByTime(6_000);
+      });
+
+      expect(window.location.pathname).toBe("/book/pay");
+      expect(visiblePay(i18n.t("booking.payAwaiting"))).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // --- state D: declined ---------------------------------------------------
+
+  it("offers the SAME link on a decline, and promises no fresh attempt or new price", async () => {
+    // D11b/D8: a retry converges onto the same hold and returns the same link,
+    // so the copy may not imply a second booking or a second amount.
+    paymentStatus.mockResolvedValue(payFacts({ payment_status: "failed" }));
+    await bookDeposit();
+
+    await findVisiblePay(i18n.t("booking.payDeclined"));
+    expect(screen.getByText(i18n.t("booking.payDeclinedBody"))).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: i18n.t("booking.payManualCta") })).toHaveAttribute(
+      "href",
+      CHECKOUT,
+    );
+    // No sum anywhere in the sentence: naming one here would be the screen
+    // inventing a price the hold already fixed.
+    expect(i18n.t("booking.payDeclinedBody")).not.toMatch(/\d/);
+    expect(visiblePay(i18n.t("booking.payHandoff"))).toHaveLength(0);
+    // The POLL made this happen, not a tap: there is no control to move focus
+    // from, so the status region is the only thing that tells a screen reader
+    // the wait is over. Moving focus instead would be a 3.2.1 defect of its own.
+    expect(screen.getByRole("status")).toHaveTextContent(i18n.t("booking.payDeclined"));
+  });
+
+  // --- state E: expired ----------------------------------------------------
+
+  it("sends an expired hold back to the ordinary slot picker, with no retry link", async () => {
+    // The seat is gone: the sweeper cancelled the booking and freed it. Offering
+    // the old checkout link would take her money for a time she no longer has.
+    paymentStatus.mockResolvedValue(
+      payFacts({ booking_status: "cancelled", payment_status: "expired" }),
+    );
+    await bookDeposit();
+
+    await findVisiblePay(i18n.t("booking.payExpired"));
+    expect(screen.getByRole("link", { name: i18n.t("manage.rebookCta") })).toHaveAttribute(
+      "href",
+      "/book/slot",
+    );
+    expect(screen.queryByRole("link", { name: i18n.t("booking.payManualCta") })).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(i18n.t("booking.payExpired"));
+  });
+
+  it("actually lets her rebook after an expiry, instead of forwarding her to a dead booking", async () => {
+    // The guard forwards `verify` to /book/confirm while a booking is in
+    // memory. That is right while the booking is alive and wrong the moment the
+    // sweeper cancelled it — without the clear, this link walks her three steps
+    // forward into the appointment she just lost and offers no fourth.
+    paymentStatus.mockResolvedValue(
+      payFacts({ booking_status: "cancelled", payment_status: "expired" }),
+    );
+    await bookDeposit();
+    await findVisiblePay(i18n.t("booking.payExpired"));
+
+    fireEvent.click(screen.getByRole("link", { name: i18n.t("manage.rebookCta") }));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/book/slot");
+    });
+    // A real slot picker, walked forward — not a bounce back to the dead one.
+    await pickFirstType();
+    fireEvent.click(await screen.findByRole("radio", { name: "10:00" }));
+    fireEvent.click(forward());
+    expect(window.location.pathname).toBe("/book/details");
+    expect(visiblePay(i18n.t("booking.payExpired"))).toHaveLength(0);
+  });
+
+  // --- the state that gets forgotten: bounded attempts, no terminal answer --
+
+  it("stops after the bounded attempts and hands her the phone, never a spinner forever", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      paymentStatus.mockResolvedValue(payFacts());
+      renderFlow(`/book/pay?session=${SESSION}`);
+      await findVisiblePay(i18n.t("booking.payAwaiting"));
+
+      // 20 attempts at 3s. The first fires on mount, so 19 ticks exhaust it.
+      for (let tick = 0; tick < 19; tick += 1) {
+        await act(async () => {
+          vi.advanceTimersByTime(3_000);
+        });
+      }
+
+      await findVisiblePay(i18n.t("booking.payUnresolved"));
+      // Exactly the bound, so this cannot pass by reaching the state some other
+      // way — a missing session id renders the same copy, and that is the one
+      // thing this test must not be measuring.
+      expect(paymentStatus).toHaveBeenCalledTimes(20);
+      // It really stopped — an unbounded poll on a money screen is a battery
+      // drain and a request storm, and it never reaches an answer either.
+      const settled = paymentStatus.mock.calls.length;
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(paymentStatus).toHaveBeenCalledTimes(settled);
+      // The phone, because this is the one state the product cannot resolve.
+      expect(screen.getByRole("link", { name: i18n.t("contact.call") })).toBeInTheDocument();
+      // It may NOT say the payment failed: her card may well have been charged.
+      expect(visiblePay(i18n.t("booking.payDeclined"))).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says the same thing on a pay URL with no session at all, and does not bounce her", async () => {
+    // A hand-typed URL, or a return that lost the query. The booking may exist
+    // and the money may have moved, so walking her back to step one would invite
+    // a second appointment and a second deposit.
+    renderFlow("/book/pay");
+
+    await findVisiblePay(i18n.t("booking.payUnresolved"));
+    expect(window.location.pathname).toBe("/book/pay");
+    expect(paymentStatus).not.toHaveBeenCalled();
+  });
+
+  it("never prints a raw status value onto a Hebrew screen", async () => {
+    paymentStatus.mockResolvedValue(payFacts({ payment_status: "failed" }));
+    await bookDeposit();
+
+    await findVisiblePay(i18n.t("booking.payDeclined"));
+    expect(screen.queryByText(/pending_payment|failed|expired/)).toBeNull();
   });
 });

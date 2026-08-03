@@ -36,6 +36,10 @@ const TIME = new Intl.DateTimeFormat("en-GB", {
 const pageClass = "mx-auto flex max-w-[640px] flex-col gap-6 px-4 pt-8 pb-16 md:px-6";
 
 const CANCELLED = "cancelled";
+// An unpaid deposit hold: the seat IS claimed and the money is not in. Neither
+// cancelled nor standing, which is why it is its own branch and not a widening
+// of either — the server carries a separate 409 code for the same reason.
+const PENDING_PAYMENT = "pending_payment";
 
 // What the page is showing. Derived from the response, never from what an action
 // optimistically hoped: a 409 on confirm or cancel re-drives the lookup so the
@@ -316,9 +320,15 @@ export function ManageBookingPage({ token }: { token: string }) {
 
   const { booking, policy } = view.data;
   const cancelled = booking.status === CANCELLED;
-  const past = !cancelled && new Date(booking.starts_at).getTime() <= Date.now();
+  const awaitingPayment = booking.status === PENDING_PAYMENT;
+  // An unpaid hold whose time has gone is still an unpaid hold: "this has
+  // passed" would be true and useless beside money that may still move.
+  const past = !cancelled && !awaitingPayment && new Date(booking.starts_at).getTime() <= Date.now();
   const confirmed = booking.attendance_confirmed_at !== null;
-  const actionable = !cancelled && !past;
+  // Both verbs 409 BOOKING_AWAITING_PAYMENT on a hold, so the controls are
+  // ABSENT rather than disabled — a disabled button still promises an action,
+  // and there is nothing to word on one that cannot act.
+  const actionable = !cancelled && !awaitingPayment && !past;
 
   return (
     <div className={pageClass}>
@@ -337,6 +347,18 @@ export function ManageBookingPage({ token }: { token: string }) {
               {t("manage.rebookCta")}
             </ButtonLink>
           </div>
+        </>
+      )}
+
+      {awaitingPayment && (
+        <>
+          <p className="max-w-[60ch] text-lg text-ink">{t("manage.awaitingPayment")}</p>
+          {/* The hint is `invalidHint`'s, reused rather than duplicated (design
+              P2): the lookup payload carries no checkout link — it is
+              possession-authed and holds the appointment's facts and nothing
+              else — so the phone is the whole of the way forward, and that is
+              the sentence that already says so. */}
+          <p className="max-w-[60ch] text-base text-ink-muted">{t("manage.invalidHint")}</p>
         </>
       )}
 
@@ -409,12 +431,29 @@ export function ManageBookingPage({ token }: { token: string }) {
               {policy !== null && (
                 <PolicyLine hours={policy.refundable_until_hours_before} />
               )}
-              {/* Pre-E4 both window sides render the SAME sentence (design P1 /
-                  pre-decided #4): every F16-era booking is deposit-free, and a
-                  forfeit warning about a deposit that was never taken would be a
-                  lie. The split ships as structure; E4 swaps the out-of-window
-                  key. */}
-              <p className="text-base text-ink">{t("manage.cancelConsequenceFree")}</p>
+              {/* MD3. The shipped sentence — "no payment was charged, so
+                  cancelling carries no cost" — is FALSE for a booking that took
+                  a deposit, and false for a bride who has ALREADY READ IT. It
+                  survives only where no deposit exists, which is still every
+                  F16-era booking.
+
+                  The branch is `deposit_taken`, NOT status: a CONFIRMED booking
+                  paid weeks ago has a deposit too, so status cannot answer this
+                  — which is the entire reason that boolean is on the wire.
+
+                  The deposit sentence is INTERIM and neutral. The two
+                  window-specific variants — the deposit comes back, the boutique
+                  keeps some of it — are the one item parked for the user,
+                  because they tell a bride what she is entitled to be repaid.
+                  When they land this is a string swap and a branch on the
+                  already-computed refund number; nothing here is structural. */}
+              <p className="text-base text-ink">
+                {t(
+                  booking.deposit_taken
+                    ? "manage.cancelConsequenceDeposit"
+                    : "manage.cancelConsequenceFree",
+                )}
+              </p>
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Button
                   variant="danger"
