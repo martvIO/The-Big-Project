@@ -44,8 +44,8 @@ E6 stops at queue + dispatch (pre-decided #28): the manager assigns a named staf
 | 34 | Shift-manager live board + dispatch | **done (PR #32)** | `.planning/specs/shift-board-checkin.md` | `.planning/plans/shift-board-checkin.md` | F15, F31 · *design gate self-approved 2026-07-31* |
 | 35 | Staff in-app notification bell | todo | — | — | F31, F34 |
 | 57 | Floor roles (reception/sales_assistant/seamstress) + break status + staff cards | **done (PR #33)** | `.planning/specs/floor-staff-roles.md` | `.planning/plans/floor-staff-roles.md` | F51, F34 |
-| 58 | Waitlist panel + dispatch (take-next, push-assign, finish, skip) | todo | — | — | F33, F36, F57 |
-| 59 | Public wall-screen queue board (`/queue`) | **done (PR #38)** — *merged but gated: no wall until F58* | `.planning/specs/public-queue-board.md` | `.planning/plans/public-queue-board.md` | F33 |
+| 58 | Waitlist panel + dispatch (take-next, push-assign, finish, skip) | **done (PR #40)** | `.planning/specs/floor-dispatch.md` | `.planning/plans/floor-dispatch.md` | F33, F36, F57 |
+| 59 | Public wall-screen queue board (`/queue`) | **done (PR #38)** | `.planning/specs/public-queue-board.md` | `.planning/plans/public-queue-board.md` | F33 |
 
 **The order is forced, not preferred** (pre-decided #37). F31 is the identity layer everything else authorises against. F32 needs a signed-in staffer with a role before a board-state read can be authorised at all. F34 needs both plus something to show. F35's only producer in this epic is F34's dispatch, so a bell built first would have nothing to ring about. **F33 is the one that could float** — a public check-in form is technically independent of F31 and F32 — but its only consumer is F34's board, so building it third keeps it one poll away from being visible instead of dead data.
 
