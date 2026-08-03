@@ -22,7 +22,38 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F57, F33, F19, F53     # FOUR FEATURES IN FLIGHT, in four sessions, in four worktrees.
+current: F19, F33, F53          # F57 MERGED 2026-08-03 (PR #33) — see the MIGRATION CHAIN block
+                                # below, whose numbers CHANGED with that merge.
+                                # THREE FEATURES IN FLIGHT. F53 belongs to ANOTHER SESSION and is
+                                # not this loop's to touch (user instruction 2026-08-03). F19 and
+                                # F33 are this session's, run one after the other.
+                                #
+                                # ==== MIGRATION CHAIN, REVISED 2026-08-03 ====
+                                # main's head is now 0015 (F57, merged). The remaining claims are:
+                                #   F19 -> 0016 (down_revision 0015)
+                                #   F33 -> 0017 (down_revision 0016)
+                                #   F53 -> 0018 (down_revision 0017)  [unchanged]
+                                # F19 AND F33 SWAPPED NUMBERS versus what this file said on
+                                # 2026-08-03 morning (F33 was 0016, F19 0017). Reason: F19 has 15
+                                # commits and a complete backend+storefront+manage build; F33 had
+                                # ZERO commits and an unstarted worktree. Serializing a finished
+                                # feature behind an unstarted one buys nothing, and F19's renumber
+                                # is two literals and a filename either way. F53 IS UNAFFECTED —
+                                # its constraint is "0015, 0016 and 0017 are all on main before I
+                                # open my PR", which is order-independent, and it still holds 0018.
+                                # The ordering rule that has NOT changed: each feature MUST NOT
+                                # OPEN ITS PR before every lower number has merged. CI tests the
+                                # merge result, and two files claiming one revision id is an
+                                # alembic multiple-heads error that git cannot see (the filenames
+                                # differ) and that reads as a mystery.
+                                # F19 was BUILT against 0015/down 0014 so its branch was
+                                # self-coherent; it RENUMBERS to 0016/down 0015 at rebase time.
+                                # F19 also carries the fast, no-DB single-head guard that makes a
+                                # collision fail loudly in `make test` instead of as a CI mystery;
+                                # it is a permanent guard, not scaffolding.
+                                #
+                                # ---- historical: how these four came to be in flight ----
+                                # (kept because the reasoning still governs which entry is pickable)
                                 # F33 was started 2026-08-03 by a SECOND session, deliberately, because
                                 # F36 — the next entry in file order — deps on F57 and cannot run beside
                                 # it. F33's deps [F5,F9,F10,F13] are all merged history, so it is the
@@ -36,17 +67,11 @@ current: F57, F33, F19, F53     # FOUR FEATURES IN FLIGHT, in four sessions, in 
                                 # pre-authorized (see this entry's gate_1_preauthorized field), so the
                                 # session goes straight to Gate 2. It touches the payments/booking
                                 # modules and neither sibling's files.
-                                # THE ONE COUPLING IS THE MIGRATION NUMBER, and it is now FOUR-way.
-                                # main's head is 0014; F57's branch holds 0015; F33 takes 0016; F19
-                                # takes 0017; F53 takes 0018. Each MUST NOT OPEN ITS PR before every
-                                # lower number has merged — CI tests the merge result, and two files
-                                # claiming one revision id is an alembic multiple-heads error that git
-                                # cannot see (the filenames differ) and that reads as a mystery.
-                                # F19 BUILDS AGAINST 0015/down_revision 0014 so its own branch is
-                                # self-coherent and its db tests can run, then RENUMBERS at rebase time
-                                # — two literals and a filename. F19 also adds the fast, no-DB
-                                # single-head guard that makes the collision fail loudly in `make test`
-                                # instead of as a CI mystery; it is a permanent guard, not scaffolding.
+                                # THE ONE COUPLING IS THE MIGRATION NUMBER, and it was FOUR-way.
+                                # SUPERSEDED — this paragraph's numbers (main 0014, F57 0015, F33
+                                # 0016, F19 0017, F53 0018) are the PRE-MERGE assignment. Read the
+                                # MIGRATION CHAIN block at the top of `current:` instead: F57's 0015
+                                # is on main and F19/F33 have swapped to 0016/0017.
                                 # Worktree: .worktrees/deposit-booking-flow on feature/deposit-booking-flow.
                                 # Worktree: .worktrees/qr-walkin-queue on feature/qr-walkin-queue.
                                 # F53 was started 2026-08-03 by a FOURTH session, on USER INSTRUCTION to
@@ -169,15 +194,17 @@ queue:
     slug: floor-staff-roles
     epic: E6
     title: "Floor roles (reception/sales_assistant/seamstress) + break status + staff cards"
-    status: pr-open
+    status: merged
     pr: 33
     spec: .planning/specs/floor-staff-roles.md
     deps: [F51, F34]
     shipped: >-
-      PR #33 opened 2026-08-03, ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN
-      and merge-gate.sh reports GATE PASS. Built from the mid-flight resume point
-      (plan Task 3); Tasks 3-13 complete. NOT MERGED — this ran as /spartan:build,
-      whose contract ends at the PR, so the merge is the loop's to take.
+      MERGED 2026-08-03 as PR #33 by the loop (merge-gate.sh exit 0, all three
+      gating jobs green on the FIRST CI RUN). Migration 0015 is now ON MAIN, which
+      is what unblocks the F19/F33/F53 migration chain below.
+      Built from the mid-flight resume point (plan Task 3); Tasks 3-13 complete.
+      The PR was opened by a /spartan:build run, whose contract ends at the PR, so
+      the merge was the loop's to take and it took it.
       Local gates: 1277 backend fast, 369 db AGAINST A LOCAL POSTGRES 16 CLUSTER
       (not debuting on CI — the F34 precedent, and it is why CI was green first
       time), 488 manage / 733 storefront / 104 ui frontend, 69 e2e, axe zero,
