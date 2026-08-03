@@ -15,6 +15,7 @@ from sqlalchemy.pool import NullPool
 
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
+from app.models.alteration_ticket import AlterationTicket
 from app.models.constants import QueueTicketStatus, StaffRole, VisitType
 from app.models.queue_ticket import QueueTicket
 from app.models.staff_user import StaffUser
@@ -1712,5 +1713,339 @@ def test_the_fitting_rooms_migration_round_trips(migrated_db: str) -> None:
         assert _fitting_tables_present(migrated_db) == []
         command.upgrade(cfg, "head")
         assert _fitting_tables_present(migrated_db) == sorted(_FITTING_TABLES)
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F41: the alteration ticket table ---
+
+_ALTERATION_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'alteration_tickets'"
+)
+# D1: two tickets for one bride on one dress is legitimate — a gown and a
+# going-away dress, or a re-do. There is nothing on this table that is unique,
+# and this count is what makes that a property of the SCHEMA rather than of a
+# paragraph.
+_ALTERATION_UNIQUE_INDEXES = (
+    "SELECT count(*) FROM pg_index WHERE indrelid = 'alteration_tickets'::regclass "
+    "AND indisunique AND NOT indisprimary"
+)
+_ALTERATION_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'alteration_tickets'::regclass AND conname = :name"
+)
+_ALTERATION_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE tablename = 'alteration_tickets' AND indexname = :name"
+)
+_ALTERATION_INDEX_NAME = "idx_alteration_tickets_tenant_due"
+_EFFORT_CHECK = "alteration_tickets_effort_minutes_check"
+# Spelled as POSTGRES deparses them, not as the migration wrote them:
+# pg_get_constraintdef parenthesises every operand of an AND, and
+# pg_indexes.indexdef schema-qualifies the table, names the access method and
+# parenthesises the partial predicate. CAPTURED from a real 16.x server rather
+# than transcribed from the migration source, because a literal that merely
+# looks right would pin nothing — which is the whole failure mode this test
+# exists to prevent for whoever re-tunes the effort ceiling or adds a second
+# index here next (F42 buys the assignee index it measures).
+_EFFORT_CHECK_DEF = "CHECK (((effort_minutes > 0) AND (effort_minutes <= 1440)))"
+_ALTERATION_INDEX_DEF_PINNED = (
+    "CREATE INDEX idx_alteration_tickets_tenant_due ON public.alteration_tickets "
+    "USING btree (tenant_id, due_date) WHERE (deleted_at IS NULL)"
+)
+
+_ALTERATION_INSERT = (
+    "INSERT INTO alteration_tickets "
+    "(tenant_id, customer_id, due_date, effort_minutes, intake_at) "
+    "VALUES (uuid_generate_v4(), uuid_generate_v4(), DATE '2026-08-20', "
+    ":effort_minutes, now())"
+)
+_DROP_EFFORT_CHECK = f"ALTER TABLE alteration_tickets DROP CONSTRAINT {_EFFORT_CHECK}"
+# The migration's own CHECK expression VERBATIM: the populated-table test proves
+# the migration could actually be applied to live data, so it must run the real
+# ALTER and not a paraphrase.
+_ADD_EFFORT_CHECK = (
+    f"ALTER TABLE alteration_tickets ADD CONSTRAINT {_EFFORT_CHECK} "
+    "CHECK (effort_minutes > 0 AND effort_minutes <= 1440)"
+)
+
+
+def _alteration_columns(url: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_ALTERATION_COLUMNS))).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _alteration_pinned_definitions(url: str) -> tuple[str, str]:
+    async def read() -> tuple[str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                check = await conn.execute(
+                    text(_ALTERATION_CONSTRAINT_DEF), {"name": _EFFORT_CHECK}
+                )
+                index = await conn.execute(
+                    text(_ALTERATION_INDEX_DEF), {"name": _ALTERATION_INDEX_NAME}
+                )
+                return (str(check.scalar_one()), str(index.scalar_one()))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _alteration_insert_admitted(url: str, effort_minutes: int) -> bool:
+    """One INSERT against the effort CHECK, rolled back either way — the
+    superuser axis, which reaches the constraint but not the GRANTs or RLS."""
+
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(text(_ALTERATION_INSERT), {"effort_minutes": effort_minutes})
+                except IntegrityError:
+                    return False
+                finally:
+                    await trans.rollback()
+                return True
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+def _effort_check_accepts(url: str, seeded_minutes: list[int]) -> bool:
+    """DROP the CHECK, seed rows, and try to re-add the migration's exact
+    expression over them — `_queue_status_check_accepts` above, for this table.
+
+    Postgres runs DDL transactionally, so each call (the DROP included) rolls
+    back whole and the session-scoped container ends as it started."""
+
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(text(_DROP_EFFORT_CHECK))
+                    for minutes in seeded_minutes:
+                        await conn.execute(text(_ALTERATION_INSERT), {"effort_minutes": minutes})
+                    await conn.execute(text(_ADD_EFFORT_CHECK))
+                    return True
+                except DBAPIError as exc:
+                    assert _EFFORT_CHECK in str(exc)
+                    return False
+                finally:
+                    await trans.rollback()
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+@pytest.mark.db
+def test_the_alteration_tickets_migration_creates_the_table(migrated_db: str) -> None:
+    """D2's five nullable timestamps ARE the state machine, and the DDL symmetry
+    is the decision: `intake_at` is nullable like the other four even though the
+    INSERT always stamps it, because four-plus-one in the DDL would force every
+    later reader — F42's load query, F44's medians — to know which one is
+    special.
+
+    `due_date` is a DATE and NOT NULL: it is the calendar day the bride names
+    (D5), and F42's arithmetic is undefined without it."""
+    columns = _alteration_columns(migrated_db)
+    for stamp in ("intake_at", "in_progress_at", "qc_at", "ready_at", "delivered_at"):
+        assert columns[stamp] == ("timestamp with time zone", "YES"), stamp
+    assert columns["due_date"] == ("date", "NO")
+    assert columns["effort_minutes"] == ("integer", "NO")
+    assert columns["customer_id"] == ("uuid", "NO")
+    # The dress is a snapshot and all three are nullable: an alteration is
+    # frequently on the bride's OWN gown, which has no catalog row (D6).
+    assert columns["dress_id"] == ("uuid", "YES")
+    assert columns["dress_name"] == ("text", "YES")
+    assert columns["dress_size"] == ("text", "YES")
+    # NULL is a real state the board renders — an unassigned ticket is the thing
+    # a shift manager is looking for (D1).
+    assert columns["assigned_staff_user_id"] == ("uuid", "YES")
+
+
+@pytest.mark.db
+def test_the_alteration_tickets_definitions_are_pinned(migrated_db: str) -> None:
+    """The highest-value test in F41, and what it guards is a FUTURE edit.
+
+    Keyed to `head` — i.e. AFTER this feature's migration, whatever number it
+    ended up with — and never to a hardcoded revision id, so a literal here
+    would not rot the first time another feature lands a migration first.
+
+    The index row is the one that fails loudly if someone re-adds UNIQUE, and
+    the one that fails if the `WHERE deleted_at IS NULL` predicate is dropped —
+    which would put every soft-deleted ticket back on the board read's access
+    path."""
+    effort_check, index = _alteration_pinned_definitions(migrated_db)
+    assert effort_check == _EFFORT_CHECK_DEF
+    assert index == _ALTERATION_INDEX_DEF_PINNED
+
+
+@pytest.mark.db
+def test_alteration_tickets_has_no_unique_index_but_the_primary_key(migrated_db: str) -> None:
+    """D1's "declined: any unique index", as a property of the schema.
+
+    Two tickets for one bride on one dress is legitimate — a gown and a
+    going-away dress, a re-do — so a later reader who wants uniqueness here must
+    first say which of those pairs they intend to refuse."""
+
+    async def read() -> int:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                return int((await conn.execute(text(_ALTERATION_UNIQUE_INDEXES))).scalar_one())
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(read()) == 0
+
+
+@pytest.mark.db
+def test_the_effort_check_admits_a_full_day_and_refuses_zero_or_more(migrated_db: str) -> None:
+    """The bound is 1440 — one day — rather than an absurdity ceiling, because
+    the largest band is `full_day` and a tenant-tuned mapping is still bounded
+    by the day it names (D1). Both edges, because a CHECK that admits everything
+    is not a bound."""
+    assert _alteration_insert_admitted(migrated_db, 1)
+    assert _alteration_insert_admitted(migrated_db, 1440)
+
+    assert not _alteration_insert_admitted(migrated_db, 0)
+    assert not _alteration_insert_admitted(migrated_db, 1441)
+    assert not _alteration_insert_admitted(migrated_db, -30)
+
+
+@pytest.mark.db
+def test_the_app_role_can_re_estimate_a_ticket_but_not_past_the_ceiling(
+    app_role_url: str,
+) -> None:
+    """The CHECK against the APP role and against UPDATE — the two axes the
+    probe above leaves open (it connects as the container superuser and only
+    INSERTs). The positive half is also F41's own pre-flight: boutique_app
+    really can write an updated estimate past the constraint, under forced RLS,
+    with only its GRANTs.
+
+    The read-back is the assertion that matters most: a refusal must change
+    NOTHING, not even partially."""
+
+    async def check() -> None:
+        engine = create_async_engine(app_role_url, poolclass=NullPool)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                ticket = AlterationTicket(
+                    tenant_id=tenant_id,
+                    customer_id=uuid.uuid4(),
+                    due_date=datetime.date(2026, 8, 20),
+                    effort_minutes=60,
+                    intake_at=datetime.datetime.now(datetime.UTC),
+                )
+                session.add(ticket)
+                await session.flush()
+                ticket_id = ticket.id
+
+            async with tenant_session(factory, tenant_id) as session:
+                await session.execute(
+                    update(AlterationTicket)
+                    .where(AlterationTicket.id == ticket_id)
+                    .values(effort_minutes=1440)
+                )
+
+            # Its own session: the refused statement aborts its transaction, and
+            # an aborted transaction cannot be reused for the read-back.
+            with pytest.raises(IntegrityError):
+                async with tenant_session(factory, tenant_id) as session:
+                    await session.execute(
+                        update(AlterationTicket)
+                        .where(AlterationTicket.id == ticket_id)
+                        .values(effort_minutes=1441)
+                    )
+
+            async with tenant_session(factory, tenant_id) as session:
+                stored = await session.scalar(
+                    select(AlterationTicket.effort_minutes).where(AlterationTicket.id == ticket_id)
+                )
+            assert stored == 1440
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+@pytest.mark.db
+def test_adding_the_effort_check_validates_existing_rows(migrated_db: str) -> None:
+    """The migration's CHECK arrives with the table, so it cannot fail on live
+    data today — but F42 is the feature that re-tunes what a band is worth, and
+    the ALTER it would need is this one. Both halves: legal rows present -> the
+    constraint is added; an out-of-range row present -> it is REFUSED. Without
+    the second half a NOT VALID constraint would pass the first and prove
+    nothing."""
+    assert _effort_check_accepts(migrated_db, [30, 480, 1440]) is True
+    assert _effort_check_accepts(migrated_db, [1441]) is False
+    assert _effort_check_accepts(migrated_db, [0]) is False
+
+
+@pytest.mark.db
+def test_migration_alteration_tickets_round_trips(migrated_db: str) -> None:
+    """upgrade() creates the table; downgrade() drops it. Runs as the migration
+    owner (the app role cannot CREATE TABLE) and mutates the live
+    session-scoped schema.
+
+    Probes BOTH directions rather than only the end state, which is 0013's rule:
+    a downgrade that silently no-ops stays green while shipping a migration that
+    cannot be rolled back.
+
+    The revision this one REVISES is resolved by WHAT IT IS — 0017's own
+    correction, after a relative `-1` target stopped naming the right revision
+    the moment F33 stacked on top of it. This migration's number is whatever
+    `alembic heads` answered at build time, and a literal here would rot the
+    first time another feature lands one first.
+
+    The finally is not decoration: leaving the schema down drops a table the ORM
+    still maps, so every later atelier db test in this shared session would fail
+    with UndefinedTable somewhere unrelated to itself."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+
+    revisions = ScriptDirectory.from_config(_alembic_config()).walk_revisions()
+    atelier = next((s for s in revisions if "alteration" in (s.doc or "").lower()), None)
+    assert atelier is not None, "the alteration migration is no longer identifiable by its message"
+    down_to = atelier.down_revision
+    assert isinstance(down_to, str), f"expected a single-parent revision, got {down_to!r}"
+
+    def exists() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text(_TABLE_EXISTS), {"name": "alteration_tickets"})
+                    return bool(result.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists()
+        command.downgrade(cfg, down_to)
+        assert not exists()
+        command.upgrade(cfg, "head")
+        assert exists()
+        assert _alteration_columns(migrated_db)["due_date"] == ("date", "NO")
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head

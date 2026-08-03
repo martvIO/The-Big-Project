@@ -3,6 +3,7 @@ import i18n from "../i18n";
 import { ar } from "../i18n/ar";
 import { he } from "../i18n/he";
 import { ROLE_LABEL_KEY } from "../lib/roles";
+import { STAGE_LABEL_KEY } from "../lib/stages";
 
 // Console copy is transcribed into he.ts as DOTTED LITERAL keys, one per row of
 // the feature's copy.md. i18next resolves those through `ignoreJSONStructure`
@@ -58,6 +59,11 @@ const HE_F33 = entries(
 // `floor.`-namespaced and rides in HE_F57 by prefix, inheriting that block's
 // digit guard and its `> 28` floor for free.
 const HE_F36 = entries(he.translation, (key) => key.startsWith("rooms."));
+// F41's atelier. Its own constant and its own floor, same reason again.
+const HE_F41 = entries(
+  he.translation,
+  (key) => key === "nav.atelier" || key.startsWith("atelier."),
+);
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -68,6 +74,7 @@ const HE = [
   ...HE_F53,
   ...HE_F33,
   ...HE_F36,
+  ...HE_F41,
 ];
 
 describe("F15 keys resolve", () => {
@@ -546,6 +553,183 @@ describe("F33 check-in QR keys resolve", () => {
     for (const [, value] of HE_F33) {
       expect(value).not.toMatch(/נשלח|תישלח|בדרך|SMS|הודעה/);
     }
+  });
+});
+
+describe("F41 atelier keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // 94 rows: nav.atelier plus 93 under atelier.*. copy.md counts 96; the plan
+    // subtracts four and adds two. Out: `form.dress` and `form.dressNone` (C3
+    // — the catalog picker is cut, there is no payload for it and its route
+    // refuses a seamstress), `form.error.dueDateHorizon` (C5 — 730 is a
+    // SERVER bound and no client constant may mirror one), and
+    // `form.existingCustomer`, REMOVED AT REVIEW: the returning-customer notice
+    // needs the STORED name before submit, which needs a lookup, and the plan
+    // forbids a new endpoint while the whole customers router refuses the
+    // seamstress this dialog admits. It shipped declared and never rendered in
+    // two locales, which reads to the next reviewer as evidence the mitigation
+    // exists. The rename is audited instead (`atelier_customer_renamed`). In:
+    // `error.rejected`, the default branch that keeps main.py's English 400
+    // body out of a Hebrew console, and `form.error.server`, the dialog-level
+    // alert §7.3 specifies and no deck declares.
+    expect(HE_F41.length).toBeGreaterThanOrEqual(94);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // The same assertion F53 added, for the same reason: `HE` is a
+    // hand-assembled union and FOUR shipped guards iterate it — the resolve
+    // check, both register guards and the `ar` parity guard. A block declared
+    // and not spread is skipped silently and greenly, and the parity guard
+    // would pass over 95 missing `ar` keys.
+    expect(HE.map(([key]) => key)).toContain("nav.atelier");
+  });
+
+  it("resolves the fourteenth NAV row's label beside the nested nav object", () => {
+    expect(i18n.t("nav.atelier")).toBe("תפירה");
+  });
+
+  it("resolves the five stage words the columns, the rail and the cues are named by", () => {
+    // The words themselves, not merely that the keys resolve: these five are
+    // spec-APPROVED values and they are the product's vocabulary for the
+    // state machine. `atelier.emptyBody` teaches all five in one sentence and
+    // must not drift from them.
+    expect(i18n.t("atelier.stage.intake")).toBe("התקבל");
+    expect(i18n.t("atelier.stage.inProgress")).toBe("בעבודה");
+    expect(i18n.t("atelier.stage.qc")).toBe("בקרה");
+    expect(i18n.t("atelier.stage.ready")).toBe("מוכן");
+    // NOT «נשלח» — nothing is shipped, she collects — and the register guard
+    // below would reject it outright.
+    expect(i18n.t("atelier.stage.delivered")).toBe("נמסר");
+    const body = i18n.t("atelier.emptyBody");
+    for (const stage of ["intake", "inProgress", "qc", "ready", "delivered"]) {
+      expect(body).toContain(i18n.t(`atelier.stage.${stage}`));
+    }
+    // And through the map the board actually reads, so a key present here but
+    // absent from `lib/stages.ts` — or the reverse — is caught. The
+    // `Record<TicketStage, string>` type catches a MISSING MEMBER; only this
+    // catches a member pointing at a key that does not exist.
+    for (const key of Object.values(STAGE_LABEL_KEY)) {
+      expect(i18n.t(key)).not.toBe(key);
+    }
+  });
+
+  it("starts every accessible name with its visible label (WCAG 2.5.3)", () => {
+    // Twelve pairs, not four. A board of 30 cards otherwise exposes 30 controls
+    // all named «לשלב הבא» — but the name that disambiguates them must still
+    // BEGIN with the visible string, or a speech-input user saying the label
+    // matches nothing. `floor.pauseAria` is «השהיה — …» and not «השהיית…» for
+    // exactly this reason, and the two word forms differ by one letter, so a
+    // later copy edit would not look wrong.
+    const pairs: [string, string][] = [
+      ["atelier.pause", "atelier.pauseAria"],
+      ["atelier.resume", "atelier.resumeAria"],
+      ["atelier.advance", "atelier.advanceAria"],
+      ["atelier.undo", "atelier.undoAria"],
+      ["atelier.skip", "atelier.skipAria"],
+      ["atelier.skipCommit", "atelier.skipCommitAria"],
+      ["atelier.assignLabel", "atelier.assignAria"],
+      ["atelier.assignCommit", "atelier.assignCommitAria"],
+      ["atelier.claim", "atelier.claimAria"],
+      ["atelier.release", "atelier.releaseAria"],
+      ["atelier.edit", "atelier.editAria"],
+      ["atelier.delete", "atelier.deleteAria"],
+    ];
+    for (const [visible, aria] of pairs) {
+      // `^`-anchored, not toContain: «העברה — {{name}}» contains «העברה לשלב»
+      // nowhere but «העברה לשלב — {{name}}» does contain «העברה», so
+      // containment alone would pass a skipCommit name that started with the
+      // wrong label. None of these Hebrew labels carries a regex metacharacter.
+      expect(i18n.t(aria, { name: "מיכל לוי" })).toMatch(new RegExp(`^${i18n.t(visible)}`));
+    }
+  });
+
+  it("gives the two controls in one card two different accessible names", () => {
+    // D18 spelled the assign `Select`'s label «שיוך», which is also the commit
+    // `Button` beside it — two controls in ONE card carrying one accessible
+    // name (WCAG 4.1.2), and a speech-input user saying «שיוך» could not tell
+    // them apart. The `Select` names WHAT is chosen and the `Button` the act.
+    expect(i18n.t("atelier.assignLabel")).not.toBe(i18n.t("atelier.assignCommit"));
+    expect(i18n.t("atelier.skip")).not.toBe(i18n.t("atelier.skipCommit"));
+  });
+
+  it("interpolates the freshness, idle-window, count and effort placeholders", () => {
+    expect(i18n.t("atelier.updatedAt", { time: "14:07" })).toBe("עודכן 14:07");
+    expect(i18n.t("atelier.staleAt", { time: "14:07" })).toBe("אין עדכון מאז 14:07");
+    expect(i18n.t("atelier.pausedAt", { time: "14:07" })).toBe("מושהה · עודכן 14:07");
+    expect(i18n.t("atelier.idleStopped", { minutes: 10 })).toContain("10");
+    // ⚠ `{{total}}`, NEVER `{{count}}` — `count` is i18next's plural-resolution
+    // trigger and this string renders ten times per paint. This assertion is
+    // half a guard: it reds if the KEY is switched to `{{count}}` and the call
+    // site is not, and it cannot see the coordinated change. The rule is in the
+    // copy deck and is a review item.
+    expect(i18n.t("atelier.stageCount", { stage: "בעבודה", total: 4 })).toBe("בעבודה · 4");
+    expect(i18n.t("atelier.bandOption", { band: "חצי יום", minutes: 240 })).toBe(
+      "חצי יום · 240 דק׳",
+    );
+    expect(i18n.t("atelier.effortMinutes", { minutes: 300 })).toBe("300 דק׳");
+  });
+
+  it("names the bride in every string that outlives her card", () => {
+    // §4.1's naming rule: a cue names the TICKET only when the ticket moved out
+    // from under the user. The advance, the undo, the create and the delete all
+    // move or remove the card; the assign and the release leave it under focus.
+    for (const key of [
+      "atelier.cue.created",
+      "atelier.cue.advanced",
+      "atelier.cue.undone",
+      "atelier.cue.deleted",
+      "atelier.deleteConfirmBody",
+    ]) {
+      expect(i18n.t(key, { name: "מיכל לוי", stage: "בקרה" })).toContain("מיכל לוי");
+    }
+    // At most ONE user-supplied value per string, which is what lets the
+    // shipped isolateBidi(text, value) and { text, name } cue state work
+    // unmodified. The assign cue names the new value alone.
+    expect(i18n.t("atelier.cue.assigned", { seamstress: "נועה לוי" })).toBe("שויך לנועה לוי.");
+    expect(i18n.t("atelier.cue.released")).toBe("השיוך בוטל.");
+  });
+
+  it("names no retry interval anywhere in the deck", () => {
+    // copy.md §0 rule 5: the backoff stretches 5s -> ~60s, so any string
+    // quantifying the wait becomes a lie the board silently stops keeping. The
+    // three card errors name the next EVENT («בעדכון הבא»), never a duration.
+    //
+    // No key is excluded, unlike F57's: this deck's `{{minutes}}` runs are all
+    // interpolations, so not one value carries a literal digit.
+    const values = HE_F41.map(([, value]) => value);
+    expect(values.filter((value) => /\d/.test(value))).toEqual([]);
+    // And the word form, which carries no digit at all. Whole words: «מידע» in
+    // `atelier.staleBody` contains «מיד» and is the legitimate word there.
+    for (const value of values) {
+      expect(value).not.toMatch(/(^|[\s"«])(מיד|שניות|חמש)([\s".,»]|$)/);
+    }
+  });
+
+  it("names no role in the access-ended sentence", () => {
+    // copy.md §0 rule 6: the server ships ONE 403 body for every unadmitted
+    // role so a probe cannot learn which roles exist, and on the demotion path
+    // telling a staffer she was demoted is her manager's sentence, not a
+    // screen's.
+    const accessEnded = i18n.t("atelier.accessEnded");
+    for (const word of ["קבלה", "יועצת מכירות", "תופרת", "אחראית משמרת", "תפקיד", "שונה"]) {
+      expect(accessEnded).not.toContain(word);
+    }
+    // «כרגע» is load-bearing: a re-promotion restores the board.
+    expect(accessEnded).toContain("כרגע");
+  });
+
+  it("declares its own outage string rather than reusing a screen-named one", () => {
+    // F57's F-10: reuse a key whose NAMESPACE NAMES ITS SUBJECT, never one
+    // whose namespace names a screen. `staff.loadFailed` is the staff list and
+    // `board.*` names a screen; `atelier.*` IS the subject here, so declaring
+    // is F-10 obeyed rather than ignored.
+    expect(i18n.t("atelier.loadFailed")).toBe("לא הצלחנו לטעון את לוח התפירה כרגע.");
+    expect(i18n.t("atelier.idleStopped", { minutes: 10 })).not.toBe(
+      i18n.t("board.idleStopped", { minutes: 10 }),
+    );
+    expect(i18n.t("atelier.idleStopped", { minutes: 10 })).not.toBe(
+      i18n.t("floor.idleStopped", { minutes: 10 }),
+    );
   });
 });
 

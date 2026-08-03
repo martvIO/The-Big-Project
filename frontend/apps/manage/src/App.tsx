@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ConsoleShell, ToastProvider } from "@boutique/ui";
 import { api } from "./api";
 import type { Staff } from "./api";
+import { AtelierSection } from "./components/AtelierSection";
 import { BoardSection } from "./components/BoardSection";
 import { BookingsSection } from "./components/BookingsSection";
 import { CatalogSection } from "./components/CatalogSection";
@@ -33,7 +34,9 @@ type SectionKey =
   // F57's floor — the TWELFTH member since F53 added `customers`.
   | "floor"
   // F33's printable check-in code — the THIRTEENTH.
-  | "checkinQr";
+  | "checkinQr"
+  // F41's atelier — the FOURTEENTH.
+  | "atelier";
 
 const ALL = ["owner", "shift_manager"] as const;
 
@@ -47,6 +50,17 @@ const ALL = ["owner", "shift_manager"] as const;
 // Nav.test.tsx's count assertions (owner ten, shift manager eight) are what make
 // this a test rather than a preference.
 const FLOOR_ONLY = ["reception", "sales_assistant", "seamstress"] as const;
+
+// F41's three, and the three are SPELLED rather than derived. A receptionist and
+// a sales assistant have no business in the workroom, and a sixth role added
+// later must be refused here BY DEFAULT — spelling them is what makes that the
+// safe direction to fail. It mirrors the atelier router, which spells the same
+// three as literals for the same reason.
+//
+// `FLOOR_ONLY` is UNCHANGED: a seamstress now reaches TWO rows, and because the
+// atelier row sits after `floor`, `reachable[0]?.key ?? section` still lands her
+// on the floor with no edit to useState("dashboard") below.
+const ATELIER_ROLES = ["owner", "shift_manager", "seamstress"] as const;
 
 // The console's single permission-to-UI table.
 //
@@ -104,6 +118,17 @@ const NAV: readonly NavItem[] = [
   // the only row they will ever see, so `reachable[0]?.key ?? section` lands
   // them here with no edit to the initial useState("dashboard").
   { key: "floor", labelKey: "nav.floor", roles: FLOOR_ONLY },
+  // F41, IMMEDIATELY AFTER `floor` — and that is the SAME SLOT as "after «לוח
+  // היום», before «צוות»", which is how the spec phrases it. The two phrasings
+  // are not in conflict and neither may be "fixed" against the other: `floor`
+  // carries FLOOR_ONLY, so the owner never sees it and «תפירה» is adjacent to
+  // «לוח היום» in HER list.
+  //
+  // Put it BEFORE `floor` instead and two things break together: a seamstress's
+  // rows come out «תפירה» then «הצוות בקומה», and `reachable[0]?.key` lands her
+  // on the atelier instead of the floor. One line, three consequences —
+  // Nav.test.tsx's seamstress ORDER assertion is what makes that a test.
+  { key: "atelier", labelKey: "nav.atelier", roles: ATELIER_ROLES },
   // F33, and `roles: ALL` is a decision rather than a default — it mirrors the
   // server, which admits both console roles to GET /manage/checkin-qr. The
   // payload is a public URL and a picture of it, the same URL printed on a sign
@@ -112,10 +137,10 @@ const NAV: readonly NavItem[] = [
   // ticket for no security gain.
   //
   // Placed after `floor` and before `staff`: the `floor` row is invisible to
-  // both roles that can see this one, so this is the TENTH row either of them
-  // sees (Nav.test.tsx's `.slice(0, 10)`) while leaving F57's "immediately after
-  // the board" true for the three floor roles. The two owner-only rows stay
-  // structurally last.
+  // both roles that can see this one, so this is the ELEVENTH row either of them
+  // sees since F41's atelier went in above it (Nav.test.tsx's `.slice(0, 11)`)
+  // while leaving F57's "immediately after the board" true for the three floor
+  // roles. The two owner-only rows stay structurally last.
   { key: "checkinQr", labelKey: "nav.checkinQr", roles: ALL },
   { key: "staff", labelKey: "nav.staff", roles: ["owner"] },
   // Owner-only, the READ included: /manage/gateway is the first backend router
@@ -213,6 +238,10 @@ export function App() {
           </div>
         )}
         {activeKey === "floor" && <FloorPanel selfId={staff.id} role={staff.role} />}
+        {/* ALONE in #console-main and never beneath another section: it owns its
+            own usePoll instance, and the console renders one section at a time
+            precisely so a workroom phone is not running two loops. */}
+        {activeKey === "atelier" && <AtelierSection selfId={staff.id} role={staff.role} />}
         {activeKey === "checkinQr" && <CheckinQrSection />}
         {activeKey === "staff" && <StaffSection staffId={staff.id} />}
         {activeKey === "gateway" && <GatewaySection />}

@@ -786,6 +786,110 @@ function customerPath(customerId: string): string {
   return `/manage/customers/${encodeURIComponent(customerId)}`;
 }
 
+// --- atelier wire types (mirror backend/app/atelier/schemas.py) ---
+
+// ⚠ DERIVED, never stored. The server has no status column: a ticket's stage is
+// the RIGHTMOST STAMPED of the five nullable timestamps below, floored at
+// `intake`. The ORDER of this union is the total order the whole feature is
+// spelled from — `lib/stages.ts` owns it, and a member inserted in the middle
+// changes the meaning of every advance and every undo.
+export type TicketStage = "intake" | "in_progress" | "qc" | "ready" | "delivered";
+
+// The five preset bands. The client sends a BAND KEY and never a number, which
+// is what makes "five presets, not a minute field" a property of the wire rather
+// than a UI convention; the server resolves it against the tenant's mapping and
+// the row stores the minutes.
+export type EffortBand = "thirty_min" | "one_hour" | "two_hours" | "half_day" | "full_day";
+
+// One card. `customer_name` ships and `customer_phone` does NOT — the board is
+// read by a seamstress and there is no surface in F41 that calls a bride.
+export interface AtelierTicket {
+  id: string;
+  customer_name: string;
+  due_date: string;
+  // Computed on read against the Jerusalem calendar day, never stored — a
+  // stored boolean would need a worker to flip it at midnight and would be stale
+  // for up to a tick.
+  overdue: boolean;
+  effort_minutes: number;
+  assigned_staff_user_id: string | null;
+  dress_id: string | null;
+  dress_name: string | null;
+  dress_size: string | null;
+  notes: string | null;
+  stage: TicketStage;
+  intake_at: string | null;
+  in_progress_at: string | null;
+  qc_at: string | null;
+  ready_at: string | null;
+  delivered_at: string | null;
+}
+
+// `assignable` is not a column — it is the server's pure function of the staff
+// row (live AND still a seamstress). It is on the wire so the console's
+// «תופרת שאינה פעילה» branch is data-driven instead of inferred from absence:
+// F51's staff CRUD can re-role or retire a seamstress and knows nothing about
+// this table.
+export interface SeamstressRef {
+  id: string;
+  display_name: string;
+  assignable: boolean;
+}
+
+export interface EffortBandRef {
+  band: EffortBand;
+  minutes: number;
+}
+
+// An ENVELOPE, not a bare array: F42 adds capacity to `seamstresses` and F43
+// fitting counts to a ticket, so an array would make the first of those a
+// breaking shape change on a screen that polls every five seconds.
+//
+// ⚠ `truncated` is a FLAG and not a count, deliberately: the row limit is
+// server-only and no client constant mirrors it, so the console can say what was
+// cut without being one constant away from lying about how much.
+export interface AtelierBoardResponse {
+  tickets: AtelierTicket[];
+  seamstresses: SeamstressRef[];
+  effort_bands: EffortBandRef[];
+  truncated: boolean;
+}
+
+// ⚠ `dress_id` is ALWAYS null from this console. The catalog picker is cut from
+// F41: the board payload carries no dresses, `GET /manage/dresses` refuses a
+// seamstress while this dialog admits one, and the card renders no image — so on
+// this surface the column has no reader. The SERVER path is kept whole; F43 is
+// the caller that will send an id.
+export interface CreateTicketRequest {
+  customer_name: string;
+  customer_phone: string;
+  due_date: string;
+  effort_band: EffortBand;
+  assigned_staff_user_id: string | null;
+  dress_id: null;
+  dress_name: string | null;
+  dress_size: string | null;
+  notes: string | null;
+}
+
+// ⚠ A FULL REPLACE — every editable field REQUIRED, no optionals anywhere. With
+// optional fields an OMITTED key and an explicitly cleared one are the same
+// request, so a console that forgot to send `notes` would silently delete a
+// bride's measurements. The customer is not editable: a ticket opened for the
+// wrong bride is a delete and a re-open.
+export interface UpdateTicketRequest {
+  due_date: string;
+  effort_band: EffortBand;
+  dress_id: null;
+  dress_name: string | null;
+  dress_size: string | null;
+  notes: string | null;
+}
+
+function ticketPath(ticketId: string): string {
+  return `/manage/atelier/tickets/${encodeURIComponent(ticketId)}`;
+}
+
 // --- endpoints ---
 
 export const api = {
@@ -1093,5 +1197,50 @@ export const api = {
   // appears nowhere in this app, so composing the URL here was never an option.
   getCheckinQr(): Promise<CheckinQrResponse> {
     return apiFetch("/manage/checkin-qr");
+  },
+
+  // F41's atelier. One poll and six writes, all three workroom roles on the
+  // read — and every mutation answers the FULL ticket rather than {ok: true},
+  // so the console patches its card from the server's own row and cannot
+  // disagree with itself. On a 200 no-op that renders the FIRST actor's
+  // timestamp rather than this request's intent, which is the outcome she
+  // wanted either way.
+  getAtelierBoard(): Promise<AtelierBoardResponse> {
+    return apiFetch("/manage/atelier/tickets");
+  },
+  createTicket(body: CreateTicketRequest): Promise<AtelierTicket> {
+    return apiFetch("/manage/atelier/tickets", { method: "POST", body });
+  },
+  updateTicket(ticketId: string, body: UpdateTicketRequest): Promise<AtelierTicket> {
+    return apiFetch(`${ticketPath(ticketId)}/update`, { method: "POST", body });
+  },
+  // `null` RELEASES, and it is a value rather than an omission — an optional
+  // field would make a malformed request that dropped the key indistinguishable
+  // from a deliberate release.
+  assignTicket(ticketId: string, staffUserId: string | null): Promise<AtelierTicket> {
+    return apiFetch(`${ticketPath(ticketId)}/assign`, {
+      method: "POST",
+      body: { staff_user_id: staffUserId },
+    });
+  },
+  // ⚠ The stage is the one to ENTER on advance and the one to CLEAR on undo, and
+  // the client names it from WHAT ITS LAST POLL SHOWED. That is what makes a
+  // stale board harmless: if the ticket moved on between the paint and the tap,
+  // the write's predicate matches nothing and the caller gets a 409 rather than
+  // stamping — or clearing — a stage that arrived after it last looked.
+  advanceStage(ticketId: string, stage: TicketStage): Promise<AtelierTicket> {
+    return apiFetch(`${ticketPath(ticketId)}/stage/advance`, {
+      method: "POST",
+      body: { stage },
+    });
+  },
+  undoStage(ticketId: string, stage: TicketStage): Promise<AtelierTicket> {
+    return apiFetch(`${ticketPath(ticketId)}/stage/undo`, { method: "POST", body: { stage } });
+  },
+  // The one per-route tightening: owner and shift manager only. A seamstress may
+  // not remove a garment from the board — it is destructive and there is no
+  // un-delete.
+  deleteTicket(ticketId: string): Promise<OkResponse> {
+    return apiFetch(`${ticketPath(ticketId)}/delete`, { method: "POST" });
   },
 };
