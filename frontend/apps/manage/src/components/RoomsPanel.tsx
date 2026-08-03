@@ -8,6 +8,7 @@ import { isolateBidi } from "../lib/booking";
 import { elapsedLine } from "../lib/elapsed";
 import { jerusalemTime } from "../lib/jerusalem";
 import { roleLabelKey } from "../lib/roles";
+import { RoomsRegistryDialog } from "./RoomsRegistryDialog";
 
 // F36. One tile per fitting room, inside FloorPanel and UNDER ITS POLL.
 //
@@ -427,6 +428,16 @@ export function RoomsPanel({
     return null;
   }
 
+  const registry = (
+    <RoomsRegistryDialog
+      open={openDialog?.kind === "registry"}
+      onClose={() => setOpenDialog(null)}
+      rooms={rooms}
+      onRooms={onRooms}
+      mutate={mutate}
+    />
+  );
+
   return (
     <div className="space-y-3">
       {heading}
@@ -740,6 +751,8 @@ export function RoomsPanel({
           </ul>
         )}
       </Card>
+
+      {registry}
     </div>
   );
 }
