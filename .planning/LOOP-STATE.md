@@ -660,10 +660,13 @@ queue:
     slug: sos-paging
     epic: E7
     title: "SOS: targeted page, full-screen alert, ack/resolve, 30s escalation"
-    status: queued
+    status: building
     deps: [F31, F36, F57]
     spec: .planning/specs/sos-paging.md
     plan: .planning/plans/sos-paging.md
+    started: >-
+      2026-08-03 22:30, worktree .worktrees/sos-paging, in PARALLEL with F58.
+      Migration resolves from `alembic heads` at rebase; F58 is building with one too.
     gates_done: >-
       Gates 1 and 2 cleared 2026-08-03; deps became merged history when F36 landed.
       SPEC REVIEW: 33 findings from 3 lenses, 33 applied, 0 rejected. Five blockers,
