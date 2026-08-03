@@ -14,8 +14,10 @@ import { GatewaySection } from "./components/GatewaySection";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
 import { ProfileSection } from "./components/ProfileSection";
+import { SosOverlay } from "./components/SosOverlay";
 import { StaffSection } from "./components/StaffSection";
 import { TermsSection } from "./components/TermsSection";
+import { SosProvider } from "./lib/sos";
 import { FloorPanel } from "./components/FloorPanel";
 import { TypesSection } from "./components/TypesSection";
 
@@ -210,42 +212,65 @@ export function App() {
 
   return (
     <ToastProvider>
-      <ConsoleShell
-        boutiqueName={staff.display_name}
-        title={t("console.title")}
-        logoutLabel={t("console.logout")}
-        onLogout={() => void handleLogout()}
-        skipLinkLabel={t("console.skipLink")}
-        nav={nav}
-        activeKey={activeKey}
-        onNavigate={(key) => setSection(key as SectionKey)}
-      >
-        {activeKey === "dashboard" && <DashboardSection />}
-        {activeKey === "profile" && <ProfileSection />}
-        {activeKey === "hours" && <HoursSection />}
-        {activeKey === "types" && <TypesSection />}
-        {activeKey === "terms" && <TermsSection role={staff.role} />}
-        {activeKey === "catalog" && <CatalogSection />}
-        {activeKey === "bookings" && <BookingsSection />}
-        {activeKey === "customers" && <CustomersSection />}
-        {/* The panel goes AFTER the board, never before: above it, the panel
-            grows as breaks start and pushes the board's one-shot scrollIntoView
-            target — the «עכשיו» divider — back out of view. */}
-        {activeKey === "board" && (
-          <div className="space-y-6">
-            <BoardSection />
-            <FloorPanel selfId={staff.id} role={staff.role} />
-          </div>
-        )}
-        {activeKey === "floor" && <FloorPanel selfId={staff.id} role={staff.role} />}
-        {/* ALONE in #console-main and never beneath another section: it owns its
-            own usePoll instance, and the console renders one section at a time
-            precisely so a workroom phone is not running two loops. */}
-        {activeKey === "atelier" && <AtelierSection selfId={staff.id} role={staff.role} />}
-        {activeKey === "checkinQr" && <CheckinQrSection />}
-        {activeKey === "staff" && <StaffSection staffId={staff.id} />}
-        {activeKey === "gateway" && <GatewaySection />}
-      </ConsoleShell>
+      {/* ⚠ A PROVIDER, MOUNTED HERE, AND THE FORCING CONSTRAINT IS MECHANICAL:
+          this component early-returns for `!bootstrapped` and again for a
+          signed-out staffer, so a hook called after those returns is a
+          rules-of-hooks violation — a LINT failure rather than a runtime one. A
+          provider is a component boundary, so it may be mounted conditionally
+          where a hook may not. `ToastProvider` is the shipped precedent and is
+          already wrapped around this same tree.
+
+          ⚠ `onSessionEnded` HANGS OFF THE PROVIDER AND NOT OFF THE OVERLAY. The
+          401 is classified at ONE site — inside the provider, where the read and
+          the four actions all funnel — so it fires exactly once. On the overlay
+          it would have a second firing site and no way to agree with the first.
+          `setStaff(null)` is the only thing in this console that drops it to the
+          login form: there is no fetch interceptor and `onNavigate` is
+          `setSection`, so without this callback the console would keep rendering
+          a working-looking shell over a dead emergency channel, on eleven
+          sections that poll nothing else. */}
+      <SosProvider onSessionEnded={() => setStaff(null)}>
+        {/* BEFORE the shell, so the overlay's controls precede every other
+            focusable in DOM order — and so the Esc route-in reaches the ack
+            control without walking the whole console chrome first. */}
+        <SosOverlay />
+        <ConsoleShell
+          boutiqueName={staff.display_name}
+          title={t("console.title")}
+          logoutLabel={t("console.logout")}
+          onLogout={() => void handleLogout()}
+          skipLinkLabel={t("console.skipLink")}
+          nav={nav}
+          activeKey={activeKey}
+          onNavigate={(key) => setSection(key as SectionKey)}
+        >
+          {activeKey === "dashboard" && <DashboardSection />}
+          {activeKey === "profile" && <ProfileSection />}
+          {activeKey === "hours" && <HoursSection />}
+          {activeKey === "types" && <TypesSection />}
+          {activeKey === "terms" && <TermsSection role={staff.role} />}
+          {activeKey === "catalog" && <CatalogSection />}
+          {activeKey === "bookings" && <BookingsSection />}
+          {activeKey === "customers" && <CustomersSection />}
+          {/* The panel goes AFTER the board, never before: above it, the panel
+              grows as breaks start and pushes the board's one-shot scrollIntoView
+              target — the «עכשיו» divider — back out of view. */}
+          {activeKey === "board" && (
+            <div className="space-y-6">
+              <BoardSection />
+              <FloorPanel selfId={staff.id} role={staff.role} />
+            </div>
+          )}
+          {activeKey === "floor" && <FloorPanel selfId={staff.id} role={staff.role} />}
+          {/* ALONE in #console-main and never beneath another section: it owns its
+              own usePoll instance, and the console renders one section at a time
+              precisely so a workroom phone is not running two loops. */}
+          {activeKey === "atelier" && <AtelierSection selfId={staff.id} role={staff.role} />}
+          {activeKey === "checkinQr" && <CheckinQrSection />}
+          {activeKey === "staff" && <StaffSection staffId={staff.id} />}
+          {activeKey === "gateway" && <GatewaySection />}
+        </ConsoleShell>
+      </SosProvider>
     </ToastProvider>
   );
 }
