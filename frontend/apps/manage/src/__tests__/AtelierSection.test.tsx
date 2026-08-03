@@ -1470,6 +1470,39 @@ describe("the delete confirm", () => {
     expect(screen.getByTestId("atelier-cue")).toHaveTextContent("מיכל לוי — הכרטיס נמחק.");
   });
 
+  it("keeps the dialog OPEN on a refusal and puts the alert INSIDE it", async () => {
+    // §7.4's Refused row. `runWrite`'s failure branch writes the in-CARD alert
+    // and returns before `cueOf` — the only caller of `setPendingDelete(null)` —
+    // so the <dialog> stays open with the confirm re-enabled and nothing in it
+    // to read. The message lands in the <li> BEHIND the backdrop, which in every
+    // real browser is `inert`: not focusable, and PRUNED FROM THE
+    // ACCESSIBILITY TREE, so the role="alert" is never announced either. jsdom
+    // implements neither, so the focus assertion below is the only part of that
+    // a test can hold — hence it is asserted explicitly.
+    //
+    // The concrete case is the one this whole feature is designed around: two
+    // shift managers, A deletes the ticket, B confirms and the server answers
+    // 404.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    deleteTicket.mockRejectedValue(new ApiError(404, "NOT_FOUND", "gone"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "מחיקה — מיכל לוי" }));
+    const dialog = openDialog("מחיקת כרטיס");
+    fireEvent.click(within(dialog).getByRole("button", { name: "מחיקה" }));
+    await waitFor(() => expect(deleteTicket).toHaveBeenCalledWith(T1));
+
+    expect((dialog as HTMLDialogElement).open).toBe(true);
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent("הכרטיס כבר לא קיים. הלוח יתעדכן בעדכון הבא.");
+    // Focus follows the message into the dialog — the in-card alert is
+    // unreachable from a modal and would strand her on a re-enabled button.
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    // And exactly one alert exists: the card's must not ALSO have been written.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
   it("dismisses without writing", async () => {
     getAtelierBoard.mockResolvedValue(board([ticket()]));
     mount();

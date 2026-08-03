@@ -368,6 +368,7 @@ def _occupied_body(base: dict[str, Any], details: dict[str, str] | None) -> dict
         error["details"] = details
     return {"error": error}
 
+
 # F41's two, and they are TWO AND NOT ONE. Both are 409s on the atelier board,
 # but the console's copy and the user's next move differ: a stage conflict says
 # the GARMENT moved on and the remedy is to look again; an assignment conflict

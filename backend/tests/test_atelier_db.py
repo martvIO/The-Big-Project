@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from app.atelier.schemas import CreateTicketRequest, StageRequest
+from app.atelier.schemas import AssignTicketRequest, CreateTicketRequest, StageRequest
 from app.atelier.service import AtelierService
 from app.atelier.stages import DEFAULT_EFFORT_BANDS, stage_of
 from app.auth.service import StaffContext
@@ -1395,11 +1395,20 @@ async def test_two_intakes_for_one_new_phone_create_one_customer(
     the row, never INSERTs, never enters the savepoint, and the test passes
     identically with `begin_nested()` deleted.
 
-    The seam is therefore explicit: the loser's FIRST `by_phone` returns `None`
+    The seam is therefore explicit: the `by_phone` INSIDE `upsert` returns `None`
     and, as a side effect, commits the winner's customer row from a `tenant_
     session` of its own. That forces miss → winner commits → loser INSERTs →
-    `IntegrityError`, deterministically, with no `gather`. The second call —
-    D7's re-read after the savepoint rolls back — delegates to the real method.
+    `IntegrityError`, deterministically, with no `gather`. Every other call —
+    `_resolve_customer`'s rename probe before the savepoint, and D7's re-read
+    after it rolls back — delegates to the real method.
+
+    ⚠ KEYED ON CALL #2, NOT #1, and the number is load-bearing rather than
+    incidental: `_resolve_customer` reads `by_phone` once BEFORE the savepoint to
+    answer "did this intake rename a live customer". Fire the seam on call #1 and
+    `upsert`'s own read then FINDS the committed winner, updates her name to «מיכל»
+    and never INSERTs — no `IntegrityError`, no savepoint, and a test that passes
+    with `begin_nested()` deleted. If a future edit changes how many times this
+    path reads `by_phone`, THIS is the line to move.
 
     Two mutations bite. Delete the savepoint (keep the `try`): the
     `IntegrityError` has aborted the enclosing transaction, so the re-read raises
@@ -1422,8 +1431,8 @@ async def test_two_intakes_for_one_new_phone_create_one_customer(
             phone: str,
         ) -> Customer | None:
             calls.append(phone)
-            if len(calls) == 1:
-                # The other intake, in the gap between this one's miss and its
+            if len(calls) == 2:
+                # The other intake, in the gap between `upsert`'s miss and its
                 # INSERT. A separate connection off the same NullPool factory;
                 # exiting the context manager is the commit.
                 async with tenant_session(factory, tid) as winner:
@@ -1445,8 +1454,9 @@ async def test_two_intakes_for_one_new_phone_create_one_customer(
             bands=DEFAULT_EFFORT_BANDS,
         )
 
-        # The seam fired, and the re-read after the savepoint ran.
-        assert len(calls) == 2
+        # The rename probe, the seam inside `upsert`, and the re-read after the
+        # savepoint — three reads, in that order.
+        assert len(calls) == 3
 
         async with tenant_session(factory, tenant_id) as session:
             customers = list(
@@ -1518,5 +1528,165 @@ async def test_the_undo_audit_row_carries_the_stamp_it_destroyed(app_role_url: s
         # only surviving record of it.
         assert stored is not None
         assert stored.qc_at is None
+    finally:
+        await engine.dispose()
+
+
+async def test_the_advance_audit_row_names_the_stage_the_ticket_LEFT(app_role_url: str) -> None:
+    """`previous = stage_of(row)` captured into a LOCAL, BEFORE the write.
+
+    Same identity-map trap as the undo above, and it went unpinned: `_refreshed`
+    re-selects the same PK in the same session with `populate_existing=True`, so
+    it hands back THE SAME instance `_load` returned with the database's new
+    values stamped over it. Read the stage after `advance_stage` and every
+    `atelier_ticket_stage_advanced` row reads `{"from": "qc", "to": "qc"}` — a
+    trail that records the destination twice and the origin never.
+
+    ⚠ THIS MUST BE A `db` TEST, for the reason the undo's docstring gives: the
+    fast fakes hand back a DIFFERENT object and never mutate the loaded row, so
+    the poisoning that makes the capture load-bearing cannot happen there and the
+    mutation stays green across the whole fast suite.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        ticket_id = await _seed(factory, tenant_id)
+        await _advance_to(factory, tenant_id, ticket_id, TicketStage.IN_PROGRESS)
+
+        await _service(factory).advance(
+            tenant_id, ticket_id, StageRequest(stage=TicketStage.QC), actor=_owner(tenant_id)
+        )
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await session.scalar(
+                select(AuditLog).where(
+                    AuditLog.action == AuditAction.ATELIER_TICKET_STAGE_ADVANCED.value
+                )
+            )
+
+        assert row is not None
+        assert row.details["to"] == TicketStage.QC.value
+        assert row.details["from"] == TicketStage.IN_PROGRESS.value, (
+            "the capture ran after the write, so `from` is the stage the ticket "
+            "ARRIVED at and the row names its destination twice"
+        )
+    finally:
+        await engine.dispose()
+
+
+async def test_the_assign_audit_row_names_the_staffer_who_HELD_the_ticket(
+    app_role_url: str,
+) -> None:
+    """`before = row.assigned_staff_user_id` captured into a LOCAL, BEFORE the
+    write — and here the capture does not merely corrupt the row, it DELETES it.
+
+    `assign` writes its audit row only when `refreshed.assigned_staff_user_id !=
+    before`. `_refreshed` returns the same identity-mapped instance the write
+    just stamped, so a capture taken afterwards compares one attribute against
+    itself: never unequal, never audited, and D11's from/to trail for assignment
+    silently stops existing. The undo's `previous_stamp` fails loudly by
+    recording a null; this one fails by recording nothing at all.
+
+    An ELEVATED release, deliberately: it is the assign path that changes the
+    holder without `_require_seamstress`, so this module never has to COMMIT a
+    floor-role staff row (see the module docstring). The repository's assign
+    verbs take an id and never look it up.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    held_by = uuid.uuid4()
+    try:
+        ticket_id = await _seed(factory, tenant_id, assigned_staff_user_id=held_by)
+
+        await _service(factory).assign(
+            tenant_id,
+            ticket_id,
+            AssignTicketRequest(staff_user_id=None),
+            actor=_owner(tenant_id),
+        )
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await session.scalar(
+                select(AuditLog).where(AuditLog.action == AuditAction.ATELIER_TICKET_ASSIGNED.value)
+            )
+
+        assert row is not None, (
+            "no assignment audit row at all — the capture ran after the write, so "
+            "the from/to comparison was the new value against itself"
+        )
+        assert row.details["from"] == str(held_by)
+        assert row.details["to"] is None
+    finally:
+        await engine.dispose()
+
+
+async def test_an_intake_that_RENAMES_a_returning_customer_leaves_a_trail(
+    app_role_url: str,
+) -> None:
+    """D6's accepted risk, made recoverable.
+
+    `CustomersRepository.upsert` assigns `existing.name = name` UNCONDITIONALLY,
+    so a seamstress typing «מ» at the counter for a phone stored as «מיכל לוי»
+    rewrites that customer's name — on a screen (F53's CustomerDetail) she has no
+    permission to open, from a router that admits her. Intake is the first writer
+    of `customers.name` in this product whose actor does not control the phone;
+    the booking path proves the phone with an OTP first.
+
+    The deck's mitigation — a notice beside the phone field naming the stored
+    name — is NOT BUILDABLE as specified: it needs the stored name BEFORE submit,
+    the plan forbids a new endpoint, and the whole customers router is
+    owner + shift_manager while intake admits a seamstress. So the rename is
+    recorded instead of previewed: an owner can ask WHO renamed WHICH customer
+    and WHEN, which is the question the CRM cannot otherwise answer at all.
+
+    ⚠ THE ROW NAMES THE FIELD AND NEVER THE VALUES, D11's rule and
+    `CUSTOMER_UPDATED`'s shape: `audit_log` has a different retention clock from
+    the row it describes, and both the old and the new spelling of a bride's name
+    are hers.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    stored_name = "מיכל לוי"
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await CustomersRepository().upsert(
+                session, tenant_id, phone="+972501234567", name=stored_name
+            )
+            customer_id = customer.id
+
+        service = _service(factory)
+        request = CreateTicketRequest(
+            customer_name="מ",
+            customer_phone="0501234567",
+            due_date=DUE,
+            effort_band=EffortBand.ONE_HOUR,
+        )
+        await service.create(
+            tenant_id, request, actor=_owner(tenant_id), bands=DEFAULT_EFFORT_BANDS
+        )
+        # A SECOND intake typing the same «מ» renames nothing and must write no
+        # second row — otherwise every repeat visit logs a rename that did not
+        # happen and the trail stops meaning anything.
+        await service.create(
+            tenant_id, request, actor=_owner(tenant_id), bands=DEFAULT_EFFORT_BANDS
+        )
+
+        async with tenant_session(factory, tenant_id) as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(AuditLog).where(
+                            AuditLog.action == AuditAction.ATELIER_CUSTOMER_RENAMED.value
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        assert len(rows) == 1, "one rename happened; the second intake changed nothing"
+        assert rows[0].entity == str(customer_id)
+        assert rows[0].details == {"field": "name"}
+        assert stored_name not in str(rows[0].details)
     finally:
         await engine.dispose()

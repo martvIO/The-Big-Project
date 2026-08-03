@@ -595,7 +595,6 @@ export const ar = {
     "atelier.form.editTitle": "עריכת כרטיס",
     "atelier.form.customerName": "שם הלקוחה",
     "atelier.form.customerPhone": "טלפון",
-    "atelier.form.existingCustomer": "לקוחה קיימת — השם יעודכן ל{{name}}.",
     "atelier.form.dueDate": "תאריך יעד",
     "atelier.form.pastDue": "התאריך שנבחר כבר עבר. אפשר להמשיך.",
     "atelier.form.effortBand": "הערכת זמן",

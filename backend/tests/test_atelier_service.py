@@ -1042,7 +1042,10 @@ async def test_intake_upserts_the_customer_INSIDE_a_savepoint(
         TENANT_ID, _create_request(), actor=_actor(StaffRole.SEAMSTRESS), bands=TUNED_BANDS
     )
 
-    assert repos.order[:2] == ["savepoint", "upsert"]
+    # `customer_by_phone` FIRST and outside the savepoint: `_resolve_customer`
+    # reads the live row to answer "did this intake rename her" before `upsert`
+    # overwrites the answer. Then the savepoint, then the write it wraps.
+    assert repos.order[:3] == ["customer_by_phone", "savepoint", "upsert"]
 
 
 async def test_a_LOSING_intake_reads_the_winners_customer_back_after_an_IntegrityError(
@@ -1062,7 +1065,12 @@ async def test_a_LOSING_intake_reads_the_winners_customer_back_after_an_Integrit
         TENANT_ID, _create_request(), actor=_actor(StaffRole.OWNER), bands=TUNED_BANDS
     )
 
-    assert repos.order[:3] == ["savepoint", "upsert", "customer_by_phone"]
+    assert repos.order[:4] == [
+        "customer_by_phone",
+        "savepoint",
+        "upsert",
+        "customer_by_phone",
+    ]
     assert repos.calls["insert"]["customer_id"] == winner.id
     assert result.customer_name == "מיכל לוי"
 
@@ -1091,8 +1099,17 @@ async def test_intake_echoes_the_RESOLVED_customer_name(
 ) -> None:
     """`upsert` rewrites `customers.name` unconditionally, so a staff member
     typing «מיכל» for a phone stored as «מיכל לוי» silently renames that
-    customer — and F53 renders that name on a screen of its own. The echo is the
-    mitigation, and it costs no endpoint."""
+    customer — and F53 renders that name on a screen of its own.
+
+    ⚠ THE ECHO IS NOT THE MITIGATION, which is what D6 claimed and what review
+    disproved: `upsert` has already stored the typed string, so on every path but
+    the savepoint race the echoed name IS the typed name and cannot differ from
+    it. What this test actually pins is that the wire carries the row the
+    database holds rather than the request field — which is what makes the
+    LOSING-intake test above meaningful. The rename itself is mitigated by the
+    `atelier_customer_renamed` audit row (`test_atelier_db.py`), because the
+    notice the deck specifies needs a pre-submit lookup and the plan forbids the
+    endpoint it would take."""
     repos = _install(monkeypatch, _Repos())
     repos.customer = _customer("מיכל")
 
@@ -1608,11 +1625,17 @@ def test_an_unknown_key_on_any_request_model_is_refused() -> None:
         _create_request(effort_minutes=37)
 
 
-def test_the_six_atelier_audit_values_are_pinned_by_literal() -> None:
-    """SET EQUALITY over a literal, so a seventh member or a renamed value is a
+def test_the_seven_atelier_audit_values_are_pinned_by_literal() -> None:
+    """SET EQUALITY over a literal, so an eighth member or a renamed value is a
     deliberate act. `audit_log.action` is plain TEXT with no CHECK, so nothing in
-    the database would refuse a typo."""
+    the database would refuse a typo.
+
+    `atelier_customer_renamed` is the seventh, added at review: it is the only
+    row in this namespace whose `entity` is a CUSTOMER rather than a ticket,
+    because intake writes `customers.name` and D6's promised notice is not
+    buildable without an endpoint the plan forbids."""
     assert {action.value for action in AuditAction if action.value.startswith("atelier_")} == {
+        "atelier_customer_renamed",
         "atelier_ticket_created",
         "atelier_ticket_updated",
         "atelier_ticket_assigned",

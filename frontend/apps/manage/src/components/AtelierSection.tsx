@@ -149,6 +149,11 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
   const [formAlert, setFormAlert] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<AtelierTicket | null>(null);
+  // §7.4 Refused. The delete confirm is the ONE write whose trigger lives in a
+  // modal <dialog>, so the in-card alert every other write uses is painted
+  // BEHIND the backdrop — inert, unfocusable and pruned from the a11y tree.
+  // Its own alert, the form dialog's shape exactly.
+  const [deleteAlert, setDeleteAlert] = useState<string | null>(null);
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const sectionRef = useRef<HTMLElement>(null);
@@ -167,6 +172,7 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
   } | null>(null);
   const cardAlertRef = useRef<HTMLParagraphElement>(null);
   const formAlertRef = useRef<HTMLParagraphElement>(null);
+  const deleteAlertRef = useRef<HTMLParagraphElement>(null);
   // `load` runs outside render and would otherwise close over a stale payload.
   const boardRef = useRef<AtelierBoardResponse | null>(null);
   const mutationsRef = useRef(0);
@@ -380,6 +386,14 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
     }
   }, [formAlert]);
 
+  useEffect(() => {
+    // And the delete dialog's, same rule again. Without this the refusal leaves
+    // focus on a re-enabled «מחיקה» that will keep answering 404.
+    if (deleteAlert !== null) {
+      deleteAlertRef.current?.focus();
+    }
+  }, [deleteAlert]);
+
   // ⚠ THE CUE IS WRITTEN ONLY WHEN ITS VALUE ACTUALLY CHANGES. Assigning a
   // non-empty string to a text node runs the DOM's string-replace-all and
   // produces a real childList mutation inside role="status" EVEN WHEN THE TWO
@@ -460,6 +474,10 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
     control: string,
     send: () => Promise<AtelierTicket | null>,
     cueOf: (patched: AtelierTicket | null) => { text: string; name: string | null },
+    // Where a refusal is RENDERED. Omitted means the in-card alert; the delete
+    // confirm passes its dialog's own, because a message painted behind an open
+    // modal is a message nobody can read or hear.
+    onError?: (text: string) => void,
   ): Promise<boolean> => {
     setBusy((current) => ({ ...current, [ticket.id]: control }));
     setCardError(null);
@@ -470,7 +488,12 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       return next;
     });
     if (!result.ok) {
-      setCardError({ id: ticket.id, text: cardErrorText(result.error) });
+      const text = cardErrorText(result.error);
+      if (onError === undefined) {
+        setCardError({ id: ticket.id, text });
+      } else {
+        onError(text);
+      }
       return false;
     }
     const patched = result.value;
@@ -563,6 +586,7 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
           name: ticket.customer_name,
         };
       },
+      setDeleteAlert,
     );
   };
 
@@ -998,7 +1022,10 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
                       onUndo={undo}
                       onAssign={assign}
                       onEdit={openEdit}
-                      onDelete={setPendingDelete}
+                      onDelete={(row) => {
+                        setDeleteAlert(null);
+                        setPendingDelete(row);
+                      }}
                       t={t}
                     />
                   ))}
@@ -1161,7 +1188,10 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
 
       <Modal
         open={pendingDelete !== null}
-        onClose={() => setPendingDelete(null)}
+        onClose={() => {
+          setDeleteAlert(null);
+          setPendingDelete(null);
+        }}
         title={t("atelier.deleteConfirmTitle")}
         footer={
           <>
@@ -1170,7 +1200,10 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
               variant="ghost"
               size="md"
               fullWidthMobile={false}
-              onClick={() => setPendingDelete(null)}
+              onClick={() => {
+                setDeleteAlert(null);
+                setPendingDelete(null);
+              }}
             >
               {t("atelier.form.cancel")}
             </Button>
@@ -1200,6 +1233,11 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
             pendingDelete?.customer_name ?? "",
           )}
         </p>
+        {deleteAlert !== null && (
+          <p ref={deleteAlertRef} role="alert" tabIndex={-1} className="mt-3 text-sm text-danger">
+            {deleteAlert}
+          </p>
+        )}
       </Modal>
     </section>
   );

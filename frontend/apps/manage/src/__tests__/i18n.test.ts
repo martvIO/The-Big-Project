@@ -558,15 +558,21 @@ describe("F33 check-in QR keys resolve", () => {
 
 describe("F41 atelier keys resolve", () => {
   it("carries the whole copy deck", () => {
-    // 95 rows: nav.atelier plus 94 under atelier.*. copy.md counts 96; the plan
-    // subtracts three and adds two. Out: `form.dress` and `form.dressNone` (C3
+    // 94 rows: nav.atelier plus 93 under atelier.*. copy.md counts 96; the plan
+    // subtracts four and adds two. Out: `form.dress` and `form.dressNone` (C3
     // — the catalog picker is cut, there is no payload for it and its route
-    // refuses a seamstress) and `form.error.dueDateHorizon` (C5 — 730 is a
-    // SERVER bound and no client constant may mirror one). In:
+    // refuses a seamstress), `form.error.dueDateHorizon` (C5 — 730 is a
+    // SERVER bound and no client constant may mirror one), and
+    // `form.existingCustomer`, REMOVED AT REVIEW: the returning-customer notice
+    // needs the STORED name before submit, which needs a lookup, and the plan
+    // forbids a new endpoint while the whole customers router refuses the
+    // seamstress this dialog admits. It shipped declared and never rendered in
+    // two locales, which reads to the next reviewer as evidence the mitigation
+    // exists. The rename is audited instead (`atelier_customer_renamed`). In:
     // `error.rejected`, the default branch that keeps main.py's English 400
     // body out of a Hebrew console, and `form.error.server`, the dialog-level
     // alert §7.3 specifies and no deck declares.
-    expect(HE_F41.length).toBeGreaterThanOrEqual(95);
+    expect(HE_F41.length).toBeGreaterThanOrEqual(94);
   });
 
   it("is FOLDED into HE, not merely declared", () => {

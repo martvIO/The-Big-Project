@@ -1237,7 +1237,6 @@ export const he = {
     // seamstress typing «מיכל» for a customer stored as «מיכל לוי» must not do
     // that invisibly. A notice, not an error: nothing is wrong, something is
     // about to change.
-    "atelier.form.existingCustomer": "לקוחה קיימת — השם יעודכן ל{{name}}.",
     // Defaults to EMPTY, never to today — a due date is the one field a hurried
     // user must not be able to accept by not looking at it.
     "atelier.form.dueDate": "תאריך יעד",

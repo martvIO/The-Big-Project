@@ -176,9 +176,21 @@ class AtelierService:
             )
             if request.assigned_staff_user_id is not None:
                 await self._require_seamstress(session, tenant_id, request.assigned_staff_user_id)
-            customer = await self._resolve_customer(
+            customer, renamed = await self._resolve_customer(
                 session, tenant_id, phone=phone, name=request.customer_name
             )
+            if renamed:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.ATELIER_CUSTOMER_RENAMED,
+                    actor_id=actor.id,
+                    entity=str(customer.id),
+                    # THE FIELD NAME AND NEITHER SPELLING. Both the old and the
+                    # new are the bride's own name, and audit_log's retention
+                    # clock is not `customers`'.
+                    details={"field": "name"},
+                )
             row = await self._tickets.insert(
                 session,
                 tenant_id=tenant_id,
@@ -207,10 +219,13 @@ class AtelierService:
                     "assigned_staff_user_id": _str_or_none(request.assigned_staff_user_id),
                 },
             )
-            # The echo of the RESOLVED name, which is the whole mitigation for
-            # `upsert` rewriting `customers.name` unconditionally: a staff member
-            # typing «מיכל» for a phone stored as «מיכל לוי» renames that
-            # customer, and F53 renders that name on a screen of its own.
+            # The echo of the RESOLVED name — which D6 called the mitigation for
+            # `upsert` rewriting `customers.name` unconditionally, and which
+            # review showed IS NOT ONE: `upsert` has already stored the typed
+            # string, so on every path but the race the echo is exactly what she
+            # typed and can never differ from it. Kept because the RACE path
+            # (`_resolve_customer`'s savepoint) really does answer the WINNER's
+            # name; the rename itself is mitigated by the audit row above.
             return AtelierTicket.from_row(row, customer_name=customer.name, today=today)
 
     # --- the edit ------------------------------------------------------------
@@ -524,7 +539,7 @@ class AtelierService:
 
     async def _resolve_customer(
         self, session: AsyncSession, tenant_id: UUID, *, phone: str, name: str
-    ) -> Customer:
+    ) -> tuple[Customer, bool]:
         """⚠ A SAVEPOINT, NOT A RETRY OF THE WHOLE REQUEST.
 
         F41 is the first caller of `upsert` that holds no advisory lock, and that
@@ -546,17 +561,30 @@ class AtelierService:
         seen. Declined: rewriting `upsert` as `INSERT … ON CONFLICT` — it is
         shipped with three other callers on the booking path, and that puts the
         booking flow's regression risk inside an atelier PR.
+
+        ⚠ THE SECOND RETURN VALUE IS "THIS INTAKE RENAMED A LIVE CUSTOMER", and
+        it costs the one extra `by_phone` above the savepoint. `upsert` holds the
+        answer already but cannot say so without a return-type change across
+        forty-odd call sites on the booking path, which is the regression risk
+        the paragraph above already declined once. The read is one hit on
+        `idx_customers_tenant_phone_unique` on a counter action, not on the board
+        poll. It also moves the race test's seam by one call — see that test.
         """
+        existing = await self._customers.by_phone(session, tenant_id, phone=phone)
+        renamed = existing is not None and existing.name != name
         try:
             async with session.begin_nested():
-                return await self._customers.upsert(session, tenant_id, phone=phone, name=name)
+                customer = await self._customers.upsert(session, tenant_id, phone=phone, name=name)
         except IntegrityError:
-            customer = await self._customers.by_phone(session, tenant_id, phone=phone)
-            if customer is None:
+            customer_or_none = await self._customers.by_phone(session, tenant_id, phone=phone)
+            if customer_or_none is None:
                 # NOT the unique index. Swallowing a different constraint here
                 # would present as a silent, WRONG customer link.
                 raise
-            return customer
+            # The winner committed in the gap, so this intake wrote no name at
+            # all — it ATTACHED to hers. Nothing was renamed.
+            return customer_or_none, False
+        return customer, renamed
 
     async def _respond(
         self,

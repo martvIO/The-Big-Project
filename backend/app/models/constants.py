@@ -394,6 +394,18 @@ class AuditAction(StrEnum):
     # `notes` may hold a bride's measurements, and audit_log has a different
     # retention clock from the row it describes. Same asymmetry, same reason as
     # CUSTOMER_UPDATED directly above.
+    #
+    # ⚠ AND A SEVENTH, added at review: CUSTOMER_RENAMED. Intake routes through
+    # `CustomersRepository.upsert`, which assigns `existing.name = name`
+    # UNCONDITIONALLY, so a seamstress typing «מ» for a phone stored as «מיכל
+    # לוי» rewrites a row that F53 renders on a screen she cannot open — and the
+    # atelier router is the first writer of `customers.name` whose actor does not
+    # control the phone (the booking path proves it with an OTP first). D6
+    # accepts the rename; this makes it recoverable. `details` names the FIELD
+    # and never either spelling, CUSTOMER_UPDATED's rule for CUSTOMER_UPDATED's
+    # reason, and `entity` is the CUSTOMER's id rather than the ticket's, because
+    # the customer is the row that changed.
+    ATELIER_CUSTOMER_RENAMED = "atelier_customer_renamed"
     ATELIER_TICKET_CREATED = "atelier_ticket_created"
     ATELIER_TICKET_UPDATED = "atelier_ticket_updated"
     ATELIER_TICKET_ASSIGNED = "atelier_ticket_assigned"

@@ -1,23 +1,32 @@
 """atelier: alteration_tickets (five nullable stamps, no status column)
 
-Revision ID: 0019
-Revises: 0018
+Revision ID: 0020
+Revises: 0019
 
 The number was resolved from `alembic heads` at build time and is not reserved:
 0017's header records what reserving one costs, and F33 then lived it — two
 files declaring revision "0016", different filenames, a textually clean merge
-and nothing in review looking wrong. If this branch rebases behind another
-migration, the fix is three edits to this one file (the filename, `revision`,
-`down_revision`) and `test_exactly_one_migration_head` is what catches a forgotten
-one, in half a second, in the fast suite.
+and nothing in review looking wrong.
+
+⚠ AND IT HAPPENED AGAIN HERE. This file was built as "0019"; F36 merged first
+with its own `0019_fitting_rooms.py`, and the rebase onto `origin/main` put two
+files claiming revision "0019" and both claiming "0018" as parent side by side.
+Alembic keys revisions by the STRING and not the filename, so it does not error —
+it emits `UserWarning: Revision 0019 is present more than once`, dedupes to ONE
+script and drops the other, which on a fresh database means one of the two tables
+is simply never created. The fix was three edits to this one file (the filename,
+`revision`, `down_revision`) and `test_exactly_one_migration_head` is what caught
+it, in half a second, in the fast suite — but only AFTER the rebase, because from
+an unrebased worktree there is only ever one 0019 to see. So: rebase first, then
+read that test.
 """
 
 from alembic import op
 
 from app.db.rls import enable_tenant_rls
 
-revision = "0019"
-down_revision = "0018"
+revision = "0020"
+down_revision = "0019"
 branch_labels = None
 depends_on = None
 

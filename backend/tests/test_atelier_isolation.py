@@ -31,7 +31,7 @@ defence in depth, so a miss through them proves only that PYTHON filtered. The
 anywhere, so nothing but the policy can answer them.
 
 That split is mutation-checked too, and it corrects the plan a second time.
-Deleting `enable_tenant_rls("alteration_tickets")` from 0019 does NOT red every
+Deleting `enable_tenant_rls("alteration_tickets")` from 0020 does NOT red every
 probe here: it reds the four that read raw, and leaves
 `test_every_write_verb_from_a_foreign_tenant_is_a_404_and_never_a_refusal` and
 `test_the_assignee_union_never_crosses_a_tenant` GREEN, because both are answered
@@ -330,13 +330,13 @@ async def test_the_app_role_can_insert_select_update_and_delete_alteration_ticke
 ) -> None:
     """All four privileges, exercised as the app role.
 
-    ⚠ THE PLAN SAYS DROPPING 0019's `GRANT … ON alteration_tickets TO app_user`
+    ⚠ THE PLAN SAYS DROPPING 0020's `GRANT … ON alteration_tickets TO app_user`
     "fails nothing until exactly here, as `permission denied`". MUTATION-CHECKED
     AND FALSE: deleting that line leaves the ENTIRE db suite green, this test
     included. Migration 0002 issues `ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user`, and those
     defaults attach to the ROLE running the migration — which in this suite, and
-    in the deploy, is the same role that creates 0019's table. The explicit GRANT
+    in the deploy, is the same role that creates 0020's table. The explicit GRANT
     is house style (every table migration since 0003 carries one) and insurance
     against exactly the caveat 0002 writes down: a table created OUT OF BAND, by
     a different deploy role or by hand. No test in this environment can reach
