@@ -312,15 +312,91 @@ export function dashboardPayload(): unknown {
   };
 }
 
+// --- F37: the SOS channel ----------------------------------------------------
+//
+// ⚠ THE DEFAULT STUB BELOW IS NOT THIS FEATURE'S CONVENIENCE, IT IS EVERY OTHER
+// JOURNEY'S. F37 mounts `SosProvider` above `ConsoleShell` in `App.tsx`, so
+// `GET /manage/floor/sos` now runs on ALL FOURTEEN sections, every few seconds,
+// for the whole of every test in this directory. Without a default the harness
+// answers its house 404 and each of those ticks fails — two failures put a
+// persistent «ערוץ הקריאות אינו פעיל.» strip over the bottom of the screen, in a
+// `role="alert"`, which reds every `getByRole("alert")` and every axe scan in
+// this directory. Adding a surface means ADDING A STUB.
+
+export interface SosAlert {
+  id: string;
+  status: string;
+  raised_by: string;
+  raised_by_name: string | null;
+  target_staff_user_id: string | null;
+  target_name: string | null;
+  room_label: string | null;
+  note: string | null;
+  accepted_by: string | null;
+  accepted_by_name: string | null;
+  acknowledged_at: string | null;
+  created_at: string;
+  // Derived on the SERVER, per row, against the one `server_now` the envelope
+  // carries — so a fixture sets them directly and no test has to sleep 30s or
+  // freeze a clock to reach an escalated card.
+  escalated: boolean;
+  stalled: boolean;
+  for_me: boolean;
+}
+
+// Five minutes before SERVER_NOW, so «מאז hh:mm» renders a real time and the
+// centre's elapsed line renders «כבר 5 דק'» rather than the just-now branch.
+export const RAISED_AT = "2099-01-04T07:55:00Z";
+
+export function sosAlert(overrides: Partial<SosAlert> = {}): SosAlert {
+  return {
+    id: "sos-1",
+    status: "open",
+    raised_by: "st-raiser",
+    raised_by_name: "רונית",
+    target_staff_user_id: null,
+    target_name: null,
+    room_label: "חדר 2",
+    note: null,
+    accepted_by: null,
+    accepted_by_name: null,
+    acknowledged_at: null,
+    created_at: RAISED_AT,
+    escalated: false,
+    stalled: false,
+    // The default is TRUE because a fixture alert that does not rise proves
+    // nothing: `for_me` is the whole audience rule and every journey here is
+    // about a device the page reached.
+    for_me: true,
+    ...overrides,
+  };
+}
+
+export function sosPayload(alerts: SosAlert[]): unknown {
+  return { alerts, server_now: SERVER_NOW };
+}
+
+// `rerouted` is a fact about THE REQUEST and not about the row, which is why the
+// raise answers an envelope and the other three answer a bare alert.
+export function raisedAlert(alert: SosAlert, rerouted = false): unknown {
+  return { alert, rerouted };
+}
+
 // --- install -----------------------------------------------------------------
 
 export interface ManageApiOptions {
   /** The identity `GET /manage/auth/me` answers. Default `staff()` — reception. */
   staff?: Staff;
   /**
-   * Per-PATHNAME reply queues, merged OVER the defaults below. One mechanism for
-   * every route the console speaks to: a later feature adds a key here rather
-   * than a switch inside the handler.
+   * Reply queues, merged OVER the defaults below. One mechanism for every route
+   * the console speaks to: a later feature adds a key here rather than a switch
+   * inside the handler.
+   *
+   * A key is a PATHNAME, or a method-qualified `"POST /manage/floor/sos"` which
+   * wins over the bare pathname when both are present. ⚠ The qualified form is
+   * not decoration: F37 is the first feature whose READ and whose CREATE share
+   * one path, so a pathname-only table cannot answer a `SosResponse` to the poll
+   * and a `RaisedAlert` to the raise.
    */
   replies?: Record<string, Reply[]>;
 }
@@ -337,6 +413,9 @@ export async function installManageApi(
     // the arrivals picker is simply ABSENT, which is the ordinary early tile.
     "/manage/floor/clients": [ok({ clients: [], truncated: false })],
     "/manage/floor/dresses": [ok({ dresses: [], truncated: false })],
+    // See the F37 block above: this one runs on every section of the console,
+    // so its absence is a rendered alert on every other journey in this file.
+    "/manage/floor/sos": [ok(sosPayload([]))],
     "/manage/dashboard": [ok(dashboardPayload())],
     "/manage/bookings": [ok({ items: [], total: 0, offset: 0, limit: 100 })],
     ...options.replies,
@@ -360,7 +439,11 @@ export async function installManageApi(
       }
       all.push({ method: request.method(), path: pathname, query: search, body });
 
-      const queue = replies[pathname];
+      // The method-qualified key first, so a path whose GET and POST answer
+      // different shapes can say so; the bare pathname is what every other
+      // route uses and stays the default.
+      const queue =
+        replies[`${request.method()} ${pathname}`] ?? replies[pathname];
       const reply = queue === undefined ? NOT_FOUND : take(queue);
       await route.fulfill({
         status: reply.status,
@@ -385,4 +468,8 @@ export function roomPath(roomId: string): string {
 
 export function queuePath(ticketId: string): string {
   return `/manage/floor/queue/${encodeURIComponent(ticketId)}`;
+}
+
+export function sosPath(alertId: string): string {
+  return `/manage/floor/sos/${encodeURIComponent(alertId)}`;
 }
