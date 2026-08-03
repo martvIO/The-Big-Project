@@ -68,3 +68,24 @@ class TicketView(BaseModel):
     # ISO-8601 UTC once a manager calls her forward. F58 writes it; F33 reads it
     # so the screen can say "go to the counter" instead of showing 1 forever.
     called_at: datetime.datetime | None
+
+
+class CheckinQrResponse(BaseModel):
+    """The whole body of `GET /manage/checkin-qr`, and it is two strings.
+
+    JSON carrying the SVG SOURCE, not an `image/svg+xml` response.
+    `apps/manage/src/api.ts`'s `apiFetch<T>` unconditionally ends in
+    `(await response.json()) as T`; the page needs the human-readable URL as
+    text anyway, because a printed QR with no legible URL beside it strands
+    anyone whose camera fails; and an image response would be the first
+    non-JSON body in the entire API, with `nosniff` on every response and no
+    precedent to copy if the media type came out wrong.
+
+    Nothing here is secret. The URL is printed on a sign in the shop window.
+    """
+
+    checkin_url: str
+    # Rendered as `<img src={"data:image/svg+xml;utf8," + encodeURIComponent(...)}>`
+    # — an image context, so no scripts and no external references, which is
+    # strictly safer than an inline <svg> or dangerouslySetInnerHTML.
+    qr_svg: str

@@ -118,6 +118,8 @@ from app.payments.service import (
 from app.payments.unconfigured import UnconfiguredGateway
 from app.payments.webhook_router import DepositBookingService
 from app.payments.webhook_router import router as webhook_router
+from app.queue.manage_router import router as queue_manage_router
+from app.queue.qr import CheckinQrService
 from app.queue.router import router as queue_router
 from app.queue.service import QueueService
 from app.queue.validation import CheckinThrottledError
@@ -748,6 +750,13 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             clock=time.monotonic,
         ),
     )
+    # base_domain, not the request's own host: the URL a poster carries has to
+    # resolve to the tenant's own storefront in dev, staging and production
+    # alike, and Settings is where deployment identity lives. Its own service
+    # rather than a method on QueueService above — it needs no session factory,
+    # no limiter and no clock, and threading base_domain through the anonymous
+    # surface's service to reach a /manage read would be the larger change.
+    app.state.checkin_qr_service = CheckinQrService(base_domain=settings.base_domain)
 
     app.state.payment_gateway = _build_payment_gateway(settings)
     app.state.secret_box = _build_secret_box(settings)
@@ -1163,6 +1172,12 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # whichever was included first. The ROUTES table in test_customers_api.py is
     # what keeps that honest for these three.
     app.include_router(customers_router)
+    # The NINTH /manage router, after the customers one and deliberately BEFORE
+    # storefront_router: every /manage router stays contiguous and ahead of the
+    # anonymous surfaces. Same shadowing hazard as the eight above, now with
+    # nine surfaces on one prefix — the ROUTES table in test_checkin_qr_api.py
+    # is what keeps this one honest.
+    app.include_router(queue_manage_router)
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
     app.include_router(storefront_router)
