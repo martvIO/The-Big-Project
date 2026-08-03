@@ -40,7 +40,7 @@ E6 stops at queue + dispatch (pre-decided #28): the manager assigns a named staf
 |---|---------|--------|------|------|------------|
 | 31 | Staff records, roles & phone-OTP staff login | todo | — | — | F3, F5, F9, F11 |
 | 32 | Live-update substrate (versioned board state + polling) | todo | — | — | F31 |
-| 33 | QR self-check-in + queue tickets + live position | todo | — | — | F5, F9, F10, F13 · *F20 dep dropped 2026-07-31* |
+| 33 | QR self-check-in + queue tickets + live position | **done (PR #36)** | `.planning/specs/qr-walkin-queue.md` | `.planning/plans/qr-walkin-queue.md` | F5, F9, F10, F13 · *F20 dep dropped 2026-07-31* |
 | 34 | Shift-manager live board + dispatch | **done (PR #32)** | `.planning/specs/shift-board-checkin.md` | `.planning/plans/shift-board-checkin.md` | F15, F31 · *design gate self-approved 2026-07-31* |
 | 35 | Staff in-app notification bell | todo | — | — | F31, F34 |
 | 57 | Floor roles (reception/sales_assistant/seamstress) + break status + staff cards | **done (PR #33)** | `.planning/specs/floor-staff-roles.md` | `.planning/plans/floor-staff-roles.md` | F51, F34 |

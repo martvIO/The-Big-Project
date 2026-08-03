@@ -13,7 +13,7 @@ class FittingRoomAssignment(StandardColumns, Base):
 
     `released_at IS NULL AND deleted_at IS NULL` is what ACTIVE means and it is
     the whole model — no status column, no boolean, no row that gets deleted.
-    Both partial unique indexes in 0018 are predicated on exactly that pair of
+    Both partial unique indexes in 0019 are predicated on exactly that pair of
     nulls, so the model and the guarantee are the same sentence.
 
     **No `assigned_at`: `created_at` IS the claim time.** The row is created at

@@ -1,15 +1,15 @@
 """fitting rooms: the registry, the assignment and its dress bindings
 
-Revision ID: 0018
-Revises: 0017
+Revision ID: 0019
+Revises: 0018
 """
 
 from alembic import op
 
 from app.db.rls import enable_tenant_rls
 
-revision = "0018"
-down_revision = "0017"
+revision = "0019"
+down_revision = "0018"
 branch_labels = None
 depends_on = None
 

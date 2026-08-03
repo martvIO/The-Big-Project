@@ -383,6 +383,45 @@ export interface ManageBookingResponse {
   boutique: ManageBoutique;
 }
 
+// --- walk-in queue wire types (mirror backend/app/queue/schemas.py) ---
+
+export interface CheckinCreateRequest {
+  name: string;
+  // Any form normalize_israeli_mobile accepts; validation.ts normalises before
+  // this leaves the page.
+  phone: string;
+  // "bride" | "evening" — a closed two-value set the backend CHECK pins.
+  visit_type: string;
+  // Absent is false and unchecked is the default on the form: she stays a person
+  // in a queue rather than a marketing contact unless she says otherwise.
+  marketing_opt_in: boolean;
+}
+
+// The WHOLE body of BOTH check-in routes, and it is four fields.
+//
+// The create answers this and only this, 201, every time — no envelope, no null
+// branch. That is the security property, not a simplification: the response is
+// identical in shape, status and content whether or not that phone was already
+// in this boutique's queue, so a stranger who submits a woman's mobile receives
+// a ticket of his own and learns nothing whatsoever about her.
+//
+// NOTE what is absent and must stay absent: her name, her phone, her visit type,
+// created_at, and every operator provenance column — tenant_id, queue_day,
+// skip_count, requeued_at. Nothing about any other ticket, ever.
+export interface TicketView {
+  // The capability. Issued exactly once, at creation, to the creating device.
+  id: string;
+  // "waiting" | "in_service" | "done" | "removed". The last two are terminal and
+  // are what stop the position page's poll.
+  status: string;
+  // 1-based among this ticket's own queue day's waiting tickets; null unless the
+  // ticket is itself waiting.
+  position: number | null;
+  // Set once a manager calls her forward. The only reason the page reads it: it
+  // is what lets the screen say "go to the counter" instead of showing 1 forever.
+  called_at: string | null;
+}
+
 // --- endpoints ---
 
 export const api = {
@@ -447,6 +486,21 @@ export const api = {
   },
   cancelBooking(token: string): Promise<ManageBookingResponse> {
     return apiFetch("/storefront/booking/cancel", { method: "POST", body: { token } });
+  },
+
+  // Both check-in routes are POSTs, the read included, and both answer the same
+  // TicketView. The read is a POST for the reason the manage lookup is: the
+  // ticket id IS the capability, and a GET would put it in the query string and
+  // from there into every access log, proxy trace and Referer header on the
+  // path — once every five seconds for the length of her visit.
+  createCheckin(body: CheckinCreateRequest): Promise<TicketView> {
+    return apiFetch("/storefront/checkin", { method: "POST", body });
+  },
+  getQueuePosition(ticketId: string): Promise<TicketView> {
+    return apiFetch("/storefront/checkin/position", {
+      method: "POST",
+      body: { ticket_id: ticketId },
+    });
   },
 };
 

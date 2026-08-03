@@ -22,11 +22,11 @@ bride's name arrives on another boutique's floor with every row-count assertion
 still passing. So the payload read is probed here directly, not only the writers.
 
 **The app role's PRIVILEGES are exercised on purpose, and the plan was wrong
-about why.** Its mutation table predicted that dropping one of 0018's three
+about why.** Its mutation table predicted that dropping one of 0019's three
 `GRANT` statements would red a write probe. MUTATION RUN: it changes nothing at
 all, because **0002's `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT,
 INSERT, UPDATE, DELETE ON TABLES TO app_user` already confers them** on every
-table a later migration creates as that role. 0018's explicit GRANT loop is
+table a later migration creates as that role. 0019's explicit GRANT loop is
 redundant — belt-and-braces for a table created out-of-band, which is what 0002's
 own comment says it is for.
 
@@ -289,7 +289,7 @@ async def test_the_app_role_may_insert_select_and_update_all_three_tables(
     like an unrelated failure in somebody else's feature. Here it is the
     assertion, and the failure names the table.
 
-    ⚠ It does NOT pin 0018's `GRANT` statements — those are redundant, see the
+    ⚠ It does NOT pin 0019's `GRANT` statements — those are redundant, see the
     module docstring. It pins the privilege however it arrives.
 
     Every verb the app role actually issues is exercised: INSERT (the room, the

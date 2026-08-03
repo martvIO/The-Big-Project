@@ -296,8 +296,37 @@ queue:
     slug: fitting-rooms
     epic: E7
     title: "Fitting-room registry + assignment (rooms panel)"
-    status: queued
+    status: building
+    attempts: 1
     deps: [F8, F13, F31, F34, F57]
+    spec: .planning/specs/fitting-rooms.md
+    plan: .planning/plans/fitting-rooms.md
+    started: >-
+      2026-08-03 16:45, worktree .worktrees/fitting-rooms on feature/fitting-rooms.
+      Picked because F57's merge made every dep merged history — it is the loop's own
+      next pick in file order. Gates 1 and 2 self-approved; the design gate too
+      (ruling 2026-07-31: E7's screens assemble from F34's shipped board shell).
+      SPEC REVIEW: 41 findings from 3 lenses, 40 applied, 1 rejected in writing.
+      EIGHT WERE BLOCKERS and two of them were one root defect worth recording,
+      because the feature would have shipped looking finished and been hollow:
+      NOTHING IN THE CONSOLE COULD EVER SUPPLY booking_id, so client_label would
+      have been null on every v1 assignment, every fitting would have rendered as
+      an anonymous visit, and E7's second success criterion would have been void
+      while every test passed. The answer is a new minimised route,
+      GET /manage/floor/clients, returning booking_id + client_label + starts_at
+      and nothing else, for people who are physically in the building today.
+      THE SECOND LOAD-BEARING FIND is a documentation defect that is really a
+      security defect: THREE SHIPPED COMMENTS (floor/router.py:11-14,
+      floor/service.py:69-75, floor/schemas.py:13-16) state as a FACT that the
+      floor payload carries ZERO customer data, and one of them is the stated
+      justification for the only router in the product admitting all five roles.
+      F36 puts a client label on that payload, so this PR REWRITES those three
+      comments. Leaving them would leave a false comment standing as the rationale
+      for the widest role gate in the codebase.
+      Design deck + copy deck (69 keys, machine-validated) reviewed by design-critic;
+      its fourteen required changes are BUILD TASKS in the plan, not review notes.
+      MIGRATION: build at head+1, renumber at rebase. F33 is in flight and expected
+      to land first, which would make this one 0019 rather than 0018.
     note: >-
       Substance unchanged from the e7 brief; pulled forward and given its floor
       surface. fitting_rooms CRUD (add/remove rooms — the brief's prerequisite for
@@ -319,11 +348,59 @@ queue:
     slug: qr-walkin-queue
     epic: E6
     title: "QR self-check-in + queue tickets + live position"
-    status: building
+    status: merged
+    pr: 36
     attempts: 1
     deps: [F5, F9, F10, F13]
     spec: .planning/specs/qr-walkin-queue.md
     plan: .planning/plans/qr-walkin-queue.md
+    shipped: >-
+      MERGED 2026-08-03 as PR #36. ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN,
+      merge-gate.sh exit 0. Migration 0018_queue_tickets. Gates run locally on the
+      exact pushed tree: lint clean, 1548 backend fast, 481 backend db AGAINST REAL
+      POSTGRES 16.14, frontend 104 ui / 943 storefront / 598 manage, 74 e2e (69
+      before) with axe at zero, alembic heads printing exactly one head.
+      FOUR THINGS A LATER READER NEEDS.
+      (1) THE PLAN WAS STALE AND THE BUILDERS CAUGHT IT. The spec gained RULING 3
+      after the plan was written, and both were committed in one commit so git shows
+      no ordering. Ruling 3 DELETES server-side dedup entirely — no unique index, no
+      advisory lock, no pre-check, no IntegrityError path, no {"ticket": null}
+      branch, no CheckinCreateResponse envelope, no per-phone limiter. Building the
+      plan as written would have shipped the exact defect the ruling removes. The
+      builders built to the SPEC and said so; the plan on main has since been
+      replaced with the corrected version (C1-C23).
+      (2) WHY DEDUP IS GONE, because it looks like a regression and is not. Two
+      holes, and the second is the bad one. THE ORACLE: with dedup, submitting a
+      phone that IS in the queue returned a distinguishable answer — free, silent,
+      unbounded, no row written, no evidence anywhere — so anyone could test whether
+      a named woman was standing in a named bridal boutique. THE DENIAL: the dedup
+      key was freed only by a status change or a soft delete and F33 ships a writer
+      for NEITHER (that is F58), so ONE anonymous POST with a known mobile denied
+      that woman a queue slot for the rest of the boutique day with no remedy
+      anywhere in the product. The create now always creates and always returns a
+      full TicketView, so the response is IDENTICAL whether or not that phone is
+      queued — that identity IS the security property. A duplicate ticket is a real,
+      expected outcome and F58 merges or removes it. Re-scan comfort moved to a
+      sessionStorage pointer that dies with the tab and is NOT a security control.
+      (3) THE MIGRATION COLLISION HAPPENED, exactly as the rule predicted. The branch
+      was built at 0016/down 0015; F19 shipped 0016_deposit_flow while it was
+      building. Two files claiming one revision id MERGE WITH NO GIT CONFLICT because
+      the filenames differ. Review caught it as a BLOCKER and it shipped as
+      0018/down 0017. This is the third time in this program that a pre-written
+      guard or an adversarial reviewer caught a clean-rebase collision.
+      (4) TWO DEFECTS THE TOOLING CAUSED, not the design. Three build agents died
+      mid-task on API 529s. One died having created three storefront modules and
+      NEVER `git add`ed them, while committed code imported them: HEAD was broken and
+      the working tree looked perfect. There is now a permanent guard,
+      backend/tests/test_frontend_imports_are_tracked.py — any later feature whose
+      agent dies the same way fails loudly instead of merging a broken HEAD. Review
+      also caught a global print stylesheet (`@media print { body * { visibility:
+      hidden } }` in index.css, imported unconditionally) that would have made every
+      OTHER console section print a blank page; it is now scoped to the QR sheet.
+      CARRIED: the collection-notice wording stays OPEN in in_run_gates — it blocks
+      two strings, not the feature, and a neutral interim ships meanwhile. F58 now
+      owns merging or removing duplicate tickets, and it is the feature that gives
+      the status column its first writer.
     resumed: >-
       2026-08-03 12:50 by a NEW session, after the session that wrote the spec and
       plan stopped without committing them — both sat UNTRACKED in the main
@@ -431,8 +508,41 @@ queue:
     slug: public-queue-board
     epic: E6
     title: "Public wall-screen queue board (/queue)"
-    status: queued
+    status: building
+    attempts: 1
     deps: [F33]
+    spec: .planning/specs/public-queue-board.md
+    plan: .planning/plans/public-queue-board.md
+    started: >-
+      2026-08-03 19:10, worktree .worktrees/public-queue-board. Eligible the moment
+      F33 merged. Gates 1 and 2 self-approved.
+      ⚠ SEE deployment_gates BELOW — this merges but does NOT go on a wall until F58.
+      NO MIGRATION, deliberately: F33's queue_tickets already carries every column and
+      its (tenant_id, queue_day) partial index is already the exact access path. A
+      builder who adds one has misread the feature.
+      SPEC REVIEW: 34 findings from 3 lenses, 31 applied, 3 rejected in writing.
+      FIVE BLOCKERS. The three worth carrying:
+      (1) THE INTERIM BOARD IS NOT DEPLOYABLE and an earlier draft claimed it was
+      useful. With no writer for called_at or the status column, nothing is
+      highlighted and the board only GROWS; because the order is arrival order and
+      the cap is five rows, THE FIVE NAMES FREEZE mid-morning and are still on the
+      screen at midnight. The usefulness claim is deleted; the deployment gate is
+      the only interim position. See deployment_gates.
+      (2) THE BRIEF'S "PUBLIC GET" IS UNAVAILABLE. test_storefront_api.py derives its
+      route list over EVERY GET under /storefront and asserts 429 on each against the
+      shared storefront limiter, so a GET here answers 200 and reddens a shipped
+      guard. The only escapes were sharing the catalog's budget (the exact failure
+      main.py names verbatim) or weakening a guard protecting six shipped reads. It
+      is a POST — and NOT for F33's reason (F33's routes carry a capability; this
+      request body is empty), so the argument is recorded separately.
+      (3) THE TV TYPE SCALE WAS clamp()-ed AGAINST vh ONLY, which makes browser text
+      resize INERT — a WCAG 1.4.4 AA failure that axe cannot see and that no shipped
+      resize sweep covered because /queue was not in RESIZE_ROUTES. Every size is now
+      clamp(<rem>, <rem> + <vh>, <rem>) with a 6-column proof table, and A34 pins it.
+      ALSO: D13 AMENDS A SHIPPED STRING. F33's check-in notice promises the record is
+      shown on "a screen in the boutique". The real processing is publication to an
+      unauthenticated worldwide URL, and consenting to the first is not consenting to
+      the second. The clause now names the public page. Do not soften it back.
     note: >-
       NEW 2026-07-31 (floor program), authorised with the full-queue ruling that
       also revived F33 — pre-decided #27 had deferred the kiosk as "a small
@@ -491,8 +601,42 @@ queue:
     slug: alteration-tickets
     epic: E9
     title: "Atelier tickets + kanban (intake/in_progress/qc/ready/delivered)"
-    status: queued
+    status: building
+    attempts: 1
     deps: [F8, F13, F31, F34, F57]
+    spec: .planning/specs/alteration-tickets.md
+    plan: .planning/plans/alteration-tickets.md
+    started: >-
+      2026-08-03 17:40, worktree .worktrees/alteration-tickets, in PARALLEL with F36.
+      Eligible because F57's merge made every dep merged history. Gates 1 and 2
+      self-approved; design gate too.
+      SPEC REVIEW: 32 findings from 3 lenses, 32 applied, 0 rejected outright.
+      FOUR BLOCKERS, and THREE OF THEM WERE ONE SHAPE — a state machine whose
+      "impossible" branch was reachable. Worth reading before touching this code:
+      (1) THE ADVANCE'S UNREACHABLE BRANCH IS REACHABLE. D3 documented
+      `stage_of(row) < target` as impossible after a zero-row UPDATE. But a zero-row
+      UPDATE TAKES NO LOCK and the repo runs READ COMMITTED, so a concurrent undo can
+      clear the target column between the write and the re-read; `elif stage > target`
+      with no else then returns None and 500s. The discriminator is now ONE EQUALITY
+      AND ONE ELSE (== target -> 200, anything else -> 409), and the identical hole is
+      closed in undo and assign. A forced-interleave db test pins it.
+      (2) THE WALKER RESTRUCTURE HANDED seamstress THE DELETE ROUTE that the same
+      section takes away, so the test would have failed against CORRECT code — on the
+      one test F57's Risk 1 declares untouchable. ATELIER_DELETE is now its own
+      constant outside the non-elevated reach set.
+      (3) THE STAGE-SKIP SELECT FIRED AN IRREVERSIBLE WRITE ON `change`. A keyboard
+      user arrowing to the last stage would fire three advances, three audit rows and
+      three focus moves — WCAG 3.2.2 Level A, and it would have been the first Select
+      in this console to mutate on change. Both selects now set draft state and a
+      sibling button commits, which is how every other Select here already works.
+      (4) TWO ROUTES SHIPPED A SERVER WITH NO CLIENT: POST /update and POST /delete had
+      no affordance, no states, no copy, no focus destination and no test — and delete
+      is destructive, un-undoable and elevated-only.
+      NO DRAG-AND-DROP AT ALL, by ruling: a drag-only kanban is unusable by keyboard
+      and screen reader, and a11y here is legal, not preference. The board moves by
+      explicit controls with five named focus destinations.
+      MIGRATION: build at head+1 (0019 today), renumber at rebase. F36 is building in
+      parallel and may land first, making this 0020.
     note: >-
       PULLED FORWARD from E9 by the floor program, and AMENDED: the kanban states
       are the brief's intake -> in_progress -> qc -> ready -> delivered. Those
@@ -1371,6 +1515,41 @@ queue:
       Q17: the storefront sits ALONGSIDE her existing site — no custom domains, no certs.
       Pre-decided #46: build-time prerender + sitemap + per-tenant robots.txt, not SSR.
       #48: calendar layered over the existing bookings list API.
+
+deployment_gates:               # MERGED code that must NOT be switched on yet, and what clears it.
+                                # Added 2026-08-03 because this was recorded only inside a spec, and
+                                # "merged" was reading as "launchable" in this file. It is not the
+                                # same thing, and the run report has to say so.
+  - feature: F33
+    gate: "merges and is fully tested, but is NOT enabled for a live pilot tenant"
+    cleared_by: F58
+    why: >-
+      Ruling 4, qr-walkin-queue.md:13 and its «Deployment ordering» section. Three
+      findings collapse into one ordering constraint: F33 writes queue tickets that
+      NO SHIPPED SURFACE RENDERS; a duplicate ticket is a normal outcome under
+      Ruling 3 and NOTHING in F33 can merge or remove one; and the position page's
+      success terminal is unreachable because nothing in F33 writes `done` or
+      `removed`. F58's waitlist panel is the first surface that can see the queue,
+      and therefore the first that can fix it.
+  - feature: F59
+    gate: "merges, but the TV does not go on a wall"
+    cleared_by: F58
+    why: >-
+      Inherits F33's gate rather than adding a second one (public-queue-board.md
+      D10(4)). Sharper here, and it is a PRIVACY point as much as a usefulness one:
+      with no writer for `called_at` or the status column, nothing is ever
+      highlighted, the board only grows, and because the order is arrival order and
+      the cap is five rows, THE FIVE NAMES ON THE SCREEN ARE THE DAY'S FIVE EARLIEST
+      CHECK-INS AND NEVER CHANGE FROM ABOUT 09:15 TO MIDNIGHT. A woman who arrived at
+      09:00 and left at 10:00 is still on a public screen at 17:00. Publishing that
+      all day on an unauthenticated URL is not «לצורך ניהול התור בלבד», which is the
+      purpose limitation the shipped check-in notice promises her.
+      Also: the kiosk runs ONE full-screen tab with screen-blanking disabled — the
+      poll stops on `document.hidden` by design, which is right for a phone and wrong
+      for a wall.
+  # WHAT THIS MEANS FOR THE RUN: F58 is not just the next floor feature, it is the
+  # CRITICAL PATH — two already-merged features are inert until it lands. It is
+  # blocked only on F36, which is building now.
 
 user_actions:                   # only the human can clear these; every report re-nags
   # Rewritten 2026-07-31: the user supplied Lemon Squeezy + Twilio credentials,

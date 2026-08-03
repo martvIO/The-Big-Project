@@ -144,3 +144,29 @@ test("manage: login screen is MODRYN-branded and still has exactly one h1", asyn
   await expect(h1).toHaveAccessibleName(/^MODRYN — .*[֐-׿]/);
   await expect(page.getByText("MODRYN", { exact: true })).toBeVisible();
 });
+
+// F33 shipped a print stylesheet in apps/manage/src/index.css, and index.css is
+// imported unconditionally by main.tsx. `.print-sheet` exists in exactly one
+// component (CheckinQrSection), so an ungated `body * { visibility: hidden }`
+// blanks the PAPER on every other console screen while leaving the layout — and
+// therefore the page count — intact: an owner printing the day's bookings gets
+// the right number of empty sheets.
+//
+// Only a real browser can see this. jsdom applies no stylesheet, so the unit
+// suite can assert nothing beyond the presence of the class, and no assertion
+// about a print dialog is possible either. `emulateMedia` is the mechanism that
+// makes the @media block live without one.
+//
+// The login screen is the console screen this suite can reach unauthenticated,
+// and it carries no .print-sheet — which is exactly the case that regressed.
+test("manage: printing a screen with no print sheet does not blank the page", async ({ page }) => {
+  await page.goto(MANAGE);
+  const submit = page.getByRole("button", { name: "כניסה" });
+  await expect(submit).toBeVisible();
+
+  await page.emulateMedia({ media: "print" });
+  // toBeVisible() fails on `visibility: hidden`, which is the whole defect —
+  // the element keeps its box and stops being painted.
+  await expect(submit, "the print stylesheet hid a screen that owns no sheet").toBeVisible();
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+});

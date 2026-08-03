@@ -45,6 +45,13 @@ const HE_F53 = entries(
   he.translation,
   (key) => key === "nav.customers" || key.startsWith("customers."),
 );
+// F33's printable check-in code. Its own constant and its own floor, for the
+// reason the comment above gives — folded into an existing list, that feature's
+// rows could shrink by this many and still pass.
+const HE_F33 = entries(
+  he.translation,
+  (key) => key === "nav.checkinQr" || key.startsWith("checkinQr."),
+);
 // F36. NO `nav.` term in this selector, and that is an assertion rather than an
 // omission — the rooms are content of the floor, not a twelfth console section,
 // so F36 adds no nav row. `floor.statusOccupied` is likewise absent: it is
@@ -59,6 +66,7 @@ const HE = [
   ...HE_F34,
   ...HE_F57,
   ...HE_F53,
+  ...HE_F33,
   ...HE_F36,
 ];
 
@@ -504,6 +512,40 @@ describe("F36 fitting-room keys resolve", () => {
     expect(i18n.t("rooms.error.STAFF_OCCUPIED", { room: "חדר 5" })).toContain(
       i18n.t("rooms.error.staffOccupiedUnknown").replace(/\.$/, ""),
     );
+  });
+});
+
+describe("F33 check-in QR keys resolve", () => {
+  it("carries the whole block", () => {
+    // nav.checkinQr plus nine under checkinQr.*.
+    expect(HE_F33.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it("resolves the thirteenth nav item beside the nested nav object", () => {
+    expect(i18n.t("nav.checkinQr")).toBe("קוד סריקה");
+  });
+
+  it("keeps the image's alt distinct from every string printed beside it", () => {
+    // The alt sits on a poster next to the poster line, the address label and
+    // the fallback hint. An alt that repeats adjacent visible text makes a
+    // screen reader say the same sentence twice and describes nothing — and axe
+    // has no rule for it, because every individual string is present and
+    // non-empty. This is the only place that can catch it.
+    const alt = i18n.t("checkinQr.imageAlt");
+    expect(alt).not.toBe("");
+    for (const key of ["checkinQr.posterLine", "checkinQr.urlLabel", "checkinQr.urlHint"]) {
+      expect(alt).not.toBe(i18n.t(key));
+    }
+  });
+
+  it("promises no message anywhere in the block", () => {
+    // F33 sends nothing. F20 adds the queue SMS; until it lands, a string
+    // hinting at one is a promise the product cannot keep to a woman who has
+    // just handed over her phone number. The global guard below covers the
+    // folded HE list; this states the rule where the block is read.
+    for (const [, value] of HE_F33) {
+      expect(value).not.toMatch(/נשלח|תישלח|בדרך|SMS|הודעה/);
+    }
   });
 });
 

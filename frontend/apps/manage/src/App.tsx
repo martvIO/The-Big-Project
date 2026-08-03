@@ -6,6 +6,7 @@ import type { Staff } from "./api";
 import { BoardSection } from "./components/BoardSection";
 import { BookingsSection } from "./components/BookingsSection";
 import { CatalogSection } from "./components/CatalogSection";
+import { CheckinQrSection } from "./components/CheckinQrSection";
 import { CustomersSection } from "./components/CustomersSection";
 import { DashboardSection } from "./components/DashboardSection";
 import { GatewaySection } from "./components/GatewaySection";
@@ -29,8 +30,10 @@ type SectionKey =
   | "board"
   | "staff"
   | "gateway"
-  // F57's floor — the ELEVENTH member.
-  | "floor";
+  // F57's floor — the TWELFTH member since F53 added `customers`.
+  | "floor"
+  // F33's printable check-in code — the THIRTEENTH.
+  | "checkinQr";
 
 const ALL = ["owner", "shift_manager"] as const;
 
@@ -101,6 +104,19 @@ const NAV: readonly NavItem[] = [
   // the only row they will ever see, so `reachable[0]?.key ?? section` lands
   // them here with no edit to the initial useState("dashboard").
   { key: "floor", labelKey: "nav.floor", roles: FLOOR_ONLY },
+  // F33, and `roles: ALL` is a decision rather than a default — it mirrors the
+  // server, which admits both console roles to GET /manage/checkin-qr. The
+  // payload is a public URL and a picture of it, the same URL printed on a sign
+  // in the window that anyone in the shop can read, so the disclosure is zero
+  // and locking a shift manager out of reprinting a torn poster is a support
+  // ticket for no security gain.
+  //
+  // Placed after `floor` and before `staff`: the `floor` row is invisible to
+  // both roles that can see this one, so this is the TENTH row either of them
+  // sees (Nav.test.tsx's `.slice(0, 10)`) while leaving F57's "immediately after
+  // the board" true for the three floor roles. The two owner-only rows stay
+  // structurally last.
+  { key: "checkinQr", labelKey: "nav.checkinQr", roles: ALL },
   { key: "staff", labelKey: "nav.staff", roles: ["owner"] },
   // Owner-only, the READ included: /manage/gateway is the first backend router
   // that is owner-only in full, and whether the boutique can take money is
@@ -197,6 +213,7 @@ export function App() {
           </div>
         )}
         {activeKey === "floor" && <FloorPanel selfId={staff.id} role={staff.role} />}
+        {activeKey === "checkinQr" && <CheckinQrSection />}
         {activeKey === "staff" && <StaffSection staffId={staff.id} />}
         {activeKey === "gateway" && <GatewaySection />}
       </ConsoleShell>
