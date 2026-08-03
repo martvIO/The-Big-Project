@@ -354,6 +354,21 @@ class AuditAction(StrEnum):
     # NO NAME AND NO PHONE in `details`, ever. audit_log has no retention policy
     # and platform operators read across tenants.
     QUEUE_TICKET_DISPATCHED = "queue_ticket_dispatched"
+    # `{ticket, called_at}`. A SECOND call writes NO row — the summons is
+    # idempotent by predicate (`called_at IS NULL`), she wanted her called and
+    # she is called, and a {called → called} entry would be noise in a trail this
+    # area has only four rows in.
+    QUEUE_TICKET_CALLED = "queue_ticket_called"
+    # `{ticket, skip_count, status}`. The count and the RESULTING status ride in
+    # `details` so a removal-by-second-skip is legible without a fifth action
+    # value — "who put her out of the queue" is answered by this row or by
+    # QUEUE_TICKET_REMOVED, and the two are the same question asked of two
+    # controls.
+    QUEUE_TICKET_SKIPPED = "queue_ticket_skipped"
+    # `{ticket}`. This and the row above close F33's Risk 12 by name: "'who
+    # called her forward' and 'who removed her' are the two questions that will
+    # want rows".
+    QUEUE_TICKET_REMOVED = "queue_ticket_removed"
 
 
 class PlatformAuditAction(StrEnum):

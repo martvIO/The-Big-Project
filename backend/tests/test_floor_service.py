@@ -23,7 +23,7 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.dependencies import NotAuthorizedError
 from app.auth.service import StaffContext
@@ -39,7 +39,7 @@ from app.db.repositories.fitting_room_assignments import (
     FittingRoomAssignmentsRepository,
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
-from app.db.repositories.queue_tickets import QueueTicketsRepository
+from app.db.repositories.queue_tickets import WAITLIST_LIMIT, QueueTicketsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.errors import DomainNotFoundError
 from app.floor.service import (
@@ -55,7 +55,13 @@ from app.floor.validation import (
     StaffOccupiedError,
 )
 from app.models.booking import Booking
-from app.models.constants import AuditAction, BookingStatus, StaffCardStatus, StaffRole
+from app.models.constants import (
+    AuditAction,
+    BookingStatus,
+    QueueTicketStatus,
+    StaffCardStatus,
+    StaffRole,
+)
 from app.models.customer import Customer
 from app.models.dress import Dress
 from app.models.fitting_room import FittingRoom
@@ -584,6 +590,18 @@ class _Rig:
         self.occupancy: RoomRow | None = None
         # F58. `None` is an empty queue, which is a 409 and not an empty 200.
         self.next_ticket: Any = _Ticket()
+        self.named_ticket: Any = _Ticket()
+        self.call_result: Any = _Called()
+        self.skip_result: Any = _Skipped()
+        self.removed = True
+        self.closed = True
+        self.ticket_status: tuple[str, int] | None = None
+        # The panel read. Recorded in `waitlist_days` rather than in `order` or
+        # `calls`, because every verb ends with it and the shipped sequence
+        # assertions are about the WRITES.
+        self.waiting: list[Any] = []
+        self.in_service_phones: set[str] = set()
+        self.waitlist_days: list[Any] = []
         self.dress_added = True
         self.dress_removed = True
 
@@ -722,7 +740,18 @@ def _install_rooms(monkeypatch: pytest.MonkeyPatch, rig: _Rig) -> _Rig:
     monkeypatch.setattr(BookingsRepository, "by_id", _booking_by_id)
     monkeypatch.setattr(DressesRepository, "by_id", _dress_by_id)
     monkeypatch.setattr(StaffUsersRepository, "by_id", _staff_by_id)
+
+    async def _waiting_for_panel(_s: Any, _sess: Any, _t: Any, day: Any, *, limit: int) -> Any:
+        rig.waitlist_days.append(day)
+        assert limit == WAITLIST_LIMIT
+        return rig.waiting
+
+    async def _in_service_phones(_s: Any, _sess: Any, _t: Any, _day: Any) -> set[str]:
+        return rig.in_service_phones
+
     monkeypatch.setattr(AuditLogRepository, "record", _audit_record)
+    monkeypatch.setattr(QueueTicketsRepository, "waiting_for_panel", _waiting_for_panel)
+    monkeypatch.setattr(QueueTicketsRepository, "in_service_phones", _in_service_phones)
     return rig
 
 
@@ -1632,13 +1661,96 @@ class _Ticket:
     called_at: datetime.datetime | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class _Called:
+    """`call`'s two RETURNING columns."""
+
+    id: uuid.UUID = TICKET_ID
+    called_at: datetime.datetime = NOW
+
+
+@dataclasses.dataclass(frozen=True)
+class _Skipped:
+    """`skip`'s three. `status` is the CASE's answer, so the fake can stage both
+    the requeue and the removal."""
+
+    id: uuid.UUID = TICKET_ID
+    skip_count: int = 1
+    status: str = QueueTicketStatus.WAITING.value
+
+
+@dataclasses.dataclass(frozen=True)
+class _Waiting:
+    """One row of `waiting_for_panel`'s seven-column projection. `phone` is on it
+    because D9's grouping needs one, and the assertion that matters most in this
+    module is that it never comes out the other side."""
+
+    id: uuid.UUID = TICKET_ID
+    name: str = "נועה בר"
+    visit_type: str = "bride"
+    created_at: datetime.datetime = CLAIMED_AT
+    called_at: datetime.datetime | None = None
+    skip_count: int = 0
+    phone: str = "+972501234567"
+
+
 def _install_tickets(monkeypatch: pytest.MonkeyPatch, rig: _Rig) -> _Rig:
     async def _claim_next(_s: Any, _sess: Any, _t: Any, *, day: Any) -> Any:
         rig.order.append("claim_next")
         rig.calls.append({"call": "claim_next", "day": day})
         return rig.next_ticket
 
+    async def _claim_by_id(_s: Any, _sess: Any, _t: Any, ticket_id: uuid.UUID) -> Any:
+        rig.order.append("claim_by_id")
+        rig.calls.append({"call": "claim_by_id", "ticket_id": ticket_id})
+        return rig.named_ticket
+
+    async def _call(_s: Any, _sess: Any, _t: Any, ticket_id: uuid.UUID, *, now: Any) -> Any:
+        rig.order.append("call")
+        rig.calls.append({"call": "call", "ticket_id": ticket_id, "now": now})
+        return rig.call_result
+
+    async def _skip(
+        _s: Any,
+        _sess: Any,
+        _t: Any,
+        ticket_id: uuid.UUID,
+        *,
+        now: Any,
+        seen_skip_count: int,
+    ) -> Any:
+        rig.order.append("skip")
+        rig.calls.append(
+            {
+                "call": "skip",
+                "ticket_id": ticket_id,
+                "now": now,
+                "seen_skip_count": seen_skip_count,
+            }
+        )
+        return rig.skip_result
+
+    async def _remove(_s: Any, _sess: Any, _t: Any, ticket_id: uuid.UUID) -> bool:
+        rig.order.append("remove")
+        rig.calls.append({"call": "remove", "ticket_id": ticket_id})
+        return rig.removed
+
+    async def _close(_s: Any, _sess: Any, _t: Any, ticket_id: uuid.UUID) -> bool:
+        rig.order.append("close")
+        rig.calls.append({"call": "close", "ticket_id": ticket_id})
+        return rig.closed
+
+    async def _status_of(_s: Any, _sess: Any, _t: Any, _ticket_id: uuid.UUID) -> Any:
+        rig.order.append("status_of")
+        return rig.ticket_status
+
     monkeypatch.setattr(QueueTicketsRepository, "claim_next", _claim_next)
+    monkeypatch.setattr(QueueTicketsRepository, "claim_by_id", _claim_by_id)
+    monkeypatch.setattr(QueueTicketsRepository, "call", _call)
+    monkeypatch.setattr(QueueTicketsRepository, "skip", _skip)
+    monkeypatch.setattr(QueueTicketsRepository, "remove", _remove)
+    monkeypatch.setattr(QueueTicketsRepository, "close", _close)
+    monkeypatch.setattr(QueueTicketsRepository, "status_of", _status_of)
     return _install_rooms(monkeypatch, rig)
 
 
@@ -1950,3 +2062,83 @@ async def test_take_next_never_consults_the_idempotence_read(
             )
 
         assert "active_for" not in rig.order
+
+
+# --- F58: the waitlist read and D9's duplicate flag ---------------------------
+
+
+async def test_the_waitlist_asks_for_todays_jerusalem_day_and_renders_the_rows_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The day is `_today()` — the SAME derivation take-next and the client
+    picker use, so a walk-in dispatched from the panel cannot be one the panel
+    could not see. NOW is 11:20 UTC on 2026-08-02, i.e. 14:20 in Jerusalem."""
+    rig = _Rig()
+    rig.waiting = [_Waiting(name="נועה בר"), _Waiting(id=uuid.uuid4(), name="מיכל")]
+    _install_tickets(monkeypatch, rig)
+
+    async def _list_live(_s: Any, _sess: Any, _t: Any) -> list[StaffUser]:
+        return []
+
+    async def _list_with_occupancy(_s: Any, _sess: Any, _t: Any) -> list[RoomRow]:
+        return []
+
+    monkeypatch.setattr(StaffUsersRepository, "list_live", _list_live)
+    monkeypatch.setattr(FittingRoomsRepository, "list_with_occupancy", _list_with_occupancy)
+
+    read = await _service().floor(TENANT_ID)
+
+    assert rig.waitlist_days == [datetime.date(2026, 8, 2)]
+    assert [entry.name for entry in read.waitlist.entries] == ["נועה בר", "מיכל"]
+    assert read.waitlist.truncated is False
+
+
+async def test_the_duplicate_flag_is_keyed_on_the_phone_and_sees_an_in_service_twin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D9's rule, and the SECOND statement is what makes it worth having.
+
+    Three rows: two waiting with one phone between them, one waiting whose twin
+    is already IN a room, and one alone. `name` collides legitimately in a bridal
+    boutique — two women called נועה is an ordinary Tuesday — so the grouping is
+    the normalised phone and nothing else.
+
+    ⚠ MUTATION PERFORMED: drop `or row.phone in in_service` → the third row
+    renders un-flagged, which is the case D9 calls the most valuable thing on
+    this panel to remove. MUTATION PERFORMED: group on `name` → rows 1 and 4
+    (both «נועה בר», different numbers) flag each other and row 2 stops flagging.
+    """
+    shared, served, lonely = "+972500000001", "+972500000002", "+972500000003"
+    rig = _Rig()
+    rig.waiting = [
+        _Waiting(id=uuid.uuid4(), name="נועה בר", phone=shared),
+        _Waiting(id=uuid.uuid4(), name="מיכל", phone=shared),
+        _Waiting(id=uuid.uuid4(), name="דנה", phone=served),
+        _Waiting(id=uuid.uuid4(), name="נועה בר", phone=lonely),
+    ]
+    rig.in_service_phones = {served}
+    _install_tickets(monkeypatch, rig)
+
+    entries = (await _service()._waitlist(cast(AsyncSession, _FakeSession()), TENANT_ID)).entries
+
+    assert [entry.duplicate for entry in entries] == [True, True, True, False]
+    # The number is the KEY and never the payload: `WaitlistEntryRead` has no
+    # field to carry one, so the grouping cannot leak by accident downstream.
+    assert not any(hasattr(entry, "phone") for entry in entries)
+
+
+async def test_a_full_waitlist_page_is_reported_as_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`len(rows) == WAITLIST_LIMIT` — F36's `DressPickerRead` derivation
+    verbatim, and the bound the repository was ASKED for is the one it is
+    compared against."""
+    rig = _Rig()
+    rig.waiting = [
+        _Waiting(id=uuid.uuid4(), phone=f"+97250{index:07d}") for index in range(WAITLIST_LIMIT)
+    ]
+    _install_tickets(monkeypatch, rig)
+
+    assert (
+        await _service()._waitlist(cast(AsyncSession, _FakeSession()), TENANT_ID)
+    ).truncated is True

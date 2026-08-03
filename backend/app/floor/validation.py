@@ -41,8 +41,10 @@ def normalize_room_label(label: str) -> str:
 
 
 class _OccupiedError(Exception):
-    """Base for the two 409s. **Not** a `DomainValidationError` subclass, and
-    that is load-bearing: Starlette resolves a handler by walking
+    """Base for every 409 here that can carry an optional `details` — F36's two
+    occupancy conflicts, and F58's two ticket-state ones. **Not** a
+    `DomainValidationError` subclass, and that is load-bearing: Starlette
+    resolves a handler by walking
     `type(exc).__mro__`, so parenting these onto the domain-400 base would make
     the shipped handler answer 400 and leave both 409 handlers unreachable.
 
@@ -82,6 +84,35 @@ class RoomOccupiedError(_OccupiedError):
     """Somebody else holds this room — a claim that violated
     `idx_fitting_room_assignments_room_active`, or a delete refused because the
     room is occupied. `details` names her: `{"staff_display_name": …}`."""
+
+
+class QueueTicketNotWaitingError(_OccupiedError):
+    """The ticket a verb named is live but is no longer `waiting` — she was
+    dispatched, skipped out or removed between the render and the tap. `details`
+    names the state: `{"status": …}`, which is what lets the console choose
+    between «היא כבר בטיפול.» and «הכניסה הזו נסגרה.»
+
+    ⚠ `details` is REQUIRED in practice on this one and optional in the type,
+    which is `_OccupiedError`'s shape and deliberately not narrowed: the two
+    handlers share `_occupied_body`, and a body that omits an absent key beats
+    one that writes a null on a legally binding surface.
+    """
+
+
+class QueueTicketChangedError(_OccupiedError):
+    """A skip whose `skip_count` moved under the caller.
+
+    ⚠ **This 409 is what stops two ordinary single taps removing a customer.**
+    Both managers rendered `skip_count == 0`, so neither client showed the
+    confirm — which is gated on `>= 1` — and without the refusal the second tap
+    would escalate to `removed` on a count nobody saw. `details` carries the
+    count the server actually holds; the next tick renders it and the next press
+    correctly opens the confirm.
+
+    Its own code rather than a flavour of `QUEUE_TICKET_NOT_WAITING`: the ticket
+    IS still waiting and still skippable, and the remedy is «רענני ונסי שוב»
+    rather than «הכניסה הזו נסגרה».
+    """
 
 
 class StaffOccupiedError(_OccupiedError):

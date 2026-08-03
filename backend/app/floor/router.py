@@ -14,16 +14,28 @@ that admits more than two.** Router-level so a route added here later cannot
 forget the gate, and because test_staff_role_gating's default-deny walker reads
 `allowed_roles` off the router: a /manage router without one is a red build.
 
-⚠ **The justification for that widening changed in F36 and the sentence that
-used to stand here is now false.** It said the floor payload carries ZERO
-customer data. It carries a client label — on each occupied room, and on the
-holder's staff card. What is true, and what the widening actually rests on:
-**the floor payload carries the minimum customer datum required by the person
-standing on the floor — at most one name per occupied room, for the duration of
-the fitting, never the day's customer book.** On a surface this feature's own
-spec calls legally sensitive, leaving the widest role gate in the product
-justified by a claim that is no longer true would be worse than never having
-written one.
+⚠ **The justification for that widening has now been falsified TWICE, and this
+is its second rewrite.** F57's sentence said the floor payload carries ZERO
+customer data; F36's replacement said "at most one name per occupied room"; F58
+puts up to a hundred more on it. What is true, and what the widening actually
+rests on:
+
+**The floor payload carries the minimum customer datum required by the person
+standing on the floor — the people who are physically in the boutique right now:
+one name per occupied fitting room, plus the name of every walk-in currently
+waiting to be served — and never the day's booking book.** Every name leaves the
+payload the moment she does: a released fitting, a served ticket, a skipped-out
+ticket, a removed ticket, or midnight Jerusalem. Nothing on it carries a phone,
+an email, an address or a consent flag.
+
+⚠ **It DOES carry each waiting ticket's id, and that id is F33's position-page
+capability.** This payload is the only server path other than the check-in
+response that emits one, so it is disclosed to a signed-in staffer of this tenant
+and to nobody else, and **the console must never render it as a link to
+`/q/{id}`.** On a surface this feature's own spec calls legally sensitive,
+leaving the widest role gate in the product justified by a claim that is no
+longer true — or by a new one that understates the disclosure — would be worse
+than never having written one.
 
 The distinction that keeps D11's conclusion right — two loops stay two loops:
 
@@ -31,11 +43,12 @@ The distinction that keeps D11's conclusion right — two loops stay two loops:
                                  her appointment type, dress, size, notes,
                                  status, arrival and manage-token surface, for
                                  the whole day, to anyone who opens the section.
-                                 Owner and shift_manager. F36 puts none of this
-                                 anywhere.
-    GET /manage/floor            the ≤3 PEOPLE PHYSICALLY IN FITTING ROOMS RIGHT
-                                 NOW. One name each, and nothing else about her,
-                                 for the duration of the fitting.
+                                 Owner and shift_manager. Neither F36 nor F58
+                                 puts any of this anywhere.
+    GET /manage/floor            the PEOPLE PHYSICALLY IN THE BOUTIQUE RIGHT
+                                 NOW — in a fitting room or standing in the
+                                 queue. One name each, and nothing else about
+                                 her, until she leaves.
     GET /manage/floor/clients    today's arrivals — checked in and still in the
                                  building. A name and an appointment time,
                                  fetched when the panel mounts and after a

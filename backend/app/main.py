@@ -79,7 +79,13 @@ from app.db.session import ensure_safe_database_role, get_session_factory
 from app.errors import DomainNotFoundError, DomainValidationError
 from app.floor.router import router as floor_router
 from app.floor.service import FloorService
-from app.floor.validation import QueueEmptyError, RoomOccupiedError, StaffOccupiedError
+from app.floor.validation import (
+    QueueEmptyError,
+    QueueTicketChangedError,
+    QueueTicketNotWaitingError,
+    RoomOccupiedError,
+    StaffOccupiedError,
+)
 from app.notifications.base import SmsNotConfiguredError, SmsSender, SmsSendError
 from app.notifications.fake import FakeSmsSender
 from app.notifications.router import router as otp_router
@@ -348,6 +354,17 @@ STAFF_OCCUPIED_BODY = {
 # F58's take-next. A 409 with NO `details`, ever — there is nobody to name — so
 # it is a plain frozen body rather than an `_occupied_body` caller.
 QUEUE_EMPTY_BODY = {"error": {"code": "QUEUE_EMPTY", "message": "Nobody is waiting in the queue."}}
+# F58's other two, and both DO grow a third key at raise time, so they are frozen
+# two-key dicts here and `_occupied_body` copies them — exactly F36's two.
+QUEUE_TICKET_NOT_WAITING_BODY = {
+    "error": {
+        "code": "QUEUE_TICKET_NOT_WAITING",
+        "message": "That queue entry is no longer waiting.",
+    }
+}
+QUEUE_TICKET_CHANGED_BODY = {
+    "error": {"code": "QUEUE_TICKET_CHANGED", "message": "That queue entry changed. Reload."}
+}
 
 
 def _occupied_body(base: dict[str, Any], details: dict[str, str] | None) -> dict[str, Any]:
@@ -1185,6 +1202,23 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     @app.exception_handler(QueueEmptyError)
     async def _queue_empty(request: Request, exc: QueueEmptyError) -> JSONResponse:
         return JSONResponse(QUEUE_EMPTY_BODY, status_code=409)
+
+    # F58's other two. Registered separately even though both subclass
+    # `_OccupiedError`: Starlette resolves on the MRO, so a handler on the shared
+    # base would answer both with one code and there would be no way to tell
+    # «היא כבר בטיפול.» from «מצב הכניסה השתנה. רענני ונסי שוב.» — two causes, two
+    # remedies, the argument that split ROOM_OCCUPIED from STAFF_OCCUPIED.
+    @app.exception_handler(QueueTicketNotWaitingError)
+    async def _ticket_not_waiting(
+        request: Request, exc: QueueTicketNotWaitingError
+    ) -> JSONResponse:
+        return JSONResponse(
+            _occupied_body(QUEUE_TICKET_NOT_WAITING_BODY, exc.details), status_code=409
+        )
+
+    @app.exception_handler(QueueTicketChangedError)
+    async def _ticket_changed(request: Request, exc: QueueTicketChangedError) -> JSONResponse:
+        return JSONResponse(_occupied_body(QUEUE_TICKET_CHANGED_BODY, exc.details), status_code=409)
 
     # Its own class like the other four throttles; the F21 reparenting note on
     # StorefrontThrottledError covers this one too.

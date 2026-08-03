@@ -31,6 +31,7 @@ claim's atomicity is a partial unique index rather than a lock (D3), and no
 
 import dataclasses
 import datetime
+from collections import Counter
 from collections.abc import Callable
 from uuid import UUID
 
@@ -52,7 +53,7 @@ from app.db.repositories.fitting_room_assignments import (
     violated_index,
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
-from app.db.repositories.queue_tickets import QueueTicketsRepository
+from app.db.repositories.queue_tickets import WAITLIST_LIMIT, QueueTicketsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
@@ -115,6 +116,65 @@ class RoomRead:
 
 
 @dataclasses.dataclass(frozen=True)
+class WaitlistEntryRead:
+    """One waiting walk-in, already reduced to what the wire may carry.
+
+    ⚠ **There is no `phone` field and that is the design.** The repository's
+    projection selects the number because D9's duplicate flag groups on it; the
+    flag is computed in the service and the number stops here, so no renderer
+    downstream has one to leak by accident. `duplicate` is the whole of what
+    survives that grouping.
+
+    `arrived_at` is `created_at` and never the sort key: a skip moves the
+    ordering key, so sending it would reset the panel's rendered clock to zero
+    and say «הגיעה זה עתה» about a woman who has been standing there forty
+    minutes. `called` is a BOOLEAN, not the instant — the panel needs to know
+    WHETHER, and the timestamp would let anyone with the screen time how long a
+    named woman has been standing at a counter.
+    """
+
+    id: UUID
+    name: str
+    visit_type: str
+    arrived_at: datetime.datetime
+    called: bool
+    skip_count: int
+    duplicate: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class WaitlistRead:
+    """The panel's list plus F36's `truncated` honesty, verbatim: the UI renders
+    one line saying the list is partial and names NO count and NO limit, because
+    both are the server's to change without a copy edit.
+
+    ⚠ `truncated: True` also means the duplicate flag is BEST-EFFORT on that
+    payload — a pair straddling the bound has one twin invisible, so the other
+    renders clean. Accepted, because the bound bites only inside a griefing flood
+    and a flag that lies by omission on row 40 of a 40-row list would be the real
+    problem.
+    """
+
+    entries: list[WaitlistEntryRead]
+    truncated: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class DispatchRead:
+    """What the two dispatch verbs answer: the tile that changed AND the queue it
+    changed it from.
+
+    One round trip rather than two, and it is not an economy — the panel and the
+    tile are two halves of one act, and a client that patched the tile from the
+    response but waited up to five seconds for the row to leave the list would
+    render the same woman as both in-service and waiting.
+    """
+
+    room: "RoomRead"
+    waitlist: WaitlistRead
+
+
+@dataclasses.dataclass(frozen=True)
 class FloorRead:
     """The whole payload's data, pre-joined, so `FloorResponse.from_rows` renders
     and does not query.
@@ -135,6 +195,7 @@ class FloorRead:
     room_rows: list[RoomRow]
     bindings_by_assignment_id: dict[UUID, list[FittingAssignmentDress]]
     server_now: datetime.datetime
+    waitlist: WaitlistRead
 
 
 @dataclasses.dataclass(frozen=True)
@@ -190,26 +251,40 @@ class FloorService:
 
         No per-role projection: all five roles see the same payload.
 
-        ⚠ **What this payload carries changed in F36, and the sentence that used
-        to stand here is now false.** It claimed this read carried none of a
-        customer's data at all, and therefore that no gate had to be widened over
-        one — but the rooms, and `occupancy` on the staff cards, carry a client
-        label. The rule as it actually is: **the floor payload carries the
-        minimum customer datum required by the person standing on the floor — at
-        most one name per occupied room, for the duration of the fitting, never
-        the day's customer book.** A seamstress
-        called to room 3 has to know who is in it; she does not have to know who
-        else is booked today, and this read still cannot tell her.
+        ⚠ **What this payload carries changed in F36, changed again in F58, and
+        the sentence that used to stand here has now been false twice.** It first
+        claimed this read carried none of a customer's data at all; F36's
+        rewrite then said "at most one name per occupied room", and F58 puts up
+        to a hundred more on it. The rule as it actually is:
 
-        That label is resolved on every read from the live rows rather than
-        snapshotted, which is what makes a retention sweep or an erasure render
-        an anonymous visit instead of quietly preserving a name in a table
-        nobody thought of.
+        **The floor payload carries the minimum customer datum required by the
+        person standing on the floor — the people who are physically in the
+        boutique right now: one name per occupied fitting room, plus the name of
+        every walk-in currently waiting to be served, and never the day's booking
+        book.** Every name leaves the payload the moment she does — a released
+        fitting, a served ticket, a skipped-out ticket, a removed ticket, or
+        midnight Jerusalem. Nothing on it carries a phone, an email, an address
+        or a consent flag.
 
-        TWO extra statements on the tick's EXISTING session — no second
-        `tenant_session`, no second pool checkout, no second `tenants.by_slug`.
-        The bindings read is skipped entirely when nothing is occupied, because
-        an empty boutique polls every five seconds and must not pay for it.
+        ⚠ **It DOES carry each waiting ticket's id, and that id is F33's
+        position-page capability.** This payload is the only server path other
+        than the check-in response that emits one, so it is disclosed to a
+        signed-in staffer of this tenant and to nobody else — and **the console
+        must never render it as a link to `/q/{id}`.**
+
+        Every one of those names is resolved on every read from the live rows
+        rather than snapshotted, which is what makes a retention sweep or an
+        erasure render an anonymous visit instead of quietly preserving a name in
+        a table nobody thought of.
+
+        FOUR extra statements on the tick's EXISTING session — the rooms join,
+        the bindings, the waitlist and D9's in-service phone projection — with no
+        second `tenant_session`, no second pool checkout and no second
+        `tenants.by_slug`. The bindings read is skipped entirely when nothing is
+        occupied, because an empty boutique polls every five seconds and must not
+        pay for it; the waitlist's two are NOT skippable, because an empty queue
+        is the common case and «אין ממתינות בתור» is the answer the panel exists
+        to give.
         """
         async with tenant_session(self._sessions, tenant_id) as session:
             staff_rows = await self._staff.list_live(session, tenant_id)
@@ -219,6 +294,7 @@ class FloorService:
                 tenant_id,
                 [row.assignment_id for row in room_rows if row.assignment_id is not None],
             )
+            waitlist = await self._waitlist(session, tenant_id)
         return FloorRead(
             staff_rows=staff_rows,
             occupancy_by_staff_id={
@@ -227,6 +303,50 @@ class FloorService:
             room_rows=room_rows,
             bindings_by_assignment_id=bindings,
             server_now=self._clock(),
+            waitlist=waitlist,
+        )
+
+    async def _waitlist(self, session: AsyncSession, tenant_id: UUID) -> WaitlistRead:
+        """D2's read plus D9's flag, on the session the caller already holds.
+
+        TWO statements, and the second one is the whole of why the flag is worth
+        having. `_live_waiting()` cannot be reused for it — its third predicate is
+        `status == 'waiting'` and the case that matters most is the twin who is
+        already IN a room: she re-scanned, was dispatched on the first ticket,
+        and the second is still waiting with nothing marking it. A manager with
+        two «נועה»s and neither flagged removes one by inference, and a removal
+        has no undo.
+
+        ⚠ **The phone stops HERE.** It is selected for this grouping and turned
+        into a boolean in this function; `WaitlistEntryRead` has no field to
+        carry it and no renderer downstream has one to leak.
+
+        ⚠ **`day` is TODAY**, and that is the opposite of `position()`'s binding
+        for a stated reason: `position()` has a ticket in hand and binding it to
+        today would tell a woman who walked out yesterday that she is next, while
+        the panel has no ticket and yesterday's ghosts must not sit above this
+        morning's first arrival. The consequence is real and F20's sweep owns it:
+        an unclosed ticket from an earlier day is invisible here and therefore
+        unremovable from this panel.
+        """
+        day = self._today()
+        rows = await self._tickets.waiting_for_panel(session, tenant_id, day, limit=WAITLIST_LIMIT)
+        in_service = await self._tickets.in_service_phones(session, tenant_id, day)
+        waiting_counts = Counter(row.phone for row in rows)
+        return WaitlistRead(
+            entries=[
+                WaitlistEntryRead(
+                    id=row.id,
+                    name=row.name,
+                    visit_type=row.visit_type,
+                    arrived_at=row.created_at,
+                    called=row.called_at is not None,
+                    skip_count=row.skip_count,
+                    duplicate=waiting_counts[row.phone] > 1 or row.phone in in_service,
+                )
+                for row in rows
+            ],
+            truncated=len(rows) == WAITLIST_LIMIT,
         )
 
     async def start_break(

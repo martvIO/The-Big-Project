@@ -21,6 +21,7 @@ the first time it runs.
 
 import datetime
 import inspect
+import re
 import time
 import uuid
 from collections.abc import Iterator
@@ -38,8 +39,22 @@ from app.errors import DomainNotFoundError
 from app.floor import router as app_router
 from app.floor import schemas as app_schemas
 from app.floor import service as app_service
-from app.floor.service import ClientPickerRead, DressPickerRead, FloorRead, RoomRead
-from app.floor.validation import RoomOccupiedError, StaffOccupiedError
+from app.floor.service import (
+    ClientPickerRead,
+    DispatchRead,
+    DressPickerRead,
+    FloorRead,
+    RoomRead,
+    WaitlistEntryRead,
+    WaitlistRead,
+)
+from app.floor.validation import (
+    QueueEmptyError,
+    QueueTicketChangedError,
+    QueueTicketNotWaitingError,
+    RoomOccupiedError,
+    StaffOccupiedError,
+)
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.booking import Booking
 from app.models.constants import StaffCardStatus, StaffRole
@@ -57,6 +72,8 @@ ROOM_ID = uuid.uuid4()
 ASSIGNMENT_ID = uuid.uuid4()
 BINDING_ID = uuid.uuid4()
 DRESS_ID = uuid.uuid4()
+TICKET_ID = uuid.uuid4()
+SECOND_TICKET_ID = uuid.uuid4()
 
 FLOOR_PATH = "/manage/floor"
 START_PATH = f"/manage/floor/staff/{TARGET_ID}/break/start"
@@ -132,6 +149,14 @@ SPEC_ERROR_CODES = {
     "ROOM_OCCUPIED",
     "STAFF_OCCUPIED",
     "CSRF_ORIGIN_MISMATCH",
+    # ⚠ TEN after F58, and the three it adds each needed a writer before they
+    # could be here: `QUEUE_EMPTY` has one the moment take-next lands, and the
+    # other two the moment any verb can refuse a ticket whose state moved. The
+    # set equality below is re-derived from LIVE responses, so a fourth code
+    # arriving without a test fails immediately.
+    "QUEUE_EMPTY",
+    "QUEUE_TICKET_NOT_WAITING",
+    "QUEUE_TICKET_CHANGED",
 }
 
 # Kept in step with test_staff_role_gating.UNKNOWN_ROLE, which owns the tripwire
@@ -244,6 +269,11 @@ class FakeFloorService:
         self.room_read = RoomRead(row=_room_row(), bindings=[])
         self.dress_picker = DressPickerRead(dresses=[], sizes_by_dress_id={}, truncated=False)
         self.client_picker = ClientPickerRead(bookings=[], names_by_customer_id={}, truncated=False)
+        # F58: empty by default, which is the COMMON case — a bridal boutique's
+        # queue is empty most of the day and the shipped payload assertions
+        # describe exactly that floor.
+        self.waitlist = WaitlistRead(entries=[], truncated=False)
+        self.dispatch = DispatchRead(room=self.room_read, waitlist=self.waitlist)
 
     async def floor(self, tenant_id: uuid.UUID) -> FloorRead:
         self.floor_calls.append(tenant_id)
@@ -262,6 +292,7 @@ class FakeFloorService:
             room_rows=self.room_rows,
             bindings_by_assignment_id=self.bindings,
             server_now=SERVER_NOW,
+            waitlist=self.waitlist,
         )
 
     async def start_break(
@@ -714,6 +745,11 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
         ],
         "rooms": [],
         "server_now": SERVER_NOW.isoformat().replace("+00:00", "Z"),
+        # F58's one new envelope key, and the EMPTY case is the one asserted
+        # here on purpose: a bridal boutique's queue is empty most of the day,
+        # and «אין ממתינות בתור» has to be a quiet answer rather than a broken
+        # one. The populated shape has its own test below.
+        "waitlist": {"entries": [], "truncated": False},
     }
 
 
@@ -1141,6 +1177,197 @@ def test_the_three_floor_reads_with_a_mismatched_origin_are_allowed() -> None:
             assert resp.status_code == 200, f"{path} → {resp.status_code}"
 
 
+# --- F58: the waitlist on the envelope, and the three new 409s ---
+
+
+def test_the_waitlist_rides_the_same_envelope_and_carries_exactly_eight_keys_per_entry() -> None:
+    """⚠ THE SET EQUALITY IS THE POINT. A ninth key arriving on a five-role
+    payload that now carries up to a hundred customer names is exactly the change
+    that must not happen quietly, and this is the same guard F36 put on
+    `StaffCard`.
+
+    `position` is `index + 1` over the SERVER's order and never a second count
+    query — two derivations of one number are two chances for the wall, her phone
+    and this panel to disagree.
+    """
+    fake = FakeFloorService()
+    fake.waitlist = WaitlistRead(
+        entries=[
+            WaitlistEntryRead(
+                id=TICKET_ID,
+                name="נועה בר",
+                visit_type="bride",
+                arrived_at=STARTS_AT,
+                called=True,
+                skip_count=1,
+                duplicate=True,
+            ),
+            WaitlistEntryRead(
+                id=SECOND_TICKET_ID,
+                name="מיכל",
+                visit_type="evening",
+                arrived_at=BREAK_BEGAN,
+                called=False,
+                skip_count=0,
+                duplicate=False,
+            ),
+        ],
+        truncated=True,
+    )
+    with _client(fake) as client:
+        body = client.get(FLOOR_PATH).json()
+
+    assert body["waitlist"] == {
+        "entries": [
+            {
+                "id": str(TICKET_ID),
+                "name": "נועה בר",
+                "visit_type": "bride",
+                "position": 1,
+                "arrived_at": STARTS_AT.isoformat().replace("+00:00", "Z"),
+                "called": True,
+                "skip_count": 1,
+                "duplicate": True,
+            },
+            {
+                "id": str(SECOND_TICKET_ID),
+                "name": "מיכל",
+                "visit_type": "evening",
+                "position": 2,
+                "arrived_at": BREAK_BEGAN.isoformat().replace("+00:00", "Z"),
+                "called": False,
+                "skip_count": 0,
+                "duplicate": False,
+            },
+        ],
+        "truncated": True,
+    }
+    assert set(body["waitlist"]["entries"][0]) == {
+        "id",
+        "name",
+        "visit_type",
+        "position",
+        "arrived_at",
+        "called",
+        "skip_count",
+        "duplicate",
+    }
+
+
+def test_no_phone_no_consent_and_no_queue_day_reaches_the_payload() -> None:
+    """A4, and it is a RECURSIVE scan over the whole serialised envelope rather
+    than a look at the keys this module happens to know about.
+
+    The repository's projection DOES select `phone` — D9's duplicate flag groups
+    on it — and the service turns it into a boolean and drops it. This is the
+    assertion that the drop actually happened, and it is written to survive a
+    later feature nesting a new object anywhere in the tree.
+    """
+    fake = FakeFloorService()
+    fake.room_rows = [_room_row(occupied=True)]
+    fake.waitlist = WaitlistRead(
+        entries=[
+            WaitlistEntryRead(
+                id=TICKET_ID,
+                name="נועה בר",
+                visit_type="bride",
+                arrived_at=STARTS_AT,
+                called=False,
+                skip_count=0,
+                duplicate=False,
+            )
+        ],
+        truncated=False,
+    )
+    with _client(fake) as client:
+        body = client.get(FLOOR_PATH).json()
+
+    banned_keys = {"phone", "marketing_opt_in_at", "queue_day"}
+    israeli_mobile = re.compile(r"^\+972\d{9}$")
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            assert not (banned_keys & set(node)), sorted(banned_keys & set(node))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+        elif isinstance(node, str):
+            assert not israeli_mobile.match(node), node
+
+    walk(body)
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "details", "message"),
+    [
+        (QueueEmptyError(), "QUEUE_EMPTY", None, "Nobody is waiting in the queue."),
+        (
+            QueueTicketNotWaitingError({"status": "in_service"}),
+            "QUEUE_TICKET_NOT_WAITING",
+            {"status": "in_service"},
+            "That queue entry is no longer waiting.",
+        ),
+        (
+            QueueTicketChangedError({"skip_count": "1"}),
+            "QUEUE_TICKET_CHANGED",
+            {"skip_count": "1"},
+            "That queue entry changed. Reload.",
+        ),
+    ],
+)
+def test_each_new_conflict_is_a_409_carrying_its_own_code(
+    error: Exception, code: str, details: dict[str, str] | None, message: str
+) -> None:
+    """Three codes and not one with a discriminating `details`: three causes,
+    three Hebrew sentences and three remedies — take another room / she is
+    already being seen / reload and try again — and a `details`-key sniff in the
+    console is a worse place for that branch than an error code.
+
+    ⚠ MUTATION PERFORMED: register the two `_OccupiedError` subclasses on the
+    shared BASE instead of on themselves → Starlette resolves on the MRO, both
+    answer one code, and two of these three parametrisations red.
+    """
+    with _client(FakeFloorService(raises=error)) as client:
+        resp = client.post(START_PATH)
+
+    assert resp.status_code == 409
+    expected: dict[str, Any] = {"code": code, "message": message}
+    if details is not None:
+        expected["details"] = details
+    assert resp.json() == {"error": expected}
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (QueueTicketNotWaitingError, "QUEUE_TICKET_NOT_WAITING"),
+        (QueueTicketChangedError, "QUEUE_TICKET_CHANGED"),
+    ],
+)
+def test_the_two_new_detailed_conflicts_omit_details_entirely_when_they_have_none(
+    error: type[Exception], code: str
+) -> None:
+    """The key is ABSENT, never null — `_occupied_body`'s rule, inherited rather
+    than re-implemented. A null would break the console's `Record<string, string>`
+    type on a legally binding surface."""
+    with _client(FakeFloorService(raises=error())) as client:
+        resp = client.post(START_PATH)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == code
+    assert "details" not in resp.json()["error"]
+
+
+def test_the_queue_empty_body_can_never_grow_a_details_key() -> None:
+    """⚠ It is a plain frozen body rather than an `_occupied_body` caller, and
+    that is the assertion: there is nobody to name on an empty queue, so the
+    handler has no third key to build and `QueueEmptyError` carries no `details`
+    attribute at all."""
+    assert not hasattr(QueueEmptyError(), "details")
+    assert set(app_main.QUEUE_EMPTY_BODY["error"]) == {"code", "message"}
+
+
 def test_every_spec_error_code_is_asserted() -> None:
     """Mechanical completeness, re-derived from live responses rather than from a
     literal — and SET EQUALITY, so an error code added without a test here fails
@@ -1172,4 +1399,11 @@ def test_every_spec_error_code_is_asserted() -> None:
                 "code"
             ]
         )
+    for error in (
+        QueueEmptyError(),
+        QueueTicketNotWaitingError({"status": "removed"}),
+        QueueTicketChangedError({"skip_count": "2"}),
+    ):
+        with _client(FakeFloorService(raises=error)) as client:
+            observed.add(client.post(START_PATH).json()["error"]["code"])
     assert observed == SPEC_ERROR_CODES
