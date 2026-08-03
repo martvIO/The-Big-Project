@@ -1314,3 +1314,43 @@ describe("two mutations in flight at once, and the pick that outlives its list",
     );
   });
 });
+
+// --- AC22: the raise control, on her own tile and on no other ------------------
+
+describe("AC22 — the tile's fourth control", () => {
+  it("renders «קריאה לעזרה» FIRST in the action row of the tile SHE holds", async () => {
+    // DOM order is tab order is wrap order, and the emergency control must be
+    // first in all three. Never on a colleague's tile: raising on somebody
+    // else's behalf is not a thing, and this assignment is what prefills the
+    // room the page names.
+    getFloor.mockResolvedValue(
+      floor([room({ assignment: assignment({ staff_user_id: SELF_ID, staff_display_name: "רותם" }) })]),
+    );
+    mount();
+    await screen.findByText("חדר 1");
+
+    const item = tile(ROOM_A);
+    const controls = within(item).getAllByRole("button");
+    expect(controls[0]).toHaveTextContent("קריאה לעזרה");
+    expect(controls[0]).toHaveAccessibleName("קריאה לעזרה — חדר 1");
+  });
+
+  it("renders it on NO other tile — a colleague's room is not hers to page from", async () => {
+    // ⚠ The assertion is scoped to the TILE and not to the document, because the
+    // SOS centre's own «קריאה לעזרה» trigger is always present two panels up —
+    // a document-wide query passes for the wrong reason and would go green with
+    // the tile's whole predicate deleted.
+    // ⚠ `assignment()` EXPLICITLY, because this file's `room()` defaults to a
+    // FREE tile — and a free tile has no raise control for any caller, so the
+    // block would go green with the whole predicate deleted. Found by running
+    // that mutation, not by reading the fixture.
+    getFloor.mockResolvedValue(floor([room({ assignment: assignment() })]));
+    mount();
+    await screen.findByText("חדר 1");
+
+    const item = tile(ROOM_A);
+    expect(within(item).getByText("דנה כהן")).toBeInTheDocument();
+    expect(within(item).queryByRole("button", { name: /קריאה לעזרה/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "קריאה לעזרה" })).toBeInTheDocument();
+  });
+});

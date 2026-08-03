@@ -115,6 +115,14 @@ interface RoomsPanelProps {
    */
   onRooms: (update: (current: Room[]) => Room[]) => void;
   onCue: (cue: { text: string; name: string | null }) => void;
+  /**
+   * ⚠ OPTIONAL, and the optionality is what keeps this file's shipped test
+   * helper edit-free. ⚠ THE TRIGGER ELEMENT TRAVELS UP: this panel's own MOVE-4
+   * effect is keyed on ITS `openDialog` state, which never changes for a dialog
+   * `FloorPanel` owns, so the effect could never fire for it and focus would
+   * drop to <body> for something the user did (spec D16).
+   */
+  onRaise?: (trigger: HTMLButtonElement, assignmentId: string) => void;
 }
 
 export function RoomsPanel({
@@ -128,6 +136,7 @@ export function RoomsPanel({
   mutate,
   onRooms,
   onCue,
+  onRaise,
 }: RoomsPanelProps) {
   const { t } = useTranslation();
 
@@ -836,6 +845,34 @@ export function RoomsPanel({
                       per tile and it is the act that ENDS the tile's current
                       state — the time-critical one, because a bride is waiting. */}
                   <div className="flex flex-wrap justify-end gap-3">
+                    {/* ⚠ FIRST IN THE ROW's DOM: dom order is tab order is wrap
+                        order, and the emergency control must be first in all
+                        three. Rendered ONLY on the tile she is standing in —
+                        raising on somebody else's behalf is not a thing, and
+                        this assignment is what prefills the room.
+
+                        Red here is the console's first NON-destructive
+                        `danger`, and the collision is worth one sentence rather
+                        than a new variant: everywhere else red means
+                        DESTRUCTIVE, here it means «this act has consequences you
+                        should mean». `secondary` is taken by the one-per-tile
+                        rule and `ghost` would make the emergency control
+                        indistinguishable from «הוספת שמלה». A MIS-TAP COSTS ONE
+                        Esc, because the trigger cannot page anybody — it opens a
+                        dialog with a default target and a separate send — which
+                        is exactly why it may be as large as an emergency
+                        deserves. */}
+                    {assignment !== null && assignment.staff_user_id === selfId && onRaise && (
+                      <Button
+                        variant="danger"
+                        size="md"
+                        fullWidthMobile={false}
+                        aria-label={t("sos.raiseAria", { room: room.label })}
+                        onClick={(event) => onRaise(event.currentTarget, assignment.id)}
+                      >
+                        {t("sos.raise")}
+                      </Button>
+                    )}
                     {assignment === null && room.is_active && (
                       <Button
                         ref={(node) => {

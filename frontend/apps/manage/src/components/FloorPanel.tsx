@@ -12,6 +12,7 @@ import { IDLE_STOP_MINUTES, usePoll } from "../lib/usePoll";
 import type { TickOutcome } from "../lib/usePoll";
 import { RoomsPanel } from "./RoomsPanel";
 import { SosCentre } from "./SosCentre";
+import { SosRaiseDialog } from "./SosRaiseDialog";
 
 // F57. The floor's staff cards: a name, a role and a live status, plus the break
 // toggle the status is derived from.
@@ -119,6 +120,10 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   // <dialog>'s own return would have no target, and focus would drop to <body>
   // for something the user did. The trigger element travels UP instead.
   const sosTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // The dialog's open state lives HERE because this panel is the common parent
+  // of both triggers — the SOS centre's and the room tile's.
+  const [raiseOpen, setRaiseOpen] = useState(false);
+  const [raiseAssignmentId, setRaiseAssignmentId] = useState<string | null>(null);
   const mutationsRef = useRef(0);
   // The pointer hold is the CALLER's — usePoll deliberately does not supply it
   // (D10), and this panel needs its own because the since-line renders only on a
@@ -337,6 +342,40 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   const applyRooms = (update: (current: Room[]) => Room[]) => {
     setRooms((current) => update(current ?? []));
     setUpdatedAt(new Date().toISOString());
+  };
+
+  useEffect(() => {
+    // MOVE G — closing the dialog returns focus to the trigger that opened it,
+    // falling back to this panel's own h2 when that trigger is gone.
+    //
+    // ⚠ THIS IS NOT A REUSE OF RoomsPanel's SHIPPED MOVE-4 EFFECT, and citing it
+    // would ship the fifth focus bug in this repo. That effect is keyed on
+    // ROOMS PANEL's OWN `openDialog` state, which never changes for a dialog
+    // THIS component owns: it would never run, the native <dialog>'s own return
+    // would have no target, and focus would drop to <body> for something the
+    // user did. The tile passes its trigger ELEMENT up instead.
+    if (raiseOpen) {
+      return;
+    }
+    const trigger = sosTriggerRef.current;
+    if (trigger === null) {
+      return;
+    }
+    sosTriggerRef.current = null;
+    if (document.activeElement !== document.body) {
+      return;
+    }
+    if (trigger.isConnected) {
+      trigger.focus();
+      return;
+    }
+    headingRef.current?.focus();
+  }, [raiseOpen]);
+
+  const openRaise = (trigger: HTMLButtonElement, assignmentId: string | null) => {
+    sosTriggerRef.current = trigger;
+    setRaiseAssignmentId(assignmentId);
+    setRaiseOpen(true);
   };
 
   const pause = () => {
@@ -626,9 +665,7 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
         role={role}
         paused={stopped}
         onCue={setCue}
-        onRaise={(trigger) => {
-          sosTriggerRef.current = trigger;
-        }}
+        onRaise={(trigger) => openRaise(trigger, null)}
       />
 
       {/* ABOVE the staff list (spec D15): a staffer opens this screen to find a
@@ -646,6 +683,7 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
         mutate={mutate}
         onRooms={applyRooms}
         onCue={setCue}
+        onRaise={openRaise}
       />
 
       {cards !== null && (
@@ -782,6 +820,21 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
             </ul>
           )}
         </Card>
+      )}
+
+      {/* Conditionally MOUNTED and not merely closed: `Modal` renders its
+          <dialog> unconditionally, so an always-mounted one would add a third
+          node to every `queryAllByRole("dialog")` on this screen — which is the
+          shape RoomsPanel's own two dialogs already avoid. */}
+      {raiseOpen && (
+        <SosRaiseDialog
+          open
+          staff={cards ?? []}
+          selfId={selfId}
+          assignmentId={raiseAssignmentId}
+          onCue={setCue}
+          onClose={() => setRaiseOpen(false)}
+        />
       )}
     </section>
   );
