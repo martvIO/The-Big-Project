@@ -173,9 +173,19 @@ class AppointmentTypeRow(BaseModel):
 
     `audience` is DISCLOSED, not enforced: an anonymous visitor cannot be
     classified as a bride, so the field exists for the UI to label the option
-    and real enforcement waits for a client identity (E5). `deposit_*` ships now
+    and real enforcement waits for a client identity (E5). `deposit_*` ships
     because a customer is entitled to see a deposit before choosing a time, not
     after — E4's payment step reads the same fields.
+
+    **F19 narrowed WHEN the pair carries a deposit, and that is a change to a
+    live public contract.** The keys always ship, but they now carry
+    `false`/`null` unless the deposit is actually collectable: the boutique's
+    `deposits_enabled` toggle is on AND a gateway is connected AND valid (D10's
+    `is_connected`, D19's `deposit_due`). A boutique that configured a deposit
+    and has no working gateway therefore looks, on this surface, exactly like a
+    boutique that never configured one — F17's Q1 ruling, "hide the deposit
+    entirely and book as if deposits were off". `StorefrontService` clears the
+    pair; the router's projection is unchanged.
     """
 
     id: UUID

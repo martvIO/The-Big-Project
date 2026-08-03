@@ -15,6 +15,7 @@ second one, guarded by 0009's index. See step 4b.
 import dataclasses
 import datetime
 import uuid
+from collections.abc import Mapping
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -43,10 +44,12 @@ from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
+from app.models.appointment_type import AppointmentType
 from app.models.booking import Booking
 from app.models.constants import ScheduledMessageKind
 from app.notifications.service import OtpService
 from app.notifications.validation import normalize_israeli_mobile
+from app.payments.service import GatewayCredentialService
 from app.storefront.validation import Clock
 
 # Past the grid's own publishable ceiling, so rejecting anything beyond it can
@@ -55,6 +58,42 @@ from app.storefront.validation import Clock
 # now and the ceiling shifts every local wall time an hour later in UTC — which
 # at +1 day ate the last half-hour of the final day's grid.
 BOOKABLE_HORIZON = datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS + 2)
+
+
+def deposit_due(
+    settings: Mapping[str, object] | None,
+    appointment_type: AppointmentType,
+    *,
+    gateway_connected: bool,
+) -> bool:
+    """D19's predicate, and the ONLY place it is spelled.
+
+        deposits_enabled AND deposit_required AND amount > 0 AND connected
+
+    Called by the storefront disclosure (`StorefrontService.list_appointment_types`)
+    and by `create_booking` below, so the page a customer reads and the flow she
+    then enters cannot disagree about whether money is owed.
+
+    The MASTER TOGGLE WINS over the per-type flag and over a working gateway: a
+    boutique who switches deposits off keeps taking bookings and stops
+    collecting, exactly as F17's Q1 ruled for the not-connected case. An ABSENT
+    toggle reads as off — `tenants.settings` starts `{}`, and the direction that
+    fails is "took a deposit nobody asked for", not "booked without one".
+
+    `gateway_connected` is `GatewayCredentialService.is_connected`'s answer,
+    passed IN rather than read here, so a page listing N types buys one
+    statement rather than N. It is the one argument a caller could get wrong,
+    and both callers resolve it from `is_connected` inside the session they are
+    already in — never from a weaker read (that is D10's whole subject).
+    """
+    toggles = settings.get("toggles") if settings is not None else None
+    enabled = bool(toggles.get("deposits_enabled")) if isinstance(toggles, Mapping) else False
+    return (
+        enabled
+        and appointment_type.deposit_required
+        and (appointment_type.deposit_amount_agorot or 0) > 0
+        and gateway_connected
+    )
 
 
 class BookingNotFoundError(DomainNotFoundError):
@@ -107,6 +146,12 @@ class BookingClaim:
     booking: Booking
     created: bool
     manage_token: str | None
+    # D19, evaluated against the SAME predicate the storefront disclosed. It
+    # rides out on the replay path too: whether money is owed is a property of
+    # the booking, not of this request being the first one. Defaulted so a
+    # caller that predates deposits reads "nothing to collect" rather than
+    # inventing a charge.
+    deposit_due: bool = False
 
 
 class BookingService:
@@ -118,9 +163,14 @@ class BookingService:
         create_limiter: FixedWindowRateLimiter,
         phone_limiter: FixedWindowRateLimiter,
         clock: Clock | None = None,
+        gateway_credentials: GatewayCredentialService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._otp = otp
+        # None = this deployment has not wired a gateway service at all, which
+        # reads as NOT connected. Unwired must never read as connected: every
+        # branch that could take money is opt-in.
+        self._gateway_credentials = gateway_credentials
         self._create_limiter = create_limiter
         # A SEPARATE instance, not a second key on create_limiter: max_attempts
         # lives on the limiter, not per key, so two keys on one instance share
@@ -151,6 +201,7 @@ class BookingService:
         dress_id: uuid.UUID | None = None,
         dress_size: str | None = None,
         notes: str | None = None,
+        settings: Mapping[str, object] | None = None,
     ) -> BookingClaim:
         """The spec's seven ordered steps. `starts_at` must be timezone-aware
         (the schema boundary enforces it); it is compared as a UTC instant
@@ -224,6 +275,20 @@ class BookingService:
             if current_terms is None or terms_version != current_terms.version:
                 raise TermsStaleError
 
+            # 2b. Is money owed? One indexed statement, read HERE — before the
+            #     advisory lock, so it never extends the hold — and answered by
+            #     the same predicate the storefront disclosed. The replay path
+            #     below returns it too. Nothing else in this transaction moves
+            #     for it: opening the hold is a later step's work.
+            due = deposit_due(
+                settings,
+                type_row,
+                gateway_connected=(
+                    self._gateway_credentials is not None
+                    and await self._gateway_credentials.is_connected(tenant_id, session)
+                ),
+            )
+
             # 3. The dress, on the item-based path — snapshot name, prove size.
             dress_name: str | None = None
             snapshot_size: str | None = None
@@ -293,7 +358,9 @@ class BookingService:
                     # No token: the first submission's raw value is already gone
                     # (only its sha256 survives), and a replay must not resend
                     # the confirmation SMS anyway. Both facts are the same fact.
-                    return BookingClaim(booking=replayed, created=False, manage_token=None)
+                    return BookingClaim(
+                        booking=replayed, created=False, manage_token=None, deposit_due=due
+                    )
 
             # 5. Re-materialize the grid and assert the instant is offered —
             #    fed the REAL booked counts, so this also enforces capacity.
@@ -365,4 +432,6 @@ class BookingService:
                     send_after=send_after,
                     manage_token=manage_token,
                 )
-            return BookingClaim(booking=booking, created=True, manage_token=manage_token)
+            return BookingClaim(
+                booking=booking, created=True, manage_token=manage_token, deposit_due=due
+            )
