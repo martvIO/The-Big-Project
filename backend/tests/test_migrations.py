@@ -26,6 +26,32 @@ def _alembic_config() -> Config:
     return cfg
 
 
+def _parent_of(marker: str) -> str:
+    """The revision one step below the migration whose message contains `marker`.
+
+    A round-trip test needs a downgrade TARGET, and both obvious spellings rot:
+    a hardcoded revision id rots when the branch is renumbered at rebase, and
+    `"-1"` rots the moment ANOTHER feature lands a migration on top, because it
+    then means "one step back from somebody else's head". The deposit block
+    below records that second failure happening for real — F53 landed on top and
+    the payments round-trip silently stopped one revision short, reporting a
+    failure against payments from a feature that never touched it.
+
+    Identifying the revision by WHAT IT IS costs nothing and survives both.
+
+    `down_revision` is typed str | list | tuple because alembic supports merge
+    revisions with several parents. This project has exactly one head
+    (test_exactly_one_migration_head) and no merges, so anything but a plain str
+    means the history grew a shape no test in this file expects.
+    """
+    revisions = ScriptDirectory.from_config(_alembic_config()).walk_revisions()
+    script = next((s for s in revisions if marker in (s.doc or "").lower()), None)
+    assert script is not None, f"no migration is identifiable by {marker!r} any more"
+    parent = script.down_revision
+    assert isinstance(parent, str), f"expected a single-parent revision, got {parent!r}"
+    return parent
+
+
 def test_exactly_one_migration_head() -> None:
     """Two migrations claiming one revision id is the failure mode that parallel
     feature branches actually hit, and it is invisible to every other guard.
@@ -1041,11 +1067,13 @@ def test_migration_0017_round_trips(migrated_db: str) -> None:
     downgrade() drops both. Runs as the migration owner (the app role cannot
     ALTER) and mutates the live session-scoped schema.
 
-    `-1` rather than a hardcoded revision, and that is a stated departure rather
-    than a correction of anyone: all four shipped round-trips hardcode their
-    target. Three unmerged migrations are racing for a revision id as this
-    lands, and "one step back from head" survives the renumber — which keeps
-    this block a plain concatenation at merge instead of a hand edit.
+    ⚠ **This block used `"-1"` and F36 broke it, which is the deposit block's
+    lesson arriving a second time.** "One step back from head" survives a
+    RENUMBER of this migration and does not survive another feature landing on
+    top of it: with 0018 at head, `-1` downgraded the fitting-room tables and
+    left `customers.notes` in place, so the first assertion after it failed and
+    named customers for a change that never touched them. Resolved by identity
+    now — `_parent_of` — which survives both.
 
     Appended at the END of the file, after the env_py test, so it never shares
     an anchor with another feature's block again. It sits after the 0016 block
@@ -1060,11 +1088,258 @@ def test_migration_0017_round_trips(migrated_db: str) -> None:
     cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
     cfg.set_main_option("sqlalchemy.url", migrated_db)
     expected = {"notes": _NOTES_COLUMN, "tags": _TAGS_COLUMN}
+    down_to = _parent_of("customer crm")
     try:
         assert _customer_crm_columns(migrated_db) == expected
-        command.downgrade(cfg, "-1")
+        command.downgrade(cfg, down_to)
         assert _customer_crm_columns(migrated_db) == {}
         command.upgrade(cfg, "head")
         assert _customer_crm_columns(migrated_db) == expected
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F36: the fitting-room registry, its assignments and its dress bindings ---
+
+_FITTING_TABLES = ("fitting_rooms", "fitting_room_assignments", "fitting_assignment_dresses")
+_FITTING_COLUMNS = (
+    "SELECT table_name, column_name, data_type, is_nullable, column_default "
+    "FROM information_schema.columns WHERE table_name IN "
+    "('fitting_rooms', 'fitting_room_assignments', 'fitting_assignment_dresses')"
+)
+# Deliberately NOT `_INDEX_DEF`, which hardcodes `tablename = 'bookings'`.
+_ANY_INDEX_DEF = "SELECT indexdef FROM pg_indexes WHERE indexname = :name"
+# Non-primary unique indexes on one table. `indisprimary` is excluded because the
+# PK's implicit unique index is not a decision anybody made about this feature.
+# CAST(...) rather than `:table::regclass`: SQLAlchemy's text() reads `:table:`
+# as a bind parameter followed by a stray colon and ships the colon to Postgres.
+_UNIQUE_INDEX_COUNT = (
+    "SELECT count(*) FROM pg_index WHERE indrelid = CAST(:table AS regclass) "
+    "AND indisunique AND NOT indisprimary"
+)
+# contype='c' is CHECK. In Postgres 16 a NOT NULL lives in pg_attribute.attnotnull
+# and NOT in pg_constraint, so this counts only constraints somebody wrote out —
+# which is what makes a `0` here a statement about the design rather than noise.
+_CHECK_COUNT = (
+    "SELECT count(*) FROM pg_constraint WHERE conrelid = CAST(:table AS regclass) AND contype = 'c'"
+)
+
+# Spelled as POSTGRES deparses them, never as the migration wrote them, and
+# CAPTURED from the live 16.14 cluster rather than transcribed: `pg_indexes.indexdef`
+# schema-qualifies the table, inserts `USING btree`, parenthesises every conjunct of
+# the predicate and re-orders nothing it is not asked to. A literal that merely looks
+# right pins nothing, and pinning nothing is the entire failure mode these three exist
+# to prevent for whoever edits an occupancy predicate next.
+_ROOM_ACTIVE_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_fitting_room_assignments_room_active "
+    "ON public.fitting_room_assignments USING btree (tenant_id, fitting_room_id) "
+    "WHERE ((released_at IS NULL) AND (deleted_at IS NULL))"
+)
+_STAFF_ACTIVE_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_fitting_room_assignments_staff_active "
+    "ON public.fitting_room_assignments USING btree (tenant_id, staff_user_id) "
+    "WHERE ((released_at IS NULL) AND (deleted_at IS NULL))"
+)
+_DRESS_BINDING_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_fitting_assignment_dresses_unique "
+    "ON public.fitting_assignment_dresses USING btree "
+    "(tenant_id, fitting_room_assignment_id, dress_id) WHERE (deleted_at IS NULL)"
+)
+
+
+def _fitting_columns(url: str) -> dict[tuple[str, str], tuple[str, str, str | None]]:
+    async def read() -> dict[tuple[str, str], tuple[str, str, str | None]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_FITTING_COLUMNS))).all()
+                return {
+                    (str(row[0]), str(row[1])): (
+                        str(row[2]),
+                        str(row[3]),
+                        None if row[4] is None else str(row[4]),
+                    )
+                    for row in rows
+                }
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_the_fitting_rooms_migration_creates_the_three_tables(migrated_db: str) -> None:
+    """The shapes D1, D2 and D4 argue for, read back off the catalog.
+
+    Only the columns those three sections make a decision about are asserted;
+    the five StandardColumns are proved by the models importing at all and by
+    every other db module in this suite. What is here is what a later reader
+    would otherwise have to take on trust: that `released_at` is NULLABLE (it is
+    the occupancy model — a NOT NULL would make an active assignment
+    unrepresentable), that `sort_order` and `is_active` carry the defaults that
+    let the registry dialog omit them, and that `dress_size` and `removed_by`
+    are nullable because a gown can be carried in before a size is chosen and a
+    live binding has no remover yet.
+    """
+    columns = _fitting_columns(migrated_db)
+    assert columns[("fitting_rooms", "label")] == ("text", "NO", None)
+    assert columns[("fitting_rooms", "sort_order")] == ("integer", "NO", "0")
+    assert columns[("fitting_rooms", "is_active")] == ("boolean", "NO", "true")
+
+    assert columns[("fitting_room_assignments", "fitting_room_id")] == ("uuid", "NO", None)
+    assert columns[("fitting_room_assignments", "staff_user_id")] == ("uuid", "NO", None)
+    assert columns[("fitting_room_assignments", "booking_id")] == ("uuid", "YES", None)
+    assert columns[("fitting_room_assignments", "released_at")] == (
+        "timestamp with time zone",
+        "YES",
+        None,
+    )
+
+    assert columns[("fitting_assignment_dresses", "fitting_room_assignment_id")] == (
+        "uuid",
+        "NO",
+        None,
+    )
+    assert columns[("fitting_assignment_dresses", "dress_id")] == ("uuid", "NO", None)
+    assert columns[("fitting_assignment_dresses", "dress_name")] == ("text", "NO", None)
+    assert columns[("fitting_assignment_dresses", "dress_size")] == ("text", "YES", None)
+    assert columns[("fitting_assignment_dresses", "removed_by")] == ("uuid", "YES", None)
+
+
+@pytest.mark.db
+def test_the_three_partial_unique_index_definitions_are_pinned(migrated_db: str) -> None:
+    """The highest-value test in the feature, and what it guards is a FUTURE edit.
+
+    These three indexes ARE the feature: one active assignment per room, one
+    active room per worker, one live binding per (assignment, dress). None of
+    them is enforced anywhere in application code — D3 argues at length that a
+    unique index is evaluated by the index rather than against a transaction
+    snapshot, which is exactly why no lock is taken. Delete a conjunct from a
+    predicate and every test that exercises the happy path stays green while the
+    guarantee is gone.
+
+    So the whole definition is pinned byte-identical, F34's discipline applied to
+    the three statements that carry F36's entire structural claim. The pinned
+    mutation is narrowing either assignment predicate to `deleted_at IS NULL`
+    alone: `released_at` is the conjunct with a writer (D2 — `deleted_at` on that
+    table has no v1 writer at all), so dropping it makes a released room
+    permanently unclaimable and nothing else in the suite notices.
+
+    The three NON-unique indexes are performance and are deliberately not pinned:
+    an index that only makes a read faster should be free to be re-tuned.
+    """
+    assert (
+        _one(migrated_db, _ANY_INDEX_DEF, {"name": "idx_fitting_room_assignments_room_active"})
+        == _ROOM_ACTIVE_INDEX_DEF
+    )
+    assert (
+        _one(migrated_db, _ANY_INDEX_DEF, {"name": "idx_fitting_room_assignments_staff_active"})
+        == _STAFF_ACTIVE_INDEX_DEF
+    )
+    assert (
+        _one(migrated_db, _ANY_INDEX_DEF, {"name": "idx_fitting_assignment_dresses_unique"})
+        == _DRESS_BINDING_INDEX_DEF
+    )
+
+
+@pytest.mark.db
+def test_fitting_room_assignments_carries_exactly_two_non_primary_unique_indexes(
+    migrated_db: str,
+) -> None:
+    """The half that catches an ADDITION, where the test above catches an edit.
+
+    A well-meant `(tenant_id, booking_id)` unique index added later reads as
+    "one open fitting per booking" and is wrong: a bride's second fitting of the
+    same day is an ordinary event, and she would be refused with a 500 nobody
+    can explain. No other test anywhere in the suite would fail — the happy
+    path, the races and the payload read are all indifferent to an extra index
+    until the day a real boutique produces the second row.
+
+    Counting is what makes an addition visible. Both figures are exact, and the
+    `fitting_rooms` zero is D1's no-unique-label decision asserted rather than
+    left as prose: a `(tenant_id, label)` unique added later would mean a
+    boutique with two alcoves it genuinely both calls «הבמה» meets a 409 the
+    product never designed a sentence for.
+    """
+    assert _one(migrated_db, _UNIQUE_INDEX_COUNT, {"table": "fitting_room_assignments"}) == "2"
+    assert _one(migrated_db, _UNIQUE_INDEX_COUNT, {"table": "fitting_rooms"}) == "0"
+
+
+@pytest.mark.db
+def test_fitting_assignment_dresses_carries_exactly_one(migrated_db: str) -> None:
+    """The same count on the child table. One live binding per (assignment,
+    dress) — and its partial predicate is what lets a removed dress be carried
+    back into the room, so a second unique index here would break the re-add."""
+    assert _one(migrated_db, _UNIQUE_INDEX_COUNT, {"table": "fitting_assignment_dresses"}) == "1"
+
+
+@pytest.mark.db
+def test_the_fitting_room_tables_carry_no_check_constraints(migrated_db: str) -> None:
+    """A CHECK-free table is a DECISION here, so it is asserted rather than
+    assumed.
+
+    There is no status column anywhere in this feature: `released_at IS NULL AND
+    deleted_at IS NULL` is what active means and it is the whole model (D2). The
+    neighbouring `bookings` table carries three CHECKs and is the obvious thing
+    to copy, so a later reader reaching for `status TEXT CHECK (...)` on an
+    assignment meets an assertion and this docstring instead of nothing.
+
+    `bookings` is asserted non-zero in the same breath, because a query that
+    silently matched nothing would make all three zeros vacuous.
+    """
+    for table in _FITTING_TABLES:
+        assert _one(migrated_db, _CHECK_COUNT, {"table": table}) == "0", table
+    assert _one(migrated_db, _CHECK_COUNT, {"table": "bookings"}) != "0"
+
+
+def _fitting_tables_present(url: str) -> list[str]:
+    async def read() -> list[str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (
+                    await conn.execute(
+                        text(
+                            "SELECT table_name FROM information_schema.tables "
+                            "WHERE table_schema = 'public' AND table_name IN "
+                            "('fitting_rooms', 'fitting_room_assignments', "
+                            "'fitting_assignment_dresses') ORDER BY table_name"
+                        )
+                    )
+                ).scalars()
+                return [str(row) for row in rows]
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_the_fitting_rooms_migration_round_trips(migrated_db: str) -> None:
+    """Both directions, which is 0013's rule: a downgrade that silently no-ops
+    stays green while shipping a migration that cannot be rolled back. F36's
+    downgrade is three DROP TABLEs and nothing else — it touches no existing
+    table, so unlike F57's it cannot fail on live data.
+
+    The downgrade target is resolved by IDENTITY, never as a literal and never
+    as `-1`. This migration's number is resolved from `alembic heads` at build
+    time and renumbered at the rebase that precedes the push, so a literal would
+    rot in the one hour it matters — and `-1` would rot the day F58 lands its
+    `queue_ticket_id` migration on top, which is scheduled.
+
+    The finally is not decoration. Leaving the schema down drops three tables the
+    ORM still maps, so every later db test in this shared session would fail with
+    UndefinedTable somewhere unrelated to itself.
+    """
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("fitting rooms")
+    try:
+        assert _fitting_tables_present(migrated_db) == sorted(_FITTING_TABLES)
+        command.downgrade(cfg, down_to)
+        assert _fitting_tables_present(migrated_db) == []
+        command.upgrade(cfg, "head")
+        assert _fitting_tables_present(migrated_db) == sorted(_FITTING_TABLES)
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
