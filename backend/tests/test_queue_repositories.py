@@ -1,5 +1,5 @@
-"""Round-trips for the F33 queue repository, as the non-owner app role. The
-isolation half lives in test_queue_isolation.py.
+"""Round-trips for the F33 queue repository and F59's board read, as the
+non-owner app role. The isolation half lives in test_queue_isolation.py.
 
 `active_today` is deliberately NOT here and never will be: Ruling 3 deleted the
 dedup pre-check, and the method existed only for it.
@@ -23,6 +23,8 @@ from app.db.repositories.queue_tickets import QueueTicketsRepository
 from app.db.tenant import tenant_session
 from app.models.constants import QueueTicketStatus, VisitType
 from app.models.queue_ticket import QueueTicket
+from app.queue.schemas import QueueBoardEntry
+from app.queue.validation import BOARD_ROW_LIMIT, board_display_name
 
 pytestmark = pytest.mark.db
 
@@ -37,7 +39,10 @@ YESTERDAY = datetime.date(2026, 8, 2)
 T1 = datetime.datetime(2026, 8, 3, 7, 0, tzinfo=datetime.UTC)
 T2 = datetime.datetime(2026, 8, 3, 7, 10, tzinfo=datetime.UTC)
 T3 = datetime.datetime(2026, 8, 3, 7, 20, tzinfo=datetime.UTC)
+T4 = datetime.datetime(2026, 8, 3, 7, 30, tzinfo=datetime.UTC)
+T5 = datetime.datetime(2026, 8, 3, 7, 40, tzinfo=datetime.UTC)
 REQUEUED = datetime.datetime(2026, 8, 3, 9, 0, tzinfo=datetime.UTC)
+CALLED_AT = datetime.datetime(2026, 8, 3, 8, 0, tzinfo=datetime.UTC)
 Y1 = datetime.datetime(2026, 8, 2, 7, 0, tzinfo=datetime.UTC)
 Y2 = datetime.datetime(2026, 8, 2, 7, 10, tzinfo=datetime.UTC)
 CONSENT_AT = datetime.datetime(2026, 8, 3, 7, 0, 30, tzinfo=datetime.UTC)
@@ -62,21 +67,33 @@ async def _seed(
     requeued_at: datetime.datetime | None = None,
     deleted_at: datetime.datetime | None = None,
     phone: str | None = None,
+    called_at: datetime.datetime | None = None,
+    name: str = "נועה",
 ) -> QueueTicket:
     """Seeds a row DIRECTLY rather than through the repository's `insert`, which
     takes no `created_at` — production never sets one. The position tests are
     about the count query, not about the writer, and a deterministic sort key is
-    what makes "position 2" mean something."""
+    what makes "position 2" mean something.
+
+    `called_at` is seeded here for the same reason: nothing in the shipped
+    product writes it (every status transition and every call-forward is F58's),
+    so the board's `called` flag has no other way to be exercised at all.
+
+    `name` is a parameter because F59's board rows are told apart BY name — the
+    payload carries no id — so a suite where every row is «נועה» could not
+    assert which row landed where.
+    """
     row = QueueTicket(
         tenant_id=tenant_id,
         queue_day=queue_day,
-        name="נועה",
+        name=name,
         phone=phone or _phone(),
         visit_type=VisitType.BRIDE.value,
         status=status,
         created_at=created_at,
         requeued_at=requeued_at,
         deleted_at=deleted_at,
+        called_at=called_at,
     )
     session.add(row)
     await session.flush()
@@ -398,6 +415,392 @@ def test_two_tickets_for_one_phone_on_one_day_both_exist_and_report_consecutive_
                 assert await repo.position(session, tenant_id, second) == 2
                 assert (await repo.by_id(session, tenant_id, first.id)) is not None
                 assert (await repo.by_id(session, tenant_id, second.id)) is not None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+# --- F59's board read: the same rows as `position`, as a list ---
+
+
+def test_the_board_order_agrees_with_the_position_count(app_role_url: str) -> None:
+    """THE test of this feature, and it pins the two reads against EACH OTHER
+    rather than each against a literal.
+
+    If the board orders differently from the position endpoint, a woman's phone
+    says she is 3rd and the wall says she is 4th — on a screen a room full of
+    strangers is reading. Index `i` of the board satisfies `position == i + 1`
+    only if both reads range over an identical predicate set under an identical
+    sort key, so the assertion is made row by row over the WHOLE board.
+
+    It is also the Risk-6 alarm, and the NOISE is what makes it one: the four
+    rows neither read may count are seeded alongside the five that both must.
+    Widen the board's status filter on one side only and a `done` row joins the
+    list while `position` answers None for it — which is this assertion going
+    red. Without the noise the two reads agree vacuously and the alarm is
+    decoration.
+    """
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                # Seeded out of arrival order on purpose: physical row order
+                # must not be what makes this pass.
+                by_name = {
+                    "גימל": await _seed(session, tenant_id, created_at=T3, name="גימל"),
+                    "אלף": await _seed(session, tenant_id, created_at=T1, name="אלף"),
+                    "הא": await _seed(session, tenant_id, created_at=T5, name="הא"),
+                    "בית": await _seed(session, tenant_id, created_at=T2, name="בית"),
+                    "דלת": await _seed(session, tenant_id, created_at=T4, name="דלת"),
+                }
+                # Four rows that belong to neither read, every one of them
+                # EARLIER than «אלף» so that counting any of them shifts every
+                # position by at least one.
+                noise = {
+                    "סיימה": await _seed(
+                        session,
+                        tenant_id,
+                        created_at=Y1,
+                        status=QueueTicketStatus.DONE.value,
+                        name="סיימה",
+                    ),
+                    "בטיפול": await _seed(
+                        session,
+                        tenant_id,
+                        created_at=Y1,
+                        status=QueueTicketStatus.IN_SERVICE.value,
+                        name="בטיפול",
+                    ),
+                    "נמחקה": await _seed(
+                        session, tenant_id, created_at=Y1, deleted_at=T1, name="נמחקה"
+                    ),
+                    "אתמול": await _seed(
+                        session, tenant_id, created_at=Y2, queue_day=YESTERDAY, name="אתמול"
+                    ),
+                }
+
+                rows, total = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert total == len(by_name)
+                assert [row.name for row in rows] == ["אלף", "בית", "גימל", "דלת", "הא"]
+                for index, row in enumerate(rows):
+                    ticket = (by_name | noise)[row.name]
+                    assert await repo.position(session, tenant_id, ticket) == index + 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_requeueing_moves_a_row_to_the_back_of_the_board_and_the_two_reads_still_agree(
+    app_role_url: str,
+) -> None:
+    """COALESCE(requeued_at, created_at) is the queue's published order, and the
+    board renders that order as a list. F58's skip is one column write, so it
+    must move the row on the wall and on her phone by the same amount."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                by_name = {
+                    "אלף": await _seed(session, tenant_id, created_at=T1, name="אלף"),
+                    "בית": await _seed(session, tenant_id, created_at=T2, name="בית"),
+                    "גימל": await _seed(session, tenant_id, created_at=T3, name="גימל"),
+                }
+                rows, _ = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert [row.name for row in rows] == ["אלף", "בית", "גימל"]
+
+                await session.execute(
+                    update(QueueTicket)
+                    .where(QueueTicket.id == by_name["אלף"].id)
+                    .values(requeued_at=REQUEUED)
+                )
+                await session.refresh(by_name["אלף"])
+
+                rows, total = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert [row.name for row in rows] == ["בית", "גימל", "אלף"]
+                assert total == 3
+                for index, row in enumerate(rows):
+                    assert await repo.position(session, tenant_id, by_name[row.name]) == index + 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_the_board_shows_only_todays_live_waiting_rows(app_role_url: str) -> None:
+    """The four predicates, each with a row that must not appear. `in_service`
+    is not waiting; `done` and `removed` are terminal; a soft-deleted row is
+    gone; and a ticket nobody closed overnight must not sit at position 1 on a
+    wall forever, which is why the board binds TODAY where `position` binds the
+    ticket's own day."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                for status in (
+                    QueueTicketStatus.IN_SERVICE,
+                    QueueTicketStatus.DONE,
+                    QueueTicketStatus.REMOVED,
+                ):
+                    await _seed(
+                        session, tenant_id, created_at=T1, status=status.value, name=status.value
+                    )
+                await _seed(session, tenant_id, created_at=T1, deleted_at=T2, name="נמחקה")
+                await _seed(session, tenant_id, created_at=Y1, queue_day=YESTERDAY, name="אתמול")
+                await _seed(session, tenant_id, created_at=T3, name="היחידה")
+
+                rows, total = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert [row.name for row in rows] == ["היחידה"]
+                assert total == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_the_board_never_shows_another_tenants_queue(app_role_url: str) -> None:
+    """The explicit tenant_id predicate, which is what refuses the row even
+    inside a session where RLS would return it."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_a, tenant_b = uuid.uuid4(), uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_b) as session:
+                await _seed(session, tenant_b, created_at=T1, name="זרה")
+
+            async with tenant_session(factory, tenant_a) as session:
+                await _seed(session, tenant_a, created_at=T2, name="שלנו")
+                rows, total = await repo.board(session, tenant_a, TODAY, limit=BOARD_ROW_LIMIT)
+                assert [row.name for row in rows] == ["שלנו"]
+                assert total == 1
+
+                # …and the same session asked for tenant B's board answers
+                # nothing, rather than leaking A's rows under B's id.
+                rows, total = await repo.board(session, tenant_b, TODAY, limit=BOARD_ROW_LIMIT)
+                assert list(rows) == []
+                assert total == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_the_cap_truncates_the_rows_and_never_the_total(app_role_url: str) -> None:
+    """`waiting_total` is the UNTRUNCATED count and the overflow line has no
+    other source: `len(entries)` would make «ועוד N» say zero forever, silently,
+    on a wall."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                for index in range(BOARD_ROW_LIMIT + 3):
+                    await _seed(
+                        session,
+                        tenant_id,
+                        created_at=T1 + datetime.timedelta(minutes=index),
+                        name=f"א{index}",
+                    )
+
+                rows, total = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert len(rows) == BOARD_ROW_LIMIT
+                assert total == BOARD_ROW_LIMIT + 3
+                assert [row.name for row in rows] == [f"א{i}" for i in range(BOARD_ROW_LIMIT)]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_a_queue_of_exactly_the_cap_is_not_an_overflow(app_role_url: str) -> None:
+    """The boundary: at exactly BOARD_ROW_LIMIT the totals match, so the client
+    renders no overflow line. One row either side of this is the off-by-one that
+    would put «ועוד 0» on the wall."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                for index in range(BOARD_ROW_LIMIT):
+                    await _seed(
+                        session,
+                        tenant_id,
+                        created_at=T1 + datetime.timedelta(minutes=index),
+                        name=f"א{index}",
+                    )
+                rows, total = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert len(rows) == BOARD_ROW_LIMIT
+                assert total == BOARD_ROW_LIMIT
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_a_second_ticket_for_the_same_phone_is_a_second_row(app_role_url: str) -> None:
+    """Ruling 3 on the wall. One woman who re-scanned the QR — the ordinary
+    re-entry path, since the pointer does not survive a fresh browsing context —
+    renders at two positions with the same first name, and `waiting_total`
+    counts her twice.
+
+    The board MUST NOT deduplicate. The only key that would identify her is
+    `phone`, and this repository's class docstring promises no read is keyed on
+    it and calls that absence the security property. Deduplicating here would be
+    the one read that breaks it, on the one endpoint where breaking it is worst.
+    F58 owns the merge.
+    """
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        phone = _phone()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                await _seed(session, tenant_id, created_at=T1, phone=phone, name="נועה כהן")
+                await _seed(session, tenant_id, created_at=T2, phone=phone, name="נועה כהן")
+
+                rows, total = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert [row.name for row in rows] == ["נועה כהן", "נועה כהן"]
+                assert total == 2
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_a_tie_on_the_sort_key_orders_by_id_and_does_not_flicker(app_role_url: str) -> None:
+    """`, id ASC`. Without it a tie makes the board's own row order
+    non-deterministic across polls, which on a wall screen is two names swapping
+    every five seconds.
+
+    Every row here shares one instant, which is a real tie rather than a
+    contrived one: `now()` is transaction-scoped in Postgres, so any writer that
+    inserts two tickets in one transaction produces exactly this. The order is
+    asserted against the id order — the mechanism itself — because "the same on
+    two calls" alone would pass on physical order.
+
+    ⚠ It does NOT buy agreement with `position()` on a tie: the count has no
+    second key, so tied rows both report the same number while the board gives
+    them consecutive ones. Accepted residual, recorded rather than fixed by
+    editing a shipped read for a one-in-a-microsecond cosmetic case.
+    """
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                tied = [
+                    await _seed(session, tenant_id, created_at=T1, name=f"א{index}")
+                    for index in range(BOARD_ROW_LIMIT)
+                ]
+                expected = [row.name for row in sorted(tied, key=lambda row: row.id)]
+
+                first, _ = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                second, _ = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert [row.name for row in first] == expected
+                assert [row.name for row in second] == expected
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_an_empty_day_is_an_empty_board_and_never_a_null(app_role_url: str) -> None:
+    """A screen that answered 404 when nobody is waiting would render its error
+    arm for most of the shop day."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                rows, total = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert list(rows) == []
+                assert total == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_a_called_ticket_is_still_on_the_board_and_carries_its_instant(app_role_url: str) -> None:
+    """Seeded directly, because nothing in the shipped product writes
+    `called_at` — F58 does, and until it ships this column is null on every row
+    in production. A called ticket is still `waiting` until F58 also writes a
+    status, so it stays on the board and the service turns the instant into the
+    boolean the wire carries."""
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                await _seed(session, tenant_id, created_at=T1, name="נקראה", called_at=CALLED_AT)
+                await _seed(session, tenant_id, created_at=T2, name="ממתינה")
+
+                rows, total = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert total == 2
+                assert [(row.name, row.called_at) for row in rows] == [
+                    ("נקראה", CALLED_AT),
+                    ("ממתינה", None),
+                ]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+def test_no_surname_reaches_the_wire(app_role_url: str) -> None:
+    """⚠ THE REAL HOME of that assertion, against real SQL and a real stored
+    surname. The e2e version cannot fail — a browser test can only see what the
+    server chose to send — so it is deliberately not written there.
+
+    Two halves, and both matter. The repository projects the WHOLE stored name,
+    so the first assertion is what keeps the second from passing vacuously;
+    `board_display_name` is what drops the surname before the schema, and the
+    serialised entry is where the promise has to hold. The service composes
+    exactly these two steps and nothing else.
+    """
+
+    async def check() -> None:
+        engine, factory = _factory(app_role_url)
+        repo = QueueTicketsRepository()
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                await _seed(session, tenant_id, created_at=T1, name="NOA COHEN")
+
+                rows, _ = await repo.board(session, tenant_id, TODAY, limit=BOARD_ROW_LIMIT)
+                assert rows[0].name == "NOA COHEN"
+
+                entry = QueueBoardEntry(
+                    position=1,
+                    first_name=board_display_name(rows[0].name),
+                    called=rows[0].called_at is not None,
+                )
+                assert entry.first_name == "NOA"
+                assert "COHEN" not in entry.model_dump_json()
         finally:
             await engine.dispose()
 
