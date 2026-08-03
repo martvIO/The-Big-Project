@@ -11,6 +11,7 @@ import { CatalogPage } from "./routes/CatalogPage";
 import { CheckinPage } from "./routes/CheckinPage";
 import { DressPage } from "./routes/DressPage";
 import { ManageBookingPage } from "./routes/ManageBookingPage";
+import { QueueBoardPage } from "./routes/QueueBoardPage";
 import { QueuePositionPage } from "./routes/QueuePositionPage";
 
 // ponytail: hand-rolled router. The workspace carries no router dependency and
@@ -30,7 +31,8 @@ export type RouteName =
   | "book"
   | "manage"
   | "checkin"
-  | "queuePosition";
+  | "queuePosition"
+  | "queueBoard";
 
 // A closed set, which is what lets /book/{step} and /book/{step}/{dressId}
 // share a shape: no dress id can ever be read as a step. `pay` joins it in flow
@@ -53,7 +55,10 @@ export type RouteMatch =
   // Same rule, same reason: the ticket id is opaque here. An unknown, swept or
   // mistyped ticket has to reach the page so the page can render its own
   // not-found state and offer a way back to /checkin.
-  | { name: "queuePosition"; ticketId: string };
+  | { name: "queuePosition"; ticketId: string }
+  // The public wall board. It takes NO input of any kind — no id, no token, no
+  // query — which is why it is the only route here with nothing beside its name.
+  | { name: "queueBoard" };
 
 // The id of StorefrontLayout's <main tabindex="-1">. Focus lands here after
 // every client navigation, and the SkipLink targets it.
@@ -80,6 +85,10 @@ const DOC_TITLE_KEYS: Record<RouteName, string> = {
   // ticket id. The id is the capability, and a tab strip is read over a shoulder
   // in a shop. F33 establishes that rule; router.test.tsx is what holds it.
   queuePosition: "document.queuePosition",
+  // One title for every state of the wall board, carrying no name and no number.
+  // The same rule as above and a stronger case for it: a board title is read
+  // over more shoulders than any other in the product.
+  queueBoard: "document.queueBoard",
 };
 
 const DRESS_PATH = /^\/dress\/([^/]+)$/;
@@ -114,6 +123,10 @@ export function matchRoute(pathname: string): RouteMatch {
   if (path === "/about") return { name: "about" };
   if (path === "/accessibility") return { name: "accessibility" };
   if (path === "/checkin") return { name: "checkin" };
+  // An exact match, beside the other exact ones and therefore before the catalog
+  // fallthrough automatically. No path parameter and no regex: the board takes
+  // no input, so there is nothing to parse and nothing to decode.
+  if (path === "/queue") return { name: "queueBoard" };
 
   const dress = DRESS_PATH.exec(path);
   if (dress) return { name: "dress", dressId: decodeId(dress[1]) };
@@ -344,6 +357,8 @@ export function Router() {
       return <CheckinPage />;
     case "queuePosition":
       return <QueuePositionPage ticketId={match.ticketId} />;
+    case "queueBoard":
+      return <QueueBoardPage />;
     // ⚠ A missing `case` compiles clean, typechecks clean and renders the dress
     // grid under the route's own title, because of the fallthrough below —
     // DOC_TITLE_KEYS is compiler-forced but this switch is not. `checkin`

@@ -747,19 +747,19 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             clock=time.monotonic,
         ),
     )
-    # F33's walk-in queue. THREE limiter instances, and the rule this file has
-    # already stated four times is the reason: max_attempts lives on the
-    # LIMITER, so a second key on an existing budget could never trip first.
-    # Concretely, reusing the OTP budgets would let a bride-heavy morning close
-    # the door queue (and the per-phone half answers a spent allowance with a
-    # silent 204, so the failure would be invisible); reusing booking-create's
-    # would let a morning of walk-ins close the front door; reusing the
-    # storefront read brake would let one leaked position-poll loop 429 the
-    # catalog for every shopper on the site.
+    # F33's walk-in queue and F59's wall board. FOUR limiter instances, and the
+    # rule this file has already stated four times is the reason: max_attempts
+    # lives on the LIMITER, so a second key on an existing budget could never
+    # trip first. Concretely, reusing the OTP budgets would let a bride-heavy
+    # morning close the door queue (and the per-phone half answers a spent
+    # allowance with a silent 204, so the failure would be invisible); reusing
+    # booking-create's would let a morning of walk-ins close the front door;
+    # reusing the storefront read brake would let one leaked position-poll loop
+    # 429 the catalog for every shopper on the site.
     #
-    # All three live here rather than on app.state because only the service has
+    # All four live here rather than on app.state because only the service has
     # what their keys need — the parsed body for the ticket key, the lookup
-    # result for the miss key — which is also what keeps the new router at
+    # result for the miss key — which is also what keeps the queue router at
     # dependencies=[Depends(_no_store)], byte-identical in posture to the OTP
     # and booking siblings.
     app.state.queue_service = QueueService(
@@ -783,6 +783,25 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         position_miss_limiter=FixedWindowRateLimiter(
             max_attempts=settings.checkin_position_max_misses_per_window,
             window_seconds=settings.checkin_position_miss_window_seconds,
+            clock=time.monotonic,
+        ),
+        # And a fourth, for the public wall board. Not any of the three above,
+        # and the create budget is the vivid case: one wall screen polling every
+        # five seconds is 720 reads an hour, 3.6x that ENTIRE ceiling, spent
+        # about seventeen minutes into the shop day — after which the wall
+        # screen answers 429 to every woman scanning the QR at the door. The
+        # ticket budget is sized for one client holding one ticket, so a
+        # per-tenant board key trips it at three screens; the miss brake is the
+        # trap the comment above names in writing.
+        #
+        # Its ceiling is a DIFFERENT number from the miss brake's rather than
+        # the same one, deliberately: a limiter ceiling is sized by traffic, and
+        # this key aggregates every screen in the shop plus every phone in the
+        # room. config.py carries that arithmetic; the "same shape, different
+        # instance" lesson is the comment above, not a number.
+        board_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.queue_board_max_per_window,
+            window_seconds=settings.queue_board_window_seconds,
             clock=time.monotonic,
         ),
     )
@@ -1251,12 +1270,16 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # impossible in production. F18 DELETES this line and app/payments/fake_pay.py
     # when a real adapter's hosted page replaces it.
     register_fake_pay(app, settings)
-    # The FIFTH /storefront sibling: F33's walk-in check-in and its position
-    # read, both POSTs. Same anonymous posture as the other three, asserted in
-    # test_checkin_api.py. Same shadowing hazard as every router above — a
-    # duplicated (method, path) would silently win or lose on include order —
-    # and the explicit /storefront path literal in test_storefront_api.py is
-    # what keeps this pair honest.
+    # The FIFTH /storefront sibling — still the fifth, because F59 added a third
+    # ROUTE to it rather than a sixth router: F33's walk-in check-in, its
+    # position read and F59's public board, all three POSTs. Same anonymous
+    # posture as the other three siblings, asserted in test_checkin_api.py and
+    # test_queue_board_api.py. The board's POST is argued from the DERIVED
+    # ROUTES table in test_storefront_api.py and NOT from F33's capability
+    # rule — its request carries no id and no body at all. Same shadowing hazard
+    # as every router above — a duplicated (method, path) would silently win or
+    # lose on include order — and the explicit /storefront path literal in
+    # test_storefront_api.py is what keeps all three honest.
     app.include_router(queue_router)
     # LAST, after every router: the mounts and the catch-all only ever see what
     # no API route claimed.

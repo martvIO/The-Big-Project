@@ -23,6 +23,7 @@ vi.mock("../routes/CheckinPage", () => ({ CheckinPage: () => "טופס רישו�
 vi.mock("../routes/QueuePositionPage", () => ({
   QueuePositionPage: ({ ticketId }: { ticketId: string }) => `מקום בתור ${ticketId}`,
 }));
+vi.mock("../routes/QueueBoardPage", () => ({ QueueBoardPage: () => "לוח" }));
 
 function go(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -181,10 +182,19 @@ describe("matchRoute", () => {
     expect(matchRoute("/q/tick3t/extra")).toEqual({ name: "catalog" });
   });
 
-  it("keeps /q/… disjoint from the /queue path F59 will add", () => {
-    // Recorded here so F59 does not have to rediscover it: the two matchers
-    // cannot collide in either direction.
-    expect(matchRoute("/queue")).toEqual({ name: "catalog" });
+  // F59's public wall board. An EXACT match, no path parameter, no regex — the
+  // board takes no input of any kind.
+  it("maps /queue to the board route", () => {
+    expect(matchRoute("/queue")).toEqual({ name: "queueBoard" });
+    expect(matchRoute("/queue/")).toEqual({ name: "queueBoard" });
+  });
+
+  it("keeps /q/… disjoint from /queue, in both directions", () => {
+    // The shipped comment on QUEUE_PATH claimed this before /queue existed; it
+    // is now simply true. The regex cannot match /queue, and an exact /queue
+    // match cannot match a ticket path — including the one that looks closest.
+    expect(matchRoute("/q/ueue")).toEqual({ name: "queuePosition", ticketId: "ueue" });
+    expect(matchRoute("/queue/anything")).toEqual({ name: "catalog" });
   });
 
   it.each(BOOK_STEPS)("maps /book/%s to its step", (step) => {
@@ -250,6 +260,22 @@ describe("the walk-in queue's routes", () => {
     renderRoute("/q/tick3t");
     expect(screen.getByText("מקום בתור tick3t")).toBeInTheDocument();
     expect(screen.queryByText("קטלוג")).toBeNull();
+  });
+
+  it("renders the wall board at /queue, never the catalogue", () => {
+    // The negative half is the whole test. `queueBoard` resolves a title from
+    // DOC_TITLE_KEYS whether or not the switch has a `case` for it, so a title
+    // assertion here would pass against a route serving the dress grid — which
+    // is exactly how `checkin` shipped for one commit.
+    renderRoute("/queue");
+    expect(screen.getByText("לוח")).toBeInTheDocument();
+    expect(screen.queryByText("קטלוג")).toBeNull();
+  });
+
+  it("titles the board from its own key, carrying no name and no number", () => {
+    renderRoute("/queue");
+    expect(document.title).toBe(i18n.t("document.queueBoard"));
+    expect(document.title).not.toBe("document.queueBoard");
   });
 });
 

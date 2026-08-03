@@ -422,6 +422,36 @@ export interface TicketView {
   called_at: string | null;
 }
 
+// One row on a television seen from three to five metres by a room full of
+// strangers, on an endpoint anyone on the internet can call.
+//
+// THREE FIELDS, and there is no ticket id — there must never be one. The id is
+// F33's capability, issued exactly once at creation; a board that carried ids
+// would hand every passer-by a live, pollable capability over five women's
+// visits at a time, refreshed every five seconds, forever.
+export interface QueueBoardEntry {
+  // 1-based, in the board's own list order. Also the React key: a name would
+  // collide on two women called נועה and on one woman holding two tickets.
+  position: number;
+  // Derived and truncated server-side. The stored name never reaches the wire.
+  first_name: string;
+  // A boolean, not called_at. The wall needs to know WHETHER, not WHEN —
+  // shipping the instant would let anyone watching time how long a named woman
+  // has stood at the counter.
+  called: boolean;
+}
+
+export interface QueueBoardView {
+  // Capped server-side. The client asserts no count anywhere, so raising the cap
+  // is a backend change with no frontend edit.
+  entries: QueueBoardEntry[];
+  // The UNTRUNCATED count the overflow line subtracts from. It counts waiting
+  // TICKETS rather than women: one woman who re-scanned the code is two rows and
+  // counts twice, and the board must not deduplicate — the only key that would
+  // is her phone, and no read here is keyed on it.
+  waiting_total: number;
+}
+
 // --- endpoints ---
 
 export const api = {
@@ -501,6 +531,17 @@ export const api = {
       method: "POST",
       body: { ticket_id: ticketId },
     });
+  },
+
+  // F59's wall board. A POST for a read like its two check-in siblings, but NOT
+  // for their reason — this request carries no capability and no secret at all,
+  // and takes no body whatsoever. It is a POST because the backend's public-read
+  // guard derives its route list over every GET under /storefront and asserts
+  // the shared storefront budget throttles each one; the board holds its own
+  // budget, so a GET here reddens a guard covering six shipped reads. The two
+  // ways out are worse: share the catalog's budget, or weaken that guard.
+  getQueueBoard(): Promise<QueueBoardView> {
+    return apiFetch("/storefront/queue", { method: "POST" });
   },
 };
 

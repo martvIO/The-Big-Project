@@ -612,10 +612,23 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         # F33's walk-in check-in — the FIFTH sibling, and both routes are POSTs
         # INCLUDING the read, for the reason above: the ticket id is the
         # capability and a GET would put it in the query string. Posture asserted
-        # in test_checkin_api.py. Note that the six ROUTES-parametrized guards
+        # in test_checkin_api.py. Note that the five ROUTES-parametrized guards
         # below needed no edit, because F33 registers no new GET here.
         "/storefront/checkin",
         "/storefront/checkin/position",
+        # F59's public wall board — a THIRD route on that same fifth sibling, not
+        # a sixth sibling. Posture asserted in test_queue_board_api.py.
+        #
+        # A POST, and NOT for F33's reason: this request carries no capability
+        # and no body at all. It is a POST because ROUTES above is DERIVED over
+        # every GET under /storefront and the five guards below parametrize over
+        # it — test_the_read_throttle_is_not_inert asserts 429 on each against a
+        # limiter configured to block everything, and that limiter is a
+        # router-level dependency of the GET-only read router which this sibling
+        # does not carry. A GET here answers 200 and reddens it, and both escapes
+        # are worse: a second key on the catalog's read brake, or a weakened
+        # guard over six shipped public reads.
+        "/storefront/queue",
     }
     # Singular /booking/* must never collide with the plural /bookings create.
     assert "/storefront/bookings" not in {

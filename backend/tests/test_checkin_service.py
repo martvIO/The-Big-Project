@@ -132,6 +132,10 @@ def _service(
         or FixedWindowRateLimiter(30, 60.0, lambda: 0.0),
         position_miss_limiter=position_miss_limiter
         or FixedWindowRateLimiter(120, 60.0, lambda: 0.0),
+        # F59's fourth budget. Nothing in this file reads the board — the
+        # generous ceiling is here so a required kwarg does not become a shared
+        # instance the day someone adds a board case to the wrong file.
+        board_limiter=FixedWindowRateLimiter(600, 60.0, lambda: 0.0),
         clock=lambda: NOW,
     )
 
@@ -240,6 +244,7 @@ async def test_the_jerusalem_day_rolls_before_the_utc_day_does() -> None:
         create_limiter=FixedWindowRateLimiter(200, 3600.0, lambda: 0.0),
         position_ticket_limiter=FixedWindowRateLimiter(30, 60.0, lambda: 0.0),
         position_miss_limiter=FixedWindowRateLimiter(120, 60.0, lambda: 0.0),
+        board_limiter=FixedWindowRateLimiter(600, 60.0, lambda: 0.0),
         clock=lambda: datetime.datetime(2026, 7, 18, 21, 30, tzinfo=datetime.UTC),
     )
     await _check_in(service)

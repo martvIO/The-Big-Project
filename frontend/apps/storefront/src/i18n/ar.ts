@@ -26,6 +26,7 @@ export const ar = {
       manageTitle: "התור שלך",
       checkin: "רישום לתור",
       queuePosition: "מקומך בתור",
+      queueBoard: "לוח התור",
     },
     manage: {
       title: "התור שלך",
@@ -83,8 +84,13 @@ export const ar = {
       visitBride: "מדידת כלה",
       visitEvening: "שמלת ערב",
       visitTypeRequired: "צריך לבחור סוג ביקור כדי להמשיך",
+      // F59 amended this value in BOTH files at once, and it has to stay that
+      // way: it is one legal text, and an Arabic launch that carried the
+      // pre-board wording while Hebrew carried the board clause would be two
+      // different notices on one form. See he.ts for why each phrase is what it
+      // is.
       notice:
-        "הפרטים שאת ממלאת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך — ונמחקים כמה ימים לאחר הביקור. הם לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה; אם סימנת אותה, השם ומספר הטלפון יישמרו לצורך זה עד שתבקשי להסיר את ההסכמה.",
+        "הפרטים שאת ממלאת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך — ונמחקים כמה ימים לאחר הביקור. מקומך בתור והמילה הראשונה בשם שהזנת מוצגים בלוח התור של הבוטיק — עמוד אינטרנט ציבורי שכל מי שיודע את כתובת האתר של הבוטיק יכול לפתוח, ולא רק מסך שנמצא בתוך החנות. מספר הטלפון שלך לא מוצג שם. הפרטים לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה; אם סימנת אותה, השם ומספר הטלפון יישמרו לצורך זה עד שתבקשי להסיר את ההסכמה.",
       optIn:
         "אני מאשרת ש{{boutique}} תשלח לי הודעות SMS על מבצעים, קולקציות חדשות ואירועים. אפשר להסיר את ההסכמה בכל הודעה.",
       submit: "הצטרפות לתור",
@@ -112,6 +118,18 @@ export const ar = {
       updatedAt: "עודכן",
       staleAt: "העדכון האחרון היה",
       pausedAt: "העדכון מושהה. עודכן",
+    },
+    // F59's wall board. Eight keys, matching he.ts exactly — the freshness,
+    // pause and retry vocabulary lives in `checkin` above and is resolved from
+    // there rather than duplicated here, on both bundles.
+    queueBoard: {
+      heading: "ממתינות בתור",
+      empty: "אין כרגע ממתינות",
+      emptyHint: "אפשר להצטרף לתור בסריקת הקוד שבבוטיק.",
+      overflow: "ועוד {{count}} בתור",
+      called: "גשי לדלפק",
+      loading: "טוענות את לוח התור",
+      loadFailed: "לא הצלחנו להציג את לוח התור כרגע.",
     },
   },
 } as const;

@@ -1,4 +1,4 @@
-"""The walk-in check-in and the position read.
+"""The walk-in check-in, the position read and the public wall board.
 
 **The create always creates.** There is no dedup key, no advisory lock, no
 pre-check, no `IntegrityError` path and no duplicate branch — so this module
@@ -17,12 +17,16 @@ for the rest of the boutique day, with no remedy anywhere in the shipped
 product. A duplicate ticket is now a real, expected outcome, and F58 merges or
 removes it.
 
-**Three limiter instances, never a second key on an existing budget.**
+**Four limiter instances, never a second key on an existing budget.**
 `max_attempts` lives on the LIMITER, so one instance is one ceiling however many
 keys it holds. Reusing the OTP budgets would let a bride-heavy morning close the
 door queue; reusing booking-create's would let a morning of walk-ins close the
 front door; reusing the storefront read brake would let one leaked poll loop 429
-the catalog for every shopper on the site.
+the catalog for every shopper on the site. F59's board is the fourth and the
+most vivid of them: one wall screen is 720 reads an hour, 3.6x the ENTIRE
+check-in create ceiling, so a board sharing that budget would spend it about
+seventeen minutes into the shop day and start answering 429 to every woman
+scanning the QR at the door. The wall screen would close the front door.
 """
 
 import datetime
@@ -35,10 +39,12 @@ from app.db.repositories.queue_tickets import QueueTicketsRepository
 from app.db.tenant import tenant_session
 from app.models.queue_ticket import QueueTicket
 from app.notifications.validation import normalize_israeli_mobile
-from app.queue.schemas import TicketView
+from app.queue.schemas import QueueBoardEntry, QueueBoardView, TicketView
 from app.queue.validation import (
+    BOARD_ROW_LIMIT,
     CheckinThrottledError,
     QueueTicketNotFoundError,
+    board_display_name,
     validate_checkin_request,
 )
 from app.storefront.validation import Clock, today_jerusalem
@@ -52,12 +58,14 @@ class QueueService:
         create_limiter: FixedWindowRateLimiter,
         position_ticket_limiter: FixedWindowRateLimiter,
         position_miss_limiter: FixedWindowRateLimiter,
+        board_limiter: FixedWindowRateLimiter,
         clock: Clock | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._create_limiter = create_limiter
         self._position_ticket_limiter = position_ticket_limiter
         self._position_miss_limiter = position_miss_limiter
+        self._board_limiter = board_limiter
         self._clock = clock
         self._tickets = QueueTicketsRepository()
 
@@ -151,6 +159,52 @@ class QueueService:
                 self._position_miss_limiter.record_failure(miss_key)
                 raise QueueTicketNotFoundError
             return _view(ticket, await self._tickets.position(session, tenant_id, ticket))
+
+    async def board(self, tenant_id: uuid.UUID) -> QueueBoardView:
+        """Today's waiting queue, capped, first names only, for a television on
+        a boutique wall. Anonymous, so every field is a disclosure decision.
+
+        Its own budget, and the fourth instance rather than a second key on one
+        of the three above — the module docstring works the create-limiter
+        arithmetic. Charged on every read including an empty board: the cost is
+        the query, not the rows.
+
+        There is no miss branch and there must not be one. Every resolvable
+        tenant has a board; an empty queue is an empty board, always 200, one
+        shape, no branch.
+
+        One clock read and it happens on the SERVER, so the request carries no
+        date and the board empties at midnight Jerusalem with no client-side
+        date logic at all — on a screen that is expected to be mounted for
+        months.
+        """
+        board_key = f"queue:board:{tenant_id}"
+        if self._board_limiter.is_blocked(board_key):
+            raise CheckinThrottledError
+        self._board_limiter.record_failure(board_key)
+
+        now = self._now()
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rows, waiting_total = await self._tickets.board(
+                session,
+                tenant_id,
+                today_jerusalem(lambda: now),
+                limit=BOARD_ROW_LIMIT,
+            )
+            return QueueBoardView(
+                entries=[
+                    QueueBoardEntry(
+                        # The SERVER numbers the rows. A client free to renumber
+                        # would be free to disagree with her phone.
+                        position=index + 1,
+                        first_name=board_display_name(row.name),
+                        # The wall needs WHETHER, not WHEN.
+                        called=row.called_at is not None,
+                    )
+                    for index, row in enumerate(rows)
+                ],
+                waiting_total=waiting_total,
+            )
 
 
 def _view(ticket: QueueTicket, position: int | None) -> TicketView:

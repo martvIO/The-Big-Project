@@ -412,6 +412,61 @@ describe("the check-in endpoints", () => {
   });
 });
 
+// F59's wall board. A POST for a read like its two siblings, but for a DIFFERENT
+// reason: this request carries no capability and nothing secret at all. The
+// route list test_storefront_api.py derives over every GET under /storefront
+// asserts a 429 on each against the shared storefront limiter, and the board
+// holds its own budget — so a GET here reddens a guard protecting six shipped
+// public reads.
+describe("the queue board endpoint", () => {
+  const BOARD = {
+    entries: [
+      { position: 1, first_name: "נועה", called: false },
+      { position: 2, first_name: "מיכל", called: false },
+    ],
+    waiting_total: 7,
+  };
+
+  it("posts to /storefront/queue with NO body at all", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, BOARD));
+
+    await api.getQueueBoard();
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/storefront/queue");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("omit");
+    // The route takes no request model, so there is nothing to send and no
+    // Content-Type to declare. A body of "{}" would be a shape the server has
+    // no schema for.
+    expect(init.body).toBeUndefined();
+    expect(init.headers).toBeUndefined();
+  });
+
+  it("returns the payload verbatim — this client never converts case", async () => {
+    stubFetch(() => jsonResponse(200, BOARD));
+
+    const board = await api.getQueueBoard();
+
+    expect(board).toEqual(BOARD);
+    expect(board.waiting_total).toBe(7);
+    expect(board.entries[0].first_name).toBe("נועה");
+    // No ticket id on the wire, ever: the id is F33's capability and the board
+    // is anonymous. Pinned here as well as on the backend because this is the
+    // type every page reads through.
+    expect(Object.keys(board.entries[0])).toEqual(["position", "first_name", "called"]);
+  });
+
+  it("adds no error code of its own — both terminals are already mapped", async () => {
+    expect(errorMessageKey(new ApiError(404, "TENANT_NOT_FOUND", "No active boutique."))).toBe(
+      "errors.tenantNotFound",
+    );
+    expect(errorMessageKey(new ApiError(429, "TOO_MANY_ATTEMPTS", "Too many attempts."))).toBe(
+      "errors.tooManyAttempts",
+    );
+  });
+});
+
 // isNotFound folds 400 VALIDATION_ERROR into "dress gone" — correct on the
 // dress detail, where a malformed id is the only 400, and WRONG on the booking
 // POST, where a schema 400 is a form problem, not a vanished dress. This pins

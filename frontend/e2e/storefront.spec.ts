@@ -228,7 +228,12 @@ type BookingEndpoint =
   | "booking/cancel"
   // F33's walk-in create. Its sibling read, /storefront/checkin/position, is
   // deliberately NOT here — see the ticket map below.
-  | "checkin";
+  | "checkin"
+  // F59's public wall board. A POST like its two check-in siblings but for a
+  // different reason: it carries no capability and no body at all. It belongs
+  // in this queue map rather than beside the position read because its answer
+  // does not depend on anything the caller sent — there is nothing to key on.
+  | "queue";
 
 const BOOKING_PATHS: Record<string, BookingEndpoint> = {
   "/storefront/terms": "terms",
@@ -241,6 +246,7 @@ const BOOKING_PATHS: Record<string, BookingEndpoint> = {
   "/storefront/booking/confirm-attendance": "booking/confirm-attendance",
   "/storefront/booking/cancel": "booking/cancel",
   "/storefront/checkin": "checkin",
+  "/storefront/queue": "queue",
 };
 
 type BookingReplies = Record<BookingEndpoint, Reply[]>;
@@ -374,6 +380,32 @@ const QUEUE_TICKETS: Record<string, unknown> = {
   [TICKET_SECOND]: ticketBody(TICKET_SECOND, { position: 4 }),
 };
 
+// --- F59 wall-board fixtures -------------------------------------------------
+//
+// Five first names, distinct from each other AND from every other Hebrew string
+// in this file — CUSTOMER_NAME is «נועה כהן», so «נועה» is deliberately not
+// among them. A row that renders the wrong name is then named by the failure
+// rather than merely counted.
+//
+// `called` is false on every entry and NO journey may drive it true: nothing
+// writes called_at until F58, so a fixture that flipped it would assert a state
+// the product has no path to.
+const BOARD_NAMES = ["מיכל", "שירה", "תמר", "יעל", "אביגיל"];
+
+// waitingTotal defaults to the row count, which is the no-overflow case. The
+// board's own arithmetic (waiting_total − entries.length) is pinned in the unit
+// suite; here the point is that five rows fit on a panel, so the two are equal.
+function boardBody(count: number, waitingTotal = count): unknown {
+  return {
+    entries: BOARD_NAMES.slice(0, count).map((first_name, index) => ({
+      position: index + 1,
+      first_name,
+      called: false,
+    })),
+    waiting_total: waitingTotal,
+  };
+}
+
 function bookingFixture(): BookingReplies {
   return {
     terms: [ok(TERMS_V3)],
@@ -394,6 +426,10 @@ function bookingFixture(): BookingReplies {
       { status: 201, body: ticketBody(TICKET_FIRST) },
       { status: 201, body: ticketBody(TICKET_SECOND) },
     ],
+    // A constant, so the 5s poll answers the same board on every tick and the
+    // route sweeps below get a settled page. The journeys that care about the
+    // row count override it.
+    queue: [ok(boardBody(3))],
   };
 }
 
@@ -546,6 +582,14 @@ async function gotoSettled(page: Page, path: string): Promise<void> {
   } else if (path.startsWith("/q/")) {
     // The number itself, which is the last thing the position read fills in.
     await expect(page.getByTestId("queue-number")).toBeVisible();
+  } else if (path === "/queue") {
+    // The freshness line and NOT a row: this helper is one if/else chain on the
+    // path, so /queue gets exactly ONE tell for every journey that visits it —
+    // and the empty board renders no row at all, so a row-based tell would time
+    // out on the journey that exists to render it. The freshness line is present
+    // in every non-loading state and is written only on a settled response,
+    // which is precisely the "the data landed" property this helper asks for.
+    await expect(page.getByTestId("queue-board-freshness")).toBeVisible();
   } else {
     // /accessibility has no loading state by design; the boutique name is what
     // arrives late and swaps in over the brand fallback. .first() because the
@@ -710,6 +754,11 @@ for (const [name, path, list, boutique] of AXE_ROUTES) {
 // under the long Hebrew collection notice on /checkin, and the text-6xl position
 // number beside the flex-wrap freshness+pause row on /q/{id}. installApi already
 // seeds both; gotoSettled needed a tell for each.
+//
+// F59's /queue joins for the same reason. "The brief is a viewing distance, not
+// a set of breakpoints" says nothing about horizontal overflow: the same public
+// URL opens on the phone of every woman in the room, and its rows are a clamped
+// number beside a clamped name in one flex line.
 const ROUTES = [
   "/",
   `/dress/${GALLERY.id}`,
@@ -717,6 +766,7 @@ const ROUTES = [
   "/accessibility",
   "/checkin",
   `/q/${TICKET_FIRST}`,
+  "/queue",
 ];
 
 test("storefront: no horizontal scroll at 375 / 768 / 1440 on every route", async ({ page }) => {
@@ -1360,7 +1410,15 @@ test("storefront: a photo-less card and its photographed row-mate are the same h
 
 // --- WCAG 1.4.4: 200% text, by zoom and by text-only resize ------------------
 
-const RESIZE_ROUTES = ["/", `/dress/${GALLERY.id}`, "/about", "/accessibility"];
+// /queue is a NEW member and F33's two routes are still not in it. The board is
+// the one page in the product whose every type size is an arbitrary clamp()
+// rather than a --text-* token, and each preferred value carries a rem term for
+// exactly one reason: without it the A11yMenu's text-size boost is a complete
+// no-op on this page. That makes the boost worth sweeping here, and the sweep is
+// the only automated check that the rem terms do anything — axe measures no font
+// size at all (Risk 4). TEXT_RESIZE_BROKEN_AT_375 stays empty: min-w-0 +
+// [overflow-wrap:anywhere] + flex-wrap on the row is what keeps it that way.
+const RESIZE_ROUTES = ["/", `/dress/${GALLERY.id}`, "/about", "/accessibility", "/queue"];
 const WIDTHS = [375, 768, 1440];
 
 // Two routes measurably fail 200% text-only resize at 375 today, both in
@@ -2507,4 +2565,159 @@ test("storefront check-in: a second check-in with the same phone mints a SECOND 
   // Every create overwrites the pointer, so it names the most recent check-in
   // from this tab and never an older one.
   expect(await page.evaluate(() => sessionStorage.getItem("checkin:ticket"))).toBe(TICKET_SECOND);
+});
+
+// =============================================================================
+// F59 — the public wall board: /queue
+// =============================================================================
+//
+// A television on the wall of a boutique, read from three to five metres by a
+// room of strangers, on an anonymous unauthenticated endpoint. It is the most
+// privacy-sensitive surface in the product, so these journeys are as much about
+// what the page does NOT put in the DOM as about what it renders.
+//
+// ⚠ NOTHING IS EVER HIGHLIGHTED. called_at has no writer until F58, so `called`
+// is false on every fixture entry here and no journey may drive it true — a
+// journey that did would assert a state the product cannot reach, which is the
+// class of vacuous test the whole spec was reviewed against.
+//
+// ⚠ "no surname appears anywhere on the page" is DELIBERATELY NOT ASSERTED. The
+// wire is {position, first_name, called}; there is no field a surname could ride
+// on, the truncation is server-side, and installApi supplies the board body
+// directly — so the derivation under test never runs in a browser. Its real
+// homes are the two backend tests (the fast board_display_name table and the
+// db-marked name="NOA COHEN" case). An assertion that cannot fail is worse than
+// no assertion, because it reads like coverage.
+
+const BOARD_HEADING = "ממתינות בתור";
+const BOARD_EMPTY = "אין כרגע ממתינות";
+const BOARD_EMPTY_HINT = "אפשר להצטרף לתור בסריקת הקוד שבבוטיק.";
+const BOARD_PAUSED_AT = "העדכון מושהה. עודכן";
+
+// A 1080p panel, which is the only geometry the deck's millimetre arithmetic is
+// written against and the one the kiosk checklist requires (a 4K panel must
+// present this CSS viewport, via DPR 2 or 200% zoom).
+const VIEWPORT_1080P = { width: 1920, height: 1080 };
+
+// Every title, aria-label and data-* across the row subtrees, deduplicated. The
+// board's whole risk is a field the eye cannot see: a title carrying the full
+// name, an aria-label built from more than the row shows, a data-ticket-id left
+// behind by a debugging session. All three are invisible on a wall and all three
+// are readable by anyone who opens the same public URL.
+async function rowMetadata(rows: Locator): Promise<string[]> {
+  const found = await rows.evaluateAll((els) =>
+    els.flatMap((el) =>
+      [el, ...el.querySelectorAll("*")].flatMap((node) =>
+        [...node.attributes]
+          .filter(
+            (a) => a.name === "title" || a.name === "aria-label" || a.name.startsWith("data-"),
+          )
+          .map((a) => `${a.name}=${a.value}`),
+      ),
+    ),
+  );
+  return [...new Set(found)].sort();
+}
+
+// --- journey 1: the live board ------------------------------------------------
+
+test("storefront wall board: three waiting rows, their positions, and nothing else about the women in them", async ({
+  page,
+}) => {
+  await installApi(page, "populated", BOUTIQUE, { queue: [ok(boardBody(3))] });
+  await gotoSettled(page, "/queue");
+
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(BOARD_HEADING);
+
+  const rows = page.getByTestId("queue-board-row");
+  await expect(rows).toHaveCount(3);
+
+  for (const [index, name] of BOARD_NAMES.slice(0, 3).entries()) {
+    const row = rows.nth(index);
+    // The position gutter is the <bdi dir="ltr">; the name is the bare one, and
+    // dir="ltr" on a Hebrew name would itself be the bidi defect.
+    await expect(row.locator("bdi[dir='ltr']")).toHaveText(String(index + 1));
+    // toHaveText is a FULL-string match after whitespace normalisation, so a row
+    // that rendered anything beside the first name reddens here.
+    await expect(row.locator("bdi:not([dir])")).toHaveText(name);
+  }
+
+  expect(await rowMetadata(rows), "a row carries text the room cannot see").toEqual([
+    "data-testid=queue-board-row",
+  ]);
+
+  // hasBookingBar() is catalog-and-dress, so this route reserves no CTA gutter —
+  // and a "book a fitting" bar fixed across a television is a control nobody in
+  // the room can press.
+  await expect(ctaBar(page)).toHaveCount(0);
+
+  // SC 2.2.2 in a real browser. Axe has no rule for any of it, and the pause is
+  // also what makes the axe scan below deterministic — a 5s poll repainting
+  // under an analyze() run is the one flake this file could grow.
+  const freshness = page.getByTestId("queue-board-freshness");
+  const live = (await freshness.textContent()) ?? "";
+  await page.getByRole("button", { name: PAUSE }).click();
+  await expect(freshness).toContainText(BOARD_PAUSED_AT);
+  expect(
+    (await freshness.textContent()) ?? "",
+    "pausing did not change the freshness SENTENCE — a state carried by styling alone",
+  ).not.toBe(live);
+
+  expect(await axeViolations(page)).toEqual([]);
+});
+
+// --- journey 2: the empty board -----------------------------------------------
+
+test("storefront wall board: the empty board is a designed state with its own axe pass", async ({
+  page,
+}) => {
+  // Post-F58 this is the state the screen is in for most of the day; pre-F58 it
+  // is the first hour, because nothing ever leaves the queue.
+  await installApi(page, "populated", BOUTIQUE, { queue: [ok(boardBody(0))] });
+  await gotoSettled(page, "/queue");
+
+  await expect(page.getByTestId("queue-board-row")).toHaveCount(0);
+  await expect(page.getByTestId("queue-board-empty")).toBeVisible();
+  await expect(page.getByText(BOARD_EMPTY)).toBeVisible();
+  await expect(page.getByText(BOARD_EMPTY_HINT)).toBeVisible();
+  // Both render here too, and they have to: without the freshness line an empty
+  // board and a crashed board are the same blank screen, and a 2.2.2 mechanism
+  // that disappears with the content is not a mechanism.
+  await expect(page.getByTestId("queue-board-freshness")).toBeVisible();
+  await expect(page.getByRole("button", { name: PAUSE })).toBeVisible();
+  await expect(ctaBar(page)).toHaveCount(0);
+
+  expect(await axeViolations(page)).toEqual([]);
+});
+
+// --- journey 3: the panel it is designed for ----------------------------------
+
+test("storefront wall board: the wall board fits a 1080p screen", async ({ page }) => {
+  await page.setViewportSize(VIEWPORT_1080P);
+  await installApi(page, "populated", BOUTIQUE, { queue: [ok(boardBody(5))] });
+  await gotoSettled(page, "/queue");
+
+  const rows = page.getByTestId("queue-board-row");
+  await expect(rows).toHaveCount(5);
+
+  // ⚠ toBeInViewport, NEVER toBeVisible. A row 300px below the fold has a
+  // non-empty box and is not display:none, so toBeVisible passes on exactly the
+  // failure this test exists for — and nobody scrolls a television.
+  await expect(
+    rows.nth(4),
+    "the fifth row is below the fold on a 1080p panel",
+  ).toBeInViewport();
+
+  // The other half: scrollHeight catches the DOCUMENT growing past the panel,
+  // toBeInViewport names the row that did it. Both are needed — under the
+  // A11yMenu text-size boost the fifth row sits ~57px below the fold while the
+  // document is still short enough that a scrollHeight check alone says nothing.
+  const doc = await page.evaluate(() => ({
+    scrollHeight: document.documentElement.scrollHeight,
+    innerHeight: window.innerHeight,
+  }));
+  expect(
+    doc.scrollHeight,
+    `the board is ${String(doc.scrollHeight - doc.innerHeight)}px taller than a 1080p panel`,
+  ).toBeLessThanOrEqual(doc.innerHeight);
 });
