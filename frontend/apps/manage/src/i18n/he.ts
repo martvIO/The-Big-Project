@@ -635,6 +635,17 @@ export const he = {
     // The card. The WORD carries the status; the colour never does.
     "floor.statusAvailable": "פנויה",
     "floor.statusBreak": "בהפסקה",
+    // F36's ONE addition to this namespace, and it sits here rather than under
+    // `rooms.` because the namespace names the payload and not the feature that
+    // added the key. FEMININE, matching its two neighbours — and a DIFFERENT
+    // word from the tile's masculine «תפוס», because the subject is a woman and
+    // not a room. Without it, `status: "occupied"` falls through the binary
+    // ternary this pair used to feed and the card prints «פנויה» about a
+    // staffer standing in room 2.
+    "floor.statusOccupied": "תפוסה",
+    // ⚠ F36 makes this reachable on an OCCUPIED card for the first time, which
+    // is the only place a screen can tell a shift manager that a break was
+    // never closed. It needs no new string.
     "floor.breakSince": "מאז {{time}}",
     "floor.breakStart": "להפסקה",
     "floor.breakStartAria": "להפסקה — {{name}}",
@@ -749,5 +760,205 @@ export const he = {
     // would be a guess the server never made.
     "customers.error.NOT_AUTHORIZED":
       "אין הרשאה לצפות בכרטיסי הלקוחות כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+
+    // --- F36: the fitting rooms ---------------------------------------------
+    //
+    // Transcribed from .planning/design/screens/fitting-rooms/copy.md, which is
+    // the CANONICAL key list — spec D17's table is superseded by it and is
+    // missing fourteen keys the components require.
+    //
+    // ⚠ NO `nav.rooms`, and that is a decision: the rooms are content of the
+    // floor, not a twelfth console section.
+    //
+    // ⚠ NO string places a Hebrew preposition, article or agreeing verb against
+    // {{room}} or {{dress}}. Those are USER-TYPED NOUNS that carry their own
+    // noun and their own gender — the boutique types «חדר 1 / חדר 2 / הבמה» —
+    // so «בחדר {{room}}» renders «בחדר חדר 2» and «{{room}} נתפס» renders
+    // «הבמה נתפס». The four shapes that survive it are an em-dash with the
+    // value last, a colon appositive with the value last, and the value
+    // rendered as its own element. {{name}} is exempt: every persona word in
+    // this product is feminine, so a feminine verb against a staffer's name
+    // agrees by construction.
+    //
+    // The panel is inside FloorPanel's poll and inherits every freshness,
+    // pause, idle, stale, outage and terminal state from it. Seventeen `floor.*`
+    // and `staff.*` keys are REUSED unchanged and none of them is respelled
+    // here.
+    "rooms.heading": "חדרי מדידה",
+    "rooms.manage": "ניהול חדרים",
+    // «עדיין» does real work: it says NOT YET, which is a setup step, rather
+    // than NONE, which reads as a fault.
+    "rooms.empty": "עדיין לא הוגדרו חדרי מדידה",
+    "rooms.emptyCta": "הוספת חדר",
+
+    // The tile's state WORDS. «פנוי» is masculine, agreeing with «חדר», and is
+    // deliberately not the staff card's «פנויה»: a room and a staffer are
+    // different subjects and the two words on one screen must not look like one
+    // word inflected by accident.
+    "rooms.free": "פנוי",
+    "rooms.occupied": "תפוס",
+    // A condition of the ROOM. «לא פעיל» would read as a switch somebody
+    // flipped, which is true and is not what she needs to know in a corridor.
+    "rooms.inactive": "מחוץ לשירות",
+    // A LABEL, so the client's name can be its own element rather than being
+    // interpolated into a sentence that could mis-agree with it.
+    "rooms.clientLabel": "לקוחה",
+    // The DEFAULT render for any claim made without a booking, and also what a
+    // swept booking or an erased customer renders as. «מקושרת» is load-bearing:
+    // the room has a bride in it; what it has no link to is a booking record.
+    "rooms.anonymous": "ללא לקוחה מקושרת",
+    // «דק'» is invariant in Hebrew, so ONE key covers 1 and 95 — there is no
+    // hours branch and no plural, and this must not become the console's first
+    // i18next plural rule.
+    "rooms.elapsed": "כבר {{minutes}} דק'",
+    // The first minute of every fitting, and the representable-but-odd
+    // negative: `created_at` comes from the database clock while `server_now`
+    // comes from the service's, so assignedAt > serverNow is representable.
+    "rooms.elapsedJustNow": "זה עתה",
+    // D11's ghost holder. Says what is true and does not speculate about why.
+    "rooms.holderGone": "אשת הצוות שתפסה את החדר כבר לא ברשימה.",
+    "rooms.dresses": "שמלות בחדר",
+
+    // The tile's controls. Every *Aria opens with its visible label so WCAG
+    // 2.5.3 label-in-name holds, then names the room after an em-dash — five
+    // tiles all offering a button called «שחרור» is a screen-reader dead end.
+    // An aria-label takes no markup, so an interpolated value in one needs no
+    // bidi treatment at all.
+    "rooms.claim": "תפיסת החדר",
+    "rooms.claimAria": "תפיסת החדר — {{room}}",
+    "rooms.release": "שחרור",
+    "rooms.releaseAria": "שחרור — {{room}}",
+    "rooms.handover": "העברה לעמיתה",
+    "rooms.handoverAria": "העברה לעמיתה — {{room}}",
+    "rooms.addDress": "הוספת שמלה",
+    "rooms.addDressAria": "הוספת שמלה — {{room}}",
+    // A text button, not a chip with an ×: this console ships no icon
+    // vocabulary, and a glyph's target ends up the size of the glyph.
+    "rooms.removeDress": "הסרה",
+    "rooms.removeDressAria": "הסרה — {{dress}}",
+
+    // The inline client picker. ⚠ A Select's `label` prop is typed `string`, so
+    // it CANNOT be bidi-isolated — which is exactly why the value goes last,
+    // where a direction flip has nothing after it to reorder past.
+    "rooms.clientPick": "לקוחה — {{room}}",
+    // Always first, always selected on mount. This is the one-tap path.
+    "rooms.clientNone": "ללא לקוחה",
+    // Names no count and no limit — both are the server's to change without a
+    // copy edit — and names the ORDERING instead, which is a fact she can act
+    // on.
+    "rooms.clientsTruncated": "הרשימה חלקית. לקוחות עם שעת תור מאוחרת יותר אינן מופיעות כאן.",
+
+    // The registry dialog.
+    "rooms.manageTitle": "חדרי המדידה של הבוטיק",
+    "rooms.label": "שם החדר",
+    // Reorder is this labelled number field and never drag-and-drop: drag's
+    // most common implementation is a WCAG 2.1.1 keyboard failure that axe
+    // cannot see. Negatives are legal and are how a row moves to the front
+    // without renumbering the rest.
+    "rooms.order": "סדר תצוגה",
+    "rooms.active": "פעיל",
+    // Reused unchanged as the dress dialog's confirm — one word for one act.
+    "rooms.add": "הוספה",
+    "rooms.save": "שמירה",
+    "rooms.delete": "מחיקה",
+    "rooms.cancel": "ביטול",
+    // Distinct from «ביטול» on purpose: the registry has no pending transaction
+    // to abandon, so «ביטול» would imply an undo the dialog does not perform.
+    "rooms.close": "סגירה",
+    // ⚠ Generic, with the room label rendered in the dialog's children as its
+    // own <bdi>. Modal.title is typed `string`, so a label interpolated here
+    // could not be isolated — and it would sit MID-string, the one position
+    // where a Latin-script room label reorders visibly.
+    "rooms.deleteConfirm": "למחוק את החדר מרשימת החדרים?",
+    "rooms.deleteConfirmBody": "אי אפשר למחוק חדר שיש בו לקוחה עכשיו.",
+    // Field-local, --color-danger from Input — the one place `danger` is
+    // correct on this surface, because it is a thing she must fix in the field
+    // she must fix it in. Neither names a number: both bounds are mirrored
+    // constants the server owns.
+    "rooms.labelRequired": "צריך למלא שם לחדר.",
+    "rooms.labelTooLong": "השם ארוך מדי.",
+    "rooms.orderRange": "סדר התצוגה מחוץ לטווח.",
+    // The dialog's OWN role="status", not the panel's: a live region outside an
+    // open modal is not reliably announced. The save cue is the shipped
+    // `common.saved`, reused rather than declared a fourth time.
+    "rooms.addedCue": "החדר נוסף.",
+    "rooms.deletedCue": "החדר נמחק.",
+
+    // The dress dialog.
+    "rooms.dressTitle": "הוספת שמלה — {{room}}",
+    // Client-side filtering only — no ?q=, no debounce, no second request.
+    "rooms.dressFilter": "חיפוש שמלה",
+    "rooms.dressPick": "שמלה",
+    "rooms.sizePick": "מידה",
+    "rooms.sizeNone": "ללא מידה",
+    "rooms.dressNoMatch": "אין שמלה שמתאימה לחיפוש.",
+    // No CTA: three of the five roles cannot reach «שמלות» at all, and pointing
+    // them at a door that answers 403 is the trap this surface avoids.
+    "rooms.dressEmpty": "אין עדיין שמלות בקטלוג.",
+    // Points at the remedy that is in the dialog with her, rather than at a
+    // section three of the five roles cannot open.
+    "rooms.dressTruncated": "הרשימה חלקית. אפשר לצמצם אותה עם החיפוש.",
+
+    // The handover dialog.
+    "rooms.handoverTitle": "העברת החדר",
+    "rooms.handoverPick": "העברה אל",
+    // She is NOT excluded from the list: the server accepts the handover and
+    // the indexes do not forbid it, so hiding her would be the client asserting
+    // a rule the server does not have.
+    "rooms.handoverOnBreak": "{{name}} — בהפסקה",
+    // `secondary` and never `danger`: a handover destroys nothing.
+    "rooms.handoverConfirm": "העברה",
+    "rooms.handoverNobody": "אין עכשיו עמיתה פנויה לקבל את החדר.",
+
+    // The errors. NONE of these is red. A 409 is two staffers reaching for one
+    // curtain at the same second and a 404 is a screen one tick behind —
+    // nothing that can go wrong on this surface is her fault, so all of them
+    // are the NOTICE register. The only `danger` in the feature is the
+    // registry's delete trigger and the field-local messages above.
+    //
+    // ⚠ Each 409 needs TWO strings, because `details` is optional: the occupant
+    // can release between the index violation and the occupant read, and an
+    // empty interpolation on a legally binding surface is worse than a sentence
+    // that admits it does not know.
+    "rooms.error.ROOM_OCCUPIED": "{{name}} כבר בחדר הזה.",
+    "rooms.error.roomOccupiedUnknown": "החדר נתפס זה עתה. נסי שוב.",
+    // A DIFFERENT sentence with a different remedy, which is why it is a
+    // different code: the fix is to release the other room, not to take another
+    // one. Colon appositive, so the unknown form below is a strict PREFIX of
+    // this one and the two can never read as two different facts.
+    "rooms.error.STAFF_OCCUPIED": "היא כבר בחדר אחר: {{room}}.",
+    "rooms.error.staffOccupiedUnknown": "היא כבר בחדר אחר.",
+    // Two 404 sentences, not one: «החדר כבר לא זמין» is actively misleading
+    // when the room is fine and the fitting simply ended.
+    "rooms.error.notFound": "החדר כבר לא זמין. הרשימה תתוקן בעדכון הבא.",
+    "rooms.error.assignmentGone": "הלקוחה כבר לא בחדר. הרשימה תתוקן בעדכון הבא.",
+    // ⚠ The PAUSED forms. `pause()` stops the loop and nothing else — a claim
+    // stays fully available while paused — so «בעדכון הבא» is a promise the
+    // screen will not keep. Same failure as a named duration, in the event
+    // form. These point at «חידוש», which is the control actually on screen.
+    "rooms.error.notFoundPaused": "החדר כבר לא זמין. הרשימה תתוקן עם חידוש העדכון.",
+    "rooms.error.assignmentGonePaused": "הלקוחה כבר לא בחדר. הרשימה תתוקן עם חידוש העדכון.",
+    // The registry delete's 409. `rooms.error.ROOM_OCCUPIED` is written for a
+    // claim («כבר בחדר הזה» = already in THIS room) and reads as a non-sequitur
+    // as a reason a delete failed, so it gets its own sentence naming the
+    // occupant AND the remedy.
+    "rooms.error.deleteOccupied": "{{name}} נמצאת בחדר עכשיו. אפשר למחוק אותו אחרי שהיא תצא.",
+    "rooms.error.deleteOccupiedUnknown": "החדר תפוס עכשיו. אפשר למחוק אותו אחרי שיתפנה.",
+
+    // The cues. USER-INITIATED ONLY — the poll never writes here, and a room
+    // claimed, released or handed over by a colleague repaints its tile
+    // silently.
+    //
+    // ⚠ THE CLIENT'S NAME IS NEVER IN A CUE. The region is persistent (nothing
+    // clears it on a timer), so a bride's name in it would sit on a five-role
+    // screen for an arbitrary length of time. The tile one line away carries
+    // her name for the duration of the fitting and not one second longer.
+    "rooms.claimedCue": "החדר נתפס: {{room}}.",
+    "rooms.releasedCue": "החדר שוחרר: {{room}}.",
+    // Names the RECEIVING colleague rather than the room: what she needs
+    // confirmed is who has it now, and the room is not in doubt.
+    "rooms.handedOverCue": "החדר הועבר אל {{name}}.",
+    "rooms.dressAddedCue": "השמלה נוספה לחדר: {{dress}}.",
+    "rooms.dressRemovedCue": "השמלה הוסרה מהחדר: {{dress}}.",
   },
 } as const;

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { run } from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
-import type { FloorResponse, StaffCard } from "../api";
+import type { FloorResponse, Room, StaffCard } from "../api";
 import { FloorPanel } from "../components/FloorPanel";
 import { IDLE_STOP_MS, POLL_INTERVAL_MS } from "../lib/usePoll";
 
@@ -40,12 +40,16 @@ function card(overrides: Partial<StaffCard> = {}): StaffCard {
     role: "seamstress",
     status: "available",
     break_started_at: null,
+    occupancy: null,
     ...overrides,
   };
 }
 
-function floor(staff: StaffCard[]): FloorResponse {
-  return { staff };
+// F36 widened the envelope with `rooms` and `server_now`. Both are DEFAULTED
+// here so every shipped call site stays exactly as it was — D15's acceptance
+// rule is about expectations, and a fixture that would not compile is not one.
+function floor(staff: StaffCard[], rooms: Room[] = []): FloorResponse {
+  return { staff, rooms, server_now: NOW };
 }
 
 const ME = card({ id: SELF_ID, display_name: "דנה כהן", role: "owner" });
