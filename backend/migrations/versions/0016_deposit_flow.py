@@ -1,26 +1,26 @@
 """deposit booking flow: the pending_payment hold, its expiry, and the late-payment SMS
 
-Revision ID: 0015
-Revises: 0014
+Revision ID: 0016
+Revises: 0015
 
-**THE REVISION ID IS PROVISIONAL AND IS RENUMBERED BEFORE THE PR OPENS.**
-Three features are in flight in three worktrees: F57 (floor staff roles) holds
-0015 and F33 (QR walk-in queue) holds 0016. F19 builds against 0015/0014 so its
-OWN branch is self-coherent and its db-marked tests can run `alembic upgrade
-head` at all; at rebase time this becomes 0017/down_revision 0016 — two literals
-and a filename.
+**RENUMBERED AT REBASE, and the guard below is why that was a two-line change.**
+Built as 0015/down_revision 0014 so this branch stayed self-coherent and its
+db-marked tests could run `alembic upgrade head` at all while F57 and F33 were
+still in flight in their own worktrees. F57 merged first and took 0015, so this
+became 0016/down_revision 0015.
 
 Two files claiming one revision id is an alembic multiple-heads error that GIT
-CANNOT SEE, because the filenames differ and the merge is textually clean. The
-guard against it is `test_exactly_one_migration_head`, added with this migration:
-it is fast, needs no database, and therefore fails in `make test` before a push
-rather than as a mystery on CI.
+CANNOT SEE — the filenames differ and the merge is textually clean. On the rebase
+that created this collision, `test_exactly_one_migration_head` failed in
+`make test` in under a second and named both heads. Without it the first symptom
+would have been every db-marked test erroring at CI fixture setup, on a branch
+that was green an hour earlier, with a diff touching no migration.
 """
 
 from alembic import op
 
-revision = "0015"
-down_revision = "0014"
+revision = "0016"
+down_revision = "0015"
 branch_labels = None
 depends_on = None
 
