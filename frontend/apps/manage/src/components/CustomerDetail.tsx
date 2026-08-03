@@ -203,7 +203,12 @@ export function CustomerDetail({ customerId, onBack, onCustomerChanged }: Custom
       onCustomerChanged(updated);
       toast({ message: t("customers.saved") });
     } catch (error) {
-      setSaveError(customerErrorText(error, t));
+      // The fallback key is not optional here. Without it every code outside
+      // {NOT_FOUND, NOT_AUTHORIZED} renders the server's ENGLISH message into a
+      // Hebrew RTL console — and the focus move below lands on that alert. The
+      // concrete one is a 401 NOT_AUTHENTICATED when her session expires with
+      // the card open.
+      setSaveError(customerErrorText(error, t, "customers.saveFailed"));
     } finally {
       setSaving(false);
     }

@@ -201,6 +201,22 @@ export function CustomersSection() {
               ))}
             </ul>
           )}
+          {rows.length < total && (
+            // `offset` is pinned to 0 and there is no pager, so the count in the
+            // announced region above is the total under the search predicate and
+            // NOT the length of this list. A boutique with 60 customers was told
+            // «לקוחות ברשימה: 60» over 50 rows with nothing saying the rest
+            // existed — a sentence false about the list it sits on. This is the
+            // notice, not pagination: the spec defers the pager, and search is
+            // the way to a customer past the first page.
+            //
+            // Both numbers, the customers.messagesTruncated shape one screen
+            // over — mid-sentence with Hebrew on both sides, so neither run
+            // needs isolating.
+            <p className="pt-4 text-sm text-ink-muted">
+              {t("customers.listTruncated", { count: rows.length, total })}
+            </p>
+          )}
         </Card>
       )}
     </div>

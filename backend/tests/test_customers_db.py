@@ -86,6 +86,23 @@ def _captured_sql(engine: AsyncEngine) -> Iterator[list[str]]:
         event.remove(engine.sync_engine, "before_cursor_execute", record)
 
 
+def _where_sql(tenant_id: uuid.UUID, customer_id: uuid.UUID, phone: str) -> str:
+    """`_customer_log_where`'s predicate ALONE, never the whole statement.
+
+    `select(MessageLog)` renders every mapped column, so the compiled string
+    opens with `SELECT message_log.tenant_id, message_log.phone, …` and a
+    substring check against the whole of it is a tautology: "message_log.
+    tenant_id" is present whatever the predicate says, including with the tenant
+    fence deleted outright. Everything after the first WHERE is the predicate,
+    and the only other tenant_id in there is `bookings.tenant_id` inside the
+    booking-id subquery — a different table name, so the split is unambiguous.
+    """
+    compiled = str(
+        select(MessageLog).where(*_customer_log_where(tenant_id, customer_id, phone)).compile()
+    )
+    return compiled.split("WHERE", 1)[1]
+
+
 async def _seed_customer(
     session: AsyncSession, tenant_id: uuid.UUID, *, phone: str, name: str
 ) -> uuid.UUID:
@@ -102,6 +119,7 @@ async def _seed_booking(
     status: str = BookingStatus.CONFIRMED.value,
     appointment_type_name: str = "מדידה ראשונה",
     deleted_at: datetime | None = None,
+    booking_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     booking = Booking(
         tenant_id=tenant_id,
@@ -115,6 +133,11 @@ async def _seed_booking(
         appointment_type_name=appointment_type_name,
         deleted_at=deleted_at,
     )
+    # `id` is server_default uuid_generate_v4(), so it is random unless pinned —
+    # and a test about ORDER BY id needs it pinned, or the expected order is
+    # itself a coin flip.
+    if booking_id is not None:
+        booking.id = booking_id
     session.add(booking)
     await session.flush()
     return booking.id
@@ -453,7 +476,14 @@ async def test_a_lifecycle_row_survives_a_phone_correction(app_role_url: str) ->
 
 async def test_the_phone_leg_matches_only_rows_without_a_booking_id(app_role_url: str) -> None:
     """A row that carries a `booking_id` belongs to that booking's customer,
-    full stop — a phone match cannot promote it onto anyone else's page."""
+    full stop — a phone match cannot promote it onto anyone else's page.
+
+    Both halves of the fence, and this is where they belong: the rows prove the
+    effect for this fixture, and the predicate assertion proves the `AND
+    booking_id IS NULL` is in the SQL at all. It moved here from
+    `test_two_tenants_sharing_one_phone_stay_isolated`, where deleting the fence
+    reddened a test whose name is about TENANT isolation and says nothing about
+    attribution inside one."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     starts_at = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
@@ -471,6 +501,7 @@ async def test_the_phone_leg_matches_only_rows_without_a_booking_id(app_role_url
             total = await MESSAGES.count_for_customer(session, tenant_id, mine, phone=PHONE_X)
         assert [row.kind for row in rows] == [MessageKind.OTP.value]
         assert total == 1
+        assert "message_log.booking_id IS NULL" in _where_sql(tenant_id, mine, PHONE_X)
     finally:
         await engine.dispose()
 
@@ -691,6 +722,11 @@ async def test_two_tenants_sharing_one_phone_stay_isolated(app_role_url: str) ->
     deleted and every suite stays green, right up until a deployment where
     `DATABASE_URL` is unset and `core/config.py:250` hands the app a superuser
     connection that bypasses FORCE RLS.
+
+    It asserts ONE thing, and that thing is cross-tenant. The `booking_id IS
+    NULL` assertion that used to sit here is intra-tenant attribution and now
+    lives in `test_the_phone_leg_matches_only_rows_without_a_booking_id`, whose
+    name is about the fence — so a red here means what the name says.
     """
     engine, factory = _factory(app_role_url)
     tenant_a, tenant_b = uuid.uuid4(), uuid.uuid4()
@@ -708,11 +744,7 @@ async def test_two_tenants_sharing_one_phone_stay_isolated(app_role_url: str) ->
         assert [row.body for row in rows] == ["של ב"]
         assert total == 1
 
-        compiled = str(
-            select(MessageLog).where(*_customer_log_where(tenant_b, customer_a, PHONE_X)).compile()
-        )
-        assert "message_log.tenant_id" in compiled
-        assert "message_log.booking_id IS NULL" in compiled
+        assert "message_log.tenant_id" in _where_sql(tenant_b, customer_a, PHONE_X)
     finally:
         await engine.dispose()
 
@@ -817,5 +849,84 @@ async def test_the_history_drops_soft_deleted_rows_and_honours_the_limit(
             )
         assert [row.appointment_type_name for row in capped] == ["האמצעית"]
         assert [row.appointment_type_name for row in everything] == ["האמצעית", "הישנה"]
+    finally:
+        await engine.dispose()
+
+
+async def test_the_history_breaks_a_starts_at_tie_on_id(app_role_url: str) -> None:
+    """Three bookings at ONE instant, which is a state the schema designs for
+    rather than an artificial one.
+
+    `idx_bookings_tenant_customer_starts_unique` is partial on `WHERE deleted_at
+    IS NULL AND status <> 'cancelled'`, and 0009's own comment says why: "a
+    customer who cancels can rebook the very same time". So one confirmed row
+    plus any number of cancelled ones can share a `starts_at` — and this read
+    deliberately includes cancelled rows, so all three land on the panel.
+
+    Under `ORDER BY starts_at DESC` alone the order among them is whatever the
+    plan happens to emit, and this method runs under a LIMIT, so a tie at the
+    boundary decides which row is DROPPED, not merely where it sits. Both
+    siblings in this feature already carry a tiebreak for the same reason —
+    `search` orders by (name, id) and `list_for_customer` by (created_at DESC,
+    id DESC).
+
+    The ids are MINTED and then sorted rather than written as literals — the
+    cluster is session-scoped and nothing here truncates, so a fixed id is a
+    `bookings_pkey` collision on the second run. Python compares `UUID.int`
+    big-endian and Postgres memcmps the same 16 bytes, so the two agree on the
+    order.
+
+    The SEED ORDER IS DECORRELATED FROM THE ID ORDER on purpose, and that is the
+    whole difficulty of this test. Today's plan is `Index Scan Backward using
+    idx_bookings_tenant_starts`, which walks ties in reverse insertion order —
+    so seeding ascending would hand back descending ids with no tiebreak at all
+    and the test would pass against the bug it exists to catch. Middle, lowest,
+    highest is not any of the orders a plan can produce for free.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    tie = datetime(2026, 3, 1, 11, 0, tzinfo=UTC)
+    low, mid, high = sorted(uuid.uuid4() for _ in range(3))
+    ids = [low, mid, high]
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer_id = await _seed_customer(session, tenant_id, phone=PHONE_X, name="מיכל לוי")
+            for index, booking_id in enumerate((mid, low, high)):
+                await _seed_booking(
+                    session,
+                    tenant_id,
+                    customer_id,
+                    starts_at=tie,
+                    # Only ONE of the three may be non-cancelled: the partial
+                    # unique index admits the tie precisely because a cancelled
+                    # row is outside it.
+                    status=(
+                        BookingStatus.CONFIRMED.value
+                        if index == 1
+                        else BookingStatus.CANCELLED.value
+                    ),
+                    booking_id=booking_id,
+                )
+            # A later booking, to prove the tiebreak is SECONDARY — starts_at
+            # still decides first.
+            newest = await _seed_booking(
+                session,
+                tenant_id,
+                customer_id,
+                starts_at=tie + timedelta(days=1),
+                status=BookingStatus.CANCELLED.value,
+            )
+
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await BOOKINGS.list_recent_for_customer(
+                session, tenant_id, customer_id=customer_id, limit=10
+            )
+            # The tie sits ON the limit boundary: without a total order, which
+            # of the three is dropped here is undefined.
+            capped = await BOOKINGS.list_recent_for_customer(
+                session, tenant_id, customer_id=customer_id, limit=3
+            )
+        assert [row.id for row in rows] == [newest, ids[2], ids[1], ids[0]]
+        assert [row.id for row in capped] == [newest, ids[2], ids[1]]
     finally:
         await engine.dispose()

@@ -92,6 +92,26 @@ async function openDetail() {
   return screen.findByRole("heading", { level: 3, name: "היסטוריית תורים" });
 }
 
+// Mirrors SEARCH_DEBOUNCE_MS, and CustomerDetail's BOOKING_HISTORY_LIMIT.
+// Neither is exported and neither is parity-guarded — the component says why for
+// the limit, and a drift in the debounce makes the wait below too short, which
+// fails loudly rather than silently.
+const SEARCH_DEBOUNCE_MS = 300;
+const BOOKING_HISTORY_LIMIT = 50;
+
+// EVERY refetch this component can make is scheduled inside
+// setTimeout(…, SEARCH_DEBOUNCE_MS). So `toHaveBeenCalledTimes(1)` read on the
+// microtask after an await that resolved synchronously is taken ~300ms BEFORE
+// the refetch it is supposed to catch is even due, and asserts nothing at all:
+// adding `selectedId` to the effect's dep array — two extra round trips for
+// every card opened — left both call-count tests green and byte-identical.
+// Letting the window elapse first is what makes them assertions.
+async function afterTheDebounceWindow() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS + 1));
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   listCustomers.mockResolvedValue(page([row()]));
@@ -209,6 +229,25 @@ describe("CustomersSection list", () => {
     expect(box).not.toHaveAttribute("dir");
   });
 
+  // `offset` is pinned to 0 and there is no pager, so the announced `total` is
+  // the count under the search predicate and NOT the length of the list beneath
+  // it. A boutique with 60 customers was told «לקוחות ברשימה: 60» above 50 rows,
+  // with nothing saying the rest existed — a sentence that is false about the
+  // list it sits on. Same notice shape this screen already uses twice.
+  it("says the list is truncated when the count exceeds the rows rendered", async () => {
+    listCustomers.mockResolvedValue(page([row()], 60));
+    renderInShell(<CustomersSection />);
+    await screen.findByText("מיכל לוי");
+    expect(screen.getByText("מוצגות 1 מתוך 60 לקוחות.")).toBeInTheDocument();
+  });
+
+  it("says nothing about truncation when every customer is on the page", async () => {
+    listCustomers.mockResolvedValue(page([row()], 1));
+    renderInShell(<CustomersSection />);
+    await screen.findByText("מיכל לוי");
+    expect(screen.queryByText(/מוצגות .* מתוך/)).toBeNull();
+  });
+
   it("puts the list under a single h2 with no skipped level", async () => {
     renderInShell(<CustomersSection />);
     await screen.findByText("מיכל לוי");
@@ -224,7 +263,9 @@ describe("CustomersSection detail swap", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "חזרה לרשימה" }));
     await screen.findByTestId("customers-count");
-    // The list state was never unmounted, so no refetch fires.
+    // The list state was never unmounted, so no refetch fires — counted only
+    // after the debounce window a refetch would have to schedule itself in.
+    await afterTheDebounceWindow();
     expect(listCustomers).toHaveBeenCalledTimes(1);
   });
 
@@ -316,6 +357,29 @@ describe("CustomerDetail panels", () => {
     getCustomer.mockResolvedValue(detail({ messages_total: 214 }));
     await openDetail();
     expect(screen.getByText("מוצגות 1 מתוך 214 רשומות ביומן.")).toBeInTheDocument();
+  });
+
+  // The SMS-log notice above has had a test since it shipped; its sibling under
+  // the booking panel had none, because no fixture ever reached the limit —
+  // which is why changing that branch's `>=` to `>` left every suite green.
+  it("states the booking history truncated once it fills the limit", async () => {
+    getCustomer.mockResolvedValue(
+      detail({
+        bookings: Array.from({ length: BOOKING_HISTORY_LIMIT }, (_, index) => ({
+          id: `b${index}`,
+          starts_at: "2026-08-04T07:00:00Z",
+          status: "completed",
+          appointment_type_name: "מדידה ראשונה",
+        })),
+      }),
+    );
+    await openDetail();
+    expect(screen.getByText("מוצגים 50 התורים האחרונים.")).toBeInTheDocument();
+  });
+
+  it("says nothing about the booking history when it is short of the limit", async () => {
+    await openDetail();
+    expect(screen.queryByText(/התורים האחרונים/)).toBeNull();
   });
 
   it("shows both empty panels when there is no history at all", async () => {
@@ -500,11 +564,42 @@ describe("CustomerDetail save", () => {
     fireEvent.click(screen.getByRole("button", { name: "שמירה" }));
 
     const alert = await screen.findByTestId("customer-save-error");
-    // Unmapped codes fall through to the server's own message deliberately: the
-    // only one this path can produce is VALIDATION_ERROR, whose text is
-    // computed per field and cannot be reproduced client-side.
-    expect(alert).toHaveTextContent("boom");
+    // Every unmapped code reads as the Hebrew save-failed sentence. It used to
+    // fall through to the server's English on the theory that VALIDATION_ERROR
+    // was the only code this path could produce — it is not, see the 401 below.
+    expect(alert).toHaveTextContent("לא ניתן לשמור את השינויים כרגע.");
+    expect(alert.textContent ?? "").not.toContain("boom");
     await waitFor(() => expect(document.activeElement).toBe(alert));
+  });
+
+  // The concrete failure: her session expires while the card is open, she
+  // presses «שמירה», the PATCH answers 401 NOT_AUTHENTICATED — and the alert the
+  // focus move lands on rendered the English "Authentication required." into a
+  // Hebrew RTL console. `customers.saveFailed` shipped in both bundles with
+  // nothing resolving it.
+  it("renders the Hebrew save-failed sentence when the session has expired", async () => {
+    await openDetail();
+    updateCustomer.mockRejectedValue(
+      new ApiError(401, "NOT_AUTHENTICATED", "Authentication required."),
+    );
+    fireEvent.change(screen.getByLabelText("הערות"), { target: { value: "משהו אחר" } });
+    fireEvent.click(screen.getByRole("button", { name: "שמירה" }));
+
+    const alert = await screen.findByTestId("customer-save-error");
+    expect(alert).toHaveTextContent("לא ניתן לשמור את השינויים כרגע.");
+    expect(alert.textContent ?? "").not.toContain("Authentication");
+  });
+
+  // NOT_FOUND stays mapped: the card is gone, which is a different fact from
+  // "the save did not land", and the fallback must not swallow it.
+  it("still maps a NOT_FOUND on save to its own sentence", async () => {
+    await openDetail();
+    updateCustomer.mockRejectedValue(new ApiError(404, "NOT_FOUND", "Resource not found."));
+    fireEvent.change(screen.getByLabelText("הערות"), { target: { value: "משהו אחר" } });
+    fireEvent.click(screen.getByRole("button", { name: "שמירה" }));
+
+    const alert = await screen.findByTestId("customer-save-error");
+    expect(alert).toHaveTextContent("הלקוחה הזו לא נמצאה. ייתכן שהכרטיס הוסר.");
   });
 
   it("patches the list row from the save response without refetching", async () => {
@@ -519,6 +614,7 @@ describe("CustomerDetail save", () => {
     fireEvent.click(screen.getByRole("button", { name: "חזרה לרשימה" }));
     await screen.findByTestId("customers-count");
     expect(screen.getByText("כלה")).toBeInTheDocument();
+    await afterTheDebounceWindow();
     expect(listCustomers).toHaveBeenCalledTimes(1);
   });
 });

@@ -385,6 +385,7 @@ export const ar = {
     "customers.searchPlaceholder": "שם או מספר טלפון",
     "customers.listLoading": "טוען את רשימת הלקוחות…",
     "customers.count": "לקוחות ברשימה: {{count}}",
+    "customers.listTruncated": "מוצגות {{count}} מתוך {{total}} לקוחות.",
     "customers.loadFailed":
       "לא ניתן לטעון את רשימת הלקוחות כרגע. אפשר לנסות שוב בעוד רגע.",
     "customers.emptyTitle": "אין עדיין לקוחות",

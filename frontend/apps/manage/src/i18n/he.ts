@@ -677,6 +677,13 @@ export const he = {
     "customers.listLoading": "טוען את רשימת הלקוחות…",
     // Base key only, no _one/_other — the booking.dayCount shape.
     "customers.count": "לקוחות ברשימה: {{count}}",
+    // `offset` is pinned to 0 and there is no pager, so `customers.count` above
+    // announces the count under the SEARCH PREDICATE, which is not the length
+    // of the list beneath it. Without this line a boutique with 60 customers
+    // reads «לקוחות ברשימה: 60» over 50 rows and nothing says the rest exist.
+    // Two numbers, mid-sentence with Hebrew on both sides — the
+    // customers.messagesTruncated shape, so neither run needs isolating.
+    "customers.listTruncated": "מוצגות {{count}} מתוך {{total}} לקוחות.",
     "customers.loadFailed":
       "לא ניתן לטעון את רשימת הלקוחות כרגע. אפשר לנסות שוב בעוד רגע.",
     // Two empty states, never one: telling a boutique with 200 customers that

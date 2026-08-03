@@ -151,15 +151,20 @@ const CUSTOMER_ERROR_KEYS = new Map<string, string>([
   ["NOT_AUTHORIZED", "customers.error.NOT_AUTHORIZED"],
 ]);
 
-// `fallbackKey` is the register for every code this map does not own, and the
-// two kinds of caller want different ones. The READ paths pass their outage key
-// — a 500 on a list is an outage and the owner needs a Hebrew sentence, not the
-// server's English one. The SAVE path passes nothing and falls through to
-// errorMessage(error) deliberately: the only unmapped code it can produce is
-// VALIDATION_ERROR, whose message is computed per field and cannot be
-// reproduced client-side — and which the client is responsible for never
-// producing at all, because every bound the server checks is mirrored in
-// validation.ts and checked first.
+// `fallbackKey` is the register for every code this map does not own, and EVERY
+// F53 caller passes one — the read paths their outage key, the save path
+// `customers.saveFailed`. A 500 on a list is an outage and the owner needs a
+// Hebrew sentence, not the server's English one; a failed save is the same.
+//
+// The save path used to pass nothing, on the theory that VALIDATION_ERROR was
+// the only unmapped code it could produce and its per-field message cannot be
+// reproduced client-side. That was false: test_customers_api.py derives the live
+// code set from the app and it includes NOT_AUTHENTICATED — the 401 a session
+// expiring mid-edit produces, which rendered "Authentication required." into an
+// RTL console, in the one alert this screen moves focus to.
+//
+// `null` therefore stays reachable only for bookingErrorText's shape, not for
+// any F53 caller. A new caller that wants the server's English must ask for it.
 export function customerErrorText(
   error: unknown,
   t: (key: string) => string,

@@ -719,6 +719,15 @@ class BookingsRepository:
         three past cancellations an empty history, and "she cancelled twice" is
         precisely the fact this screen exists to surface — `list_day`'s argument,
         one panel over.
+
+        **The `id` tiebreak is not decoration**, the same sentence
+        `MessageLogRepository.list_for_customer` writes about `created_at`.
+        `starts_at` ties are DESIGNED FOR here: both partial unique indexes are
+        `WHERE deleted_at IS NULL AND status <> 'cancelled'`, and 0009's comment
+        says why — "a customer who cancels can rebook the very same time" — while
+        this read deliberately admits cancelled rows. Under a LIMIT a tie at the
+        boundary decides which row is DROPPED, not merely where it sits, so
+        without a total order the panel can show a different set on a refresh.
         """
         stmt = (
             select(Booking)
@@ -727,7 +736,7 @@ class BookingsRepository:
                 Booking.customer_id == customer_id,
                 Booking.deleted_at.is_(None),
             )
-            .order_by(Booking.starts_at.desc())
+            .order_by(Booking.starts_at.desc(), Booking.id.desc())
             .limit(limit)
         )
         return list((await session.execute(stmt)).scalars().all())

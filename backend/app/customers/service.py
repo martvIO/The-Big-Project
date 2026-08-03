@@ -21,10 +21,25 @@ response, so the two views cannot disagree — same object"*, and it only holds 
 the response really is the same object.
 
 **One `tenant_session` per request**, so `session.begin()` makes the whole
-handler body one transaction and the three reads see one snapshot. That matters
-here rather than being tidy: a booking created between the customer read and the
-message read would otherwise produce a log row whose `booking_id` matches
-nothing in the history panel beside it.
+handler body one transaction: one connection, one RLS binding for all three
+reads, and one atomic unit on the write path.
+
+⚠ It does NOT buy a stable read view, and the claim that it does — which the
+spec and the plan both still make — is false against this code. `get_engine()`
+sets no `isolation_level` and `tenant_session` issues no SET TRANSACTION
+ISOLATION LEVEL, so Postgres runs READ COMMITTED, where every statement takes a
+FRESH snapshot. A booking created between the customer read and the message read
+therefore CAN still produce a log row whose `booking_id` matches nothing in the
+history panel beside it. Cross-panel consistency here is best-effort, and the
+panels are read-only evidence, so a one-refresh skew is a cosmetic race rather
+than a correctness bug.
+
+Raising the isolation level would fix it and is deliberately NOT done here: it is
+a repo-wide behaviour change (every caller of `get_engine()` inherits it, and
+REPEATABLE READ turns concurrent writes into serialization failures the handlers
+do not retry) and must not ride in on this feature. Anyone adding a field to
+`SmsLogRow` that has to agree with the booking panel needs to read this
+paragraph, not the sentence it replaced.
 """
 
 import uuid

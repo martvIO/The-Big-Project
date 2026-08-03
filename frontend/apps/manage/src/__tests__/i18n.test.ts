@@ -241,8 +241,8 @@ describe("F34 board keys resolve", () => {
 
 describe("F53 customers keys resolve", () => {
   it("carries the whole copy deck", () => {
-    // 51 rows: nav.customers plus 50 under customers.*.
-    expect(HE_F53.length).toBeGreaterThanOrEqual(48);
+    // 52 rows: nav.customers plus 51 under customers.*.
+    expect(HE_F53.length).toBeGreaterThanOrEqual(49);
   });
 
   it("is FOLDED into HE, not merely declared", () => {
