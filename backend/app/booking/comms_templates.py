@@ -30,6 +30,7 @@ CONFIRMATION_MAX_SEGMENTS = 3
 REMINDER_MAX_SEGMENTS = 3
 OWNER_CANCEL_MAX_SEGMENTS = 3
 OWNER_RESCHEDULE_MAX_SEGMENTS = 3
+PAYMENT_RECEIVED_NO_SLOT_MAX_SEGMENTS = 3
 
 # tenants.name is unbounded TEXT, but the arithmetic above assumes ~25 characters
 # of it. Truncating here is the only way production matches the tested fixture
@@ -109,6 +110,25 @@ def jerusalem_time(instant: datetime.datetime) -> str:
 
 def _when(instant: datetime.datetime) -> tuple[str, str, str]:
     return jerusalem_weekday(instant), jerusalem_date(instant), jerusalem_time(instant)
+
+
+# --- the fifth body ---------------------------------------------------------
+
+# F19 MD2, verbatim from the spec's decision block. A CONSTANT and not a
+# function because it takes nothing: the four bodies above are parameterised by
+# facts the copy deck approved them to state, and prefixing this one with the
+# boutique name would be inventing copy MD2 did not approve.
+#
+# What it is allowed to say is the whole point, and MD2 fixed it: it promises no
+# refund (MD1 keeps the deposit against a new appointment, and D16 writes no
+# refund_due row), it names no new time (race row #15 is the bride who already
+# rebooked herself, for whom "we will arrange a new time" is false), and it
+# claims nothing has already been done (it is sent from the branch where the
+# rebind did NOT happen). "We will get back to you shortly" is true in both
+# races, and the specific remedy is the owner's to say on the phone.
+PAYMENT_RECEIVED_NO_SLOT_BODY = (
+    "התשלום שלך התקבל. המועד שבחרת כבר נתפס, והפיקדון שמור עבורך — נחזור אליך בהקדם."
+)
 
 
 # --- the four bodies --------------------------------------------------------
