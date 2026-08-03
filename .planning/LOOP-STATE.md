@@ -28,29 +28,49 @@ current: F19, F33, F53          # F57 MERGED 2026-08-03 (PR #33) — see the MIG
                                 # not this loop's to touch (user instruction 2026-08-03). F19 and
                                 # F33 are this session's, run one after the other.
                                 #
-                                # ==== MIGRATION CHAIN, REVISED 2026-08-03 ====
-                                # main's head is now 0015 (F57, merged). The remaining claims are:
-                                #   F19 -> 0016 (down_revision 0015)
-                                #   F33 -> 0017 (down_revision 0016)
-                                #   F53 -> 0018 (down_revision 0017)  [unchanged]
-                                # F19 AND F33 SWAPPED NUMBERS versus what this file said on
-                                # 2026-08-03 morning (F33 was 0016, F19 0017). Reason: F19 has 15
-                                # commits and a complete backend+storefront+manage build; F33 had
-                                # ZERO commits and an unstarted worktree. Serializing a finished
-                                # feature behind an unstarted one buys nothing, and F19's renumber
-                                # is two literals and a filename either way. F53 IS UNAFFECTED —
-                                # its constraint is "0015, 0016 and 0017 are all on main before I
-                                # open my PR", which is order-independent, and it still holds 0018.
-                                # The ordering rule that has NOT changed: each feature MUST NOT
-                                # OPEN ITS PR before every lower number has merged. CI tests the
-                                # merge result, and two files claiming one revision id is an
-                                # alembic multiple-heads error that git cannot see (the filenames
-                                # differ) and that reads as a mystery.
-                                # F19 was BUILT against 0015/down 0014 so its branch was
-                                # self-coherent; it RENUMBERS to 0016/down 0015 at rebase time.
-                                # F19 also carries the fast, no-DB single-head guard that makes a
-                                # collision fail loudly in `make test` instead of as a CI mystery;
-                                # it is a permanent guard, not scaffolding.
+                                # ==== MIGRATION CHAIN — NOW A RULE, NOT A FIXED GRID ====
+                                # main's head is 0015 (F57, merged 2026-08-03). Every fixed number
+                                # this file previously assigned (F33=0016, F19=0017, F53=0018) was
+                                # derived from a head of 0014 and is now OFF BY ONE. Do not read
+                                # them as current. THE RULE THAT REPLACES THEM:
+                                #   Resolve your revision id from `alembic heads` on main
+                                #   IMMEDIATELY BEFORE the rebase that precedes your push, and
+                                #   make the migration the LAST commit on the branch so the
+                                #   renumber costs one amend to one file nothing else references.
+                                # This is what F53's own entry already said, and it is the only
+                                # form that survives three sessions landing in an order none of
+                                # them controls. EXPECTED landing order, not a reservation:
+                                # F19 (nearly done) -> F33 (building) -> F53 (building).
+                                # The ordering rule is UNCHANGED and is the load-bearing one:
+                                # do not OPEN a PR while a lower-numbered migration is still
+                                # unmerged. CI tests the merge result, and two files claiming one
+                                # revision id is an alembic multiple-heads error that git cannot
+                                # see (the filenames differ) and that reads as a mystery.
+                                # THREE THINGS MAKE THIS SAFE WITHOUT COORDINATION: (a) a wrong
+                                # down_revision names a revision that does not exist, so alembic
+                                # errors outright rather than drifting; (b) F19 carries a fast,
+                                # no-DB single-head guard that fails in `make test` instead of as
+                                # a CI mystery — it is permanent, not scaffolding; (c) each branch
+                                # BUILDS against head+1 so it is self-coherent and its db tests
+                                # run, then renumbers at rebase.
+                                #
+                                # ==== WHO OWNS WHAT, 2026-08-03 12:48 ====
+                                # THREE SESSIONS ARE LIVE IN THIS REPO AT ONCE. Verified by file
+                                # mtimes, not by assumption — check the same way before touching a
+                                # worktree that is not yours (`find .worktrees/<slug> -mmin -15`;
+                                # note BSD find has no -newermt).
+                                #   F19  .worktrees/deposit-booking-flow — ANOTHER SESSION, ACTIVE.
+                                #        Writing as of 12:47 (a declined-state fix: DECLINE_ERROR
+                                #        hoisted to a shared constant, is_declined() on the poll,
+                                #        a db test for the round trip). 15 commits + uncommitted
+                                #        work. DO NOT rebase, renumber, push or review it.
+                                #   F53  .worktrees/customers-crm — ANOTHER SESSION, ACTIVE, and
+                                #        the user named it explicitly. 8 commits. Hands off.
+                                #   F33  .worktrees/qr-walkin-queue — UNOWNED. Spec and plan are
+                                #        written (887 + 838 lines) and were left UNTRACKED in the
+                                #        main checkout by the session that wrote them; the worktree
+                                #        holds only an 8-line conftest.py addition and no commits.
+                                #        THIS LOOP TOOK IT.
                                 #
                                 # ---- historical: how these four came to be in flight ----
                                 # (kept because the reasoning still governs which entry is pickable)
@@ -292,9 +312,23 @@ queue:
     slug: qr-walkin-queue
     epic: E6
     title: "QR self-check-in + queue tickets + live position"
-    status: specing
+    status: building
     attempts: 1
     deps: [F5, F9, F10, F13]
+    spec: .planning/specs/qr-walkin-queue.md
+    plan: .planning/plans/qr-walkin-queue.md
+    resumed: >-
+      2026-08-03 12:50 by a NEW session, after the session that wrote the spec and
+      plan stopped without committing them — both sat UNTRACKED in the main
+      checkout and are committed with this status change. Gates 1 and 2 are
+      self-approved (standing approval; the collection-notice string stays parked
+      in in_run_gates and a neutral interim ships, which is the F19 precedent).
+      The worktree carried an 8-line uncommitted conftest.py addition from that
+      session — inspected and kept/discarded deliberately at build start rather
+      than trusted as done, per the F57 resume precedent.
+      MIGRATION: resolve from `alembic heads` at rebase time. See the rule block
+      at the top of `current:` — the old fixed 0016 claim was derived from a head
+      of 0014 and is off by one now that F57's 0015 has merged.
     started: >-
       2026-08-03, in PARALLEL with F57 and in its own worktree
       (.worktrees/qr-walkin-queue). Picked because F36, the next entry in file
