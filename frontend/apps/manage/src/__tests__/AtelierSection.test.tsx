@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { run } from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
-import type { AtelierBoardResponse, AtelierTicket } from "../api";
+import type { AtelierBoardResponse, AtelierTicket, TicketStage } from "../api";
 import { AtelierSection } from "../components/AtelierSection";
 import { IDLE_STOP_MS, POLL_INTERVAL_MS } from "../lib/usePoll";
 
@@ -1743,6 +1743,66 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     expect(document.activeElement).toHaveTextContent("התקבל");
   });
 
+  it("5c — a POLL onto a BIG board, where the repaint and its effects split", async () => {
+    // ⚠ THE MUTATION 5a CANNOT CATCH, AND THE ONE THAT REACHED CI. The restore
+    // effect carries NO DEPENDENCY ARRAY, so it is queued after EVERY commit —
+    // including a commit whose DOM still predates the repaint the intent was
+    // recorded for. React drains a commit's queued passive effects at the top of
+    // the next render pass, so a `restoreRef.current = null` written ABOVE the
+    // guards is executed by that stale pass, and the repaint then arrives with
+    // nothing left to restore. Focus lands on <body> with no user action at all.
+    //
+    // 5a reddens on that mutation only when it happens to run FIRST in its
+    // worker; run 90th in this file it stays GREEN with the bug present, because
+    // by then the turns spent on the earlier tests drain the queue before the
+    // capture. That is exactly how F41 passed every gate locally and failed CI's
+    // Frontend job — the outcome is decided by one scheduler turn, which is not
+    // a thing a test may leave to the host.
+    //
+    // So the split is FORCED here rather than hoped for, and forced by the
+    // product: 150 cards. Rendering them blows Scheduler's 5 ms frame budget, so
+    // React yields between the commit and the passive flush every time, on a
+    // cold worker and a warm one alike. Boards this size ship — the API carries
+    // a `truncated` flag precisely because they do.
+    const crowd = (stage: TicketStage) => {
+      const rows = [ticket({ stage })];
+      for (let i = 1; i < 150; i += 1) {
+        rows.push(
+          ticket({
+            id: `bbbbbbbb-0000-0000-0000-${String(i).padStart(12, "0")}`,
+            customer_name: `לקוחה ${i}`,
+          }),
+        );
+      }
+      return board(rows);
+    };
+
+    getAtelierBoard.mockResolvedValue(crowd("intake"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+
+    await act(async () => {
+      // Tick 1 — an unchanged board. Its repaint is still an unflushed passive
+      // effect when tick 2 lands.
+      vi.advanceTimersByTime(POLL_INTERVAL_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      // Tick 2 — the colleague's move, into the gap.
+      getAtelierBoard.mockResolvedValue(crowd("qc"));
+      vi.advanceTimersByTime(POLL_INTERVAL_MS);
+    });
+
+    const moved = within(screen.getByRole("list", { name: "בקרה" })).getByRole("button", {
+      name: "לשלב הבא — מיכל לוי",
+    });
+    expect(control.isConnected).toBe(false);
+    expect(document.activeElement).toBe(moved);
+  });
+
   it("steals NOTHING back that the user moved while a write was in flight", async () => {
     // ⚠ THE `document.activeElement === document.body` GUARD IS WHAT MAKES THE
     // UNCONDITIONAL CAPTURE FREE — and this is the fixture that exercises it: she
@@ -1774,6 +1834,69 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     ).toBeInTheDocument();
 
     expect(document.activeElement).toBe(pauseControl);
+  });
+
+  it("steals NOTHING back on a FAILED poll, once she has tabbed out of the document", async () => {
+    // ⚠ THE OTHER DIRECTION OF 5c'S DEFECT, and the one an a11y fix for 5c
+    // INTRODUCES if it keeps the intent «while focus is still inside the
+    // captured card». That condition is a PROXY for «the repaint has not landed
+    // yet» and it is not a faithful one: it is equally true of a seamstress
+    // sitting still on a card with nothing pending at all. Kept there, the
+    // intent outlives its payload and the next commit that happens to find
+    // <body> fires it.
+    //
+    // This is that commit. She leaves the document by HER OWN Tab — no repaint
+    // dropped her — and `load`'s catch branch never reaches captureFocus, so
+    // nothing invalidates the stale intent before `setStale(true)` commits.
+    // Restoring here is WCAG 3.2.x unexpected change of context, caused by the
+    // fix for 3.2.x.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+
+    // A SUCCESSFUL tick that moves nothing: the card is where it was and so is
+    // she, so the intent this tick recorded is spent the moment its board lands.
+    await advanceTimers(POLL_INTERVAL_MS);
+    expect(document.activeElement).toBe(control);
+
+    control.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    getAtelierBoard.mockRejectedValue(new ApiError(500, "SERVER_ERROR", "boom"));
+    await advanceTimers(POLL_INTERVAL_MS);
+    await waitFor(() => expect(screen.getByText(/אין עדכון מאז/)).toBeInTheDocument());
+
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("steals NOTHING back on a commit NO payload preceded, such as the pause toggle", async () => {
+    // The second trigger for the same stale intent, and the one that shows it
+    // takes no network at all: EVERY commit reaches the restore effect, so
+    // «השהיה» will do — and so would a cue, a draft keystroke or an in-card
+    // alert. Whatever expires an intent has to be the payload it was recorded
+    // for, because nothing else is guaranteed to arrive.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+    await advanceTimers(POLL_INTERVAL_MS);
+    expect(document.activeElement).toBe(control);
+
+    control.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    // `fireEvent.click` does not move focus, which is what makes the reading
+    // clean: anything holding focus after the toggle was put there by the
+    // component and not by the tap.
+    fireEvent.click(screen.getByRole("button", { name: "השהיה — לוח התפירה" }));
+    expect(screen.getByText(/מושהה · עודכן/)).toBeInTheDocument();
+
+    expect(document.activeElement).toBe(document.body);
   });
 });
 

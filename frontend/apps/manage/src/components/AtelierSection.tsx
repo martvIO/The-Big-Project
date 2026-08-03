@@ -127,6 +127,10 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
   const { t } = useTranslation();
 
   const [boardData, setBoardData] = useState<AtelierBoardResponse | null>(null);
+  // ⚠ HOW MANY PAYLOADS THIS RENDER HAS SEEN, and it is STATE on purpose — the
+  // restore effect below is the only reader and it needs the number the commit
+  // it belongs to was painted with, not the newest one. See `applyBoard`.
+  const [boardCommit, setBoardCommit] = useState(0);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -165,16 +169,27 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
   // the user moving it. That guard is what makes «unconditional» free: if focus
   // is still on something real the restore does nothing, and it is strictly less
   // code than any predicate over the two lists.
+  //
+  // `capturedAt` is the `boardCommit` value current when the intent was
+  // recorded. Every intent is recorded immediately before exactly ONE
+  // `applyBoard` — `load` captures then applies, `runWrite` records then applies
+  // — so «the repaint this intent is waiting for» is precisely «the first board
+  // commit after `capturedAt`», and the effect can test for it rather than
+  // guess from where focus happens to be.
   const restoreRef = useRef<{
     ticketId: string;
     control: string | null;
     columnStage: TicketStage;
+    capturedAt: number;
   } | null>(null);
   const cardAlertRef = useRef<HTMLParagraphElement>(null);
   const formAlertRef = useRef<HTMLParagraphElement>(null);
   const deleteAlertRef = useRef<HTMLParagraphElement>(null);
   // `load` runs outside render and would otherwise close over a stale payload.
   const boardRef = useRef<AtelierBoardResponse | null>(null);
+  // …and `boardCommit`'s state copy is one render behind by design, so the
+  // capture sites — which also run outside render — read the count from here.
+  const boardCommitRef = useRef(0);
   const mutationsRef = useRef(0);
   // The pointer hold is the CALLER's — usePoll deliberately does not supply it.
   // It matters more here than on the floor panel: a card changing column is a
@@ -196,9 +211,17 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
   // reader is a phone left on a bench.
   const dialogOpen = form !== null || pendingDelete !== null;
 
+  // ⚠ A COUNTER, not the payload, and NOT `[boardData]` in a dependency array:
+  // `setBoardData` BAILS OUT of a reference-identical payload, so keying the
+  // restore on the data would silently skip the one repaint an intent is
+  // waiting for. `setBoardCommit` always changes, so a board application always
+  // produces a commit, and two applications collapsed into one render still
+  // move the count past every intent they subsume.
   const applyBoard = (next: AtelierBoardResponse) => {
     boardRef.current = next;
+    boardCommitRef.current += 1;
     setBoardData(next);
+    setBoardCommit(boardCommitRef.current);
   };
 
   /**
@@ -226,6 +249,7 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       ticketId,
       control: active.closest("[data-control]")?.getAttribute("data-control") ?? null,
       columnStage: row.stage,
+      capturedAt: boardCommitRef.current,
     };
   };
 
@@ -326,8 +350,31 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
     // Focusing the destination also scrolls it into view natively, so the
     // stacked layout needs no scroll code.
     const target = restoreRef.current;
+    if (target === null) {
+      return;
+    }
+    // ⚠ THE INTENT BELONGS TO ONE COMMIT AND EXPIRES ON IT. This effect is
+    // queued after EVERY commit, so it also runs on commits whose DOM still
+    // PREDATES the repaint the intent is waiting for: React flushes a commit's
+    // passive effects in a task of its own, and a later render pass drains them
+    // before it paints. Those passes carry the OLD `boardCommit` — the count the
+    // intent was recorded at, or less — so they decline here and leave it alone.
+    // Clearing above this line is what shipped the defect: a stale pass ate the
+    // intent, its own precondition then failed, and the real repaint arrived
+    // with nothing left to restore.
+    if (boardCommit <= target.capturedAt) {
+      return;
+    }
+    // Past it, so the repaint HAS landed. The intent dies here whatever happens
+    // next, which is the half a `document.activeElement` test cannot supply:
+    // «focus is still inside the captured card» is equally true of a repaint
+    // that has not landed and of a user sitting still with nothing pending, and
+    // an intent kept for the second case is a stolen focus later — the next
+    // commit that finds her on <body>, for ANY reason including her own Tab out
+    // of the document, hands her back to a card she left. Expiry is decided by
+    // the payload, not by where she happens to be standing.
     restoreRef.current = null;
-    if (target === null || document.activeElement !== document.body) {
+    if (document.activeElement !== document.body) {
       return;
     }
     const root = sectionRef.current;
@@ -361,9 +408,10 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
     // would SILENTLY NEVER FIRE for a poll that handed `setBoardData` a
     // reference-identical payload — React bails out of the update and the effect
     // is skipped, which is the defect FloorPanel records in its own words for
-    // its [cards] effect. Both guards above are cheap and the component
-    // re-renders on every tick regardless, so running after every commit costs
-    // nothing and cannot go stale.
+    // its [cards] effect. `boardCommit` above is what makes that moot: it is
+    // read from the render, so every commit is judged on its own count and the
+    // ones with nothing to do return on the first line. Anyone adding an array
+    // here must key it on [boardCommit] and never on [boardData].
   });
 
   useEffect(() => {
@@ -505,7 +553,12 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       // card, so the unconditional capture would find nothing on the one act
       // that most needs a destination; and the tapped control is `disabled`
       // while the request is in flight, which real browsers blur.
-      restoreRef.current = { ticketId: ticket.id, control, columnStage: ticket.stage };
+      restoreRef.current = {
+        ticketId: ticket.id,
+        control,
+        columnStage: ticket.stage,
+        capturedAt: boardCommitRef.current,
+      };
       applyBoard({
         ...current,
         tickets:
