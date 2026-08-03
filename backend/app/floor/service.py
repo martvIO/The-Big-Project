@@ -52,14 +52,28 @@ from app.db.repositories.fitting_room_assignments import (
     violated_index,
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
+from app.db.repositories.sessions import SessionsRepository
+from app.db.repositories.sos_alerts import SosAlertsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
-from app.floor.validation import RoomOccupiedError, StaffOccupiedError, normalize_room_label
+from app.floor.validation import (
+    RoomOccupiedError,
+    SosValidationError,
+    StaffOccupiedError,
+    normalize_room_label,
+    normalize_sos_note,
+)
 from app.models.booking import Booking
-from app.models.constants import AuditAction, BookingStatus, StaffCardStatus, StaffRole
+from app.models.constants import (
+    AuditAction,
+    BookingStatus,
+    StaffCardStatus,
+    StaffRole,
+)
 from app.models.dress import Dress
 from app.models.fitting_assignment_dress import FittingAssignmentDress
+from app.models.sos_alert import SosAlert
 from app.models.staff_user import StaffUser
 from app.storefront.validation import BOUTIQUE_TIMEZONE, today_jerusalem
 
@@ -106,6 +120,27 @@ class RoomRead:
 
     row: RoomRow
     bindings: list[FittingAssignmentDress]
+
+
+@dataclasses.dataclass(frozen=True)
+class RaisedSos:
+    """What the raise answers, and it is the ONE mutation in this feature whose
+    answer is not just the row.
+
+    ⚠ `rerouted` is a fact about THIS REQUEST, not about the row, which is why
+    it cannot be inferred later: nobody reading the alert afterwards can know
+    whether `target_staff_user_id IS NULL` means "she asked for the shift
+    manager" or "she asked for Dana and Dana was logged out". The audit row keeps
+    the pair; this flag is what lets the raiser be TOLD, on screen, in the moment
+    it matters.
+
+    *Declined: letting the console infer it by comparing what it sent with what
+    came back — correct today, and exactly the kind of implicit contract that
+    survives one refactor.*
+    """
+
+    alert: SosAlert
+    rerouted: bool
 
 
 @dataclasses.dataclass(frozen=True)
@@ -174,6 +209,11 @@ class FloorService:
         self._dresses = DressesRepository()
         self._variants = DressVariantsRepository()
         self._customers = CustomersRepository()
+        self._sos = SosAlertsRepository()
+        # F37's reachability probe, and the ONLY reader of it. Named
+        # `_session_rows` because `self._sessions` is already the session
+        # FACTORY on this class — two very different things one letter apart.
+        self._session_rows = SessionsRepository()
         self._clock = clock or (lambda: datetime.datetime.now(datetime.UTC))
 
     async def floor(self, tenant_id: UUID) -> FloorRead:
@@ -790,6 +830,111 @@ class FloorService:
         start, end = self._today_window()
         return start <= booking.starts_at < end
 
+    # --- F37: the SOS page ----------------------------------------------------
+
+    async def raise_sos(
+        self,
+        tenant_id: UUID,
+        *,
+        target_staff_user_id: UUID | None,
+        fitting_room_assignment_id: UUID | None,
+        note: str | None,
+        actor: StaffContext,
+    ) -> RaisedSos:
+        """One staffer asking for help, and it has exactly THREE failure modes:
+        401 (no session), 403 (a role outside the five — unreachable for a
+        signed-in staffer, since the router admits all five) and 400 (note too
+        long, or self-target).
+
+        ⚠ **NOTHING ABOUT THE STATE OF THE BOUTIQUE CAN REFUSE A PAGE.** Not a
+        missing room, not a deleted room, not a released assignment, not a
+        colleague who went home, not a colleague who does not exist, not an empty
+        shift, not another alert already open. That sentence IS «a page is never
+        silently dropped», and `test_nothing_about_the_boutique_can_refuse_a_page`
+        walks it as a table.
+
+        ⚠ **There is NO `_authorize` call here and its absence is the design.**
+        `_authorize`'s docstring names the hazard as a body-supplied
+        `staff_user_id` doubling as the caller's identity; this body carries a
+        TARGET and never an actor. `raised_by = actor.id`, full stop — nobody may
+        raise a page AS somebody else, not even an owner, because an SOS is a
+        first-person statement and an owner who needs help raises her own.
+        `RaiseSosRequest` is a `ForbidExtraModel`, so a body carrying `raised_by`
+        is a 400 rather than a silently ignored key.
+        """
+        note = normalize_sos_note(note)
+        if target_staff_user_id is not None and target_staff_user_id == actor.id:
+            # A self-page has no audience: it would sit open forever escalating
+            # to the shift manager for nothing, and the raiser never gets the
+            # overlay for her own page, so nothing would ever surface it to her
+            # either.
+            raise SosValidationError("cannot page yourself")
+
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            assignment_id = None
+            if fitting_room_assignment_id is not None:
+                # PERMISSIVE, and it must be HER OWN assignment. Unresolved ->
+                # store NULL and carry on: a stale room pointer must never refuse
+                # a page, and RLS makes a foreign tenant's id simply not resolve,
+                # so there is no leak and no oracle.
+                assignment = await self._sos.assignment_of(
+                    session, tenant_id, fitting_room_assignment_id, actor.id
+                )
+                assignment_id = assignment.id if assignment is not None else None
+
+            # PERMISSIVE, and this is THE no-reachable-target case. A named
+            # target must resolve to a live staff row AND hold a live session. If
+            # either check fails the alert is created with a NULL target —
+            # rerouted to the shift manager IN THE DATA and not merely in the UI
+            # — and the raiser is TOLD SO. The raise does not fail.
+            #
+            # Why the role audience can never be empty: a NULL target routes to
+            # ELEVATED_ROLES = {owner, shift_manager}, and `auth/staff.py` holds
+            # the last-owner invariant ("at least one live owner") under an
+            # advisory lock. So the epic's "with no on-shift staffer in the
+            # requested role" is unreachable for the ROLE target and real only
+            # for a NAMED one — which is exactly why it is discharged here.
+            target_id = target_staff_user_id
+            if target_id is not None:
+                target_row = await self._staff.by_id(session, tenant_id, target_id)
+                reachable = target_row is not None and await self._session_rows.has_live_session(
+                    session, tenant_id, target_id, at
+                )
+                if not reachable:
+                    target_id = None
+
+            alert = await self._sos.insert(
+                session,
+                tenant_id,
+                raised_by=actor.id,
+                target_staff_user_id=target_id,
+                fitting_room_assignment_id=assignment_id,
+                note=note,
+            )
+            rerouted = target_staff_user_id is not None and target_id is None
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.SOS_RAISED,
+                actor_id=actor.id,
+                entity=str(alert.id),
+                # ⚠ The requested_target / target PAIR is the whole point. The
+                # reroute writes NULL into the column, destroying the only record
+                # of whom she actually tried to page — `previous_break_started_at`
+                # and the handover `from`, third instance. Without the pair the
+                # trail says a page went to the shift manager and cannot say Dana
+                # was meant to get it.
+                details={
+                    "alert": str(alert.id),
+                    "requested_target": _str_or_none(target_staff_user_id),
+                    "target": _str_or_none(target_id),
+                    "rerouted": rerouted,
+                    "assignment": _str_or_none(assignment_id),
+                },
+            )
+            return RaisedSos(alert=alert, rerouted=rerouted)
+
     @staticmethod
     def _authorize(staff_id: UUID, actor: StaffContext) -> None:
         """The acting identity is `StaffContext`, resolved from the session
@@ -808,3 +953,7 @@ class FloorService:
 
 def _isoformat(value: datetime.datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _str_or_none(value: UUID | None) -> str | None:
+    return str(value) if value is not None else None
