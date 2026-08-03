@@ -38,17 +38,23 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from app.atelier.stages import stage_of
+from app.atelier.schemas import CreateTicketRequest, StageRequest
+from app.atelier.service import AtelierService
+from app.atelier.stages import DEFAULT_EFFORT_BANDS, stage_of
+from app.auth.service import StaffContext
 from app.db.repositories.alteration_tickets import (
     BOARD_TICKET_LIMIT,
     DELIVERED_WINDOW_DAYS,
     AlterationTicketsRepository,
 )
+from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.rls import TENANT_ID_SETTING
 from app.db.tenant import tenant_session
 from app.models.alteration_ticket import AlterationTicket
-from app.models.constants import StaffRole, TicketStage
+from app.models.audit_log import AuditLog
+from app.models.constants import AuditAction, EffortBand, StaffRole, TicketStage
+from app.models.customer import Customer
 from app.storefront.validation import BOUTIQUE_TIMEZONE
 
 pytestmark = pytest.mark.db
@@ -1106,5 +1112,411 @@ async def test_the_loser_of_a_claim_renders_the_WINNERS_row_not_its_own_stale_co
             assert row.assigned_staff_user_id == winner, (
                 "the loser rendered its own stale copy — populate_existing=True is gone"
             )
+    finally:
+        await engine.dispose()
+
+
+# --- the forced interleaves ---
+#
+# ⚠ NO `asyncio.gather` ANYWHERE BELOW, deliberately, for the reason
+# `test_booking_owner_db.py:1313-1336` and `test_floor_db.py:251-263` state
+# verbatim: gather does not ORDER two transactions. The loser most often loads
+# AFTER the winner has committed, its in-memory instance is already correct, and
+# the zero-row branch each test exists to prove goes green with the mechanism
+# never exercised.
+#
+# The mechanism used instead is `tenant_session`'s own shape. Exiting the context
+# manager IS the commit (`db/tenant.py`), and two nested `tenant_session`s on one
+# NullPool factory take two separate connections — so opening B INSIDE A and
+# letting it exit gives, deterministically and single-threaded:
+#
+#     A loads (stale)  →  B writes and COMMITS  →  A writes  →  A re-reads
+#
+# Under READ COMMITTED A's UPDATE and A's re-read both see B's commit. That is
+# every ordering these guards care about, and it is reproducible.
+#
+# ⚠ THE ORDER IS FORCED, NOT PREFERRED. B must commit BEFORE A writes: A's write
+# takes a row lock it cannot release until the outer `async with` exits, so an
+# arrangement where B writes second is not a slower test, it is a hang.
+
+
+async def test_a_concurrent_advance_to_a_later_stage_refuses_the_earlier_one(
+    app_role_url: str,
+) -> None:
+    """RACE #1 — the `AND <every later column> IS NULL` clause, proved against a
+    writer whose OWN VIEW of the row says the write is legal.
+
+    A loads the ticket at `intake`. B advances it to `ready` and commits. A then
+    taps `qc` — the stage its last poll showed as next. Every column A can see is
+    still NULL, so a guard written as a pre-read in Python would let this through;
+    the predicate is evaluated by the DATABASE at write time, against `ready_at`
+    as B just committed it, and refuses.
+
+    Delete the later-columns clause and A stamps `qc_at` on a garment already at
+    `ready`: the row then carries a qc timestamp LATER than its ready one, the
+    board paints it backwards, and F44's `ready_at - in_progress_at` medians are
+    computed from a trail that never happened.
+
+    ⚠ THAT MUTATION ALSO REDS `test_an_advance_BEHIND_the_current_stage_writes_
+    nothing`, and the plan's prediction that every single-writer test stays green
+    is wrong on this branch: Task 3 already pins the backwards half with one
+    writer. What this test pins ALONE is that the guard lives in the PREDICATE.
+    Mutation-checked: replace the SQL clause with a Python guard read off
+    `session.get()` — the row already in this session's identity map, which is
+    the natural "I have the row, why ask again" simplification — and the
+    single-writer test stays GREEN (its session never loaded the row, so the get
+    goes to the database and is accurate) while this one and race #2 go RED. A
+    pre-read another transaction can invalidate is not a guard, and this is the
+    only test on the branch that can say so.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        repo = AlterationTicketsRepository()
+        ticket_id = await _seed(factory, tenant_id)
+
+        async with tenant_session(factory, tenant_id) as session_a:
+            stale = await repo.by_id(session_a, tenant_id, ticket_id)
+            assert stale is not None
+            assert stale.qc_at is None
+            assert stale.ready_at is None  # A's whole justification for tapping qc
+
+            async with tenant_session(factory, tenant_id) as session_b:
+                wrote, _ = await repo.advance_stage(
+                    session_b, tenant_id, ticket_id, TicketStage.READY, at=NOW
+                )
+                assert wrote is True
+
+            wrote, row = await repo.advance_stage(
+                session_a, tenant_id, ticket_id, TicketStage.QC, at=LATER
+            )
+            assert wrote is False
+            assert row is not None
+
+        async with tenant_session(factory, tenant_id) as session:
+            stored = await session.scalar(
+                select(AlterationTicket).where(AlterationTicket.id == ticket_id)
+            )
+        assert stored is not None
+        assert stored.qc_at is None, "the loser stamped a stage the garment had already left"
+        assert stored.ready_at == NOW
+        assert stage_of(stored) is TicketStage.READY
+    finally:
+        await engine.dispose()
+
+
+async def test_the_loser_of_an_advance_race_renders_the_databases_stage(
+    app_role_url: str,
+) -> None:
+    """RACE #2 — `populate_existing=True` inside `_refreshed`, on the ADVANCE
+    path.
+
+    The same interleave as race #1, asserting the OTHER half of the tuple. A's
+    UPDATE matched nothing, but SQLAlchemy's ORM-enabled DML runs `evaluate`
+    synchronization by default: it re-checks the UPDATE's criteria against the
+    instance in A's identity map — the stale copy A loaded, where every stamp
+    after `qc` is still NULL — decides it matches, and stamps `qc_at` onto it.
+    `expire_on_commit=False` then hands that object straight back.
+
+    Without the flag A's re-read finds that poisoned instance and returns it
+    WITHOUT overwriting its attributes, so A answers `qc` — her own intent, for a
+    write the database refused — and the console shows a stage the garment left
+    two seconds ago. With it, A renders `ready`.
+
+    ⚠ IT MUST BE THIS SHAPE: A has to have LOADED the row before writing.
+    `AtelierService.advance` does exactly that on every call, for the audit row's
+    `from`. F57's note records that with only fresh-session tests present,
+    removing this flag changed nothing at all.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        repo = AlterationTicketsRepository()
+        ticket_id = await _seed(factory, tenant_id)
+
+        async with tenant_session(factory, tenant_id) as session_a:
+            stale = await repo.by_id(session_a, tenant_id, ticket_id)
+            assert stale is not None
+
+            async with tenant_session(factory, tenant_id) as session_b:
+                wrote, _ = await repo.advance_stage(
+                    session_b, tenant_id, ticket_id, TicketStage.READY, at=NOW
+                )
+                assert wrote is True
+
+            wrote, row = await repo.advance_stage(
+                session_a, tenant_id, ticket_id, TicketStage.QC, at=LATER
+            )
+            assert wrote is False
+            assert row is not None
+            assert row.ready_at == NOW, "the loser rendered its own stale copy"
+            assert row.qc_at is None, "evaluate synchronization stamped the refused value"
+            assert stage_of(row) is TicketStage.READY
+    finally:
+        await engine.dispose()
+
+
+async def test_two_seamstresses_claiming_one_ticket_leave_one_owner(
+    app_role_url: str,
+) -> None:
+    """RACE #3 — `AND assigned_staff_user_id IS NULL` in the claim predicate.
+
+    Two phones, one card, one unassigned ticket. Both women saw it free; the
+    predicate is what makes the second tap a refusal rather than a silent
+    overwrite of a colleague's claim.
+
+    Exactly ONE of the two ids is stored afterwards, and it is the FIRST
+    committer's. Delete the clause and the loser overwrites the winner: two
+    seamstresses each believe the garment is theirs, and the one who claimed it
+    first finds it gone from her list at the next poll with nothing anywhere
+    recording that it moved.
+
+    ⚠ Deleting the clause outright reds FOUR tests, so on its own it pins nothing
+    specific to this one. The mutation that isolates it is race #1's: move the
+    guard out of the predicate and read it off `session.get()` instead. The
+    single-writer claim test stays GREEN — its two claims run in two fresh
+    sessions, so the get is a real query — and only the two race-shaped tests go
+    RED. This session loaded the ticket while it was still free, which is exactly
+    the phone that shows a free card and the exact state a pre-read preserves.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        repo = AlterationTicketsRepository()
+        ticket_id = await _seed(factory, tenant_id)
+        winner, loser = uuid.uuid4(), uuid.uuid4()
+
+        async with tenant_session(factory, tenant_id) as session_a:
+            stale = await repo.by_id(session_a, tenant_id, ticket_id)
+            assert stale is not None
+            assert stale.assigned_staff_user_id is None  # what the loser's phone showed
+
+            async with tenant_session(factory, tenant_id) as session_b:
+                wrote, _ = await repo.claim(session_b, tenant_id, ticket_id, staff_user_id=winner)
+                assert wrote is True
+
+            wrote, row = await repo.claim(session_a, tenant_id, ticket_id, staff_user_id=loser)
+            assert wrote is False
+            assert row is not None
+
+        async with tenant_session(factory, tenant_id) as session:
+            stored = await session.scalar(
+                select(AlterationTicket).where(AlterationTicket.id == ticket_id)
+            )
+        assert stored is not None
+        assert stored.assigned_staff_user_id == winner, "the loser overwrote the winner's claim"
+    finally:
+        await engine.dispose()
+
+
+async def test_the_loser_of_an_elevated_reassign_renders_the_databases_row(
+    app_role_url: str,
+) -> None:
+    """`populate_existing=True` applied to the ASSIGN path and not only to
+    advance — the row that stops the flag being re-scoped to one call site, which
+    is the mistake `staff_users.py`'s own `_refreshed` docstring says has bitten
+    this repo three times.
+
+    ⚠ THE PLAN NAMES THIS `test_the_loser_of_an_elevated_reassign_renders_the_
+    databases_assignee` AND THAT TEST CANNOT EXIST. `assign` is deliberately
+    unconditional (D9): whoever writes LAST is the database's answer, and with a
+    forced interleave the second writer is always this session — so its own
+    assignee IS the stored one, with the flag or without it. There is no losing
+    assign.
+
+    What IS observable, and what this asserts, is every OTHER column: A loads the
+    ticket at `intake`, B advances it to `ready` and commits, A reassigns. A's
+    write succeeds, so A's assignee is correct either way — but without the flag
+    A's re-read hands back the instance it loaded before B committed, and A
+    renders a card at `intake` with a fresh assignee. The manager reassigns a
+    garment and her screen quietly rewinds its stage.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        repo = AlterationTicketsRepository()
+        ticket_id = await _seed(factory, tenant_id)
+        target = uuid.uuid4()
+
+        async with tenant_session(factory, tenant_id) as session_a:
+            stale = await repo.by_id(session_a, tenant_id, ticket_id)
+            assert stale is not None
+            assert stale.ready_at is None
+
+            async with tenant_session(factory, tenant_id) as session_b:
+                wrote, _ = await repo.advance_stage(
+                    session_b, tenant_id, ticket_id, TicketStage.READY, at=NOW
+                )
+                assert wrote is True
+
+            wrote, row = await repo.assign(session_a, tenant_id, ticket_id, staff_user_id=target)
+            assert wrote is True
+            assert row is not None
+            assert row.assigned_staff_user_id == target
+            assert row.ready_at == NOW, "the reassign rendered a stage the ticket had left"
+            assert stage_of(row) is TicketStage.READY
+    finally:
+        await engine.dispose()
+
+
+# --- the service against real Postgres: the savepoint and the undo's audit row ---
+
+
+def _service(factory: async_sessionmaker[AsyncSession]) -> AtelierService:
+    return AtelierService(factory, clock=lambda: NOW)
+
+
+def _owner(tenant_id: uuid.UUID) -> StaffContext:
+    """OWNER, so `_authorize_work` returns on the role alone and this module never
+    has to COMMIT a floor-role staff row — see the module docstring."""
+    return StaffContext(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        email="owner@bella.example",
+        display_name="בעלים",
+        role=StaffRole.OWNER.value,
+    )
+
+
+async def test_two_intakes_for_one_new_phone_create_one_customer(
+    app_role_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RACE #4 — D7's `session.begin_nested()` SAVEPOINT around
+    `CustomersRepository.upsert`.
+
+    ⚠ THIS RACE NEEDS ITS OWN SEAM AND A TEST WRITTEN WITHOUT ONE IS VACUOUS.
+    `upsert` is read-then-insert INSIDE ONE CALL (`by_phone` → miss → add →
+    flush), so for the `IntegrityError` to fire BOTH sessions must miss before
+    EITHER inserts — and plain session ordering gives only two arrangements,
+    neither of which is a test. Loser held open first: the loser INSERTs, holds
+    the index tuple uncommitted, and the winner's flush BLOCKS on a transaction
+    that cannot commit until the outer `async with` exits — single-threaded
+    asyncio, so a hang. Winner first and committed: the loser's `by_phone` FINDS
+    the row, never INSERTs, never enters the savepoint, and the test passes
+    identically with `begin_nested()` deleted.
+
+    The seam is therefore explicit: the loser's FIRST `by_phone` returns `None`
+    and, as a side effect, commits the winner's customer row from a `tenant_
+    session` of its own. That forces miss → winner commits → loser INSERTs →
+    `IntegrityError`, deterministically, with no `gather`. The second call —
+    D7's re-read after the savepoint rolls back — delegates to the real method.
+
+    Two mutations bite. Delete the savepoint (keep the `try`): the
+    `IntegrityError` has aborted the enclosing transaction, so the re-read raises
+    `PendingRollbackError` and the intake 500s with the ticket lost. Delete the
+    whole `try`: the raw `IntegrityError` reaches the router, which is the 500
+    the guard exists to prevent.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        real_by_phone = CustomersRepository.by_phone
+        calls: list[str] = []
+        winner_name = "מיכל לוי"
+
+        async def seam(
+            self: CustomersRepository,
+            session: AsyncSession,
+            tid: uuid.UUID,
+            *,
+            phone: str,
+        ) -> Customer | None:
+            calls.append(phone)
+            if len(calls) == 1:
+                # The other intake, in the gap between this one's miss and its
+                # INSERT. A separate connection off the same NullPool factory;
+                # exiting the context manager is the commit.
+                async with tenant_session(factory, tid) as winner:
+                    winner.add(Customer(tenant_id=tid, phone=phone, name=winner_name))
+                return None
+            return await real_by_phone(self, session, tid, phone=phone)
+
+        monkeypatch.setattr(CustomersRepository, "by_phone", seam)
+
+        ticket = await _service(factory).create(
+            tenant_id,
+            CreateTicketRequest(
+                customer_name="מיכל",
+                customer_phone="0501234567",
+                due_date=DUE,
+                effort_band=EffortBand.ONE_HOUR,
+            ),
+            actor=_owner(tenant_id),
+            bands=DEFAULT_EFFORT_BANDS,
+        )
+
+        # The seam fired, and the re-read after the savepoint ran.
+        assert len(calls) == 2
+
+        async with tenant_session(factory, tenant_id) as session:
+            customers = list(
+                (await session.execute(select(Customer).where(Customer.phone == "+972501234567")))
+                .scalars()
+                .all()
+            )
+            stored = await session.scalar(
+                select(AlterationTicket).where(AlterationTicket.id == ticket.id)
+            )
+
+        assert len(customers) == 1, "the losing intake created a second customer"
+        assert stored is not None
+        assert stored.customer_id == customers[0].id
+        # The loser attached to the WINNER's row rather than inventing its own,
+        # so the name on the wire is the one the database holds.
+        assert ticket.customer_name == winner_name
+        assert customers[0].name == winner_name
+    finally:
+        await engine.dispose()
+
+
+async def test_the_undo_audit_row_carries_the_stamp_it_destroyed(app_role_url: str) -> None:
+    """The previous stamp captured into a LOCAL, BEFORE the write.
+
+    Undo is the one write in this feature that DESTROYS history: the five
+    timestamps ARE the trail, and once `qc_at` is NULL the moment it held is gone
+    from the row forever. The audit row's `previous_stamp` is the only place it
+    survives.
+
+    Move the capture after the write and it records `null`. `undo_stage` is
+    ORM-enabled DML whose `evaluate` synchronization stamps the SET value — here
+    `None` — onto the very instance `_load` just handed back out of the identity
+    map, so a read taken afterwards sees the cleared column and empties the row it
+    exists to fill. `test_floor_db.py::test_the_end_audit_row_carries_the_
+    timestamp_the_break_actually_started` is the shipped precedent.
+
+    ⚠ THIS MUST BE A `db` TEST. F57's note records that this mutation leaves
+    every fast test green: monkeypatched repositories never stamp anything, so
+    the poisoning that makes the capture load-bearing does not happen at all.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    actor = _owner(tenant_id)
+    try:
+        ticket_id = await _seed(factory, tenant_id)
+        await _advance_to(factory, tenant_id, ticket_id, TicketStage.IN_PROGRESS, TicketStage.QC)
+
+        await _service(factory).undo(
+            tenant_id, ticket_id, StageRequest(stage=TicketStage.QC), actor=actor
+        )
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await session.scalar(
+                select(AuditLog).where(
+                    AuditLog.action == AuditAction.ATELIER_TICKET_STAGE_UNDONE.value
+                )
+            )
+            stored = await session.scalar(
+                select(AlterationTicket).where(AlterationTicket.id == ticket_id)
+            )
+
+        assert row is not None
+        assert row.details["stage"] == TicketStage.QC.value
+        assert row.details["previous_stamp"] == NOW.isoformat(), (
+            "the capture ran after the write and recorded the value it destroyed as null"
+        )
+        # And the stamp really is gone from the row, so the audit entry is the
+        # only surviving record of it.
+        assert stored is not None
+        assert stored.qc_at is None
     finally:
         await engine.dispose()
