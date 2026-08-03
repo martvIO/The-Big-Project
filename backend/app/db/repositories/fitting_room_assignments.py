@@ -56,6 +56,7 @@ class FittingRoomAssignmentsRepository:
         room_id: uuid.UUID,
         staff_id: uuid.UUID,
         booking_id: uuid.UUID | None,
+        queue_ticket_id: uuid.UUID | None = None,
     ) -> FittingRoomAssignment:
         """One INSERT. No advisory lock, and the absence is the design.
 
@@ -81,9 +82,15 @@ class FittingRoomAssignmentsRepository:
         nothing. This raises from the execute, where the caller's `try` — placed
         OUTSIDE its `async with session.begin_nested()` — can see it.
 
-        This repository raises. The SAVEPOINT is the service's, because only the
-        service needs the outer transaction alive afterwards to read the occupant
-        the 409 has to name.
+        This repository raises. The SAVEPOINT is the service's — and F58's two
+        dispatch verbs deliberately have none, because on those paths a live
+        ticket write must not survive the conflict (`FloorService.take_next`).
+
+        ⚠ `queue_ticket_id` DEFAULTS to None rather than being required, and that
+        is not laziness: every assignment F36 ever created has it null and the
+        anonymous claim (a staffer prepping a room) stays a first-class path, so
+        the default IS the ordinary case. The two pointers are independent — a
+        bride who booked ahead and also scanned the QR can carry both.
         """
         stmt = (
             insert(FittingRoomAssignment)
@@ -92,6 +99,7 @@ class FittingRoomAssignmentsRepository:
                 fitting_room_id=room_id,
                 staff_user_id=staff_id,
                 booking_id=booking_id,
+                queue_ticket_id=queue_ticket_id,
             )
             .returning(FittingRoomAssignment)
         )

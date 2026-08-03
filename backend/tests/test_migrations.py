@@ -1717,6 +1717,69 @@ def test_the_fitting_rooms_migration_round_trips(migrated_db: str) -> None:
         command.upgrade(cfg, "head")  # idempotent when already at head
 
 
+# --- F58: the assignment's pointer at the walk-in it serves (D1) ---------------
+
+
+@pytest.mark.db
+def test_the_floor_dispatch_migration_adds_one_nullable_column(migrated_db: str) -> None:
+    """`queue_ticket_id` is the other half of `booking_id` and is shaped exactly
+    like it: nullable, no default, no FK.
+
+    NULLABLE is not a convenience. Every assignment F36 ever created has this
+    column null, so a NOT NULL could not be added at all without a backfill that
+    has nothing to backfill from — and the anonymous claim (a staffer prepping a
+    room, both pointers null) stays a first-class path rather than becoming the
+    exception.
+
+    No DEFAULT for the same reason `booking_id` has none: a default here would
+    be a fabricated pointer at a customer.
+
+    The three shipped guards that must stay green with NO EDIT alongside this —
+    the pinned partial-unique definitions, the two-unique-index count and the
+    zero-CHECK count — are the assertions that make D1's three DELIBERATELY
+    ABSENT decisions reviewed rather than merely written down. They are in this
+    file already and this migration does not touch them.
+    """
+    columns = _fitting_columns(migrated_db)
+    assert columns[("fitting_room_assignments", "queue_ticket_id")] == ("uuid", "YES", None)
+
+
+def _dispatch_column_present(url: str) -> bool:
+    return ("fitting_room_assignments", "queue_ticket_id") in _fitting_columns(url)
+
+
+@pytest.mark.db
+def test_the_floor_dispatch_migration_round_trips(migrated_db: str) -> None:
+    """Both directions, which is 0013's rule: a downgrade that silently no-ops
+    stays green while shipping a migration that cannot be rolled back.
+
+    ⚠ UNLIKE F36's, THIS DOWNGRADE CAN LOSE LIVE DATA — it drops the only record
+    of which walk-in each fitting served. The test asserts it works, not that it
+    is safe; the migration's own comment carries the warning.
+
+    The target is resolved by IDENTITY (`_parent_of`), never as a literal and
+    never as `-1`: this migration's number comes from `alembic heads` at build
+    time and is renumbered at the rebase that precedes the push, so a literal
+    would rot in the one hour it matters.
+
+    The finally is not decoration. Left downgraded, the ORM maps a column the
+    table no longer has, and every later db test in this shared session fails
+    with UndefinedColumn somewhere unrelated to itself.
+    """
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("floor dispatch")
+    try:
+        assert _dispatch_column_present(migrated_db) is True
+        command.downgrade(cfg, down_to)
+        assert _dispatch_column_present(migrated_db) is False
+        command.upgrade(cfg, "head")
+        assert _dispatch_column_present(migrated_db) is True
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
 # --- F41: the alteration ticket table ---
 
 _ALTERATION_COLUMNS = (

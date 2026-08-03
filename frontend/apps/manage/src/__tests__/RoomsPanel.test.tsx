@@ -2,7 +2,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { run } from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
-import type { FloorResponse, Room, RoomAssignment, StaffCard } from "../api";
+import type {
+  DispatchResult,
+  FloorResponse,
+  Room,
+  RoomAssignment,
+  StaffCard,
+  WaitlistEntry,
+} from "../api";
 import { FloorPanel } from "../components/FloorPanel";
 import { POLL_INTERVAL_MS } from "../lib/usePoll";
 
@@ -25,6 +32,7 @@ vi.mock("../api", async () => {
       claimRoom: vi.fn(),
       releaseAssignment: vi.fn(),
       removeAssignmentDress: vi.fn(),
+      takeNext: vi.fn(),
     },
   };
 });
@@ -35,6 +43,7 @@ const listFloorClients = vi.mocked(api.listFloorClients);
 const claimRoom = vi.mocked(api.claimRoom);
 const releaseAssignment = vi.mocked(api.releaseAssignment);
 const removeAssignmentDress = vi.mocked(api.removeAssignmentDress);
+const takeNext = vi.mocked(api.takeNext);
 
 // 11:07Z is 14:07 in Jerusalem (IDT, UTC+3); the test script pins
 // TZ=America/New_York, so an unzoned read prints 07:07 and every time assertion
@@ -49,6 +58,7 @@ const ROOM_B = "bbbbbbbb-0000-0000-0000-000000000002";
 const ASSIGNMENT_ID = "cccccccc-0000-0000-0000-000000000003";
 const BINDING_ID = "dddddddd-0000-0000-0000-000000000004";
 const BOOKING_ID = "eeeeeeee-0000-0000-0000-000000000005";
+const TICKET_ID = "ffffffff-0000-0000-0000-000000000006";
 
 function staff(overrides: Partial<StaffCard> = {}): StaffCard {
   return {
@@ -87,8 +97,34 @@ function room(overrides: Partial<Room> = {}): Room {
   };
 }
 
-function floor(rooms: Room[], cards: StaffCard[] = [staff()]): FloorResponse {
-  return { staff: cards, rooms, server_now: NOW };
+function waiting(overrides: Partial<WaitlistEntry> = {}): WaitlistEntry {
+  return {
+    id: TICKET_ID,
+    name: "נועה בר",
+    visit_type: "bride",
+    position: 1,
+    arrived_at: ASSIGNED_AT,
+    called: false,
+    skip_count: 0,
+    duplicate: false,
+    ...overrides,
+  };
+}
+
+// ⚠ The third argument is F58's, and its DEFAULT is the empty queue — every
+// shipped call above stays byte-identical and keeps rendering a floor with no
+// «קחי את הבאה» on any tile, which is exactly the state they were written
+// against.
+function floor(
+  rooms: Room[],
+  cards: StaffCard[] = [staff()],
+  entries: WaitlistEntry[] = [],
+): FloorResponse {
+  return { staff: cards, rooms, server_now: NOW, waitlist: { entries, truncated: false } };
+}
+
+function dispatched(next: Room, entries: WaitlistEntry[] = []): DispatchResult {
+  return { room: next, waitlist: { entries, truncated: false } };
 }
 
 function mount(props: { selfId?: string; role?: string } = {}) {
@@ -113,6 +149,7 @@ beforeEach(() => {
   claimRoom.mockReset();
   releaseAssignment.mockReset();
   removeAssignmentDress.mockReset();
+  takeNext.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
 });
 
@@ -1294,5 +1331,294 @@ describe("two mutations in flight at once, and the pick that outlives its list",
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "החדר כבר לא זמין. הרשימה תתוקן בעדכון הבא.",
     );
+  });
+});
+
+// --- F58: «קחי את הבאה», the tile's second ending act ------------------------
+
+describe("take-next on the tile", () => {
+  it("renders FIRST in the action row, and only on a free ACTIVE tile", async () => {
+    // §3.1: both acts END the tile's state and serve two different populations,
+    // so neither is demoted to `ghost` — ORDER carries the hierarchy, and at 375
+    // the first on the wrapped line is the one a thumb reaches first.
+    getFloor.mockResolvedValue(
+      floor(
+        [
+          room({ id: ROOM_A }),
+          room({ id: ROOM_B, label: "הבמה", is_active: false }),
+          room({
+            id: "77777777-0000-0000-0000-000000000007",
+            label: "חדר 3",
+            assignment: assignment(),
+          }),
+        ],
+        [staff()],
+        [waiting()],
+      ),
+    );
+    mount();
+    await screen.findByText("הבמה");
+
+    const free = within(tile(ROOM_A)).getAllByRole("button");
+    expect(free[0]).toHaveAccessibleName("קחי את הבאה בתור — חדר 1");
+    expect(free[0]).toHaveTextContent("קחי את הבאה");
+    expect(free[1]).toHaveAccessibleName("תפיסת החדר — חדר 1");
+
+    // An out-of-service tile offers neither act, and an occupied one is not
+    // free to seat anybody.
+    expect(within(tile(ROOM_B)).queryByRole("button", { name: /קחי את הבאה/ })).toBeNull();
+    expect(
+      within(tile("77777777-0000-0000-0000-000000000007")).queryByRole("button", {
+        name: /קחי את הבאה/,
+      }),
+    ).toBeNull();
+  });
+
+  it("REMOVES the control when the queue empties, rather than refusing the tap", async () => {
+    // §3.1. QUEUE_EMPTY therefore fires only on a STALE tile — the last woman
+    // left between the render and the tap — and the next tick takes the control
+    // away entirely.
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    mount();
+    await screen.findByRole("button", { name: "קחי את הבאה בתור — חדר 1" });
+
+    getFloor.mockResolvedValue(floor([room()]));
+    await advance(POLL_INTERVAL_MS);
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /קחי את הבאה/ })).toBeNull(),
+    );
+    // …and the OTHER ending act is untouched: the queue emptying says nothing
+    // about the arrivals list.
+    expect(screen.getByRole("button", { name: "תפיסת החדר — חדר 1" })).toBeInTheDocument();
+  });
+
+  it("dispatches the head of the queue: the tile fills, the ROW leaves, one paint", async () => {
+    // §3.2. A client that patched the tile from the response and waited up to
+    // five seconds for the row to leave would render the same woman as
+    // in-service AND waiting.
+    //
+    // MUTATION: drop the waitlist half of `onDispatch` — the row survives the
+    // dispatch and this reddens.
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    takeNext.mockResolvedValue(
+      dispatched(
+        room({
+          assignment: assignment({ staff_user_id: SELF_ID, client_label: "נועה בר" }),
+        }),
+      ),
+    );
+    mount();
+    await screen.findByText("נועה בר");
+
+    fireEvent.click(screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" }));
+
+    // `{}` IS the one-tap take-next on herself: the acting identity is the
+    // session cookie and the QUEUE chooses the customer.
+    await waitFor(() => expect(takeNext).toHaveBeenCalledWith(ROOM_A, {}));
+    await waitFor(() => expect(within(tile(ROOM_A)).getByText("תפוס")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /דלגי/ })).toBeNull();
+    expect(screen.getByText("אין ממתינות בתור")).toBeInTheDocument();
+  });
+
+  it("names the ROOM in the cue and NEVER the walk-in", async () => {
+    // §11.2, and it is sharper here than on a claim: her ROW LEAVES, so a cue
+    // naming her would be the only place her name survives after she has gone —
+    // in a persistent region on a five-role screen.
+    //
+    // MUTATION: interpolate `entry.name` into the cue and this reddens twice.
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    takeNext.mockResolvedValue(
+      dispatched(room({ assignment: assignment({ client_label: "נועה בר" }) })),
+    );
+    mount();
+    await screen.findByText("נועה בר");
+
+    fireEvent.click(screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("floor-cue")).toHaveTextContent("הלקוחה שובצה: חדר 1."),
+    );
+    expect(screen.getByTestId("floor-cue").textContent).not.toContain("נועה בר");
+  });
+
+  it("A31b — QUEUE_EMPTY is a NOTICE about an empty queue, not the outage sentence", async () => {
+    // §3.4. Without the branch it takes describe()'s fall-through and tells a
+    // manager whose queue is simply empty that the STAFF LIST failed to load,
+    // in the muted outage register — the exact failure the error code is bought
+    // to avoid, delivered in the wrong colour on top.
+    //
+    // MUTATION: delete the QUEUE_EMPTY branch from describe().
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    takeNext.mockRejectedValue(new ApiError(409, "QUEUE_EMPTY", "empty"));
+    mount();
+    await screen.findByText("נועה בר");
+
+    fireEvent.click(screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("אין ממתינות בתור.");
+    expect(alert.textContent).not.toContain("לא הצלחנו לטעון");
+    // The NOTICE register, and neither register is red.
+    expect(alert.className).toContain("text-warning-text");
+    expect(alert.className).not.toContain("text-ink-muted");
+    expect(alert.className).not.toContain("text-danger");
+    // MOVE 1: focus is inside the alert. Waited for rather than asserted
+    // synchronously — findByRole resolves on the node being in the DOM and the
+    // effect that focuses it runs after that (LOOP-STATE's rule: fix the wait,
+    // never raise the timeout).
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+  });
+
+  it("a LOST RACE leaves the queue exactly where it was", async () => {
+    // §3.3, item 2, and the only thing on this screen the CUSTOMER can feel: a
+    // refused take-next must roll the ticket back, so the woman at position 1 is
+    // still at position 1 with her wait clock unbroken. If this panel ever shows
+    // her gone after a refusal, the transaction design failed.
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    takeNext.mockRejectedValue(
+      new ApiError(409, "ROOM_OCCUPIED", "taken", { staff_display_name: "דנה כהן" }),
+    );
+    mount();
+    await screen.findByText("נועה בר");
+
+    fireEvent.click(screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" }));
+
+    // The SHIPPED F36 sentence, reused rather than re-keyed.
+    expect(await screen.findByRole("alert")).toHaveTextContent("דנה כהן כבר בחדר הזה.");
+    expect(screen.getByText("נועה בר")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "קראי — נועה בר" })).toBeInTheDocument();
+    // Nothing was achieved, so the persistent region says nothing.
+    expect(screen.getByTestId("floor-cue")).toHaveTextContent("");
+  });
+
+  it("DC-3 — a take-next STAFF_OCCUPIED speaks about HER, in the second person", async () => {
+    // The dispatch routes send no staff_user_id, so the target IS the acting
+    // manager and F36's third-person «היא כבר בחדר אחר» tells her about herself.
+    // A SECOND sentence rather than an edit: the shipped value is asserted
+    // verbatim in three shipped test files.
+    //
+    // MUTATION: drop the `target === "queue"` fork and this reddens.
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    takeNext.mockRejectedValue(
+      new ApiError(409, "STAFF_OCCUPIED", "hers", { room_label: "הבמה" }),
+    );
+    mount();
+    await screen.findByText("נועה בר");
+
+    fireEvent.click(screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("את כבר בחדר אחר: הבמה.");
+    expect(alert.textContent).not.toContain("היא כבר");
+    expect(alert.querySelector("bdi")).toHaveTextContent("הבמה");
+  });
+
+  it("DC-3 — …and the details-less twin drops the room, not the person", async () => {
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    takeNext.mockRejectedValue(new ApiError(409, "STAFF_OCCUPIED", "hers"));
+    mount();
+    await screen.findByText("נועה בר");
+
+    fireEvent.click(screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("את כבר בחדר אחר.");
+    expect(alert.textContent).not.toContain("היא כבר");
+  });
+
+  it("gives a take-next 404 the ROOM's sentence, never the assignment's", async () => {
+    // take-next raises DomainNotFoundError("fitting_room") and nothing else, so
+    // «הלקוחה כבר לא בחדר» would be a sentence about a fitting that never
+    // started. The `queue` target rides the room's 404 branch, paused twin
+    // included.
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    takeNext.mockRejectedValue(new ApiError(404, "NOT_FOUND", "gone"));
+    mount();
+    await screen.findByText("נועה בר");
+
+    fireEvent.click(screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("החדר כבר לא זמין. הרשימה תתוקן בעדכון הבא.");
+    expect(alert.textContent).not.toContain("הלקוחה כבר לא בחדר");
+  });
+
+  it("DC-2(a) — the tile's focus slot belongs to «קחי את הבאה» whenever it renders", async () => {
+    // controlRefs is ONE slot per room and React runs ref callbacks in TREE
+    // order, so an unguarded claim callback runs LAST and silently wins it —
+    // and ~5s later MOVE 6 hands focus to «תפיסת החדר», a control she never
+    // touched. The slot belongs to the tile's FIRST control.
+    //
+    // MUTATION: remove the `waitlistCount === 0` guard from the claim button's
+    // ref callback — focus lands on «תפיסת החדר — חדר 1» and this reddens.
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    takeNext.mockRejectedValue(new ApiError(409, "ROOM_OCCUPIED", "taken"));
+    mount();
+    await screen.findByText("נועה בר");
+
+    const control = screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" });
+    control.focus();
+    fireEvent.click(control);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("alert")));
+
+    // The next tick keeps the alert's promise and unmounts the focused node —
+    // with the queue still populated, so both controls are still rendered.
+    await advance(POLL_INTERVAL_MS);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toHaveAccessibleName("קחי את הבאה בתור — חדר 1");
+  });
+
+  it("DC-2(b) — only the control she pressed spins, and BOTH are disabled", async () => {
+    // `disabled` is shared because one tile can serve one act at a time;
+    // `loading` is not, because two spinners on one tile say two requests are
+    // in flight.
+    //
+    // MUTATION: give both controls `loading={busy}` — the claim reports
+    // aria-busy and this reddens.
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    takeNext.mockReturnValue(new Promise<DispatchResult>(() => {}));
+    mount();
+    await screen.findByText("נועה בר");
+
+    const control = screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" });
+    fireEvent.click(control);
+
+    const claimControl = screen.getByRole("button", { name: "תפיסת החדר — חדר 1" });
+    await waitFor(() => expect(control).toBeDisabled());
+    expect(claimControl).toBeDisabled();
+    expect(control).toHaveAttribute("aria-busy", "true");
+    expect(claimControl).not.toHaveAttribute("aria-busy");
+  });
+
+  it("…and the same rule the other way round when the CLAIM is the act", async () => {
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    claimRoom.mockReturnValue(new Promise<Room>(() => {}));
+    mount();
+    await screen.findByText("נועה בר");
+
+    const claimControl = screen.getByRole("button", { name: "תפיסת החדר — חדר 1" });
+    fireEvent.click(claimControl);
+
+    const control = screen.getByRole("button", { name: "קחי את הבאה בתור — חדר 1" });
+    await waitFor(() => expect(claimControl).toBeDisabled());
+    expect(control).toBeDisabled();
+    expect(claimControl).toHaveAttribute("aria-busy", "true");
+    expect(control).not.toHaveAttribute("aria-busy");
+  });
+
+  it("passes axe on a free tile carrying both ending acts", async () => {
+    // New markup on a shipped tile: a second `secondary` in the action row, and
+    // the waitlist panel below it. axe has no rule for either of the two things
+    // this task actually turns on (a focus move, a register), so this row is
+    // necessary and explicitly not sufficient.
+    getFloor.mockResolvedValue(floor([room()], [staff()], [waiting()]));
+    const { container } = mount();
+    await screen.findByText("נועה בר");
+
+    const results = await run(container);
+    expect(results.violations).toEqual([]);
   });
 });

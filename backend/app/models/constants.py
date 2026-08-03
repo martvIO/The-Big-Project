@@ -371,6 +371,42 @@ class AuditAction(StrEnum):
     # a new room tomorrow, so an id alone records that something was removed and
     # cannot say what.
     FITTING_ROOM_DELETED = "fitting_room_deleted"
+    # F58's floor dispatch (D13). No migration, same as every block above.
+    #
+    # ONE value for both dispatch verbs, with the mode in `details`, and that is
+    # CUSTOMER_UPDATED's split criterion rather than BOOKING_*'s: the question
+    # this table gets asked is "who put whom in which room", and nobody will
+    # ever ask it "who used the take-next button but not the assign one". The
+    # row already names the ticket, the room, the assignment and the staffer, so
+    # a second action value would carry no information the first does not.
+    #
+    # ⚠ A dispatch writes THIS row and NOT a second FITTING_ROOM_CLAIMED: the
+    # claim row's whole content is a subset of this one's, and two rows for one
+    # act is the noise D13 declined FITTING_ROOM_CREATED over.
+    #
+    # A NO-OP WRITES NO ROW, and on this path that is not a guard but a
+    # consequence: `_audit.record` is inside the transaction, so a lost race
+    # rolls the row back with the ticket write (D3a). The trail cannot claim a
+    # dispatch that did not happen.
+    #
+    # NO NAME AND NO PHONE in `details`, ever. audit_log has no retention policy
+    # and platform operators read across tenants.
+    QUEUE_TICKET_DISPATCHED = "queue_ticket_dispatched"
+    # `{ticket, called_at}`. A SECOND call writes NO row — the summons is
+    # idempotent by predicate (`called_at IS NULL`), she wanted her called and
+    # she is called, and a {called → called} entry would be noise in a trail this
+    # area has only four rows in.
+    QUEUE_TICKET_CALLED = "queue_ticket_called"
+    # `{ticket, skip_count, status}`. The count and the RESULTING status ride in
+    # `details` so a removal-by-second-skip is legible without a fifth action
+    # value — "who put her out of the queue" is answered by this row or by
+    # QUEUE_TICKET_REMOVED, and the two are the same question asked of two
+    # controls.
+    QUEUE_TICKET_SKIPPED = "queue_ticket_skipped"
+    # `{ticket}`. This and the row above close F33's Risk 12 by name: "'who
+    # called her forward' and 'who removed her' are the two questions that will
+    # want rows".
+    QUEUE_TICKET_REMOVED = "queue_ticket_removed"
 
     # F41's atelier board (D11). Same fact as every block above: audit_log.action
     # is plain TEXT with no CHECK (0003), so these six need no migration.

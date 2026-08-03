@@ -11,6 +11,7 @@ from app.models.constants import BookingStatus
 from app.models.customer import Customer
 from app.models.fitting_room import FittingRoom
 from app.models.fitting_room_assignment import FittingRoomAssignment
+from app.models.queue_ticket import QueueTicket
 from app.models.staff_user import StaffUser
 
 
@@ -262,7 +263,13 @@ class FittingRoomsRepository:
         """The one join chain, written once. Three callers narrow it with a
         predicate and nothing else — a second transcription of five outer joins
         is five chances for one `deleted_at` to differ between the payload and
-        the row a mutation answers with."""
+        the row a mutation answers with.
+
+        ⚠ **The projection is ELEVEN columns and `client_label` is `row[10]`.**
+        Adding a column anywhere before it shifts the index silently, so F58's
+        walk-in name is a COALESCE inside the existing slot rather than a twelfth
+        column.
+        """
         stmt = (
             select(
                 FittingRoom.id,
@@ -275,7 +282,16 @@ class FittingRoomsRepository:
                 FittingRoomAssignment.created_at,
                 StaffUser.display_name,
                 StaffUser.role,
-                Customer.name,
+                # F58. `RoomRow` gains no field — `client_label` gains a SOURCE,
+                # so all three callers inherit it and `Occupancy` on the staff
+                # card inherits it for free through `occupancy_by_staff_id`.
+                #
+                # A COALESCE and not a branch, because the two pointers are
+                # nullable and independent: null/null is the anonymous visit F36
+                # already ships, and a bride who booked AND scanned resolves to
+                # her `customers` name — the record with a verified phone behind
+                # it — rather than to the one she typed at the QR sheet.
+                func.coalesce(Customer.name, QueueTicket.name),
             )
             .select_from(FittingRoom)
             .outerjoin(
@@ -309,6 +325,29 @@ class FittingRoomsRepository:
                     Customer.tenant_id == tenant_id,
                     Customer.id == Booking.customer_id,
                     Customer.deleted_at.is_(None),
+                ),
+            )
+            # F58's FIFTH join, at the END of the chain. A walk-in has no booking
+            # and no customer row, so without it every dispatched walk-in renders
+            # as an anonymous visit — the tile would say a room is occupied and
+            # refuse to say by whom, on the surface whose entire purpose is to
+            # answer that.
+            #
+            # ⚠ `deleted_at IS NULL` and NOTHING ELSE, and the asymmetry with the
+            # `bookings` join above is deliberate. That one also excludes
+            # `status = 'cancelled'`, because a cancelled appointment is not a
+            # fitting; a ticket's terminal statuses are the NORMAL END of a
+            # fitting the tile may still be rendering in the same transaction, so
+            # filtering on status here would blank the label at exactly the wrong
+            # instant. `deleted_at` is the retention/erasure signal — the one that
+            # must remove the name — which is the `customers` join's rule applied
+            # unchanged.
+            .outerjoin(
+                QueueTicket,
+                and_(
+                    QueueTicket.tenant_id == tenant_id,
+                    QueueTicket.id == FittingRoomAssignment.queue_ticket_id,
+                    QueueTicket.deleted_at.is_(None),
                 ),
             )
             .where(FittingRoom.tenant_id == tenant_id, FittingRoom.deleted_at.is_(None))

@@ -1,13 +1,18 @@
 """The floor read, the two break writers, the room registry, the claim and its
-dress bindings, and the two one-shot pickers.
+dress bindings, the two one-shot pickers, and F58's five dispatch verbs.
 
 **The TARGET-DEPENDENT half of the authorization rule lives HERE, not on the
 router.** The router's gate answers "may this role open the floor at all" — all
 five, because the payload carries the minimum customer datum required by the
-person standing on the floor (at most one name per occupied room, never the
-day's customer book). This answers "may this person toggle, claim for, or
-release THAT person", which no `RoleGate` can express because it depends on the
-target:
+person standing on the floor: **the people who are physically in the boutique
+right now — one name per occupied fitting room, plus the name of every walk-in
+currently waiting to be served — and never the day's booking book.** It also
+carries each waiting ticket's id, which is F33's position-page capability. That
+sentence is on its THIRD version and the two before it were left standing after
+they had been falsified, which is the failure this docstring is the last copy of:
+`floor()` below and `router.py` each carry the full rule and the audit trail.
+This answers "may this person toggle, claim for, or release THAT person", which
+no `RoleGate` can express because it depends on the target:
 
     owner, shift_manager -> anybody
     reception, sales_assistant, seamstress -> herself, and nobody else
@@ -31,6 +36,7 @@ claim's atomicity is a partial unique index rather than a lock (D3), and no
 
 import dataclasses
 import datetime
+from collections import Counter
 from collections.abc import Callable
 from uuid import UUID
 
@@ -52,15 +58,30 @@ from app.db.repositories.fitting_room_assignments import (
     violated_index,
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
+from app.db.repositories.queue_tickets import WAITLIST_LIMIT, QueueTicketsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
-from app.floor.validation import RoomOccupiedError, StaffOccupiedError, normalize_room_label
+from app.floor.validation import (
+    QueueEmptyError,
+    QueueTicketChangedError,
+    QueueTicketNotWaitingError,
+    RoomOccupiedError,
+    StaffOccupiedError,
+    normalize_room_label,
+)
 from app.models.booking import Booking
-from app.models.constants import AuditAction, BookingStatus, StaffCardStatus, StaffRole
+from app.models.constants import (
+    AuditAction,
+    BookingStatus,
+    QueueTicketStatus,
+    StaffCardStatus,
+    StaffRole,
+)
 from app.models.dress import Dress
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.staff_user import StaffUser
+from app.queue.validation import QueueTicketNotFoundError
 from app.storefront.validation import BOUTIQUE_TIMEZONE, today_jerusalem
 
 # Frozen as a module constant so the membership test reads as the rule it is.
@@ -109,6 +130,65 @@ class RoomRead:
 
 
 @dataclasses.dataclass(frozen=True)
+class WaitlistEntryRead:
+    """One waiting walk-in, already reduced to what the wire may carry.
+
+    ⚠ **There is no `phone` field and that is the design.** The repository's
+    projection selects the number because D9's duplicate flag groups on it; the
+    flag is computed in the service and the number stops here, so no renderer
+    downstream has one to leak by accident. `duplicate` is the whole of what
+    survives that grouping.
+
+    `arrived_at` is `created_at` and never the sort key: a skip moves the
+    ordering key, so sending it would reset the panel's rendered clock to zero
+    and say «הגיעה זה עתה» about a woman who has been standing there forty
+    minutes. `called` is a BOOLEAN, not the instant — the panel needs to know
+    WHETHER, and the timestamp would let anyone with the screen time how long a
+    named woman has been standing at a counter.
+    """
+
+    id: UUID
+    name: str
+    visit_type: str
+    arrived_at: datetime.datetime
+    called: bool
+    skip_count: int
+    duplicate: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class WaitlistRead:
+    """The panel's list plus F36's `truncated` honesty, verbatim: the UI renders
+    one line saying the list is partial and names NO count and NO limit, because
+    both are the server's to change without a copy edit.
+
+    ⚠ `truncated: True` also means the duplicate flag is BEST-EFFORT on that
+    payload — a pair straddling the bound has one twin invisible, so the other
+    renders clean. Accepted, because the bound bites only inside a griefing flood
+    and a flag that lies by omission on row 40 of a 40-row list would be the real
+    problem.
+    """
+
+    entries: list[WaitlistEntryRead]
+    truncated: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class DispatchRead:
+    """What the two dispatch verbs answer: the tile that changed AND the queue it
+    changed it from.
+
+    One round trip rather than two, and it is not an economy — the panel and the
+    tile are two halves of one act, and a client that patched the tile from the
+    response but waited up to five seconds for the row to leave the list would
+    render the same woman as both in-service and waiting.
+    """
+
+    room: "RoomRead"
+    waitlist: WaitlistRead
+
+
+@dataclasses.dataclass(frozen=True)
 class FloorRead:
     """The whole payload's data, pre-joined, so `FloorResponse.from_rows` renders
     and does not query.
@@ -129,6 +209,7 @@ class FloorRead:
     room_rows: list[RoomRow]
     bindings_by_assignment_id: dict[UUID, list[FittingAssignmentDress]]
     server_now: datetime.datetime
+    waitlist: WaitlistRead
 
 
 @dataclasses.dataclass(frozen=True)
@@ -174,6 +255,7 @@ class FloorService:
         self._dresses = DressesRepository()
         self._variants = DressVariantsRepository()
         self._customers = CustomersRepository()
+        self._tickets = QueueTicketsRepository()
         self._clock = clock or (lambda: datetime.datetime.now(datetime.UTC))
 
     async def floor(self, tenant_id: UUID) -> FloorRead:
@@ -183,26 +265,40 @@ class FloorService:
 
         No per-role projection: all five roles see the same payload.
 
-        ⚠ **What this payload carries changed in F36, and the sentence that used
-        to stand here is now false.** It claimed this read carried none of a
-        customer's data at all, and therefore that no gate had to be widened over
-        one — but the rooms, and `occupancy` on the staff cards, carry a client
-        label. The rule as it actually is: **the floor payload carries the
-        minimum customer datum required by the person standing on the floor — at
-        most one name per occupied room, for the duration of the fitting, never
-        the day's customer book.** A seamstress
-        called to room 3 has to know who is in it; she does not have to know who
-        else is booked today, and this read still cannot tell her.
+        ⚠ **What this payload carries changed in F36, changed again in F58, and
+        the sentence that used to stand here has now been false twice.** It first
+        claimed this read carried none of a customer's data at all; F36's
+        rewrite then said "at most one name per occupied room", and F58 puts up
+        to a hundred more on it. The rule as it actually is:
 
-        That label is resolved on every read from the live rows rather than
-        snapshotted, which is what makes a retention sweep or an erasure render
-        an anonymous visit instead of quietly preserving a name in a table
-        nobody thought of.
+        **The floor payload carries the minimum customer datum required by the
+        person standing on the floor — the people who are physically in the
+        boutique right now: one name per occupied fitting room, plus the name of
+        every walk-in currently waiting to be served, and never the day's booking
+        book.** Every name leaves the payload the moment she does — a released
+        fitting, a served ticket, a skipped-out ticket, a removed ticket, or
+        midnight Jerusalem. Nothing on it carries a phone, an email, an address
+        or a consent flag.
 
-        TWO extra statements on the tick's EXISTING session — no second
-        `tenant_session`, no second pool checkout, no second `tenants.by_slug`.
-        The bindings read is skipped entirely when nothing is occupied, because
-        an empty boutique polls every five seconds and must not pay for it.
+        ⚠ **It DOES carry each waiting ticket's id, and that id is F33's
+        position-page capability.** This payload is the only server path other
+        than the check-in response that emits one, so it is disclosed to a
+        signed-in staffer of this tenant and to nobody else — and **the console
+        must never render it as a link to `/q/{id}`.**
+
+        Every one of those names is resolved on every read from the live rows
+        rather than snapshotted, which is what makes a retention sweep or an
+        erasure render an anonymous visit instead of quietly preserving a name in
+        a table nobody thought of.
+
+        FOUR extra statements on the tick's EXISTING session — the rooms join,
+        the bindings, the waitlist and D9's in-service phone projection — with no
+        second `tenant_session`, no second pool checkout and no second
+        `tenants.by_slug`. The bindings read is skipped entirely when nothing is
+        occupied, because an empty boutique polls every five seconds and must not
+        pay for it; the waitlist's two are NOT skippable, because an empty queue
+        is the common case and «אין ממתינות בתור» is the answer the panel exists
+        to give.
         """
         async with tenant_session(self._sessions, tenant_id) as session:
             staff_rows = await self._staff.list_live(session, tenant_id)
@@ -212,6 +308,7 @@ class FloorService:
                 tenant_id,
                 [row.assignment_id for row in room_rows if row.assignment_id is not None],
             )
+            waitlist = await self._waitlist(session, tenant_id)
         return FloorRead(
             staff_rows=staff_rows,
             occupancy_by_staff_id={
@@ -220,6 +317,50 @@ class FloorService:
             room_rows=room_rows,
             bindings_by_assignment_id=bindings,
             server_now=self._clock(),
+            waitlist=waitlist,
+        )
+
+    async def _waitlist(self, session: AsyncSession, tenant_id: UUID) -> WaitlistRead:
+        """D2's read plus D9's flag, on the session the caller already holds.
+
+        TWO statements, and the second one is the whole of why the flag is worth
+        having. `_live_waiting()` cannot be reused for it — its third predicate is
+        `status == 'waiting'` and the case that matters most is the twin who is
+        already IN a room: she re-scanned, was dispatched on the first ticket,
+        and the second is still waiting with nothing marking it. A manager with
+        two «נועה»s and neither flagged removes one by inference, and a removal
+        has no undo.
+
+        ⚠ **The phone stops HERE.** It is selected for this grouping and turned
+        into a boolean in this function; `WaitlistEntryRead` has no field to
+        carry it and no renderer downstream has one to leak.
+
+        ⚠ **`day` is TODAY**, and that is the opposite of `position()`'s binding
+        for a stated reason: `position()` has a ticket in hand and binding it to
+        today would tell a woman who walked out yesterday that she is next, while
+        the panel has no ticket and yesterday's ghosts must not sit above this
+        morning's first arrival. The consequence is real and F20's sweep owns it:
+        an unclosed ticket from an earlier day is invisible here and therefore
+        unremovable from this panel.
+        """
+        day = self._today()
+        rows = await self._tickets.waiting_for_panel(session, tenant_id, day, limit=WAITLIST_LIMIT)
+        in_service = await self._tickets.in_service_phones(session, tenant_id, day)
+        waiting_counts = Counter(row.phone for row in rows)
+        return WaitlistRead(
+            entries=[
+                WaitlistEntryRead(
+                    id=row.id,
+                    name=row.name,
+                    visit_type=row.visit_type,
+                    arrived_at=row.created_at,
+                    called=row.called_at is not None,
+                    skip_count=row.skip_count,
+                    duplicate=waiting_counts[row.phone] > 1 or row.phone in in_service,
+                )
+                for row in rows
+            ],
+            truncated=len(rows) == WAITLIST_LIMIT,
         )
 
     async def start_break(
@@ -410,6 +551,377 @@ class FloorService:
             ) from error
         raise error
 
+    async def take_next(
+        self, tenant_id: UUID, room_id: UUID, *, staff_user_id: UUID | None, actor: StaffContext
+    ) -> DispatchRead:
+        """The head of today's queue into this room, in ONE transaction (D3).
+
+        ⚠ **NOTHING INSIDE THE `async with` MAY `return` AFTER THE TICKET UPDATE
+        HAS RUN, AND EVERY REFUSAL RAISES.** `db/tenant.py:25` is
+        `async with session_factory() as session, session.begin():`, so an
+        exception propagating out of that block ROLLS BACK and a `return` from
+        inside it COMMITS. That is the whole guarantee, and it is narrower than
+        the one an earlier draft of the spec named: a raised 409 rolls the ticket
+        write back with or without a savepoint, so the savepoint is not what
+        protects the customer — the absence of a `return` is.
+
+        What a `return` would cost, concretely: the ticket UPDATE has run, the
+        INSERT failed, the block returns, `tenant_session` commits — and the
+        woman is `in_service` with no room. Gone from the waitlist, gone from the
+        public board, on no tile, her own phone reading «התור שלך התחיל» for the
+        rest of the day, recoverable only with psql. No verb in this feature can
+        reach that state to undo it.
+
+        **There is NO savepoint and NO idempotence branch**, and both absences
+        are the design rather than an economy. No savepoint because nothing after
+        the conflict needs the transaction alive — the occupant read moves to a
+        second, short, read-only session paid only on a refusal — so the `try`
+        wraps the `async with` ITSELF. No idempotence branch because the
+        transaction that would have made a 200 true is gone: every
+        `IntegrityError` out of here is a refusal, and answering 200 would report
+        a dispatch that claimed nobody while consuming the head of the queue.
+        That is the exact inverse of `claim`, where a re-claim IS a true 200.
+
+        Ordered exactly:
+
+        1. **Authorize, before any read** — a 403 raised after a read is an
+           existence oracle (module docstring).
+        2. **Room `FOR UPDATE`**, then **2b: the occupant read** — a FAST PATH,
+           not the guarantee. `has_active_for_room`'s shipped docstring is the
+           authority for why a read issued after that lock sees the committed
+           claim; `occupant_of_room` is the same predicate returning the row the
+           409 needs anyway, so it is one read and not two. Without 2b the
+           feature's most likely collision (two managers on one free tile inside
+           one 5s tick) claims a real customer's ticket and throws it away, and a
+           third take-next SKIP-LOCKs past her — out-of-order service
+           MANUFACTURED by the design rather than forced by it.
+        3. The ticket, 4. the empty-queue refusal, 5. the INSERT (which RAISES),
+           6. the audit row IN THE SAME TRANSACTION so a lost race cannot leave a
+           trail claiming a dispatch that did not happen, 7. the room read.
+
+        The answer is the tile AND the queue, because they are two halves of one
+        act: a client that patched the tile from this response but waited up to
+        five seconds for the row to leave the list would render the same woman as
+        both in-service and waiting.
+        """
+        target_staff_id = staff_user_id or actor.id
+        self._authorize(target_staff_id, actor)
+        try:
+            async with tenant_session(self._sessions, tenant_id) as session:
+                room = await self._rooms.by_id_for_update(session, tenant_id, room_id)
+                if room is None or not room.is_active:
+                    raise DomainNotFoundError("fitting_room")
+                occupant = await self._assignments.occupant_of_room(session, tenant_id, room_id)
+                if occupant is not None:
+                    raise RoomOccupiedError(
+                        await self._occupant_details(session, tenant_id, occupant)
+                    )
+                ticket = await self._tickets.claim_next(session, tenant_id, day=self._today())
+                if ticket is None:
+                    raise QueueEmptyError
+                assignment = await self._assignments.claim(
+                    session,
+                    tenant_id,
+                    room_id=room_id,
+                    staff_id=target_staff_id,
+                    booking_id=None,
+                    queue_ticket_id=ticket.id,
+                )
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.QUEUE_TICKET_DISPATCHED,
+                    actor_id=actor.id,
+                    entity=str(ticket.id),
+                    details={
+                        "ticket": str(ticket.id),
+                        "room": str(room_id),
+                        "assignment": str(assignment.id),
+                        "staff": str(target_staff_id),
+                        "mode": "take_next",
+                    },
+                )
+                return await self._dispatch_read(session, tenant_id, room_id)
+        except IntegrityError as error:
+            # ⚠ THE TRANSACTION IS ALREADY GONE — the exception left the
+            # `async with`, which rolled it back. The ticket is `waiting` again
+            # at its original position (`requeued_at` was never touched) and no
+            # audit row was written.
+            raise await self._occupied_error(tenant_id, room_id, target_staff_id, error) from error
+
+    async def _occupied_error(
+        self, tenant_id: UUID, room_id: UUID, target_staff_id: UUID, error: IntegrityError
+    ) -> Exception:
+        """Returns the exception to raise; the caller does `raise ... from error`.
+
+        ⚠ **NO IDEMPOTENCE BRANCH.** `active_for` is deliberately NOT consulted.
+        On the dispatch verbs the ticket write is live and a `return` would
+        commit it (see `take_next`), so the shipped analogue's FIRST branch
+        (`_resolve_claim_conflict`, above) — correct there — strands a customer
+        here. A dispatch that violated either index dispatched NOBODY and must
+        refuse.
+
+        ⚠ **The ROOM is resolved FIRST and WITHOUT the constraint name.** F36's
+        rule applied to a case its own branch ORDER cannot cover: a write
+        violating BOTH indexes reports whichever has the lower OID — migration
+        creation order, which flips after any REINDEX CONCURRENTLY or pg_repack.
+        Reading the occupant first makes the answer deterministic. (Step 2b
+        already refuses the committed-occupant case before the INSERT, so this
+        runs only for a winner that had not yet committed when 2b read — but it
+        must still be right.)
+
+        ⚠ **An UNRECOGNISED constraint RE-RAISES**, unchanged from F36: a 500 on
+        a violation nobody predicted is correct, and silently mapping it to
+        ROOM_OCCUPIED would tell a staffer a lie about furniture. This is why the
+        helper RETURNS an exception rather than raising one — `return error` is
+        how that branch is expressible at all.
+
+        A SECOND `tenant_session`, and F36 was right to decline one for its claim
+        ("another pool checkout, another set_config, another BEGIN/COMMIT and a
+        second place for the tenant id to be wrong") — it had a savepoint
+        available. Here the savepoint is not available and would not help, so the
+        second checkout is the price of correctness and is paid only on a
+        refusal. The tenant id is an argument, so there is no second place for it
+        to be wrong.
+        """
+        async with tenant_session(self._sessions, tenant_id) as session:
+            occupant = await self._assignments.occupant_of_room(session, tenant_id, room_id)
+            if occupant is not None:
+                return RoomOccupiedError(await self._occupant_details(session, tenant_id, occupant))
+            held = await self._assignments.room_of_staff(session, tenant_id, target_staff_id)
+            if held is not None:
+                return StaffOccupiedError(
+                    await self._held_room_details(session, tenant_id, target_staff_id)
+                )
+        # ⚠ MEMBERSHIP, not `is None`. The spec's D3a snippet writes
+        # `if violated_index(error) is None: return error`, which is WEAKER than
+        # the F36 rule the same docstring says it keeps: a violation carrying an
+        # unrecognised NAME — any unique index a later feature adds to this
+        # table — would fall through to ROOM_OCCUPIED, which is exactly the lie
+        # about furniture F36 declined to tell. `not in (…)` covers both the
+        # unnamed and the unknown-named case. Caught by the parametrised
+        # re-raise test, which copies F36's shipped [None, "idx_something…"].
+        if violated_index(error) not in (ROOM_ACTIVE_INDEX, STAFF_ACTIVE_INDEX):
+            return error
+        # A recognised violation with nobody left to name: the winner released in
+        # the gap. «החדר נתפס זה עתה. נסי שוב.»
+        return RoomOccupiedError(None)
+
+    async def assign(
+        self,
+        tenant_id: UUID,
+        room_id: UUID,
+        *,
+        queue_ticket_id: UUID,
+        staff_user_id: UUID | None,
+        actor: StaffContext,
+    ) -> DispatchRead:
+        """Push-assign: `take_next` with step 3 naming a ticket instead of
+        draining the queue (D4).
+
+        **Everything else is take-next's, deliberately and line for line** — the
+        same `_authorize` before any read, the same room lock, the same step 2b,
+        the same `try` around the whole `async with`, the same absence of a
+        savepoint and the same absence of an idempotence branch. Read
+        `take_next`'s docstring; every word of the ⚠ block applies here, and the
+        stranded-customer failure it describes is reachable from this verb by
+        exactly the same edit.
+
+        ⚠ **`claim_next` MUST NOT be reachable from here.** A push-assign that
+        quietly served the head of the queue would put a woman the manager was
+        not looking at into the room she was.
+
+        Rowcount 0 on the ticket is TWO answers and the read is where they are
+        told apart — `status_of`, never `by_id` (D2).
+        """
+        target_staff_id = staff_user_id or actor.id
+        self._authorize(target_staff_id, actor)
+        try:
+            async with tenant_session(self._sessions, tenant_id) as session:
+                room = await self._rooms.by_id_for_update(session, tenant_id, room_id)
+                if room is None or not room.is_active:
+                    raise DomainNotFoundError("fitting_room")
+                occupant = await self._assignments.occupant_of_room(session, tenant_id, room_id)
+                if occupant is not None:
+                    raise RoomOccupiedError(
+                        await self._occupant_details(session, tenant_id, occupant)
+                    )
+                ticket = await self._tickets.claim_by_id(session, tenant_id, queue_ticket_id)
+                if ticket is None:
+                    # Unreachable third branch, and it stays a raise rather than a
+                    # fall-through: this verb's predicate is `status_of`'s exactly
+                    # and nothing in the product moves a ticket back to `waiting`,
+                    # so a live waiting row here means two statements of one
+                    # transaction disagreed. «רענני ונסי שוב» is the only honest
+                    # remedy for that.
+                    raise QueueTicketChangedError(
+                        {
+                            "skip_count": str(
+                                await self._ticket_refusal(session, tenant_id, queue_ticket_id)
+                            )
+                        }
+                    )
+                assignment = await self._assignments.claim(
+                    session,
+                    tenant_id,
+                    room_id=room_id,
+                    staff_id=target_staff_id,
+                    booking_id=None,
+                    queue_ticket_id=ticket.id,
+                )
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.QUEUE_TICKET_DISPATCHED,
+                    actor_id=actor.id,
+                    entity=str(ticket.id),
+                    details={
+                        "ticket": str(ticket.id),
+                        "room": str(room_id),
+                        "assignment": str(assignment.id),
+                        "staff": str(target_staff_id),
+                        "mode": "assign",
+                    },
+                )
+                return await self._dispatch_read(session, tenant_id, room_id)
+        except IntegrityError as error:
+            raise await self._occupied_error(tenant_id, room_id, target_staff_id, error) from error
+
+    async def call(self, tenant_id: UUID, ticket_id: UUID, *, actor: StaffContext) -> WaitlistRead:
+        """The summons (D7). No `_authorize`: a call has no target STAFFER, so
+        there is nothing for a self-or-elevated rule to compare, and the router's
+        five-role gate is the whole check.
+
+        ⚠ **ROWCOUNT 0 HAS THREE CAUSES HERE, NOT D4'S TWO, AND THE THIRD IS THE
+        ORDINARY ONE.** The extra `called_at IS NULL` conjunct adds it: she is
+        already called. That is a 200 with the current waitlist and NO audit row —
+        she wanted her called and she is called, and a {called → called} entry
+        would be noise in a trail this area has four rows in. A builder
+        implementing D4's two-answer table literally falls through here with no
+        branch at all, which is a silent no-op reported as success or a 500.
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._tickets.call(session, tenant_id, ticket_id, now=at)
+            if row is None:
+                # Raises on the two shared causes; a return means she was already
+                # called, which is the third.
+                await self._ticket_refusal(session, tenant_id, ticket_id)
+            else:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.QUEUE_TICKET_CALLED,
+                    actor_id=actor.id,
+                    entity=str(ticket_id),
+                    # `row.called_at`, not `at`: on the winning write they are
+                    # equal, and reading it off the statement keeps this honest if
+                    # the writer ever stops taking the caller's clock.
+                    details={"ticket": str(ticket_id), "called_at": _isoformat(row.called_at)},
+                )
+            return await self._waitlist(session, tenant_id)
+
+    async def skip(
+        self, tenant_id: UUID, ticket_id: UUID, *, seen_skip_count: int, actor: StaffContext
+    ) -> WaitlistRead:
+        """Skip-to-back, and the second skip removes (D6). `ELEVATED` at the
+        route, so there is no target-dependent check to make here either.
+
+        ⚠ **Rowcount 0 is THREE answers and the third one is what stops two
+        ordinary single taps removing a customer.** The row is live and still
+        `waiting`, so what failed is `skip_count = :seen_skip_count`: a colleague
+        skipped her between this manager's render and her tap, and escalating on
+        a count nobody saw would remove her with the confirm — gated on
+        `skip_count >= 1` — never rendered on either device. 409
+        `QUEUE_TICKET_CHANGED` carries the count the server actually holds; the
+        next tick renders 1 and the next press correctly opens the confirm.
+
+        The audit row's `status` is read off the statement's own RETURNING rather
+        than re-derived in Python: the `CASE` is the authority on whether this
+        press removed her.
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._tickets.skip(
+                session, tenant_id, ticket_id, now=at, seen_skip_count=seen_skip_count
+            )
+            if row is None:
+                raise QueueTicketChangedError(
+                    {"skip_count": str(await self._ticket_refusal(session, tenant_id, ticket_id))}
+                )
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.QUEUE_TICKET_SKIPPED,
+                actor_id=actor.id,
+                entity=str(ticket_id),
+                details={
+                    "ticket": str(ticket_id),
+                    "skip_count": row.skip_count,
+                    "status": row.status,
+                },
+            )
+            return await self._waitlist(session, tenant_id)
+
+    async def remove(
+        self, tenant_id: UUID, ticket_id: UUID, *, actor: StaffContext
+    ) -> WaitlistRead:
+        """The no-show and Ruling 3's duplicate, which are the same act (D8).
+
+        Destructive with no undo, so the confirm in front of it and this row
+        behind it are what the design carries instead of a restore verb — one
+        more route, one more gate, one more audit value and one more control, to
+        undo an act that already has a confirm in front of it.
+
+        Rowcount 0 really does have only D4's two causes here: no `skip_count`
+        conjunct and no `called_at` one.
+        """
+        async with tenant_session(self._sessions, tenant_id) as session:
+            if not await self._tickets.remove(session, tenant_id, ticket_id):
+                # See `assign`: the third branch is unreachable and the honest
+                # answer to a state this table cannot produce is "reload".
+                raise QueueTicketChangedError(
+                    {"skip_count": str(await self._ticket_refusal(session, tenant_id, ticket_id))}
+                )
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.QUEUE_TICKET_REMOVED,
+                actor_id=actor.id,
+                entity=str(ticket_id),
+                details={"ticket": str(ticket_id)},
+            )
+            return await self._waitlist(session, tenant_id)
+
+    async def _ticket_refusal(self, session: AsyncSession, tenant_id: UUID, ticket_id: UUID) -> int:
+        """The rowcount-0 read, shared by the four verbs that can take one.
+
+        It RAISES the two causes every one of them shares — gone (or swept, or
+        another tenant's) is a 404; no longer `waiting` is a 409 naming the state
+        — and RETURNS the live `skip_count` when the row is still waiting,
+        because THAT fact means something different on each verb and is therefore
+        the verb's to answer: a re-call on `call`, a stale count on `skip`, and
+        an unreachable disagreement on `assign` and `remove`.
+
+        ⚠ **`status_of` and never `by_id`.** The projection is what keeps a phone
+        and a consent timestamp out of a session that is running ORM-enabled
+        UPDATEs, and — measured, not assumed — an entity read here answers the
+        PRE-skip count out of the identity map, so `skip` would refuse a caller
+        who sent the value it had just been told.
+
+        ⚠ **Nothing has been written when this runs.** Every caller reaches it on
+        a rowcount of 0, so raising out of `tenant_session` rolls back a
+        transaction that changed nothing — which is why these raises are safe
+        where a `return` after the dispatch verbs' ticket write would not be.
+        """
+        found = await self._tickets.status_of(session, tenant_id, ticket_id)
+        if found is None:
+            raise QueueTicketNotFoundError
+        status, skip_count = found
+        if status != QueueTicketStatus.WAITING.value:
+            raise QueueTicketNotWaitingError({"status": status})
+        return skip_count
+
     async def release(
         self, tenant_id: UUID, assignment_id: UUID, *, actor: StaffContext
     ) -> RoomRead:
@@ -425,6 +937,35 @@ class FloorService:
         soft-deleted from `staff_users` since the claim, `staff_user_id` matches
         nobody, so only an elevated caller can clear the tile. That is the right
         answer and it is not a gap.
+
+        ⚠ **F58's FINISH IS THIS METHOD, EXTENDED, AND THERE IS NO SIXTH ROUTE
+        (D5).** That is a safety property rather than an economy: a separate
+        finish verb on the waitlist would leave releasing from the ROOM TILE —
+        the control that is already there, already documented, already tested —
+        freeing the room and leaving the ticket `in_service` forever, which is
+        exactly the defect this feature exists to eliminate, re-introduced by the
+        feature that eliminates it.
+
+        Three properties, each deliberate:
+
+        1. **One transaction.** The close is one more statement on the session
+           this method already holds. The worker frees and the entry closes
+           together, or neither does.
+        2. **`queue_ticket_id IS NULL` → byte-identical shipped behaviour**, and
+           that is the acceptance gate rather than a hope. Every assignment F36
+           ever created takes the untouched path, INCLUDING its audit row: the
+           `queue_ticket` key is present exactly when there is a ticket to name,
+           never as a null. (D5's own property 5 spells it `str(id) | None`,
+           which would put a null key on every release in the product and
+           contradict its property 2; the shipped suite is the tiebreak, and
+           `_occupied_body` is the house precedent for omitting rather than
+           nulling.)
+        3. **`wrote is False` → no close.** Somebody already released it, so
+           neither write happens — two no-ops, one condition. And `close`'s own
+           `status = 'in_service'` conjunct is the second guard behind it: a
+           ticket a manager REMOVED mid-fitting stays removed, and rowcount 0
+           there raises nothing, because the room is free, which is what she
+           asked for.
         """
         at = self._clock()
         async with tenant_session(self._sessions, tenant_id) as session:
@@ -437,6 +978,9 @@ class FloorService:
             if row is None:
                 raise DomainNotFoundError("fitting_room_assignment")
             if wrote:
+                ticket_id = row.queue_ticket_id
+                if ticket_id is not None:
+                    await self._tickets.close(session, tenant_id, ticket_id)
                 await self._audit.record(
                     session,
                     tenant_id=tenant_id,
@@ -447,6 +991,7 @@ class FloorService:
                         "room": str(row.fitting_room_id),
                         "assignment": str(assignment_id),
                         "staff": str(row.staff_user_id),
+                        **({"queue_ticket": str(ticket_id)} if ticket_id is not None else {}),
                     },
                 )
             # `wrote is False` with a live row back means somebody already
@@ -716,6 +1261,13 @@ class FloorService:
 
     # --- F36: shared helpers ---------------------------------------------------
 
+    def _today(self) -> datetime.date:
+        """Today's Jerusalem calendar day, and `_today_window()` calls it rather
+        than re-deriving it — so the dispatch day and the client picker's window
+        cannot drift apart, which is the argument `_today_window` already makes
+        one level down."""
+        return today_jerusalem(self._clock)
+
     def _today_window(self) -> tuple[datetime.datetime, datetime.datetime]:
         """Today's Jerusalem calendar day as a half-open UTC range.
 
@@ -724,12 +1276,23 @@ class FloorService:
         would be a control that does nothing, and two transcriptions of the same
         arithmetic are two chances for that.
         """
-        today = today_jerusalem(self._clock)
+        today = self._today()
         return (
             datetime.datetime.combine(today, datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE),
             datetime.datetime.combine(
                 today + datetime.timedelta(days=1), datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
             ),
+        )
+
+    async def _dispatch_read(
+        self, session: AsyncSession, tenant_id: UUID, room_id: UUID
+    ) -> DispatchRead:
+        """What both dispatch verbs answer, on the session that made the write —
+        so the tile and the queue are read from ONE committed state and cannot
+        disagree about the woman who just moved between them."""
+        return DispatchRead(
+            room=await self._room_read(session, tenant_id, room_id),
+            waitlist=await self._waitlist(session, tenant_id),
         )
 
     async def _room_read(self, session: AsyncSession, tenant_id: UUID, room_id: UUID) -> RoomRead:

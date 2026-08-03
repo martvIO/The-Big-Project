@@ -264,6 +264,19 @@ export function QueuePositionPage({ ticketId }: { ticketId: string }) {
 
   const ticket = view.kind === "live" ? view.ticket : null;
   const closed = ticket !== null && CLOSED_STATUSES.has(ticket.status);
+  // ⚠ F58 MAKES `called_at` AND `in_service` CO-OCCUR FOR THE FIRST TIME. A
+  // dispatch moves the ticket to `in_service` and deliberately leaves the call
+  // timestamp standing — it is the record that she was summoned, and the one
+  // column the wall board reads — so the two facts are now true together of a
+  // woman standing in a fitting room. The arms are ordered closed → inService →
+  // called → position: without that, the `called` arm wins and this page tells
+  // her to approach the counter, while «התור שלך התחיל» is unreachable on the
+  // only path in the product that produces it.
+  //
+  // *Declined the alternative* — having take-next clear `called_at` — because it
+  // would erase the record that she was summoned, on the one column F59 reads,
+  // for a rendering problem that belongs to the renderer.
+  const inService = ticket !== null && ticket.status === "in_service";
   const called = ticket !== null && ticket.called_at !== null;
   const live = ticket !== null && !closed;
 
@@ -320,23 +333,23 @@ export function QueuePositionPage({ ticketId }: { ticketId: string }) {
         <p className="max-w-[60ch] text-base text-ink">{t("checkin.closed")}</p>
       )}
 
-      {ticket !== null && !closed && called && (
+      {ticket !== null && !closed && inService && (
+        <p className="font-display text-3xl text-ink">{t("checkin.statusInService")}</p>
+      )}
+
+      {ticket !== null && !closed && !inService && called && (
         <p data-testid="queue-called" className="font-display text-3xl text-ink">
           {t("checkin.called")}
         </p>
       )}
 
-      {ticket !== null && !closed && !called && ticket.position !== null && (
+      {ticket !== null && !closed && !inService && !called && ticket.position !== null && (
         <div className="flex flex-col gap-2">
           <p data-testid="queue-number" className="font-display text-6xl text-ink">
             <bdi dir="ltr">{ticket.position}</bdi>
           </p>
           <p className="text-base text-ink-muted">{t("checkin.statusWaiting")}</p>
         </div>
-      )}
-
-      {ticket !== null && !closed && !called && ticket.position === null && (
-        <p className="font-display text-3xl text-ink">{t("checkin.statusInService")}</p>
       )}
 
       {view.kind === "notFound" && (
