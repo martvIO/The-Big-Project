@@ -151,7 +151,20 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
   const [pendingDelete, setPendingDelete] = useState<AtelierTicket | null>(null);
 
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
   const terminalRef = useRef<HTMLParagraphElement>(null);
+  // ⚠ C4 — ONE UNCONDITIONAL CAPTURE, five destinations. Recorded BEFORE an
+  // incoming payload is applied (the only moment both lists exist) and before
+  // every write, and consumed after the paint iff `document.activeElement` is
+  // <body> — which is the browser saying the repaint dropped focus rather than
+  // the user moving it. That guard is what makes «unconditional» free: if focus
+  // is still on something real the restore does nothing, and it is strictly less
+  // code than any predicate over the two lists.
+  const restoreRef = useRef<{
+    ticketId: string;
+    control: string | null;
+    columnStage: TicketStage;
+  } | null>(null);
   const cardAlertRef = useRef<HTMLParagraphElement>(null);
   const formAlertRef = useRef<HTMLParagraphElement>(null);
   // `load` runs outside render and would otherwise close over a stale payload.
@@ -182,6 +195,34 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
     setBoardData(next);
   };
 
+  /**
+   * Record where focus is, if it is inside a card. Unconditional: no comparison
+   * against the incoming list, because the case that matters most has no stage
+   * change at all — a seamstress tabbed onto «לקחת» whose colleague claims the
+   * ticket gets a card with ZERO controls for her, in the same column, still in
+   * the payload. Every predicate the deck proposed is false there.
+   */
+  const captureFocus = () => {
+    restoreRef.current = null;
+    const active = document.activeElement;
+    if (!(active instanceof Element)) {
+      return;
+    }
+    const ticketId = active.closest("[data-ticket-id]")?.getAttribute("data-ticket-id");
+    if (ticketId === undefined || ticketId === null) {
+      return;
+    }
+    const row = boardRef.current?.tickets.find((item) => item.id === ticketId);
+    if (row === undefined) {
+      return;
+    }
+    restoreRef.current = {
+      ticketId,
+      control: active.closest("[data-control]")?.getAttribute("data-control") ?? null,
+      columnStage: row.stage,
+    };
+  };
+
   const load = async () => {
     const generation = poll.generation();
     try {
@@ -189,6 +230,9 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       if (!poll.isCurrent(generation)) {
         return;
       }
+      // Decided BEFORE the new list is applied — the only moment both lists
+      // exist.
+      captureFocus();
       applyBoard(result);
       // The freshness claim changes ONLY on a success, which is what makes it a
       // claim the board can keep.
@@ -265,6 +309,56 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       terminalRef.current?.focus();
     }
   }, [terminal, dialogOpen]);
+
+  useEffect(() => {
+    // AFTER THE PAINT, and only if the repaint dropped focus. The order is the
+    // one C4 fixes: (1) the same control on the same ticket, wherever it now is;
+    // (2) any control on that ticket; (3) the NEW column's heading; (4) the
+    // RECORDED column's heading, which is the delete case — the card is gone
+    // entirely, so there is nothing to look up.
+    //
+    // Focusing the destination also scrolls it into view natively, so the
+    // stacked layout needs no scroll code.
+    const target = restoreRef.current;
+    restoreRef.current = null;
+    if (target === null || document.activeElement !== document.body) {
+      return;
+    }
+    const root = sectionRef.current;
+    if (root === null) {
+      return;
+    }
+    const card = Array.from(root.querySelectorAll("[data-ticket-id]")).find(
+      (node) => node.getAttribute("data-ticket-id") === target.ticketId,
+    );
+    if (card !== undefined) {
+      const same =
+        target.control === null
+          ? null
+          : card.querySelector<HTMLElement>(`[data-control="${target.control}"]`);
+      if (same !== null) {
+        same.focus();
+        return;
+      }
+      const any = card.querySelector<HTMLElement>("[data-control]");
+      if (any !== null) {
+        any.focus();
+        return;
+      }
+    }
+    const landed = boardRef.current?.tickets.find((item) => item.id === target.ticketId);
+    const destination =
+      (landed === undefined ? null : document.getElementById(headingId(landed.stage))) ??
+      document.getElementById(headingId(target.columnStage));
+    destination?.focus();
+    // ⚠ NO DEPENDENCY ARRAY, deliberately. Keyed on [boardData] this effect
+    // would SILENTLY NEVER FIRE for a poll that handed `setBoardData` a
+    // reference-identical payload — React bails out of the update and the effect
+    // is skipped, which is the defect FloorPanel records in its own words for
+    // its [cards] effect. Both guards above are cheap and the component
+    // re-renders on every tick regardless, so running after every commit costs
+    // nothing and cannot go stale.
+  });
 
   useEffect(() => {
     // A refused write moves focus to the in-card alert. Keyed on the error state
@@ -382,6 +476,13 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
     const patched = result.value;
     const current = boardRef.current;
     if (current !== null) {
+      // Recorded EXPLICITLY rather than read off `document.activeElement`, and
+      // at the same moment `load` records — immediately before the new list is
+      // applied. The delete's confirm button lives in a DIALOG and not in a
+      // card, so the unconditional capture would find nothing on the one act
+      // that most needs a destination; and the tapped control is `disabled`
+      // while the request is in flight, which real browsers blur.
+      restoreRef.current = { ticketId: ticket.id, control, columnStage: ticket.stage };
       applyBoard({
         ...current,
         tickets:
@@ -448,15 +549,21 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       ticket,
       "delete",
       () => api.deleteTicket(ticket.id).then(() => null),
-      () => ({
-        text: t("atelier.cue.deleted", { name: ticket.customer_name }),
-        name: ticket.customer_name,
-      }),
-    ).then((ok) => {
-      if (ok) {
+      () => {
+        // ⚠ CLOSED HERE, inside `cueOf`, and not from a `.then()` on the write:
+        // it has to land in the SAME commit as the card's removal. A later batch
+        // closes the <dialog> AFTER the restore effect has already focused the
+        // column heading, and the dialog's own focus-return then drops focus to
+        // <body> — an intermittently green test over a permanently stranded
+        // user. Clearing a draft inside `cueOf` is the shape the skip and assign
+        // writes already use.
         setPendingDelete(null);
-      }
-    });
+        return {
+          text: t("atelier.cue.deleted", { name: ticket.customer_name }),
+          name: ticket.customer_name,
+        };
+      },
+    );
   };
 
   const openCreate = () => {
@@ -687,7 +794,7 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
   const seamstresses = boardData?.seamstresses ?? [];
 
   return (
-    <section className="space-y-4">
+    <section ref={sectionRef} className="space-y-4">
       {heading}
 
       {showFreshness && (

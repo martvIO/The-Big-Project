@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import type { ReactNode } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { run } from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
 import type { AtelierBoardResponse, AtelierTicket } from "../api";
@@ -85,6 +89,18 @@ function board(
   };
 }
 
+// AtelierSection renders inside ConsoleShell's <main>, which owns the console's
+// single sr-only <h1>. The axe harness reproduces that frame rather than scanning
+// a headless fragment whose heading order starts at h2.
+function renderInShell(node: ReactNode) {
+  return render(
+    <main>
+      <h1 className="sr-only">ניהול הבוטיק</h1>
+      {node}
+    </main>,
+  );
+}
+
 function mount(props: { selfId?: string; role?: string } = {}) {
   return render(<AtelierSection selfId={props.selfId ?? OWNER_ID} role={props.role ?? "owner"} />);
 }
@@ -116,6 +132,17 @@ afterEach(() => {
 async function advanceTimers(ms: number) {
   await act(async () => {
     vi.advanceTimersByTime(ms);
+  });
+}
+
+// ⚠ `act`, and deliberately not a bare click followed by `waitFor`. RTL's
+// `waitFor` ADVANCES FAKE TIMERS, so it fires poll ticks inside the window a
+// mutation assertion is measuring — and a tick whose mocked payload is the
+// PRE-mutation board drags the card back to where it started. `act` flushes
+// React and the promise chain and nothing else.
+async function clickAndSettle(node: HTMLElement) {
+  await act(async () => {
+    fireEvent.click(node);
   });
 }
 
@@ -696,13 +723,11 @@ describe("the board states", () => {
     mount();
     await screen.findByText("מיכל לוי");
 
-    fireEvent.click(screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" }));
+    await clickAndSettle(screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" }));
 
-    await waitFor(() =>
-      expect(
-        within(screen.getByRole("list", { name: "בעבודה" })).getByText("מיכל לוי"),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      within(screen.getByRole("list", { name: "בעבודה" })).getByText("מיכל לוי"),
+    ).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { level: 3 })[1]).toHaveTextContent("בעבודה · 1");
     expect(screen.getAllByRole("heading", { level: 3 })[0]).toHaveTextContent("התקבל · 0");
   });
@@ -1502,5 +1527,331 @@ describe("C7 — a terminal while a dialog is open", () => {
     // …and it takes focus: the dialog's own focus-return targets a trigger the
     // terminal panel has just unmounted, which would otherwise land on <body>.
     expect(document.activeElement).toBe(screen.getByRole("alert"));
+  });
+});
+
+// --- §3.3 / C4: THE FIVE FOCUS DESTINATIONS ---------------------------------
+//
+// ⚠ A SUCCESSFUL ADVANCE MOVES THE CARD TO A DIFFERENT COLUMN, so the tapped
+// control unmounts and the browser drops document.activeElement to <body>. On
+// this surface that is not a side effect — IT IS WHAT THE FEATURE DOES. This bug
+// class has shipped THREE times in this repo and axe walked past it every time,
+// because axe cannot see a focus move that never happened.
+//
+// Each test below asserts `document.activeElement` IS the expected node, never
+// merely that the node exists: a shipped success-path focus test was once
+// vacuous precisely because jsdom does not blur a disabled element.
+
+describe("the five focus destinations a repaint or a mutation can strand", () => {
+  it("1 — a successful advance lands on the SAME ticket's control in its NEW column", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    advanceStage.mockResolvedValue(
+      ticket({ stage: "in_progress", in_progress_at: "2026-08-04T11:00:00Z" }),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+    await clickAndSettle(control);
+
+    const moved = within(screen.getByRole("list", { name: "בעבודה" })).getByRole("button", {
+      name: "לשלב הבא — מיכל לוי",
+    });
+    // …and it is a DIFFERENT node from the one she tapped, which is what makes
+    // this a move rather than a rename.
+    expect(moved).not.toBe(control);
+    expect(control.isConnected).toBe(false);
+    expect(document.activeElement).toBe(moved);
+  });
+
+  it("1b — an advance onto `delivered` lands on ANY control of that ticket, not <body>", async () => {
+    // The destination card has no «לשלב הבא» at all, so the id-keyed lookup
+    // falls through to the next control on the same ticket.
+    getAtelierBoard.mockResolvedValue(board([ticket({ stage: "ready" })]));
+    advanceStage.mockResolvedValue(
+      ticket({ stage: "delivered", delivered_at: "2026-08-04T11:00:00Z" }),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+    await clickAndSettle(control);
+
+    expect(
+      within(screen.getByRole("list", { name: "נמסר" })).getByText("מיכל לוי"),
+    ).toBeInTheDocument();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(
+      (document.activeElement as HTMLElement).closest("[data-ticket-id]"),
+    ).toHaveAttribute("data-ticket-id", T1);
+  });
+
+  it("2 — ANY refused mutation lands on the in-card alert", async () => {
+    // ⚠ THE FAILURE PATH IS THE ONE THAT GETS FORGOTTEN: one shipped surface
+    // compensated on its success path and restored nothing in its catch, and
+    // that was a Level A defect found in review and not in CI.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    advanceStage.mockRejectedValue(new ApiError(409, "TICKET_STAGE_CONFLICT", "moved"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+    await clickAndSettle(control);
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("הכרטיס כבר התקדם.");
+    expect(document.activeElement).toBe(alert);
+  });
+
+  it("3 — a successful poll that clears the focused alert hands focus back to that card's control", async () => {
+    // ⚠ EASY TO MISS because the alert is cleared about five seconds later WITH
+    // NO USER ACTION AT ALL, and the departing-card rescue cannot cover it: the
+    // card is still in the list.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    advanceStage.mockRejectedValue(new ApiError(409, "TICKET_STAGE_CONFLICT", "moved"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+    await clickAndSettle(control);
+    expect(document.activeElement).toBe(screen.getByRole("alert"));
+
+    await advanceTimers(POLL_INTERVAL_MS);
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toHaveAccessibleName("לשלב הבא — מיכל לוי");
+  });
+
+  it("4 — a successful DELETE lands on the departing card's own column heading", async () => {
+    // The card is gone entirely, so the id-keyed lookup has nothing to find.
+    // Without the rescue, deleting the focused card drops focus to <body> on the
+    // single most destructive act in the feature.
+    getAtelierBoard.mockResolvedValue(
+      board([ticket(), ticket({ id: T2, customer_name: "רותם כהן" })]),
+    );
+    deleteTicket.mockResolvedValue({ ok: true });
+    const { container } = mount();
+    await screen.findByText("רותם כהן");
+
+    fireEvent.click(screen.getByRole("button", { name: "מחיקה — מיכל לוי" }));
+    const dialog = openDialog("מחיקת כרטיס");
+    // ⚠ `act`, and deliberately NOT `waitFor`. jsdom runs a native <dialog>'s
+    // close-focus steps from a QUEUED TASK, where the platform runs them
+    // synchronously inside close() — i.e. in the Modal child's effect, before
+    // this section's. `waitFor` advances timers and therefore flushes that
+    // deferred task, which restores focus toward a trigger that left with the
+    // card and lands it on <body>: the assertion below would then be measuring
+    // jsdom's queue rather than this component. `act` flushes React and the
+    // promise chain and nothing else.
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "מחיקה" }));
+    });
+
+    expect(container.querySelectorAll("[data-ticket-id]")).toHaveLength(1);
+    expect(document.activeElement).toBe(
+      screen.getAllByRole("heading", { level: 3 })[0],
+    );
+    expect(document.activeElement).toHaveTextContent("התקבל");
+  });
+
+  it("5a — a POLL that moves the focused card, because a COLLEAGUE advanced it", async () => {
+    // ⚠ Five columns are five <ul>s, so a card changing stage UNMOUNTS from one
+    // list and MOUNTS in another. Focus is lost with no user action at all, five
+    // seconds after somebody else tapped a button on a different phone.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+
+    getAtelierBoard.mockResolvedValue(board([ticket({ stage: "qc" })]));
+    await advanceTimers(POLL_INTERVAL_MS);
+
+    const moved = await waitFor(() =>
+      within(screen.getByRole("list", { name: "בקרה" })).getByRole("button", {
+        name: "לשלב הבא — מיכל לוי",
+      }),
+    );
+    expect(control.isConnected).toBe(false);
+    expect(document.activeElement).toBe(moved);
+  });
+
+  it("5b — a POLL that DE-CONTROLS the focused card, because a COLLEAGUE claimed it", async () => {
+    // ⚠ THE CASE A STAGE-KEYED CAPTURE WOULD MISS, and the reason the capture is
+    // UNCONDITIONAL: the stage did not change, no alert is involved and the
+    // ticket is still in the payload — so every predicate the deck proposed is
+    // false, and the card she is standing on simply loses every control she had.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount({ role: "seamstress", selfId: NOA_ID });
+    await screen.findByText("מיכל לוי");
+
+    const claim = screen.getByRole("button", { name: "לקחת — מיכל לוי" });
+    claim.focus();
+
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ assigned_staff_user_id: OTHER_SEAMSTRESS })], {
+        seamstresses: [
+          { id: NOA_ID, display_name: "נועה לוי", assignable: true },
+          { id: OTHER_SEAMSTRESS, display_name: "רותם", assignable: true },
+        ],
+      }),
+    );
+    await advanceTimers(POLL_INTERVAL_MS);
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: /לקחת/ })).toBeNull());
+    // The card stayed put, so the destination is its own column's heading.
+    expect(document.activeElement).toBe(screen.getAllByRole("heading", { level: 3 })[0]);
+    expect(document.activeElement).toHaveTextContent("התקבל");
+  });
+
+  it("steals NOTHING back that the user moved while a write was in flight", async () => {
+    // ⚠ THE `document.activeElement === document.body` GUARD IS WHAT MAKES THE
+    // UNCONDITIONAL CAPTURE FREE — and this is the fixture that exercises it: she
+    // taps «לשלב הבא», then tabs away while the request is in the air. The
+    // capture is already recorded, so without the guard the response would drag
+    // her back into a card she deliberately left.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    let settle: (value: AtelierTicket) => void = () => {};
+    advanceStage.mockReturnValue(
+      new Promise<AtelierTicket>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+    fireEvent.click(control);
+
+    const pauseControl = screen.getByRole("button", { name: "השהיה — לוח התפירה" });
+    pauseControl.focus();
+
+    await act(async () => {
+      settle(ticket({ stage: "in_progress", in_progress_at: "2026-08-04T11:00:00Z" }));
+    });
+    expect(
+      within(screen.getByRole("list", { name: "בעבודה" })).getByText("מיכל לוי"),
+    ).toBeInTheDocument();
+
+    expect(document.activeElement).toBe(pauseControl);
+  });
+});
+
+// --- §3.4 / C12: operable with no pointer, and no drag affordance anywhere ---
+
+describe("the keyboard sweep", () => {
+  it("makes every act a real focusable control, never a div with a role", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket({ stage: "in_progress" })]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    for (const name of [
+      "לשלב הבא — מיכל לוי",
+      "העברה — מיכל לוי",
+      "שיוך — מיכל לוי",
+      "ביטול שלב — מיכל לוי",
+      "עריכה — מיכל לוי",
+      "מחיקה — מיכל לוי",
+    ]) {
+      const control = screen.getByRole("button", { name });
+      expect(control.tagName).toBe("BUTTON");
+      expect(control).not.toHaveAttribute("tabindex", "-1");
+    }
+    for (const name of ["העברה לשלב — מיכל לוי", "תופרת — מיכל לוי"]) {
+      expect(screen.getByRole("combobox", { name }).tagName).toBe("SELECT");
+    }
+    for (const chip of within(
+      screen.getByRole("navigation", { name: "מעבר לשלב" }),
+    ).getAllByRole("link")) {
+      expect(chip.tagName).toBe("A");
+    }
+  });
+
+  it("has NO drag handler and NO draggable attribute anywhere in the tree", async () => {
+    // ⚠ A kanban is a drag-shaped idea and this one ships with NO drag
+    // affordance at all. Every accessible DnD is a keyboard alternative bolted
+    // onto a gesture, so the button path gets built either way, and WCAG 2.5.7
+    // requires the single-pointer alternative regardless. THE ALTERNATIVE IS THE
+    // INTERFACE.
+    //
+    // Read as SOURCE as well as as DOM: a handler wired to a child component
+    // would never reach the rendered attributes.
+    // `process.cwd()` is apps/manage under vitest; `import.meta.url` is not a
+    // file: URL there.
+    const source = readFileSync(
+      resolve(process.cwd(), "src/components/AtelierSection.tsx"),
+      "utf-8",
+    );
+    for (const banned of [
+      "onDragStart",
+      "onDragOver",
+      "onDragEnd",
+      "onDrop",
+      "draggable",
+      "dnd",
+      "aria-grabbed",
+    ]) {
+      expect(source).not.toContain(banned);
+    }
+
+    getAtelierBoard.mockResolvedValue(board([ticket({ stage: "in_progress" })]));
+    const { container } = mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(container.querySelectorAll("[draggable]")).toHaveLength(0);
+    expect(container.querySelectorAll("[aria-grabbed]")).toHaveLength(0);
+    expect(container.querySelectorAll('[role="application"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[role="grid"]')).toHaveLength(0);
+  });
+});
+
+// --- axe: necessary, and EXPLICITLY not sufficient ---------------------------
+
+describe("axe", () => {
+  it("finds zero violations on the loaded board", async () => {
+    // ⚠ EXPLICITLY NOT SUFFICIENT. axe has NO rule for SC 2.2.2 and cannot see a
+    // focus move that never happened, so the five focus tests above and the
+    // pause assertions are the only automated coverage of a LEGAL requirement.
+    // Neither set may be dropped as redundant with this row, now or in any later
+    // tidy-up.
+    getAtelierBoard.mockResolvedValue(
+      board([
+        ticket({ stage: "in_progress", overdue: true }),
+        ticket({ id: T2, customer_name: "רותם כהן", assigned_staff_user_id: NOA_ID }),
+      ]),
+    );
+    const { container } = renderInShell(<AtelierSection selfId={OWNER_ID} role="owner" />);
+    await screen.findByText("מיכל לוי");
+
+    const results = await run(container);
+    expect(results.violations).toEqual([]);
+  });
+
+  it("finds zero violations on the EMPTY board a new boutique sees first", async () => {
+    getAtelierBoard.mockResolvedValue(board([]));
+    const { container } = renderInShell(<AtelierSection selfId={OWNER_ID} role="owner" />);
+    await screen.findByText("אין עדיין כרטיסי תפירה");
+
+    const results = await run(container);
+    expect(results.violations).toEqual([]);
+  });
+
+  it("finds zero violations with the intake dialog open", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    const { container } = renderInShell(<AtelierSection selfId={OWNER_ID} role="owner" />);
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "כרטיס חדש" }));
+    openDialog("כרטיס חדש");
+
+    const results = await run(container);
+    expect(results.violations).toEqual([]);
   });
 });
