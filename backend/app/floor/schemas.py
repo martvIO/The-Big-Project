@@ -341,3 +341,32 @@ class AddDressRequest(ForbidExtraModel):
 
     dress_id: uuid.UUID
     size_label: str | None = Field(default=None, max_length=MAX_SIZE_LABEL_LENGTH)
+
+
+# --- F37: the raise body ------------------------------------------------------
+
+
+class RaiseSosRequest(ForbidExtraModel):
+    """Every field optional, and all three defaults are the ORDINARY case.
+
+    ⚠ **`ForbidExtraModel` is load-bearing on this one body above every other in
+    the product.** `raised_by` is exactly the shape `FloorService._authorize`'s
+    docstring names as THE hazard — a body-supplied staff id doubling as the
+    caller's identity — and here it would let anyone page AS anyone. The acting
+    identity is the `StaffContext` from the session cookie and NOTHING on this
+    model may stand in for it: nobody raises a page as somebody else, not even an
+    owner, because an SOS is a first-person statement and an owner who needs help
+    raises her own.
+
+    `target_staff_user_id = None` is the shift-manager ROLE and is the default
+    because it is what a staffer alone with a bride actually taps.
+
+    ⚠ **`note` carries NO `Field(max_length=...)` bound**, `CreateRoomRequest`'s
+    rule for `CreateRoomRequest`'s reason: `normalize_sos_note` strips first and
+    bounds the stripped string, and a `max_length` here would refuse a legal
+    120-character note typed with a trailing space — on an emergency field.
+    """
+
+    target_staff_user_id: uuid.UUID | None = None
+    fitting_room_assignment_id: uuid.UUID | None = None
+    note: str | None = None

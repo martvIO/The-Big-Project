@@ -82,7 +82,12 @@ from app.db.session import ensure_safe_database_role, get_session_factory
 from app.errors import DomainNotFoundError, DomainValidationError
 from app.floor.router import router as floor_router
 from app.floor.service import FloorService
-from app.floor.validation import RoomOccupiedError, StaffOccupiedError
+from app.floor.validation import (
+    RoomOccupiedError,
+    SosAlreadyAcceptedError,
+    SosClosedError,
+    StaffOccupiedError,
+)
 from app.notifications.base import SmsNotConfiguredError, SmsSender, SmsSendError
 from app.notifications.fake import FakeSmsSender
 from app.notifications.router import router as otp_router
@@ -333,12 +338,12 @@ PAYMENT_ALREADY_HELD_BODY = {
         "message": "A deposit is already pending for this booking.",
     }
 }
-# F36's two, and they are the ONLY bodies in this module that can grow a third
-# key. Two codes rather than one with a discriminating `details`: two causes, two
-# Hebrew sentences, two remedies (take another room vs. release her other room
-# first), and a `details`-key sniff in the console is a worse place for that
-# branch than an error code. Both are frozen two-key dicts HERE — `details` is
-# added by the handler, at raise time, from a copy.
+# F36's two and F37's two, and they are the ONLY bodies in this module that can
+# grow a third key. Two codes rather than one with a discriminating `details`:
+# two causes, two Hebrew sentences, two remedies (take another room vs. release
+# her other room first), and a `details`-key sniff in the console is a worse
+# place for that branch than an error code. All are frozen two-key dicts HERE —
+# `details` is added by the handler, at raise time, from a copy.
 ROOM_OCCUPIED_BODY = {
     "error": {"code": "ROOM_OCCUPIED", "message": "This fitting room is already claimed."}
 }
@@ -348,9 +353,23 @@ STAFF_OCCUPIED_BODY = {
         "message": "That staff member is already in a fitting room.",
     }
 }
+# F37. The losing accept, and the cancel of an already-accepted alert. `details`
+# names the owner — which is the whole reason `sos_alerts.accepted_by` exists: a
+# 409 that says «somebody» is unanswerable, and a second GET to discover her
+# would race the resolve it is trying to describe.
+SOS_ALREADY_ACCEPTED_BODY = {
+    "error": {
+        "code": "SOS_ALREADY_ACCEPTED",
+        "message": "This SOS has already been accepted.",
+    }
+}
+# ⚠ This one NEVER grows `details`, and that is deliberate: three of four codes
+# carrying the key would be drift, four would make it the default, and there is
+# nobody to name — a closed alert's remedy is "there is nothing to do".
+SOS_CLOSED_BODY = {"error": {"code": "SOS_CLOSED", "message": "This SOS is already closed."}}
 
 
-def _occupied_body(base: dict[str, Any], details: dict[str, str] | None) -> dict[str, Any]:
+def _body_with_details(base: dict[str, Any], details: dict[str, str] | None) -> dict[str, Any]:
     """The `DomainValidationError` technique: a fixed body plus one value known
     only at raise time.
 
@@ -361,7 +380,14 @@ def _occupied_body(base: dict[str, Any], details: dict[str, str] | None) -> dict
     ⚠ Falsy `details` OMITS the key entirely rather than writing a null. The
     occupant can release between the index violation and the occupant read, and
     a 409 that names nobody is better than «{{name}} כבר בחדר הזה.» rendering
-    with an empty interpolation on a legally binding surface.
+    with an empty interpolation on a legally binding surface. F37's accept has
+    the same shape for a different reason: the acceptor's staff row can be
+    removed between her accept and the loser's read.
+
+    ⚠ **Renamed from `_occupied_body` in F37**, and it is a rename rather than a
+    copy: F37's two conflicts have nothing to do with occupancy, and two copies
+    of six lines that must stay identical is how the leak this function exists
+    to prevent gets reintroduced in one of them.
     """
     error = dict(base["error"])
     if details:
@@ -1201,11 +1227,30 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # code, so the datum has to travel in `details` or the UI cannot reach it.
     @app.exception_handler(RoomOccupiedError)
     async def _room_occupied(request: Request, exc: RoomOccupiedError) -> JSONResponse:
-        return JSONResponse(_occupied_body(ROOM_OCCUPIED_BODY, exc.details), status_code=409)
+        return JSONResponse(_body_with_details(ROOM_OCCUPIED_BODY, exc.details), status_code=409)
 
     @app.exception_handler(StaffOccupiedError)
     async def _staff_occupied(request: Request, exc: StaffOccupiedError) -> JSONResponse:
-        return JSONResponse(_occupied_body(STAFF_OCCUPIED_BODY, exc.details), status_code=409)
+        return JSONResponse(_body_with_details(STAFF_OCCUPIED_BODY, exc.details), status_code=409)
+
+    # F37's two, and BOTH blocks are required rather than one on the shared base:
+    # this module registers a handler PER CONCRETE CLASS and there is no
+    # `_DetailedConflictError` handler anywhere. A missing block does not fall
+    # back to a generic 409 — it answers 500.
+    #
+    # SOS_ALREADY_ACCEPTED carries `details` when there is somebody to name and
+    # omits the key when there is not; SOS_CLOSED never carries it and is not
+    # even routed through the `details` argument, so the asymmetry is visible in
+    # the code rather than only in a comment.
+    @app.exception_handler(SosAlreadyAcceptedError)
+    async def _sos_already_accepted(request: Request, exc: SosAlreadyAcceptedError) -> JSONResponse:
+        return JSONResponse(
+            _body_with_details(SOS_ALREADY_ACCEPTED_BODY, exc.details), status_code=409
+        )
+
+    @app.exception_handler(SosClosedError)
+    async def _sos_closed(request: Request, exc: SosClosedError) -> JSONResponse:
+        return JSONResponse(SOS_CLOSED_BODY, status_code=409)
 
     # 409, not 400: both requests are well-formed — a CONCURRENT WRITER is what
     # refuses them, and each names a different one. F41's only two new codes;
