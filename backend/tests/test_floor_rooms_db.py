@@ -897,6 +897,12 @@ _EXPECTED_COLUMNS = {
         "fitting_room_id",
         "staff_user_id",
         "booking_id",
+        # F58's half of the same rule. A POINTER at a live queue_tickets row,
+        # never a copy of anything on it — which is why adding it leaves this
+        # test's whole argument intact rather than weakening it. A soft-deleted
+        # or swept ticket renders an anonymous visit, exactly as a swept booking
+        # already does.
+        "queue_ticket_id",
         "released_at",
         "created_at",
         "updated_at",
@@ -922,11 +928,18 @@ async def test_the_assignment_stores_no_personal_column(app_role_url: str) -> No
     than a blacklist — the column a later feature adds will not be called
     `client_name`.
 
-    The assignment stores a `booking_id` and no personal field of any kind, so
-    the card's label is resolved on every read from the live rows. A snapshotted
-    name would SURVIVE both the walk-in auto-delete and F20's retention sweep:
-    the platform would delete a customer record and quietly keep a copy of who
-    she was, in a table nobody thought of, on a screen five roles can open.
+    The assignment stores TWO POINTERS — `booking_id` and, since F58,
+    `queue_ticket_id` — and no personal field of any kind, so the card's label is
+    resolved on every read from the live rows. A snapshotted name would SURVIVE
+    both the walk-in auto-delete and F20's retention sweep: the platform would
+    delete a customer record and quietly keep a copy of who she was, in a table
+    nobody thought of, on a screen five roles can open.
+
+    ⚠ F58's column is the first ADDITION this set equality has ever refused, and
+    that is the test working. Neither the F58 spec's D1 nor its plan named this
+    guard — both named only the three in `test_migrations.py` — so the addition
+    was reviewed here, on the failure, which is exactly the review the equality
+    exists to force.
 
     `dress_name` and `dress_size` are snapshots and are deliberately IN the set —
     a gown is not a person, and the owner renaming one mid-fitting must not
