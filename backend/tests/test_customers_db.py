@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.message_log import (
     SMS_LOG_LIMIT,
@@ -48,7 +49,7 @@ from app.db.repositories.message_log import (
 )
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
-from app.models.constants import MessageKind
+from app.models.constants import BookingStatus, MessageKind
 from app.models.message_log import MessageLog
 
 pytestmark = pytest.mark.db
@@ -61,6 +62,7 @@ PHONE_Y = "+972529876543"
 
 CUSTOMERS = CustomersRepository()
 MESSAGES = MessageLogRepository()
+BOOKINGS = BookingsRepository()
 
 
 def _factory(app_role_url: str) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
@@ -97,6 +99,9 @@ async def _seed_booking(
     customer_id: uuid.UUID,
     *,
     starts_at: datetime,
+    status: str = BookingStatus.CONFIRMED.value,
+    appointment_type_name: str = "מדידה ראשונה",
+    deleted_at: datetime | None = None,
 ) -> uuid.UUID:
     booking = Booking(
         tenant_id=tenant_id,
@@ -104,9 +109,11 @@ async def _seed_booking(
         appointment_type_id=uuid.uuid4(),
         starts_at=starts_at,
         seat_index=1,
+        status=status,
         terms_version_accepted=1,
         terms_accepted_at=starts_at,
-        appointment_type_name="מדידה ראשונה",
+        appointment_type_name=appointment_type_name,
+        deleted_at=deleted_at,
     )
     session.add(booking)
     await session.flush()
@@ -706,5 +713,109 @@ async def test_two_tenants_sharing_one_phone_stay_isolated(app_role_url: str) ->
         )
         assert "message_log.tenant_id" in compiled
         assert "message_log.booking_id IS NULL" in compiled
+    finally:
+        await engine.dispose()
+
+
+# --- booking history (D4) ---
+
+
+async def test_the_history_carries_every_status_including_cancelled_newest_first(
+    app_role_url: str,
+) -> None:
+    """The two departures from `list_live_for_customer` are what this pins.
+
+    That method is F15's re-mint feed: it pins `status = 'confirmed'` and
+    `starts_at > after`, so reusing it here would show a bride with three past
+    cancellations an empty history. Every booking below is in the PAST and one
+    of them is cancelled, so a service that reached for the shipped method
+    answers `[]` and this test is the thing that says so.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    base = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer_id = await _seed_customer(session, tenant_id, phone=PHONE_X, name="מיכל לוי")
+            other_id = await _seed_customer(session, tenant_id, phone=PHONE_Y, name="דנה כהן")
+            for index, status in enumerate(
+                (
+                    BookingStatus.COMPLETED.value,
+                    BookingStatus.CANCELLED.value,
+                    BookingStatus.NO_SHOW.value,
+                    BookingStatus.CONFIRMED.value,
+                )
+            ):
+                await _seed_booking(
+                    session,
+                    tenant_id,
+                    customer_id,
+                    starts_at=base + timedelta(days=index),
+                    status=status,
+                )
+            # Same tenant, a different bride: the customer_id predicate is the
+            # only thing keeping her appointment off this page.
+            await _seed_booking(session, tenant_id, other_id, starts_at=base + timedelta(days=9))
+
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await BOOKINGS.list_recent_for_customer(
+                session, tenant_id, customer_id=customer_id, limit=10
+            )
+        assert [row.status for row in rows] == [
+            BookingStatus.CONFIRMED.value,
+            BookingStatus.NO_SHOW.value,
+            BookingStatus.CANCELLED.value,
+            BookingStatus.COMPLETED.value,
+        ]
+        assert [row.starts_at for row in rows] == [
+            base + timedelta(days=index) for index in (3, 2, 1, 0)
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def test_the_history_drops_soft_deleted_rows_and_honours_the_limit(
+    app_role_url: str,
+) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    base = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer_id = await _seed_customer(session, tenant_id, phone=PHONE_X, name="מיכל לוי")
+            await _seed_booking(
+                session,
+                tenant_id,
+                customer_id,
+                starts_at=base,
+                appointment_type_name="הישנה",
+            )
+            await _seed_booking(
+                session,
+                tenant_id,
+                customer_id,
+                starts_at=base + timedelta(days=1),
+                appointment_type_name="האמצעית",
+            )
+            # The newest by starts_at, and soft-deleted: it must not be the row
+            # a limit of one returns.
+            await _seed_booking(
+                session,
+                tenant_id,
+                customer_id,
+                starts_at=base + timedelta(days=2),
+                appointment_type_name="המחוקה",
+                deleted_at=datetime.now(UTC),
+            )
+
+        async with tenant_session(factory, tenant_id) as session:
+            capped = await BOOKINGS.list_recent_for_customer(
+                session, tenant_id, customer_id=customer_id, limit=1
+            )
+            everything = await BOOKINGS.list_recent_for_customer(
+                session, tenant_id, customer_id=customer_id, limit=10
+            )
+        assert [row.appointment_type_name for row in capped] == ["האמצעית"]
+        assert [row.appointment_type_name for row in everything] == ["האמצעית", "הישנה"]
     finally:
         await engine.dispose()
