@@ -29,6 +29,12 @@ pytestmark = pytest.mark.db
 PROVIDER = "fake"
 NOW = datetime.datetime(2026, 7, 31, 9, 0, tzinfo=datetime.UTC)
 LATER = NOW + datetime.timedelta(minutes=15)
+# F19: the delivery that arrives after the hold has already been swept.
+TOO_LATE = LATER + datetime.timedelta(minutes=5)
+# Only ever compared, and only by `by_booking_ids`: EARLIER < NOW pins which of
+# two payments on one booking is "the latest" without leaning on now() ties.
+EARLIER = NOW - datetime.timedelta(hours=1)
+REDIRECT = "https://pay.example/checkout/fake-1"
 
 
 def _factory(app_role_url: str) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
@@ -226,6 +232,7 @@ async def _hold(
     *,
     session_id: str = "fake-1",
     amount_agorot: int = 15000,
+    redirect_url: str = REDIRECT,
 ) -> uuid.UUID:
     async with tenant_session(factory, tenant) as session:
         row = await PaymentsRepository().insert(
@@ -235,9 +242,23 @@ async def _hold(
             provider=PROVIDER,
             amount_agorot=amount_agorot,
             provider_session_id=session_id,
+            redirect_url=redirect_url,
             hold_expires_at=LATER,
         )
         return row.id
+
+
+async def _expire(
+    factory: async_sessionmaker[AsyncSession], tenant: uuid.UUID, payment_id: uuid.UUID
+) -> None:
+    """What the D6 sweeper's claim-1 UPDATE does to the row, stated directly:
+    the sweeper itself is a service, and this file tests repositories."""
+    async with tenant_session(factory, tenant) as session:
+        row = await PaymentsRepository().by_id(session, tenant, payment_id)
+        assert row is not None
+        row.status = PaymentStatus.EXPIRED.value
+        row.redirect_url = None
+        await session.flush()
 
 
 async def test_insert_a_hold_and_read_it_back(app_role_url: str) -> None:
@@ -252,6 +273,9 @@ async def test_insert_a_hold_and_read_it_back(app_role_url: str) -> None:
             assert live.id == payment_id
             assert live.status == PaymentStatus.PENDING.value
             assert live.amount_agorot == 15000
+            # F19 D8: the hosted-page URL is STORED, not re-minted, so the
+            # converge path has something to hand a double-tap back.
+            assert live.redirect_url == REDIRECT
             by_session = await repo.by_provider_session_id(
                 session, tenant, provider=PROVIDER, session_id="fake-1"
             )
@@ -287,6 +311,10 @@ async def test_settle_fires_once_and_then_reports_a_miss(app_role_url: str) -> N
             assert settled.status == PaymentStatus.PAID.value
             assert settled.paid_at == LATER
             assert settled.provider_transaction_id == "txn-1"
+            # F19 D8: blanked on every exit from `pending`. A live checkout URL
+            # outliving its hold is a link that takes real money for a seat the
+            # boutique has already given away.
+            assert settled.redirect_url is None
         async with tenant_session(factory, tenant) as session:
             # The guard is `status='pending'`, so a redelivery cannot fire twice.
             assert (
@@ -360,5 +388,130 @@ async def test_record_error_leaves_the_status_alone(app_role_url: str) -> None:
             assert updated is not None
             assert updated.error == "amount mismatch"
             assert updated.status == PaymentStatus.PENDING.value
+    finally:
+        await engine.dispose()
+
+
+# --- F19: the late settlement, and the owner's batch read ---
+
+
+async def test_settle_late_honours_an_expired_hold(app_role_url: str) -> None:
+    """F17's Gate 1 Q4 — "HONOUR IT ... the deposit is marked paid" — had no
+    writer: `settle` is guarded `WHERE status='pending'` and so matches nothing
+    against an expired row. That is an implementation gap, not a reopened
+    ruling, and this is the statement that closes it.
+
+    Writing `provider_transaction_id` also RE-ARMS `by_provider_transaction_id`,
+    so every subsequent redelivery of the same transaction short-circuits."""
+    engine, factory = _factory(app_role_url)
+    tenant, booking = uuid.uuid4(), uuid.uuid4()
+    repo = PaymentsRepository()
+    try:
+        payment_id = await _hold(factory, tenant, booking)
+        await _expire(factory, tenant, payment_id)
+
+        async with tenant_session(factory, tenant) as session:
+            honoured = await repo.settle_late(
+                session, tenant, payment_id, provider_transaction_id="txn-late", paid_at=TOO_LATE
+            )
+            assert honoured is not None
+            assert honoured.status == PaymentStatus.PAID.value
+            assert honoured.paid_at == TOO_LATE
+            assert honoured.provider_transaction_id == "txn-late"
+            assert honoured.redirect_url is None
+            # No `late_paid` status: `paid_at > hold_expires_at` already carries
+            # the distinction structurally, on the row itself.
+            assert honoured.hold_expires_at is not None
+            assert honoured.paid_at > honoured.hold_expires_at
+
+        async with tenant_session(factory, tenant) as session:
+            found = await repo.by_provider_transaction_id(
+                session, tenant, provider=PROVIDER, transaction_id="txn-late"
+            )
+            assert found is not None and found.id == payment_id
+            # The guard is `status='expired'`, so a redelivery cannot fire twice.
+            assert (
+                await repo.settle_late(
+                    session,
+                    tenant,
+                    payment_id,
+                    provider_transaction_id="txn-late",
+                    paid_at=TOO_LATE,
+                )
+                is None
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_settle_late_refuses_a_row_that_is_not_expired(app_role_url: str) -> None:
+    """The two writers do not overlap: `settle` owns `pending`, `settle_late`
+    owns `expired`, and neither can reach the other's rows."""
+    engine, factory = _factory(app_role_url)
+    tenant = uuid.uuid4()
+    repo = PaymentsRepository()
+    try:
+        pending = await _hold(factory, tenant, uuid.uuid4(), session_id="fake-1")
+        paid = await _hold(factory, tenant, uuid.uuid4(), session_id="fake-2")
+        async with tenant_session(factory, tenant) as session:
+            await repo.settle(session, tenant, paid, provider_transaction_id="txn-1", paid_at=LATER)
+
+        async with tenant_session(factory, tenant) as session:
+            assert (
+                await repo.settle_late(
+                    session, tenant, pending, provider_transaction_id="txn-2", paid_at=TOO_LATE
+                )
+                is None
+            )
+            assert (
+                await repo.settle_late(
+                    session, tenant, paid, provider_transaction_id="txn-3", paid_at=TOO_LATE
+                )
+                is None
+            )
+            still_pending = await repo.by_id(session, tenant, pending)
+            assert still_pending is not None
+            assert still_pending.status == PaymentStatus.PENDING.value
+            assert still_pending.provider_transaction_id is None
+    finally:
+        await engine.dispose()
+
+
+async def test_by_booking_ids_returns_the_latest_payment_per_booking(app_role_url: str) -> None:
+    """D18's batch read for the owner console. A booking can carry an expired
+    hold AND a later paid one — the console renders one badge, so the newest row
+    is the one that answers "where is her money"."""
+    engine, factory = _factory(app_role_url)
+    tenant = uuid.uuid4()
+    twice, once, unknown = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    repo = PaymentsRepository()
+    try:
+        # The empty case issues no query at all — `list_day` on a quiet morning
+        # must not pay for a round trip.
+        async with tenant_session(factory, tenant) as session:
+            assert await repo.by_booking_ids(session, tenant, []) == {}
+
+        abandoned = await _hold(factory, tenant, twice, session_id="fake-1")
+        await _expire(factory, tenant, abandoned)
+        retried = await _hold(factory, tenant, twice, session_id="fake-2")
+        solo = await _hold(factory, tenant, once, session_id="fake-3")
+
+        async with tenant_session(factory, tenant) as session:
+            # Both rows land in one transaction's now() otherwise, which would
+            # make "latest" a coin flip rather than an assertion.
+            older = await repo.by_id(session, tenant, abandoned)
+            assert older is not None
+            older.created_at = EARLIER
+            newer = await repo.by_id(session, tenant, retried)
+            assert newer is not None
+            newer.created_at = NOW
+            await session.flush()
+
+        async with tenant_session(factory, tenant) as session:
+            found = await repo.by_booking_ids(session, tenant, [twice, once, unknown])
+            assert set(found) == {twice, once}
+            assert found[twice].id == retried
+            assert found[twice].status == PaymentStatus.PENDING.value
+            assert found[once].id == solo
     finally:
         await engine.dispose()
