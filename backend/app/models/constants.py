@@ -23,6 +23,21 @@ class StaffRole(StrEnum):
     SEAMSTRESS = "seamstress"
 
 
+class StaffCardStatus(StrEnum):
+    # F57's floor cards. NOT pinned by the DB and deliberately not: it is DERIVED
+    # on read from `staff_users.break_started_at` (D2 adds no status column and no
+    # break history table), so there is no stored value for a CHECK to constrain.
+    #
+    # 'occupied' is coming and is deliberately NOT here. F36 gives it a writer —
+    # an open `fitting_room_assignments` row — and widens this in the SAME PR, the
+    # ScheduledMessageKind rule. Shipping the literal now would put a status on
+    # the wire that nothing in the product can ever produce, and the set-equality
+    # assertion in test_floor_service.py is what makes that structurally
+    # impossible rather than merely currently-unreached.
+    AVAILABLE = "available"
+    BREAK = "break"
+
+
 class AppointmentAudience(StrEnum):
     # brides_only on a type — or the tenant-wide brides_only toggle — hides it
     # from non-bride visitors (consumers: E3 slot engine, E2 storefront).
@@ -146,6 +161,17 @@ class AuditAction(StrEnum):
     STAFF_ROLE_CHANGED = "staff_role_changed"
     STAFF_PASSWORD_RESET = "staff_password_reset"
     STAFF_DEACTIVATED = "staff_deactivated"
+    # F57's floor breaks (D8). Same fact as every block above: audit_log.action is
+    # plain TEXT with no CHECK (0003), so these need no migration.
+    #
+    # These two rows are the ONLY record that a break happened — D2 ships no
+    # break history table and nothing reads them yet (F53's activity log is the
+    # first read surface). That is why the END carries
+    # `previous_break_started_at`: ending a break destroys the only copy of when
+    # it began, so a row without it records that something stopped and cannot say
+    # what.
+    STAFF_BREAK_STARTED = "staff_break_started"
+    STAFF_BREAK_ENDED = "staff_break_ended"
     # F17's payment gateway. Same fact as the two blocks above: audit_log.action
     # is plain TEXT with no CHECK (0003), so these need no migration.
     #

@@ -35,6 +35,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -43,9 +44,12 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from app.auth.service import StaffContext
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
-from app.models.constants import StaffRole
+from app.floor.service import FloorService
+from app.models.audit_log import AuditLog
+from app.models.constants import AuditAction, StaffRole
 
 pytestmark = pytest.mark.db
 
@@ -358,6 +362,67 @@ async def test_an_end_landing_in_the_gap_after_a_concurrent_end_writes_nothing(
         assert wrote is False
         assert row is not None
         assert row.break_started_at is None
+    finally:
+        await engine.dispose()
+
+
+# --- the service path, against a REAL identity map ---------------------------
+
+
+async def test_the_end_audit_row_carries_the_timestamp_the_break_actually_started(
+    app_role_url: str,
+) -> None:
+    """⚠ The one assertion in the feature that `test_floor_service.py` CANNOT
+    make, and the reason this test exists in the db module instead.
+
+    That module drives the service against monkeypatched repositories, so no
+    ORM-enabled UPDATE ever runs and no instance is ever stamped — it proves the
+    service passes the value it captured, not that the value was still there to
+    capture. Here the write is real.
+
+    `FloorService.end_break` calls `by_id` and then `end_break` IN ONE SESSION.
+    Both hand back the same instance out of one identity map, and the UPDATE's
+    `evaluate` synchronization sets `break_started_at = NULL` on it. So a service
+    that read `before.break_started_at` AFTER the write — the natural way to
+    write it — would record `previous_break_started_at: null` on every single
+    end, and the audit row would say a break stopped without saying what stopped.
+    Nothing else in the suite would go red.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        repo = StaffUsersRepository()
+        staff_id = await _seed_staff(factory, tenant_id)
+        async with tenant_session(factory, tenant_id) as session:
+            await repo.start_break(session, tenant_id, staff_id, at=NOW)
+
+        actor = StaffContext(
+            id=staff_id,
+            tenant_id=tenant_id,
+            email="owner@bella.example",
+            display_name="Staff",
+            role=StaffRole.OWNER.value,
+        )
+        row = await FloorService(factory, clock=lambda: LATER).end_break(
+            tenant_id, staff_id, actor=actor
+        )
+        assert row.break_started_at is None
+
+        async with tenant_session(factory, tenant_id) as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(AuditLog).where(AuditLog.action == AuditAction.STAFF_BREAK_ENDED)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        assert rows[0].details == {
+            "target": str(staff_id),
+            "previous_break_started_at": NOW.isoformat(),
+        }
     finally:
         await engine.dispose()
 
