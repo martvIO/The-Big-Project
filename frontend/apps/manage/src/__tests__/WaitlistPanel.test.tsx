@@ -1079,27 +1079,90 @@ describe("the six focus moves", () => {
 
   it("MOVE 3b — a row that TRAVELS on a successful first skip also hands focus to the heading", async () => {
     // ⚠ F-8, and the half a departing-row check alone would miss. Rows are keyed
-    // by entry.id, so the row STAYS MOUNTED and the browser keeps focus on the
-    // same control — now at position 40, below the fold, where a focus ring is
-    // indistinguishable from lost focus for exactly the user who most needs it.
-    // Declined the alternative of re-focusing the moved control, which scrolls
-    // it into view: a forty-row scroll jump with no user action is the repaint
-    // F34's F-8 exists to prevent, and the cue already says what happened.
+    // by entry.id, so the row STAYS MOUNTED — now at position 40, below the
+    // fold, where a focus ring is indistinguishable from lost focus for exactly
+    // the user who most needs it. Declined the alternative of re-focusing the
+    // moved control, which scrolls it into view: a forty-row scroll jump with no
+    // user action is the repaint F34's F-8 exists to prevent, and the cue
+    // already says what happened.
+    //
+    // ⚠⚠ THE BLUR IS THE WHOLE TEST, and its first version did not have it —
+    // which made this assertion VACUOUS in precisely the way MOVE 2's comment
+    // twenty lines up warns about, on the very next test down. A first skip is
+    // the ONE path with no reveal, so `loading` lands on the TAPPED control and
+    // a real browser blurs it the instant `disabled` does; by the time the
+    // response swaps the list, `document.activeElement` is <body> and the DOM
+    // can no longer say which row she was in. jsdom keeps focus on the disabled
+    // button instead, so the travelled arm resolved a row it could never resolve
+    // in Chromium and the assertion passed while MOVE 2 — not MOVE 3 — did the
+    // work, scrolling the page forty rows down to the moved control. Verified by
+    // mutation: with the click-time capture in `act` removed, this test reds and
+    // focus lands on «קראי — מיכל אברהם» at position 2.
     const travelled = list([
       entry({ id: ENTRY_B, name: "נועה בר", position: 1 }),
       entry({ skip_count: 1, position: 2 }),
     ]);
-    skipQueueTicket.mockResolvedValue(travelled);
+    const gate = deferred<Waitlist>();
+    skipQueueTicket.mockReturnValue(gate.promise);
     mount({ initial: list([entry(), entry({ id: ENTRY_B, name: "נועה בר", position: 2 })]) });
     const control = screen.getByRole("button", { name: "דלגי — מיכל אברהם" });
     act(() => {
       control.focus();
       fireEvent.click(control);
     });
+    // The drop to <body>, produced through a still-enabled control because
+    // jsdom's own blur() is a no-op on a disabled one. MOVE 2's trap, one test
+    // down, for the same reason.
+    act(() => {
+      const other = screen.getByRole("button", { name: "הסרה — מיכל אברהם" });
+      other.focus();
+      other.blur();
+    });
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => {
+      gate.settle(travelled);
+    });
     await waitFor(() => {
       expect(within(row(ENTRY_A)).getByText("2")).toBeInTheDocument();
     });
     expect(document.activeElement).toBe(screen.getByRole("heading", { level: 3 }));
+  });
+
+  it("MOVE 3b stands down when she moved focus OFF the panel while the skip was in flight", async () => {
+    // The other side of the click-time capture, and the reason it is consulted
+    // ONLY when activeElement is <body>. The capture says where she WAS, not
+    // where she is: if she has since put focus on something real — FloorPanel's
+    // «השהיה» sits directly above this panel and is the likeliest — then a
+    // rescue would be MOVE 3 doing the exact stealing MOVE 2's own stand-down
+    // guard exists to prevent, one move over. The plain button stands for that
+    // control, which this harness deliberately does not mount.
+    const travelled = list([
+      entry({ id: ENTRY_B, name: "נועה בר", position: 1 }),
+      entry({ skip_count: 1, position: 2 }),
+    ]);
+    const gate = deferred<Waitlist>();
+    skipQueueTicket.mockReturnValue(gate.promise);
+    mount({ initial: list([entry(), entry({ id: ENTRY_B, name: "נועה בר", position: 2 })]) });
+    const control = screen.getByRole("button", { name: "דלגי — מיכל אברהם" });
+    act(() => {
+      control.focus();
+      fireEvent.click(control);
+    });
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    act(() => {
+      outside.focus();
+    });
+
+    await act(async () => {
+      gate.settle(travelled);
+    });
+    await waitFor(() => {
+      expect(within(row(ENTRY_A)).getByText("2")).toBeInTheDocument();
+    });
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
   });
 
   it("MOVE 3c — a colleague's renumbering under her finger does NOT steal focus", async () => {

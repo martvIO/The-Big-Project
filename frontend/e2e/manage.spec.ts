@@ -56,6 +56,7 @@ const CONFIRM_REMOVE_DUPLICATE =
   "אם הטלפון שלה מציג את הכניסה הזו, המסך שלה יראה שהביקור הסתיים. אפשר לומר לה שהמקום שלה נשמר.";
 const ASSIGN_CONFIRM = "שיבוץ";
 const REMOVED_CUE = "הוסרה מהתור.";
+const SKIPPED_CUE = "הועברה לסוף התור.";
 const QUEUE_EMPTY_ALERT = "אין ממתינות בתור.";
 const OUTAGE_ALERT = "לא הצלחנו לטעון את רשימת הצוות כרגע.";
 const ROW_GONE_ALERT = "הכניסה הזו כבר לא קיימת. הרשימה תתוקן בעדכון הבא.";
@@ -491,6 +492,71 @@ test("manage board: a skip at skip_count 1 confirms first and sends the count th
   const sent = api.of(`${queuePath("qt-1")}/skip`);
   expect(sent).toHaveLength(1);
   expect(sent[0].body).toEqual({ seen_skip_count: 1 });
+});
+
+// --- 6b. the FIRST skip travels, and focus must not travel with it ----------
+
+test("manage board: a first skip moves the row to the end and hands focus to the panel heading", async ({
+  page,
+}) => {
+  // ⚠ THE ONE PATH WITH NO REVEAL, which is why it is the one that broke and
+  // the one that has to be measured in Chromium. At skip_count 0 there is no
+  // confirm, so `loading` lands on the control she TAPPED — a real browser
+  // blurs it, `document.activeElement` drops to <body>, and the panel can no
+  // longer read which row she was in off the DOM. Every other verb here closes
+  // a reveal on its way out and is caught by that reveal's own focus fallback;
+  // this one has no fallback at all, so MOVE 3 is the only mechanism and it was
+  // standing down. jsdom keeps focus on the disabled button, which is exactly
+  // why the unit test for this could pass while the browser scrolled the page
+  // to the moved row instead.
+  const api = await installManageApi(page, {
+    staff: MANAGER,
+    replies: {
+      "/manage/floor": [
+        ok(
+          floorPayload({
+            staff: [MANAGER_CARD],
+            rooms: [ROOM_ONE],
+            waitlist: waitlist([
+              waitlistEntry({ id: "qt-1", name: SHIRA, position: 1 }),
+              waitlistEntry({ id: "qt-2", name: TAMAR, position: 2 }),
+            ]),
+          }),
+        ),
+      ],
+      [`${queuePath("qt-1")}/skip`]: [
+        ok(
+          waitlist([
+            waitlistEntry({ id: "qt-2", name: TAMAR, position: 1 }),
+            waitlistEntry({ id: "qt-1", name: SHIRA, position: 2, skip_count: 1 }),
+          ]),
+        ),
+      ],
+    },
+  });
+
+  await gotoBoardFloor(page);
+
+  const target = row(page, "qt-1");
+  const control = target.getByRole("button", { name: skipAria(SHIRA) });
+  await control.focus();
+  await expect(control).toBeFocused();
+  await control.click();
+
+  // She is STILL LISTED — a first skip moves her, it does not remove her — and
+  // the row now carries the line that says so.
+  await expect(row(page, "qt-1").getByText(SKIPPED_ONCE)).toBeVisible();
+  await expect(cue(page)).toContainText(SKIPPED_CUE);
+
+  // One tap, no confirm — and the count the screen rendered, sent verbatim.
+  const sent = api.of(`${queuePath("qt-1")}/skip`);
+  expect(sent).toHaveLength(1);
+  expect(sent[0].body).toEqual({ seen_skip_count: 0 });
+
+  // ⚠ THE ASSERTION. Not the moved control, which is now below the fold and
+  // would have scrolled the page there with no user action — the repaint F-8
+  // exists to prevent. The heading is where a rescue belongs.
+  await expect(page.getByRole("heading", { level: 3, name: WAITLIST_HEADING })).toBeFocused();
 });
 
 // --- 7. an unstubbed call fails loudly, in Hebrew ---------------------------

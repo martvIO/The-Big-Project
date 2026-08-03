@@ -1,13 +1,18 @@
 """The floor read, the two break writers, the room registry, the claim and its
-dress bindings, and the two one-shot pickers.
+dress bindings, the two one-shot pickers, and F58's five dispatch verbs.
 
 **The TARGET-DEPENDENT half of the authorization rule lives HERE, not on the
 router.** The router's gate answers "may this role open the floor at all" — all
 five, because the payload carries the minimum customer datum required by the
-person standing on the floor (at most one name per occupied room, never the
-day's customer book). This answers "may this person toggle, claim for, or
-release THAT person", which no `RoleGate` can express because it depends on the
-target:
+person standing on the floor: **the people who are physically in the boutique
+right now — one name per occupied fitting room, plus the name of every walk-in
+currently waiting to be served — and never the day's booking book.** It also
+carries each waiting ticket's id, which is F33's position-page capability. That
+sentence is on its THIRD version and the two before it were left standing after
+they had been falsified, which is the failure this docstring is the last copy of:
+`floor()` below and `router.py` each carry the full rule and the audit trail.
+This answers "may this person toggle, claim for, or release THAT person", which
+no `RoleGate` can express because it depends on the target:
 
     owner, shift_manager -> anybody
     reception, sales_assistant, seamstress -> herself, and nobody else

@@ -83,17 +83,29 @@ interface Reveal {
 // Without that gate a colleague's remove renumbers every row below it and would
 // yank focus to the heading with no action by her — and a row that appears,
 // moves or vanishes because somebody else acted must repaint silently.
+//
+// ⚠⚠ AND ON EVERY SELF-ACTED PATH THE DOM CANNOT ANSWER THE QUESTION BY THEN.
+// @boutique/ui's Button is `disabled={disabled || loading}`, so a real browser
+// blurs the tapped control the instant `act` sets busy — and `document.body`
+// has no `[data-entry-id]` ancestor, so the live read returns nothing and BOTH
+// arms stand down on the half of this move F-8 exists for. `blurredFrom` is
+// that fact captured at CLICK time, and it is consulted only when activeElement
+// is `<body>`: if she moved focus somewhere real in the meantime, that is where
+// it stays. jsdom does not blur a disabled element, which is why the live read
+// looked sufficient in a green suite — the same trap MOVE 2's test documents.
 function focusRescueNeeded(
   previous: readonly WaitlistEntry[],
   incoming: readonly WaitlistEntry[],
   actedOn: string | null,
+  blurredFrom: string | null,
 ): boolean {
   const active = document.activeElement;
-  if (!(active instanceof Element)) {
-    return false;
-  }
-  const held = active.closest("[data-entry-id]")?.getAttribute("data-entry-id");
-  if (held === undefined || held === null) {
+  const live =
+    active instanceof Element
+      ? (active.closest("[data-entry-id]")?.getAttribute("data-entry-id") ?? null)
+      : null;
+  const held = live ?? (active === document.body ? blurredFrom : null);
+  if (held === null) {
     return false;
   }
   const after = incoming.find((entry) => entry.id === held);
@@ -185,6 +197,11 @@ export function WaitlistPanel({
   const reclaimFocusRef = useRef<string | null>(null);
   const focusHeadingRef = useRef(false);
   const travelledRef = useRef<string | null>(null);
+  // The row her focus was inside when she tapped, recorded BEFORE the request
+  // disables the control she tapped and the browser drops focus to <body>. Read
+  // by `focusRescueNeeded`; see its own comment for why the live DOM read cannot
+  // answer this on any self-acted path.
+  const blurredRowRef = useRef<string | null>(null);
   const entriesRef = useRef<readonly WaitlistEntry[] | null>(null);
   const fetchRef = useRef(fetchCount);
 
@@ -209,8 +226,14 @@ export function WaitlistPanel({
     const previous = entriesRef.current;
     entriesRef.current = entries;
     if (previous !== null && entries !== null) {
-      focusHeadingRef.current = focusRescueNeeded(previous, entries, travelledRef.current);
+      focusHeadingRef.current = focusRescueNeeded(
+        previous,
+        entries,
+        travelledRef.current,
+        blurredRowRef.current,
+      );
       travelledRef.current = null;
+      blurredRowRef.current = null;
     }
   }
 
@@ -424,6 +447,15 @@ export function WaitlistPanel({
   };
 
   const act = async (entryId: string, verb: Verb, fn: () => Promise<void>): Promise<unknown> => {
+    // ⚠ BEFORE setBusy, and that ordering is the whole point: this is the last
+    // instant the DOM still knows where her focus was. The next line renders the
+    // tapped control `disabled`, which blurs it in every real browser.
+    const active = document.activeElement;
+    blurredRowRef.current =
+      active instanceof Element &&
+      active.closest("[data-entry-id]")?.getAttribute("data-entry-id") === entryId
+        ? entryId
+        : null;
     setBusy((current) => ({ ...current, [entryId]: verb }));
     setRowError(null);
     restoreFocusRef.current = entryId;
@@ -437,6 +469,9 @@ export function WaitlistPanel({
       // for one commit on its way past.
       restoreFocusRef.current = null;
       travelledRef.current = null;
+      // The list did not change, so nothing will consume this — and a stale one
+      // would rescue on the NEXT tick that touches that row.
+      blurredRowRef.current = null;
       setRowError({ id: entryId, ...describe(failure) });
       // ⚠ THE COLLISION, resolved explicitly: setRowError and setOpenReveal land
       // in one commit, and the [rowError] effect is declared BEFORE the

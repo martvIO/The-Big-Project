@@ -782,12 +782,29 @@ def test_no_floor_module_still_claims_the_payload_carries_zero_customer_data() -
     comment on a security rationale is worse than never having written one.
 
     Pinned as a text assertion because nothing else can see it: every runtime
-    test passes either way."""
+    test passes either way.
+
+    ⚠ **F36's REPLACEMENT is now false too, and the positive assertion alone
+    could not see that.** "at most one name per occupied room" was true of F36's
+    payload and is not true of F58's: WAITLIST_LIMIT is 100, and every waiting
+    row additionally carries F33's position-page capability. The guard was
+    satisfied by the stale sentence because that sentence CONTAINS the phrase
+    "minimum customer datum" — so a module could keep the falsified clause as its
+    stated rationale and stay green, which is exactly what `service.py`'s module
+    docstring did.
+
+    The rule is not that the phrase is banned: `router.py` and `service.py.floor`
+    both QUOTE it, correctly, as a claim that was once made and is no longer
+    true. The rule is that it may only ever appear QUOTED. Counting the quoted
+    occurrences against all of them says that in one line and bites on the next
+    module that asserts it bare."""
+    falsified = "at most one name per occupied room"
     for module in (app_router, app_service, app_schemas):
         source = inspect.getsource(module)
         assert "ZERO customer data" not in source, module.__name__
         assert "no customer data" not in source, module.__name__
         assert "minimum customer datum" in source, module.__name__
+        assert source.count(falsified) == source.count(f'"{falsified}"'), module.__name__
 
 
 def test_the_target_comes_from_the_path_and_the_actor_from_the_session() -> None:
