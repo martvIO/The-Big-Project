@@ -16,7 +16,7 @@ import { defineConfig } from "vite";
 // and asserts this line matches it — a twelfth router added without touching
 // this file fails there rather than silently 404ing in dev only.
 const MANAGE_API =
-  "^/manage/(appointment-types|auth|availability|bookings|dashboard|dresses|gateway|settings|slots|staff|terms)";
+  "^/manage/(appointment-types|auth|availability|bookings|dashboard|dresses|floor|gateway|settings|slots|staff|terms)";
 
 export default defineConfig({
   // The console lives at {slug}.{domain}/manage, same origin as the storefront

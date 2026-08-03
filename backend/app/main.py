@@ -73,6 +73,8 @@ from app.dashboard.router import router as dashboard_router
 from app.dashboard.service import DashboardService
 from app.db.session import ensure_safe_database_role, get_session_factory
 from app.errors import DomainNotFoundError, DomainValidationError
+from app.floor.router import router as floor_router
+from app.floor.service import FloorService
 from app.notifications.base import SmsNotConfiguredError, SmsSender, SmsSendError
 from app.notifications.fake import FakeSmsSender
 from app.notifications.router import router as otp_router
@@ -560,6 +562,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # No clock wired: the parameter exists so the db suite can freeze the
     # window, and production reads a real one (D8).
     app.state.dashboard_service = DashboardService(get_session_factory())
+    # No clock wired, same as the dashboard: the parameter exists so the db suite
+    # can freeze the break timestamp, and production reads a real one.
+    app.state.floor_service = FloorService(get_session_factory())
     app.state.login_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.login_max_attempts,
         window_seconds=settings.login_window_seconds,
@@ -1036,7 +1041,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # whichever was included first. The ROUTES table in test_dashboard_api.py is
     # what keeps that honest for this one.
     app.include_router(dashboard_router)
-    # The SEVENTH, after the dashboard one. Same hazard again, and the ROUTES
+    # F57's floor. The SEVENTH router carrying prefix="/manage" exactly, and the
+    # ONLY one whose gate admits more than two roles — require_role(*StaffRole),
+    # spelled from the enum. That is safe only because
+    # test_the_floor_roles_reach_exactly_the_floor_routes pins the three floor
+    # roles out of every other /manage route; the two ship together or neither
+    # should. Same shadowing hazard as the six above: the ROUTES table in
+    # test_floor_api.py is what keeps this one honest.
+    app.include_router(floor_router)
+    # The next one, after the floor. Same hazard again. Same hazard again, and the ROUTES
     # table in test_payments_api.py is what keeps it honest — plus
     # test_staff_role_gating.py imports that table, so these four rows also get
     # a real end-to-end 403 assertion rather than only the structural one.
