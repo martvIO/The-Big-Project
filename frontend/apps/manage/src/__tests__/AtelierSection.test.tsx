@@ -1743,6 +1743,21 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     expect(document.activeElement).toHaveTextContent("התקבל");
   });
 
+  // The board 5c and 5d both need, and the ONE fixture in this file whose size is
+  // load-bearing rather than cosmetic — see 5c's note for why it is 150.
+  const crowd = (stage: TicketStage) => {
+    const rows = [ticket({ stage })];
+    for (let i = 1; i < 150; i += 1) {
+      rows.push(
+        ticket({
+          id: `bbbbbbbb-0000-0000-0000-${String(i).padStart(12, "0")}`,
+          customer_name: `לקוחה ${i}`,
+        }),
+      );
+    }
+    return board(rows);
+  };
+
   it("5c — a POLL onto a BIG board, where the repaint and its effects split", async () => {
     // ⚠ THE MUTATION 5a CANNOT CATCH, AND THE ONE THAT REACHED CI. The restore
     // effect carries NO DEPENDENCY ARRAY, so it is queued after EVERY commit —
@@ -1764,19 +1779,6 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     // React yields between the commit and the passive flush every time, on a
     // cold worker and a warm one alike. Boards this size ship — the API carries
     // a `truncated` flag precisely because they do.
-    const crowd = (stage: TicketStage) => {
-      const rows = [ticket({ stage })];
-      for (let i = 1; i < 150; i += 1) {
-        rows.push(
-          ticket({
-            id: `bbbbbbbb-0000-0000-0000-${String(i).padStart(12, "0")}`,
-            customer_name: `לקוחה ${i}`,
-          }),
-        );
-      }
-      return board(rows);
-    };
-
     getAtelierBoard.mockResolvedValue(crowd("intake"));
     mount();
     await screen.findByText("מיכל לוי");
@@ -1795,6 +1797,44 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
       getAtelierBoard.mockResolvedValue(crowd("qc"));
       vi.advanceTimersByTime(POLL_INTERVAL_MS);
     });
+
+    const moved = within(screen.getByRole("list", { name: "בקרה" })).getByRole("button", {
+      name: "לשלב הבא — מיכל לוי",
+    });
+    expect(control.isConnected).toBe(false);
+    expect(document.activeElement).toBe(moved);
+  });
+
+  it("5d — the same BIG board, where the stale pass carries the CAPTURED count itself", async () => {
+    // ⚠ THE BOUNDARY 5c LEAVES OPEN. 5c's stale pass carries a count BELOW the
+    // capture, so it declines under `boardCommit < capturedAt` just as well as
+    // under `<=`; no test in this file distinguishes the two, and the equal case
+    // is the one the ordering makes REACHABLE — 5c only misses it because its
+    // second tick bumps the capture past the pending pass before that pass
+    // drains.
+    //
+    // So this is 5c with ONE tick. The intent is recorded against the board that
+    // is already on screen, and the pass still queued at that moment is that same
+    // board's own: `boardCommit === capturedAt`. Its DOM predates the payload —
+    // the card has not moved, the tapped control is still connected and still
+    // focused — so a restore resolved there would hit nodes about to be replaced,
+    // and an intent consumed there leaves the real repaint with nothing. Focus
+    // lands on <body>, 5c's defect reached through the other half of the
+    // comparison. `<=` is what declines on it.
+    //
+    // `advanceTimers` is `act`, and the query below is deliberately NOT wrapped
+    // in `waitFor` (5a's shape): `waitFor` advances fake timers, which fires
+    // further poll ticks and flushes jsdom's deferred focus work — the assertion
+    // would then be measuring that queue rather than this guard. See test 4.
+    getAtelierBoard.mockResolvedValue(crowd("intake"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
+    control.focus();
+
+    getAtelierBoard.mockResolvedValue(crowd("qc"));
+    await advanceTimers(POLL_INTERVAL_MS);
 
     const moved = within(screen.getByRole("list", { name: "בקרה" })).getByRole("button", {
       name: "לשלב הבא — מיכל לוי",
