@@ -591,7 +591,7 @@ describe("the fitting-room client", () => {
 
 // --- the queue verbs (Feature 58) ---
 
-const TICKET_ID = "ffffffff-1111-2222-3333-444444444444";
+const QUEUE_TICKET_ID = "ffffffff-1111-2222-3333-444444444444";
 
 describe("the dispatch client", () => {
   it("hits all five routes with their verb, their path and their body verbatim", async () => {
@@ -602,10 +602,10 @@ describe("the dispatch client", () => {
     // machine while production, CI and the whole suite stay green.
     const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
     await api.takeNext(ROOM_ID, {});
-    await api.assignFromQueue(ROOM_ID, { queue_ticket_id: TICKET_ID });
-    await api.callQueueTicket(TICKET_ID);
-    await api.skipQueueTicket(TICKET_ID, { seen_skip_count: 0 });
-    await api.removeQueueTicket(TICKET_ID);
+    await api.assignFromQueue(ROOM_ID, { queue_ticket_id: QUEUE_TICKET_ID });
+    await api.callQueueTicket(QUEUE_TICKET_ID);
+    await api.skipQueueTicket(QUEUE_TICKET_ID, { seen_skip_count: 0 });
+    await api.removeQueueTicket(QUEUE_TICKET_ID);
 
     const calls = fetchMock.mock.calls.map((call) => {
       const [path, init] = call as [string, RequestInit];
@@ -620,11 +620,11 @@ describe("the dispatch client", () => {
       [
         "POST",
         `/manage/floor/rooms/${ROOM_ID}/assign`,
-        { queue_ticket_id: TICKET_ID },
+        { queue_ticket_id: QUEUE_TICKET_ID },
       ],
-      ["POST", `/manage/floor/queue/${TICKET_ID}/call`, undefined],
-      ["POST", `/manage/floor/queue/${TICKET_ID}/skip`, { seen_skip_count: 0 }],
-      ["POST", `/manage/floor/queue/${TICKET_ID}/remove`, undefined],
+      ["POST", `/manage/floor/queue/${QUEUE_TICKET_ID}/call`, undefined],
+      ["POST", `/manage/floor/queue/${QUEUE_TICKET_ID}/skip`, { seen_skip_count: 0 }],
+      ["POST", `/manage/floor/queue/${QUEUE_TICKET_ID}/remove`, undefined],
     ]);
   });
 
@@ -634,7 +634,7 @@ describe("the dispatch client", () => {
     // the exact failure the field exists to prevent. 0 is falsy in JS and this
     // is the row that catches a `...(count ? {count} : {})` "tidy-up".
     const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
-    await api.skipQueueTicket(TICKET_ID, { seen_skip_count: 0 });
+    await api.skipQueueTicket(QUEUE_TICKET_ID, { seen_skip_count: 0 });
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.body).toBe('{"seen_skip_count":0}');
   });
@@ -658,7 +658,7 @@ describe("the dispatch client", () => {
         },
       }),
     );
-    await expect(api.callQueueTicket(TICKET_ID)).rejects.toMatchObject({
+    await expect(api.callQueueTicket(QUEUE_TICKET_ID)).rejects.toMatchObject({
       status: 409,
       code: "QUEUE_TICKET_NOT_WAITING",
       details: { status: "in_service" },
@@ -678,7 +678,7 @@ describe("the dispatch client", () => {
         },
       }),
     );
-    const failure: unknown = await api.callQueueTicket(TICKET_ID).catch((error: unknown) => error);
+    const failure: unknown = await api.callQueueTicket(QUEUE_TICKET_ID).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(ApiError);
     expect((failure as ApiError).details).toBeUndefined();
     expect((failure as ApiError).code).toBe("QUEUE_TICKET_NOT_WAITING");
@@ -759,5 +759,125 @@ describe("customer endpoints", () => {
       status: 404,
       code: "NOT_FOUND",
     });
+  });
+});
+
+// --- the atelier board (Feature 41) ---
+
+const TICKET_ID = "88888888-9999-aaaa-bbbb-cccccccccccc";
+
+describe("the atelier client", () => {
+  it("reads the board from the envelope endpoint", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, { tickets: [], seamstresses: [], effort_bands: [], truncated: false }),
+    );
+    await api.getAtelierBoard();
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/atelier/tickets");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET" });
+  });
+
+  it("sends the intake body verbatim in snake_case, with dress_id null", async () => {
+    // ⚠ There is no case-conversion layer in this app; the wire format is the
+    // backend's snake_case and a camelCase key would be a 400 from a
+    // ForbidExtraModel, not a silently ignored field.
+    //
+    // `dress_id` is ALWAYS null from this console (C3): the catalog picker is
+    // cut, its route refuses a seamstress and the card renders no image. F43 is
+    // the caller that will send an id.
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: TICKET_ID }));
+    await api.createTicket({
+      customer_name: "מיכל לוי",
+      customer_phone: "0521234567",
+      due_date: "2026-08-20",
+      effort_band: "two_hours",
+      assigned_staff_user_id: null,
+      dress_id: null,
+      dress_name: "שמלת ערב של הלקוחה",
+      dress_size: "38",
+      notes: null,
+    });
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/manage/atelier/tickets");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toMatchObject({
+      customer_name: "מיכל לוי",
+      effort_band: "two_hours",
+      dress_id: null,
+    });
+    // `effort_minutes` is never sent — the band key is, and the server resolves
+    // it against the tenant's mapping. That is what makes "five preset bands,
+    // not a minute field" a property of the wire.
+    expect(JSON.parse(init.body)).not.toHaveProperty("effort_minutes");
+  });
+
+  it("posts a FULL update — every editable field, never a partial patch", async () => {
+    // An omitted key and an explicitly cleared one would be the same request, so
+    // a console that forgot to send `notes` would silently delete a bride's
+    // measurements. The server's UpdateTicketRequest has no default anywhere.
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: TICKET_ID }));
+    await api.updateTicket(TICKET_ID, {
+      due_date: "2026-08-22",
+      effort_band: "half_day",
+      dress_id: null,
+      dress_name: null,
+      dress_size: null,
+      notes: "",
+    });
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe(`/manage/atelier/tickets/${TICKET_ID}/update`);
+    expect(init.method).toBe("POST");
+    expect(Object.keys(JSON.parse(init.body)).sort()).toEqual([
+      "dress_id",
+      "dress_name",
+      "dress_size",
+      "due_date",
+      "effort_band",
+      "notes",
+    ]);
+  });
+
+  it("sends null to RELEASE an assignment, as a value and not an omission", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { id: TICKET_ID }));
+    await api.assignTicket(TICKET_ID, null);
+    expect(fetchMock.mock.calls[0][0]).toBe(`/manage/atelier/tickets/${TICKET_ID}/assign`);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ staff_user_id: null });
+  });
+
+  it("names the stage on both stage verbs, on their own paths", async () => {
+    // The client names the stage from what its LAST POLL showed, which is what
+    // makes a stale board harmless: if the ticket moved on between the paint and
+    // the tap, the write's predicate fails and the caller gets a 409 rather than
+    // stamping — or clearing — a stage that arrived after it last looked.
+    const advanced = stubFetch(() => jsonResponse(200, { id: TICKET_ID }));
+    await api.advanceStage(TICKET_ID, "qc");
+    expect(advanced.mock.calls[0][0]).toBe(`/manage/atelier/tickets/${TICKET_ID}/stage/advance`);
+    expect(JSON.parse(advanced.mock.calls[0][1].body)).toEqual({ stage: "qc" });
+
+    const undone = stubFetch(() => jsonResponse(200, { id: TICKET_ID }));
+    await api.undoStage(TICKET_ID, "qc");
+    expect(undone.mock.calls[0][0]).toBe(`/manage/atelier/tickets/${TICKET_ID}/stage/undo`);
+    expect(JSON.parse(undone.mock.calls[0][1].body)).toEqual({ stage: "qc" });
+  });
+
+  it("posts the delete to its own path and encodes the id", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.deleteTicket("a b/c");
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/atelier/tickets/a%20b%2Fc/delete");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+  });
+
+  it("surfaces both conflict codes and the 404 as distinguishable ApiErrors", async () => {
+    // The section maps them to THREE different Hebrew sentences because the
+    // user's next move differs: a garment moved on and she should look again; a
+    // person took it and the next tick will name her; a ticket vanished. A
+    // single generic CONFLICT would make the console branch on a message string.
+    for (const [status, code] of [
+      [409, "TICKET_STAGE_CONFLICT"],
+      [409, "TICKET_ALREADY_ASSIGNED"],
+      [404, "NOT_FOUND"],
+    ] as const) {
+      stubFetch(() => jsonResponse(status, { error: { code, message: "…" } }));
+      await expect(api.advanceStage(TICKET_ID, "qc")).rejects.toMatchObject({ status, code });
+    }
   });
 });

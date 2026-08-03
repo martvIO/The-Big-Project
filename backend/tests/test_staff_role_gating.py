@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from test_atelier_api import ATELIER_ROUTES, FakeAtelierService
 from test_boutique_api import (
     ROUTES,
     TENANT,
@@ -79,17 +80,6 @@ OWNER_ONLY = {
     GATEWAY_DISCONNECT,
 }
 
-# F57's three. The floor router is the ONLY /manage router admitting more than
-# two roles — require_role(*StaffRole) — and these are the roles that widening
-# let in. FLOOR_OPEN below is the exhaustive list of what they may reach.
-FLOOR_ROLES = frozenset(
-    {
-        StaffRole.RECEPTION.value,
-        StaffRole.SALES_ASSISTANT.value,
-        StaffRole.SEAMSTRESS.value,
-    }
-)
-
 # ROUTE-TABLE TEMPLATES, for the same reason STAFF_PATCH is one: the classifier
 # below reads `route.path`, so a concrete /manage/floor/staff/<uuid>/... would
 # never match and would fail on the `missing` assertion instead.
@@ -153,6 +143,50 @@ FLOOR_OPEN = {
     FLOOR_TAKE_NEXT,
     FLOOR_ASSIGN,
     FLOOR_QUEUE_CALL,
+}
+
+# F41's seven, same templates-not-urls rule. test_atelier_api.ATELIER_ROUTES is
+# the CONCRETE spelling, used by the HTTP walks below.
+#
+# ⚠ DELETE IS SPLIT OUT, AND THIS IS NOT TIDINESS. The walker classifies on
+# `effective = frozenset.intersection(*role_sets)`, and delete carries a
+# per-route require_role(OWNER, SHIFT_MANAGER) on top of the router's three — so
+# its effective set is {owner, shift_manager} and seamstress is NOT in it. A
+# seamstress row that named delete would be one element larger than reality and
+# would RED A CORRECT BUILD on the one test F57's Risk 1 declares untouchable,
+# which is the exact situation that gets a test relaxed.
+ATELIER_DELETE = ("POST", "/manage/atelier/tickets/{ticket_id}/delete")
+ATELIER_OPEN = {
+    ("GET", "/manage/atelier/tickets"),
+    ("POST", "/manage/atelier/tickets"),
+    ("POST", "/manage/atelier/tickets/{ticket_id}/update"),
+    ("POST", "/manage/atelier/tickets/{ticket_id}/assign"),
+    ("POST", "/manage/atelier/tickets/{ticket_id}/stage/advance"),
+    ("POST", "/manage/atelier/tickets/{ticket_id}/stage/undo"),
+    ATELIER_DELETE,
+}
+
+# ⚠ THE EXHAUSTIVE REACH OF EACH NON-ELEVATED ROLE, one row each, asserted as a
+# SET EQUALITY per role.
+#
+# This replaces F57's single `FLOOR_ROLES`/`FLOOR_OPEN` pair, and the reason is
+# F41: the old model was that the three non-elevated roles MOVE AS A BLOCK, and
+# an atelier router that admits `seamstress` and not the other two makes that
+# false — deliberately and visibly. Under the old pair that is CORRECT CODE
+# FAILING A CORRECT TEST, which is precisely the situation Risk 1 warns leads to
+# a reviewer relaxing the assertion.
+#
+# What the per-role table gives up: only the assumption that the three are
+# interchangeable. What it keeps, every word of it: still an exact set equality,
+# still derived from the LIVE route table, still catches a route that quietly
+# lost its gate (an ungated route's `effective` is empty, so it drops out of
+# every row and the equality fails), still fails the day some future router
+# copy-pastes a wide gate, and now ALSO fails if one of these roles is admitted
+# to a route the other two reach.
+NON_ELEVATED_REACH: dict[str, frozenset[tuple[str, str]]] = {
+    StaffRole.RECEPTION.value: frozenset(FLOOR_OPEN),
+    StaffRole.SALES_ASSISTANT.value: frozenset(FLOOR_OPEN),
+    StaffRole.SEAMSTRESS.value: frozenset(FLOOR_OPEN | (ATELIER_OPEN - {ATELIER_DELETE})),
 }
 
 # The probe for "a role the enum does not know", shared verbatim by
@@ -291,34 +325,55 @@ def test_route_table_matches_the_permission_matrix() -> None:
     )
 
 
-def test_the_floor_roles_reach_exactly_the_floor_routes() -> None:
-    """⚠ THE TEST THE WHOLE FEATURE'S SAFETY RESTS ON (spec Risk 1).
+# ⚠ F57's Risk 1 names this test `test_the_floor_roles_reach_exactly_the_floor_routes`.
+# F41 renamed it — the reach is no longer the same for all three — WITHOUT
+# relaxing anything: read `test_each_non_elevated_role_reaches_exactly_its_own_routes`
+# below and the NON_ELEVATED_REACH table above. This comment exists so a grep for
+# the old name lands here rather than on nothing, which would read as a deletion.
+def test_each_non_elevated_role_reaches_exactly_its_own_routes() -> None:
+    """⚠ THE TEST THE FLOOR ROUTER'S AND THE ATELIER ROUTER'S SAFETY RESTS ON
+    (F57 spec Risk 1, F41 spec D10 / plan C1).
 
     The floor router's gate is `require_role(*StaffRole)` — every role the
     product has, spelled from the enum so a sixth is admitted by default. That is
-    safe ONLY because this test pins the three floor roles OUT of every other
-    /manage route. Both halves ship together or neither should.
+    safe ONLY because this test pins the non-elevated roles OUT of every route
+    their own table row does not name. Both halves ship together or neither
+    should. The atelier router is the converse case: it names THREE LITERALS
+    precisely so a sixth role is refused there by default, and this test is what
+    proves the literals are the ones intended.
 
-    IT MUST NEVER BE RELAXED TO A SUBSET CHECK, and `FLOOR_OPEN` must never gain
-    a route without the reviewer asking why. F36 and F58 will both extend the
-    floor router; that is expected and each new row is a deliberate, reviewed act.
+    IT MUST NEVER BE RELAXED TO A SUBSET CHECK, and no row of NON_ELEVATED_REACH
+    may gain a route without the reviewer asking why. F36 and F58 will both
+    extend the floor router; F42 will extend the atelier one. Each new row is a
+    deliberate, reviewed act.
+
+    ⚠ WHAT F41 CHANGED AND WHAT IT KEPT, stated because the point of the
+    restructure is that it gives nothing up. It was `admits_floor == FLOOR_OPEN`
+    over one frozen `FLOOR_ROLES` set, plus a `partial` list asserting that no
+    route admits only SOME of the three. That second assertion's model is that
+    the three move as a BLOCK, and F41 ends that: the atelier admits `seamstress`
+    alone. So `partial` is DELETED rather than adapted — its intent, "admits only
+    some of them", is now expressible only as a row naming a route the table does
+    not, which IS the per-role equality. Three set equalities in place of one
+    equality and one block assumption is strictly stronger, not weaker: it still
+    catches a route that quietly lost its gate (an ungated route's `effective` is
+    empty, so it drops out of every row), still catches a future router that
+    copy-pastes a wide gate, and now also catches one of the three being admitted
+    somewhere the other two are not.
 
     ⚠ CLASSIFY ON THE INTERSECTION, NEVER `any(...)` OVER THE GATES. `RoleGate`
     composes by intersection (`auth/dependencies.py:44-45`) and `_gate_role_sets`
     yields EVERY gate in the tree, router-level and per-route both — which is why
-    the shipped matrix test above uses `all(...)`. With `any(...)`, a route added
-    to the floor router and TIGHTENED per-route —
-    `@router.post("/floor/rooms/assign",
-    dependencies=[Depends(require_role(OWNER, SHIFT_MANAGER))])`, i.e. exactly
-    what F36 and F58 will add — would land in `admits_floor` even though the
-    intersection denies the floor roles, and the first assertion would red-fail
-    on a CORRECT route. A reviewer facing that red on a test declared
-    untouchable is most likely to "fix" it by relaxing the assertion, which is
-    precisely the outcome Risk 1 exists to prevent.
+    the shipped matrix test above uses `all(...)`. F41's own
+    `POST /manage/atelier/tickets/{ticket_id}/delete` is exactly the shape that
+    breaks under `any`: the router admits the seamstress and the per-route gate
+    does not, so `any` would put it in her reach and red-fail a CORRECT route. A
+    reviewer facing that red on a test declared untouchable is most likely to
+    "fix" it by relaxing the assertion, which is precisely the outcome Risk 1
+    exists to prevent.
     """
     app = create_app(resolver=_null_resolver)
-    admits_floor: set[tuple[str, str]] = set()
-    partial: list[tuple[str, str, frozenset[str]]] = []
+    reach: dict[str, set[tuple[str, str]]] = {role: set() for role in NON_ELEVATED_REACH}
     seen: set[tuple[str, str]] = set()
 
     for route in _leaf_routes(app):
@@ -328,32 +383,44 @@ def test_the_floor_roles_reach_exactly_the_floor_routes() -> None:
             continue
         role_sets = list(_gate_role_sets(dependant))
         # An UNGATED route's effective set is empty and therefore admits nobody.
-        # That is what makes assertion 1 catch a floor route which quietly lost
-        # its gate: it drops out of `admits_floor` and the set equality fails.
+        # That is what makes the equalities catch a route which quietly lost its
+        # gate: it drops out of every row and the equality fails.
         effective: frozenset[str] = frozenset.intersection(*role_sets) if role_sets else frozenset()
         for method in getattr(route, "methods", None) or ():
             seen.add((method, path))
-            if effective & FLOOR_ROLES:
-                admits_floor.add((method, path))
-                if not effective >= FLOOR_ROLES:
-                    partial.append((method, path, effective))
+            for role in NON_ELEVATED_REACH:
+                if role in effective:
+                    reach[role].add((method, path))
 
     assert seen, "no /manage route was discovered — the walker is broken"
 
-    # 1. Nothing else in the product admits a floor role — including a future
-    #    router that copy-pastes require_role(*StaffRole) — and no floor route
-    #    lost its gate.
-    assert admits_floor == FLOOR_OPEN, (
-        f"floor roles reach the wrong set of routes: "
-        f"unexpected={sorted(admits_floor - FLOOR_OPEN)} "
-        f"missing={sorted(FLOOR_OPEN - admits_floor)}"
-    )
-    # 2. A floor route admits ALL THREE, never some of them.
-    assert not partial, f"floor routes admitting only some floor roles: {sorted(partial)}"
-    # 3. The anti-vacuity half (the `seen >= UNGATED_ALLOWLIST` shape above):
-    #    FLOOR_OPEN may not name a path that no longer exists.
-    missing = FLOOR_OPEN - seen
-    assert not missing, f"FLOOR_OPEN names routes that no longer exist: {sorted(missing)}"
+    # 1. Per role, an EXACT set equality against its table row. Nothing else in
+    #    the product admits that role — including a future router that
+    #    copy-pastes require_role(*StaffRole) — and no route on its row lost its
+    #    gate.
+    for role, expected in NON_ELEVATED_REACH.items():
+        assert reach[role] == expected, (
+            f"{role} reaches the wrong set of routes: "
+            f"unexpected={sorted(reach[role] - expected)} "
+            f"missing={sorted(expected - reach[role])}"
+        )
+
+    # 2. The anti-vacuity half (the `seen >= UNGATED_ALLOWLIST` shape above),
+    #    WIDENED to the full union INCLUDING delete: delete does exist and the
+    #    owner reaches it, and the point of this half is that no row of either
+    #    table names a path the route table has lost.
+    #
+    #    ⚠ WHAT THE WIDENING ACTUALLY CATCHES, verified by mutation rather than
+    #    assumed. Every route in a role's reach row is already caught by that
+    #    role's equality above — deleting it makes `reach[role]` one element
+    #    short. ATELIER_DELETE is the ONE declared route in NOBODY's row, so it
+    #    is invisible to all three equalities: narrow `declared` back to
+    #    FLOOR_OPEN, delete the /delete route from the router, and this test
+    #    stays GREEN. That is the vacuity this line exists to prevent, and it is
+    #    the same reason ATELIER_DELETE had to be named as a constant at all.
+    declared = FLOOR_OPEN | ATELIER_OPEN
+    missing = declared - seen
+    assert not missing, f"the tables name routes that no longer exist: {sorted(missing)}"
 
 
 def test_terms_publishing_is_owner_only_in_the_route_table() -> None:
@@ -406,6 +473,28 @@ async def test_the_all_roles_gate_admits_every_role() -> None:
         assert await gate(staff) is staff
 
 
+async def test_the_three_role_gate_admits_exactly_the_atelier_roles() -> None:
+    """F41's atelier router spells its gate with THREE LITERALS and nothing else
+    in the codebase does.
+
+    ⚠ A SECOND CASE, not three roles added to `test_gate_admits_listed_roles`.
+    That test builds `require_role(OWNER, SHIFT_MANAGER)`, so adding 'seamstress'
+    to its loop would assert that a TWO-ROLE gate admits her — false, and
+    dangerous in the direction that matters. The shipped assertion is untouched
+    (F57's own note on the `*StaffRole` case directly above, verbatim reasoning).
+
+    The refusal half is the load-bearing one: literals rather than `*StaffRole`
+    is what makes a receptionist — and a sixth role added later — refused BY
+    DEFAULT.
+    """
+    gate = require_role(StaffRole.OWNER, StaffRole.SHIFT_MANAGER, StaffRole.SEAMSTRESS)
+    for role in ("owner", "shift_manager", "seamstress"):
+        staff = _staff(role)
+        assert await gate(staff) is staff
+    with pytest.raises(NotAuthorizedError):
+        await gate(_staff(StaffRole.RECEPTION.value))
+
+
 async def test_owner_only_gate_refuses_shift_manager() -> None:
     with pytest.raises(NotAuthorizedError):
         await require_role(StaffRole.OWNER)(_staff("shift_manager"))
@@ -455,6 +544,7 @@ def _client(
     authed: bool = True,
     catalog: FakeCatalogService | None = None,
     floor: FakeFloorService | None = None,
+    atelier: FakeAtelierService | None = None,
 ) -> tuple[TestClient, CountingAuthService]:
     async def _resolver(slug: str) -> TenantContext | None:
         return TENANT if slug == "bella" else None
@@ -485,6 +575,13 @@ def _client(
         # pass one: reaching the real (unset) app.state.floor_service blows that
         # test up instead of quietly passing.
         app.state.floor_service = floor
+    if atelier is not None:
+        # Same asymmetry as the catalog and floor fakes, for the same reason.
+        # test_unknown_role_is_403_on_every_gated_route deliberately does NOT
+        # pass one: with app.state.atelier_service never set, a gate that carried
+        # `allowed_roles` without raising would fall through to an AttributeError
+        # and blow that test up rather than quietly passing.
+        app.state.atelier_service = atelier
     client = TestClient(app, base_url="http://bella.localtest.me")
     if authed:
         client.cookies.set("boutique_session", TOKEN, domain="bella.localtest.me")
@@ -511,10 +608,20 @@ def test_shift_manager_is_admitted_everywhere_except_terms_publishing() -> None:
     # answer 2xx to prove admission rather than merely "not 403".
     fake = FakeBoutiqueService()
     client, _ = _client(
-        fake, "shift_manager", catalog=FakeCatalogService(), floor=FakeFloorService()
+        fake,
+        "shift_manager",
+        catalog=FakeCatalogService(),
+        floor=FakeFloorService(),
+        atelier=FakeAtelierService(),
     )
     with client:
-        for method, path, body in [*ROUTES, *CATALOG_ROUTES, *GATEWAY_ROUTES, *FLOOR_ROUTES]:
+        for method, path, body in [
+            *ROUTES,
+            *CATALOG_ROUTES,
+            *GATEWAY_ROUTES,
+            *FLOOR_ROUTES,
+            *ATELIER_ROUTES,
+        ]:
             resp = client.request(method, path, json=body)
             if (method, path) in OWNER_ONLY:
                 assert resp.status_code == 403, (method, path, resp.text)
@@ -552,7 +659,13 @@ def test_unknown_role_is_403_on_every_gated_route() -> None:
     fake = FakeBoutiqueService()
     client, _ = _client(fake, UNKNOWN_ROLE)
     with client:
-        for method, path, body in [*ROUTES, *CATALOG_ROUTES, *GATEWAY_ROUTES, *FLOOR_ROUTES]:
+        for method, path, body in [
+            *ROUTES,
+            *CATALOG_ROUTES,
+            *GATEWAY_ROUTES,
+            *FLOOR_ROUTES,
+            *ATELIER_ROUTES,
+        ]:
             resp = client.request(method, path, json=body)
             assert resp.status_code == 403, (method, path, resp.text)
             assert resp.json() == NOT_AUTHORIZED_BODY

@@ -1,13 +1,25 @@
 """floor dispatch: the assignment's pointer at the walk-in it serves
 
-Revision ID: 0020
-Revises: 0019
+Revision ID: 0021
+Revises: 0020
+
+⚠ AND IT HAPPENED A THIRD TIME. This file was built as "0020" — honestly, from
+`alembic heads` at build time — and F41 merged forty-one minutes later with its
+own `0020_alteration_tickets.py`, whose header records the same thing happening
+to it at "0019". Two files declaring revision "0020", different filenames, a
+textually clean merge and nothing in review looking wrong: alembic keys
+revisions by the STRING, so it does not error — it warns `Revision 0020 is
+present more than once`, dedupes to ONE script and DROPS the other, which on a
+fresh database means one of the two features' DDL simply never runs. Renumbered
+here at the merge that brought F41 in, which is the only moment both files are
+visible: three edits to this one file (the filename, `revision`,
+`down_revision`), and `test_exactly_one_migration_head` is what proves it.
 """
 
 from alembic import op
 
-revision = "0020"
-down_revision = "0019"
+revision = "0021"
+down_revision = "0020"
 branch_labels = None
 depends_on = None
 

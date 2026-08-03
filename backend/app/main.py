@@ -14,6 +14,9 @@ from starlette.routing import Match
 from starlette.types import Scope
 
 from app.api.routes.health import router as health_router
+from app.atelier.router import router as atelier_router
+from app.atelier.service import AtelierService
+from app.atelier.validation import TicketAlreadyAssignedError, TicketStageConflictError
 from app.auth.dependencies import NotAuthenticatedError, NotAuthorizedError
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.router import RateLimitedError
@@ -386,6 +389,26 @@ def _occupied_body(base: dict[str, Any], details: dict[str, str] | None) -> dict
     return {"error": error}
 
 
+# F41's two, and they are TWO AND NOT ONE. Both are 409s on the atelier board,
+# but the console's copy and the user's next move differ: a stage conflict says
+# the GARMENT moved on and the remedy is to look again; an assignment conflict
+# says a PERSON took it, and the next tick will name her. Collapsing them into
+# the shipped generic CONFLICT (`TERMS_CONFLICT_BODY` above) would make the
+# console branch on a message string.
+TICKET_STAGE_CONFLICT_BODY = {
+    "error": {
+        "code": "TICKET_STAGE_CONFLICT",
+        "message": "This ticket has already moved on. Reload and try again.",
+    }
+}
+TICKET_ALREADY_ASSIGNED_BODY = {
+    "error": {
+        "code": "TICKET_ALREADY_ASSIGNED",
+        "message": "Someone else has taken this ticket.",
+    }
+}
+
+
 # The built SPAs: Frontend/apps/{manage,storefront}/dist copied to
 # app/static/{manage,storefront} by the deploy-staging job. NEVER committed, and
 # deliberately NOT listed in .gitignore either: `railway up` respects
@@ -646,6 +669,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # No clock: nothing the CRM answers is time-derived — the booking history is
     # ordered by starts_at with no window and the SMS log has no band.
     app.state.customers_service = CustomersService(get_session_factory())
+    # No clock wired, same as the dashboard and the floor: the parameter exists
+    # so the db suite can freeze `today_jerusalem` — which the overdue flag, the
+    # delivered window and the due-date horizon all read — and production reads a
+    # real one.
+    app.state.atelier_service = AtelierService(get_session_factory())
     app.state.login_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.login_max_attempts,
         window_seconds=settings.login_window_seconds,
@@ -1220,6 +1248,22 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _ticket_changed(request: Request, exc: QueueTicketChangedError) -> JSONResponse:
         return JSONResponse(_occupied_body(QUEUE_TICKET_CHANGED_BODY, exc.details), status_code=409)
 
+    # 409, not 400: both requests are well-formed — a CONCURRENT WRITER is what
+    # refuses them, and each names a different one. F41's only two new codes;
+    # `AtelierValidationError` needs no handler at all because it subclasses
+    # DomainValidationError, and a missing ticket rides DomainNotFoundError.
+    @app.exception_handler(TicketStageConflictError)
+    async def _ticket_stage_conflict(
+        request: Request, exc: TicketStageConflictError
+    ) -> JSONResponse:
+        return JSONResponse(TICKET_STAGE_CONFLICT_BODY, status_code=409)
+
+    @app.exception_handler(TicketAlreadyAssignedError)
+    async def _ticket_already_assigned(
+        request: Request, exc: TicketAlreadyAssignedError
+    ) -> JSONResponse:
+        return JSONResponse(TICKET_ALREADY_ASSIGNED_BODY, status_code=409)
+
     # Its own class like the other four throttles; the F21 reparenting note on
     # StorefrontThrottledError covers this one too.
     @app.exception_handler(GatewayThrottledError)
@@ -1286,6 +1330,16 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # nine surfaces on one prefix — the ROUTES table in test_checkin_qr_api.py
     # is what keeps this one honest.
     app.include_router(queue_manage_router)
+    # F41's atelier. The TENTH /manage router, after the queue one and
+    # deliberately BEFORE storefront_router: every /manage router stays
+    # contiguous and ahead of the anonymous surfaces. Same shadowing hazard as
+    # the nine above, now with ten surfaces on one prefix — a duplicated
+    # (method, path) would silently win or lose on include order with no error at
+    # all, and the ATELIER_ROUTES table in test_atelier_api.py is what keeps
+    # these seven honest. It is also the only /manage router whose gate names
+    # `seamstress`, which is why test_staff_role_gating.py's walker became a
+    # per-role set equality in the same PR.
+    app.include_router(atelier_router)
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
     app.include_router(storefront_router)

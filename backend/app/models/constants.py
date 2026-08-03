@@ -46,6 +46,44 @@ class StaffCardStatus(StrEnum):
     OCCUPIED = "occupied"
 
 
+class TicketStage(StrEnum):
+    # F41's atelier board. NOT pinned by the DB and deliberately not: there is no
+    # stored value for a CHECK to constrain. The state is DERIVED from five
+    # nullable TIMESTAMPTZ columns on alteration_tickets (pre-decided #39's
+    # mechanism, relabelled by the 2026-07-31 ATELIER ruling), and StaffCardStatus
+    # above is the shipped precedent for a derived, DB-unpinned wire enum.
+    #
+    # DECLARATION ORDER IS THE TOTAL ORDER and D3's predicate builder reads it.
+    # A member inserted in the MIDDLE changes the semantics of every advance and
+    # every undo in the feature — the conditional write is
+    # `AND <every column after the target> IS NULL`, which is spelled from this
+    # order and nowhere else. test_the_declaration_order_is_the_total_order is
+    # what makes that a red test rather than a silent behaviour change.
+    INTAKE = "intake"
+    IN_PROGRESS = "in_progress"
+    QC = "qc"
+    READY = "ready"
+    DELIVERED = "delivered"
+
+
+class EffortBand(StrEnum):
+    # Q13's five, verbatim. NOT pinned by the DB: what persists is
+    # alteration_tickets.effort_minutes, and a band is only ever an INPUT
+    # affordance — the client never sends a number, so there is no request shape
+    # in which 37 minutes reaches the row.
+    #
+    # The MINUTES are what persist, never the label, which is why the table has
+    # no effort_band column: a boutique that re-tunes half_day from 240 to 300
+    # must not silently re-value every ticket already estimated. The consequence
+    # is that a stored effort_minutes may match no current band, and the board
+    # renders that honestly.
+    THIRTY_MIN = "thirty_min"
+    ONE_HOUR = "one_hour"
+    TWO_HOURS = "two_hours"
+    HALF_DAY = "half_day"
+    FULL_DAY = "full_day"
+
+
 class AppointmentAudience(StrEnum):
     # brides_only on a type — or the tenant-wide brides_only toggle — hides it
     # from non-bride visitors (consumers: E3 slot engine, E2 storefront).
@@ -369,6 +407,47 @@ class AuditAction(StrEnum):
     # called her forward' and 'who removed her' are the two questions that will
     # want rows".
     QUEUE_TICKET_REMOVED = "queue_ticket_removed"
+
+    # F41's atelier board (D11). Same fact as every block above: audit_log.action
+    # is plain TEXT with no CHECK (0003), so these six need no migration.
+    #
+    # ONE STAGE_ADVANCED VALUE RATHER THAN FIVE, and the split rule is followed
+    # rather than broken. The questions this table gets asked here are "who moved
+    # this ticket, and when" — both one WHERE action = … plus the row's own
+    # `details`. The question a per-stage split would serve, "how many tickets
+    # reached delivered", is answered from the five TIMESTAMP COLUMNS and never
+    # from audit_log, which is the whole point of the derived-state mechanism.
+    # Five values would buy a query nobody runs.
+    #
+    # ⚠ STAGE_UNDONE carries `previous_stamp` and it is LOAD-BEARING in a way
+    # `previous_break_started_at` was not: the five timestamps ARE the trail, so
+    # an un-stamp is the one write in this feature that DESTROYS history, and
+    # this row is the only place it survives. It must be captured into a local
+    # BEFORE the write — the ORM's `evaluate` synchronization stamps NULL onto
+    # the very instance the reader is about to read.
+    #
+    # TICKET_UPDATED's `details` carries changed key NAMES AND NEVER VALUES:
+    # `notes` may hold a bride's measurements, and audit_log has a different
+    # retention clock from the row it describes. Same asymmetry, same reason as
+    # CUSTOMER_UPDATED directly above.
+    #
+    # ⚠ AND A SEVENTH, added at review: CUSTOMER_RENAMED. Intake routes through
+    # `CustomersRepository.upsert`, which assigns `existing.name = name`
+    # UNCONDITIONALLY, so a seamstress typing «מ» for a phone stored as «מיכל
+    # לוי» rewrites a row that F53 renders on a screen she cannot open — and the
+    # atelier router is the first writer of `customers.name` whose actor does not
+    # control the phone (the booking path proves it with an OTP first). D6
+    # accepts the rename; this makes it recoverable. `details` names the FIELD
+    # and never either spelling, CUSTOMER_UPDATED's rule for CUSTOMER_UPDATED's
+    # reason, and `entity` is the CUSTOMER's id rather than the ticket's, because
+    # the customer is the row that changed.
+    ATELIER_CUSTOMER_RENAMED = "atelier_customer_renamed"
+    ATELIER_TICKET_CREATED = "atelier_ticket_created"
+    ATELIER_TICKET_UPDATED = "atelier_ticket_updated"
+    ATELIER_TICKET_ASSIGNED = "atelier_ticket_assigned"
+    ATELIER_TICKET_STAGE_ADVANCED = "atelier_ticket_stage_advanced"
+    ATELIER_TICKET_STAGE_UNDONE = "atelier_ticket_stage_undone"
+    ATELIER_TICKET_DELETED = "atelier_ticket_deleted"
 
 
 class PlatformAuditAction(StrEnum):
