@@ -508,8 +508,41 @@ queue:
     slug: public-queue-board
     epic: E6
     title: "Public wall-screen queue board (/queue)"
-    status: queued
+    status: building
+    attempts: 1
     deps: [F33]
+    spec: .planning/specs/public-queue-board.md
+    plan: .planning/plans/public-queue-board.md
+    started: >-
+      2026-08-03 19:10, worktree .worktrees/public-queue-board. Eligible the moment
+      F33 merged. Gates 1 and 2 self-approved.
+      ⚠ SEE deployment_gates BELOW — this merges but does NOT go on a wall until F58.
+      NO MIGRATION, deliberately: F33's queue_tickets already carries every column and
+      its (tenant_id, queue_day) partial index is already the exact access path. A
+      builder who adds one has misread the feature.
+      SPEC REVIEW: 34 findings from 3 lenses, 31 applied, 3 rejected in writing.
+      FIVE BLOCKERS. The three worth carrying:
+      (1) THE INTERIM BOARD IS NOT DEPLOYABLE and an earlier draft claimed it was
+      useful. With no writer for called_at or the status column, nothing is
+      highlighted and the board only GROWS; because the order is arrival order and
+      the cap is five rows, THE FIVE NAMES FREEZE mid-morning and are still on the
+      screen at midnight. The usefulness claim is deleted; the deployment gate is
+      the only interim position. See deployment_gates.
+      (2) THE BRIEF'S "PUBLIC GET" IS UNAVAILABLE. test_storefront_api.py derives its
+      route list over EVERY GET under /storefront and asserts 429 on each against the
+      shared storefront limiter, so a GET here answers 200 and reddens a shipped
+      guard. The only escapes were sharing the catalog's budget (the exact failure
+      main.py names verbatim) or weakening a guard protecting six shipped reads. It
+      is a POST — and NOT for F33's reason (F33's routes carry a capability; this
+      request body is empty), so the argument is recorded separately.
+      (3) THE TV TYPE SCALE WAS clamp()-ed AGAINST vh ONLY, which makes browser text
+      resize INERT — a WCAG 1.4.4 AA failure that axe cannot see and that no shipped
+      resize sweep covered because /queue was not in RESIZE_ROUTES. Every size is now
+      clamp(<rem>, <rem> + <vh>, <rem>) with a 6-column proof table, and A34 pins it.
+      ALSO: D13 AMENDS A SHIPPED STRING. F33's check-in notice promises the record is
+      shown on "a screen in the boutique". The real processing is publication to an
+      unauthenticated worldwide URL, and consenting to the first is not consenting to
+      the second. The clause now names the public page. Do not soften it back.
     note: >-
       NEW 2026-07-31 (floor program), authorised with the full-queue ruling that
       also revived F33 — pre-decided #27 had deferred the kiosk as "a small
