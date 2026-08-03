@@ -1002,5 +1002,355 @@ export const he = {
     // says one thing for one action — and it names no interval (§0 rule 9),
     // because nothing here knows when the read will succeed.
     "checkinQr.retry": "ניסיון נוסף",
+
+    // --- F41, the atelier. 95 keys, 0 reused. ---------------------------------
+    //
+    // The board states, it does not reassure: every string is a fact, and the
+    // ones about time have a time on them. A seamstress reads this screen fifty
+    // times a shift and warmth at that frequency is noise.
+    //
+    // ⚠ TEN of the values below are BYTE-IDENTICAL to shipped `board.*` /
+    // `floor.*` strings and are DECLARED, not reused. Lifting them into a shared
+    // `poll.*` namespace would edit BoardSection's and FloorPanel's i18n, and
+    // both components must pass unedited — which is the only thing separating a
+    // faithful fourth usePoll consumer from a subtly different one. Named owner
+    // rather than a deferred trigger: the team, at F37 or F59, as a standalone
+    // i18n PR touching no component logic.
+    //
+    // ⚠ Once `atelier` exists as a section here, ANY quoted "atelier.…" literal
+    // anywhere in apps/manage/src is scraped as an i18n key and must resolve to
+    // a defined, non-empty Hebrew string. Do not name a data-testid
+    // `atelier.submit`.
+    "nav.atelier": "תפירה",
+    // «תפירה» — the craft. Not «תיקונים» (repairs, which reads as fixing a
+    // mistake) and not «אטלייה» (a transliteration the boutique does not say out
+    // loud). The heading is definite where the nav row is bare: a heading names
+    // the thing on screen, a nav row names a destination.
+    "atelier.heading": "לוח התפירה",
+    // The CTA above the columns AND the create dialog's title — one fact, one
+    // key. Two byte-identical strings under two keys is how a console ends up
+    // spelling one fact two ways the day somebody edits one of them.
+    "atelier.newTicket": "כרטיס חדש",
+
+    // The freshness row. «עודכן 14:07» says THIS WAS TRUE AT 14:07 — past tense
+    // by construction, because the board polls and «בזמן אמת» is a claim it
+    // cannot keep even for one interval.
+    "atelier.updatedAt": "עודכן {{time}}",
+    "atelier.staleAt": "אין עדכון מאז {{time}}",
+    // Says what is UNKNOWN, not what is wrong: the board cannot tell a dead wifi
+    // from a dead server. No apology, no «אנא», and no interval — the backoff
+    // stretches 5s to ~60s, so «מיד» is true at tick 1 and false by tick 5.
+    "atelier.staleBody": "ייתכן שהמידע אינו עדכני.",
+    "atelier.refresh": "רענון",
+
+    // WCAG 2.0 SC 2.2.2, and axe has no rule for it: at zero of these eight keys
+    // the product ships green in CI and non-conformant in law. Third such
+    // surface in this console.
+    //
+    // «השהיה» is identical to the board's and the floor panel's on purpose — one
+    // product vocabulary, and a staffer must not have to learn that «השהיה» and
+    // «עצירה» are the same act.
+    "atelier.pause": "השהיה",
+    // ⚠ «השהיה — …» and NOT «השהיית…»: the accessible name must START with the
+    // visible label or a speech-input user saying «השהיה» matches nothing (WCAG
+    // 2.5.3). The two word forms differ by one letter.
+    "atelier.pauseAria": "השהיה — לוח התפירה",
+    // ONE button whose name changes, never two buttons and never aria-pressed.
+    // Not «רענון»: that word is the one-shot retry above, and the two acts
+    // differ — one fetch now vs. start the beat again.
+    "atelier.resume": "חידוש",
+    "atelier.resumeAria": "חידוש — לוח התפירה",
+    "atelier.pausedAt": "מושהה · עודכן {{time}}",
+    "atelier.paused": "העדכון מושהה. לוח התפירה לא יתעדכן עד לחידוש.",
+    // ⚠ May NOT be byte-identical to `board.idleStopped` or `floor.idleStopped`.
+    // All three write into a role="status" region and all three idle windows are
+    // reset by the same global listeners in usePoll. This console renders one
+    // section at a time so the collision is rarer here — the string still names
+    // its own region, because the reason is a rule and not a coincidence.
+    "atelier.idleStopped": "עדכון לוח התפירה הופסק אחרי {{minutes}} דקות ללא פעילות.",
+    // Not symmetry: on resume the button's own accessible name flips, and a
+    // screen reader does not reliably re-announce the name of a control that is
+    // already focused — so without this the one confirmation a sighted user gets
+    // for free is denied to the user 2.2.2 exists for.
+    "atelier.resumed": "העדכון חודש.",
+
+    // A SECOND navigation landmark on a page that already has the shell's, so it
+    // must be named or a screen-reader user cycling landmarks lands on two
+    // things both called "navigation". Names the act, not the thing.
+    "atelier.railAria": "מעבר לשלב",
+    // ⚠ `{{total}}`, NEVER `{{count}}`. `count` is i18next's plural-resolution
+    // trigger, and this string renders TEN times per paint (five headings, five
+    // rail chips). ⚠ And it carries NO NOUN: «{{total}} כרטיסים» is wrong at 1
+    // and wrong at 2 (Hebrew takes a dual), and doing it properly needs four
+    // plural suffixes per string in two bundles — while the <ul>'s own list role
+    // already announces the item count to the reader the noun was for.
+    "atelier.stageCount": "{{stage}} · {{total}}",
+    // The five stages ARE the state machine — five nullable timestamps, no
+    // status column — and these are the words the whole product speaks about
+    // them. `atelier.emptyBody` teaches all five in one sentence and must not
+    // drift from these.
+    "atelier.stage.intake": "התקבל",
+    "atelier.stage.inProgress": "בעבודה",
+    "atelier.stage.qc": "בקרה",
+    "atelier.stage.ready": "מוכן",
+    // ⚠ «נמסר» — handed over. Deliberately NOT «נשלח», which is both wrong
+    // (nothing is shipped; she collects) and rejected outright by this suite's
+    // register guard. Nothing in this product delivers anything to anybody.
+    "atelier.stage.delivered": "נמסר",
+    "atelier.emptyColumn": "אין כרטיסים בשלב זה",
+
+    // Ten per-card controls, ten `*Aria` siblings. A 30-card board otherwise
+    // exposes 30 controls all named «לשלב הבא», 30 more all named «העברה» and 30
+    // more all named «שיוך», and a screen-reader user pulling up the control
+    // list — or a speech-input user saying the label — cannot address a specific
+    // ticket (WCAG 4.1.2, 2.4.6). Every `*Aria` value STARTS with its visible
+    // label (2.5.3) and adds the bride's name.
+    //
+    // ⚠ An aria-label takes no markup, so `{{name}}` interpolates plainly in
+    // every one of them — no <bdi>, no helper. There is nothing rendered to
+    // reorder.
+    "atelier.advance": "לשלב הבא",
+    "atelier.advanceAria": "לשלב הבא — {{name}}",
+    "atelier.skip": "העברה לשלב",
+    "atelier.skipAria": "העברה לשלב — {{name}}",
+    // ⚠ Selection and commit are SEPARATE controls because a closed native
+    // <select> fires `change` on every arrow keypress — an onChange-mutating
+    // skip would write three timestamps and three audit rows while a keyboard
+    // user was still choosing (WCAG 3.2.2 On Input, Level A).
+    "atelier.skipCommit": "העברה",
+    "atelier.skipCommitAria": "העברה — {{name}}",
+    // It cancels A STAGE, not the ticket, and that distinction is the whole
+    // reason «מחיקה» is a different word. Absent on an intake card.
+    "atelier.undo": "ביטול שלב",
+    "atelier.undoAria": "ביטול שלב — {{name}}",
+    // ⚠ NOT «שיוך»: the commit Button beside it is «שיוך», so two controls in
+    // one card would carry one accessible name (WCAG 4.1.2). The Select names
+    // WHAT is being chosen and the Button names the ACT, which is also how the
+    // skip pair reads.
+    "atelier.assignLabel": "תופרת",
+    "atelier.assignAria": "תופרת — {{name}}",
+    "atelier.assignCommit": "שיוך",
+    "atelier.assignCommitAria": "שיוך — {{name}}",
+    // A seamstress's single control on an unassigned ticket — she takes it. Two
+    // syllables, because it lives under a thumb. Not «שייך לי», which is an
+    // administrative act on a record.
+    "atelier.claim": "לקחת",
+    "atelier.claimAria": "לקחת — {{name}}",
+    "atelier.release": "לשחרר",
+    "atelier.releaseAria": "לשחרר — {{name}}",
+    "atelier.edit": "עריכה",
+    "atelier.editAria": "עריכה — {{name}}",
+    // The card's destructive trigger AND the confirm dialog's confirm button.
+    // There is no un-delete.
+    "atelier.delete": "מחיקה",
+    "atelier.deleteAria": "מחיקה — {{name}}",
+
+    // On EVERY card — it is the priority key the whole epic subtracts from.
+    // «יעד», the target date, not «תאריך» alone (which says nothing) and not
+    // «למסירה» (which would put a delivery word on four columns that have
+    // delivered nothing).
+    "atelier.dueDate": "יעד {{date}}",
+    // ⚠ THE WORD IS THE SIGNAL AND THE COLOUR IS REINFORCEMENT. Never rendered
+    // on a delivered ticket: a garment delivered late is history, not a thing to
+    // chase.
+    "atelier.overdue": "באיחור",
+    // Muted words, not a red flag — unassigned is the normal state of a ticket
+    // ten seconds old, and it is what a seamstress is looking for when she
+    // claims. Also the release option in the elevated assign Select.
+    "atelier.unassigned": "לא משויך",
+    // The `assignable: false` branch. THE FLAG IS ON THE WIRE, so this is a fact
+    // and not an inference from absence: F51's staff CRUD can re-role or retire
+    // a seamstress and knows nothing about this table.
+    "atelier.assigneeInactive": "תופרת שאינה פעילה",
+    "atelier.band.thirtyMin": "חצי שעה",
+    // The intake form's default — the middle-low value, because a default of
+    // «יום מלא» inflates every estimate in the boutique and «חצי שעה» deflates
+    // it.
+    "atelier.band.oneHour": "שעה",
+    "atelier.band.twoHours": "שעתיים",
+    // ⚠ The band whose tenant mapping is most likely to be wrong — "half-day" is
+    // not 240 minutes in a boutique whose shifts are six hours — and F41 ships
+    // no editor for the mapping. Which is what `bandOption` below is for.
+    "atelier.band.halfDay": "חצי יום",
+    "atelier.band.fullDay": "יום מלא",
+    // The <option> label: the word AND its tenant-resolved minutes, so an owner
+    // discovers on day one that the platform thinks her half-day is four hours
+    // rather than in F42's load bars three weeks later.
+    //
+    // ⚠ An <option> takes no markup, so no isolation helper is available. The
+    // string is built so the numeric run is BRACKETED BY HEBREW ON BOTH SIDES,
+    // which is what makes the bidi resolution safe without markup — a string
+    // ending in the number would put a neutral run at the paragraph edge.
+    "atelier.bandOption": "{{band}} · {{minutes}} דק׳",
+    // The CARD's effort word when a stored `effort_minutes` matches no current
+    // band: a boutique re-tuned «חצי יום» after the ticket was estimated. The
+    // visible consequence of "minutes persist, never the label" — a ticket
+    // estimated under the old mapping must not be silently re-valued.
+    "atelier.effortMinutes": "{{minutes}} דק׳",
+
+    // The announced cues. USER-INITIATED ONLY — the poll produces nothing here.
+    //
+    // ⚠ THE NAMING RULE: a cue names the TICKET only when the ticket moved out
+    // from under the user; when the card stays put, focus is the referent and
+    // the cue names only the new value. What that buys mechanically is that
+    // every cue carries AT MOST ONE interpolated user value, so the shipped
+    // isolateBidi(text, value) and the shipped { text, name } state shape work
+    // unmodified and no second helper is invented.
+    "atelier.loading": "טוען את לוח התפירה…",
+    // The dialog returns focus to «כרטיס חדש» and NOT to the new card, so this
+    // is the only thing that says which ticket was opened.
+    "atelier.cue.created": "{{name}} — נפתח כרטיס.",
+    // ⚠ THE SINGLE MOST IMPORTANT STRING IN THIS BLOCK: for a sighted user the
+    // move is self-evident because the card is visibly in another column, and
+    // FOR A SCREEN-READER USER THIS SENTENCE IS THE MOVE.
+    //
+    // ⚠ Not «הועבר ל{{stage}}»: the five stage words are past-tense verbs and an
+    // adjective, and «ל» does not prefix them — «הועבר לבעבודה» is
+    // ungrammatical. The colon construction is word-agnostic, so a sixth stage
+    // can never break it.
+    "atelier.cue.advanced": "{{name}} — שלב חדש: {{stage}}.",
+    // The half where the grammar actually breaks in production: undoing
+    // `in_progress` returns the ticket to «התקבל», and «הוחזר להתקבל» is the
+    // commonest undo there is.
+    "atelier.cue.undone": "{{name}} — חזרה לשלב: {{stage}}.",
+    // ⚠ ONE name, not two. The card does not move on an assign, so focus is
+    // still on it and the ticket is already the referent — and naming both would
+    // put TWO user-supplied names in one string, which isolateBidi(text, value)
+    // cannot isolate without a second helper.
+    "atelier.cue.assigned": "שויך ל{{seamstress}}.",
+    // No interpolation at all — the card did not move, focus is on it, and there
+    // is no new value to name.
+    "atelier.cue.released": "השיוך בוטל.",
+    // The card is gone and focus is on a column heading, so nothing else can say
+    // which ticket left.
+    "atelier.cue.deleted": "{{name}} — הכרטיס נמחק.",
+
+    "atelier.form.editTitle": "עריכת כרטיס",
+    // CREATE MODE ONLY. A ticket opened for the wrong bride is a delete, not an
+    // edit, so in edit mode the customer renders as a static line and not a
+    // field — which is also what the server's UpdateTicketRequest allows.
+    "atelier.form.customerName": "שם הלקוחה",
+    "atelier.form.customerPhone": "טלפון",
+    // ⚠ Appears the moment the phone parses to a customer whose stored name
+    // differs from what she typed. `upsert` rewrites `customers.name`
+    // UNCONDITIONALLY and F53 renders that name on a screen of its own, so a
+    // seamstress typing «מיכל» for a customer stored as «מיכל לוי» must not do
+    // that invisibly. A notice, not an error: nothing is wrong, something is
+    // about to change.
+    "atelier.form.existingCustomer": "לקוחה קיימת — השם יעודכן ל{{name}}.",
+    // Defaults to EMPTY, never to today — a due date is the one field a hurried
+    // user must not be able to accept by not looking at it.
+    "atelier.form.dueDate": "תאריך יעד",
+    // ⚠ A WARNING, NEVER A BLOCK, and the server agrees: there is no lower bound
+    // and a past date is a 200 on create and on update. A dress that was due
+    // yesterday is exactly the ticket a boutique most needs to open. The second
+    // sentence is what stops it reading as an error.
+    "atelier.form.pastDue": "התאריך שנבחר כבר עבר. אפשר להמשיך.",
+    // «הערכה» is the honest word — the epic's central accepted risk is that
+    // these estimates are wrong, and a label reading «זמן עבודה» would state as
+    // fact what the whole epic treats as a guess.
+    "atelier.form.effortBand": "הערכת זמן",
+    // ⚠ The catalog dress Select is CUT from F41 (C3): the board payload carries
+    // no dresses, the only source is a route gated to owner + shift manager
+    // while this dialog admits a seamstress, and the card renders no image, so
+    // `dress_id` has no reader on this surface. The free-text field ships alone
+    // and unconditionally; `atelier.form.dress` and `atelier.form.dressNone` are
+    // deliberately absent. F43 is the caller that will send a `dress_id`.
+    "atelier.form.dressName": "שם השמלה",
+    // Free text, never validated against `dress_variants` — a seamstress records
+    // what she measured («38, מותן מוקטן»), not a stock bucket.
+    "atelier.form.dressSize": "מידה",
+    // ⚠ The field most likely to hold a bride's measurements, which is the most
+    // intimate data this platform will ever carry — and it is why the label is a
+    // neutral «הערות» rather than anything that invites them.
+    "atelier.form.notes": "הערות",
+    "atelier.form.notesHelp": "מה צריך לעשות בשמלה.",
+    "atelier.form.submitCreate": "פתיחת כרטיס",
+    "atelier.form.submitEdit": "שמירה",
+    // The dismiss on BOTH dialogs. Esc and the backdrop do the same thing, and
+    // never the confirm.
+    "atelier.form.cancel": "ביטול",
+
+    // Field validation, refused before the request. The register is fix-this, so
+    // every one names what to do and none apologises.
+    "atelier.form.error.customerName": "צריך שם לקוחה.",
+    "atelier.form.error.customerPhone": "מספר הטלפון אינו תקין.",
+    "atelier.form.error.dueDate": "צריך תאריך יעד.",
+    "atelier.form.error.dressName": "שם השמלה ארוך מדי.",
+    "atelier.form.error.dressSize": "המידה ארוכה מדי.",
+    "atelier.form.error.notes": "ההערות ארוכות מדי.",
+    // ⚠ The dialog-level alert, for a server refusal that maps to no field: an
+    // unknown band key, a `dress_id` 404, a due date past the server's 730-day
+    // typo fence. There is deliberately NO client string quoting that number —
+    // it is a SERVER bound and no client constant may mirror one. This is also
+    // what keeps main.py's ENGLISH 400 body out of a Hebrew dialog.
+    "atelier.form.error.server": "הפעולה נדחתה. כדאי לבדוק את הפרטים ולנסות שוב.",
+
+    // ⚠ The first thing every new boutique sees on this screen, so it is
+    // designed rather than blank: the five columns and the rail are replaced
+    // entirely, because five headings each reading «אין כרטיסים בשלב זה» is a
+    // wall of nothing that looks broken. «עדיין» is doing real work — it says
+    // NOT YET, not NOT EVER.
+    "atelier.empty": "אין עדיין כרטיסי תפירה",
+    // THE ONLY PLACE IN THE PRODUCT WHERE THE FIVE STAGES ARE TAUGHT IN ONE
+    // SENTENCE — what the replaced columns would have taught, at the cost of
+    // looking broken, delivered as a sentence instead. It must name all five, in
+    // order, in the same words the columns use.
+    "atelier.emptyBody":
+      "כל כרטיס עובר חמישה שלבים: התקבל, בעבודה, בקרה, מוכן, נמסר. אפשר לפתוח את הכרטיס הראשון עכשיו.",
+    // ⚠ The console never states the NUMBER: the limit is server-only and the
+    // `truncated` flag is on the wire precisely so it stays that way — a client
+    // that quoted 500 would be one constant away from lying. Ordering is
+    // due_date ascending, so what is missing is the LEAST urgent, and the copy
+    // says so rather than leaving her to wonder which end was cut.
+    "atelier.truncated":
+      "מוצגים הכרטיסים הדחופים ביותר. כרטיסים רחוקים יותר אינם מוצגים כאן.",
+    // ⚠ DECLARED, not reused. F57's rule is «reuse a key whose NAMESPACE NAMES
+    // ITS SUBJECT, never one whose namespace names a screen» — `staff.loadFailed`
+    // is the staff list and `board.*` names a screen, so `atelier.*` being the
+    // subject namespace here makes declaring it that rule OBEYED.
+    "atelier.loadFailed": "לא הצלחנו לטעון את לוח התפירה כרגע.",
+    // The session outlives a shift by design (12 hours, no sliding renewal), so
+    // the realistic reader is a phone left on a bench overnight — a plain
+    // instruction, not an alarm.
+    "atelier.sessionEnded": "תוקף החיבור פג. צריך להתחבר מחדש.",
+    // ⚠ DELIBERATELY GENERIC. The server ships ONE 403 body for every unadmitted
+    // role so a probe cannot learn which roles exist; naming a role, or saying
+    // what changed, would be an invention the server never made — and on the
+    // demotion path it would be the product telling a staffer she was demoted,
+    // which is her manager's sentence to say, not a screen's. «כרגע» is doing
+    // real work: a re-promotion restores the board.
+    "atelier.accessEnded":
+      "אין הרשאה לצפות בלוח התפירה כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+    // On the 401 a reload lands on the login screen; on the 403 it lands on a
+    // console whose board answers 403 again — the honest behaviour of "a
+    // demotion bites on the very next request", inherited rather than papered
+    // over.
+    "atelier.reload": "רענון הדף",
+
+    // Two error codes and not one, because the user's next move differs: a
+    // garment moved on and she should look again; a person took it and the next
+    // tick will name her. All four name the EVENT that repairs them and never a
+    // duration.
+    "atelier.error.stageConflict": "הכרטיס כבר התקדם. הלוח יתעדכן בעדכון הבא.",
+    // Does NOT name the winner: the console does not have her name at the moment
+    // of the refusal, and the next tick renders it on the card.
+    "atelier.error.alreadyAssigned": "הכרטיס כבר משויך. הלוח יתעדכן בעדכון הבא.",
+    // A mutation on a ticket deleted in the gap between the last tick and the
+    // tap. NOT terminal — a ticket vanishing is a fact about the ticket, not
+    // about her access.
+    "atelier.error.notFound": "הכרטיס כבר לא קיים. הלוח יתעדכן בעדכון הבא.",
+    // ⚠ THE DEFAULT BRANCH, and it is structural rather than cosmetic: it
+    // guarantees no English body can reach this console from any code F41 or a
+    // later feature adds. A per-code string would leave the next new code
+    // uncovered.
+    "atelier.error.rejected": "הפעולה נדחתה. הלוח יתעדכן בעדכון הבא.",
+
+    "atelier.deleteConfirmTitle": "מחיקת כרטיס",
+    // Two sentences, and the second is the whole reason this dialog exists:
+    // there is no un-delete, so a ticket removed by mistake is recoverable only
+    // through psql. It names the bride because the confirm is being read at the
+    // moment the wrong card might be the focused one.
+    "atelier.deleteConfirmBody": "הכרטיס של {{name}} יימחק מהלוח. לא ניתן לשחזר אותו.",
   },
 } as const;
