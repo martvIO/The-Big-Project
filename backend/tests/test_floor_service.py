@@ -29,6 +29,8 @@ from app.auth.dependencies import NotAuthorizedError
 from app.auth.service import StaffContext
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.customers import CustomersRepository
+from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
 from app.db.repositories.fitting_assignment_dresses import FittingAssignmentDressesRepository
 from app.db.repositories.fitting_room_assignments import (
@@ -39,10 +41,16 @@ from app.db.repositories.fitting_room_assignments import (
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.errors import DomainNotFoundError
-from app.floor.service import FloorService, card_status
+from app.floor.service import (
+    CLIENT_PICKER_LIMIT,
+    DRESS_PICKER_LIMIT,
+    FloorService,
+    card_status,
+)
 from app.floor.validation import FloorValidationError, RoomOccupiedError, StaffOccupiedError
 from app.models.booking import Booking
 from app.models.constants import AuditAction, BookingStatus, StaffCardStatus, StaffRole
+from app.models.customer import Customer
 from app.models.dress import Dress
 from app.models.fitting_room import FittingRoom
 from app.models.fitting_room_assignment import FittingRoomAssignment
@@ -517,6 +525,12 @@ def _booking(**overrides: object) -> Booking:
     row.checked_in_at = NOW
     for key, value in overrides.items():
         setattr(row, key, value)
+    return row
+
+
+def _dress(name: str) -> Dress:
+    row = Dress(tenant_id=TENANT_ID, name=name, sort_order=0)
+    row.id = uuid.uuid4()
     return row
 
 
@@ -1434,3 +1448,137 @@ async def test_the_floor_read_keys_occupancy_by_staff_id_off_the_rooms_join(
     assert list(read.occupancy_by_staff_id) == [holder]
     assert len(read.room_rows) == 2
     assert read.server_now == NOW
+
+
+# --- F36: the two one-shot pickers (D16) -------------------------------------
+
+
+async def test_the_dress_picker_pairs_each_gown_with_its_sizes_and_tolerates_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sizes map is SPARSE and the pairing must survive that: a gown with no
+    live variants is ordinary and binds with a null size, so a `[...]` lookup
+    here would 500 the picker on the first sample dress a boutique adds."""
+    sized, unsized = _dress("שמלה 47"), _dress("שמלה 12")
+
+    async def _list_for_picker(_s: Any, _sess: Any, _t: Any, *, limit: int) -> list[Dress]:
+        return [sized, unsized]
+
+    async def _sizes(_s: Any, _sess: Any, _t: Any, ids: Any) -> dict[uuid.UUID, list[str]]:
+        assert list(ids) == [sized.id, unsized.id]
+        return {sized.id: ["38", "40"]}
+
+    monkeypatch.setattr(DressesRepository, "list_for_picker", _list_for_picker)
+    monkeypatch.setattr(DressVariantsRepository, "size_labels_by_dress", _sizes)
+
+    read = await _service().dresses(TENANT_ID)
+
+    assert read.sizes_by_dress_id == {sized.id: ["38", "40"]}
+    assert [row.id for row in read.dresses] == [sized.id, unsized.id]
+    assert read.truncated is False
+
+
+async def test_a_full_dress_page_is_reported_as_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ The flag is `len(rows) == LIMIT`, and the bound the repository was ASKED
+    for is the one it is compared against. A hidden gown with no notice is the
+    one failure a picker may not have — the UI renders a line pointing at
+    «שמלות» instead."""
+    rows = [_dress(f"שמלה {index}") for index in range(DRESS_PICKER_LIMIT)]
+
+    async def _list_for_picker(_s: Any, _sess: Any, _t: Any, *, limit: int) -> list[Dress]:
+        assert limit == DRESS_PICKER_LIMIT
+        return rows
+
+    async def _sizes(_s: Any, _sess: Any, _t: Any, ids: Any) -> dict[uuid.UUID, list[str]]:
+        return {}
+
+    monkeypatch.setattr(DressesRepository, "list_for_picker", _list_for_picker)
+    monkeypatch.setattr(DressVariantsRepository, "size_labels_by_dress", _sizes)
+
+    assert (await _service().dresses(TENANT_ID)).truncated is True
+
+
+async def test_the_client_picker_asks_for_todays_jerusalem_day_and_names_the_arrivals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ The WINDOW is the assertion, not the rows. `NOW` is 11:20 UTC on
+    2026-08-02, which is 14:20 in Jerusalem (IDT, UTC+3) — so today's calendar
+    day there begins at 21:00 UTC on the 1st and ends at 21:00 UTC on the 2nd. A
+    UTC-day window would drop or keep an arrival for three hours either side of
+    midnight in Israel, every day.
+
+    It is the SAME window the claim's check-in predicate uses, out of one helper:
+    a booking this picker offers and the claim then refuses would be a control
+    that does nothing.
+    """
+    booking = _booking(checked_in_at=NOW)
+    asked: dict[str, Any] = {}
+
+    async def _checked_in(
+        _s: Any,
+        _sess: Any,
+        _t: Any,
+        *,
+        from_instant: datetime.datetime,
+        until_instant: datetime.datetime,
+        limit: int,
+    ) -> list[Booking]:
+        asked.update({"from_instant": from_instant, "until_instant": until_instant, "limit": limit})
+        return [booking]
+
+    async def _by_ids(_s: Any, _sess: Any, _t: Any, ids: Any) -> list[Customer]:
+        assert list(ids) == [booking.customer_id]
+        row = Customer(tenant_id=TENANT_ID, phone="+972501234567", name="מיכל")
+        row.id = booking.customer_id
+        return [row]
+
+    monkeypatch.setattr(BookingsRepository, "list_checked_in_between", _checked_in)
+    monkeypatch.setattr(CustomersRepository, "by_ids", _by_ids)
+
+    read = await _service().clients(TENANT_ID)
+
+    assert asked["from_instant"] == datetime.datetime(2026, 8, 1, 21, 0, tzinfo=datetime.UTC)
+    assert asked["until_instant"] == datetime.datetime(2026, 8, 2, 21, 0, tzinfo=datetime.UTC)
+    assert asked["limit"] == CLIENT_PICKER_LIMIT
+    assert read.names_by_customer_id == {booking.customer_id: "מיכל"}
+    assert read.truncated is False
+
+
+async def test_the_client_picker_window_is_the_one_the_claim_admits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both sides of one helper, asserted against each other rather than against
+    two transcriptions of the same arithmetic. A booking at either edge of the
+    window the picker asks for must be claimable, and one outside it must not."""
+    asked: dict[str, Any] = {}
+
+    async def _checked_in(
+        _s: Any,
+        _sess: Any,
+        _t: Any,
+        *,
+        from_instant: datetime.datetime,
+        until_instant: datetime.datetime,
+        limit: int,
+    ) -> list[Booking]:
+        asked.update({"from_instant": from_instant, "until_instant": until_instant})
+        return []
+
+    async def _by_ids(_s: Any, _sess: Any, _t: Any, ids: Any) -> list[Customer]:
+        return []
+
+    monkeypatch.setattr(BookingsRepository, "list_checked_in_between", _checked_in)
+    monkeypatch.setattr(CustomersRepository, "by_ids", _by_ids)
+    service = _service()
+    await service.clients(TENANT_ID)
+
+    first = asked["from_instant"]
+    last = asked["until_instant"] - datetime.timedelta(microseconds=1)
+    assert service._is_claimable(_booking(starts_at=first, checked_in_at=NOW)) is True
+    assert service._is_claimable(_booking(starts_at=last, checked_in_at=NOW)) is True
+    assert (
+        service._is_claimable(_booking(starts_at=asked["until_instant"], checked_in_at=NOW))
+        is False
+    )

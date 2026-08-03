@@ -1,12 +1,20 @@
-"""The floor read and the two break writers.
+"""The floor read, the two break writers, the room registry, the claim and its
+dress bindings, and the two one-shot pickers.
 
-**The authorization rule has two axes and lives HERE, not on the router.** The
-router's gate answers "may this role open the floor at all" — all five, because
-the payload carries no customer data. This answers "may this person toggle THAT
-person", which no `RoleGate` can express because it depends on the target:
+**The TARGET-DEPENDENT half of the authorization rule lives HERE, not on the
+router.** The router's gate answers "may this role open the floor at all" — all
+five, because the payload carries the minimum customer datum required by the
+person standing on the floor (at most one name per occupied room, never the
+day's customer book). This answers "may this person toggle, claim for, or
+release THAT person", which no `RoleGate` can express because it depends on the
+target:
 
     owner, shift_manager -> anybody
     reception, sales_assistant, seamstress -> herself, and nobody else
+
+⚠ **The handover's rule is NOT here, and its absence is deliberate** — it is a
+pure role predicate, so it is the ROUTE's gate. Splitting the two by whether the
+predicate reads the target is the rule; see `handover`'s own docstring.
 
 **The check is each method's first statement and it runs before the session is
 opened.** That ordering is the security property, not a style choice: a 403
@@ -15,8 +23,9 @@ enumerate the tenant's staff ids by which error came back.
 `test_floor_service.py` asserts the repository was never called, which is the
 only way to state it.
 
-**No rate limiter and no advisory lock.** The writers are idempotent by
-predicate and touch one column on one row (see `StaffUsersRepository`), and no
+**No rate limiter and no advisory lock.** The break writers are idempotent by
+predicate and touch one column on one row (see `StaffUsersRepository`); the
+claim's atomicity is a partial unique index rather than a lock (D3), and no
 `/manage` router carries a limiter.
 """
 
@@ -32,6 +41,8 @@ from app.auth.dependencies import NotAuthorizedError
 from app.auth.service import StaffContext
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.customers import CustomersRepository
+from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
 from app.db.repositories.fitting_assignment_dresses import FittingAssignmentDressesRepository
 from app.db.repositories.fitting_room_assignments import (
@@ -47,6 +58,7 @@ from app.errors import DomainNotFoundError
 from app.floor.validation import RoomOccupiedError, StaffOccupiedError, normalize_room_label
 from app.models.booking import Booking
 from app.models.constants import AuditAction, BookingStatus, StaffCardStatus, StaffRole
+from app.models.dress import Dress
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.staff_user import StaffUser
 from app.storefront.validation import BOUTIQUE_TIMEZONE, today_jerusalem
@@ -55,6 +67,14 @@ from app.storefront.validation import BOUTIQUE_TIMEZONE, today_jerusalem
 # Spelled from the enum rather than as literals: a sixth role added to
 # StaffRole is NOT elevated by default, which is the safe direction to fail.
 ELEVATED_ROLES = frozenset({StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value})
+
+# D16's two one-shot pickers. BOUNDS, not page sizes: neither list paginates and
+# neither is on the poll, so the number is "more than any boutique has" rather
+# than "one screenful". `truncated` is the honesty the UI renders in the one case
+# a bound bites — F34's precedent, whose comment is the argument: a hidden bride
+# is the one failure a board may not have.
+DRESS_PICKER_LIMIT = 500
+CLIENT_PICKER_LIMIT = 200
 
 
 def card_status(row: StaffUser, *, occupied: bool) -> StaffCardStatus:
@@ -111,6 +131,32 @@ class FloorRead:
     server_now: datetime.datetime
 
 
+@dataclasses.dataclass(frozen=True)
+class DressPickerRead:
+    """The dress picker's two statements, pre-joined, so `FloorDressList` renders
+    and does not query. `sizes_by_dress_id` is sparse — a gown with no live
+    variants is ordinary and binds with a null size."""
+
+    dresses: list[Dress]
+    sizes_by_dress_id: dict[UUID, list[str]]
+    truncated: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class ClientPickerRead:
+    """The client picker's two statements, same shape.
+
+    The name is keyed by CUSTOMER id and looked up per booking rather than
+    snapshotted, so an erased customer renders an anonymous row here for exactly
+    the same reason she renders an anonymous visit on the payload — one rule, two
+    surfaces.
+    """
+
+    bookings: list[Booking]
+    names_by_customer_id: dict[UUID, str]
+    truncated: bool
+
+
 class FloorService:
     def __init__(
         self,
@@ -126,6 +172,8 @@ class FloorService:
         self._dress_bindings = FittingAssignmentDressesRepository()
         self._bookings = BookingsRepository()
         self._dresses = DressesRepository()
+        self._variants = DressVariantsRepository()
+        self._customers = CustomersRepository()
         self._clock = clock or (lambda: datetime.datetime.now(datetime.UTC))
 
     async def floor(self, tenant_id: UUID) -> FloorRead:
@@ -133,12 +181,23 @@ class FloorService:
         and the cards do not shuffle between ticks — plus every live room and
         the gowns in the occupied ones.
 
-        No per-role projection: all five roles see the same list, because there
-        is nothing on a card a colleague may not see — a name, a role and a
-        status. The rooms carry a client label, and that label is resolved on
-        every read from the live rows rather than snapshotted, which is what
-        makes a retention sweep or an erasure render an anonymous visit instead
-        of quietly preserving a name in a table nobody thought of.
+        No per-role projection: all five roles see the same payload.
+
+        ⚠ **What this payload carries changed in F36, and the sentence that used
+        to stand here is now false.** It claimed this read carried none of a
+        customer's data at all, and therefore that no gate had to be widened over
+        one — but the rooms, and `occupancy` on the staff cards, carry a client
+        label. The rule as it actually is: **the floor payload carries the
+        minimum customer datum required by the person standing on the floor — at
+        most one name per occupied room, for the duration of the fitting, never
+        the day's customer book.** A seamstress
+        called to room 3 has to know who is in it; she does not have to know who
+        else is booked today, and this read still cannot tell her.
+
+        That label is resolved on every read from the live rows rather than
+        snapshotted, which is what makes a retention sweep or an erasure render
+        an anonymous visit instead of quietly preserving a name in a table
+        nobody thought of.
 
         TWO extra statements on the tick's EXISTING session — no second
         `tenant_session`, no second pool checkout, no second `tenants.by_slug`.
@@ -601,7 +660,77 @@ class FloorService:
                 details={"room": str(room_id), "label": label},
             )
 
+    # --- F36: the two one-shot pickers (D16) ----------------------------------
+
+    async def dresses(self, tenant_id: UUID) -> DressPickerRead:
+        """Fetched ONCE, when the dress dialog opens — never on the poll.
+
+        This router answers it rather than the catalog's because `RoleGate`
+        NARROWS ONLY: `catalog/router.py` admits owner and shift_manager and there
+        is no per-route way to let a seamstress in, so widening that router is the
+        only alternative and is exactly what the role-gating walker exists to
+        prevent. What travels is a name and its size labels — strictly less than
+        the boutique's own storefront already publishes to an anonymous visitor.
+        """
+        async with tenant_session(self._sessions, tenant_id) as session:
+            rows = await self._dresses.list_for_picker(session, tenant_id, limit=DRESS_PICKER_LIMIT)
+            sizes = await self._variants.size_labels_by_dress(
+                session, tenant_id, [row.id for row in rows]
+            )
+        return DressPickerRead(
+            dresses=rows,
+            sizes_by_dress_id=sizes,
+            truncated=len(rows) == DRESS_PICKER_LIMIT,
+        )
+
+    async def clients(self, tenant_id: UUID) -> ClientPickerRead:
+        """⚠ **The only thing in the console that can supply a `booking_id`.**
+
+        Without it `booking_id` is on the claim body with no producer: the three
+        floor roles cannot reach `/manage/bookings` at all, so every claim they
+        could make would be anonymous and the client label — the thing the feature
+        exists for — would be null on the surface that matters.
+
+        Today's JERUSALEM calendar day and `checked_in_at IS NOT NULL`, i.e. the
+        people physically in the building. That predicate is the whole
+        minimisation argument, and it is the same one the payload makes: this is
+        the arrivals, never the day book.
+        """
+        start, end = self._today_window()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            rows = await self._bookings.list_checked_in_between(
+                session,
+                tenant_id,
+                from_instant=start,
+                until_instant=end,
+                limit=CLIENT_PICKER_LIMIT,
+            )
+            customers = await self._customers.by_ids(
+                session, tenant_id, [row.customer_id for row in rows]
+            )
+        return ClientPickerRead(
+            bookings=rows,
+            names_by_customer_id={row.id: row.name for row in customers},
+            truncated=len(rows) == CLIENT_PICKER_LIMIT,
+        )
+
     # --- F36: shared helpers ---------------------------------------------------
+
+    def _today_window(self) -> tuple[datetime.datetime, datetime.datetime]:
+        """Today's Jerusalem calendar day as a half-open UTC range.
+
+        Written once because the claim's check-in predicate and the client picker
+        must agree exactly: a booking the picker offers and the claim then refuses
+        would be a control that does nothing, and two transcriptions of the same
+        arithmetic are two chances for that.
+        """
+        today = today_jerusalem(self._clock)
+        return (
+            datetime.datetime.combine(today, datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE),
+            datetime.datetime.combine(
+                today + datetime.timedelta(days=1), datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
+            ),
+        )
 
     async def _room_read(self, session: AsyncSession, tenant_id: UUID, room_id: UUID) -> RoomRead:
         row = await self._rooms.room_with_occupancy(session, tenant_id, room_id)
@@ -658,11 +787,7 @@ class FloorService:
         """
         if booking.checked_in_at is None or booking.status == BookingStatus.CANCELLED.value:
             return False
-        today = today_jerusalem(self._clock)
-        start = datetime.datetime.combine(today, datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE)
-        end = datetime.datetime.combine(
-            today + datetime.timedelta(days=1), datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
-        )
+        start, end = self._today_window()
         return start <= booking.starts_at < end
 
     @staticmethod

@@ -98,8 +98,39 @@ FLOOR_ROLES = frozenset(
 FLOOR_READ = ("GET", "/manage/floor")
 FLOOR_BREAK_START = ("POST", "/manage/floor/staff/{staff_id}/break/start")
 FLOOR_BREAK_END = ("POST", "/manage/floor/staff/{staff_id}/break/end")
+# F36's six. The claim and the release carry a TARGET-dependent rule (self, or
+# elevated on anyone) which no RoleGate can express, so they are open here and
+# refused in the service. The two dress verbs carry no ownership rule at all
+# (D4). The two GETs are the pickers the floor roles cannot otherwise reach,
+# because the catalog and bookings routers admit two roles and RoleGate narrows
+# only.
+FLOOR_CLAIM = ("POST", "/manage/floor/rooms/{room_id}/claim")
+FLOOR_RELEASE = ("POST", "/manage/floor/assignments/{assignment_id}/release")
+FLOOR_DRESS_ADD = ("POST", "/manage/floor/assignments/{assignment_id}/dresses")
+FLOOR_DRESS_REMOVE = (
+    "DELETE",
+    "/manage/floor/assignments/{assignment_id}/dresses/{binding_id}",
+)
+FLOOR_DRESS_LIST = ("GET", "/manage/floor/dresses")
+FLOOR_CLIENT_LIST = ("GET", "/manage/floor/clients")
 
-FLOOR_OPEN = {FLOOR_READ, FLOOR_BREAK_START, FLOOR_BREAK_END}
+# ⚠ The FOUR tightened routes are DELIBERATELY ABSENT — the three registry verbs
+# (`POST`/`PATCH`/`DELETE /manage/floor/rooms…`) and `handover`. Their absence is
+# the assertion that the tightening is real, and it is what keeps the comment
+# above ("the exhaustive list of what they may reach") true. Adding `handover`
+# here to make a red go away would make this table assert that a seamstress may
+# reach a route she always gets a 403 on.
+FLOOR_OPEN = {
+    FLOOR_READ,
+    FLOOR_BREAK_START,
+    FLOOR_BREAK_END,
+    FLOOR_CLAIM,
+    FLOOR_RELEASE,
+    FLOOR_DRESS_ADD,
+    FLOOR_DRESS_REMOVE,
+    FLOOR_DRESS_LIST,
+    FLOOR_CLIENT_LIST,
+}
 
 # The probe for "a role the enum does not know", shared verbatim by
 # test_catalog_api and test_migrations. Deliberately NOT 'reception' (or

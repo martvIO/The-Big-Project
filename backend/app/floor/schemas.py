@@ -10,10 +10,19 @@ rooms and occupancy to it while F58 adds the waitlist. An envelope makes those
 additive; a bare array makes the first of them a breaking shape change on a
 screen that polls every five seconds.
 
-**A card is a name, a role and a status, and deliberately nothing else** — no
-avatar, no phone, no email. `email` in particular is the one a later reader will
-reach for as a stable key: `id` is the key, and the address of every member of
-staff is not something a seamstress needs in order to see who is on a break.
+⚠ **A card was "a name, a role and a status, and deliberately nothing else"
+until F36, and that sentence is now false about this very module**: `StaffCard`
+carries `occupancy`, and `Occupancy.client_label` is a customer's name. What
+holds instead — one rule for the whole payload — is that it carries **the
+minimum customer datum required by the person standing on the floor: at most one
+name per occupied room, for the duration of the fitting, never the day's
+customer book.**
+
+What is still deliberately absent from a card is every stable identifier and
+every contact route — no avatar, no phone, no email. `email` in particular is
+the one a later reader will reach for as a key: `id` is the key, and the address
+of every member of staff is not something a seamstress needs in order to see who
+is on a break.
 """
 
 import datetime
@@ -24,7 +33,7 @@ from pydantic import BaseModel, Field
 
 from app.catalog.validation import MAX_SIZE_LABEL_LENGTH, MAX_SORT_ORDER
 from app.db.repositories.fitting_rooms import RoomRow
-from app.floor.service import FloorRead, card_status
+from app.floor.service import ClientPickerRead, DressPickerRead, FloorRead, card_status
 from app.models.constants import StaffCardStatus
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.staff_user import StaffUser
@@ -236,6 +245,18 @@ class FloorDressList(BaseModel):
     # gowns — a hidden item is the one failure a picker may not have.
     truncated: bool
 
+    @classmethod
+    def from_read(cls, read: "DressPickerRead") -> "FloorDressList":
+        """A PURE RENDERER, like `from_rows`. `.get(id, [])` because the sizes
+        map is sparse: a gown with no live variants is ordinary."""
+        return cls(
+            dresses=[
+                FloorDress(id=row.id, name=row.name, sizes=read.sizes_by_dress_id.get(row.id, []))
+                for row in read.dresses
+            ],
+            truncated=read.truncated,
+        )
+
 
 class FloorClient(BaseModel):
     """The people physically in the building — today's checked-in arrivals, not
@@ -250,6 +271,23 @@ class FloorClient(BaseModel):
 class FloorClientList(BaseModel):
     clients: list[FloorClient]
     truncated: bool
+
+    @classmethod
+    def from_read(cls, read: "ClientPickerRead") -> "FloorClientList":
+        """`.get(...)` rather than `[...]`: a customer erased since check-in
+        leaves her booking live and her row anonymous, which is the same rule the
+        payload's `client_label` follows and deliberately not an error."""
+        return cls(
+            clients=[
+                FloorClient(
+                    booking_id=row.id,
+                    client_label=read.names_by_customer_id.get(row.customer_id),
+                    starts_at=row.starts_at,
+                )
+                for row in read.bookings
+            ],
+            truncated=read.truncated,
+        )
 
 
 # --- F36: the request bodies --------------------------------------------------
