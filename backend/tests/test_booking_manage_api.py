@@ -66,7 +66,10 @@ STARTS_AT = datetime.datetime(2099, 8, 2, 7, 0, tzinfo=datetime.UTC)
 
 
 def _response(
-    *, status: str = BookingStatus.CONFIRMED.value, confirmed_at: datetime.datetime | None = None
+    *,
+    status: str = BookingStatus.CONFIRMED.value,
+    confirmed_at: datetime.datetime | None = None,
+    deposit_taken: bool = False,
 ) -> ManageBookingResponse:
     return ManageBookingResponse(
         booking=ManageBookingFacts(
@@ -76,6 +79,7 @@ def _response(
             appointment_type_name="מדידה ראשונה",
             dress_name="שמלת אלמה",
             dress_size="36",
+            deposit_taken=deposit_taken,
         ),
         policy=ManagePolicy(refundable_until_hours_before=48, forfeit_percent=50),
         boutique=ManageBoutique(
@@ -93,6 +97,7 @@ class StubManageService:
     call log — nothing else."""
 
     error: Exception | None = None
+    deposit_taken: bool = False
     calls: list[tuple[str, uuid.UUID, str]] = dataclasses.field(default_factory=list)
 
     async def lookup(self, tenant: Any, *, token: str) -> ManageBookingResponse:
@@ -116,7 +121,7 @@ class StubManageService:
         if self.error is not None:
             raise self.error
         self.calls.append((name, tenant.id, token))
-        return _response(status=status, confirmed_at=confirmed_at)
+        return _response(status=status, confirmed_at=confirmed_at, deposit_taken=self.deposit_taken)
 
 
 class FakeAuthService:
@@ -264,9 +269,35 @@ def test_the_payload_carries_no_customer_pii_and_no_ids() -> None:
         "appointment_type_name",
         "dress_name",
         "dress_size",
+        "deposit_taken",
     }
     forbidden = {"id", "customer_id", "seat_index", "notes", "phone", "name", "manage_token_hash"}
     assert not forbidden & set(body["booking"])
+
+
+def test_the_deposit_fact_is_a_bare_boolean_and_never_the_sum() -> None:
+    """MD3's field (A3), and the reason it is a `bool` rather than an amount:
+    the cancel screen branches on WHETHER a deposit exists, and the interim
+    sentence names no number. A sum on this anonymous, possession-authed wire
+    would be a money fact about a person the payload otherwise refuses to
+    identify."""
+    client, _ = _client(StubManageService(deposit_taken=True))
+    with client:
+        body = client.post(LOOKUP, json={"token": MANAGE_TOKEN}).json()
+    assert body["booking"]["deposit_taken"] is True
+    assert not {"amount_agorot", "deposit_amount_agorot", "refund_due_agorot"} & set(
+        body["booking"]
+    )
+
+
+def test_a_booking_with_no_deposit_says_so_rather_than_omitting_the_field() -> None:
+    """`cancelConsequenceFree` survives ONLY on this branch, so the field is
+    always present: a missing key would make the false "cancelling is free"
+    sentence the client's default again (MD3's hard constraint)."""
+    client, _ = _client()
+    with client:
+        body = client.post(LOOKUP, json={"token": MANAGE_TOKEN}).json()
+    assert body["booking"]["deposit_taken"] is False
 
 
 def test_the_boutique_block_is_the_contact_subset_only() -> None:

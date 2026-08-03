@@ -39,7 +39,20 @@ class BookingCreateRequest(BaseModel):
 
 class BookingCreateResponse(BaseModel):
     """What the confirmation screen needs and nothing else — no customer id, no
-    seat index, no terms bookkeeping on the anonymous wire."""
+    seat index, no terms bookkeeping on the anonymous wire.
+
+    The three deposit fields (F19 D11/D13) answer one question the screen cannot
+    otherwise ask: is money owed, and where does she pay it. `status` is
+    `pending_payment` exactly when `deposit_due` is true — a seat held with the
+    money not yet in. `payment_session_id` is the POLL credential, deliberately
+    not the manage token: it is already client-visible by construction (it is
+    embedded in the hosted-page URL the browser is about to visit) and
+    possession of it authorises nothing but a status read.
+
+    Both nullable fields stay null unless a deposit is due — including on MD4's
+    compensated path, where the gateway was unreachable and the booking stands
+    with no deposit taken.
+    """
 
     id: uuid.UUID
     starts_at: datetime.datetime
@@ -47,6 +60,9 @@ class BookingCreateResponse(BaseModel):
     appointment_type_name: str
     dress_name: str | None
     dress_size: str | None
+    deposit_due: bool = False
+    redirect_url: str | None = None
+    payment_session_id: str | None = None
 
 
 class ManageTokenRequest(BaseModel):
@@ -72,6 +88,13 @@ class ManageBookingFacts(BaseModel):
     appointment_type_name: str
     dress_name: str | None
     dress_size: str | None
+    # F19 A3, and MD3 cannot ship without it. The cancel screen renders
+    # `cancelConsequenceDeposit` on ANY booking that took a deposit — including a
+    # `confirmed` one that was paid weeks ago — so `status` alone cannot answer
+    # it, and `cancelConsequenceFree` ("cancelling is free") survives only where
+    # this is False. A BOOLEAN and never the sum: the payload is possession-authed
+    # and deliberately carries no money fact about a person it refuses to name.
+    deposit_taken: bool
 
 
 class ManagePolicy(BaseModel):
@@ -125,6 +148,17 @@ class OwnerBookingRow(BaseModel):
     customer_name: str
     appointment_type_name: str
     dress_name: str | None
+    # F19 D18: the ONLY owner-facing payment surface in the product, on the list
+    # she already loads every morning — no new route, no nav row. `paid` on a
+    # `cancelled` booking is the action-needed marker (MD1's reschedule is the
+    # button behind it), and `failed` is MD4's "booked without a deposit, the
+    # provider was unavailable". Null wherever no payment row exists.
+    payment_status: str | None
+    # F19 A1/D16: COMPUTED from the accepted terms version against `starts_at`,
+    # never stored — F19 writes no `refund_due` / `refunded` / `forfeited` row
+    # anywhere, because the port ships no `refund()`. Display only, and null
+    # unless the deposit was actually taken.
+    refund_due_agorot: int | None
 
 
 class OwnerBookingListResponse(BaseModel):

@@ -32,11 +32,17 @@ from app.booking.schemas import (
 )
 from app.booking.tokens import manage_token_hash, manage_token_matches
 from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.payments import PaymentsRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
-from app.models.constants import BookingCancelledBy, BookingStatus, ScheduledMessageKind
+from app.models.constants import (
+    BookingCancelledBy,
+    BookingStatus,
+    PaymentStatus,
+    ScheduledMessageKind,
+)
 from app.storefront.validation import Clock, profile_text
 
 
@@ -54,6 +60,20 @@ class BookingAlreadyStartedError(Exception):
 class BookingCancelledError(Exception):
     """Confirming attendance at a cancelled appointment. 409 BOOKING_CANCELLED.
     A repeat CANCEL is a 200 instead — idempotent by checklist row 21."""
+
+
+class BookingAwaitingPaymentError(Exception):
+    """An action on a `pending_payment` hold. 409 BOOKING_AWAITING_PAYMENT.
+
+    Its own code rather than a reuse of BOOKING_CANCELLED (F19 D14/A2): the
+    appointment is neither cancelled nor standing, and the page renders a third
+    state — awaiting payment, carrying the checkout link — off this one.
+
+    The guard lives HERE and not in the repository on purpose:
+    `by_manage_token_hash` deliberately carries no status predicate, because the
+    LOOKUP must still answer an unpaid hold (an honest "awaiting payment" beats a
+    dead link for someone re-opening her SMS). Only the two ACTIONS refuse.
+    """
 
 
 class BookingLookupThrottledError(Exception):
@@ -94,6 +114,7 @@ class ManageBookingService:
         self._bookings = BookingsRepository()
         self._terms = TermsVersionsRepository()
         self._scheduled = ScheduledMessagesRepository()
+        self._payments = PaymentsRepository()
 
     def _now(self) -> datetime.datetime:
         now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
@@ -130,6 +151,10 @@ class ManageBookingService:
             booking = await self._resolve(session, tenant.id, token)
             if booking.status == BookingStatus.CANCELLED.value:
                 raise BookingCancelledError
+            if booking.status == BookingStatus.PENDING_PAYMENT.value:
+                # An unpaid hold is not an appointment she can promise to attend
+                # (D14): the seat is hers only until the sweeper takes it back.
+                raise BookingAwaitingPaymentError
             if booking.starts_at <= now:
                 raise BookingAlreadyStartedError
             # Idempotent: the repository's `IS NULL` guard means a second tap
@@ -160,6 +185,13 @@ class ManageBookingService:
                 # already-cancelled appointment is the same success, even once
                 # the appointment time has passed.
                 return await self._render(session, tenant, booking)
+            if booking.status == BookingStatus.PENDING_PAYMENT.value:
+                # NOT the idempotent 200 above, and not a cancel either (D14):
+                # this writer frees the seat and attributes the cancellation to
+                # the CUSTOMER, and a checkout still in flight is neither her
+                # decision nor a released seat. The sweeper owns that transition
+                # and attributes it 'expired' (MD5).
+                raise BookingAwaitingPaymentError
             if booking.starts_at <= now:
                 raise BookingAlreadyStartedError
             updated = await self._bookings.cancel(
@@ -191,6 +223,13 @@ class ManageBookingService:
         self, session: AsyncSession, tenant: ManageTenant, booking: Booking
     ) -> ManageBookingResponse:
         accepted = await self._terms.by_version(session, tenant.id, booking.terms_version_accepted)
+        # A3: the LATEST payment on this booking, and only `paid` counts as taken
+        # — a pending hold, a swept `expired` one and MD4's `failed` marker all
+        # mean no money moved, which is exactly when "cancelling is free" is still
+        # a true sentence.
+        payment = (await self._payments.by_booking_ids(session, tenant.id, [booking.id])).get(
+            booking.id
+        )
         profile = tenant.settings.get("profile")
         profile = profile if isinstance(profile, dict) else {}
         return ManageBookingResponse(
@@ -201,6 +240,7 @@ class ManageBookingService:
                 appointment_type_name=booking.appointment_type_name,
                 dress_name=booking.dress_name,
                 dress_size=booking.dress_size,
+                deposit_taken=payment is not None and payment.status == PaymentStatus.PAID.value,
             ),
             # None only if the accepted version row has somehow gone — the table
             # is append-only by DB grant, so this is a guard and not a path. The
