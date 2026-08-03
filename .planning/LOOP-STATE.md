@@ -22,7 +22,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F57, F33, F19          # THREE FEATURES IN FLIGHT, in three sessions, in three worktrees.
+current: F57, F33, F19, F53     # FOUR FEATURES IN FLIGHT, in four sessions, in four worktrees.
                                 # F33 was started 2026-08-03 by a SECOND session, deliberately, because
                                 # F36 — the next entry in file order — deps on F57 and cannot run beside
                                 # it. F33's deps [F5,F9,F10,F13] are all merged history, so it is the
@@ -36,10 +36,10 @@ current: F57, F33, F19          # THREE FEATURES IN FLIGHT, in three sessions, i
                                 # pre-authorized (see this entry's gate_1_preauthorized field), so the
                                 # session goes straight to Gate 2. It touches the payments/booking
                                 # modules and neither sibling's files.
-                                # THE ONE COUPLING IS THE MIGRATION NUMBER, and it is now three-way.
-                                # main's head is 0014; F57's branch holds 0015; F33 takes 0016. F19
-                                # therefore lands 0017/down_revision 0016 and MUST NOT OPEN ITS PR
-                                # BEFORE F57 AND F33 MERGE — CI tests the merge result, and two files
+                                # THE ONE COUPLING IS THE MIGRATION NUMBER, and it is now FOUR-way.
+                                # main's head is 0014; F57's branch holds 0015; F33 takes 0016; F19
+                                # takes 0017; F53 takes 0018. Each MUST NOT OPEN ITS PR before every
+                                # lower number has merged — CI tests the merge result, and two files
                                 # claiming one revision id is an alembic multiple-heads error that git
                                 # cannot see (the filenames differ) and that reads as a mystery.
                                 # F19 BUILDS AGAINST 0015/down_revision 0014 so its own branch is
@@ -49,6 +49,18 @@ current: F57, F33, F19          # THREE FEATURES IN FLIGHT, in three sessions, i
                                 # instead of as a CI mystery; it is a permanent guard, not scaffolding.
                                 # Worktree: .worktrees/deposit-booking-flow on feature/deposit-booking-flow.
                                 # Worktree: .worktrees/qr-walkin-queue on feature/qr-walkin-queue.
+                                # F53 was started 2026-08-03 by a FOURTH session, on USER INSTRUCTION to
+                                # build something depending on none of F57, F33 and F19. Under that
+                                # constraint the eligible set is F60, F50, F53 (then E5). F60 is the
+                                # loop's own file-order pick but its ENTIRE blast radius is App.tsx +
+                                # i18n/{he,ar}.ts — the two files F57 is rewriting — and its storefront
+                                # hint step wants F33's /checkin page, so it is not actually independent.
+                                # F50 ships from BoardSection.tsx, which F57 has gutted (258 +-, poll
+                                # loop extracted to lib/usePoll.ts): a guaranteed hard conflict. F53 is
+                                # SMC-4, deps [F31] merged, and almost its whole surface is NEW files
+                                # (app/customers/, CustomersSection.tsx, CustomerDetail.tsx) — every
+                                # contended file it touches is append-shaped. That is why it was chosen.
+                                # Worktree: .worktrees/customers-crm on feature/customers-crm.
                                 # ---- F57 ----
                                 # floor program iteration 2 of 10 — MID-FLIGHT, interrupted 2026-07-31.
                                 # F34 MERGED (PR #32) 2026-07-31 — its merge unblocked this entry.
@@ -846,8 +858,27 @@ queue:
     slug: customers-crm
     epic: SMC
     title: "Customers CRM + notes/tags + SMS log"
-    status: queued
+    status: specing
+    attempts: 1
     deps: [F31]
+    started: >-
+      2026-08-03, in PARALLEL with F57, F33 and F19, in its own worktree
+      (.worktrees/customers-crm). Picked on USER INSTRUCTION for a feature
+      depending on none of those three; see the `current:` block for why F60 and
+      F50 were rejected. Deps [F31] are merged history.
+      MIGRATION: 0018, down_revision 0017. Resolve from `alembic heads` again
+      immediately before push; the migration is the LAST commit on the branch so
+      the renumber costs one amend to one file nothing else references. Do not
+      open the PR until 0015/0016/0017 are all on main.
+      TWO SHIPPED GUARDS BITE THIS FEATURE and are cheaper to read than to
+      rediscover. (1) i18n.test.ts:247 rejects any string matching
+      /נשלח|תישלח|בדרך/, so the natural SMS-log heading «הודעות שנשלחו» is
+      refused — «יומן הודעות» is the shipped copy, and it is also the honest one
+      because the log renders status='failed' rows. (2) test_spa_serving.py:372
+      asserts set equality between the live /manage route table and the vite dev
+      proxy's segment alternation, so the `customers` segment must be added to
+      Frontend/apps/manage/vite.config.ts or the console silently gets the SPA
+      shell with a 200 and the wrong body — the exact bug F52 shipped.
     note: >-
       SMC-4. customers.notes TEXT + tags TEXT[] (migration), ILIKE search,
       detail with booking history, read-only SMS log (message_log by phone OR
