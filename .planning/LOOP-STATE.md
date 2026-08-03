@@ -296,8 +296,37 @@ queue:
     slug: fitting-rooms
     epic: E7
     title: "Fitting-room registry + assignment (rooms panel)"
-    status: queued
+    status: building
+    attempts: 1
     deps: [F8, F13, F31, F34, F57]
+    spec: .planning/specs/fitting-rooms.md
+    plan: .planning/plans/fitting-rooms.md
+    started: >-
+      2026-08-03 16:45, worktree .worktrees/fitting-rooms on feature/fitting-rooms.
+      Picked because F57's merge made every dep merged history — it is the loop's own
+      next pick in file order. Gates 1 and 2 self-approved; the design gate too
+      (ruling 2026-07-31: E7's screens assemble from F34's shipped board shell).
+      SPEC REVIEW: 41 findings from 3 lenses, 40 applied, 1 rejected in writing.
+      EIGHT WERE BLOCKERS and two of them were one root defect worth recording,
+      because the feature would have shipped looking finished and been hollow:
+      NOTHING IN THE CONSOLE COULD EVER SUPPLY booking_id, so client_label would
+      have been null on every v1 assignment, every fitting would have rendered as
+      an anonymous visit, and E7's second success criterion would have been void
+      while every test passed. The answer is a new minimised route,
+      GET /manage/floor/clients, returning booking_id + client_label + starts_at
+      and nothing else, for people who are physically in the building today.
+      THE SECOND LOAD-BEARING FIND is a documentation defect that is really a
+      security defect: THREE SHIPPED COMMENTS (floor/router.py:11-14,
+      floor/service.py:69-75, floor/schemas.py:13-16) state as a FACT that the
+      floor payload carries ZERO customer data, and one of them is the stated
+      justification for the only router in the product admitting all five roles.
+      F36 puts a client label on that payload, so this PR REWRITES those three
+      comments. Leaving them would leave a false comment standing as the rationale
+      for the widest role gate in the codebase.
+      Design deck + copy deck (69 keys, machine-validated) reviewed by design-critic;
+      its fourteen required changes are BUILD TASKS in the plan, not review notes.
+      MIGRATION: build at head+1, renumber at rebase. F33 is in flight and expected
+      to land first, which would make this one 0019 rather than 0018.
     note: >-
       Substance unchanged from the e7 brief; pulled forward and given its floor
       surface. fitting_rooms CRUD (add/remove rooms — the brief's prerequisite for
