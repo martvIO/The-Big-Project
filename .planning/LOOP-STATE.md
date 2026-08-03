@@ -22,7 +22,18 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F57                    # floor program iteration 2 of 10 — MID-FLIGHT, interrupted 2026-07-31.
+current: F57, F33               # TWO FEATURES IN FLIGHT, in two sessions, in two worktrees.
+                                # F33 was started 2026-08-03 by a SECOND session, deliberately, because
+                                # F36 — the next entry in file order — deps on F57 and cannot run beside
+                                # it. F33's deps [F5,F9,F10,F13] are all merged history, so it is the
+                                # loop's own pick (first queued entry whose deps are all merged).
+                                # THE ONE COUPLING IS THE MIGRATION NUMBER. main's head is 0014; F57's
+                                # branch holds 0015. F33 therefore lands 0016/down_revision 0015 and
+                                # MUST NOT OPEN ITS PR BEFORE F57 MERGES — CI tests the merge result and
+                                # two 0015s is an alembic multiple-heads error that reads as a mystery.
+                                # Worktree: .worktrees/qr-walkin-queue on feature/qr-walkin-queue.
+                                # ---- F57 ----
+                                # floor program iteration 2 of 10 — MID-FLIGHT, interrupted 2026-07-31.
                                 # F34 MERGED (PR #32) 2026-07-31 — its merge unblocked this entry.
                                 # INTERRUPTED BY A USAGE LIMIT, NOT BY A FAILURE. Do not increment
                                 # `attempts` and do not reset to `queued` — the branch has real work.
@@ -178,8 +189,23 @@ queue:
     slug: qr-walkin-queue
     epic: E6
     title: "QR self-check-in + queue tickets + live position"
-    status: queued
+    status: specing
+    attempts: 1
     deps: [F5, F9, F10, F13]
+    started: >-
+      2026-08-03, in PARALLEL with F57 and in its own worktree
+      (.worktrees/qr-walkin-queue). Picked because F36, the next entry in file
+      order, deps on F57 and cannot be built beside it; F33's deps are all
+      merged history, which makes it the loop's own next pick.
+      THREE USER RULINGS taken at pick time:
+        (1) build F33, not F60 and not an idle wait for F36;
+        (2) the printable QR renders SERVER-SIDE via `segno` — pure-Python, zero
+            transitive deps — so the manage bundle grows by nothing and the print
+            page is a plain <img>; the npm qrcode route was declined;
+        (3) the collection notice ships as a NEUTRAL INTERIM sentence and the
+            in_run_gates F33 entry STAYS OPEN. This is the F19 precedent exactly.
+      MIGRATION: 0016, down_revision 0015. Resolve from `alembic heads` again
+      immediately before push; do not open the PR until F57's 0015 is on main.
     note: >-
       REVIVED AT FULL SCOPE by user ruling 2026-07-31, overriding the SMC ruling
       that "F33 is not built". The F20 DEP IS DROPPED: F33 adds
