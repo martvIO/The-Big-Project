@@ -25,6 +25,7 @@ from test_boutique_api import (
 )
 from test_catalog_api import ROUTES as CATALOG_ROUTES
 from test_catalog_api import FakeCatalogService
+from test_floor_api import FLOOR_ROUTES, FakeFloorService
 from test_payments_api import ROUTES as GATEWAY_ROUTES
 
 from app.auth.dependencies import (
@@ -78,11 +79,35 @@ OWNER_ONLY = {
     GATEWAY_DISCONNECT,
 }
 
+# F57's three. The floor router is the ONLY /manage router admitting more than
+# two roles — require_role(*StaffRole) — and these are the roles that widening
+# let in. FLOOR_OPEN below is the exhaustive list of what they may reach.
+FLOOR_ROLES = frozenset(
+    {
+        StaffRole.RECEPTION.value,
+        StaffRole.SALES_ASSISTANT.value,
+        StaffRole.SEAMSTRESS.value,
+    }
+)
+
+# ROUTE-TABLE TEMPLATES, for the same reason STAFF_PATCH is one: the classifier
+# below reads `route.path`, so a concrete /manage/floor/staff/<uuid>/... would
+# never match and would fail on the `missing` assertion instead.
+# test_floor_api.FLOOR_ROUTES is the CONCRETE spelling of the same three, used by
+# the HTTP walks (plan C4).
+FLOOR_READ = ("GET", "/manage/floor")
+FLOOR_BREAK_START = ("POST", "/manage/floor/staff/{staff_id}/break/start")
+FLOOR_BREAK_END = ("POST", "/manage/floor/staff/{staff_id}/break/end")
+
+FLOOR_OPEN = {FLOOR_READ, FLOOR_BREAK_START, FLOOR_BREAK_END}
+
 # The probe for "a role the enum does not know", shared verbatim by
 # test_catalog_api and test_migrations. Deliberately NOT 'reception' (or
-# seamstress/sales): 0011's comment names those three as the next roles to join
-# StaffRole, and the day one of them does, a test using it as the unknown-role
-# probe would silently start asserting the opposite of its own name.
+# seamstress/sales_assistant): 0011's comment named those three as the next roles
+# to join StaffRole, and F57 IS the day they did — so a test using one of them as
+# the unknown-role probe would now silently assert the opposite of its own name.
+# The sentinel was chosen for exactly this day and it held; the tripwire below is
+# what makes that a fact rather than a hope.
 UNKNOWN_ROLE = "no-such-role"
 # The tripwire that keeps the sentence above true.
 assert UNKNOWN_ROLE not in {role.value for role in StaffRole}, (
@@ -212,6 +237,71 @@ def test_route_table_matches_the_permission_matrix() -> None:
     )
 
 
+def test_the_floor_roles_reach_exactly_the_floor_routes() -> None:
+    """⚠ THE TEST THE WHOLE FEATURE'S SAFETY RESTS ON (spec Risk 1).
+
+    The floor router's gate is `require_role(*StaffRole)` — every role the
+    product has, spelled from the enum so a sixth is admitted by default. That is
+    safe ONLY because this test pins the three floor roles OUT of every other
+    /manage route. Both halves ship together or neither should.
+
+    IT MUST NEVER BE RELAXED TO A SUBSET CHECK, and `FLOOR_OPEN` must never gain
+    a route without the reviewer asking why. F36 and F58 will both extend the
+    floor router; that is expected and each new row is a deliberate, reviewed act.
+
+    ⚠ CLASSIFY ON THE INTERSECTION, NEVER `any(...)` OVER THE GATES. `RoleGate`
+    composes by intersection (`auth/dependencies.py:44-45`) and `_gate_role_sets`
+    yields EVERY gate in the tree, router-level and per-route both — which is why
+    the shipped matrix test above uses `all(...)`. With `any(...)`, a route added
+    to the floor router and TIGHTENED per-route —
+    `@router.post("/floor/rooms/assign",
+    dependencies=[Depends(require_role(OWNER, SHIFT_MANAGER))])`, i.e. exactly
+    what F36 and F58 will add — would land in `admits_floor` even though the
+    intersection denies the floor roles, and the first assertion would red-fail
+    on a CORRECT route. A reviewer facing that red on a test declared
+    untouchable is most likely to "fix" it by relaxing the assertion, which is
+    precisely the outcome Risk 1 exists to prevent.
+    """
+    app = create_app(resolver=_null_resolver)
+    admits_floor: set[tuple[str, str]] = set()
+    partial: list[tuple[str, str, frozenset[str]]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for route in _leaf_routes(app):
+        path = getattr(route, "path", None)
+        dependant = getattr(route, "dependant", None)
+        if path is None or dependant is None or not path.startswith("/manage"):
+            continue
+        role_sets = list(_gate_role_sets(dependant))
+        # An UNGATED route's effective set is empty and therefore admits nobody.
+        # That is what makes assertion 1 catch a floor route which quietly lost
+        # its gate: it drops out of `admits_floor` and the set equality fails.
+        effective: frozenset[str] = frozenset.intersection(*role_sets) if role_sets else frozenset()
+        for method in getattr(route, "methods", None) or ():
+            seen.add((method, path))
+            if effective & FLOOR_ROLES:
+                admits_floor.add((method, path))
+                if not FLOOR_ROLES <= effective:
+                    partial.append((method, path, effective))
+
+    assert seen, "no /manage route was discovered — the walker is broken"
+
+    # 1. Nothing else in the product admits a floor role — including a future
+    #    router that copy-pastes require_role(*StaffRole) — and no floor route
+    #    lost its gate.
+    assert admits_floor == FLOOR_OPEN, (
+        f"floor roles reach the wrong set of routes: "
+        f"unexpected={sorted(admits_floor - FLOOR_OPEN)} "
+        f"missing={sorted(FLOOR_OPEN - admits_floor)}"
+    )
+    # 2. A floor route admits ALL THREE, never some of them.
+    assert not partial, f"floor routes admitting only some floor roles: {sorted(partial)}"
+    # 3. The anti-vacuity half (the `seen >= UNGATED_ALLOWLIST` shape above):
+    #    FLOOR_OPEN may not name a path that no longer exists.
+    missing = FLOOR_OPEN - seen
+    assert not missing, f"FLOOR_OPEN names routes that no longer exist: {sorted(missing)}"
+
+
 def test_terms_publishing_is_owner_only_in_the_route_table() -> None:
     app = create_app(resolver=_null_resolver)
     for route in _leaf_routes(app):
@@ -244,6 +334,21 @@ async def test_gate_admits_listed_roles() -> None:
     gate = require_role(StaffRole.OWNER, StaffRole.SHIFT_MANAGER)
     for role in ("owner", "shift_manager"):
         staff = _staff(role)
+        assert await gate(staff) is staff
+
+
+async def test_the_all_roles_gate_admits_every_role() -> None:
+    """F57's floor router spells its gate `require_role(*StaffRole)` and nothing
+    else in the codebase does.
+
+    ⚠ A SECOND CASE, not three roles added to the one above. That test builds
+    `require_role(OWNER, SHIFT_MANAGER)`, so adding 'reception' to its loop would
+    assert that a TWO-ROLE gate admits a floor role — false, and dangerous in the
+    direction that matters. The shipped assertion is untouched (plan C1).
+    """
+    gate = require_role(*StaffRole)
+    for role in StaffRole:
+        staff = _staff(role.value)
         assert await gate(staff) is staff
 
 
@@ -295,6 +400,7 @@ def _client(
     *,
     authed: bool = True,
     catalog: FakeCatalogService | None = None,
+    floor: FakeFloorService | None = None,
 ) -> tuple[TestClient, CountingAuthService]:
     async def _resolver(slug: str) -> TenantContext | None:
         return TENANT if slug == "bella" else None
@@ -315,6 +421,16 @@ def _client(
         # instead of quietly passing.
         app.state.catalog_service = catalog
         app.dependency_overrides[get_media_storage] = lambda: InMemoryMediaStorage()
+    if floor is not None:
+        # Wired ONLY when a test needs the floor surface to answer 2xx — the
+        # catalog asymmetry directly above, and it matters MORE here. The floor
+        # router is the one gate in the codebase spelled require_role(*StaffRole),
+        # so it is where a decoy gate that carries `allowed_roles` without
+        # raising would be most consequential.
+        # test_unknown_role_is_403_on_every_gated_route deliberately does NOT
+        # pass one: reaching the real (unset) app.state.floor_service blows that
+        # test up instead of quietly passing.
+        app.state.floor_service = floor
     client = TestClient(app, base_url="http://bella.localtest.me")
     if authed:
         client.cookies.set("boutique_session", TOKEN, domain="bella.localtest.me")
@@ -334,10 +450,17 @@ def test_shift_manager_is_admitted_everywhere_except_terms_publishing() -> None:
     # gateway fake is wired, deliberately: the gate raises during dependency
     # solving, so reaching the real (unconfigured) service would blow this up
     # rather than quietly pass.
+    #
+    # FLOOR_ROUTES joins for a third reason again: the floor gate admits all five
+    # roles, so a shift manager must reach every one of them. A floor fake IS
+    # wired here (unlike the unknown-role walk below) because these three must
+    # answer 2xx to prove admission rather than merely "not 403".
     fake = FakeBoutiqueService()
-    client, _ = _client(fake, "shift_manager", catalog=FakeCatalogService())
+    client, _ = _client(
+        fake, "shift_manager", catalog=FakeCatalogService(), floor=FakeFloorService()
+    )
     with client:
-        for method, path, body in [*ROUTES, *CATALOG_ROUTES, *GATEWAY_ROUTES]:
+        for method, path, body in [*ROUTES, *CATALOG_ROUTES, *GATEWAY_ROUTES, *FLOOR_ROUTES]:
             resp = client.request(method, path, json=body)
             if (method, path) in OWNER_ONLY:
                 assert resp.status_code == 403, (method, path, resp.text)
@@ -365,10 +488,17 @@ def test_unknown_role_is_403_on_every_gated_route() -> None:
     # so a 403 here proves the catalog gate's __call__ actually enforces — a
     # decoy gate that carries allowed_roles but never raises would fall through
     # to the real (unconfigured) CatalogService and blow the test up.
+    #
+    # ⚠ FLOOR_ROUTES ride along with NO floor fake, and that is the point. The
+    # floor router's gate is require_role(*StaffRole) — the widest gate in the
+    # codebase — so it is precisely where "the gate carries allowed_roles" could
+    # be true while "the gate raises" is false. With app.state.floor_service
+    # never set, a gate that failed to enforce would fall through to an
+    # AttributeError and blow this test up rather than quietly passing.
     fake = FakeBoutiqueService()
     client, _ = _client(fake, UNKNOWN_ROLE)
     with client:
-        for method, path, body in [*ROUTES, *CATALOG_ROUTES, *GATEWAY_ROUTES]:
+        for method, path, body in [*ROUTES, *CATALOG_ROUTES, *GATEWAY_ROUTES, *FLOOR_ROUTES]:
             resp = client.request(method, path, json=body)
             assert resp.status_code == 403, (method, path, resp.text)
             assert resp.json() == NOT_AUTHORIZED_BODY

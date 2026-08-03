@@ -520,6 +520,70 @@ async def test_the_last_owner_guard_stays_quiet_when_it_should() -> None:
     assert "count_live_owners" not in trace
 
 
+# --- F57: the widened role set passes through F51's guards unchanged ---
+
+
+@pytest.mark.parametrize(
+    "role",
+    [StaffRole.RECEPTION.value, StaffRole.SALES_ASSISTANT.value, StaffRole.SEAMSTRESS.value],
+)
+async def test_the_last_owner_guard_fires_on_a_move_to_any_floor_role(role: str) -> None:
+    """⚠ The guard keys on the target LEAVING `owner`, never on where it is
+    going (`auth/staff.py:187-193`), so widening StaffRole cannot open a hole in
+    it — but "cannot" is a claim, and this is what makes it a fact.
+
+    Without it, the sole owner of a boutique could demote herself to seamstress
+    and lock every human being out of the console, with the tenant's only remedy
+    being an operator CLI ticket.
+    """
+    sole = _row(role=StaffRole.OWNER.value)
+    service, staff, audit, _ = _service([sole])
+    staff.live_owners = 1
+
+    with pytest.raises(LastOwnerRequiredError):
+        await service.update(TENANT_ID, sole.id, role=role, actor=_actor())
+
+    assert staff.updates == []
+    assert audit.rows == []
+
+
+@pytest.mark.parametrize(
+    "role",
+    [StaffRole.RECEPTION.value, StaffRole.SALES_ASSISTANT.value, StaffRole.SEAMSTRESS.value],
+)
+async def test_the_self_demote_guard_fires_on_a_move_to_any_floor_role(role: str) -> None:
+    """The other half of the same move, and it fires FIRST (`:187-188`) — an
+    owner may not demote herself even when another live owner exists, so this
+    seeds two."""
+    me = _row(staff_id=OWNER_ID, role=StaffRole.OWNER.value)
+    service, staff, audit, _ = _service([me])
+    staff.live_owners = 2
+
+    with pytest.raises(StaffSelfManageError):
+        await service.update(TENANT_ID, me.id, role=role, actor=_actor())
+
+    assert staff.updates == []
+    assert audit.rows == []
+
+
+async def test_a_role_change_into_a_floor_role_audits_both_values() -> None:
+    """`STAFF_ROLE_CHANGED`'s details are plain strings (`:251`), so they carry
+    the new values with no edit — asserted rather than assumed, because a trail
+    recording `to: null` for exactly the three newest roles would be invisible
+    until someone read the table."""
+    target = _row(role=StaffRole.SHIFT_MANAGER.value)
+    service, staff, audit, _ = _service([target])
+    staff.live_owners = 2
+
+    await service.update(TENANT_ID, target.id, role=StaffRole.SEAMSTRESS.value, actor=_actor())
+
+    assert audit.actions() == [AuditAction.STAFF_ROLE_CHANGED]
+    assert audit.rows[0]["details"] == {
+        "from": StaffRole.SHIFT_MANAGER.value,
+        "to": StaffRole.SEAMSTRESS.value,
+    }
+
+
 # --- audit: one row per thing that actually changed (spec D8) ---
 
 

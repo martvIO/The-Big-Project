@@ -60,7 +60,9 @@ _ADD_WIDE_ROLE_CHECK = (
 )
 _DROP_ROLE_CHECK = f"ALTER TABLE staff_users DROP CONSTRAINT {_ROLE_CHECK}"
 # Kept in step with test_staff_role_gating.UNKNOWN_ROLE, which owns the tripwire
-# asserting it never becomes a real StaffRole.
+# asserting it never becomes a real StaffRole. F57 is the day 0011's three
+# anticipated roles actually joined the enum, and the sentinel held — it was
+# chosen precisely so that day would not silently invert every test using it.
 UNKNOWN_ROLE = "no-such-role"
 _COUNT_ROLE_CHECK = "SELECT count(*) FROM pg_constraint WHERE conname = :name"
 

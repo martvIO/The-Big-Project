@@ -538,6 +538,33 @@ def test_an_unknown_role_never_reaches_the_database_check() -> None:
     assert fake.calls == []
 
 
+@pytest.mark.parametrize(
+    "role",
+    [StaffRole.RECEPTION.value, StaffRole.SALES_ASSISTANT.value, StaffRole.SEAMSTRESS.value],
+)
+def test_the_three_floor_roles_are_accepted_on_create_and_on_patch(role: str) -> None:
+    """F57 adds ZERO production code to app/auth/ and this is the proof, because
+    "widening the enum widens nothing" cuts both ways and a reviewer will ask.
+
+    `CreateStaffRequest.role: StaffRole` and `UpdateStaffRequest.role:
+    StaffRole | None` are typed as the enum precisely so an unknown value is a
+    house 400 at the boundary and can never reach 0011's CHECK
+    (`auth/schemas.py:65-67`). Widening the enum therefore widens both request
+    schemas with no edit — asserted end to end over HTTP rather than assumed.
+    """
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        created = client.post(LIST_PATH, json={**CREATE_BODY, "role": role})
+        patched = client.patch(DETAIL_PATH, json={"role": role})
+
+    assert created.status_code == 200, created.text
+    assert patched.status_code == 200, patched.text
+    # The enum member reaches the service, not the raw string — so this also
+    # fails if a future schema change starts coercing it to something else.
+    assert fake.call("create")["role"] == role
+    assert fake.call("update")["role"] == role
+
+
 def test_a_malformed_staff_id_is_a_400_not_a_500() -> None:
     fake = FakeStaffService()
     with _client(fake) as client:
