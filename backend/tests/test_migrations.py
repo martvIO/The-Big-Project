@@ -981,3 +981,76 @@ def test_the_deposit_migration_round_trips(migrated_db: str) -> None:
         assert _one(migrated_db, _STATUS_CONSTRAINT_DEF) != _STATUS_CHECK_DEF
     finally:
         command.upgrade(cfg, "head")
+
+
+# --- 0018: the customer CRM columns ---
+
+_CUSTOMER_CRM_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable, column_default, udt_name "
+    "FROM information_schema.columns "
+    "WHERE table_name = 'customers' AND column_name IN ('notes', 'tags') "
+    "ORDER BY column_name"
+)
+# Spelled as POSTGRES deparses them, not as 0018 wrote them, and captured from a
+# real 16.x cluster rather than transcribed. `data_type` is the bare string
+# ARRAY for EVERY array column, which is what makes `udt_name` load-bearing
+# rather than padding — without it text[] and int[] are indistinguishable. And
+# nobody would have typed "'{}'::text[]" from the migration source.
+_NOTES_COLUMN = ("text", "YES", None, "text")
+_TAGS_COLUMN = ("ARRAY", "NO", "'{}'::text[]", "_text")
+
+
+def _customer_crm_columns(url: str) -> dict[str, tuple[str, str, str | None, str]]:
+    async def read() -> dict[str, tuple[str, str, str | None, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_CUSTOMER_CRM_COLUMNS))).all()
+                return {
+                    str(row[0]): (
+                        str(row[1]),
+                        str(row[2]),
+                        None if row[3] is None else str(row[3]),
+                        str(row[4]),
+                    )
+                    for row in rows
+                }
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_migration_0018_round_trips(migrated_db: str) -> None:
+    """upgrade() adds a nullable TEXT and a NOT NULL TEXT[] DEFAULT '{}';
+    downgrade() drops both. Runs as the migration owner (the app role cannot
+    ALTER) and mutates the live session-scoped schema.
+
+    `-1` rather than a hardcoded revision, and that is a stated departure rather
+    than a correction of anyone: all four shipped round-trips hardcode their
+    target. Three unmerged migrations are racing for a revision id as this
+    lands, and "one step back from head" survives the renumber — which keeps
+    this block a plain concatenation at merge instead of a hand edit.
+
+    Appended at the END of the file, after the env_py test, so it never shares
+    an anchor with another feature's block again. It sits after the 0016 block
+    that calls itself "LAST among the schema-mutating tests" — that claim is
+    about leaving the shared schema at head, which this block's own finally
+    also guarantees, so both are order-independent and neither is weakened.
+
+    The finally is not decoration. Leaving the schema down drops two columns the
+    ORM still maps, so every later db test in this shared session would fail
+    with UndefinedColumn somewhere unrelated to itself."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    expected = {"notes": _NOTES_COLUMN, "tags": _TAGS_COLUMN}
+    try:
+        assert _customer_crm_columns(migrated_db) == expected
+        command.downgrade(cfg, "-1")
+        assert _customer_crm_columns(migrated_db) == {}
+        command.upgrade(cfg, "head")
+        assert _customer_crm_columns(migrated_db) == expected
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
