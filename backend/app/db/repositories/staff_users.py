@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -116,6 +117,110 @@ class StaffUsersRepository:
         await session.flush()
         await session.refresh(row)
         return row
+
+    async def start_break(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID, *, at: datetime
+    ) -> tuple[bool, StaffUser | None]:
+        """F57: she is stepping off the floor.
+
+        Idempotent by predicate — `break_started_at IS NULL` means a second
+        staffer's tap keeps the FIRST timestamp rather than moving it, which is
+        what makes two managers pressing at once agree instead of the later one
+        winning.
+
+        The `bool` is read off the `.returning()` scalar and NOT off the row,
+        because it cannot be read off the row. `update(StaffUser)` here is
+        ORM-enabled DML whose default `evaluate` synchronization stamps
+        `break_started_at = :at` onto the identity-mapped instance WHATEVER the
+        database matched, and the session factory is built
+        `expire_on_commit=False` (`db/session.py:66`), so a trailing `by_id`
+        hands that poisoned object straight back. This repo has documented the
+        trap three times and shipped the fix once — `bookings.py:473` (`cancel`,
+        the governing precedent: the `.returning()` scalar is the ONLY honest
+        "did I write?"), `bookings.py:300` (`check_in`, the same rule with two
+        zero-row causes), `booking/owner.py:326-333` (capture BEFORE the write)
+        and `test_booking_owner_db.py:747` (the race no fake can produce).
+
+        Returns `(wrote, row)`, and NOT F34's four-member `CheckInOutcome`: that
+        needed three values because zero rows there had two OPPOSITE causes
+        (already checked in vs no longer confirmed). A break has no status
+        guard, so zero rows with a live row back means the target state already
+        holds, full stop. `(False, None)` is the only other answer and it means
+        gone — soft-deleted, another tenant's, or never existed.
+
+        No advisory lock. F51's namespaced one (`app/auth/staff.py`) exists
+        because the last-owner invariant is "at least one", which no index and
+        no single statement can express; this writes one column on one row and
+        has no cross-row invariant to serialise. Taking it would serialise every
+        break in the boutique against every staff edit.
+        """
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.break_started_at.is_(None),
+                StaffUser.deleted_at.is_(None),
+            )
+            .values(break_started_at=at)
+            .returning(StaffUser.id)
+        )
+        refreshed = await self._refreshed(session, tenant_id, staff_id)
+        return wrote.scalar_one_or_none() is not None, refreshed
+
+    async def end_break(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID
+    ) -> tuple[bool, StaffUser | None]:
+        """She is back on the floor. `start_break`'s shape with the predicate
+        inverted; every word of that docstring applies here too.
+
+        Nothing schedules this (spec D7) — a break ends when somebody says so,
+        because every automatic end would be a guess about a shift and there is
+        no roster to guess from.
+        """
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.break_started_at.is_not(None),
+                StaffUser.deleted_at.is_(None),
+            )
+            .values(break_started_at=None)
+            .returning(StaffUser.id)
+        )
+        refreshed = await self._refreshed(session, tenant_id, staff_id)
+        return wrote.scalar_one_or_none() is not None, refreshed
+
+    async def _refreshed(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID
+    ) -> StaffUser | None:
+        """The re-read that defeats the identity map — `bookings.py`'s
+        `_refreshed` verbatim, for the same reason.
+
+        `populate_existing=True` is the whole mechanism and it is not a spare
+        keyword to drop: without it this SELECT returns the instance already in
+        the identity map WITHOUT overwriting its attributes — i.e. the object
+        the UPDATE just stamped — so the caller renders its own intent instead
+        of the database's answer. Under READ COMMITTED it also sees a concurrent
+        transaction's commit, which is what makes the LOSER of a start-racing-an-
+        end render the WINNER's value.
+
+        It is applied unconditionally rather than per call site: whether a caller
+        happened to load the row first is exactly the reasoning that has bitten
+        this repo three times, and the flag costs one chained method.
+        """
+        return (
+            await session.execute(
+                select(StaffUser)
+                .where(
+                    StaffUser.tenant_id == tenant_id,
+                    StaffUser.id == staff_id,
+                    StaffUser.deleted_at.is_(None),
+                )
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
 
     async def soft_delete(self, session: AsyncSession, tenant_id: UUID, staff_id: UUID) -> bool:
         """Returns whether a live row was hit — not the row, because DELETE
