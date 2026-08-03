@@ -46,6 +46,44 @@ class StaffCardStatus(StrEnum):
     OCCUPIED = "occupied"
 
 
+class TicketStage(StrEnum):
+    # F41's atelier board. NOT pinned by the DB and deliberately not: there is no
+    # stored value for a CHECK to constrain. The state is DERIVED from five
+    # nullable TIMESTAMPTZ columns on alteration_tickets (pre-decided #39's
+    # mechanism, relabelled by the 2026-07-31 ATELIER ruling), and StaffCardStatus
+    # above is the shipped precedent for a derived, DB-unpinned wire enum.
+    #
+    # DECLARATION ORDER IS THE TOTAL ORDER and D3's predicate builder reads it.
+    # A member inserted in the MIDDLE changes the semantics of every advance and
+    # every undo in the feature — the conditional write is
+    # `AND <every column after the target> IS NULL`, which is spelled from this
+    # order and nowhere else. test_the_declaration_order_is_the_total_order is
+    # what makes that a red test rather than a silent behaviour change.
+    INTAKE = "intake"
+    IN_PROGRESS = "in_progress"
+    QC = "qc"
+    READY = "ready"
+    DELIVERED = "delivered"
+
+
+class EffortBand(StrEnum):
+    # Q13's five, verbatim. NOT pinned by the DB: what persists is
+    # alteration_tickets.effort_minutes, and a band is only ever an INPUT
+    # affordance — the client never sends a number, so there is no request shape
+    # in which 37 minutes reaches the row.
+    #
+    # The MINUTES are what persist, never the label, which is why the table has
+    # no effort_band column: a boutique that re-tunes half_day from 240 to 300
+    # must not silently re-value every ticket already estimated. The consequence
+    # is that a stored effort_minutes may match no current band, and the board
+    # renders that honestly.
+    THIRTY_MIN = "thirty_min"
+    ONE_HOUR = "one_hour"
+    TWO_HOURS = "two_hours"
+    HALF_DAY = "half_day"
+    FULL_DAY = "full_day"
+
+
 class AppointmentAudience(StrEnum):
     # brides_only on a type — or the tenant-wide brides_only toggle — hides it
     # from non-bride visitors (consumers: E3 slot engine, E2 storefront).
