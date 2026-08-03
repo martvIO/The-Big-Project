@@ -80,6 +80,33 @@ class DressesRepository:
         )
         return (await session.execute(stmt)).scalar_one()
 
+    async def list_for_picker(
+        self, session: AsyncSession, tenant_id: UUID, *, limit: int
+    ) -> list[Dress]:
+        """The floor's one-shot dress list (F36 D16) — fetched when the dress
+        dialog opens, never on the poll.
+
+        `ORDER BY sort_order, name, id` and NOT `list_page`'s
+        `created_at DESC`: a picker is scanned by a human looking for a name,
+        where the catalog page is read newest-first. Live dresses only, and the
+        caller renders a one-line «truncated» notice when it gets `limit` rows
+        back rather than silently hiding gowns.
+
+        It lives on this repository rather than on a fitting-room one because
+        this file owns every query against `dresses` — but the DISCLOSURE
+        argument is F36's: name and size labels are strictly less than the
+        boutique's own storefront already publishes to an anonymous visitor
+        (`storefront/service.py`), which is what lets the floor router answer it
+        for all five roles when the catalog router admits only two.
+        """
+        stmt = (
+            select(Dress)
+            .where(Dress.tenant_id == tenant_id, Dress.deleted_at.is_(None))
+            .order_by(Dress.sort_order, Dress.name, Dress.id)
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
     async def insert(
         self,
         session: AsyncSession,

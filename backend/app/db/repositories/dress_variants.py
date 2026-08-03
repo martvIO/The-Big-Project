@@ -61,6 +61,38 @@ class DressVariantsRepository:
             for dress_id, variant_count, total_quantity in rows
         }
 
+    async def size_labels_by_dress(
+        self, session: AsyncSession, tenant_id: UUID, dress_ids: Sequence[UUID]
+    ) -> dict[UUID, list[str]]:
+        """Every live size label for a page of dresses, in ONE statement — the
+        floor picker's second read (F36 D16), and `aggregate_by_dress`'s shape
+        including the empty-input short-circuit.
+
+        Labels rather than `aggregate_by_dress`'s counts, because the picker has
+        to render the actual sizes a staffer chooses between. Quantity is
+        deliberately not returned: a gown carried in for a fitting is not a sale,
+        and stock is the catalog's business.
+
+        Keys are present only for dresses that HAVE live variants, so the caller
+        reads with `.get(id, [])` — a dress with no sizes recorded is ordinary
+        and binds with a null size.
+        """
+        if not dress_ids:
+            return {}
+        stmt = (
+            select(DressVariant.dress_id, DressVariant.size_label)
+            .where(
+                DressVariant.tenant_id == tenant_id,
+                DressVariant.dress_id.in_(dress_ids),
+                DressVariant.deleted_at.is_(None),
+            )
+            .order_by(DressVariant.dress_id, DressVariant.sort_order, DressVariant.id)
+        )
+        grouped: dict[UUID, list[str]] = {}
+        for dress_id, size_label in (await session.execute(stmt)).all():
+            grouped.setdefault(dress_id, []).append(size_label)
+        return grouped
+
     async def insert(
         self,
         session: AsyncSession,
