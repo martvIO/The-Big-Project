@@ -142,12 +142,18 @@ describe("the console nav is role-filtered", () => {
     },
   );
 
-  it("keeps the owner's ten and the shift manager's eight free of the floor row", () => {
+  it("keeps the owner's eleven and the shift manager's nine free of the floor row", () => {
     // The floor panel reaches those two roles UNDER «לוח היום», never as a
-    // second nav row — spec D11, and the reason there is no eleventh label in
+    // second nav row — spec D11, and the reason there is no twelfth label in
     // NAV_LABELS above.
+    //
+    // The three numbers in this file's assertions (this length, the owner's
+    // count at :103, the shift manager's `.slice(0, 9)` at :110) move TOGETHER
+    // every time a `roles: ALL` row is added, and the test NAME carries them in
+    // words as well. F53 moved four of the five and left this one at ten, which
+    // is why it is spelled out here: a nav row is five coordinated edits, not one.
     expect(NAV_LABELS).not.toContain("הצוות בקומה");
-    expect(NAV_LABELS).toHaveLength(10);
+    expect(NAV_LABELS).toHaveLength(11);
   });
 
   it("does not white-screen on a role the enum does not know", async () => {

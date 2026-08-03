@@ -955,21 +955,35 @@ def test_the_deposit_migration_round_trips(migrated_db: str) -> None:
     """Both directions, which is 0013's rule: a downgrade that silently no-ops
     stays green while shipping a migration that cannot be rolled back.
 
-    LAST among the schema-mutating tests in this file and owns no fixtures, for
-    the reason test_migration_0014_round_trips states — the shared session-scoped
-    schema is left at head by the `finally`, and leaving it lower drops columns
-    the ORM still maps, so every later db test in the session would fail with
-    UndefinedColumn somewhere unrelated to itself.
+    Owns no fixtures and restores the schema to head in its `finally`, for the
+    reason test_migration_0014_round_trips states — the shared session-scoped
+    schema is left at head, and leaving it lower drops columns the ORM still
+    maps, so every later db test in the session would fail with UndefinedColumn
+    somewhere unrelated to itself. That `finally` is also what makes this test
+    order-independent, which is why it no longer needs to be last in the file.
     """
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
     cfg.set_main_option("sqlalchemy.url", migrated_db)
-    # `down_revision` is typed as str | list | tuple because alembic supports
-    # merge revisions with several parents. This project has exactly one head
+    # Resolve THIS migration's own parent, not head's.
+    #
+    # This read `head.down_revision`, which was the same revision only for as
+    # long as the deposit migration WAS head. F53's customer-CRM migration
+    # landed on top and the two silently diverged: the downgrade then stopped
+    # one revision short, left `payments.redirect_url` in place, and the first
+    # assertion after it failed — a test broken by a feature that never touched
+    # payments, reported against payments. Identify the revision by WHAT IT IS
+    # so the next feature to land on top costs nothing.
+    #
+    # `down_revision` is typed str | list | tuple because alembic supports merge
+    # revisions with several parents. This project has exactly one head
     # (test_exactly_one_migration_head) and no merges, so anything but a plain
     # str here means the history grew a shape no other test in this file expects.
-    down_to = ScriptDirectory.from_config(_alembic_config()).get_revision("head").down_revision
-    assert isinstance(down_to, str), f"expected a single-parent head, got {down_to!r}"
+    revisions = ScriptDirectory.from_config(_alembic_config()).walk_revisions()
+    deposit = next((s for s in revisions if "deposit" in (s.doc or "").lower()), None)
+    assert deposit is not None, "the deposit migration is no longer identifiable by its message"
+    down_to = deposit.down_revision
+    assert isinstance(down_to, str), f"expected a single-parent revision, got {down_to!r}"
     try:
         assert _column_type(migrated_db, "payments", "redirect_url") == ("text", "YES")
         assert _one(migrated_db, _INDEX_DEF, {"name": "idx_bookings_pending_payment"}) is not None
