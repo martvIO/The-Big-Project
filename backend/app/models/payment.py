@@ -9,9 +9,32 @@ from app.models.base import Base, StandardColumns
 
 
 class Payment(StandardColumns, Base):
-    """One deposit against one booking. `PaymentService` is its single writer —
-    no adapter and no future caller can skip this row, exactly as no SMS path can
-    skip `message_log`.
+    """One deposit against one booking.
+
+    **`PaymentService` was this table's single writer, and F19 made it two.**
+    The rule it enforced still stands and is worth restating: no adapter and no
+    future caller may skip this row, exactly as no SMS path can skip
+    `message_log`. Every route still reaches this table only through
+    `PaymentService` — that is why `settle_late` is wrapped by
+    `honour_late_settlement` rather than called from the webhook route.
+
+    The second writer is `DepositSweeper` (`app/payments/sweeper.py`), and the
+    reason is a boundary rather than convenience: the hold expiry writes
+    `payments` AND `bookings` in ONE transaction, and `PaymentService` owns
+    neither side of that pair — `settle_from_webhook` and
+    `honour_late_settlement` each state in their own docstrings that they do not
+    touch `bookings`, because a seat decision needs the advisory lock and the
+    occupancy reads that live in the booking domain. Folding a `bookings` writer
+    into `PaymentService` would erase that boundary on its first commit; and the
+    sweeper runs in the worker, which would otherwise have to build a gateway
+    adapter and a secret box it never calls.
+
+    The accepted cost, stated so a third writer has to argue past it: `status`
+    now has two writers and a future caller could cite the precedent. The
+    containment is that `DepositSweeper` lives in the same package, takes the
+    same injected `WallClock` as `open_deposit`, only ever writes one column
+    pair on rows its own guarded `WHERE` already proved `pending`, and never
+    inserts.
 
     `provider` and `amount_agorot` are SNAPSHOTS, not read-throughs (the 0008
     appointment_type_name/dress_name argument): the owner can change a deposit at

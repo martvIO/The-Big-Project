@@ -32,6 +32,7 @@ from app.notifications.fake import FakeSmsSender
 from app.notifications.service import NotificationService
 from app.notifications.twilio import TwilioSmsSender
 from app.notifications.unconfigured import UnconfiguredSmsSender
+from app.payments.sweeper import DepositSweeper, SweepResult
 
 logger = logging.getLogger("worker")
 
@@ -62,15 +63,26 @@ def build_sender(settings: Settings) -> SmsSender:
     return UnconfiguredSmsSender()
 
 
-async def poll_once(comms: BookingCommsService, tenants: TenantsRepository) -> DrainResult:
-    """One tick across every active tenant.
+async def poll_once(
+    comms: BookingCommsService, tenants: TenantsRepository, sweeper: DepositSweeper
+) -> DrainResult:
+    """One tick across every active tenant: drain due messages, then release
+    expired deposit holds (F19 D7).
 
     A failure for one tenant must not stop the others: a single bad row would
     otherwise silence every boutique's reminders until someone noticed. The
     exception is logged, never swallowed silently, and the next tick retries the
     same rows because a rolled-back claim leaves them pending.
+
+    The two jobs get SEPARATE try blocks. Sharing one would let a bad payment row
+    silence a boutique's reminders, which is the harm D7 names. The residual
+    asymmetry is deliberate and stated: the drain runs first, so a drain failure
+    defers that tenant's sweep by one tick. Its rows are still `pending` and the
+    next tick claims them; the reverse ordering would realise the named harm
+    instead.
     """
     totals = DrainResult()
+    swept = SweepResult()
     # ponytail: O(tenants) queries per tick. Noise at pilot volume (a handful of
     # boutiques, one query each); E5 #29's scale pass is where this is revisited.
     for tenant in await tenants.list_active():
@@ -91,6 +103,18 @@ async def poll_once(comms: BookingCommsService, tenants: TenantsRepository) -> D
             failed=totals.failed + result.failed,
             cancelled=totals.cancelled + result.cancelled,
             deferred=totals.deferred + result.deferred,
+        )
+        try:
+            swept = swept + await sweeper.sweep(tenant.id)
+        except Exception:
+            logger.exception("deposit hold sweep failed for tenant %s", tenant.id)
+            continue
+    if swept != SweepResult():
+        logger.info(
+            "deposit holds: expired=%d released=%d orphaned=%d",
+            swept.expired,
+            swept.released,
+            swept.orphaned,
         )
     if totals != DrainResult():
         logger.info(
@@ -116,11 +140,20 @@ async def main() -> None:
         base_domain=settings.base_domain,
     )
     tenants = TenantsRepository(factory)
+    # No gateway, no secret box, no credential service: the sweep issues two
+    # UPDATEs and calls nobody. That is the whole reason expiry is its own class
+    # rather than a PaymentService method — see app/payments/sweeper.py.
+    sweeper = DepositSweeper(
+        factory,
+        hold_seconds=settings.deposit_hold_seconds,
+        poll_interval_seconds=settings.worker_poll_interval_seconds,
+    )
     logger.info(
-        "worker started — scheduled-message poller every %ds", settings.worker_poll_interval_seconds
+        "worker started — scheduled-message poller and deposit-hold sweeper every %ds",
+        settings.worker_poll_interval_seconds,
     )
     while True:
-        await poll_once(comms, tenants)
+        await poll_once(comms, tenants, sweeper)
         await asyncio.sleep(settings.worker_poll_interval_seconds)
 
 
