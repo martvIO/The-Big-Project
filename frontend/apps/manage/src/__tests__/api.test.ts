@@ -443,6 +443,8 @@ describe("the floor client", () => {
       stubFetch(() => jsonResponse(status, { error: { code, message: "…" } }));
       await expect(api.startStaffBreak("id")).rejects.toMatchObject({ status, code });
     }
+  });
+});
 
 // --- customers CRM (Feature 53) ---
 
