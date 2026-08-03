@@ -932,6 +932,35 @@ class FloorService:
         soft-deleted from `staff_users` since the claim, `staff_user_id` matches
         nobody, so only an elevated caller can clear the tile. That is the right
         answer and it is not a gap.
+
+        ⚠ **F58's FINISH IS THIS METHOD, EXTENDED, AND THERE IS NO SIXTH ROUTE
+        (D5).** That is a safety property rather than an economy: a separate
+        finish verb on the waitlist would leave releasing from the ROOM TILE —
+        the control that is already there, already documented, already tested —
+        freeing the room and leaving the ticket `in_service` forever, which is
+        exactly the defect this feature exists to eliminate, re-introduced by the
+        feature that eliminates it.
+
+        Three properties, each deliberate:
+
+        1. **One transaction.** The close is one more statement on the session
+           this method already holds. The worker frees and the entry closes
+           together, or neither does.
+        2. **`queue_ticket_id IS NULL` → byte-identical shipped behaviour**, and
+           that is the acceptance gate rather than a hope. Every assignment F36
+           ever created takes the untouched path, INCLUDING its audit row: the
+           `queue_ticket` key is present exactly when there is a ticket to name,
+           never as a null. (D5's own property 5 spells it `str(id) | None`,
+           which would put a null key on every release in the product and
+           contradict its property 2; the shipped suite is the tiebreak, and
+           `_occupied_body` is the house precedent for omitting rather than
+           nulling.)
+        3. **`wrote is False` → no close.** Somebody already released it, so
+           neither write happens — two no-ops, one condition. And `close`'s own
+           `status = 'in_service'` conjunct is the second guard behind it: a
+           ticket a manager REMOVED mid-fitting stays removed, and rowcount 0
+           there raises nothing, because the room is free, which is what she
+           asked for.
         """
         at = self._clock()
         async with tenant_session(self._sessions, tenant_id) as session:
@@ -944,6 +973,9 @@ class FloorService:
             if row is None:
                 raise DomainNotFoundError("fitting_room_assignment")
             if wrote:
+                ticket_id = row.queue_ticket_id
+                if ticket_id is not None:
+                    await self._tickets.close(session, tenant_id, ticket_id)
                 await self._audit.record(
                     session,
                     tenant_id=tenant_id,
@@ -954,6 +986,7 @@ class FloorService:
                         "room": str(row.fitting_room_id),
                         "assignment": str(assignment_id),
                         "staff": str(row.staff_user_id),
+                        **({"queue_ticket": str(ticket_id)} if ticket_id is not None else {}),
                     },
                 )
             # `wrote is False` with a live row back means somebody already

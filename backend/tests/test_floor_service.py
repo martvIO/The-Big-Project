@@ -2643,3 +2643,119 @@ async def test_both_dispatch_verbs_answer_the_tile_and_the_queue_together(
 
         assert read.room.row.room_id == ROOM_ID
         assert [entry.name for entry in read.waitlist.entries] == ["מיכל"]
+
+
+# --- F58: FINISH is the shipped release, EXTENDED (D5) ------------------------
+#
+# ⚠ THE ACCEPTANCE GATE FOR THIS TASK IS THE FOUR TESTS ABOVE STAYING GREEN WITH
+# NO EDIT. Every assignment F36 ever created carries `queue_ticket_id IS NULL`
+# and must take the byte-identical shipped path — including its audit row, whose
+# `details` the shipped test asserts as an EXACT dict.
+#
+# ⚠ AND THAT IS WHY THE NEW KEY IS OMITTED RATHER THAN NULL. D5 property 5 says
+# the row gains `{"queue_ticket": str(id) | None}`, which would have added a
+# `None` key to every release in the product and reddened
+# `test_a_release_that_wrote_records_one_audit_row_and_stamps_the_service_clock`
+# — contradicting D5 property 2, which calls those suites the acceptance gate.
+# The key is therefore present exactly when there is a ticket to name, which is
+# `_occupied_body`'s shipped rule for the same situation one layer up.
+
+
+async def test_a_release_of_a_dispatched_walk_in_closes_her_ticket_in_the_same_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FINISH. There is no sixth route, and that is a SAFETY property rather than
+    an economy: a separate finish verb would leave releasing from the room tile —
+    the control that is already there, already tested — freeing the room and
+    leaving the ticket `in_service` forever, which is precisely the defect this
+    feature exists to eliminate.
+
+    One transaction: the worker frees and the entry closes together, or neither
+    does.
+    """
+    rig = _Rig()
+    actor = _actor(StaffRole.SEAMSTRESS)
+    rig.assignment = _assignment(actor.id)
+    rig.release_result = (True, _assignment(actor.id, released_at=NOW, queue_ticket_id=TICKET_ID))
+    _install_tickets(monkeypatch, rig)
+
+    await _service().release(TENANT_ID, ASSIGNMENT_ID, actor=actor)
+
+    assert {"call": "close", "ticket_id": TICKET_ID} in rig.calls
+    assert rig.order.index("close") < rig.order.index("audit")
+    assert rig.audit == [
+        {
+            "action": AuditAction.FITTING_ROOM_RELEASED.value,
+            "actor_id": actor.id,
+            "entity": str(ASSIGNMENT_ID),
+            "details": {
+                "room": str(ROOM_ID),
+                "assignment": str(ASSIGNMENT_ID),
+                "staff": str(actor.id),
+                "queue_ticket": str(TICKET_ID),
+            },
+        }
+    ]
+
+
+async def test_a_release_of_an_ordinary_assignment_closes_nothing_and_names_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`queue_ticket_id IS NULL` is the DEFAULT, not an edge case: a staffer
+    prepping a room, a booked bride, an anonymous visit. Every one of those takes
+    the path F36 shipped, unchanged and unmentioned."""
+    rig = _Rig()
+    actor = _actor(StaffRole.SEAMSTRESS)
+    rig.assignment = _assignment(actor.id)
+    rig.release_result = (True, _assignment(actor.id, released_at=NOW))
+    _install_tickets(monkeypatch, rig)
+
+    await _service().release(TENANT_ID, ASSIGNMENT_ID, actor=actor)
+
+    assert "close" not in rig.order
+    assert "queue_ticket" not in rig.audit[0]["details"]
+
+
+async def test_a_second_release_of_a_dispatched_walk_in_re_closes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ `wrote is False` → NO CLOSE, and the two no-ops are ONE condition.
+
+    Somebody already released it: she wanted the room free and the room is free,
+    which is a 200 with no audit row. Closing the ticket anyway would be a write
+    on a path whose whole point is that it writes nothing — and on a ticket a
+    manager may have REMOVED mid-fitting, `close`'s own `status = 'in_service'`
+    conjunct is the second guard behind this one.
+
+    ⚠ MUTATION PERFORMED: close unconditionally (drop the `wrote` guard) → this
+    test reds on `close` appearing in the order.
+    """
+    rig = _Rig()
+    actor = _actor(StaffRole.SEAMSTRESS)
+    rig.assignment = _assignment(actor.id)
+    rig.release_result = (False, _assignment(actor.id, released_at=NOW, queue_ticket_id=TICKET_ID))
+    _install_tickets(monkeypatch, rig)
+
+    await _service().release(TENANT_ID, ASSIGNMENT_ID, actor=actor)
+
+    assert "close" not in rig.order
+    assert rig.audit == []
+
+
+async def test_a_release_whose_ticket_a_manager_already_removed_still_frees_the_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`close` answering False raises NOTHING. The room is free, which is what
+    she asked for; the ticket stays `removed` because a release must not
+    resurrect a manager's removal as `done`."""
+    rig = _Rig()
+    actor = _actor(StaffRole.SEAMSTRESS)
+    rig.assignment = _assignment(actor.id)
+    rig.release_result = (True, _assignment(actor.id, released_at=NOW, queue_ticket_id=TICKET_ID))
+    rig.closed = False
+    _install_tickets(monkeypatch, rig)
+
+    read = await _service().release(TENANT_ID, ASSIGNMENT_ID, actor=actor)
+
+    assert read.row.room_id == ROOM_ID
+    assert len(rig.audit) == 1
