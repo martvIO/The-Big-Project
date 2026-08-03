@@ -549,7 +549,8 @@ queue:
     slug: public-queue-board
     epic: E6
     title: "Public wall-screen queue board (/queue)"
-    status: building
+    status: merged
+    pr: 38
     attempts: 1
     deps: [F33]
     spec: .planning/specs/public-queue-board.md
@@ -584,6 +585,32 @@ queue:
       shown on "a screen in the boutique". The real processing is publication to an
       unauthenticated worldwide URL, and consenting to the first is not consenting to
       the second. The clause now names the public page. Do not soften it back.
+    shipped: >-
+      MERGED 2026-08-03 as PR #38, ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN.
+      NO MIGRATION — alembic heads unchanged at 0019, which is the claim D2 makes and
+      a reviewer verified. Gates local on the pushed tree: 1702 backend fast, 550
+      backend db on REAL POSTGRES 16.14, 104 ui / 1013 storefront / 729 manage,
+      77 e2e (74 before), axe zero. Build ran 18 agents, ZERO failures.
+      ⚠ STILL GATED — see deployment_gates. This merges; the TV does not go on a wall
+      until F58 ships.
+      THREE THINGS A LATER READER NEEDS.
+      (1) A MUTATION CHECK CAUGHT A VACUOUS TEST AND THE TEST WAS STRENGTHENED RATHER
+      THAN THE MUTATION ACCEPTED. `test_the_board_order_agrees_with_the_position_count`
+      seeded five all-waiting rows, so widening the status filter ON THE BOARD SIDE
+      ONLY added no rows and the alarm never fired — the one test whose entire job is
+      catching that divergence was blind to it. It now seeds done / in_service /
+      soft-deleted / yesterday noise, all EARLIER than every real row, so any one-sided
+      widening shifts a position. This is the discipline working: the plan says "fix
+      the seed, not the assertion".
+      (2) THE PREDICATES ARE NOW SHARED WITH position(), not copied. A divergence
+      between the wall and the customer's own phone (she reads 3rd, the wall says 4th)
+      is structurally impossible for the shared half rather than merely test-caught.
+      The day binding still differs and the helper docstring says why.
+      (3) REVIEW'S TWO SURVIVORS WERE BOTH REPRODUCED BY EXECUTION, not argued. The
+      MAJOR: in the `failed` state the freshness line rendered «עודכן» with a blank
+      time — the page's one designated honesty signal, dangling beside a visible error.
+      The sibling position page cannot reach it because it gates on a loaded ticket;
+      F59 dropped that gate deliberately and added no replacement arm.
     note: >-
       NEW 2026-07-31 (floor program), authorised with the full-queue ruling that
       also revived F33 — pre-decided #27 had deferred the kiosk as "a small
@@ -1640,6 +1667,19 @@ rulings_2026_07_30:             # taken in the finish-the-project planning sessi
   - "F15 phone-correction without OTP is ACKNOWLEDGED as shipped for owner AND shift_manager."
 
 known_flaky:                    # nondeterministic tests — they gate every merge, so treat as debt
+  - test: "backend/tests/test_booking_owner_db.py::test_two_concurrent_reschedules_of_one_booking_never_self_collide"
+    seen: "2026-08-03 during F59's build, in a full local db run against Postgres 16.14"
+    evidence: >-
+      Failed once in a full db run, PASSED in isolation, and did not recur in the
+      final full run of the same tree. F59 touches nothing in booking reschedule —
+      its diff is the queue board — so this is not an F59 regression.
+    why_it_matters: >-
+      It is a db-marked CONCURRENCY test, so the failure mode it guards is real and a
+      flake here is the worst kind: it trains whoever is watching to re-run a red
+      concurrency test rather than read it. It has only been seen locally, never on
+      CI, which may mean the local runner's shared cluster is the trigger rather than
+      the test. Diagnose before assuming either.
+    owner: unassigned — pick up at the E6 epic boundary
   - test: "frontend/apps/storefront/src/__tests__/ManageBookingPage.test.tsx :: the cancel two-step :: moves focus into the revealed block, onto the question itself"
     seen: "2026-07-31 on PR #27, whose diff touched ZERO frontend files"
     evidence: >-
