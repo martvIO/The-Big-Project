@@ -435,6 +435,11 @@ describe("delete — a nested Modal, and the 409 that has to name a person", () 
 
     await waitFor(() => expect(confirm.open).toBe(false));
     expect(within(modal).getByTestId("registry-cue")).toHaveTextContent("החדר כבר לא זמין.");
+    // ⚠ The RE-SEED half, which this test was named for and did not assert —
+    // it stayed green while the row survived, and review round 1 found the row
+    // surviving. Seed-once means no tick can repair it, so the write that
+    // learned the row is gone must drop it.
+    await waitFor(() => expect(within(modal).queryByDisplayValue("הבמה")).toBeNull());
   });
 });
 
@@ -626,5 +631,112 @@ describe("accessibility", () => {
     fireEvent.click(within(rowFor("הבמה")).getByRole("button", { name: "מחיקה" }));
     await waitFor(() => expect(dialogs()).toHaveLength(2));
     expect((await run(container)).violations).toEqual([]);
+  });
+});
+
+// --- review round 1 ----------------------------------------------------------
+
+describe("a partial PATCH may not re-seed the fields it did not send", () => {
+  it("leaves a TYPED label and order alone when the active toggle is flipped", async () => {
+    // ⚠ The seed-once contract says "re-seed from that write's own response",
+    // and it was written for WHOLE-ROW writes. `setActive` sends `{is_active}`
+    // only, so the response still carries the OLD label and order precisely
+    // because the request omitted them — re-seeding the whole row therefore
+    // discards the rename she was in the middle of and announces «נשמר» over
+    // it. AC25's failure, caused by the dialog's own write instead of a tick.
+    //
+    // MUTATION: re-seed with `draftOf(patched)` and both assertions redden.
+    updateRoom.mockResolvedValue(room({ is_active: false }));
+    mount();
+    await screen.findByText("הבמה");
+    const modal = await openRegistry();
+
+    const row = rowFor("חדר 1");
+    fireEvent.change(within(row).getByLabelText("שם החדר"), {
+      target: { value: "חדר 1 (מראה שבורה)" },
+    });
+    fireEvent.change(within(row).getByLabelText("סדר תצוגה"), { target: { value: "-3" } });
+    fireEvent.click(within(row).getByRole("switch"));
+
+    await waitFor(() => expect(updateRoom).toHaveBeenCalledWith(ROOM_A, { is_active: false }));
+    await waitFor(() =>
+      expect(within(modal).getByTestId("registry-cue")).toHaveTextContent("נשמר"),
+    );
+    expect(within(row).getByLabelText("שם החדר")).toHaveValue("חדר 1 (מראה שבורה)");
+    expect(within(row).getByLabelText("סדר תצוגה")).toHaveValue(-3);
+    // …and the one field the request DID send follows the server.
+    expect(within(row).getByRole("switch")).not.toBeChecked();
+  });
+});
+
+describe("a vanished row leaves the dialog", () => {
+  it("drops the ghost row when the delete 404s, instead of promising a repair", async () => {
+    // The cue reads «הרשימה תתוקן בעדכון הבא», and the seed-once contract makes
+    // that promise permanently unkeepable inside an open dialog: no tick may
+    // re-seed the rows. So the write that learned the row is gone has to remove
+    // it, or the owner retries the same 404 until she closes and reopens.
+    //
+    // MUTATION: set the cue and leave `drafts` alone — the row stays with its
+    // name field, its toggle, its «שמירה» and its «מחיקה».
+    deleteRoom.mockRejectedValue(new ApiError(404, "NOT_FOUND", "gone"));
+    mount();
+    await screen.findByText("הבמה");
+    const modal = await openRegistry();
+
+    const confirm = await openConfirmFor("הבמה");
+    fireEvent.click(within(confirm).getByRole("button", { name: "מחיקה" }));
+
+    await waitFor(() => expect(confirm.open).toBe(false));
+    expect(within(modal).getByTestId("registry-cue")).toHaveTextContent("החדר כבר לא זמין.");
+    await waitFor(() => expect(within(modal).queryByDisplayValue("הבמה")).toBeNull());
+    // The row that is still there is untouched.
+    expect(within(modal).getByDisplayValue("חדר 1")).toBeInTheDocument();
+  });
+
+  async function openConfirmFor(label: string) {
+    fireEvent.click(within(rowFor(label)).getByRole("button", { name: "מחיקה" }));
+    await waitFor(() => expect(dialogs()).toHaveLength(2));
+    return dialogs()[1];
+  }
+});
+
+describe("the registry cue announces every outcome, including a repeated one", () => {
+  it("writes the live region TWICE for two consecutive adds", async () => {
+    // ⚠ Both cues are the same non-interpolated constant, and assigning an
+    // equal string is a React bail-out — so the text node inside role="status"
+    // never mutates and AT announces nothing for the second add. F34's F-7
+    // byte-identical rule is about suppressing POLL-driven repeats, not the
+    // owner's own saves. BookingDetail's shipped shape (clear, then rewrite
+    // after the await) is what makes each outcome a real mutation.
+    //
+    // MUTATION: drop the clear and this counts one write instead of two.
+    createRoom.mockResolvedValueOnce(room({ id: NEW_ROOM, label: "חדר 3" }));
+    createRoom.mockResolvedValueOnce(room({ id: "eeeeeeee-0000-0000-0000-000000000005", label: "חדר 4" }));
+    mount();
+    await screen.findByText("הבמה");
+    const modal = await openRegistry();
+
+    const cue = within(modal).getByTestId("registry-cue");
+    let writes = 0;
+    const observer = new MutationObserver((records) => {
+      writes += records.length;
+    });
+    observer.observe(cue, { childList: true, characterData: true, subtree: true });
+
+    const addRow = within(modal).getByTestId("registry-add");
+    const addOne = async (label: string, rows: number) => {
+      fireEvent.change(within(addRow).getByLabelText("שם החדר"), { target: { value: label } });
+      fireEvent.click(within(addRow).getByRole("button", { name: "הוספה" }));
+      await waitFor(() => expect(within(modal).getAllByTestId("registry-row")).toHaveLength(rows));
+      await waitFor(() => expect(cue).toHaveTextContent("החדר נוסף."));
+    };
+
+    await addOne("חדר 3", 3);
+    await addOne("חדר 4", 4);
+
+    expect(createRoom).toHaveBeenCalledTimes(2);
+    observer.disconnect();
+    // Two adds, two announcements. Pre-fix the second one is silent.
+    expect(writes).toBeGreaterThanOrEqual(3);
   });
 });

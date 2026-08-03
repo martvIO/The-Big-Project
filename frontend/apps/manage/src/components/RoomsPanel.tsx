@@ -107,7 +107,13 @@ interface RoomsPanelProps {
   paused: boolean;
   /** FloorPanel's shared five-part dance. Null means done, anything else is the error. */
   mutate: (fn: () => Promise<void>) => Promise<unknown>;
-  onRooms: (next: Room[]) => void;
+  /**
+   * An UPDATER and never a finished list: two tiles can be in flight at once
+   * (`busy` is per room, `mutate` counts rather than latches), so a handler
+   * that rebuilt the list from the `rooms` prop it closed over discarded the
+   * other handler's patch. See FloorPanel.applyRooms.
+   */
+  onRooms: (update: (current: Room[]) => Room[]) => void;
   onCue: (cue: { text: string; name: string | null }) => void;
 }
 
@@ -336,10 +342,17 @@ export function RoomsPanel({
       });
   };
 
-  // The two 404s are DIFFERENT SENTENCES and that is a correction to the spec's
-  // single key: «החדר כבר לא זמין» is actively misleading when the room is fine
-  // and the fitting simply ended.
-  const describe = (error: unknown, target: "room" | "assignment"): Omit<TileError, "id"> => {
+  // The three 404s are DIFFERENT SENTENCES and that is a correction to the
+  // spec's single key: «החדר כבר לא זמין» is actively misleading when the room
+  // is fine and the fitting simply ended — and equally misleading when the room
+  // is fine and the BOOKING she picked is what the server could not find
+  // (FloorService.claim raises DomainNotFoundError("booking") for a cancelled,
+  // un-checked-in or not-today booking, through the same NOT_FOUND envelope).
+  // The wire cannot tell them apart, so the CALLER decides from what it sent.
+  const describe = (
+    error: unknown,
+    target: "room" | "assignment" | "client",
+  ): Omit<TileError, "id"> => {
     if (error instanceof ApiError && error.status === 409 && error.code === "ROOM_OCCUPIED") {
       const name = error.details?.staff_display_name;
       return name === undefined
@@ -353,6 +366,12 @@ export function RoomsPanel({
         : { text: t("rooms.error.STAFF_OCCUPIED", { room }), value: room, outage: false };
     }
     if (error instanceof ApiError && error.status === 404) {
+      // The client sentence has NO paused twin, and that is not an omission:
+      // it promises no next update because the caller has already performed the
+      // repair — the pick is dropped and the arrivals list re-read.
+      if (target === "client") {
+        return { text: t("rooms.error.clientGone"), value: null, outage: false };
+      }
       // DC-8. pause() stops the loop and `mode` is read only for the freshness
       // stamp, so a claim is fully available while paused — and «הרשימה תתוקן
       // בעדכון הבא» is then a promise the screen will not keep. Same failure as
@@ -368,7 +387,11 @@ export function RoomsPanel({
     return { text: t("staff.loadFailed"), value: null, outage: true };
   };
 
-  const act = async (roomId: string, target: "room" | "assignment", fn: () => Promise<void>) => {
+  const act = async (
+    roomId: string,
+    target: "room" | "assignment" | "client",
+    fn: () => Promise<void>,
+  ): Promise<unknown> => {
     setBusyIds((current) => [...current, roomId]);
     setTileError(null);
     restoreFocusRef.current = roomId;
@@ -380,14 +403,20 @@ export function RoomsPanel({
       restoreFocusRef.current = null;
       setTileError({ id: roomId, ...describe(failure, target) });
     }
+    // Returned so a caller can repair state the sentence claims is repaired.
+    return failure;
   };
 
   // NOT optimistic. The tile is patched from the SERVER's own row — every
   // mutation answers exactly what the payload's rooms[] elements carry — so the
   // panel cannot disagree with itself, and on an idempotent re-claim that is
   // what renders the FIRST holder rather than this request's intent.
+  //
+  // ⚠ The base is the LATEST list and never the captured prop: two tiles in
+  // flight together is a supported shape, and the second response to land would
+  // otherwise erase the first.
   const patch = (next: Room) => {
-    onRooms((rooms ?? []).map((item) => (item.id === next.id ? next : item)));
+    onRooms((current) => current.map((item) => (item.id === next.id ? next : item)));
   };
 
   // A dialog's write settles differently from a tile control's: focus goes back
@@ -410,9 +439,23 @@ export function RoomsPanel({
     setOpenDialog(null);
   };
 
+  const dropPick = (roomId: string) => {
+    setClientPick((current) => {
+      const { [roomId]: _dropped, ...rest } = current;
+      return rest;
+    });
+  };
+
   const claim = (room: Room) => {
-    const booking = clientPick[room.id] ?? "";
-    void act(room.id, "room", async () => {
+    // ⚠ THE SENT VALUE FOLLOWS THE LIST, not the map. `clientPick` is written
+    // only by the Select and the Select is rendered only while `clients` is
+    // non-empty, so a pick can outlive both the control and the booking: one
+    // dropped refetch, or an owner undoing a check-in from another device, and
+    // an unconditional read would bind a customer the screen does not show as
+    // selected — silently, on the surface D9's minimisation argument governs.
+    const pick = clientPick[room.id] ?? "";
+    const booking = (clients ?? []).some((client) => client.booking_id === pick) ? pick : "";
+    void act(room.id, booking === "" ? "room" : "client", async () => {
       // `{}` IS the one-tap anonymous claim on herself — the default path, and
       // the only one available before the day's first arrival. `staff_user_id`
       // is never sent: the acting identity is the session cookie.
@@ -424,7 +467,22 @@ export function RoomsPanel({
       // standing in. The tile one line away carries her name for exactly as long
       // as the fitting lasts.
       onCue({ text: t("rooms.claimedCue", { room: patched.label }), name: patched.label });
+      // ⚠ The pick is SPENT. copy.md §4 makes «ללא לקוחה» the mounted default
+      // and calls that the one-tap path; a pick that survived the claim it was
+      // made for would bind the previous bride to the next fitting in that room
+      // — wrong name on the five-role payload, wrong booking in the audit row,
+      // and no error anywhere.
+      dropPick(room.id);
       reloadClients();
+    }).then((failure) => {
+      // A 404 on a claim that CARRIED a booking is the booking's, as far as the
+      // panel can tell. The sentence names the client, so the state has to make
+      // that sentence true: drop the pick and re-read the arrivals, which turns
+      // the retry into the anonymous claim instead of the same refusal forever.
+      if (booking !== "" && failure instanceof ApiError && failure.status === 404) {
+        dropPick(room.id);
+        reloadClients();
+      }
     });
   };
 

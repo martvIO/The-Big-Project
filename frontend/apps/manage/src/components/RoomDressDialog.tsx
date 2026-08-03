@@ -80,6 +80,14 @@ export function RoomDressDialog({ open, room, onClose, onAdd, busy }: RoomDressD
   // cheaper than an effect that re-selects.
   const chosen = matches.find((dress) => dress.id === dressId) ?? matches[0];
   const sizes = chosen?.sizes ?? [];
+  // ⚠ DERIVED for the same reason `chosen` is. Typing in the filter can change
+  // `chosen` with no onChange firing, and `size` is reset only by the gown
+  // picker's own onChange — so a stored size survived onto a different gown, the
+  // picker showed «ללא מידה» while state still held it, and the confirm posted
+  // the pair the screen was not showing. The server stores `size_label` verbatim
+  // as a permanent snapshot with no lookup against dress_variants, so «סברינה ·
+  // 40» would be the record for a gown that comes in no sizes at all.
+  const activeSize = sizes.includes(size) ? size : "";
 
   return (
     <Modal
@@ -100,7 +108,7 @@ export function RoomDressDialog({ open, room, onClose, onAdd, busy }: RoomDressD
               size="md"
               fullWidthMobile={false}
               loading={busy}
-              onClick={() => onAdd(chosen.id, size === "" ? null : size)}
+              onClick={() => onAdd(chosen.id, activeSize === "" ? null : activeSize)}
             >
               {t("rooms.add")}
             </Button>
@@ -153,7 +161,7 @@ export function RoomDressDialog({ open, room, onClose, onAdd, busy }: RoomDressD
                   <Select
                     label={t("rooms.sizePick")}
                     className="min-h-11"
-                    value={size}
+                    value={activeSize}
                     onChange={(event) => setSize(event.target.value)}
                   >
                     {/* Always first and always the default: a sample gown

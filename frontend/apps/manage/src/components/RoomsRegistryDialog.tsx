@@ -48,7 +48,13 @@ interface RoomsRegistryDialogProps {
   open: boolean;
   onClose: () => void;
   rooms: Room[];
-  onRooms: (next: Room[]) => void;
+  /**
+   * An UPDATER and never a finished list. Two rows can be saved at once — the
+   * busy flag is per row — and the panel's tiles mutate under the same handler
+   * set, so a write that rebuilt the list from the captured `rooms` prop
+   * discarded whatever landed while it was in flight. See FloorPanel.applyRooms.
+   */
+  onRooms: (update: (current: Room[]) => Room[]) => void;
   mutate: (fn: () => Promise<void>) => Promise<unknown>;
 }
 
@@ -135,6 +141,27 @@ export function RoomsRegistryDialog({
     return { text: t("staff.loadFailed"), value: null };
   };
 
+  // ⚠ A row the server says is GONE has to leave the dialog. The cue reads
+  // «הרשימה תתוקן בעדכון הבא», and the seed-once contract makes that promise
+  // permanently unkeepable in here — no tick may re-seed the rows — so without
+  // this the owner retries the same 404 on a ghost row until she closes and
+  // reopens. Filtered rather than re-seeded from `rooms`: a re-seed would reset
+  // every OTHER row's unsaved edits, which is the reset seed-once exists to
+  // prevent.
+  const forgetIfGone = (id: string, failure: unknown) => {
+    if (failure instanceof ApiError && failure.status === 404) {
+      setDrafts((current) => current.filter((row) => row.id !== id));
+    }
+  };
+
+  // ⚠ Each verb below CLEARS the cue before its await and writes it after.
+  // Every cue in here is a non-interpolated constant, and assigning an equal
+  // string is a React bail-out — so a second add, or a save after a save,
+  // mutated no text node inside role="status" and announced NOTHING. F34's F-7
+  // byte-identical rule is about suppressing POLL-driven repeats; her own
+  // writes are exactly what a cue is for. BookingDetail ships this same
+  // clear-then-rewrite shape.
+
   const save = (draft: Draft) => {
     const found = validate(draft.label, draft.sortOrder);
     if (found.label !== undefined || found.order !== undefined) {
@@ -143,17 +170,21 @@ export function RoomsRegistryDialog({
     }
     setErrors((current) => ({ ...current, [draft.id]: {} }));
     setBusyId(draft.id);
+    setCue("");
     void mutate(async () => {
       const patched = await api.updateRoom(draft.id, {
         label: draft.label.trim(),
         sort_order: Number(draft.sortOrder),
       });
-      onRooms(rooms.map((room) => (room.id === patched.id ? patched : room)));
+      onRooms((current) => current.map((room) => (room.id === patched.id ? patched : room)));
+      // Safe to re-seed the WHOLE row here and only here: this request sent
+      // both fields, so the response carries what she typed.
       setDrafts((current) => current.map((row) => (row.id === patched.id ? draftOf(patched) : row)));
       setCue(t("common.saved"));
     }).then((failure) => {
       setBusyId(null);
       if (failure !== null) {
+        forgetIfGone(draft.id, failure);
         setCue(message(failure).text);
       }
     });
@@ -164,15 +195,26 @@ export function RoomsRegistryDialog({
   // order need an explicit «שמירה», because typing has no natural commit point.
   const setActive = (draft: Draft, isActive: boolean) => {
     setBusyId(draft.id);
+    setCue("");
     const body: UpdateRoomRequest = { is_active: isActive };
     void mutate(async () => {
       const patched = await api.updateRoom(draft.id, body);
-      onRooms(rooms.map((room) => (room.id === patched.id ? patched : room)));
-      setDrafts((current) => current.map((row) => (row.id === patched.id ? draftOf(patched) : row)));
+      onRooms((current) => current.map((room) => (room.id === patched.id ? patched : room)));
+      // ⚠ ONLY the field this request SENT. The seed-once contract says «re-seed
+      // from that write's own response», and it was written for whole-row
+      // writes: this one omits `label` and `sort_order` deliberately, so the
+      // response still carries their OLD values and `draftOf` would discard the
+      // rename she is halfway through — while announcing «נשמר» over it. The
+      // wire's own rule (api.ts: an omitted key means UNCHANGED) applied to the
+      // client's state.
+      setDrafts((current) =>
+        current.map((row) => (row.id === patched.id ? { ...row, isActive: patched.is_active } : row)),
+      );
       setCue(t("common.saved"));
     }).then((failure) => {
       setBusyId(null);
       if (failure !== null) {
+        forgetIfGone(draft.id, failure);
         setCue(message(failure).text);
       }
     });
@@ -186,9 +228,10 @@ export function RoomsRegistryDialog({
     }
     setAddError(null);
     setBusyId("add");
+    setCue("");
     void mutate(async () => {
       const created = await api.createRoom({ label: addLabel.trim() });
-      onRooms([...rooms, created]);
+      onRooms((current) => [...current, created]);
       setDrafts((current) => [...current, draftOf(created)]);
       setAddLabel("");
       setCue(t("rooms.addedCue"));
@@ -202,10 +245,11 @@ export function RoomsRegistryDialog({
 
   const remove = (draft: Draft) => {
     setBusyId(draft.id);
+    setCue("");
     setConfirmError(null);
     void mutate(async () => {
       await api.deleteRoom(draft.id);
-      onRooms(rooms.filter((room) => room.id !== draft.id));
+      onRooms((current) => current.filter((room) => room.id !== draft.id));
       setDrafts((current) => current.filter((row) => row.id !== draft.id));
       setConfirming(null);
       setCue(t("rooms.deletedCue"));
@@ -221,6 +265,7 @@ export function RoomsRegistryDialog({
         return;
       }
       setConfirming(null);
+      forgetIfGone(draft.id, failure);
       setCue(message(failure).text);
     });
   };

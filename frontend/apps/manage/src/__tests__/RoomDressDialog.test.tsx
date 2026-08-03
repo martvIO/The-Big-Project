@@ -358,3 +358,42 @@ describe("focus — the two contracts, and axe sees neither", () => {
     expect((await run(document.body)).violations).toEqual([]);
   });
 });
+
+// --- review round 1 ----------------------------------------------------------
+
+describe("the size follows the gown the picker actually shows", () => {
+  it("drops a size the newly derived gown does not come in", async () => {
+    // ⚠ `chosen` is DERIVED from `matches` while `size` is stored state, reset
+    // only by the gown picker's own onChange. Typing in the filter re-derives
+    // `chosen` with no onChange at all, so the size survives onto a different
+    // gown — and the server stores `size_label` verbatim as the permanent
+    // snapshot with no lookup against dress_variants, so the binding row reads
+    // «סברינה · 40» for a gown that has no sizes at all.
+    //
+    // MUTATION: pass the stored `size` to onAdd and the posted body carries
+    // "40" instead of no size.
+    addAssignmentDress.mockResolvedValue(
+      room({
+        assignment: assignment({
+          dresses: [
+            { id: "b1", dress_id: "d2", dress_name: "סברינה", dress_size: null },
+          ],
+        }),
+      }),
+    );
+    mount();
+    await screen.findByText("חדר 2");
+    const modal = await openDress();
+
+    fireEvent.change(within(modal).getByLabelText("מידה"), { target: { value: "40" } });
+    // ורוניק drops out; סברינה becomes the derived gown and has no sizes at all,
+    // so the size picker unmounts while its state survives.
+    fireEvent.change(within(modal).getByLabelText("חיפוש שמלה"), { target: { value: "סבר" } });
+    expect(within(modal).queryByLabelText("מידה")).toBeNull();
+
+    fireEvent.click(within(modal).getByRole("button", { name: "הוספה" }));
+
+    await waitFor(() => expect(addAssignmentDress).toHaveBeenCalledTimes(1));
+    expect(addAssignmentDress).toHaveBeenCalledWith(ASSIGNMENT_ID, { dress_id: "d2" });
+  });
+});

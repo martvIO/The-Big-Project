@@ -928,10 +928,19 @@ export const he = {
     // this one and the two can never read as two different facts.
     "rooms.error.STAFF_OCCUPIED": "היא כבר בחדר אחר: {{room}}.",
     "rooms.error.staffOccupiedUnknown": "היא כבר בחדר אחר.",
-    // Two 404 sentences, not one: «החדר כבר לא זמין» is actively misleading
-    // when the room is fine and the fitting simply ended.
+    // THREE 404 sentences, not one: «החדר כבר לא זמין» is actively misleading
+    // when the room is fine and the fitting simply ended — and equally
+    // misleading when the room is fine and the BOOKING she picked is the thing
+    // the server could not find. The envelope is the same `NOT_FOUND` body for
+    // all three, so the caller decides from what it sent.
     "rooms.error.notFound": "החדר כבר לא זמין. הרשימה תתוקן בעדכון הבא.",
     "rooms.error.assignmentGone": "הלקוחה כבר לא בחדר. הרשימה תתוקן בעדכון הבא.",
+    // ⚠ NO «בעדכון הבא» and therefore NO paused twin: the panel does not
+    // promise a repair here, it PERFORMS one — the pick is dropped and the
+    // arrivals list re-read before this sentence renders — so the next tap is
+    // the anonymous claim and the picker is already back to «ללא לקוחה».
+    "rooms.error.clientGone":
+      "הלקוחה שנבחרה כבר לא ברשימת ההגעות של היום. אפשר לבחור לקוחה אחרת או לתפוס את החדר ללא לקוחה.",
     // ⚠ The PAUSED forms. `pause()` stops the loop and nothing else — a claim
     // stays fully available while paused — so «בעדכון הבא» is a promise the
     // screen will not keep. Same failure as a named duration, in the event

@@ -506,6 +506,8 @@ export const ar = {
     "rooms.error.staffOccupiedUnknown": "היא כבר בחדר אחר.",
     "rooms.error.notFound": "החדר כבר לא זמין. הרשימה תתוקן בעדכון הבא.",
     "rooms.error.assignmentGone": "הלקוחה כבר לא בחדר. הרשימה תתוקן בעדכון הבא.",
+    "rooms.error.clientGone":
+      "הלקוחה שנבחרה כבר לא ברשימת ההגעות של היום. אפשר לבחור לקוחה אחרת או לתפוס את החדר ללא לקוחה.",
     "rooms.error.notFoundPaused": "החדר כבר לא זמין. הרשימה תתוקן עם חידוש העדכון.",
     "rooms.error.assignmentGonePaused": "הלקוחה כבר לא בחדר. הרשימה תתוקן עם חידוש העדכון.",
     "rooms.error.deleteOccupied": "{{name}} נמצאת בחדר עכשיו. אפשר למחוק אותו אחרי שהיא תצא.",

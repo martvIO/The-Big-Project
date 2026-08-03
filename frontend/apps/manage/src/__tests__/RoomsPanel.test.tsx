@@ -1138,3 +1138,161 @@ describe("accessibility", () => {
     expect((await run(container)).violations).toEqual([]);
   });
 });
+
+// --- review round 1 ----------------------------------------------------------
+
+describe("two mutations in flight at once, and the pick that outlives its list", () => {
+  it("does not let a SECOND tile's response discard the FIRST tile's patch", async () => {
+    // ⚠ `busy` is per room (`busyIds.includes(room.id)`) and `mutate` tracks a
+    // COUNTER, so two tiles can be in flight together by design — and the loop
+    // issues no tick meanwhile, so the only thing that can move `rooms`
+    // underneath a handler is the other handler. Claim room 1 + release room 2
+    // is server-legal (one staffer, one room; the release is somebody else's
+    // assignment, which an owner may end).
+    //
+    // MUTATION: rebuild the list from the captured `rooms` prop instead of the
+    // latest value and room 1 renders «פנוי» with a live claim control while
+    // the server has it claimed.
+    const occupied = room({ id: ROOM_B, label: "הבמה", assignment: assignment() });
+    getFloor.mockResolvedValue(floor([room(), occupied]));
+    let settleClaim: (value: Room) => void = () => {};
+    let settleRelease: (value: Room) => void = () => {};
+    claimRoom.mockReturnValue(
+      new Promise<Room>((resolve) => {
+        settleClaim = resolve;
+      }),
+    );
+    releaseAssignment.mockReturnValue(
+      new Promise<Room>((resolve) => {
+        settleRelease = resolve;
+      }),
+    );
+    mount();
+    await screen.findByText("הבמה");
+
+    fireEvent.click(screen.getByRole("button", { name: "תפיסת החדר — חדר 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "שחרור — הבמה" }));
+    expect(claimRoom).toHaveBeenCalledTimes(1);
+    expect(releaseAssignment).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      settleClaim(room({ assignment: assignment({ staff_user_id: SELF_ID }) }));
+    });
+    await waitFor(() => expect(within(tile(ROOM_A)).getByText("תפוס")).toBeInTheDocument());
+    await act(async () => {
+      settleRelease(room({ id: ROOM_B, label: "הבמה" }));
+    });
+
+    await waitFor(() => expect(within(tile(ROOM_B)).getByText("פנוי")).toBeInTheDocument());
+    // The claim's own row is still the truth for its tile.
+    expect(within(tile(ROOM_A)).getByText("תפוס")).toBeInTheDocument();
+    expect(within(tile(ROOM_A)).queryByRole("button", { name: "תפיסת החדר — חדר 1" })).toBeNull();
+  });
+
+  it("never sends a booking the client list no longer carries", async () => {
+    // The picker is gone from the screen but `clientPick` is not: nothing
+    // clears it, so the sent value has to follow the LIST rather than the map.
+    //
+    // MUTATION: read `clientPick[room.id]` unconditionally and the claim binds
+    // a customer the screen does not show as selected.
+    listFloorClients.mockResolvedValue({
+      clients: [{ booking_id: BOOKING_ID, client_label: "מיכל", starts_at: NOW }],
+      truncated: false,
+    });
+    getFloor.mockResolvedValue(floor([room(), room({ id: ROOM_B, label: "הבמה" })]));
+    claimRoom.mockResolvedValue(room({ id: ROOM_B, label: "הבמה", assignment: assignment() }));
+    mount();
+    await screen.findByText("הבמה");
+    await waitFor(() => expect(screen.getAllByRole("combobox")).toHaveLength(2));
+
+    fireEvent.change(within(tile(ROOM_A)).getByRole("combobox"), {
+      target: { value: BOOKING_ID },
+    });
+    // מיכל leaves the day's arrivals — an owner undoing her check-in from
+    // another device — and the next claim's refetch answers without her.
+    listFloorClients.mockResolvedValue({ clients: [], truncated: false });
+    fireEvent.click(screen.getByRole("button", { name: "תפיסת החדר — הבמה" }));
+    await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "תפיסת החדר — חדר 1" }));
+
+    await waitFor(() => expect(claimRoom).toHaveBeenCalledTimes(2));
+    expect(claimRoom).toHaveBeenLastCalledWith(ROOM_A, {});
+  });
+
+  it("clears the pick after a successful claim, so the ONE-TAP path stays anonymous", async () => {
+    // copy.md §4: «ללא לקוחה» is always selected on mount and that is the
+    // one-tap path. A pick that survives the claim it was made for rebinds the
+    // PREVIOUS bride to the next fitting in that room, with no error anywhere.
+    //
+    // MUTATION: leave `clientPick` alone on success and the second claim posts
+    // מיכל's booking again.
+    listFloorClients.mockResolvedValue({
+      clients: [{ booking_id: BOOKING_ID, client_label: "מיכל", starts_at: NOW }],
+      truncated: false,
+    });
+    getFloor.mockResolvedValue(floor([room()]));
+    claimRoom.mockResolvedValue(room({ assignment: assignment({ staff_user_id: SELF_ID }) }));
+    releaseAssignment.mockResolvedValue(room());
+    mount();
+    await screen.findByText("חדר 1");
+    await waitFor(() => expect(screen.getByRole("combobox")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: BOOKING_ID } });
+    fireEvent.click(screen.getByRole("button", { name: "תפיסת החדר — חדר 1" }));
+    await waitFor(() => expect(claimRoom).toHaveBeenCalledWith(ROOM_A, { booking_id: BOOKING_ID }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "שחרור — חדר 1" }));
+    const picker = await screen.findByRole("combobox");
+    expect((picker as HTMLSelectElement).value).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: "תפיסת החדר — חדר 1" }));
+    await waitFor(() => expect(claimRoom).toHaveBeenCalledTimes(2));
+    expect(claimRoom).toHaveBeenLastCalledWith(ROOM_A, {});
+  });
+
+  it("names the CLIENT, not the room, when the claim's 404 is about the booking", async () => {
+    // `FloorService.claim` raises DomainNotFoundError("booking") when the picked
+    // booking is cancelled, un-checked-in or outside today's Jerusalem window,
+    // and the envelope carries the same NOT_FOUND body as a missing room — so
+    // «החדר כבר לא זמין» is rendered beside a tile that still says «פנוי» and
+    // still offers the claim. The message must name the thing she can act on.
+    //
+    // MUTATION: map every claim 404 to the room's sentence and this reddens.
+    listFloorClients.mockResolvedValue({
+      clients: [{ booking_id: BOOKING_ID, client_label: "מיכל", starts_at: NOW }],
+      truncated: false,
+    });
+    getFloor.mockResolvedValue(floor([room()]));
+    claimRoom.mockRejectedValue(new ApiError(404, "NOT_FOUND", "gone"));
+    mount();
+    await screen.findByText("חדר 1");
+    await waitFor(() => expect(screen.getByRole("combobox")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: BOOKING_ID } });
+    fireEvent.click(screen.getByRole("button", { name: "תפיסת החדר — חדר 1" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("הלקוחה שנבחרה כבר לא ברשימת ההגעות של היום.");
+    expect(alert.textContent).not.toContain("החדר כבר לא זמין");
+    // …and the screen REPAIRS itself rather than promising a repair: the pick is
+    // dropped and the list re-read, so the retry is the anonymous claim.
+    await waitFor(() => expect(listFloorClients).toHaveBeenCalledTimes(2));
+    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("still names the ROOM when the claim carried no booking at all", async () => {
+    // The room sentence is not deleted — it is narrowed to the claims that
+    // cannot be about a booking.
+    getFloor.mockResolvedValue(floor([room()]));
+    claimRoom.mockRejectedValue(new ApiError(404, "NOT_FOUND", "gone"));
+    mount();
+    await screen.findByText("חדר 1");
+
+    fireEvent.click(screen.getByRole("button", { name: "תפיסת החדר — חדר 1" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "החדר כבר לא זמין. הרשימה תתוקן בעדכון הבא.",
+    );
+  });
+});

@@ -310,11 +310,20 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   }, [cards]);
 
   // A room mutation's own response is the truth for its tile, and the freshness
-  // stamp moves with it — the same contract `toggle` keeps for a card. There is
-  // no ref mirror because the loop issues no tick while a mutation is in flight,
-  // so `rooms` cannot move underneath the handler that read it.
-  const applyRooms = (next: Room[]) => {
-    setRooms(next);
+  // stamp moves with it — the same contract `toggle` keeps for a card.
+  //
+  // ⚠ AN UPDATER, not a value, and this is the whole of review round 1's
+  // MAJOR. The earlier shape took a finished list, so each caller rebuilt it
+  // from the `rooms` PROP captured in the render that created its handler. The
+  // loop issues no tick while a mutation is in flight — true, and the reason
+  // the old comment here said no mirror was needed — but the collision is
+  // MUTATION-vs-MUTATION, not tick-vs-mutation: `busy` is per room and `mutate`
+  // counts rather than latches, so a claim on one tile and a release on another
+  // overlap by design, and the second response to land rebuilt the list from a
+  // base that predated the first. A claimed room rendered «פנוי» with a live
+  // claim control, under a freshness stamp reset to now, until the next tick.
+  const applyRooms = (update: (current: Room[]) => Room[]) => {
+    setRooms((current) => update(current ?? []));
     setUpdatedAt(new Date().toISOString());
   };
 

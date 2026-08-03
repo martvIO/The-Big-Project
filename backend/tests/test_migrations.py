@@ -1437,9 +1437,9 @@ def test_migration_0017_round_trips(migrated_db: str) -> None:
     another feature landing on top of it: `-1` is one step back from CURRENT,
     and current is head. F33 landed 0018 and this test began downgrading THAT —
     dropping queue_tickets, leaving notes and tags in place, and asserting they
-    were gone; F36 landed its own 0018 (renumbered to 0019 at this merge) and downgraded the fitting-room tables
-    for the same reason. Both are red on the first `pytest -m db` after the
-    merge, in a file neither merging branch wrote.
+    were gone; F36 landed its own 0018 (renumbered to 0019 at this merge) and
+    downgraded the fitting-room tables for the same reason. Both are red on the
+    first `pytest -m db` after the merge, in a file neither branch wrote.
 
     main pinned the literal `"0016"`; this branch resolves it by IDENTITY —
     `_parent_of` — which survives a renumber as well as a stack, and the literal
