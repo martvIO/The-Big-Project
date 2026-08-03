@@ -32,7 +32,7 @@ from app.errors import DomainValidationError
 from app.models.constants import QueueTicketStatus, VisitType
 from app.models.queue_ticket import QueueTicket
 from app.queue.service import QueueService
-from app.queue.validation import CheckinThrottledError
+from app.queue.validation import CheckinThrottledError, QueueTicketNotFoundError
 
 TENANT_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 TICKET_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
@@ -369,3 +369,156 @@ def test_no_module_in_the_queue_package_reaches_for_a_ticket_by_phone() -> None:
     banned = re.compile(r"active_today|by_phone|phone\s*==")
     for path in sorted(QUEUE_PACKAGE.glob("*.py")):
         assert not banned.search(path.read_text(encoding="utf-8")), path.name
+
+
+# --- the position read (Task 4) ---
+
+
+def _waiting_ticket(
+    *, status: str = QueueTicketStatus.WAITING.value, called_at: datetime.datetime | None = None
+) -> QueueTicket:
+    row = QueueTicket(
+        tenant_id=TENANT_ID,
+        queue_day=JERUSALEM_DAY,
+        name="נועה",
+        phone="+972501234567",
+        visit_type=VisitType.BRIDE.value,
+    )
+    row.id = TICKET_ID
+    row.created_at = NOW
+    row.status = status
+    row.called_at = called_at
+    return row
+
+
+async def test_the_position_read_answers_the_tickets_own_four_fields() -> None:
+    called = datetime.datetime(2026, 7, 18, 20, 30, tzinfo=datetime.UTC)
+    session = _FakeSession(count=2, row=_waiting_ticket(called_at=called))
+    ticket = await _service(session).position(TENANT_ID, TICKET_ID)
+    assert ticket.model_dump() == {
+        "id": TICKET_ID,
+        "status": QueueTicketStatus.WAITING.value,
+        "position": 3,
+        "called_at": called,
+    }
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        QueueTicketStatus.IN_SERVICE.value,
+        QueueTicketStatus.DONE.value,
+        QueueTicketStatus.REMOVED.value,
+    ],
+)
+async def test_a_ticket_that_is_not_waiting_reports_no_position(status: str) -> None:
+    """A number with no referent is worse than no number: nothing that is not
+    waiting has a place in a queue."""
+    session = _FakeSession(count=5, row=_waiting_ticket(status=status))
+    ticket = await _service(session).position(TENANT_ID, TICKET_ID)
+    assert ticket.position is None
+    assert ticket.status == status
+
+
+async def test_the_position_is_counted_within_the_tickets_own_queue_day() -> None:
+    """C11, re-asserted through the service. The repository binds the day from
+    the row it has in hand; the service must not pass today's date down and
+    tell someone who walked out yesterday that she is next."""
+    yesterday = _waiting_ticket()
+    yesterday.queue_day = datetime.date(2026, 7, 17)
+    session = _FakeSession(count=4, row=yesterday)
+    ticket = await _service(session).position(TENANT_ID, TICKET_ID)
+    assert ticket.position == 5
+
+
+async def test_an_unknown_id_is_a_not_found_that_inherits_the_shipped_handler() -> None:
+    with pytest.raises(QueueTicketNotFoundError):
+        await _service(_FakeSession(row=None)).position(TENANT_ID, uuid.uuid4())
+
+
+async def test_a_foreign_tenants_ticket_is_a_miss_and_never_a_403() -> None:
+    """RLS plus the repository's explicit predicate make a foreign row
+    indistinguishable from an absent one, and that indistinguishability IS the
+    security property — a 403 would confirm the ticket exists."""
+    with pytest.raises(QueueTicketNotFoundError):
+        await _service(_FakeSession(row=None)).position(uuid.uuid4(), TICKET_ID)
+
+
+# --- Task 4: the metering table, and C7 is what it encodes ---
+
+
+async def test_a_hit_charges_the_ticket_budget_and_leaves_the_tenant_brake_alone() -> None:
+    """Both limiters are built with a ceiling of one, so `is_blocked` after the
+    call reads as "was this budget charged" with no reach into the limiter's
+    internals."""
+    ticket_limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    miss_limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    session = _FakeSession(count=0, row=_waiting_ticket())
+    await _service(
+        session, position_ticket_limiter=ticket_limiter, position_miss_limiter=miss_limiter
+    ).position(TENANT_ID, TICKET_ID)
+    assert ticket_limiter.is_blocked(f"checkin:position:{TENANT_ID}:{TICKET_ID}") is True
+    assert miss_limiter.is_blocked(f"checkin:position:miss:{TENANT_ID}") is False
+
+
+async def test_a_miss_charges_both_budgets() -> None:
+    ticket_limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    miss_limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    unknown = uuid.uuid4()
+    with pytest.raises(QueueTicketNotFoundError):
+        await _service(
+            _FakeSession(row=None),
+            position_ticket_limiter=ticket_limiter,
+            position_miss_limiter=miss_limiter,
+        ).position(TENANT_ID, unknown)
+    assert ticket_limiter.is_blocked(f"checkin:position:{TENANT_ID}:{unknown}") is True
+    assert miss_limiter.is_blocked(f"checkin:position:miss:{TENANT_ID}") is True
+
+
+async def test_a_spent_ticket_budget_throttles_that_one_ticket() -> None:
+    """The caller's own budget, keyed on a capability they already hold, so a
+    429 on it discloses nothing. A leaked poll loop stops at its own ceiling
+    instead of at the boutique's."""
+    ticket_limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    session = _FakeSession(count=0, row=_waiting_ticket())
+    service = _service(session, position_ticket_limiter=ticket_limiter)
+    await service.position(TENANT_ID, TICKET_ID)
+    with pytest.raises(CheckinThrottledError):
+        await service.position(TENANT_ID, TICKET_ID)
+
+
+async def test_a_spent_miss_brake_throttles_the_next_miss() -> None:
+    miss_limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    service = _service(_FakeSession(row=None), position_miss_limiter=miss_limiter)
+    with pytest.raises(QueueTicketNotFoundError):
+        await service.position(TENANT_ID, uuid.uuid4())
+    with pytest.raises(CheckinThrottledError):
+        await service.position(TENANT_ID, uuid.uuid4())
+
+
+async def test_a_spent_miss_brake_still_answers_a_real_ticket() -> None:
+    """C7, and this is the assertion that fails if someone puts the tenant
+    charge back on the hit path. `is_blocked` fires on a repeated KEY, and the
+    ticket key comes from the caller's own body — a walk of fresh UUIDs never
+    repeats one, so charging the tenant on every read let one host at 50 rps
+    deny every real bride her position page."""
+    miss_limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    miss_limiter.record_failure(f"checkin:position:miss:{TENANT_ID}")
+    session = _FakeSession(count=1, row=_waiting_ticket())
+    ticket = await _service(session, position_miss_limiter=miss_limiter).position(
+        TENANT_ID, TICKET_ID
+    )
+    assert ticket.position == 2
+
+
+async def test_the_miss_brake_is_keyed_on_the_tenant_and_the_ticket_budget_on_the_ticket() -> None:
+    ticket_limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    session = _FakeSession(count=0, row=_waiting_ticket())
+    service = _service(session, position_ticket_limiter=ticket_limiter)
+    await service.position(TENANT_ID, TICKET_ID)
+    other = uuid.uuid4()
+    session.row = _waiting_ticket()
+    session.row.id = other
+    # A different ticket is a different key, so the first ticket's spent budget
+    # cannot deny it. One budget per capability, not one per boutique.
+    assert (await service.position(TENANT_ID, other)).id == other

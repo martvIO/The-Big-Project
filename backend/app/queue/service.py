@@ -38,6 +38,7 @@ from app.notifications.validation import normalize_israeli_mobile
 from app.queue.schemas import TicketView
 from app.queue.validation import (
     CheckinThrottledError,
+    QueueTicketNotFoundError,
     validate_checkin_request,
 )
 from app.storefront.validation import Clock, today_jerusalem
@@ -114,6 +115,41 @@ class QueueService:
                 # phone is in hand, and it owns the promotion.
                 marketing_opt_in_at=now if marketing_opt_in else None,
             )
+            return _view(ticket, await self._tickets.position(session, tenant_id, ticket))
+
+    async def position(self, tenant_id: uuid.UUID, ticket_id: uuid.UUID) -> TicketView:
+        """The per-ticket budget is charged on every read, hit or miss. The
+        per-tenant brake is consulted and charged on a MISS ONLY.
+
+        That asymmetry is the whole point. `is_blocked` fires on a repeated KEY,
+        and the ticket key comes from the caller's own body — a walk of fresh
+        random UUIDs never repeats one, so the per-ticket budget cannot bound
+        it. Charging the tenant on every read instead meant one host at 50 rps
+        denied every real bride her position page. Now a flood of guessed ids
+        denies only reads that no legitimate client makes, while a hit on a live
+        ticket rides its own 30/60s and never touches the brake.
+
+        Charging the per-ticket budget on a miss too is deliberate: it is what
+        bounds a walk that hammers ONE guessed id, which the miss brake alone
+        would let through at its own rate. Two keys, two shapes of walk.
+        """
+        ticket_key = f"checkin:position:{tenant_id}:{ticket_id}"
+        if self._position_ticket_limiter.is_blocked(ticket_key):
+            raise CheckinThrottledError
+        self._position_ticket_limiter.record_failure(ticket_key)
+
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            ticket = await self._tickets.by_id(session, tenant_id, ticket_id)
+            if ticket is None:
+                miss_key = f"checkin:position:miss:{tenant_id}"
+                if self._position_miss_limiter.is_blocked(miss_key):
+                    # A spent brake turns this 404 into a 429, which defers the
+                    # client's terminal by up to one window rather than lying to
+                    # it. Wasteful, never wrong; answering 404 regardless would
+                    # make the brake bound nothing.
+                    raise CheckinThrottledError
+                self._position_miss_limiter.record_failure(miss_key)
+                raise QueueTicketNotFoundError
             return _view(ticket, await self._tickets.position(session, tenant_id, ticket))
 
 
