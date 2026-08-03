@@ -361,3 +361,73 @@ export function validateStaffDraft(draft: StaffDraft): string | null {
   }
   return null;
 }
+
+// --- customers CRM (Feature 53) ---
+//
+// Mirrors of backend/app/customers/validation.py. backend/tests/
+// test_frontend_constant_parity.py fails if any of these drifts.
+//
+// These return i18n KEYS, not Hebrew. The rest of this file hardcodes its
+// strings and the storefront twin's header records what that cost — two copies
+// of one sentence held together by luck. F53's copy deck is the single place
+// its strings exist (spec D11), so the caller resolves the key with the
+// interpolation values it already has in scope.
+
+export const MAX_TAG_LENGTH = 24;
+export const MAX_TAGS = 10;
+export const MAX_CUSTOMER_NOTES_LENGTH = 2000;
+// Not a write bound — it is Query(max_length=…) on GET /manage/customers. It is
+// mirrored because it is applied as maxLength on the search box: without it a
+// pasted over-long term answers 400 and the list renders an outage message for
+// an input error that every retry reproduces.
+export const MAX_SEARCH_TERM_LENGTH = 80;
+
+// _CONTROL_CHARS / _CONTROL_CHARS_EXCEPT_WS in app/booking/validation.py,
+// character for character — app/customers/validation.py imports those two
+// rather than restating them, so one backend module is the authority for both
+// consoles. A tag bars the whole C0 set plus DEL: a newline inside a TEXT[]
+// element renders a two-line chip and copies wrong. Notes are a paragraph, so
+// they keep \t, \n and \r.
+// oxlint-disable-next-line no-control-regex -- mirroring a backend charset gate
+const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+// oxlint-disable-next-line no-control-regex -- same, minus \t \n \r
+const CONTROL_CHARS_EXCEPT_WS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+
+// `existing` is the DRAFT chip list, not the saved one — the cap and the
+// duplicate rule both have to see tags added since the last save. A blank tag
+// is not an error here: the caller drops it without a message, because typing
+// nothing and pressing «הוספה» is not a mistake worth a sentence.
+export function validateTag(tag: string, existing: string[]): string | null {
+  const trimmed = tag.trim();
+  if (trimmed.length > MAX_TAG_LENGTH) {
+    return "customers.tagTooLong";
+  }
+  if (CONTROL_CHARS.test(trimmed)) {
+    return "customers.tagInvalid";
+  }
+  // Case-insensitive, matching normalize_tags' casefold dedup: the server would
+  // silently drop a re-cased duplicate and the chip would vanish on save.
+  const folded = trimmed.toLocaleLowerCase();
+  if (existing.some((current) => current.trim().toLocaleLowerCase() === folded)) {
+    return "customers.tagDuplicate";
+  }
+  if (existing.length >= MAX_TAGS) {
+    return "customers.tagsFull";
+  }
+  return null;
+}
+
+// maxLength on a <textarea> bounds length but does NOT filter control
+// characters, so a note pasted out of Word carrying U+000B reaches the server,
+// raises CustomerValidationError, and its ENGLISH message renders into a Hebrew
+// console. This guard is the only thing that makes "the client never produces a
+// VALIDATION_ERROR" true rather than hopeful.
+export function validateCustomerNotes(notes: string): string | null {
+  if (notes.length > MAX_CUSTOMER_NOTES_LENGTH) {
+    return "customers.notesTooLong";
+  }
+  if (CONTROL_CHARS_EXCEPT_WS.test(notes)) {
+    return "customers.notesInvalid";
+  }
+  return null;
+}
