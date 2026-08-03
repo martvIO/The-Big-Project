@@ -8,6 +8,7 @@ import { AboutPage } from "./routes/AboutPage";
 import { AccessibilityPage } from "./routes/AccessibilityPage";
 import { BookPage } from "./routes/BookPage";
 import { CatalogPage } from "./routes/CatalogPage";
+import { CheckinPage } from "./routes/CheckinPage";
 import { DressPage } from "./routes/DressPage";
 import { ManageBookingPage } from "./routes/ManageBookingPage";
 import { QueuePositionPage } from "./routes/QueuePositionPage";
@@ -339,12 +340,16 @@ export function Router() {
       return <BookPage step={match.step} dressId={match.dressId} />;
     case "manage":
       return <ManageBookingPage token={match.token} />;
+    case "checkin":
+      return <CheckinPage />;
     case "queuePosition":
       return <QueuePositionPage ticketId={match.ticketId} />;
-    // ⚠ A missing `case` compiles clean and renders the dress grid under the
-    // route's own title, because of the fallthrough below. `checkin` is matched
-    // above and lands its arm with its page; until then this comment is the only
-    // marker that it has not.
+    // ⚠ A missing `case` compiles clean, typechecks clean and renders the dress
+    // grid under the route's own title, because of the fallthrough below —
+    // DOC_TITLE_KEYS is compiler-forced but this switch is not. `checkin`
+    // shipped that way for one commit and every title assertion stayed green.
+    // What catches it is the pair of render assertions in router.test.tsx that
+    // check the page mounted AND that the catalogue did not.
     default:
       return <CatalogPage />;
   }

@@ -19,6 +19,10 @@ vi.mock("../routes/BookPage", () => ({
 vi.mock("../routes/ManageBookingPage", () => ({
   ManageBookingPage: ({ token }: { token: string }) => `ניהול ${token}`,
 }));
+vi.mock("../routes/CheckinPage", () => ({ CheckinPage: () => "טופס רישום" }));
+vi.mock("../routes/QueuePositionPage", () => ({
+  QueuePositionPage: ({ ticketId }: { ticketId: string }) => `מקום בתור ${ticketId}`,
+}));
 
 function go(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -222,6 +226,30 @@ describe("the booking flow's routes", () => {
   it("renders the step named in the path", () => {
     renderRoute("/book/terms/d1");
     expect(screen.getByText("שלב terms")).toBeInTheDocument();
+  });
+});
+
+// The render switch ends in `default: return <CatalogPage />`, so a route that
+// matches, resolves a title and has NO `case` compiles clean, typechecks clean
+// and serves the dress grid under its own tab title. `/checkin` shipped exactly
+// that way — and every title assertion in this file passed against it, because
+// the title comes from DOC_TITLE_KEYS[match.name] and never from the switch.
+//
+// So each of these asserts the page rendered AND that the catalogue did not.
+// The negative half is the one that reddens against the fallthrough; asserting
+// the title, or asserting the stub alone against a route that renders both,
+// would not.
+describe("the walk-in queue's routes", () => {
+  it("renders the check-in form at /checkin, never the catalogue", () => {
+    renderRoute("/checkin");
+    expect(screen.getByText("טופס רישום")).toBeInTheDocument();
+    expect(screen.queryByText("קטלוג")).toBeNull();
+  });
+
+  it("renders the position page at /q/:ticketId with its ticket id, never the catalogue", () => {
+    renderRoute("/q/tick3t");
+    expect(screen.getByText("מקום בתור tick3t")).toBeInTheDocument();
+    expect(screen.queryByText("קטלוג")).toBeNull();
   });
 });
 

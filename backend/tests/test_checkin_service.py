@@ -69,11 +69,17 @@ class _FakeSession:
     """`added` and `statements` are what make the assertions possible: the
     number of INSERTs is a claim this feature makes in two places (one either
     way on the opt-in, none at all on a 400), and it is only checkable by
-    recording them."""
+    recording them.
+
+    `statements` holds the SELECT *objects*, not `str()` of them. `execute()`
+    answers a canned result whatever it is handed, so any assertion about a
+    WHERE clause has to read the statement itself — and `str()` renders bound
+    values as `:queue_day_1`, which is exactly the part that matters. The
+    objects let a test read `.compile().params`."""
 
     def __init__(self, *, count: int = 0, row: QueueTicket | None = None) -> None:
         self.added: list[QueueTicket] = []
-        self.statements: list[str] = []
+        self.statements: list[Any] = []
         self.count = count
         self.row = row
 
@@ -100,7 +106,7 @@ class _FakeSession:
 
     async def execute(self, *args: object, **kwargs: object) -> _FakeResult:
         if args:
-            self.statements.append(str(args[0]))
+            self.statements.append(args[0])
         return _FakeResult(count=self.count, row=self.row)
 
 
@@ -423,12 +429,25 @@ async def test_a_ticket_that_is_not_waiting_reports_no_position(status: str) -> 
 async def test_the_position_is_counted_within_the_tickets_own_queue_day() -> None:
     """C11, re-asserted through the service. The repository binds the day from
     the row it has in hand; the service must not pass today's date down and
-    tell someone who walked out yesterday that she is next."""
+    tell someone who walked out yesterday that she is next.
+
+    Asserted on the COUNT statement's bound value and not on the returned
+    number: `_FakeSession.execute` answers `count` whatever it is given, so
+    `position == 5` is `4 + 1` and holds just as well against a query bound to
+    `today_jerusalem()`. The clock here says 2026-07-18 and the ticket says
+    2026-07-17, so the two are distinguishable — which is the whole point.
+    (`test_queue_repositories.py` pins the same rule against real SQL, but it
+    is db-marked and invisible to `pytest -m "not db"`.)"""
     yesterday = _waiting_ticket()
     yesterday.queue_day = datetime.date(2026, 7, 17)
     session = _FakeSession(count=4, row=yesterday)
     ticket = await _service(session).position(TENANT_ID, TICKET_ID)
     assert ticket.position == 5
+
+    # by_id first, then the count — the count is the one with a day predicate.
+    bound = session.statements[-1].compile().params
+    assert bound["queue_day_1"] == datetime.date(2026, 7, 17)
+    assert JERUSALEM_DAY not in bound.values()
 
 
 async def test_an_unknown_id_is_a_not_found_that_inherits_the_shipped_handler() -> None:
