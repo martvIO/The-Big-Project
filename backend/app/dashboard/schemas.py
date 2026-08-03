@@ -38,14 +38,22 @@ class WeekBucket(BaseModel):
 
 
 class StatusTotals(BaseModel):
-    """All four CHECK-pinned statuses. `confirmed` over a window entirely in the
+    """All five CHECK-pinned statuses. `confirmed` over a window entirely in the
     past is the UNCLASSIFIED count — an appointment whose outcome the owner
-    never recorded — and it ships beside `no_show_rate` for that reason (D5)."""
+    never recorded — and it ships beside `no_show_rate` for that reason (D5).
+
+    `pending_payment` is the odd one out: F19 filters those rows out of the
+    projection before any fold sees them (D14), so this count is fed from the
+    UNFILTERED list and is the ONLY place a checkout in progress is visible. It
+    is deliberately absent from every other number on the panel — a bride on a
+    payment page is not an appointment."""
 
     confirmed: int
     cancelled: int
     no_show: int
     completed: int
+    # Defaulted, so the four-status fixtures that predate F19 still construct.
+    pending_payment: int = 0
 
 
 class AppointmentTypeCount(BaseModel):
