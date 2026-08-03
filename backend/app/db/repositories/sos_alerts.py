@@ -1,12 +1,47 @@
+import dataclasses
 import uuid
 from datetime import datetime
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import Select, and_, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.constants import SosStatus
+from app.models.fitting_room import FittingRoom
 from app.models.fitting_room_assignment import FittingRoomAssignment
 from app.models.sos_alert import SosAlert
+from app.models.staff_user import StaffUser
+
+LIVE_STATUSES = (SosStatus.OPEN, SosStatus.ACCEPTED)
+
+
+@dataclasses.dataclass(frozen=True)
+class SosAlertRow:
+    """One card: the alert, plus the four things its pointers resolve to.
+
+    Frozen, and holding the ORM row rather than copying its columns out, so the
+    read-time predicates keep operating on a `SosAlert` exactly as D6 spells them
+    and there is no second transcription of twelve fields to drift.
+
+    ⚠ **There is no customer datum here and there is no join that could produce
+    one.** F36's floor payload carries a bride's name and is fetched only while
+    the console is on the board or the floor; this one is fetched on every
+    section, every few seconds, for the whole shift. The responder needs to know
+    who is calling and which curtain — the person in the room is the colleague
+    who raised it.
+    """
+
+    alert: SosAlert
+    # Null ONLY when the staff row is gone entirely: the three staff joins carry
+    # no `deleted_at` filter, so a colleague removed mid-page still has a name.
+    raised_by_name: str | None
+    # Null when the target is the shift-manager ROLE, and also when the named
+    # staffer's row was swept — the card says «no name» either way, and the
+    # column that would have told them apart is the one the reroute overwrites.
+    target_name: str | None
+    accepted_by_name: str | None
+    # Null = no room on this page, which is ordinary.
+    room_label: str | None
 
 
 class SosAlertsRepository:
@@ -121,6 +156,138 @@ class SosAlertsRepository:
         )
         refreshed = await self._refreshed(session, tenant_id, alert_id)
         return wrote.scalar_one_or_none() is not None, refreshed
+
+    async def live_for(
+        self, session: AsyncSession, tenant_id: uuid.UUID, *, actor_id: uuid.UUID | None
+    ) -> list[SosAlertRow]:
+        """Every alert this caller may see, oldest first — D10's ONE statement.
+
+        ⚠ **`actor_id=None` IS the elevated caller**, and she gets no extra
+        predicate at all rather than a bound-in boolean: faster, and it keeps
+        this module out of the business of knowing which roles are elevated.
+        WHICH callers pass None is `ELEVATED_ROLES`' decision and lives in the
+        service beside the rest of D7.
+
+        Everybody else sees exactly the three alerts that are hers — the one she
+        raised (so she sees the accept), the one she was named on, and the one she
+        owns. That filter runs HERE, on the server, which is the whole reason an
+        overlay fed by this read can be mounted app-wide on eleven sections.
+
+        OLDEST first, and it is not a preference: the overlay and the centre both
+        render this order, so the longest-waiting emergency is the one at the top
+        and the cards do not shuffle between ticks.
+        """
+        stmt = self._joined(tenant_id).where(SosAlert.status.in_(LIVE_STATUSES))
+        if actor_id is not None:
+            stmt = stmt.where(
+                or_(
+                    SosAlert.raised_by == actor_id,
+                    SosAlert.target_staff_user_id == actor_id,
+                    SosAlert.accepted_by == actor_id,
+                )
+            )
+        return await self._rows(session, stmt.order_by(SosAlert.created_at))
+
+    async def view_of(
+        self, session: AsyncSession, tenant_id: uuid.UUID, alert_id: uuid.UUID
+    ) -> SosAlertRow | None:
+        """ONE card, the same join — what every mutation answers.
+
+        ⚠ **NO status filter and no audience clause**, which is `by_id`'s reason
+        applied to the ANSWER rather than to the decision: a resolve answers the
+        row it just closed, and the verb has already decided who may see it.
+        """
+        rows = await self._rows(session, self._joined(tenant_id).where(SosAlert.id == alert_id))
+        return rows[0] if rows else None
+
+    def _joined(
+        self, tenant_id: uuid.UUID
+    ) -> Select[tuple[SosAlert, str | None, str | None, str | None, str | None]]:
+        """The join chain, written ONCE. Two callers narrow it with a predicate
+        and nothing else — a second transcription of five outer joins is five
+        chances for one `deleted_at` to differ between the poll and the row a
+        mutation answers with.
+
+        There are no FK constraints in this schema, so every predicate is spelled
+        out. Three of them are decisions with named tests:
+
+        - **The three `staff_users` joins carry NO `deleted_at` filter.** A
+          colleague removed mid-page still has a name, and an alert that cannot
+          say who called is worse than one naming a departed colleague. It is also
+          what makes the 409's `details`-less branch rare rather than routine.
+        - **The assignment join carries no `released_at` filter** — the fitting
+          can end while the page is open and the alert must still say where.
+        - **The rooms join carries NO `deleted_at` filter**, F36's Risk 1(c)
+          decided there and handed here verbatim: once the assignment is released
+          the owner may soft-delete the room, and rendering a since-deleted
+          label is deliberate and safe because **a room label is not personal
+          data**.
+
+        All five are LEFT, so an alert whose every pointer has been swept still
+        renders — with null names, a null room and a card that says so. An alert
+        that vanished because a pointer did would be a page silently dropped.
+        """
+        raiser = aliased(StaffUser)
+        target = aliased(StaffUser)
+        acceptor = aliased(StaffUser)
+        return (
+            select(
+                SosAlert,
+                raiser.display_name,
+                target.display_name,
+                acceptor.display_name,
+                FittingRoom.label,
+            )
+            .select_from(SosAlert)
+            .outerjoin(raiser, and_(raiser.tenant_id == tenant_id, raiser.id == SosAlert.raised_by))
+            .outerjoin(
+                target,
+                and_(target.tenant_id == tenant_id, target.id == SosAlert.target_staff_user_id),
+            )
+            .outerjoin(
+                acceptor,
+                and_(acceptor.tenant_id == tenant_id, acceptor.id == SosAlert.accepted_by),
+            )
+            .outerjoin(
+                FittingRoomAssignment,
+                and_(
+                    FittingRoomAssignment.tenant_id == tenant_id,
+                    FittingRoomAssignment.id == SosAlert.fitting_room_assignment_id,
+                    FittingRoomAssignment.deleted_at.is_(None),
+                ),
+            )
+            .outerjoin(
+                FittingRoom,
+                and_(
+                    FittingRoom.tenant_id == tenant_id,
+                    FittingRoom.id == FittingRoomAssignment.fitting_room_id,
+                ),
+            )
+            .where(SosAlert.tenant_id == tenant_id, SosAlert.deleted_at.is_(None))
+        )
+
+    async def _rows(
+        self,
+        session: AsyncSession,
+        stmt: Select[tuple[SosAlert, str | None, str | None, str | None, str | None]],
+    ) -> list[SosAlertRow]:
+        """`populate_existing=True` for `_refreshed`'s reason, and it matters most
+        exactly here: this read runs AFTER the verb's own guarded UPDATE, whose
+        `evaluate` synchronization may have stamped the caller's intent onto an
+        identity-mapped instance the database never touched. Without the flag a
+        card could render what this request wanted rather than what happened.
+        """
+        rows = (await session.execute(stmt.execution_options(populate_existing=True))).all()
+        return [
+            SosAlertRow(
+                alert=row[0],
+                raised_by_name=row[1],
+                target_name=row[2],
+                accepted_by_name=row[3],
+                room_label=row[4],
+            )
+            for row in rows
+        ]
 
     async def assignment_of(
         self,

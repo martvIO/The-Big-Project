@@ -37,8 +37,10 @@ from app.db.repositories.sos_alerts import SosAlertsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.models.constants import SosStatus, StaffRole
+from app.models.fitting_room import FittingRoom
 from app.models.fitting_room_assignment import FittingRoomAssignment
 from app.models.sos_alert import SosAlert
+from app.models.staff_user import StaffUser
 
 pytestmark = pytest.mark.db
 
@@ -545,5 +547,260 @@ async def test_an_accept_never_touches_another_tenants_alert(app_role_url: str) 
         assert stored is not None
         assert stored.status == SosStatus.OPEN
         assert stored.accepted_by is None
+    finally:
+        await engine.dispose()
+
+
+# --- the payload read: one statement, five LEFT JOINs -------------------------
+#
+# ⚠ **`actor_id=None` IS the elevated caller** — the repository takes an id and
+# never a role, so which roles are elevated stays `ELEVATED_ROLES`' decision in
+# the service. That is also what lets the audience clause be tested at all in a
+# module forbidden from committing a floor role: nothing here needs one.
+
+
+async def test_the_live_read_resolves_the_raiser_the_target_the_acceptor_and_the_room(
+    app_role_url: str,
+) -> None:
+    """D10's whole join chain in one row — and NO customer datum reaches it. The
+    assignment is bound to a booking on the floor payload; this read never goes
+    near `bookings` or `customers`, which is the largest privacy decision in the
+    feature expressed as an absent join."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="נועה")
+        dana = await _seed_staff(factory, tenant_id, display_name="דנה")
+        assignment_id = await _seed_assignment(factory, tenant_id, raiser, label="חדר 2")
+        alert_id = await _insert_alert(
+            factory,
+            tenant_id,
+            raised_by=raiser,
+            target=dana,
+            assignment_id=assignment_id,
+            note="צריך סיכות",
+        )
+        async with tenant_session(factory, tenant_id) as session:
+            await SosAlertsRepository().accept(session, tenant_id, alert_id, actor_id=dana, at=NOW)
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await SosAlertsRepository().live_for(session, tenant_id, actor_id=None)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.alert.id == alert_id
+        assert row.alert.note == "צריך סיכות"
+        assert row.raised_by_name == "נועה"
+        assert row.target_name == "דנה"
+        assert row.accepted_by_name == "דנה"
+        assert row.room_label == "חדר 2"
+    finally:
+        await engine.dispose()
+
+
+async def test_a_removed_raiser_still_names_the_page(app_role_url: str) -> None:
+    """⚠ **The three `staff_users` joins carry NO `deleted_at` filter**, and add
+    one to any of them and this reds. F36's ghost-holder rule: a staffer removed
+    mid-page still has a name, and an alert that cannot say who called is worse
+    than one naming a departed colleague."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="נועה")
+        alert_id = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        async with tenant_session(factory, tenant_id) as session:
+            await session.execute(
+                update(StaffUser).where(StaffUser.id == raiser).values(deleted_at=NOW)
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await SosAlertsRepository().live_for(session, tenant_id, actor_id=None)
+        assert [row.alert.id for row in rows] == [alert_id]
+        assert rows[0].raised_by_name == "נועה"
+    finally:
+        await engine.dispose()
+
+
+async def test_a_released_assignment_still_resolves_its_room_label(app_role_url: str) -> None:
+    """⚠ **NO `released_at` filter on the assignment join and NO `deleted_at`
+    filter on the rooms join** — F36's Risk 1(c), decided there and handed here
+    verbatim. The fitting ends while the page is open and the owner may then
+    soft-delete the room; the alert must still say WHERE. A room label is not
+    personal data, so the no-snapshot rule does not reach it."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="נועה")
+        assignment_id = await _seed_assignment(factory, tenant_id, raiser, label="חדר 2")
+        alert_id = await _insert_alert(
+            factory, tenant_id, raised_by=raiser, assignment_id=assignment_id
+        )
+        async with tenant_session(factory, tenant_id) as session:
+            _, assignment = await FittingRoomAssignmentsRepository().release(
+                session, tenant_id, assignment_id, at=NOW
+            )
+            assert assignment is not None
+            await session.execute(
+                update(FittingRoom)
+                .where(FittingRoom.id == assignment.fitting_room_id)
+                .values(deleted_at=NOW)
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await SosAlertsRepository().live_for(session, tenant_id, actor_id=None)
+        assert [row.alert.id for row in rows] == [alert_id]
+        assert rows[0].room_label == "חדר 2"
+    finally:
+        await engine.dispose()
+
+
+async def test_an_alert_whose_every_pointer_was_swept_still_renders(app_role_url: str) -> None:
+    """All five joins are LEFT, so the card renders with nulls and says so — an
+    alert that vanishes because a pointer did is a page silently dropped."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        ghost = uuid.uuid4()
+        alert_id = await _insert_alert(
+            factory, tenant_id, raised_by=ghost, target=uuid.uuid4(), assignment_id=uuid.uuid4()
+        )
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await SosAlertsRepository().live_for(session, tenant_id, actor_id=None)
+        assert [row.alert.id for row in rows] == [alert_id]
+        assert rows[0].raised_by_name is None
+        assert rows[0].target_name is None
+        assert rows[0].accepted_by_name is None
+        assert rows[0].room_label is None
+    finally:
+        await engine.dispose()
+
+
+async def test_the_live_read_carries_the_open_and_the_accepted_and_nothing_else(
+    app_role_url: str,
+) -> None:
+    """The predicate is `idx_sos_alerts_live`'s, byte for byte, so the planner
+    uses it — and a resolved alert is history the console has no reader for."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id)
+        open_id = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        accepted_id = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        resolved_id = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        cancelled_id = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        swept_id = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        async with tenant_session(factory, tenant_id) as session:
+            await SosAlertsRepository().accept(
+                session, tenant_id, accepted_id, actor_id=raiser, at=NOW
+            )
+            await session.execute(
+                update(SosAlert).where(SosAlert.id == resolved_id).values(status=SosStatus.RESOLVED)
+            )
+            await session.execute(
+                update(SosAlert)
+                .where(SosAlert.id == cancelled_id)
+                .values(status=SosStatus.CANCELLED)
+            )
+            await session.execute(
+                update(SosAlert).where(SosAlert.id == swept_id).values(deleted_at=NOW)
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await SosAlertsRepository().live_for(session, tenant_id, actor_id=None)
+        assert {row.alert.id for row in rows} == {open_id, accepted_id}
+    finally:
+        await engine.dispose()
+
+
+async def test_the_live_read_is_oldest_first(app_role_url: str) -> None:
+    """OLDEST first, and it is not a preference: the overlay and the centre both
+    render this order, and the longest-waiting emergency is the one at the top."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id)
+        first = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        second = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        third = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await SosAlertsRepository().live_for(session, tenant_id, actor_id=None)
+        assert [row.alert.id for row in rows] == [first, second, third]
+    finally:
+        await engine.dispose()
+
+
+async def test_an_elevated_caller_sees_every_alert_in_the_tenant(app_role_url: str) -> None:
+    """She is the fallback, so «never silently dropped» requires it: a shift
+    manager sees every alert from the instant it is raised — an alert she neither
+    raised, was named on, nor owns. Whether one RISES on her device is a separate,
+    narrower predicate.
+
+    Elevation is spelled `actor_id=None` here; WHICH roles spell it that way is
+    the service's `ELEVATED_ROLES` test, not this module's."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        stranger = await _seed_staff(factory, tenant_id, display_name="Rina")
+        alert_id = await _insert_alert(factory, tenant_id, raised_by=stranger)
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await SosAlertsRepository().live_for(session, tenant_id, actor_id=None)
+        assert [row.alert.id for row in rows] == [alert_id]
+    finally:
+        await engine.dispose()
+
+
+async def test_a_floor_role_sees_only_the_three_alerts_that_are_hers(app_role_url: str) -> None:
+    """⚠ **THE audience clause, and the mutation is dropping the `or_(...)`.**
+    Hers are the one she raised (so she sees the accept), the one she was named
+    on, and the one she owns. A stranger's page is not hers to see — and the
+    whole reason the overlay can be app-level on eleven sections is that this
+    filter runs on the SERVER."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        her = await _seed_staff(factory, tenant_id, display_name="Noa")
+        stranger = await _seed_staff(factory, tenant_id, display_name="Rina")
+        raised = await _insert_alert(factory, tenant_id, raised_by=her)
+        named = await _insert_alert(factory, tenant_id, raised_by=stranger, target=her)
+        owned = await _insert_alert(factory, tenant_id, raised_by=stranger)
+        await _insert_alert(factory, tenant_id, raised_by=stranger)
+        async with tenant_session(factory, tenant_id) as session:
+            await SosAlertsRepository().accept(session, tenant_id, owned, actor_id=her, at=NOW)
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await SosAlertsRepository().live_for(session, tenant_id, actor_id=her)
+        assert {row.alert.id for row in rows} == {raised, named, owned}
+    finally:
+        await engine.dispose()
+
+
+async def test_the_live_read_never_crosses_a_tenant_boundary(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    mine, theirs = uuid.uuid4(), uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, theirs)
+        await _insert_alert(factory, theirs, raised_by=raiser)
+        async with tenant_session(factory, mine) as session:
+            rows = await SosAlertsRepository().live_for(session, mine, actor_id=None)
+        assert rows == []
+    finally:
+        await engine.dispose()
+
+
+async def test_the_view_of_one_alert_answers_a_closed_one_too(app_role_url: str) -> None:
+    """⚠ **NO status filter here, and it is `by_id`'s reason applied to the
+    ANSWER instead of the decision**: a resolve answers the row it just closed,
+    and a read that dropped it would leave the console patching a card from
+    nothing."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="נועה")
+        alert_id = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        async with tenant_session(factory, tenant_id) as session:
+            await session.execute(
+                update(SosAlert).where(SosAlert.id == alert_id).values(status=SosStatus.RESOLVED)
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            row = await SosAlertsRepository().view_of(session, tenant_id, alert_id)
+            missing = await SosAlertsRepository().view_of(session, tenant_id, uuid.uuid4())
+        assert row is not None
+        assert row.alert.status == SosStatus.RESOLVED
+        assert row.raised_by_name == "נועה"
+        assert missing is None
     finally:
         await engine.dispose()
