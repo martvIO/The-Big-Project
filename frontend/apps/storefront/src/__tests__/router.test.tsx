@@ -143,6 +143,46 @@ describe("matchRoute", () => {
     expect(matchRoute("/b/tok/extra")).toEqual({ name: "catalog" });
   });
 
+  // F33's walk-in queue. /checkin is printed on a physical sign in the shop
+  // window, which makes it the most deep-linked URL the product has.
+  it("maps /checkin to its own route", () => {
+    expect(matchRoute("/checkin")).toEqual({ name: "checkin" });
+    expect(matchRoute("/checkin/")).toEqual({ name: "checkin" });
+  });
+
+  it("extracts the ticket id from /q/:ticketId", () => {
+    expect(matchRoute("/q/11111111-2222-3333-4444-555555555555")).toEqual({
+      name: "queuePosition",
+      ticketId: "11111111-2222-3333-4444-555555555555",
+    });
+    expect(matchRoute("/q/tick3t/")).toEqual({ name: "queuePosition", ticketId: "tick3t" });
+  });
+
+  it("routes an UNKNOWN ticket to the position page, not to the catalog", () => {
+    // Load-bearing, the same reason /b/{token}'s ordering is: an unknown,
+    // expired or swept ticket must reach the page's own not-found state. Swallowed
+    // into the collection, a woman standing in the doorway gets a dress grid.
+    expect(matchRoute("/q/anything-at-all")).toEqual({
+      name: "queuePosition",
+      ticketId: "anything-at-all",
+    });
+  });
+
+  it("does not throw on a malformed escape in a ticket id", () => {
+    expect(matchRoute("/q/%")).toEqual({ name: "queuePosition", ticketId: "%" });
+  });
+
+  it("does not read a deeper or bare /q path as a position route", () => {
+    expect(matchRoute("/q")).toEqual({ name: "catalog" });
+    expect(matchRoute("/q/tick3t/extra")).toEqual({ name: "catalog" });
+  });
+
+  it("keeps /q/… disjoint from the /queue path F59 will add", () => {
+    // Recorded here so F59 does not have to rediscover it: the two matchers
+    // cannot collide in either direction.
+    expect(matchRoute("/queue")).toEqual({ name: "catalog" });
+  });
+
   it.each(BOOK_STEPS)("maps /book/%s to its step", (step) => {
     expect(matchRoute(`/book/${step}`)).toEqual({ name: "book", step });
   });
@@ -354,6 +394,26 @@ describe("Router document title, focus and scroll", () => {
   it("never puts the manage token in the document title", () => {
     renderRoute("/b/mt-secret-token");
     expect(document.title).not.toContain("mt-secret-token");
+  });
+
+  it("titles the check-in route from the catalogue", () => {
+    renderRoute("/checkin");
+    expect(document.title).toBe(i18n.t("document.checkin"));
+    expect(document.title).not.toBe("document.checkin");
+  });
+
+  it("titles the position route from the catalogue", () => {
+    renderRoute("/q/tick3t");
+    expect(document.title).toBe(i18n.t("document.queuePosition"));
+    expect(document.title).not.toBe("document.queuePosition");
+  });
+
+  it("never puts the ticket id in the document title", () => {
+    // F33 ESTABLISHES this rule — no shipped comment states it, and this
+    // assertion is the only thing holding it. The id is the capability, and a
+    // tab strip is read over a shoulder in a shop.
+    renderRoute("/q/tick3t-secret");
+    expect(document.title).not.toContain("tick3t-secret");
   });
 
   it("does not steal focus on first paint — the skip link is the first stop", () => {

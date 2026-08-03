@@ -20,7 +20,15 @@ import { ManageBookingPage } from "./routes/ManageBookingPage";
 // Side effect worth keeping: with no back() to call, the qa-checklist ban on
 // history-based back navigation is structural rather than a grep.
 
-export type RouteName = "catalog" | "dress" | "about" | "accessibility" | "book" | "manage";
+export type RouteName =
+  | "catalog"
+  | "dress"
+  | "about"
+  | "accessibility"
+  | "book"
+  | "manage"
+  | "checkin"
+  | "queuePosition";
 
 // A closed set, which is what lets /book/{step} and /book/{step}/{dressId}
 // share a shape: no dress id can ever be read as a step. `pay` joins it in flow
@@ -38,7 +46,12 @@ export type RouteMatch =
   | { name: "book"; step: BookStep; dressId?: string }
   // The token is opaque and is NOT validated here: an unknown or rotated token
   // has to reach the page so the page can render its own invalid-link state.
-  | { name: "manage"; token: string };
+  | { name: "manage"; token: string }
+  | { name: "checkin" }
+  // Same rule, same reason: the ticket id is opaque here. An unknown, swept or
+  // mistyped ticket has to reach the page so the page can render its own
+  // not-found state and offer a way back to /checkin.
+  | { name: "queuePosition"; ticketId: string };
 
 // The id of StorefrontLayout's <main tabindex="-1">. Focus lands here after
 // every client navigation, and the SkipLink targets it.
@@ -60,6 +73,11 @@ const DOC_TITLE_KEYS: Record<RouteName, string> = {
   // One title for all six manage states. She arrived from a text message, and an
   // outcome ("cancelled") does not belong in the tab strip.
   manage: "document.manageTitle",
+  checkin: "document.checkin",
+  // One title for every state of the position page, and it NEVER carries the
+  // ticket id. The id is the capability, and a tab strip is read over a shoulder
+  // in a shop. F33 establishes that rule; router.test.tsx is what holds it.
+  queuePosition: "document.queuePosition",
 };
 
 const DRESS_PATH = /^\/dress\/([^/]+)$/;
@@ -68,6 +86,12 @@ const BOOK_PATH = /^\/book(?:\/([^/]+)(?:\/([^/]+))?)?$/;
 // character is segment budget. /manage-booking/{token} would spend ~14 extra
 // characters per message forever.
 const MANAGE_PATH = /^\/b\/([^/]+)$/;
+// Short for the same reason MANAGE_PATH is, plus one of its own: /checkin is
+// printed on a physical sign in the shop window and this path is what the QR
+// beside it resolves to, so every character is ink and every character is a
+// chance to mistype. Deliberately disjoint from the /queue F59 adds: this
+// pattern cannot match /queue and an exact /queue match cannot match /q/… .
+const QUEUE_PATH = /^\/q\/([^/]+)$/;
 
 function isBookStep(value: string): value is BookStep {
   return (BOOK_STEPS as readonly string[]).includes(value);
@@ -87,6 +111,7 @@ export function matchRoute(pathname: string): RouteMatch {
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/about") return { name: "about" };
   if (path === "/accessibility") return { name: "accessibility" };
+  if (path === "/checkin") return { name: "checkin" };
 
   const dress = DRESS_PATH.exec(path);
   if (dress) return { name: "dress", dressId: decodeId(dress[1]) };
@@ -96,6 +121,13 @@ export function matchRoute(pathname: string): RouteMatch {
   // into the collection (spec D7/D8). Anything after /b/ matches.
   const manage = MANAGE_PATH.exec(path);
   if (manage) return { name: "manage", token: decodeId(manage[1]) };
+
+  // Also BEFORE the catalog fallthrough, for the identical reason: a swept or
+  // mistyped ticket must reach the position page's own not-found state. A woman
+  // standing in the doorway who gets a dress grid instead has no way to learn
+  // that her place in the queue is gone.
+  const queue = QUEUE_PATH.exec(path);
+  if (queue) return { name: "queuePosition", ticketId: decodeId(queue[1]) };
 
   const book = BOOK_PATH.exec(path);
   if (book !== null) {
@@ -306,6 +338,10 @@ export function Router() {
       return <BookPage step={match.step} dressId={match.dressId} />;
     case "manage":
       return <ManageBookingPage token={match.token} />;
+    // ⚠ A missing `case` compiles clean and renders the dress grid under the
+    // route's own title, because of the fallthrough below. `checkin` and
+    // `queuePosition` are matched above and land their arms with their pages;
+    // until then this comment is the only marker that they have not.
     default:
       return <CatalogPage />;
   }

@@ -76,6 +76,11 @@ SHELL_PATHS = [
     "/book",
     "/book/slot",
     "/book/slot/7f1b0e2c",
+    # F33's walk-in queue. /checkin is printed on a physical sign in the shop
+    # window, which makes it the most deep-linked URL the product has, and
+    # /q/{ticket_id} is what the printed QR's response sends her to.
+    "/checkin",
+    "/q/tick3t",
     "/anything-a-stale-link-points-at",
 ]
 

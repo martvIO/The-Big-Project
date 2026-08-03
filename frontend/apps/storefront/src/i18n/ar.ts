@@ -24,6 +24,8 @@ export const ar = {
   translation: {
     document: {
       manageTitle: "התור שלך",
+      checkin: "רישום לתור",
+      queuePosition: "מקומך בתור",
     },
     manage: {
       title: "התור שלך",
@@ -66,6 +68,48 @@ export const ar = {
     // now so the next feature appends rather than re-deciding where it goes.
     errors: {
       bookingAwaitingPayment: "התור הזה ממתין לתשלום המקדמה, ולכן אי אפשר לעדכן אותו כרגע.",
+    },
+    // F33's walk-in queue. `notice` and `optIn` are counsel-gated in he.ts and
+    // are gated here too: the swap F20 makes is a TWO-FILE, two-string edit, and
+    // an Arabic launch that shipped a translated notice while Hebrew still
+    // carried the interim would be two different legal texts on one form.
+    checkin: {
+      heading: "רישום לתור",
+      lastFromDevice: "הרישום האחרון שנעשה מהמכשיר הזה",
+      name: "שם מלא",
+      phone: "טלפון נייד",
+      phoneHint: "כדי שנוכל לקרוא לך כשיגיע תורך. אפשר להזין עשר ספרות, למשל 0501234567.",
+      visitType: "סוג הביקור",
+      visitBride: "מדידת כלה",
+      visitEvening: "שמלת ערב",
+      visitTypeRequired: "צריך לבחור סוג ביקור כדי להמשיך",
+      notice:
+        "הפרטים שאת ממלאת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך — ונמחקים כמה ימים לאחר הביקור. הם לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה; אם סימנת אותה, השם ומספר הטלפון יישמרו לצורך זה עד שתבקשי להסיר את ההסכמה.",
+      optIn:
+        "אני מאשרת ש{{boutique}} תשלח לי הודעות SMS על מבצעים, קולקציות חדשות ואירועים. אפשר להסיר את ההסכמה בכל הודעה.",
+      submit: "הצטרפות לתור",
+      submitting: "רושמות אותך לתור",
+      budgetSpent:
+        "יש כרגע הרבה רישומים לתור. אפשר לנסות שוב בעוד זמן מה, ואפשר פשוט לפנות אלינו כאן בבוטיק.",
+      createFailed: "לא הצלחנו לרשום אותך לתור כרגע.",
+      boutiqueUnavailable: "לא הצלחנו לטעון את פרטי הבוטיק כרגע.",
+      loading: "טוענות את פרטי הבוטיק",
+      positionLoading: "טוענות את מקומך בתור",
+      positionLabel: "מקומך בתור",
+      statusWaiting: "ממתינה",
+      statusInService: "התור שלך התחיל",
+      called: "אפשר לגשת לדלפק",
+      closed: "הביקור הזה הסתיים.",
+      backToCheckin: "רישום לתור חדש",
+      notFound: "הקישור הזה כבר לא תקף.",
+      notFoundHint: "אפשר להירשם לתור מחדש, ואפשר פשוט לפנות אלינו כאן בבוטיק.",
+      loadFailed: "לא הצלחנו להציג את מקומך בתור כרגע.",
+      retry: "ניסיון נוסף",
+      pause: "השהיית העדכון",
+      resume: "חידוש העדכון",
+      updatedAt: "עודכן",
+      staleAt: "העדכון האחרון היה",
+      pausedAt: "העדכון מושהה. עודכן",
     },
   },
 } as const;

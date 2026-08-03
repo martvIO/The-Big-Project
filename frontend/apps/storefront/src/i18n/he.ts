@@ -21,6 +21,11 @@ export const he = {
       // she arrived from a text message, and the tab strip is not where an
       // outcome should be announced.
       manageTitle: "התור שלך",
+      // The walk-in queue (F33). The position page has ONE title for all of its
+      // states and it NEVER carries the ticket id — the id is the capability,
+      // and a tab strip is read over a shoulder in a shop.
+      checkin: "רישום לתור",
+      queuePosition: "מקומך בתור",
     },
 
     catalog: {
@@ -378,6 +383,92 @@ export const he = {
       // errors.slotsError, whose wording is about times that did not load.
       loadFailed: "לא הצלחנו להציג את פרטי התור כרגע.",
       retry: "ניסיון נוסף",
+    },
+
+    // The walk-in queue (F33) — /checkin and /q/{ticket_id}.
+    //
+    // ⚠ `notice` and `optIn` are COUNSEL-GATED (spec D13; the in-run gate on F33
+    // is open and stays open). The values below are the spec's INTERIM Hebrew,
+    // shipped rather than left blank because Amendment 13 requires notice AT THE
+    // MOMENT OF COLLECTION and this form is that moment — collecting a name and
+    // a phone from a member of the public behind silence is the one thing this
+    // feature may not do. F20 replaces both VALUES, here and in ar.ts, and that
+    // is the whole swap: no component may hardcode any part of either sentence,
+    // and no second copy may exist anywhere.
+    //
+    // Both interpolate {{boutique}} from the layout's single fetch, and neither
+    // may ever render without a name in it — which is why /checkin withholds the
+    // entire form while that fetch is loading or has failed.
+    checkin: {
+      heading: "רישום לתור",
+      // The tab-scoped courtesy pointer's link, labelled as what it IS. On a
+      // shared phone or a door tablet the slot holds SOMEONE ELSE'S ticket, and
+      // "your place in the queue" would hand a stranger a live capability while
+      // claiming it was hers.
+      lastFromDevice: "הרישום האחרון שנעשה מהמכשיר הזה",
+
+      name: "שם מלא",
+      phone: "טלפון נייד",
+      // The only place the format is taught on this surface, so it must keep
+      // matching validatePhone — a rejection here happens to a member of the
+      // public standing in a doorway.
+      phoneHint: "כדי שנוכל לקרוא לך כשיגיע תורך. אפשר להזין עשר ספרות, למשל 0501234567.",
+      visitType: "סוג הביקור",
+      visitBride: "מדידת כלה",
+      visitEvening: "שמלת ערב",
+      visitTypeRequired: "צריך לבחור סוג ביקור כדי להמשיך",
+
+      // INTERIM, counsel-gated. Names the boutique, the purpose, the retention
+      // window, and the exception for the contact detail an opt-in keeps.
+      notice:
+        "הפרטים שאת ממלאת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך — ונמחקים כמה ימים לאחר הביקור. הם לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה; אם סימנת אותה, השם ומספר הטלפון יישמרו לצורך זה עד שתבקשי להסיר את ההסכמה.",
+      // INTERIM, counsel-gated. This is the operative consent text, so it names
+      // who sends, by what channel, about what, and how to stop.
+      optIn:
+        "אני מאשרת ש{{boutique}} תשלח לי הודעות SMS על מבצעים, קולקציות חדשות ואירועים. אפשר להסיר את ההסכמה בכל הודעה.",
+
+      submit: "הצטרפות לתור",
+      submitting: "רושמות אותך לתור",
+      // A spent create budget. Names NO duration — the shared 429 body carries
+      // none and F33 adds no Retry-After — and never auto-retries.
+      budgetSpent:
+        "יש כרגע הרבה רישומים לתור. אפשר לנסות שוב בעוד זמן מה, ואפשר פשוט לפנות אלינו כאן בבוטיק.",
+      createFailed: "לא הצלחנו לרשום אותך לתור כרגע.",
+      // The two arms that WITHHOLD the form. Degrading to a nameless notice is
+      // the one failure mode that decision exists to prevent.
+      boutiqueUnavailable: "לא הצלחנו לטעון את פרטי הבוטיק כרגע.",
+      loading: "טוענות את פרטי הבוטיק",
+
+      // /q/{ticket_id}
+      positionLoading: "טוענות את מקומך בתור",
+      positionLabel: "מקומך בתור",
+      statusWaiting: "ממתינה",
+      statusInService: "התור שלך התחיל",
+      // called_at set: the most valuable thing this screen can say, and the only
+      // reason called_at is read in F33 at all.
+      called: "אפשר לגשת לדלפק",
+      closed: "הביקור הזה הסתיים.",
+      backToCheckin: "רישום לתור חדש",
+      // An unknown, swept or mistyped ticket. No blame, no technical words.
+      notFound: "הקישור הזה כבר לא תקף.",
+      notFoundHint: "אפשר להירשם לתור מחדש, ואפשר פשוט לפנות אלינו כאן בבוטיק.",
+      loadFailed: "לא הצלחנו להציג את מקומך בתור כרגע.",
+      retry: "ניסיון נוסף",
+
+      // SC 2.2.2 (Level A), which axe has no rule for: ONE button whose
+      // accessible NAME flips. No aria-pressed, and deliberately no aria-label
+      // variant — an aria-label would override the visible text and break the
+      // rule that the name IS the label.
+      pause: "השהיית העדכון",
+      resume: "חידוש העדכון",
+      // Three freshness states that read differently AS TEXT — a class-only
+      // difference is exactly the colour-alone defect this is meant to catch.
+      // All past tense: «עודכן 14:07» says this was true at 14:07, never
+      // «בזמן אמת», which a poll cannot keep even for one interval. Each is a
+      // lead; the call site follows it with the time in its own <bdi dir="ltr">.
+      updatedAt: "עודכן",
+      staleAt: "העדכון האחרון היה",
+      pausedAt: "העדכון מושהה. עודכן",
     },
 
     contact: {
