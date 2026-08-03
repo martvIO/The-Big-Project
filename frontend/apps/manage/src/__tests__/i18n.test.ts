@@ -64,6 +64,10 @@ const HE_F41 = entries(
   he.translation,
   (key) => key === "nav.atelier" || key.startsWith("atelier."),
 );
+// F37's SOS page. NO `nav.` term in this selector either, and here that is the
+// sharpest assertion in the file: an alert is an INTERRUPTION, not a
+// destination, so F37 adds no console section and no nav row (spec D11).
+const HE_F37 = entries(he.translation, (key) => key.startsWith("sos."));
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -75,6 +79,7 @@ const HE = [
   ...HE_F33,
   ...HE_F36,
   ...HE_F41,
+  ...HE_F37,
 ];
 
 describe("F15 keys resolve", () => {
@@ -733,6 +738,144 @@ describe("F41 atelier keys resolve", () => {
   });
 });
 
+describe("F37 sos keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // copy.md's 48 rows plus DC-4's `sos.roomA11yPrefix`. Its own floor, for
+    // the reason the comment above HE_F17 gives: folded into an existing list,
+    // this feature's rows could shrink by this many and still pass.
+    expect(HE_F37.length).toBeGreaterThan(44);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // ⚠ THE ONE ASSERTION THE «אני מגיעה» WORDING DECISION RESTS ON. Declare the
+    // constant and forget the spread and the resolve check, BOTH register
+    // guards and the `ar` guards silently skip all 49 hand-transcribed strings
+    // and stay green — including the send-ban that cost this feature «בדרך»,
+    // its most natural button word. Nothing else in this file notices.
+    expect(HE.map(([key]) => key)).toContain("sos.calling");
+  });
+
+  it("adds no nav row, and that is an assertion rather than an omission", () => {
+    expect(HE_F37.filter(([key]) => key.startsWith("nav."))).toEqual([]);
+    expect("nav.sos" in he.translation).toBe(false);
+  });
+
+  it("never claims, promises or hedges a send, scoped to this namespace", () => {
+    // ⚠ THE THREE-TERM REGEX — the global guard's — and NOT the HE_F33-scoped
+    // five-term /נשלח|תישלח|בדרך|SMS|הודעה/ sitting a few blocks above. «הודעה»
+    // is in the approved `sos.error.noteTooLong` («ההודעה ארוכה מדי.»), so F33's
+    // block copied wholesale reds this suite on a string the copy deck approved.
+    //
+    // Belt-and-braces over the global guard the fold restores, not a substitute
+    // for it: this one states the rule where the block is read, and it is the
+    // rule that made the ack «אני מגיעה» rather than «אני בדרך».
+    const values = HE_F37.map(([, value]) => value);
+    expect(values.filter((value) => /נשלח|תישלח|בדרך/.test(value))).toEqual([]);
+    // «שליחת» is ש-ל-י-ח-ת and trips neither term. Checked here because it LOOKS
+    // like it should, and a later editor "fixing" it would lose the send verb.
+    expect(i18n.t("sos.send")).toContain("שליחת");
+  });
+
+  it("names no literal digit anywhere in the namespace", () => {
+    // copy.md §0 rule 5. Escalation and stall are named as STATES — «ללא מענה»,
+    // «אין תזוזה מאז שאושרה» — never as durations, because `escalated` is an
+    // unbounded boolean and a flat «30 שניות» would be a lie to a shift manager
+    // looking at a four-minute-old page. This guard is what makes D17's refusal
+    // to mirror ESCALATION_AFTER a complete argument rather than one with a
+    // literal 30 sitting in the bundle contradicting it.
+    const values = HE_F37.map(([, value]) => value);
+    expect(values.filter((value) => /\d/.test(value))).toEqual([]);
+  });
+
+  it("starts each accessible name with its visible label (WCAG 2.5.3)", () => {
+    // Level A, and therefore inside IS 5568's binding scope. Several cards can
+    // be up at once, so each control's name appends the raiser after an
+    // em-dash — but it must still OPEN with the visible word or a speech-input
+    // user saying what she can see matches nothing. D17's «הסתרת ההתראה — …»
+    // failed exactly this against a visible «הסתרה».
+    for (const name of ["accept", "dismiss", "resolve", "cancel"]) {
+      expect(i18n.t(`sos.${name}Aria`, { name: "דנה כהן" })).toMatch(
+        new RegExp(`^${i18n.t(`sos.${name}`)}`),
+      );
+    }
+  });
+
+  it("says «אני מגיעה» on the button and the same verb back to the raiser", () => {
+    // One word across two screens with no translation between them: she presses
+    // «אני מגיעה» and the raiser reads «דנה כהן מגיעה.». The symmetry is the
+    // reason the string survived the send-ban rather than being reworded away.
+    expect(i18n.t("sos.accept")).toBe("אני מגיעה");
+    expect(i18n.t("sos.acceptedBy", { name: "דנה כהן" })).toBe("דנה כהן מגיעה.");
+    expect(i18n.t("sos.acceptedByUnknown")).toBe("מישהי כבר מגיעה.");
+  });
+
+  it("declares the two keys whose values a reused key could not carry", () => {
+    // `sos.channelReload` copies `floor.reload`'s WORD and not its key: the
+    // strip renders on the eleven sections where no `floor.*` string otherwise
+    // appears. ⚠ It is «רענון הדף» and NOT «רענון» — that is `floor.refresh`, a
+    // different act (refetch the list) offered by a different control, and a
+    // button labelled with it that reloads the page is a promise the word does
+    // not make.
+    expect(i18n.t("sos.channelReload")).toBe(i18n.t("floor.reload"));
+    expect(i18n.t("sos.channelReload")).not.toBe(i18n.t("floor.refresh"));
+    // And the cue that must not say «נסגרה»: the alert is untouched on the
+    // server, so it stays open, keeps escalating and comes back on reload.
+    expect(i18n.t("sos.dismissedCue")).not.toBe(i18n.t("sos.resolvedCue"));
+  });
+
+  it("reuses rather than re-declares the four shipped strings it needs", () => {
+    // copy.md §8. `SosCentre` lives inside `FloorPanel`'s poll and must not
+    // spell any of its states a second way, and `lib/elapsed.ts` HARDCODES the
+    // two elapsed keys — so the alternative to cross-namespace reuse is a
+    // second elapsed implementation, which D17's no-date-library rule forbids.
+    for (const key of ["sos.dismissCancel", "sos.targetOnBreak", "sos.centreRaise"]) {
+      expect(key in he.translation).toBe(false);
+    }
+    expect(i18n.t("rooms.cancel")).toBe("ביטול");
+    expect(i18n.t("rooms.handoverOnBreak", { name: "דנה כהן" })).toBe("דנה כהן — בהפסקה");
+  });
+
+  it("interpolates the time, room and count placeholders", () => {
+    expect(i18n.t("sos.since", { time: "11:20" })).toBe("מאז 11:20");
+    expect(i18n.t("sos.raiseAria", { room: "חדר 2" })).toBe("קריאה לעזרה — חדר 2");
+    // `{{count}}` is i18next's plural trigger, and the base key is what
+    // resolves when no plural form is declared — pinned here rather than
+    // assumed, because a missing form renders the KEY into an emergency strip.
+    expect(i18n.t("sos.dismissedCount", { count: 3 })).toBe("קריאות עזרה · 3");
+    expect(i18n.t("sos.rerouted", { name: "דנה כהן" })).toBe(
+      "דנה כהן לא מחוברת עכשיו. הקריאה עברה למנהלת המשמרת.",
+    );
+  });
+
+  it("keeps the ghost raiser feminine so every sentence still agrees", () => {
+    // «אשת צוות שאינה ברשימה» substitutes into {{name}}, so «{{name}} קוראת
+    // לעזרה» stays grammatical and the removed-raiser case needs no second key
+    // anywhere in the deck.
+    expect(i18n.t("sos.calling", { name: i18n.t("sos.raiserGone") })).toBe(
+      "אשת צוות שאינה ברשימה קוראת לעזרה",
+    );
+  });
+
+  it("names the manual fallback on the RAISE and deliberately not on the rest", () => {
+    // A failed raise means nobody was called and the emergency is invisible, so
+    // «או קראי בקול» is the correct instruction. A failed accept means only that
+    // SHE did not claim it — the alert is still open, still rising on every
+    // other targeted device and still escalating — so nothing was dropped and
+    // «נסי שוב» is exactly right.
+    expect(i18n.t("sos.error.raiseFailed")).toContain("קראי בקול");
+    expect(i18n.t("sos.error.actionFailed")).not.toContain("קראי בקול");
+  });
+
+  it("carries a details-less twin for BOTH 409s that name a person", () => {
+    // The winner's staff row can be removed between her accept and this read,
+    // so `details` is optional on both — and without the twins the console
+    // renders «‎ כבר מגיעה.» with an empty interpolation on a legally binding
+    // surface. The cancel twin is the key spec D17 does not list at all.
+    expect(i18n.t("sos.error.alreadyAcceptedUnknown")).not.toContain("{{");
+    expect(i18n.t("sos.error.cancelAfterAcceptUnknown")).toContain("«נפתר»");
+  });
+});
+
 describe("the register, mechanically", () => {
   const values = HE.map(([, value]) => value);
 
@@ -770,6 +913,18 @@ describe("the ar bundle", () => {
     // widening it would be a different feature's decision to take.
     const arTranslation = ar.translation as Record<string, string>;
     const drifted = HE_F36.filter(([key, value]) => arTranslation[key] !== value).map(
+      ([key]) => key,
+    );
+    expect(drifted).toEqual([]);
+  });
+
+  it("carries the approved Hebrew VALUE for every sos key, not merely the key", () => {
+    // AC23. `ar[key] === he[key]`, NOT "non-empty" — which passes on an English
+    // string, on a `TODO`, and on a DIFFERENT Hebrew wording, and 49 keys are
+    // transcribed by hand into two files. On this namespace a different wording
+    // is not cosmetic: «בדרך» could re-enter the product through ar.ts alone.
+    const arTranslation = ar.translation as Record<string, string>;
+    const drifted = HE_F37.filter(([key, value]) => arTranslation[key] !== value).map(
       ([key]) => key,
     );
     expect(drifted).toEqual([]);

@@ -442,3 +442,18 @@ export function validateCustomerNotes(notes: string): string | null {
 // maxLength here is the tighter of the two — which is the right direction: the
 // owner simply cannot type the 41st character.
 export const MAX_ROOM_LABEL_LENGTH = 40;
+
+// --- the SOS note (Feature 37) ---
+//
+// Mirror of backend/app/floor/validation.py. backend/tests/
+// test_frontend_constant_parity.py fails if it drifts.
+//
+// Applied as maxLength on the raise dialog's note input, which is what makes
+// `sos.error.noteTooLong` unreachable from this console — and the string ships
+// anyway, because the server's rule is the real one.
+//
+// ⚠ ESCALATION_AFTER and STALLED_AFTER are deliberately NOT mirrored: the client
+// never computes them, it renders booleans the server derived, and after the
+// copy rule that names both thresholds as STATES rather than durations the
+// bundle carries no number for them at all.
+export const MAX_SOS_NOTE_LENGTH = 120;
