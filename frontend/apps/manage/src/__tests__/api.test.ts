@@ -589,6 +589,114 @@ describe("the fitting-room client", () => {
   });
 });
 
+// --- the queue verbs (Feature 58) ---
+
+const TICKET_ID = "ffffffff-1111-2222-3333-444444444444";
+
+describe("the dispatch client", () => {
+  it("hits all five routes with their verb, their path and their body verbatim", async () => {
+    // ⚠ EVERY PATH'S SECOND SEGMENT IS `floor`, which is why
+    // apps/manage/vite.config.ts needs no edit — test_spa_serving.py asserts
+    // set equality between the live route table's second segments and the
+    // manage dev proxy's alternation, and a mismatch breaks ONLY a developer's
+    // machine while production, CI and the whole suite stay green.
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.takeNext(ROOM_ID, {});
+    await api.assignFromQueue(ROOM_ID, { queue_ticket_id: TICKET_ID });
+    await api.callQueueTicket(TICKET_ID);
+    await api.skipQueueTicket(TICKET_ID, { seen_skip_count: 0 });
+    await api.removeQueueTicket(TICKET_ID);
+
+    const calls = fetchMock.mock.calls.map((call) => {
+      const [path, init] = call as [string, RequestInit];
+      return [
+        init.method,
+        path,
+        init.body === undefined ? undefined : JSON.parse(init.body as string),
+      ];
+    });
+    expect(calls).toEqual([
+      ["POST", `/manage/floor/rooms/${ROOM_ID}/take-next`, {}],
+      [
+        "POST",
+        `/manage/floor/rooms/${ROOM_ID}/assign`,
+        { queue_ticket_id: TICKET_ID },
+      ],
+      ["POST", `/manage/floor/queue/${TICKET_ID}/call`, undefined],
+      ["POST", `/manage/floor/queue/${TICKET_ID}/skip`, { seen_skip_count: 0 }],
+      ["POST", `/manage/floor/queue/${TICKET_ID}/remove`, undefined],
+    ]);
+  });
+
+  it("sends seen_skip_count ZERO as a real field, never an omitted one", async () => {
+    // ⚠ `SkipRequest.seen_skip_count` has NO server-side default: a caller that
+    // omits it is a caller that did not read a count, and guessing 0 for her is
+    // the exact failure the field exists to prevent. 0 is falsy in JS and this
+    // is the row that catches a `...(count ? {count} : {})` "tidy-up".
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.skipQueueTicket(TICKET_ID, { seen_skip_count: 0 });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toBe('{"seen_skip_count":0}');
+  });
+
+  it("encodes the ticket id it puts in a path", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.callQueueTicket("a b/c");
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/floor/queue/a%20b%2Fc/call");
+  });
+
+  it("carries a queue 409's details onto the ApiError so the row can pick its sentence", async () => {
+    // One code, three sentences (design.md F-5): `details.status` chooses
+    // between «היא כבר בטיפול.» and «הכניסה הזו נסגרה.», which are different
+    // remedies — go and find her in a fitting room, versus nothing to do.
+    stubFetch(() =>
+      jsonResponse(409, {
+        error: {
+          code: "QUEUE_TICKET_NOT_WAITING",
+          message: "That queue ticket is no longer waiting.",
+          details: { status: "in_service" },
+        },
+      }),
+    );
+    await expect(api.callQueueTicket(TICKET_ID)).rejects.toMatchObject({
+      status: 409,
+      code: "QUEUE_TICKET_NOT_WAITING",
+      details: { status: "in_service" },
+    });
+  });
+
+  it("leaves a queue 409's details UNDEFINED, never null, when the body carries none", async () => {
+    // `ApiError.details` is typed `Record<string, string> | undefined`, so the
+    // {"status": null} shape cannot be constructed at all — which is what lets
+    // the row select waitlist.error.ticketNotWaitingUnknown rather than
+    // guessing at a remedy.
+    stubFetch(() =>
+      jsonResponse(409, {
+        error: {
+          code: "QUEUE_TICKET_NOT_WAITING",
+          message: "That queue ticket is no longer waiting.",
+        },
+      }),
+    );
+    const failure: unknown = await api.callQueueTicket(TICKET_ID).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).details).toBeUndefined();
+    expect((failure as ApiError).code).toBe("QUEUE_TICKET_NOT_WAITING");
+  });
+
+  it("surfaces the empty-queue 409 as its own code, not as a generic failure", async () => {
+    // Spec D3 buys this code so a manager whose queue is simply empty is not
+    // told a load failed, in the muted outage register, on top.
+    stubFetch(() =>
+      jsonResponse(409, { error: { code: "QUEUE_EMPTY", message: "The queue is empty." } }),
+    );
+    await expect(api.takeNext(ROOM_ID, {})).rejects.toMatchObject({
+      status: 409,
+      code: "QUEUE_EMPTY",
+    });
+  });
+});
+
 // --- customers CRM (Feature 53) ---
 
 const CUSTOMER_ID = "33333333-4444-5555-6666-777777777777";

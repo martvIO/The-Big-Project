@@ -54,7 +54,7 @@ function card(overrides: Partial<StaffCard> = {}): StaffCard {
 // here so every shipped call site stays exactly as it was — D15's acceptance
 // rule is about expectations, and a fixture that would not compile is not one.
 function floor(staff: StaffCard[], rooms: Room[] = []): FloorResponse {
-  return { staff, rooms, server_now: NOW };
+  return { staff, rooms, server_now: NOW, waitlist: { entries: [], truncated: false } };
 }
 
 // 10:25Z is 42 minutes before NOW, and 42 is the deck's own worked example.

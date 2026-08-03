@@ -837,6 +837,18 @@ export const he = {
     "rooms.removeDress": "הסרה",
     "rooms.removeDressAria": "הסרה — {{dress}}",
 
+    // F58's dispatch control, on each FREE + ACTIVE tile and only while the
+    // queue is non-empty. `rooms.*` and not `waitlist.*`: it renders in a
+    // component that draws eighteen `rooms.` strings and would otherwise be the
+    // only foreigner among them — and it puts the new accessible name under the
+    // SHIPPED 2.5.3 loop above by adding one word to an array.
+    //
+    // ⚠ «— {{room}}» and never «לחדר {{room}}». A room label is a user-typed
+    // noun that carries its own noun, so the boutique's «חדר 2» renders «לחדר
+    // חדר 2»; the em-dash puts the value last, where it agrees with nothing.
+    "rooms.takeNext": "קחי את הבאה",
+    "rooms.takeNextAria": "קחי את הבאה בתור — {{room}}",
+
     // The inline client picker. ⚠ A Select's `label` prop is typed `string`, so
     // it CANNOT be bidi-isolated — which is exactly why the value goes last,
     // where a direction flip has nothing after it to reorder past.
@@ -928,6 +940,23 @@ export const he = {
     // this one and the two can never read as two different facts.
     "rooms.error.STAFF_OCCUPIED": "היא כבר בחדר אחר: {{room}}.",
     "rooms.error.staffOccupiedUnknown": "היא כבר בחדר אחר.",
+    // ⚠ F58's SELF forms of the same 409, and two NEW keys rather than a
+    // two-line edit of the pair above. The third-person value is asserted
+    // verbatim in RoomsPanel.test.tsx, RoomHandoverDialog.test.tsx and
+    // i18n.test.ts, so editing it reds four shipped assertions on the PR whose
+    // acceptance rule is that every shipped suite passes unedited. A take-next
+    // and a row's push-assign carry NO target staffer, so the refusal is about
+    // the caller herself and «היא» would name nobody on the screen. Rendered on
+    // the two dispatch verbs only; handover keeps the shipped pair.
+    "rooms.error.staffOccupiedSelf": "את כבר בחדר אחר: {{room}}.",
+    "rooms.error.staffOccupiedSelfUnknown": "את כבר בחדר אחר.",
+    // F58, 409: the last woman left the queue between the render and the tap —
+    // «an ordinary five-second race». Without its own branch it takes
+    // `describe()`'s fall-through and tells a manager whose queue is simply
+    // empty that a load failed, in the muted OUTAGE register on top. It is
+    // `waitlist.empty` plus a full stop, deliberately: the alert answers her
+    // tap, the EmptyState one panel below answers the screen.
+    "rooms.error.QUEUE_EMPTY": "אין ממתינות בתור.",
     // THREE 404 sentences, not one: «החדר כבר לא זמין» is actively misleading
     // when the room is fine and the fitting simply ended — and equally
     // misleading when the room is fine and the BOOKING she picked is the thing
@@ -969,6 +998,167 @@ export const he = {
     "rooms.handedOverCue": "החדר הועבר אל {{name}}.",
     "rooms.dressAddedCue": "השמלה נוספה לחדר: {{dress}}.",
     "rooms.dressRemovedCue": "השמלה הוסרה מהחדר: {{dress}}.",
+
+    // F58 — the waitlist panel, the THIRD child of the floor screen. 37 keys,
+    // transcribed from copy.md, which is canonical: spec D16's table is a
+    // proposal and this block corrects fourteen of its rows.
+    //
+    // The panel's chrome. The heading is an h3 peer of «חדרי מדידה» and carries
+    // tabIndex={-1} because it is the focus-rescue target for three of the six
+    // moves. Plural and indefinite: it names a group of people, not a
+    // destination, and there is no nav row for it to match.
+    "waitlist.heading": "ממתינות בתור",
+    // The state this panel is in for most of a boutique's day. It must read as
+    // QUIET, never as broken and never as unconfigured — there is nothing to set
+    // up and nobody to call, so no body and no CTA ship with it. No «עדיין»,
+    // which would promise arrivals the shop cannot promise.
+    "waitlist.empty": "אין ממתינות בתור",
+    // >100 waiting is a griefing flood inside F33's tenant ceiling, not a
+    // boutique. Names no count and no limit — both are the server's to change
+    // without a copy edit — and names WHAT FALLS OFF instead: the list is
+    // arrival-ordered, so the missing rows are the later arrivals.
+    "waitlist.truncated": "הרשימה חלקית. הממתינות שהגיעו מאוחר יותר אינן מופיעות כאן.",
+    // ⚠ PANEL-LEVEL and rendered ONCE, under the heading. Forty identical
+    // sentences is not a design, and the fact is about the rooms rather than
+    // about any entry. It is the only surface that explains why «שבצי לחדר»
+    // vanished from every row and «קחי את הבאה» from every tile at one moment.
+    // «כרגע» is load-bearing: a release two minutes later restores both.
+    "waitlist.noFreeRoom": "אין חדר פנוי כרגע.",
+
+    // The row's facts, and every one of them is a WORD. ⚠ «מדידת כלה» and not
+    // «שמלת כלה»: the storefront check-in form — the form she filled in —
+    // spells the bride arm that way, and a manager reading a different word
+    // beside a customer who ticked that one cannot know they are the same fact.
+    "waitlist.visitBride": "מדידת כלה",
+    "waitlist.visitEvening": "שמלת ערב",
+    // Computed at render against the envelope's server_now through the shipped
+    // `elapsedMinutes`, and frozen exactly when the panel freezes. «ממתינה» and
+    // not «כבר»: the room's word says this has been going on INSIDE a room, the
+    // queue's says she is still standing there. No hours branch and no plural —
+    // «דק'» is invariant in Hebrew, so one key covers 1 and 95, and this must
+    // not become the console's first i18next plural rule.
+    "waitlist.waiting": "ממתינה {{minutes}} דק'",
+    // The first minute of every arrival, and the clamped negative: `arrived_at`
+    // is created_at, whose DEFAULT now() is the DATABASE host's clock while
+    // server_now comes from the service's Python one, so arrived_at > serverNow
+    // is representable.
+    "waitlist.waitingJustNow": "הגיעה זה עתה",
+    // The row's ONE Badge, `warning`. It is her QUEUE STATE — summoned and still
+    // waiting — and it is the fact F59's public board reads the same column for.
+    "waitlist.called": "נקראה",
+    // ⚠ A LINE and not a second Badge. Two pills in 295px teaches the reader to
+    // scan colours instead of words; and a chip names a CATEGORY, while the
+    // manager's actual question is which of these two Noas do I remove — whose
+    // answer is a fact she can check by asking the woman in front of her. A chip
+    // also cannot say LIVE, and the twin may already be in a room, which is the
+    // most valuable case on this panel to remove.
+    "waitlist.duplicate": "יש עוד כניסה פעילה היום עם אותו מספר טלפון.",
+    // Muted, so the second press's meaning is legible BEFORE it is pressed —
+    // which is the whole reason skip_count is on the wire. Impersonal: who
+    // skipped her is an audit question and not a floor one.
+    "waitlist.skippedOnce": "דילגו עליה פעם אחת",
+
+    // The row's four controls. WHICH ONE EXISTS is the rendered form of the
+    // authorization axes — a 403 is terminal for the whole floor screen, so
+    // there is no «אין לך הרשאה» string here and there cannot be. Every *Aria
+    // is «<visible label> — {{name}}»: forty rows all offering a button named
+    // «דלגי» is a screen-reader dead end, and four of spec D16's five proposals
+    // failed WCAG 2.5.3, «הסרת {{name}} מהתור» on a different WORD FORM.
+    "waitlist.call": "קראי",
+    "waitlist.callAria": "קראי — {{name}}",
+    // The row's one `secondary` — the act that ends its state. «שבצי לחדר» and
+    // not «שבצי»: the bare verb is ambiguous on a floor where a staffer is also
+    // assigned to things.
+    "waitlist.assign": "שבצי לחדר",
+    "waitlist.assignAria": "שבצי לחדר — {{name}}",
+    "waitlist.skip": "דלגי",
+    "waitlist.skipAria": "דלגי — {{name}}",
+    // «הסרה» and not «מחיקה»: nothing is deleted — the row goes to `removed` and
+    // the audit trail keeps it.
+    "waitlist.remove": "הסרה",
+    "waitlist.removeAria": "הסרה — {{name}}",
+
+    // The three inline reveals. No <dialog> anywhere in this feature: one would
+    // need three focus mechanisms axe cannot see, and a row a tick can unmount
+    // underneath it is exactly where that cost is highest.
+    //
+    // ⚠ A Select's `label` prop is typed `string`, so isolation is IMPOSSIBLE
+    // rather than merely omitted — hence the value last, again.
+    "waitlist.assignRoom": "שיבוץ לחדר — {{name}}",
+    // The act, not «אישור» — the same root as the trigger, so the two read as
+    // one gesture.
+    "waitlist.assignConfirm": "שיבוץ",
+    // Shown only once the rendered skip_count is >= 1. Focus lands on this
+    // paragraph, so a screen reader hears what is being asked.
+    "waitlist.confirmSkip": "דילוג נוסף יסיר את {{name}} מהתור. להמשיך?",
+    "waitlist.confirmRemove": "להסיר את {{name}} מהתור?",
+    // ⚠ A second line inside the remove reveal, rendered ONLY when the entry is
+    // flagged duplicate, and the only mitigation Risk 2 has that the manager can
+    // act on: whichever of her two tickets is removed, if it is the one her tab
+    // polls, her phone renders «הביקור הזה הסתיים.» and stops the loop while she
+    // is still in the queue on the other one. Hedged with «אם», because the
+    // panel genuinely cannot know which ticket that phone holds.
+    "waitlist.confirmRemoveDuplicate":
+      "אם הטלפון שלה מציג את הכניסה הזו, המסך שלה יראה שהביקור הסתיים. אפשר לומר לה שהמקום שלה נשמר.",
+    // ONE key for BOTH destructive reveals, because the removing second skip IS
+    // a removal. A bare «אישור» is the button a hurried reader presses without
+    // having read the question, on the one press in this feature with no undo.
+    "waitlist.confirmRemoveYes": "אישור ההסרה",
+    // Names what happens if she declines. «ביטול» on a REMOVAL confirm is two
+    // cancellations in one control pair.
+    "waitlist.confirmKeep": "השארה בתור",
+
+    // The refusals. NONE of these is red: a 409 is two managers reaching for one
+    // customer and a 404 is a screen one tick behind, so both are the NOTICE
+    // register. The only `danger` in this feature is the confirm button above.
+    "waitlist.error.notFound": "הכניסה הזו כבר לא קיימת. הרשימה תתוקן בעדכון הבא.",
+    "waitlist.error.notFoundPaused": "הכניסה הזו כבר לא קיימת. הרשימה תתוקן עם חידוש העדכון.",
+    // ⚠ ONE code, THREE sentences, chosen on `details.status`, because the
+    // remedies differ: go and find her in a fitting room / there is nothing to
+    // do and the next tick drops the row / this one admits it does not know.
+    // `details` is optional on the wire, which is what makes the third a
+    // requirement rather than a nicety.
+    "waitlist.error.QUEUE_TICKET_NOT_WAITING": "היא כבר בטיפול.",
+    "waitlist.error.ticketClosed": "הכניסה הזו נסגרה.",
+    "waitlist.error.ticketNotWaitingUnknown": "הכניסה הזו כבר לא ממתינה.",
+    // ⚠ THIS SENTENCE EXISTS BECAUSE OF THE SERVER'S `AND skip_count =
+    // :seen_skip_count`. Without the conjunct behind it, two managers each
+    // tapping «דלגי» ONCE on a woman at skip_count == 0 would REMOVE her with
+    // the confirm never shown on either device. She is NOT removed; the press is
+    // refused — and the same tick that clears this alert raises the rendered
+    // count to 1, so her next press correctly opens the confirm.
+    "waitlist.error.QUEUE_TICKET_CHANGED": "מצב הכניסה השתנה. הרשימה תתוקן בעדכון הבא.",
+    "waitlist.error.queueTicketChangedPaused":
+      "מצב הכניסה השתנה. הרשימה תתוקן עם חידוש העדכון.",
+
+    // The cues. USER-INITIATED ONLY, and ⚠ NOT ONE OF THEM NAMES A CUSTOMER.
+    // FloorPanel's region is PERSISTENT — nothing clears it, not a timer, not a
+    // tick, not an unmount — so «נועה הוסרה מהתור.» would sit in a five-role
+    // screen's DOM after her row has left the payload and after she has left the
+    // shop, making the cue the only place her name survives. So the cues name
+    // the ACT, and the row one line away carries her name for exactly as long as
+    // she is on the floor.
+    //
+    // One cue for take-next AND push-assign: they differ only in who chose the
+    // customer. «שובצה» shares the root of «שבצי לחדר», so the control and its
+    // confirmation read as one vocabulary, and the colon puts the room label
+    // last where it agrees with nothing.
+    "waitlist.dispatchedCue": "הלקוחה שובצה: {{room}}.",
+    // ⚠ «נרשמה» and never «נשלחה». F58 SENDS NOTHING to anybody — no SMS, no
+    // scheduled_messages row, no sender ID — `call` stamps a timestamp, and
+    // that is what makes her page read «אפשר לגשת לדלפק» and F59's board
+    // highlight her. «נשלחה» would also trip the register guard that filters
+    // every value in HE for /נשלח|תישלח|בדרך/. Identical after the second call
+    // that writes nothing, deliberately: telling her she lost a race would be
+    // telling her she was wrong when she was right.
+    "waitlist.calledCue": "הקריאה נרשמה.",
+    "waitlist.skippedCue": "הועברה לסוף התור.",
+    // After a removal AND after the second skip, which removes her. The client
+    // chooses between this and the line above on the seen_skip_count it SENT, so
+    // it needs nothing from a response that no longer carries her — and a row
+    // that vanished under «הועברה לסוף התור» would be the screen reporting the
+    // opposite of what it did.
+    "waitlist.removedCue": "הוסרה מהתור.",
 
     // F33 — the printable check-in code. Two audiences in one block, which is
     // the only unusual thing about it: `heading`, `intro`, `printCta` and

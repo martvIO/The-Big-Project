@@ -82,7 +82,7 @@ function room(overrides: Partial<Room> = {}): Room {
 }
 
 function floor(rooms: Room[]): FloorResponse {
-  return { staff: [staff()], rooms, server_now: NOW };
+  return { staff: [staff()], rooms, server_now: NOW, waitlist: { entries: [], truncated: false } };
 }
 
 function mount() {

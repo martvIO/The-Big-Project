@@ -58,6 +58,13 @@ const HE_F33 = entries(
 // `floor.`-namespaced and rides in HE_F57 by prefix, inheriting that block's
 // digit guard and its `> 28` floor for free.
 const HE_F36 = entries(he.translation, (key) => key.startsWith("rooms."));
+// F58. No `nav.` term either, and for the same reason F36 has none: the queue is
+// CONTENT of the floor, not a thirteenth console section, so F58 adds no nav
+// row. Its five `rooms.*` keys are likewise absent — the namespace names the
+// surface, not the feature that added the key (see the HE_F57 comment), so they
+// ride in HE_F36 by prefix and inherit its digit guard, its 2.5.3 loop and its
+// `ar`-value guard for free.
+const HE_F58 = entries(he.translation, (key) => key.startsWith("waitlist."));
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -68,6 +75,7 @@ const HE = [
   ...HE_F53,
   ...HE_F33,
   ...HE_F36,
+  ...HE_F58,
 ];
 
 describe("F15 keys resolve", () => {
@@ -421,7 +429,13 @@ describe("F36 fitting-room keys resolve", () => {
     // copy.md's 68 `rooms.*` rows plus DC-8's two paused variants of the two
     // 404s. `floor.statusOccupied` is the deck's sixty-ninth key and is NOT
     // counted here — it rides in HE_F57 by prefix.
-    expect(HE_F36.length).toBeGreaterThanOrEqual(70);
+    //
+    // ⚠ 71 today, and F58 adds FIVE: the tile's «קחי את הבאה» plus its aria,
+    // `rooms.error.QUEUE_EMPTY`, and DC-3's two self-form STAFF_OCCUPIED
+    // sentences. The floor moves to 76 — spec D16 says the namespace gains one
+    // key and design.md F-6 says three; both are wrong, in different
+    // directions, and the count is what settles it.
+    expect(HE_F36.length).toBeGreaterThanOrEqual(76);
   });
 
   it("is FOLDED into HE, not merely declared", () => {
@@ -458,7 +472,10 @@ describe("F36 fitting-room keys resolve", () => {
     // end, so each *Aria appends the room (or the dress) after an em-dash — but
     // it must still OPEN with the visible word, or a speech-input user saying
     // what she can see matches nothing.
-    for (const name of ["claim", "release", "handover", "addDress"]) {
+    // F58 adds "takeNext" to this SHIPPED loop rather than writing a parallel
+    // one, which is the whole mechanical argument for keeping the tile's two
+    // new strings in `rooms.*` (design.md F-6).
+    for (const name of ["claim", "release", "handover", "addDress", "takeNext"]) {
       expect(i18n.t(`rooms.${name}Aria`, { room: "חדר 2" })).toMatch(
         new RegExp(`^${i18n.t(`rooms.${name}`)}`),
       );
@@ -549,6 +566,135 @@ describe("F33 check-in QR keys resolve", () => {
   });
 });
 
+describe("F58 waitlist keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // copy.md's 37 `waitlist.*` rows. The deck's other five keys are `rooms.*`
+    // and are counted by HE_F36's floor above, not here.
+    expect(HE_F58.length).toBeGreaterThanOrEqual(37);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // ⚠ On THIS feature the fold is load-bearing twice. Declaring the constant
+    // and forgetting the spread is the failure the comment above HE_F17
+    // records — the resolve check, BOTH register guards and the `ar` parity
+    // guard would silently skip all thirty-seven hand-transcribed strings — and
+    // the send-ban below is the guard that actually BIT here: spec D16's
+    // `waitlist.calledCue` was «נשלחה קריאה.», which contains the banned root
+    // and is also false, because `call` stamps a timestamp and F58 sends
+    // nothing to anybody.
+    expect(HE.map(([key]) => key)).toContain("waitlist.heading");
+  });
+
+  it("adds no nav row, and that is an assertion rather than an omission", () => {
+    // The queue is content of the floor, not a destination: F58 adds no console
+    // section, no route and no nav item (spec D15).
+    expect(HE_F58.filter(([key]) => key.startsWith("nav."))).toEqual([]);
+    expect("nav.waitlist" in he.translation).toBe(false);
+    expect("nav.queue" in he.translation).toBe(false);
+  });
+
+  it("names no literal digit anywhere in the namespace", () => {
+    // Every number on this panel is an interpolation — the position, the wait
+    // minutes and the skip count all arrive from the payload — so no exemption
+    // is needed. A literal digit here would be a retry interval or the server's
+    // own LIMIT 100, and the screen can keep neither true.
+    const values = HE_F58.map(([, value]) => value);
+    expect(values.filter((value) => /\d/.test(value))).toEqual([]);
+  });
+
+  it("starts each accessible name with its visible label (WCAG 2.5.3)", () => {
+    // DC-1. Forty rows all offering a button named «דלגי» is a screen-reader
+    // dead end, so each *Aria appends the customer after an em-dash — but it
+    // must still OPEN with the visible word, or a speech-input user saying what
+    // she can see matches nothing at all. FOUR of spec D16's five proposals
+    // failed this, and «הסרת {{name}} מהתור» failed on a different WORD FORM
+    // from «הסרה», which is the version she cannot recover from.
+    for (const name of ["call", "assign", "skip", "remove"]) {
+      expect(i18n.t(`waitlist.${name}Aria`, { name: "נועה בר" })).toMatch(
+        new RegExp(`^${i18n.t(`waitlist.${name}`)}`),
+      );
+    }
+  });
+
+  it("gives the NOT_WAITING 409 three sentences, one per remedy", () => {
+    // design.md F-5. D12 gives one code two Hebrew sentences and D16 declares
+    // one key; the remedies differ (go and find her in a fitting room / there
+    // is nothing to do), and `details` is optional on the wire, so F36's
+    // *Unknown precedent adds the third.
+    expect(i18n.t("waitlist.error.QUEUE_TICKET_NOT_WAITING")).toBe("היא כבר בטיפול.");
+    expect(i18n.t("waitlist.error.ticketClosed")).toBe("הכניסה הזו נסגרה.");
+    expect(i18n.t("waitlist.error.ticketNotWaitingUnknown")).toBe("הכניסה הזו כבר לא ממתינה.");
+  });
+
+  it("ships a paused twin of every sentence that promises a next update", () => {
+    // DC-8, inherited. pause() stops the loop and NOTHING else — every verb on
+    // this panel stays fully available while paused — so «הרשימה תתוקן בעדכון
+    // הבא» is then a promise the screen will not keep. The paused pair points at
+    // «חידוש», the control that IS on screen.
+    for (const key of ["waitlist.error.notFound", "waitlist.error.QUEUE_TICKET_CHANGED"]) {
+      expect(i18n.t(key)).toContain("בעדכון הבא");
+    }
+    for (const key of [
+      "waitlist.error.notFoundPaused",
+      "waitlist.error.queueTicketChangedPaused",
+    ]) {
+      expect(i18n.t(key)).not.toContain("בעדכון הבא");
+      expect(i18n.t(key)).toContain(i18n.t("floor.resume"));
+    }
+  });
+
+  it("names the ACT in every cue and NEVER a customer", () => {
+    // copy.md §7 and the deck's sharpest privacy line. The region is PERSISTENT
+    // — FloorPanel's <p role="status"> is overwritten only by the next cue and
+    // cleared by nothing — so «נועה הוסרה מהתור.» would sit in a five-role
+    // screen's DOM after her row has left the payload AND after she has left the
+    // shop, making the cue the only place her name survives. D16 put a customer
+    // in all four.
+    for (const key of [
+      "waitlist.calledCue",
+      "waitlist.skippedCue",
+      "waitlist.removedCue",
+      "waitlist.dispatchedCue",
+    ]) {
+      expect(he.translation[key as keyof typeof he.translation]).not.toContain("{{name}}");
+    }
+    // The one interpolation among the four is a ROOM label.
+    expect(i18n.t("waitlist.dispatchedCue", { room: "חדר 2" })).toBe("הלקוחה שובצה: חדר 2.");
+  });
+
+  it("spells the bride arm the way the form she filled in spells it", () => {
+    // ⚠ CORRECTS D16's «שמלת כלה», which would be a THIRD spelling of a
+    // two-value enum. The storefront check-in form labels this arm «מדידת כלה»,
+    // and a manager reading a different word beside a customer who ticked that
+    // one has no way to know they are the same fact. The two apps have separate
+    // bundles, so the key cannot be shared; the VALUE must agree.
+    expect(i18n.t("waitlist.visitBride")).toBe("מדידת כלה");
+    expect(i18n.t("waitlist.visitEvening")).toBe("שמלת ערב");
+  });
+
+  it("keeps the tile's empty-queue alert one full stop away from the panel's own", () => {
+    // A deliberate near-duplicate and not a miss (copy.md §11): the alert
+    // answers her tap and the EmptyState one panel below answers the screen, so
+    // one fact gets one vocabulary in two registers rather than two sentences.
+    expect(i18n.t("rooms.error.QUEUE_EMPTY")).toBe(`${i18n.t("waitlist.empty")}.`);
+  });
+
+  it("gives the dispatch verbs a SELF form of the staff-occupied 409", () => {
+    // DC-3 / C13. The shipped third-person «היא כבר בחדר אחר: {{room}}.» is
+    // asserted verbatim in RoomsPanel.test.tsx, RoomHandoverDialog.test.tsx and
+    // this file, so editing its value reds four shipped assertions — hence two
+    // NEW keys rather than the two-line he/ar edit the critic asked for. A
+    // take-next or a push-assign carries no target staffer, so the refusal is
+    // about the caller herself and «היא» would name nobody on screen.
+    expect(i18n.t("rooms.error.staffOccupiedSelf", { room: "חדר 5" })).toBe(
+      "את כבר בחדר אחר: חדר 5.",
+    );
+    expect(i18n.t("rooms.error.staffOccupiedSelfUnknown")).toBe("את כבר בחדר אחר.");
+    // The shipped third-person pair is UNTOUCHED.
+    expect(i18n.t("rooms.error.STAFF_OCCUPIED", { room: "חדר 5" })).toBe("היא כבר בחדר אחר: חדר 5.");
+  });
+});
+
 describe("the register, mechanically", () => {
   const values = HE.map(([, value]) => value);
 
@@ -586,6 +732,19 @@ describe("the ar bundle", () => {
     // widening it would be a different feature's decision to take.
     const arTranslation = ar.translation as Record<string, string>;
     const drifted = HE_F36.filter(([key, value]) => arTranslation[key] !== value).map(
+      ([key]) => key,
+    );
+    expect(drifted).toEqual([]);
+  });
+
+  it("carries the approved Hebrew VALUE for every waitlist key, not merely the key", () => {
+    // The guard above is scoped to HE_F36 BY NAME, so without this twin F58's
+    // thirty-seven hand-transcribed strings would ship with only the presence
+    // check — which passes on an English string, a `TODO`, or a different
+    // Hebrew wording. There is still no he/ar parity guard anywhere in this
+    // repo (F15's Risk 5), so each block declares its own.
+    const arTranslation = ar.translation as Record<string, string>;
+    const drifted = HE_F58.filter(([key, value]) => arTranslation[key] !== value).map(
       ([key]) => key,
     );
     expect(drifted).toEqual([]);
