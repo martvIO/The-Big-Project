@@ -296,7 +296,8 @@ queue:
     slug: fitting-rooms
     epic: E7
     title: "Fitting-room registry + assignment (rooms panel)"
-    status: building
+    status: merged
+    pr: 37
     attempts: 1
     deps: [F8, F13, F31, F34, F57]
     spec: .planning/specs/fitting-rooms.md
@@ -325,8 +326,48 @@ queue:
       for the widest role gate in the codebase.
       Design deck + copy deck (69 keys, machine-validated) reviewed by design-critic;
       its fourteen required changes are BUILD TASKS in the plan, not review notes.
-      MIGRATION: build at head+1, renumber at rebase. F33 is in flight and expected
-      to land first, which would make this one 0019 rather than 0018.
+      MIGRATION: built at 0018, renumbered to 0019 when F33's 0018 landed first —
+      the rule working exactly as written.
+    shipped: >-
+      MERGED 2026-08-03 as PR #37, ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN.
+      Migration 0019_fitting_rooms. Gates run locally on the pushed tree: 1663 backend
+      fast, 537 backend db ON REAL POSTGRES 16.14, 104 ui / 943 storefront / 729
+      manage, 74 e2e, axe zero, alembic heads one head.
+      THE BUILD RAN CLEAN — 27 agents, ZERO failures, the first workflow today with no
+      API deaths.
+      THREE THINGS A LATER READER NEEDS.
+      (1) THE SPEC'S 409 DISCRIMINATOR DID NOT WORK, AND EVERY 409 WOULD HAVE BEEN A
+      500. D3 said to tell the two indexes apart with
+      getattr(exc.orig, "constraint_name", None). SQLAlchemy's asyncpg dialect REBUILDS
+      the error as IntegrityError("%s: %s" % (type(e), e)) and raises it `from` the
+      asyncpg original, so exc.orig carries a FORMATTED STRING and no constraint_name —
+      the expression is None for every violation and the claim always took its re-raise
+      branch. Verified against the dialect source and three live violations. Corrected
+      once, beside the two index constants:
+      getattr(getattr(error.orig, "__cause__", None), "constraint_name", None).
+      Anything later that discriminates a Postgres constraint by name must use that
+      shape, not the obvious one.
+      (2) TWO MAJOR REVIEW FINDINGS, BOTH REPRODUCED END TO END BEFORE BEING ACCEPTED
+      (3 lenses -> 17 findings -> each judged by an independent skeptic -> 2 survived).
+      The sharper one: patch() rebuilt the whole room list FROM A STALE CLOSURE, so two
+      concurrent room mutations discarded each other. busyIds is keyed PER ROOM, so
+      overlapping mutations are supported by design, and the poll cannot heal the
+      window because tick() returns "suppressed" while a mutation is in flight. For up
+      to 5s the screen showed a CLAIMED room as free with a live claim button — a
+      colleague tapping it gets a 409, the exact state this feature exists to prevent —
+      while the freshness stamp asserted the panel was current. The shipped double-tap
+      test could not catch it: it covers one control, and `busy` genuinely disables that.
+      RoomsRegistryDialog was structurally identical and fixed with it.
+      (3) A SHIPPED ROUND-TRIP TEST BROKE BY BEING LANDED ON. test_migration_0017_round_trips
+      used command.downgrade(cfg, "-1"), so 0019 arriving on top made it downgrade the
+      FITTING-ROOM tables and then assert about customers. That is the deposit block's
+      documented rot arriving a second time; fixed with a shared _parent_of(marker)
+      helper that resolves the target BY IDENTITY, so F58 landing on top costs nothing.
+      CARRIED: F37 attaches its SOS alert to the assignment row and the handover keeps
+      the assignment id stable for exactly that reason. Nine mutation checks were run;
+      TWO CAME BACK GREEN and are recorded IN THE CODE as not-actually-pinned rather
+      than left as false confidence (populate_existing=True, and the five explicit
+      tenant_id predicates that RLS already carries).
     note: >-
       Substance unchanged from the e7 brief; pulled forward and given its floor
       surface. fitting_rooms CRUD (add/remove rooms — the brief's prerequisite for
