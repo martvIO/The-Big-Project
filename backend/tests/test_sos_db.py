@@ -49,7 +49,9 @@ from app.errors import DomainNotFoundError
 from app.floor.service import FloorService
 from app.floor.validation import SosAlreadyAcceptedError, SosClosedError
 from app.models.audit_log import AuditLog
-from app.models.constants import AuditAction, SosStatus, StaffRole
+from app.models.booking import Booking
+from app.models.constants import AuditAction, BookingStatus, SosStatus, StaffRole
+from app.models.customer import Customer
 from app.models.sos_alert import SosAlert
 from app.models.staff_user import StaffUser
 
@@ -57,6 +59,9 @@ pytestmark = pytest.mark.db
 
 NOW = datetime(2026, 8, 3, 11, 20, tzinfo=UTC)
 LATER = datetime(2026, 8, 3, 13, 45, tzinfo=UTC)
+# The one customer datum this feature must never render. Bound to the raiser's
+# own room, which is the state F36's floor payload puts on a tile.
+CLIENT_NAME = "מיכל כהן"
 
 
 def _factory(app_role_url: str) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
@@ -76,7 +81,9 @@ def _actor(staff_id: uuid.UUID, tenant_id: uuid.UUID, role: StaffRole) -> StaffC
         tenant_id=tenant_id,
         email="staff@example.com",
         display_name="Actor",
-        # `.value`: ELEVATED_ROLES is a frozenset of strings.
+        # `.value`: `StaffContext.role` is a `str`. ⚠ NOT a vacuity guard —
+        # `StaffRole` is a `StrEnum`, so the member and its value compare and
+        # hash equal (mutation run in `test_sos_service.py`, all green).
         role=role.value,
     )
 
@@ -135,6 +142,45 @@ async def _claim_room(
         return assignment.id
 
 
+async def _claim_booked_room(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    staff_id: uuid.UUID,
+    *,
+    label: str = "חדר 2",
+) -> uuid.UUID:
+    """A room claimed FOR a checked-in bride — exactly the state F36's floor
+    payload renders her name in. This feature's read must reach the room label
+    and stop there."""
+    async with tenant_session(factory, tenant_id) as session:
+        customer = Customer(
+            tenant_id=tenant_id,
+            phone=f"+9725{uuid.uuid4().int % 10**8:08d}",
+            name=CLIENT_NAME,
+        )
+        session.add(customer)
+        await session.flush()
+        booking = Booking(
+            tenant_id=tenant_id,
+            customer_id=customer.id,
+            appointment_type_id=uuid.uuid4(),
+            starts_at=NOW,
+            seat_index=1,
+            status=BookingStatus.CONFIRMED.value,
+            terms_version_accepted=1,
+            terms_accepted_at=NOW,
+            appointment_type_name="מדידה",
+            checked_in_at=NOW,
+        )
+        session.add(booking)
+        await session.flush()
+        room = await FittingRoomsRepository().insert(session, tenant_id, label=label, sort_order=0)
+        assignment = await FittingRoomAssignmentsRepository().claim(
+            session, tenant_id, room_id=room.id, staff_id=staff_id, booking_id=booking.id
+        )
+        return assignment.id
+
+
 async def _audit_rows(
     factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID, action: AuditAction
 ) -> list[AuditLog]:
@@ -176,10 +222,12 @@ async def test_a_logged_out_target_is_rerouted_to_the_shift_manager(app_role_url
             actor=_actor(raiser, tenant_id, StaffRole.OWNER),
         )
         assert result.rerouted is True
-        assert result.alert.target_staff_user_id is None
+        assert result.sos.alert.target_staff_user_id is None
 
         async with tenant_session(factory, tenant_id) as session:
-            stored = await session.scalar(select(SosAlert).where(SosAlert.id == result.alert.id))
+            stored = await session.scalar(
+                select(SosAlert).where(SosAlert.id == result.sos.alert.id)
+            )
         assert stored is not None
         assert stored.target_staff_user_id is None
         assert stored.status == SosStatus.OPEN
@@ -188,7 +236,7 @@ async def test_a_logged_out_target_is_rerouted_to_the_shift_manager(app_role_url
         rows = await _audit_rows(factory, tenant_id, AuditAction.SOS_RAISED)
         assert len(rows) == 1
         assert rows[0].details == {
-            "alert": str(result.alert.id),
+            "alert": str(result.sos.alert.id),
             "requested_target": str(dana),
             "target": None,
             "rerouted": True,
@@ -214,7 +262,7 @@ async def test_a_signed_in_target_is_stored_and_not_rerouted(app_role_url: str) 
             actor=_actor(raiser, tenant_id, StaffRole.OWNER),
         )
         assert result.rerouted is False
-        assert result.alert.target_staff_user_id == dana
+        assert result.sos.alert.target_staff_user_id == dana
         rows = await _audit_rows(factory, tenant_id, AuditAction.SOS_RAISED)
         assert rows[0].details["requested_target"] == str(dana)
         assert rows[0].details["target"] == str(dana)
@@ -246,7 +294,7 @@ async def test_a_deleted_target_is_rerouted_and_the_alert_is_still_created(
             actor=_actor(raiser, tenant_id, StaffRole.OWNER),
         )
         assert result.rerouted is True
-        assert result.alert.target_staff_user_id is None
+        assert result.sos.alert.target_staff_user_id is None
     finally:
         await engine.dispose()
 
@@ -265,7 +313,7 @@ async def test_her_own_assignment_is_stored_on_the_page(app_role_url: str) -> No
             note=None,
             actor=_actor(raiser, tenant_id, StaffRole.OWNER),
         )
-        assert result.alert.fitting_room_assignment_id == assignment_id
+        assert result.sos.alert.fitting_room_assignment_id == assignment_id
         rows = await _audit_rows(factory, tenant_id, AuditAction.SOS_RAISED)
         assert rows[0].details["assignment"] == str(assignment_id)
     finally:
@@ -297,8 +345,8 @@ async def test_another_staffers_assignment_stores_null_and_the_alert_is_still_cr
             note=None,
             actor=_actor(raiser, tenant_id, StaffRole.OWNER),
         )
-        assert result.alert.fitting_room_assignment_id is None
-        assert result.alert.status == SosStatus.OPEN
+        assert result.sos.alert.fitting_room_assignment_id is None
+        assert result.sos.alert.status == SosStatus.OPEN
         rows = await _audit_rows(factory, tenant_id, AuditAction.SOS_RAISED)
         assert rows[0].details["assignment"] is None
     finally:
@@ -322,7 +370,7 @@ async def test_an_unknown_assignment_id_stores_null_and_the_alert_is_still_creat
             note=None,
             actor=_actor(raiser, tenant_id, StaffRole.OWNER),
         )
-        assert result.alert.fitting_room_assignment_id is None
+        assert result.sos.alert.fitting_room_assignment_id is None
     finally:
         await engine.dispose()
 
@@ -351,7 +399,7 @@ async def test_a_second_page_by_the_same_raiser_is_admitted(app_role_url: str) -
             note=None,
             actor=actor,
         )
-        assert first.alert.id != second.alert.id
+        assert first.sos.alert.id != second.sos.alert.id
     finally:
         await engine.dispose()
 
@@ -373,7 +421,7 @@ async def _raise(
         note=None,
         actor=_actor(raiser, tenant_id, StaffRole.OWNER),
     )
-    return result.alert.id
+    return result.sos.alert.id
 
 
 async def test_an_accept_stamps_the_owner_and_writes_one_audit_row(app_role_url: str) -> None:
@@ -387,9 +435,9 @@ async def test_an_accept_stamps_the_owner_and_writes_one_audit_row(app_role_url:
         row = await _service(factory).accept_sos(
             tenant_id, alert_id, actor=_actor(dana, tenant_id, StaffRole.SHIFT_MANAGER)
         )
-        assert row.status == SosStatus.ACCEPTED
-        assert row.accepted_by == dana
-        assert row.acknowledged_at == NOW
+        assert row.alert.status == SosStatus.ACCEPTED
+        assert row.alert.accepted_by == dana
+        assert row.alert.acknowledged_at == NOW
 
         rows = await _audit_rows(factory, tenant_id, AuditAction.SOS_ACCEPTED)
         assert len(rows) == 1
@@ -490,9 +538,9 @@ async def test_a_re_accept_by_the_owner_writes_no_audit_row(app_role_url: str) -
 
         first = await service.accept_sos(tenant_id, alert_id, actor=actor)
         again = await service.accept_sos(tenant_id, alert_id, actor=actor)
-        assert again.status == SosStatus.ACCEPTED
-        assert again.accepted_by == dana
-        assert again.acknowledged_at == first.acknowledged_at == NOW
+        assert again.alert.status == SosStatus.ACCEPTED
+        assert again.alert.accepted_by == dana
+        assert again.alert.acknowledged_at == first.alert.acknowledged_at == NOW
         assert len(await _audit_rows(factory, tenant_id, AuditAction.SOS_ACCEPTED)) == 1
     finally:
         await engine.dispose()
@@ -540,5 +588,176 @@ async def test_another_tenants_alert_is_a_404_and_is_never_touched(app_role_url:
         assert stored is not None
         assert stored.status == SosStatus.OPEN
         assert stored.accepted_by is None
+    finally:
+        await engine.dispose()
+
+
+# --- the read-time predicates, against a real row and a FROZEN clock ----------
+#
+# ⚠ **BOTH operands are frozen and that is not fussiness.** `server_now` is
+# `FloorService`'s injectable clock and `created_at` is SEEDED, so the margin is
+# exact. Left the other way — seed `created_at`, let the wall clock supply
+# `server_now` — the not-escalated assertion flips as soon as ~1 s elapses
+# between the seed and the read, i.e. a Postgres round trip on a loaded CI box,
+# and a test that goes green or red on machine speed will be re-run until it
+# passes, which is how a mutation regime rots.
+#
+# What a `db` test genuinely cannot freeze is `server_default=text("now()")` —
+# which is precisely WHY `created_at` is seeded: the default applies only when
+# the column is omitted.
+
+
+async def _age(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    alert_id: uuid.UUID,
+    **fields: datetime,
+) -> None:
+    """Seeds the operand the service clock is compared against — `created_at` is
+    `server_default=text("now()")` and a test that let the wall clock supply it
+    would go green or red on machine speed."""
+    async with tenant_session(factory, tenant_id) as session:
+        await session.execute(update(SosAlert).where(SosAlert.id == alert_id).values(**fields))
+
+
+async def test_an_alert_open_for_31_seconds_is_escalated_and_one_open_for_29_is_not(
+    app_role_url: str,
+) -> None:
+    """The thirty-second rule against a real row, and `escalated` rides the wire
+    from the same instant the console's elapsed line is anchored on."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        manager = await _seed_staff(factory, tenant_id, display_name="Dana")
+        fresh = await _raise(factory, tenant_id, raiser)
+        old = await _raise(factory, tenant_id, raiser)
+        await _age(factory, tenant_id, fresh, created_at=NOW - timedelta(seconds=29))
+        await _age(factory, tenant_id, old, created_at=NOW - timedelta(seconds=31))
+
+        read = await _service(factory).sos(
+            tenant_id, actor=_actor(manager, tenant_id, StaffRole.SHIFT_MANAGER)
+        )
+        assert read.server_now == NOW
+        assert {one.alert.id: one.escalated for one in read.alerts} == {fresh: False, old: True}
+    finally:
+        await engine.dispose()
+
+
+async def test_an_accepted_alert_unresolved_for_two_minutes_re_rises_for_the_shift_manager(
+    app_role_url: str,
+) -> None:
+    """⚠ **AC26, and deleting `_stalled` or its `_for_me` branch is the only
+    thing that reds it.** Every other test in this file accepts and then resolves.
+
+    Without the second boolean an accepted alert stops escalating and stops
+    rising on EVERY device in the boutique, forever — and it is worse than
+    silence, because the raiser's screen reads «דנה מגיעה» and she stops looking
+    for help on a signal the product cannot back."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        dana = await _seed_staff(factory, tenant_id, display_name="Dana")
+        rina = await _seed_staff(factory, tenant_id, display_name="Rina")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        await _service(factory).accept_sos(
+            tenant_id, alert_id, actor=_actor(dana, tenant_id, StaffRole.SHIFT_MANAGER)
+        )
+        manager = _actor(rina, tenant_id, StaffRole.SHIFT_MANAGER)
+
+        # One minute in: hers, and nobody else's.
+        await _age(factory, tenant_id, alert_id, acknowledged_at=NOW - timedelta(minutes=1))
+        moving = await _service(factory).sos(tenant_id, actor=manager)
+        assert [(one.stalled, one.for_me) for one in moving.alerts] == [(False, False)]
+
+        # Three minutes in: nobody has moved, so it is nobody's job again.
+        await _age(factory, tenant_id, alert_id, acknowledged_at=NOW - timedelta(minutes=3))
+        stalled = await _service(factory).sos(tenant_id, actor=manager)
+        assert [(one.stalled, one.for_me) for one in stalled.alerts] == [(True, True)]
+        assert stalled.alerts[0].alert.status == SosStatus.ACCEPTED
+        assert stalled.alerts[0].row.accepted_by_name == "Dana"
+
+        # …and never for the raiser, even then.
+        hers = await _service(factory).sos(
+            tenant_id, actor=_actor(raiser, tenant_id, StaffRole.SHIFT_MANAGER)
+        )
+        assert [one.for_me for one in hers.alerts] == [False]
+    finally:
+        await engine.dispose()
+
+
+async def test_a_seamstress_sees_only_her_own_pages(app_role_url: str) -> None:
+    """⚠ **AC7 end to end, and dropping the `or_(...)` audience clause is the
+    mutation.** The overlay is mounted app-wide on eleven sections, and the only
+    reason that is safe is that the filter runs on the SERVER.
+
+    The context's role is `seamstress`; the COMMITTED rows are all elevated,
+    which is the seed rule this module runs under."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        her = await _seed_staff(factory, tenant_id, display_name="Noa")
+        stranger = await _seed_staff(factory, tenant_id, display_name="Rina")
+        # She must hold a live session or the raise below REROUTES to the
+        # shift-manager role and the alert is not name-targeted at all.
+        await _sign_in(factory, tenant_id, her)
+        raised = await _raise(factory, tenant_id, her)
+        named = await _raise(factory, tenant_id, stranger, target=her)
+        strangers = await _raise(factory, tenant_id, stranger)
+
+        seamstress = _actor(her, tenant_id, StaffRole.SEAMSTRESS)
+        assert {
+            one.alert.id
+            for one in (await _service(factory).sos(tenant_id, actor=seamstress)).alerts
+        } == {
+            raised,
+            named,
+        }
+        owner = _actor(stranger, tenant_id, StaffRole.OWNER)
+        assert {
+            one.alert.id for one in (await _service(factory).sos(tenant_id, actor=owner)).alerts
+        } == {
+            raised,
+            named,
+            strangers,
+        }
+    finally:
+        await engine.dispose()
+
+
+async def test_the_payload_carries_no_customer_datum(app_role_url: str) -> None:
+    """⚠ **AC8's `db` half.** A checked-in booking is bound to the raiser's
+    assignment, exactly as F36's floor payload would render it, and her name
+    appears NOWHERE on this read. F36's payload is fetched only while the console
+    is on the board or the floor; this one is fetched on every section, every few
+    seconds, for the whole shift."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        assignment_id = await _claim_booked_room(factory, tenant_id, raiser)
+        await _service(factory).raise_sos(
+            tenant_id,
+            target_staff_user_id=None,
+            fitting_room_assignment_id=assignment_id,
+            note=None,
+            actor=_actor(raiser, tenant_id, StaffRole.OWNER),
+        )
+        read = await _service(factory).sos(
+            tenant_id, actor=_actor(raiser, tenant_id, StaffRole.OWNER)
+        )
+        assert [one.row.room_label for one in read.alerts] == ["חדר 2"]
+        rendered = [
+            (
+                one.row.raised_by_name,
+                one.row.target_name,
+                one.row.accepted_by_name,
+                one.row.room_label,
+                one.alert.note,
+            )
+            for one in read.alerts
+        ]
+        assert CLIENT_NAME not in str(rendered)
     finally:
         await engine.dispose()

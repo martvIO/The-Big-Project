@@ -200,13 +200,16 @@ class SosAlertsRepository:
         rows = await self._rows(session, self._joined(tenant_id).where(SosAlert.id == alert_id))
         return rows[0] if rows else None
 
-    def _joined(
-        self, tenant_id: uuid.UUID
-    ) -> Select[tuple[SosAlert, str | None, str | None, str | None, str | None]]:
-        """The join chain, written ONCE. Two callers narrow it with a predicate
-        and nothing else — a second transcription of five outer joins is five
-        chances for one `deleted_at` to differ between the poll and the row a
-        mutation answers with.
+    def _joined(self, tenant_id: uuid.UUID) -> Select[tuple[SosAlert, str, str, str, str]]:
+        """The join chain, written ONCE.
+
+        ⚠ The four name columns are typed `str` because that is what the COLUMN
+        is; every one of them comes back NULL from an outer join whose right side
+        is missing, and `SosAlertRow` is where that truth is declared.
+
+        Two callers narrow this with a predicate and nothing else: a second
+        transcription of five outer joins is five chances for one `deleted_at` to
+        differ between the poll and the row a mutation answers with.
 
         There are no FK constraints in this schema, so every predicate is spelled
         out. Three of them are decisions with named tests:
@@ -269,7 +272,7 @@ class SosAlertsRepository:
     async def _rows(
         self,
         session: AsyncSession,
-        stmt: Select[tuple[SosAlert, str | None, str | None, str | None, str | None]],
+        stmt: Select[tuple[SosAlert, str, str, str, str]],
     ) -> list[SosAlertRow]:
         """`populate_existing=True` for `_refreshed`'s reason, and it matters most
         exactly here: this read runs AFTER the verb's own guarded UPDATE, whose
