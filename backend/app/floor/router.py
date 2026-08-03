@@ -94,15 +94,18 @@ async def start_break(
     """`staff` is the ACTING identity and comes from the session cookie;
     `staff_id` is the TARGET and comes from the path. The service's two-axis
     check is what keeps the second from ever standing in for the first."""
-    return StaffCard.from_row(
-        await service.start_break(get_current_tenant(request).id, staff_id, actor=staff)
+    row, occupancy = await service.start_break(
+        get_current_tenant(request).id, staff_id, actor=staff
     )
+    return StaffCard.from_row(row, occupancy=occupancy)
 
 
 @router.post("/floor/staff/{staff_id}/break/end")
 async def end_break(
     request: Request, staff_id: uuid.UUID, service: Service, staff: Staff
 ) -> StaffCard:
-    return StaffCard.from_row(
-        await service.end_break(get_current_tenant(request).id, staff_id, actor=staff)
-    )
+    """The occupancy the service hands back is the SECOND half of the card, not
+    a decoration: if this staffer is standing in a fitting room the card must say
+    `occupied`, or it contradicts the panel it lands in five seconds later."""
+    row, occupancy = await service.end_break(get_current_tenant(request).id, staff_id, actor=staff)
+    return StaffCard.from_row(row, occupancy=occupancy)

@@ -116,6 +116,38 @@ class FittingRoomAssignmentsRepository:
         )
         return (await session.execute(stmt)).scalar_one_or_none()
 
+    async def by_id(
+        self, session: AsyncSession, tenant_id: uuid.UUID, assignment_id: uuid.UUID
+    ) -> FittingRoomAssignment | None:
+        """⚠ **`deleted_at IS NULL` only — NO `released_at IS NULL`, and that is
+        the release's whole idempotence.**
+
+        The release authorizes on the row's `staff_user_id`, so it must read the
+        row before it writes. Filtering `released_at IS NULL` there would make a
+        second release read as ABSENT and answer 404 — but she wanted the room
+        free and the room is free, so it is a 200. The `(wrote, row)` pair from
+        `release()` is what separates "already released" from "never existed";
+        this read must not pre-empt that distinction.
+        """
+        return await self._refreshed(session, tenant_id, assignment_id)
+
+    async def active_by_id(
+        self, session: AsyncSession, tenant_id: uuid.UUID, assignment_id: uuid.UUID
+    ) -> FittingRoomAssignment | None:
+        """The dress routes' read, and it DOES filter `released_at IS NULL`.
+
+        The asymmetry with `by_id` is deliberate and is the error table's: a
+        released assignment is a 200 to the release and a 404 to everything else,
+        because the fitting is over and nothing more goes into that room.
+        """
+        stmt = select(FittingRoomAssignment).where(
+            FittingRoomAssignment.tenant_id == tenant_id,
+            FittingRoomAssignment.id == assignment_id,
+            FittingRoomAssignment.released_at.is_(None),
+            FittingRoomAssignment.deleted_at.is_(None),
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
     async def occupant_of_room(
         self, session: AsyncSession, tenant_id: uuid.UUID, room_id: uuid.UUID
     ) -> FittingRoomAssignment | None:

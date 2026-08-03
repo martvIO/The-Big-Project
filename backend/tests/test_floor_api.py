@@ -25,7 +25,9 @@ from app import main as app_main
 from app.auth.dependencies import get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
+from app.db.repositories.fitting_rooms import RoomRow
 from app.errors import DomainNotFoundError
+from app.floor.service import FloorRead
 from app.floor.validation import RoomOccupiedError, StaffOccupiedError
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.constants import StaffCardStatus, StaffRole
@@ -42,6 +44,9 @@ START_PATH = f"/manage/floor/staff/{TARGET_ID}/break/start"
 END_PATH = f"/manage/floor/staff/{TARGET_ID}/break/end"
 
 BREAK_BEGAN = datetime.datetime(2026, 8, 2, 9, 5, tzinfo=datetime.UTC)
+# F36's one new envelope field: the server's instant at serialisation, which is
+# what the console's «כבר 42 דק'» is computed against.
+SERVER_NOW = datetime.datetime(2026, 8, 2, 11, 20, tzinfo=datetime.UTC)
 
 # CONCRETE urls, not templates (plan C4). The structural walker in
 # test_staff_role_gating.py reads `route.path` and needs TEMPLATES, so it keeps
@@ -140,28 +145,40 @@ class FakeFloorService:
         # in this task; the rooms routes assert the same handlers through their
         # own paths once they land.
         self.raises = raises
+        # F36: the break writers' occupancy lookup. Default None — the shipped
+        # F57 assertions describe a floor with no rooms, which is every boutique
+        # until an owner adds one.
+        self.occupancy: RoomRow | None = None
+        self.occupancy_by_staff_id: dict[uuid.UUID, RoomRow] = {}
+        self.room_rows: list[RoomRow] = []
 
-    async def floor(self, tenant_id: uuid.UUID) -> list[StaffUser]:
+    async def floor(self, tenant_id: uuid.UUID) -> FloorRead:
         self.floor_calls.append(tenant_id)
-        return [
-            _staff_user(STAFF_ID, display_name="דנה כהן", role=StaffRole.OWNER.value),
-            _staff_user(
-                TARGET_ID,
-                display_name="נועה לוי",
-                role=StaffRole.SEAMSTRESS.value,
-                break_started_at=BREAK_BEGAN,
-            ),
-        ]
+        return FloorRead(
+            staff_rows=[
+                _staff_user(STAFF_ID, display_name="דנה כהן", role=StaffRole.OWNER.value),
+                _staff_user(
+                    TARGET_ID,
+                    display_name="נועה לוי",
+                    role=StaffRole.SEAMSTRESS.value,
+                    break_started_at=BREAK_BEGAN,
+                ),
+            ],
+            occupancy_by_staff_id=self.occupancy_by_staff_id,
+            room_rows=self.room_rows,
+            bindings_by_assignment_id={},
+            server_now=SERVER_NOW,
+        )
 
     async def start_break(
         self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor: StaffContext
-    ) -> StaffUser:
-        return self._toggle("start", tenant_id, staff_id, actor, BREAK_BEGAN)
+    ) -> tuple[StaffUser, RoomRow | None]:
+        return self._toggle("start", tenant_id, staff_id, actor, BREAK_BEGAN), self.occupancy
 
     async def end_break(
         self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor: StaffContext
-    ) -> StaffUser:
-        return self._toggle("end", tenant_id, staff_id, actor, None)
+    ) -> tuple[StaffUser, RoomRow | None]:
+        return self._toggle("end", tenant_id, staff_id, actor, None), self.occupancy
 
     def _toggle(
         self,
@@ -320,8 +337,15 @@ def test_each_toggle_reaches_its_own_service_method() -> None:
 
 
 def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> None:
-    """An ENVELOPE, not a bare array: F36 adds rooms and F58 the waitlist to this
-    same payload, and a bare array makes the first of them a breaking change."""
+    """An ENVELOPE, not a bare array: F36 added the rooms and F58 adds the
+    waitlist to this same payload, and a bare array would have made the first of
+    them a breaking change on a screen that polls every five seconds.
+
+    `rooms` and `server_now` are F36's two new envelope keys. `server_now` is the
+    ONE field the console's «כבר 42 דק'» is computed against: a server-computed
+    minute count is stale the instant it is serialised, and a device-clock one is
+    wrong by however far a boutique tablet has drifted.
+    """
     fake = FakeFloorService()
     with _client(fake) as client:
         body = client.get(FLOOR_PATH).json()
@@ -334,6 +358,7 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
                 "role": "owner",
                 "status": "available",
                 "break_started_at": None,
+                "occupancy": None,
             },
             {
                 "id": str(TARGET_ID),
@@ -341,17 +366,60 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
                 "role": "seamstress",
                 "status": "break",
                 "break_started_at": BREAK_BEGAN.isoformat().replace("+00:00", "Z"),
+                "occupancy": None,
             },
-        ]
+        ],
+        "rooms": [],
+        "server_now": SERVER_NOW.isoformat().replace("+00:00", "Z"),
     }
 
 
 def test_a_toggle_answers_one_card_and_not_the_whole_floor() -> None:
+    """⚠ SIX keys, and it stays a SET EQUALITY. `occupancy` is F36's; the
+    assertion is what catches a SEVENTH field arriving unreviewed on a payload
+    all five roles can open, which on this particular payload is the whole of the
+    no-customer-data argument mechanised."""
     fake = FakeFloorService()
     with _client(fake) as client:
         body = client.post(START_PATH).json()
-    assert set(body) == {"id", "display_name", "role", "status", "break_started_at"}
+    assert set(body) == {
+        "id",
+        "display_name",
+        "role",
+        "status",
+        "break_started_at",
+        "occupancy",
+    }
     assert body["status"] == "break"
+
+
+def test_a_break_route_answers_occupied_when_the_staffer_is_in_a_room() -> None:
+    """⚠ The status and the occupancy object are derived from ONE argument, so
+    they cannot disagree — a card saying «פנויה» about a staffer standing in room
+    2 is the lie this whole field exists to prevent, one word over."""
+    fake = FakeFloorService()
+    fake.occupancy = RoomRow(
+        room_id=uuid.uuid4(),
+        label="חדר 2",
+        sort_order=1,
+        is_active=True,
+        assignment_id=uuid.uuid4(),
+        staff_user_id=TARGET_ID,
+        staff_display_name="נועה לוי",
+        staff_role=StaffRole.SEAMSTRESS.value,
+        booking_id=None,
+        client_label="מיכל",
+        assigned_at=BREAK_BEGAN,
+    )
+    with _client(fake) as client:
+        body = client.post(START_PATH).json()
+
+    assert body["status"] == "occupied"
+    assert body["occupancy"]["room_label"] == "חדר 2"
+    assert body["occupancy"]["client_label"] == "מיכל"
+    # The break timestamp stays on the wire regardless, so the card can still say
+    # she forgot to end one.
+    assert body["break_started_at"] is not None
 
 
 def test_no_card_carries_an_email_or_any_credential() -> None:

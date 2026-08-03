@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.catalog.validation import MAX_SIZE_LABEL_LENGTH, MAX_SORT_ORDER
 from app.db.repositories.fitting_rooms import RoomRow
-from app.floor.service import card_status
+from app.floor.service import FloorRead, card_status
 from app.models.constants import StaffCardStatus
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.staff_user import StaffUser
@@ -41,24 +41,56 @@ class StaffCard(BaseModel):
     # console must not infer one from the other in the opposite direction: F36
     # adds `occupied`, which also carries no break timestamp.
     break_started_at: datetime.datetime | None
+    # F36. Non-null EXACTLY when `status` is `occupied`, and null on both other
+    # statuses — the two are derived from the same `occupancy` argument, so they
+    # cannot disagree. A SIXTH key on this card, and the set-equality assertion
+    # over it is what catches a seventh arriving unreviewed on a five-role
+    # payload.
+    occupancy: "Occupancy | None"
 
     @classmethod
-    def from_row(cls, row: StaffUser) -> "StaffCard":
+    def from_row(cls, row: StaffUser, *, occupancy: "RoomRow | None" = None) -> "StaffCard":
         return cls(
             id=row.id,
             display_name=row.display_name,
             role=row.role,
-            status=card_status(row),
+            status=card_status(row, occupied=occupancy is not None),
             break_started_at=row.break_started_at,
+            occupancy=Occupancy.from_row(occupancy) if occupancy is not None else None,
         )
 
 
 class FloorResponse(BaseModel):
     staff: list[StaffCard]
+    # EVERY LIVE ROOM — active and inactive — in (sort_order, created_at) order.
+    # Inactive rooms ship so the panel can grey them: a room a staffer cannot
+    # find is worse than one she can see is out of service.
+    rooms: list["Room"]
+    # The server's own instant at serialisation. The console computes «כבר 42
+    # דק'» against it plus the elapsed device clock, so only the DELTA of a
+    # boutique tablet's clock is trusted and never its absolute value.
+    server_now: datetime.datetime
 
     @classmethod
-    def from_rows(cls, rows: list[StaffUser]) -> "FloorResponse":
-        return cls(staff=[StaffCard.from_row(row) for row in rows])
+    def from_rows(cls, read: "FloorRead") -> "FloorResponse":
+        """A PURE RENDERER of one pre-joined structure. It issues no query, and
+        keeping it that way is what stops this module growing a second one."""
+        return cls(
+            staff=[
+                StaffCard.from_row(row, occupancy=read.occupancy_by_staff_id.get(row.id))
+                for row in read.staff_rows
+            ],
+            rooms=[
+                Room.from_row(
+                    row,
+                    read.bindings_by_assignment_id.get(row.assignment_id, [])
+                    if row.assignment_id is not None
+                    else [],
+                )
+                for row in read.room_rows
+            ],
+            server_now=read.server_now,
+        )
 
 
 # --- F36: the rooms -----------------------------------------------------------

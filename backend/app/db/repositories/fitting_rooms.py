@@ -221,6 +221,48 @@ class FittingRoomsRepository:
         uses the index. All five joins are LEFT, so an assignment whose source
         row has been swept still renders a room with `client_label` null.
         """
+        return await self._occupancy_rows(session, tenant_id)
+
+    async def room_with_occupancy(
+        self, session: AsyncSession, tenant_id: uuid.UUID, room_id: uuid.UUID
+    ) -> RoomRow | None:
+        """ONE tile, the same join. Every mutation answers the full room
+        RENDERED FROM THE DATABASE rather than from the request, which is what
+        lets the panel patch a tile in place and never disagree with itself."""
+        rows = await self._occupancy_rows(session, tenant_id, room_id=room_id)
+        return rows[0] if rows else None
+
+    async def occupancy_for_staff(
+        self, session: AsyncSession, tenant_id: uuid.UUID, staff_id: uuid.UUID
+    ) -> RoomRow | None:
+        """Which room this staffer is in, denormalised — the break routes' one
+        extra lookup.
+
+        `POST …/break/start` answers a full card, and if that staffer is standing
+        in a fitting room the card must say `occupied`. "Pass False, it's just
+        the break route" is the shortcut that ships a card contradicting the
+        panel it lands in five seconds later.
+
+        The `staff_user_id` predicate is a strict qual on the OUTER-joined side,
+        so the planner collapses that join to an inner one and reaches the row
+        through `idx_fitting_room_assignments_staff_active` — which holds at most
+        one key per staffer by construction, so this never has to choose.
+        """
+        rows = await self._occupancy_rows(session, tenant_id, staff_id=staff_id)
+        return rows[0] if rows else None
+
+    async def _occupancy_rows(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        *,
+        room_id: uuid.UUID | None = None,
+        staff_id: uuid.UUID | None = None,
+    ) -> list[RoomRow]:
+        """The one join chain, written once. Three callers narrow it with a
+        predicate and nothing else — a second transcription of five outer joins
+        is five chances for one `deleted_at` to differ between the payload and
+        the row a mutation answers with."""
         stmt = (
             select(
                 FittingRoom.id,
@@ -272,6 +314,10 @@ class FittingRoomsRepository:
             .where(FittingRoom.tenant_id == tenant_id, FittingRoom.deleted_at.is_(None))
             .order_by(FittingRoom.sort_order, FittingRoom.created_at)
         )
+        if room_id is not None:
+            stmt = stmt.where(FittingRoom.id == room_id)
+        if staff_id is not None:
+            stmt = stmt.where(FittingRoomAssignment.staff_user_id == staff_id)
         rows: list[Any] = list((await session.execute(stmt)).all())
         return [
             RoomRow(

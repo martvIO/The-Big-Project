@@ -403,10 +403,14 @@ async def test_the_end_audit_row_carries_the_timestamp_the_break_actually_starte
             display_name="Staff",
             role=StaffRole.OWNER.value,
         )
-        row = await FloorService(factory, clock=lambda: LATER).end_break(
+        # F36 gave both break writers a second return value: the room this
+        # staffer is standing in, or None. The card's `occupied` is derived from
+        # it, so the route cannot answer «פנויה» about somebody in room 2.
+        row, occupancy = await FloorService(factory, clock=lambda: LATER).end_break(
             tenant_id, staff_id, actor=actor
         )
         assert row.break_started_at is None
+        assert occupancy is None
 
         async with tenant_session(factory, tenant_id) as session:
             rows = list(
