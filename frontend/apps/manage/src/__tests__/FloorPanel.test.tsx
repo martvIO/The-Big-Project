@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { run } from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
-import type { FloorResponse, Room, StaffCard } from "../api";
+import type { FloorResponse, Occupancy, Room, StaffCard } from "../api";
 import { FloorPanel } from "../components/FloorPanel";
 import { IDLE_STOP_MS, POLL_INTERVAL_MS } from "../lib/usePoll";
 
@@ -50,6 +50,22 @@ function card(overrides: Partial<StaffCard> = {}): StaffCard {
 // rule is about expectations, and a fixture that would not compile is not one.
 function floor(staff: StaffCard[], rooms: Room[] = []): FloorResponse {
   return { staff, rooms, server_now: NOW };
+}
+
+// 10:25Z is 42 minutes before NOW, and 42 is the deck's own worked example.
+const ASSIGNED_AT = "2026-08-04T10:25:00Z";
+const ROOM_ID = "33333333-3333-3333-3333-333333333333";
+const ASSIGNMENT_ID = "44444444-4444-4444-4444-444444444444";
+
+function occupancy(overrides: Partial<Occupancy> = {}): Occupancy {
+  return {
+    assignment_id: ASSIGNMENT_ID,
+    fitting_room_id: ROOM_ID,
+    room_label: "חדר 2",
+    client_label: "מיכל",
+    assigned_at: ASSIGNED_AT,
+    ...overrides,
+  };
 }
 
 const ME = card({ id: SELF_ID, display_name: "דנה כהן", role: "owner" });
@@ -659,6 +675,167 @@ describe("the control matrix is cosmetics over the server's check", () => {
   });
 });
 
+// --- F36: the card's third status and the occupancy line ---------------------
+
+function cardOf(name: string): HTMLElement {
+  return screen.getByText(name).closest("li") as HTMLElement;
+}
+
+describe("the third card status (F36)", () => {
+  it("an OCCUPIED card reads «תפוסה», her room and her client — never «פנויה»", async () => {
+    // AC22, and the one a reviewer should look for. The shipped Badge was a
+    // BINARY ternary, so `status: "occupied"` fell to its else branch and
+    // printed «פנויה» about a woman standing in room 2 — one word away from the
+    // lie this whole feature exists to prevent.
+    getFloor.mockResolvedValue(floor([card({ status: "occupied", occupancy: occupancy() })]));
+    mount();
+    await screen.findByText("נועה לוי");
+
+    expect(screen.getByText("תפוסה")).toBeInTheDocument();
+    expect(screen.queryByText("פנויה")).toBeNull();
+
+    const item = cardOf("נועה לוי");
+    expect(within(item).getByText("חדר 2")).toBeInTheDocument();
+    expect(within(item).getByText("מיכל")).toBeInTheDocument();
+    // Computed against the envelope's server_now, so only the DELTA of a
+    // boutique tablet's clock is trusted and never its absolute value.
+    expect(item.textContent).toContain("כבר 42 דק'");
+  });
+
+  it("renders the holder's role as muted words and never a second Badge", async () => {
+    // Deck P-2. Two pills in 295px teaches the reader to scan colours instead
+    // of words, which is how a status vocabulary dies. The card's ONE Badge is
+    // the status; the role is muted words in a bare <bdi>.
+    getFloor.mockResolvedValue(floor([card({ status: "occupied", occupancy: occupancy() })]));
+    mount();
+    await screen.findByText("נועה לוי");
+
+    const item = cardOf("נועה לוי");
+    const role = within(item).getByText("תופרת");
+    expect(role.tagName).toBe("BDI");
+    expect(role).not.toHaveAttribute("dir");
+    expect(role.closest("p")).toHaveClass("text-ink-muted");
+    // Badge is the only rounded-full span in the tree.
+    expect(item.querySelectorAll("span.rounded-full")).toHaveLength(1);
+  });
+
+  it("labels the client on the occupancy line, and says so when there is none", async () => {
+    // DC-11. A bare name one line under another bare name, separated by a
+    // character most screen readers do not voice, is not a labelled value —
+    // rooms.clientLabel is what makes the middle fragment readable.
+    getFloor.mockResolvedValue(
+      floor([
+        card({ status: "occupied", occupancy: occupancy() }),
+        card({
+          id: SELF_ID,
+          display_name: "רותם",
+          status: "occupied",
+          // The DEFAULT render for any claim made without a booking — a
+          // staffer prepping a room, a swept booking, an erased customer.
+          occupancy: occupancy({ room_label: "הבמה", client_label: null }),
+        }),
+      ]),
+    );
+    mount();
+    await screen.findByText("רותם");
+
+    expect(within(cardOf("נועה לוי")).getByText("לקוחה")).toBeInTheDocument();
+    const anonymous = cardOf("רותם");
+    expect(anonymous.textContent).toContain("ללא לקוחה מקושרת");
+    expect(within(anonymous).queryByText("לקוחה")).toBeNull();
+    expect(within(anonymous).getByText("הבמה")).toBeInTheDocument();
+  });
+
+  it("says «זה עתה» for the first minute rather than «כבר 0 דק'»", async () => {
+    // `created_at` comes from the DATABASE clock and `server_now` from the
+    // service's Python one, so assignedAt > serverNow is representable and a
+    // raw subtraction can go negative. Math.max(0, …) plus this string removes
+    // both, and «זה עתה» is a fact rather than a clamp artefact.
+    getFloor.mockResolvedValue(
+      floor([
+        card({
+          status: "occupied",
+          occupancy: occupancy({ assigned_at: "2026-08-04T11:08:00Z" }),
+        }),
+      ]),
+    );
+    mount();
+    await screen.findByText("נועה לוי");
+
+    const item = cardOf("נועה לוי");
+    expect(item.textContent).toContain("זה עתה");
+    expect(item.textContent).not.toContain("כבר");
+  });
+
+  it("renders no occupancy line at all on a free card", async () => {
+    getFloor.mockResolvedValue(floor([card()]));
+    mount();
+    await screen.findByText("נועה לוי");
+
+    const item = cardOf("נועה לוי");
+    expect(item.textContent).not.toContain("לקוחה");
+    expect(item.textContent).not.toContain("כבר");
+  });
+});
+
+// --- deck F-2: the boolean F36 breaks if nobody looks ------------------------
+
+describe("deck F-2 — occupied wins the status, break_started_at owns the break", () => {
+  // The rarest card in the product, and the only place a screen can tell a
+  // shift manager that a break was never closed: occupied AND still on a break.
+  // No shipped block constructs it, which is exactly why each of the three
+  // sites below needs its own named test — nothing else in this suite goes red
+  // when `onBreak` is derived from `status`.
+  const forgotten = () =>
+    floor([
+      card({ status: "occupied", break_started_at: BREAK_BEGAN, occupancy: occupancy() }),
+    ]);
+
+  it("keeps the since-line on a staffer who is occupied AND still on a break", async () => {
+    // MUTATION: revert the since-line guard to `card.status === "break"`. The
+    // one signal that makes a forgotten break legible then vanishes exactly
+    // when it has lasted longest (F57's F-6).
+    getFloor.mockResolvedValue(forgotten());
+    mount();
+    await screen.findByText("נועה לוי");
+
+    expect(screen.getByText(/מאז/)).toHaveTextContent("11:20");
+  });
+
+  it("offers «חזרה» and calls endStaffBreak, never «להפסקה»", async () => {
+    // ⚠ MUTATION: revert toggle()'s `onBreak` to `card.status === "break"`.
+    // Without this she can NEVER end that break from this screen: the control
+    // reads «להפסקה» and calls startStaffBreak, the tap is a 200 no-op keeping
+    // the FIRST timestamp, the cue confirms a break was recorded, and it stays
+    // that way until she releases the room.
+    getFloor.mockResolvedValue(forgotten());
+    endStaffBreak.mockResolvedValue(card({ status: "available", break_started_at: null }));
+    mount();
+    await screen.findByText("נועה לוי");
+
+    const control = screen.getByRole("button", { name: "חזרה — נועה לוי" });
+    expect(control).toHaveTextContent("חזרה");
+    expect(screen.queryByRole("button", { name: /להפסקה/ })).toBeNull();
+
+    fireEvent.click(control);
+    await waitFor(() => expect(endStaffBreak).toHaveBeenCalledWith(OTHER_ID));
+    expect(startStaffBreak).not.toHaveBeenCalled();
+  });
+
+  it("still reads «תפוסה» and not «בהפסקה» while that break is open", async () => {
+    // MUTATION: revert the Badge to the shipped binary ternary — «בהפסקה» wins
+    // and the card stops saying she is in a room. `status` is a DISPLAY
+    // PRECEDENCE and occupied beats break, on the wire and on the render.
+    getFloor.mockResolvedValue(forgotten());
+    mount();
+    await screen.findByText("נועה לוי");
+
+    expect(screen.getByText("תפוסה")).toBeInTheDocument();
+    expect(screen.queryByText("בהפסקה")).toBeNull();
+    expect(screen.queryByText("פנויה")).toBeNull();
+  });
+});
+
 // --- accessibility -----------------------------------------------------------
 
 describe("accessibility", () => {
@@ -696,6 +873,30 @@ describe("accessibility", () => {
     );
     const { container } = mount();
     await screen.findByText("נועה לוי");
+
+    const results = await run(container);
+    expect(results.violations).toEqual([]);
+  });
+
+  it("passes axe on the occupied card too, break included", async () => {
+    // The occupied render is new markup — a third Badge word and a three-
+    // fragment occupancy line with two <bdi>s in it — so the shipped axe row
+    // above cannot speak for it. Same caveat: axe has NO rule for SC 2.2.2 and
+    // no way to see a focus move that never happened.
+    getFloor.mockResolvedValue(
+      floor([
+        card({ id: SELF_ID, display_name: "דנה כהן", role: "owner" }),
+        card({ status: "occupied", break_started_at: BREAK_BEGAN, occupancy: occupancy() }),
+        card({
+          id: "66666666-6666-6666-6666-666666666666",
+          display_name: "רותם",
+          status: "occupied",
+          occupancy: occupancy({ room_label: "הבמה", client_label: null }),
+        }),
+      ]),
+    );
+    const { container } = mount();
+    await screen.findByText("רותם");
 
     const results = await run(container);
     expect(results.violations).toEqual([]);
