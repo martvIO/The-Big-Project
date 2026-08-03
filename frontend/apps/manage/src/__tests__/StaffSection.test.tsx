@@ -585,3 +585,58 @@ describe("StaffSection accessibility", () => {
     }
   });
 });
+
+describe("StaffSection carries the five roles F57 added", () => {
+  it("renders «תופרת» for a seamstress rather than «אחראית משמרת»", async () => {
+    // ⚠ THE TEST THAT FAILS AGAINST THE UN-FIXED TERNARY. Until F57,
+    // `roleWord` was `role === "owner" ? roleOwner : roleShiftManager`, which
+    // returns «אחראית משמרת» for ANYTHING that is not owner. Widening StaffRole
+    // without fixing it labels every seamstress a shift manager on this screen —
+    // a defect this feature CREATES, not one it inherits.
+    listStaff.mockResolvedValue([
+      OWNER,
+      member({ role: "seamstress", display_name: "נועה" }),
+    ]);
+    renderInShell(<StaffSection staffId={ME} />);
+
+    await screen.findByText("נועה");
+    // Scoped to HER ROW: the role words also appear as <option>s in the edit
+    // form, so an unscoped query is ambiguous rather than wrong.
+    expect(within(rowFor("נועה")).getByText("תופרת")).toBeInTheDocument();
+    expect(within(rowFor("נועה")).queryByText("אחראית משמרת")).toBeNull();
+  });
+
+  it.each([
+    ["reception", "קבלה"],
+    ["sales_assistant", "יועצת מכירות"],
+    ["seamstress", "תופרת"],
+  ])("renders %s as its own word", async (role, word) => {
+    listStaff.mockResolvedValue([OWNER, member({ role: role as StaffMember["role"] })]);
+    renderInShell(<StaffSection staffId={ME} />);
+
+    await screen.findByText("דנה");
+    expect(within(rowFor("דנה")).getByText(word)).toBeInTheDocument();
+  });
+
+  it("offers all five roles in EVERY role select", async () => {
+    // Both selects — the create form's and the inline edit form's — widen from
+    // ROLE_OPTIONS, so neither can silently keep offering two.
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderInShell(<StaffSection staffId={ME} />);
+    await screen.findByText("דנה");
+
+    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: "עריכה" }));
+
+    const selects = await screen.findAllByLabelText("תפקיד");
+    expect(selects.length).toBeGreaterThan(0);
+    for (const select of selects) {
+      expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual([
+        "בעלת הבוטיק",
+        "אחראית משמרת",
+        "קבלה",
+        "יועצת מכירות",
+        "תופרת",
+      ]);
+    }
+  });
+});

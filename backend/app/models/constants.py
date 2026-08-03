@@ -7,11 +7,35 @@ class TenantStatus(StrEnum):
 
 
 class StaffRole(StrEnum):
-    # The DB pins this exact set (0011). Reception/seamstress/sales join when
-    # E6-proper gives them their first consumer — pre-adding speculative roles
-    # is the un-lazy thing (the ScheduledMessageKind rule).
+    # The DB pins this exact set (0011, widened by F57's migration), and
+    # test_the_floor_roles_migration_pins_the_widened_constraint_definition holds
+    # the deparsed literal so the next widening collides with a review.
+    #
+    # The floor program is the consumer 0011's comment demanded before the last
+    # three could be added — pre-adding speculative roles is the un-lazy thing
+    # (the ScheduledMessageKind rule), and this block is the record that the bar
+    # was MET rather than waived: the roles arrive in the same PR as the surface
+    # that reads them.
     OWNER = "owner"
     SHIFT_MANAGER = "shift_manager"
+    RECEPTION = "reception"
+    SALES_ASSISTANT = "sales_assistant"  # supersedes pre-decided #24's 'sales'
+    SEAMSTRESS = "seamstress"
+
+
+class StaffCardStatus(StrEnum):
+    # F57's floor cards. NOT pinned by the DB and deliberately not: it is DERIVED
+    # on read from `staff_users.break_started_at` (D2 adds no status column and no
+    # break history table), so there is no stored value for a CHECK to constrain.
+    #
+    # 'occupied' is coming and is deliberately NOT here. F36 gives it a writer —
+    # an open `fitting_room_assignments` row — and widens this in the SAME PR, the
+    # ScheduledMessageKind rule. Shipping the literal now would put a status on
+    # the wire that nothing in the product can ever produce, and the set-equality
+    # assertion in test_floor_service.py is what makes that structurally
+    # impossible rather than merely currently-unreached.
+    AVAILABLE = "available"
+    BREAK = "break"
 
 
 class AppointmentAudience(StrEnum):
@@ -137,6 +161,17 @@ class AuditAction(StrEnum):
     STAFF_ROLE_CHANGED = "staff_role_changed"
     STAFF_PASSWORD_RESET = "staff_password_reset"
     STAFF_DEACTIVATED = "staff_deactivated"
+    # F57's floor breaks (D8). Same fact as every block above: audit_log.action is
+    # plain TEXT with no CHECK (0003), so these need no migration.
+    #
+    # These two rows are the ONLY record that a break happened — D2 ships no
+    # break history table and nothing reads them yet (F53's activity log is the
+    # first read surface). That is why the END carries
+    # `previous_break_started_at`: ending a break destroys the only copy of when
+    # it began, so a row without it records that something stopped and cannot say
+    # what.
+    STAFF_BREAK_STARTED = "staff_break_started"
+    STAFF_BREAK_ENDED = "staff_break_ended"
     # F17's payment gateway. Same fact as the two blocks above: audit_log.action
     # is plain TEXT with no CHECK (0003), so these need no migration.
     #

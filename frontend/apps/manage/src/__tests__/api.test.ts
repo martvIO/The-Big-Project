@@ -412,3 +412,36 @@ describe("staff endpoints", () => {
     }
   });
 });
+
+describe("the floor client", () => {
+  it("reads the floor from the envelope endpoint", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { staff: [] }));
+    await api.getFloor();
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/floor");
+  });
+
+  it("posts each break toggle to its own path and encodes the id", async () => {
+    const started = stubFetch(() => jsonResponse(200, { id: "a b/c" }));
+    await api.startStaffBreak("a b/c");
+    expect(started.mock.calls[0][0]).toBe("/manage/floor/staff/a%20b%2Fc/break/start");
+    expect(started.mock.calls[0][1]).toMatchObject({ method: "POST" });
+
+    const ended = stubFetch(() => jsonResponse(200, { id: "a b/c" }));
+    await api.endStaffBreak("a b/c");
+    expect(ended.mock.calls[0][0]).toBe("/manage/floor/staff/a%20b%2Fc/break/end");
+    expect(ended.mock.calls[0][1]).toMatchObject({ method: "POST" });
+  });
+
+  it("surfaces a toggle's 403 and 404 as ApiError codes the panel can map", async () => {
+    // The panel treats them DIFFERENTLY — 403 is terminal for the whole panel
+    // (deck P-6) and 404 is an in-card alert — so both must arrive as
+    // distinguishable ApiErrors rather than as one generic failure.
+    for (const [status, code] of [
+      [403, "NOT_AUTHORIZED"],
+      [404, "NOT_FOUND"],
+    ] as const) {
+      stubFetch(() => jsonResponse(status, { error: { code, message: "…" } }));
+      await expect(api.startStaffBreak("id")).rejects.toMatchObject({ status, code });
+    }
+  });
+});

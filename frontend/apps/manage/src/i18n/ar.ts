@@ -301,5 +301,57 @@ export const ar = {
     "board.reload": "רענון הדף",
 
     "board.error.transitionInvalid": "מצב התור השתנה. השורה תתוקן בעדכון הבא.",
+
+    // --- F57: the floor's staff cards -------------------------------------
+    //
+    // Untranslated Hebrew standing in, per Q3 / pre-decided #47 and the
+    // 2026-07-31 languages ruling (Hebrew only for now, no switcher). NEVER "":
+    // i18next's returnEmptyString renders the empty string rather than falling
+    // back, so a premature switch would blank the panel instead of showing
+    // Hebrew.
+    //
+    // ⚠ Nothing keeps this file in step with he.ts — no parity guard exists and
+    // F57 does not invent one (Risk 7 / design.md F-5). The mitigation is that
+    // both columns are transcribed from ONE copy.md table. F45 owns the real
+    // translation.
+    "nav.floor": "הצוות בקומה",
+    "floor.heading": "צוות בקומה",
+
+    "floor.loading": "טוען את רשימת הצוות…",
+    "floor.empty": "אין נשות צוות פעילות",
+
+    "floor.updatedAt": "עודכן {{time}}",
+    "floor.staleAt": "אין עדכון מאז {{time}}",
+    "floor.staleBody": "ייתכן שהמידע אינו עדכני.",
+    "floor.refresh": "רענון",
+
+    "floor.pause": "השהיה",
+    "floor.pauseAria": "השהיה — עדכון הצוות",
+    "floor.resume": "חידוש",
+    "floor.resumeAria": "חידוש — עדכון הצוות",
+    "floor.pausedAt": "מושהה · עודכן {{time}}",
+    "floor.paused": "העדכון מושהה. רשימת הצוות לא תתעדכן עד לחידוש.",
+    "floor.idleStopped": "עדכון הצוות הופסק אחרי {{minutes}} דקות ללא פעילות.",
+    "floor.resumed": "העדכון חודש.",
+
+    "floor.statusAvailable": "פנויה",
+    "floor.statusBreak": "בהפסקה",
+    "floor.breakSince": "מאז {{time}}",
+    "floor.breakStart": "להפסקה",
+    "floor.breakStartAria": "להפסקה — {{name}}",
+    "floor.breakEnd": "חזרה",
+    "floor.breakEndAria": "חזרה — {{name}}",
+
+    "floor.breakStartedCue": "נרשמה הפסקה עבור {{name}}.",
+    "floor.breakEndedCue": "ההפסקה הסתיימה עבור {{name}}.",
+
+    "floor.sessionEnded": "תוקף החיבור פג. צריך להתחבר מחדש.",
+    "floor.accessEnded": "אין הרשאה לצפות ברשימת הצוות כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+    "floor.reload": "רענון הדף",
+    "floor.error.notFound": "אשת הצוות הזו כבר לא פעילה. הרשימה תתוקן בעדכון הבא.",
+
+    "staff.roleReception": "קבלה",
+    "staff.roleSalesAssistant": "יועצת מכירות",
+    "staff.roleSeamstress": "תופרת",
   },
 } as const;

@@ -13,6 +13,7 @@ import { LoginForm } from "./components/LoginForm";
 import { ProfileSection } from "./components/ProfileSection";
 import { StaffSection } from "./components/StaffSection";
 import { TermsSection } from "./components/TermsSection";
+import { FloorPanel } from "./components/FloorPanel";
 import { TypesSection } from "./components/TypesSection";
 
 type SectionKey =
@@ -25,9 +26,22 @@ type SectionKey =
   | "bookings"
   | "board"
   | "staff"
-  | "gateway";
+  | "gateway"
+  // F57's floor — the ELEVENTH member.
+  | "floor";
 
 const ALL = ["owner", "shift_manager"] as const;
+
+// F57's three. They reach exactly one nav row and exactly one section.
+//
+// ⚠ Declined: widening `board`'s roles to all five instead of adding a row. A
+// seamstress would land on a section labelled «לוח היום» whose board the server
+// refuses her, BoardSection's first fetch would 403, and its own terminalOf
+// correctly treats that as terminal — blanking the screen. The label would
+// promise a thing the gate forbids and the component would be right to break.
+// Nav.test.tsx's count assertions (owner ten, shift manager eight) are what make
+// this a test rather than a preference.
+const FLOOR_ONLY = ["reception", "sales_assistant", "seamstress"] as const;
 
 // The console's single permission-to-UI table.
 //
@@ -64,6 +78,12 @@ const NAV: readonly NavItem[] = [
   // above says, this array is cosmetics: the control is the server's RoleGate,
   // which is also why the board treats a 403 as terminal.
   { key: "board", labelKey: "nav.board", roles: ALL },
+  // Immediately after the board, and ONLY for the three floor roles: the owner
+  // and the shift manager reach the same panel under «לוח היום» (Task 11 renders
+  // it beneath the board there) and get no second row. For the three, this is
+  // the only row they will ever see, so `reachable[0]?.key ?? section` lands
+  // them here with no edit to the initial useState("dashboard").
+  { key: "floor", labelKey: "nav.floor", roles: FLOOR_ONLY },
   { key: "staff", labelKey: "nav.staff", roles: ["owner"] },
   // Owner-only, the READ included: /manage/gateway is the first backend router
   // that is owner-only in full, and whether the boutique can take money is
@@ -149,7 +169,16 @@ export function App() {
         {activeKey === "terms" && <TermsSection role={staff.role} />}
         {activeKey === "catalog" && <CatalogSection />}
         {activeKey === "bookings" && <BookingsSection />}
-        {activeKey === "board" && <BoardSection />}
+        {/* The panel goes AFTER the board, never before: above it, the panel
+            grows as breaks start and pushes the board's one-shot scrollIntoView
+            target — the «עכשיו» divider — back out of view. */}
+        {activeKey === "board" && (
+          <div className="space-y-6">
+            <BoardSection />
+            <FloorPanel selfId={staff.id} role={staff.role} />
+          </div>
+        )}
+        {activeKey === "floor" && <FloorPanel selfId={staff.id} role={staff.role} />}
         {activeKey === "staff" && <StaffSection staffId={staff.id} />}
         {activeKey === "gateway" && <GatewaySection />}
       </ConsoleShell>

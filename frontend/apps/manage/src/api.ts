@@ -359,7 +359,38 @@ function mediaPath(dressId: string, mediaId: string): string {
 
 // --- staff wire types (mirror backend/app/auth/schemas.py) ---
 
-export type StaffRole = "owner" | "shift_manager";
+// F57 widened this to five. StaffMember, CreateStaffRequest and
+// UpdateStaffRequest all reference it, so they widen with no edit of their own —
+// and ROLE_LABEL_KEY in lib/roles.ts is typed Record<StaffRole, string>, so a
+// sixth member added here without a label is a compile error rather than a
+// mislabelled row.
+export type StaffRole =
+  | "owner"
+  | "shift_manager"
+  | "reception"
+  | "sales_assistant"
+  | "seamstress";
+
+// --- floor wire types (mirror backend/app/floor/schemas.py) ---
+
+// Derived on read from break_started_at, never stored. 'occupied' arrives with
+// F36, which gives it a writer in the same PR — the backend's set-equality test
+// is what keeps it off the wire until then.
+export type StaffCardStatus = "available" | "break";
+
+export interface StaffCard {
+  id: string;
+  display_name: string;
+  role: string;
+  status: StaffCardStatus;
+  break_started_at: string | null;
+}
+
+// An ENVELOPE, not a bare array: F36 adds rooms and F58 the waitlist to this
+// same payload, so an array would make the first of them a breaking change.
+export interface FloorResponse {
+  staff: StaffCard[];
+}
 
 export interface StaffMember {
   id: string;
@@ -631,6 +662,22 @@ export const api = {
   },
   undoBookingCheckIn(bookingId: string): Promise<OwnerBookingDetail> {
     return apiFetch(`${bookingPath(bookingId)}/undo-check-in`, { method: "POST" });
+  },
+  // F57's floor. Both toggles answer ONE card — the whole panel is not re-sent —
+  // so the tapped card patches in place from the response and the loop keeps its
+  // own beat underneath.
+  getFloor(): Promise<FloorResponse> {
+    return apiFetch("/manage/floor");
+  },
+  startStaffBreak(staffId: string): Promise<StaffCard> {
+    return apiFetch(`/manage/floor/staff/${encodeURIComponent(staffId)}/break/start`, {
+      method: "POST",
+    });
+  },
+  endStaffBreak(staffId: string): Promise<StaffCard> {
+    return apiFetch(`/manage/floor/staff/${encodeURIComponent(staffId)}/break/end`, {
+      method: "POST",
+    });
   },
   rescheduleBooking(bookingId: string, startsAt: string): Promise<OwnerBookingDetail> {
     return apiFetch(`${bookingPath(bookingId)}/reschedule`, {

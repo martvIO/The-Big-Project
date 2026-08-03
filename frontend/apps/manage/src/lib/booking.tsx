@@ -43,6 +43,32 @@ export function isolateLtr(text: string, value: string): ReactNode {
   );
 }
 
+// The same split for a value that is NOT a numeric run — a person's name.
+//
+// ⚠ `isolateLtr` is WRONG for a name and this is not a nicety: it emits
+// `<bdi dir="ltr">`, and forcing LTR on «נועה לוי» reverses the visual order of
+// its Hebrew words. It is a bidi defect that LOOKS DELIBERATE, which is the kind
+// nobody files. A bare `<bdi>` isolates the run without asserting a direction,
+// so the browser resolves each name's own — which is exactly what is wanted when
+// the value may be Hebrew, Arabic or Latin and the surrounding paragraph is RTL.
+//
+// F57's design deck raises this as F-11. Note what it does NOT cover: an
+// `aria-label` takes no markup, so a name interpolated into one needs no
+// treatment at all — there is nothing rendered to reorder.
+export function isolateBidi(text: string, value: string): ReactNode {
+  const at = value === "" ? -1 : text.indexOf(value);
+  if (at < 0) {
+    return text;
+  }
+  return (
+    <>
+      {text.slice(0, at)}
+      <bdi>{value}</bdi>
+      {text.slice(at + value.length)}
+    </>
+  );
+}
+
 // main.py's *_BODY literals are English, and this console is Hebrew-only —
 // IS 5568 makes the language of an error message operationally load-bearing for
 // the owner who has to act on it. These four codes are the ones F15 owns, and

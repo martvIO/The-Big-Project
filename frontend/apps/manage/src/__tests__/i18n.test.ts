@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import i18n from "../i18n";
 import { ar } from "../i18n/ar";
 import { he } from "../i18n/he";
+import { ROLE_LABEL_KEY } from "../lib/roles";
 
 // Console copy is transcribed into he.ts as DOTTED LITERAL keys, one per row of
 // the feature's copy.md. i18next resolves those through `ignoreJSONStructure`
@@ -36,7 +37,11 @@ const HE_F52 = entries(
 // and still pass. Every block keeps its own floor.
 const HE_F17 = entries(he.translation, (key) => key === "nav.gateway" || key.startsWith("gateway."));
 const HE_F34 = entries(he.translation, (key) => key === "nav.board" || key.startsWith("board."));
-const HE = [...HE_F15, ...HE_F51, ...HE_F52, ...HE_F17, ...HE_F34];
+// F57. Its three `staff.role*` keys are deliberately NOT selected here — they
+// are `staff.`-namespaced and ride in HE_F51, which is where they belong: the
+// namespace names the payload, not the feature that added the key.
+const HE_F57 = entries(he.translation, (key) => key === "nav.floor" || key.startsWith("floor."));
+const HE = [...HE_F15, ...HE_F51, ...HE_F52, ...HE_F17, ...HE_F34, ...HE_F57];
 
 describe("F15 keys resolve", () => {
   it("carries the whole copy deck", () => {
@@ -236,6 +241,87 @@ describe("F34 board keys resolve", () => {
 // otherwise. That is why the notice is phrased «יש למסור…» and not «אינה
 // נשלחת…»: the latter contains נשלח and would trip this guard, and a copy deck
 // that has to dodge its own guard is copy that is one edit away from lying.
+describe("F57 floor keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // 29 `floor.*` keys plus `nav.floor`; the other three of the deck's 32 are
+    // `staff.role*` and land in HE_F51.
+    expect(HE_F57.length).toBeGreaterThan(28);
+  });
+
+  it("resolves the eleventh nav item beside the nested nav object", () => {
+    expect(i18n.t("nav.floor")).toBe("הצוות בקומה");
+  });
+
+  it("resolves every role label the record names", () => {
+    // The Record<StaffRole, string> type catches a MISSING MEMBER at compile
+    // time; this catches a member pointing at a key that does not exist, which
+    // types cannot see. Both halves are needed — a seamstress rendering the raw
+    // slug and a seamstress rendering «אחראית משמרת» are different bugs.
+    for (const key of Object.values(ROLE_LABEL_KEY)) {
+      expect(i18n.t(key)).not.toBe(key);
+    }
+    expect(i18n.t(ROLE_LABEL_KEY.seamstress)).toBe("תופרת");
+    expect(i18n.t(ROLE_LABEL_KEY.reception)).toBe("קבלה");
+    expect(i18n.t(ROLE_LABEL_KEY.sales_assistant)).toBe("יועצת מכירות");
+  });
+
+  it("keeps the pause control's accessible name containing its visible label", () => {
+    // WCAG 2.5.3 label-in-name, and the reason the deck overrode spec D12's
+    // «השהיית עדכון הצוות»: a speech-input user saying the visible «השהיה»
+    // must match. Asserted rather than trusted, because the two word forms
+    // differ by one letter and a later copy edit would not look wrong.
+    expect(i18n.t("floor.pauseAria")).toContain(i18n.t("floor.pause"));
+    expect(i18n.t("floor.resumeAria")).toContain(i18n.t("floor.resume"));
+  });
+
+  it("names its own region in the idle notice, unlike the board's", () => {
+    // Both write into a role="status" region and both idle windows reset
+    // together, so on the board screen a screen-reader user would otherwise
+    // hear one sentence twice (design.md §9 F-4).
+    const floor = i18n.t("floor.idleStopped", { minutes: 10 });
+    expect(floor).not.toBe(i18n.t("board.idleStopped", { minutes: 10 }));
+    expect(floor).toContain("הצוות");
+  });
+
+  it("interpolates the colleague's name into both toggle labels and both cues", () => {
+    for (const key of [
+      "floor.breakStartAria",
+      "floor.breakEndAria",
+      "floor.breakStartedCue",
+      "floor.breakEndedCue",
+    ]) {
+      expect(i18n.t(key, { name: "נועה לוי" })).toContain("נועה לוי");
+    }
+  });
+
+  it("does not ship floor.outage — the shipped staff.loadFailed is reused", () => {
+    // design.md §9 F-10. The precedent this sets for F37/F41/F42/F59: reuse a
+    // key whose NAMESPACE NAMES ITS SUBJECT, never one whose namespace names a
+    // screen. `staff.loadFailed` is one sentence about the staff list, which is
+    // exactly what this panel failed to load.
+    expect("floor.outage" in he.translation).toBe(false);
+    expect(i18n.t("staff.loadFailed")).toBe("לא הצלחנו לטעון את רשימת הצוות כרגע.");
+  });
+
+  it("names no retry interval anywhere in the deck", () => {
+    // copy.md §0 rule 9: the backoff falsifies any number the moment it doubles.
+    // `floor.idleStopped` carries {{minutes}}, which is the IDLE window and not
+    // a retry interval, so it is excluded by key rather than by pattern.
+    const values = HE_F57.filter(([key]) => key !== "floor.idleStopped").map(([, value]) => value);
+    expect(values.filter((value) => /\d/.test(value))).toEqual([]);
+  });
+
+  it("names no role in the access-ended sentence", () => {
+    // copy.md §0 rule 10, and for the three floor roles this sentence is the
+    // entire product going dark — naming the role would teach the permission
+    // model at the worst possible moment.
+    const accessEnded = i18n.t("floor.accessEnded");
+    for (const word of ["קבלה", "יועצת מכירות", "תופרת", "אחראית משמרת"]) {
+      expect(accessEnded).not.toContain(word);
+    }
+  });
+});
+
 describe("the register, mechanically", () => {
   const values = HE.map(([, value]) => value);
 

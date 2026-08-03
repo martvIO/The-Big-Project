@@ -50,9 +50,19 @@ _ADD_ROLE_CHECK = (
     f"ALTER TABLE staff_users ADD CONSTRAINT {_ROLE_CHECK} "
     "CHECK (role IN ('owner', 'shift_manager'))"
 )
+# F57's migration statement, VERBATIM, for the same reason _ADD_ROLE_CHECK is
+# 0011's. It is also — byte for byte — what F57's DOWNGRADE must refuse to run
+# past a floor-role row, which is why _ADD_ROLE_CHECK is reused below as the
+# narrowing statement rather than spelled a second time.
+_ADD_WIDE_ROLE_CHECK = (
+    f"ALTER TABLE staff_users ADD CONSTRAINT {_ROLE_CHECK} "
+    "CHECK (role IN ('owner', 'shift_manager', 'reception', 'sales_assistant', 'seamstress'))"
+)
 _DROP_ROLE_CHECK = f"ALTER TABLE staff_users DROP CONSTRAINT {_ROLE_CHECK}"
 # Kept in step with test_staff_role_gating.UNKNOWN_ROLE, which owns the tripwire
-# asserting it never becomes a real StaffRole.
+# asserting it never becomes a real StaffRole. F57 is the day 0011's three
+# anticipated roles actually joined the enum, and the sentinel held — it was
+# chosen precisely so that day would not silently invert every test using it.
 UNKNOWN_ROLE = "no-such-role"
 _COUNT_ROLE_CHECK = "SELECT count(*) FROM pg_constraint WHERE conname = :name"
 
@@ -72,16 +82,28 @@ def _role_check_exists(url: str) -> bool:
 
 @pytest.mark.db
 def test_staff_role_check_pins_the_role_set(migrated_db: str) -> None:
-    """0011's CHECK admits exactly the StaffRole members. Both probes roll back —
-    nothing leaks into other tests sharing the container."""
+    """The CHECK admits exactly the StaffRole members and nothing else.
+
+    ITERATED from the live enum rather than listing today's five: the day a sixth
+    role is added, either the migration widened the CHECK with it and this test
+    covers it for free, or it did not and this test is the red. Listing values
+    would have to be edited by the same hand that forgot the migration.
+
+    EVERY probe rolls back, and after F57 that is load-bearing rather than tidy.
+    `migrated_db` is `scope="session"`, so one container is shared by every
+    db-marked module — and a committed 'reception' row makes
+    test_adding_the_role_check_validates_existing_rows re-add 0011's TWO-value
+    CHECK over a row that violates it, flipping an assertion in a test that never
+    mentions F57."""
 
     async def check() -> None:
         engine = create_async_engine(migrated_db)
         try:
-            async with engine.connect() as conn:
-                trans = await conn.begin()
-                await conn.execute(text(_STAFF_INSERT), {"role": "shift_manager"})
-                await trans.rollback()
+            for role in StaffRole:
+                async with engine.connect() as conn:
+                    trans = await conn.begin()
+                    await conn.execute(text(_STAFF_INSERT), {"role": role.value})
+                    await trans.rollback()
             async with engine.connect() as conn:
                 trans = await conn.begin()
                 with pytest.raises(IntegrityError):
@@ -107,7 +129,19 @@ def test_the_app_role_can_promote_to_shift_manager_but_not_to_an_unknown_role(
     for two different reasons worth separating: every tenant-scoped reader in the
     suite cannot see it (RLS), and the two superuser probes in THIS file do see it
     but do not care — 'shift_manager' satisfies the constraint they add, so the
-    populated-table test's owner half still succeeds with this row present."""
+    populated-table test's owner half still succeeds with this row present.
+
+    ⚠ **After F57 that leftover may hold ONLY 'owner' or 'shift_manager'**, which
+    is why the floor-role half below is rolled back rather than committed. A
+    committed 'reception' row reddens THREE tests — both round-trips, whose first
+    statement is F57's narrowing downgrade, and
+    test_adding_the_role_check_validates_existing_rows, which has nothing to do
+    with round-trips and would simply find 0011's two-value ADD refused."""
+
+    class _Rollback(Exception):
+        """Aborts the tenant_session so the floor-role write is never committed.
+        Exiting tenant_session IS the commit (db/tenant.py:25), so there is no
+        gentler way to run a write under the app role and keep nothing."""
 
     async def check() -> None:
         engine = create_async_engine(app_role_url, poolclass=NullPool)
@@ -145,33 +179,58 @@ def test_the_app_role_can_promote_to_shift_manager_but_not_to_an_unknown_role(
                 )
             # The refusal changed nothing — not even partially.
             assert stored == StaffRole.SHIFT_MANAGER.value
+
+            # F57's widened CHECK on the same two axes the shift_manager half
+            # covers — the APP role, and UPDATE rather than INSERT. Rolled back,
+            # per the docstring: the write must happen and be admitted, and it
+            # must not survive this test.
+            with pytest.raises(_Rollback):
+                async with tenant_session(factory, tenant_id) as session:
+                    await session.execute(
+                        update(StaffUser)
+                        .where(StaffUser.id == staff_id)
+                        .values(role=StaffRole.SEAMSTRESS.value)
+                    )
+                    promoted = await session.scalar(
+                        select(StaffUser.role).where(StaffUser.id == staff_id)
+                    )
+                    assert promoted == StaffRole.SEAMSTRESS.value
+                    raise _Rollback
+
+            async with tenant_session(factory, tenant_id) as session:
+                after = await session.scalar(select(StaffUser.role).where(StaffUser.id == staff_id))
+            # The rollback is real, and the leftover row is back to a value the
+            # narrowing downgrade can live with.
+            assert after == StaffRole.SHIFT_MANAGER.value
         finally:
             await engine.dispose()
 
     asyncio.run(check())
 
 
-@pytest.mark.db
-def test_adding_the_role_check_validates_existing_rows(migrated_db: str) -> None:
-    """0011's comment claims ADD CONSTRAINT validates existing rows, so the
-    migration cannot fail on live data where every row carries the 'owner'
-    default. Proven with the migration's exact ALTER on a POPULATED table, both
-    halves: an 'owner' row present -> the constraint is added; an unknown-role row
-    present -> it is REFUSED. Without the second half a NOT VALID constraint
-    would pass the first and the comment would be a lie.
+def _constraint_accepts(url: str, add_sql: str, seeded_roles: list[str]) -> bool:
+    """DROP the role CHECK, seed rows, and try to re-add `add_sql` over them.
 
-    Postgres runs DDL transactionally, so each half — the DROP included — rolls
-    back whole and the session-scoped container ends as it started."""
+    One helper for three claims — 0011's ADD-validates-existing-rows, F57's
+    widened sibling, and F57's downgrade refusing to narrow — because all three
+    are the same experiment with a different statement and a different seed, and
+    three copies of it would be three places to drift.
 
-    async def probe(seeded_role: str) -> bool:
-        engine = create_async_engine(migrated_db)
+    Postgres runs DDL transactionally, so each call — the DROP included — rolls
+    back whole and the session-scoped container ends as it started. That is what
+    keeps a seeded floor role from reaching any other module (spec D1's trap).
+    """
+
+    async def probe() -> bool:
+        engine = create_async_engine(url)
         try:
             async with engine.connect() as conn:
                 trans = await conn.begin()
                 try:
                     await conn.execute(text(_DROP_ROLE_CHECK))
-                    await conn.execute(text(_STAFF_INSERT), {"role": seeded_role})
-                    await conn.execute(text(_ADD_ROLE_CHECK))
+                    for role in seeded_roles:
+                        await conn.execute(text(_STAFF_INSERT), {"role": role})
+                    await conn.execute(text(add_sql))
                     return True
                 except DBAPIError as exc:
                     # DBAPIError, not IntegrityError: a failing ADD CONSTRAINT is
@@ -185,8 +244,61 @@ def test_adding_the_role_check_validates_existing_rows(migrated_db: str) -> None
         finally:
             await engine.dispose()
 
-    assert asyncio.run(probe(StaffRole.OWNER.value)) is True
-    assert asyncio.run(probe(UNKNOWN_ROLE)) is False
+    return asyncio.run(probe())
+
+
+@pytest.mark.db
+def test_adding_the_role_check_validates_existing_rows(migrated_db: str) -> None:
+    """0011's comment claims ADD CONSTRAINT validates existing rows, so the
+    migration cannot fail on live data where every row carries the 'owner'
+    default. Proven with the migration's exact ALTER on a POPULATED table, both
+    halves: an 'owner' row present -> the constraint is added; an unknown-role row
+    present -> it is REFUSED. Without the second half a NOT VALID constraint
+    would pass the first and the comment would be a lie."""
+    assert _constraint_accepts(migrated_db, _ADD_ROLE_CHECK, [StaffRole.OWNER.value]) is True
+    assert _constraint_accepts(migrated_db, _ADD_ROLE_CHECK, [UNKNOWN_ROLE]) is False
+
+
+@pytest.mark.db
+def test_adding_the_widened_role_check_validates_existing_rows(migrated_db: str) -> None:
+    """F57's widening, on a POPULATED table, with the migration's exact ALTER —
+    0011's shape reused because the claim is the same claim.
+
+    A widening can only ever ADMIT rows that were already legal, so this cannot
+    fail on live data. The test exists anyway for the two things the argument
+    does not cover: a claim is worth what proves it, and a typo in one of the
+    three new literals fails here rather than in production.
+
+    The positive half seeds BOTH generations — two pre-F57 roles and a floor one
+    — so it proves the widened constraint still admits the old set rather than
+    only the values it added. That is the mutation a careless rewrite of the
+    literal list would make, and seeding 'reception' alone would miss it."""
+    assert (
+        _constraint_accepts(
+            migrated_db,
+            _ADD_WIDE_ROLE_CHECK,
+            [StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value, StaffRole.RECEPTION.value],
+        )
+        is True
+    )
+    assert _constraint_accepts(migrated_db, _ADD_WIDE_ROLE_CHECK, [UNKNOWN_ROLE]) is False
+
+
+@pytest.mark.db
+def test_the_downgrade_refuses_to_narrow_past_a_floor_role_row(migrated_db: str) -> None:
+    """F57's downgrade re-adds the TWO-value CHECK deliberately WITHOUT
+    `IF EXISTS` and deliberately ABLE TO FAIL, and this is that failure asserted
+    rather than described.
+
+    A row holding 'seamstress' must BLOCK the narrowing. The alternative — a
+    lenient downgrade — leaves the database describing a state its own schema
+    forbids: a row sitting past a constraint its value violates, which nothing
+    afterwards would ever notice.
+
+    The statement under test is `_ADD_ROLE_CHECK`, which is 0011's upgrade and
+    F57's downgrade byte for byte. That is not a shortcut — it is the reason the
+    downgrade is spelled the way it is."""
+    assert _constraint_accepts(migrated_db, _ADD_ROLE_CHECK, [StaffRole.SEAMSTRESS.value]) is False
 
 
 @pytest.mark.db
@@ -495,6 +607,119 @@ def test_migration_0014_round_trips(migrated_db: str) -> None:
         assert _check_in_column(migrated_db) is None
         command.upgrade(cfg, "head")
         assert _check_in_column(migrated_db) == ("timestamp with time zone", "YES")
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F57: the widened role CHECK and the break column ---
+
+_BREAK_COLUMN = (
+    "SELECT data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'staff_users' AND column_name = 'break_started_at'"
+)
+_ROLE_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    f"WHERE conrelid = 'staff_users'::regclass AND conname = '{_ROLE_CHECK}'"
+)
+# Spelled as POSTGRES deparses it, not as the migration wrote it:
+# pg_get_constraintdef normalises `IN (...)` into `= ANY (ARRAY[...])` and casts
+# every literal. CAPTURED from a real 16.x server rather than transcribed from
+# _ADD_WIDE_ROLE_CHECK above, because a literal that merely looks right would pin
+# nothing — and pinning nothing is the whole failure mode this test exists to
+# prevent for whoever widens this constraint next.
+_WIDE_ROLE_CHECK_DEF = (
+    "CHECK ((role = ANY (ARRAY['owner'::text, 'shift_manager'::text, "
+    "'reception'::text, 'sales_assistant'::text, 'seamstress'::text])))"
+)
+
+
+def _role_constraint_def(url: str) -> str:
+    async def read() -> str:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                return str((await conn.execute(text(_ROLE_CONSTRAINT_DEF))).scalar_one())
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _break_column(url: str) -> tuple[str, str] | None:
+    async def read() -> tuple[str, str] | None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                row = (await conn.execute(text(_BREAK_COLUMN))).first()
+                return None if row is None else (str(row[0]), str(row[1]))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_the_floor_roles_migration_pins_the_widened_constraint_definition(
+    migrated_db: str,
+) -> None:
+    """The highest-value test in F57, and what it guards is a FUTURE edit.
+
+    Every argument in this feature rests on the role set being exactly these
+    five: D4 spells the floor router's gate `require_role(*StaffRole)`, D5's
+    walker pins the three floor roles out of everything else, and
+    test_me_echoes_an_out_of_enum_role_verbatim records in writing that what
+    makes `/manage/auth/me`'s un-allowlisted echo safe is THE DATABASE. This
+    makes that mechanical: when F36 or a later feature widens the role set it
+    collides with a pinned literal and a deliberate review, instead of colliding
+    with nothing.
+
+    Keyed to `head` — i.e. AFTER this feature's migration, whatever number it
+    ended up with — and never to a hardcoded revision id (D3). The migration id
+    is resolved from `alembic heads` at build time, so a literal here would rot
+    the first time another feature lands a migration first."""
+    assert _role_constraint_def(migrated_db) == _WIDE_ROLE_CHECK_DEF
+
+
+@pytest.mark.db
+def test_the_floor_roles_migration_adds_a_nullable_break_timestamp(migrated_db: str) -> None:
+    """One nullable TIMESTAMPTZ and nothing else — no default, no NOT NULL, no
+    backfill. NULL is the only "not on a break" sentinel (spec D2), so a default
+    or a NOT NULL would have to invent a second one."""
+    assert _break_column(migrated_db) == ("timestamp with time zone", "YES")
+
+
+@pytest.mark.db
+def test_migration_floor_roles_round_trips(migrated_db: str) -> None:
+    """upgrade() widens the CHECK and adds the column; downgrade() removes BOTH.
+    Runs as the migration owner (the app role cannot ALTER) and mutates the live
+    session-scoped schema, so it is LAST among the schema-mutating tests in this
+    file and owns no fixtures.
+
+    Probes BOTH directions and BOTH halves rather than only the end state, which
+    is 0013's own rule: a downgrade that silently no-ops on one of the two would
+    stay green while shipping a migration that cannot be rolled back.
+
+    `downgrade(cfg, "0014")` and not a revision id of F57's own — the target is
+    the revision this one REVISES, which is what `alembic heads` answered at
+    build time. The finally is not decoration: leaving the schema narrow drops a
+    column the ORM still maps AND a constraint three tests above probe, in a
+    shared session-scoped container."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    try:
+        assert _break_column(migrated_db) == ("timestamp with time zone", "YES")
+        assert _role_constraint_def(migrated_db) == _WIDE_ROLE_CHECK_DEF
+        command.downgrade(cfg, "0014")
+        assert _break_column(migrated_db) is None
+        # …and the narrowed CHECK is REBUILT, not merely dropped: the downgrade
+        # re-adds 0011's two-value expression, and asserting its presence is what
+        # separates "rolled back" from "gave up halfway".
+        assert _role_check_exists(migrated_db)
+        assert _role_constraint_def(migrated_db) != _WIDE_ROLE_CHECK_DEF
+        command.upgrade(cfg, "head")
+        assert _break_column(migrated_db) == ("timestamp with time zone", "YES")
+        assert _role_constraint_def(migrated_db) == _WIDE_ROLE_CHECK_DEF
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
 

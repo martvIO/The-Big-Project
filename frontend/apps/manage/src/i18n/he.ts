@@ -535,5 +535,80 @@ export const he = {
     // 5s, at 60s and at whatever constant F29 lands on (§0 rule 9). Every other
     // code falls through to bookingErrorText unchanged.
     "board.error.transitionInvalid": "מצב התור השתנה. השורה תתוקן בעדכון הבא.",
+
+    // --- F57: the floor's staff cards -------------------------------------
+    //
+    // Transcribed VERBATIM from .planning/design/screens/floor-staff-roles/
+    // copy.md — that table is the canonical key list, not this file and not the
+    // plan's prose: 32 keys invented here, 4 REUSED and deliberately not
+    // re-declared (staff.roleOwner, staff.roleShiftManager, staff.selfMarker
+    // above, and staff.loadFailed for the outage — copy.md drops the proposed
+    // `floor.outage` under its §0 rule 8, because a second spelling of one
+    // sentence in one console is a defect).
+    //
+    // Two spec strings were REVISED by the deck and the deck won both times:
+    // floor.pauseAria is «השהיה — …» and not «השהיית …» (the visible label is
+    // «השהיה», so the other form fails WCAG 2.5.3 label-in-name and a
+    // speech-input user saying the visible word matches nothing), and
+    // floor.breakSince drops «בהפסקה» because the Badge directly above already
+    // says it.
+    //
+    // No string names or implies a retry interval (§0 rule 9) — the backoff
+    // falsifies any number the moment it doubles — and floor.accessEnded names
+    // no role (§0 rule 10).
+    "nav.floor": "הצוות בקומה",
+    "floor.heading": "צוות בקומה",
+
+    "floor.loading": "טוען את רשימת הצוות…",
+    "floor.empty": "אין נשות צוות פעילות",
+
+    // The freshness row. `updatedAt` changes ONLY on a success, which is what
+    // makes it a claim the panel can keep.
+    "floor.updatedAt": "עודכן {{time}}",
+    "floor.staleAt": "אין עדכון מאז {{time}}",
+    "floor.staleBody": "ייתכן שהמידע אינו עדכני.",
+    "floor.refresh": "רענון",
+
+    // SC 2.2.2. ONE button whose name changes — never two, never aria-pressed.
+    "floor.pause": "השהיה",
+    "floor.pauseAria": "השהיה — עדכון הצוות",
+    "floor.resume": "חידוש",
+    "floor.resumeAria": "חידוש — עדכון הצוות",
+    "floor.pausedAt": "מושהה · עודכן {{time}}",
+    "floor.paused": "העדכון מושהה. רשימת הצוות לא תתעדכן עד לחידוש.",
+    // Names the REGION, not just the act: board.idleStopped (:488) is otherwise
+    // byte-identical, both write into a role="status" region, and both idle
+    // windows are reset by the same global interactions — so on the board screen
+    // a screen-reader user would hear one sentence twice with nothing saying
+    // which surface stopped (design.md §9 F-4).
+    "floor.idleStopped": "עדכון הצוות הופסק אחרי {{minutes}} דקות ללא פעילות.",
+    "floor.resumed": "העדכון חודש.",
+
+    // The card. The WORD carries the status; the colour never does.
+    "floor.statusAvailable": "פנויה",
+    "floor.statusBreak": "בהפסקה",
+    "floor.breakSince": "מאז {{time}}",
+    "floor.breakStart": "להפסקה",
+    "floor.breakStartAria": "להפסקה — {{name}}",
+    "floor.breakEnd": "חזרה",
+    "floor.breakEndAria": "חזרה — {{name}}",
+
+    // The cue region. A no-op 200 announces the SAME sentence as a write: the
+    // outcome she wanted is the outcome that holds, and telling her she lost a
+    // race would be telling her she was wrong when she was right.
+    "floor.breakStartedCue": "נרשמה הפסקה עבור {{name}}.",
+    "floor.breakEndedCue": "ההפסקה הסתיימה עבור {{name}}.",
+
+    "floor.sessionEnded": "תוקף החיבור פג. צריך להתחבר מחדש.",
+    "floor.accessEnded": "אין הרשאה לצפות ברשימת הצוות כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+    "floor.reload": "רענון הדף",
+    // Inside the card, because a panel-level error names no colleague. Names the
+    // EVENT that repairs it and never a duration.
+    "floor.error.notFound": "אשת הצוות הזו כבר לא פעילה. הרשימה תתוקן בעדכון הבא.",
+
+    // The three role words F57 adds. The two shipped ones are NOT re-declared.
+    "staff.roleReception": "קבלה",
+    "staff.roleSalesAssistant": "יועצת מכירות",
+    "staff.roleSeamstress": "תופרת",
   },
 } as const;
