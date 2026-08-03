@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import os
 import shutil
 import subprocess
 from collections.abc import Callable, Iterator
@@ -82,7 +83,34 @@ def run_sql() -> Callable[[str, list[str]], None]:
 @pytest.fixture(scope="session")
 def postgres_url() -> Iterator[str]:
     """Real Postgres 16 via Testcontainers, connected as the container superuser.
-    RLS behavior must be tested against the real engine — SQLite would lie to us."""
+    RLS behavior must be tested against the real engine — SQLite would lie to us.
+
+    `TEST_POSTGRES_SUPERUSER_URL` overrides the container with a cluster you
+    started yourself. This exists because the constraint it works around is
+    permanent, not incidental: development on this project happens without a
+    Docker daemon, so `pytest -m db` — which is where every RLS policy, every
+    partial unique index and every concurrency race is actually proved — can
+    otherwise only run on CI. That turns a routine test bug into a red CI run
+    and a fix commit, on a feature whose whole point is a race.
+
+    A local Postgres 16 is enough, and this is the whole setup:
+
+        initdb -D /tmp/pg16/data -U postgres --auth=trust
+        pg_ctl -D /tmp/pg16/data -o "-p 55432" -l /tmp/pg16/log start
+        export TEST_POSTGRES_SUPERUSER_URL=\\
+          postgresql+asyncpg://postgres@127.0.0.1:55432/postgres
+
+    It must be a SUPERUSER url pointing at a THROWAWAY cluster: `migrated_db`
+    creates roles and runs every migration against it, and the RLS tests are
+    only meaningful because `app_role_url` connects as a NON-superuser derived
+    from this one (a superuser bypasses RLS and would make every isolation test
+    pass vacuously). Never point this at anything you care about.
+    """
+    override = os.environ.get("TEST_POSTGRES_SUPERUSER_URL")
+    if override:
+        yield override
+        return
+
     if not _docker_running():
         pytest.fail(DOCKER_HELP, pytrace=False)
 

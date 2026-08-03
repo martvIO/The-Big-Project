@@ -33,6 +33,17 @@ class Payment(StandardColumns, Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
     # The hosted-page session F19 redirects to.
     provider_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The hosted-page URL itself (F19 D8). Stored rather than re-minted, because
+    # `open_deposit` converges on an existing hold WITHOUT calling the gateway —
+    # so a double-tap or the 0009 replay branch has no session to hand back
+    # unless this column kept the first one. Re-minting instead would create the
+    # orphaned-payable-session bug that D23's ordering exists to prevent.
+    #
+    # Blanked in the same .values() as every transition out of 'pending'
+    # (settle, settle_late, and the sweeper's expiry claim): a live checkout URL
+    # outliving its hold is a link that takes real money for a seat the boutique
+    # has already given away.
+    redirect_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The webhook's identity, and the replay key behind 0012's unique index.
     provider_transaction_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # F19's expiry sweeper reads this.
