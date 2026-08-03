@@ -409,11 +409,11 @@ describe("F57 floor keys resolve", () => {
 
 describe("F33 check-in QR keys resolve", () => {
   it("carries the whole block", () => {
-    // nav.checkinQr plus eight under checkinQr.*.
-    expect(HE_F33.length).toBeGreaterThanOrEqual(9);
+    // nav.checkinQr plus nine under checkinQr.*.
+    expect(HE_F33.length).toBeGreaterThanOrEqual(10);
   });
 
-  it("resolves the twelfth nav item beside the nested nav object", () => {
+  it("resolves the thirteenth nav item beside the nested nav object", () => {
     expect(i18n.t("nav.checkinQr")).toBe("קוד סריקה");
   });
 

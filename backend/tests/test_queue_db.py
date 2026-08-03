@@ -9,7 +9,7 @@ forced-interleave dedup race and its whole "asyncio.gather is not an interleave"
 rationale; "a `done` ticket frees the key"; "a soft-deleted ticket frees the
 key"; the service-level dedup-convergence test; and "the advisory-lock key is
 namespaced". Every one of them asserted something about a unique index, a lock
-or an `IntegrityError`. F33 ships none of the three — `0016` carries no unique
+or an `IntegrityError`. F33 ships none of the three — `0018` carries no unique
 index but the primary key (pinned by `test_migrations.py`), `app/queue/` has no
 raw statement and no `try` block — so none of those tests has a subject. A race
 test needs two writers that can CONFLICT; two INSERTs that both succeed by

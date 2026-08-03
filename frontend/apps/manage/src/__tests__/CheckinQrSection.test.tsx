@@ -105,6 +105,25 @@ describe("the printable check-in code", () => {
     expect(screen.queryByRole("img")).toBeNull();
   });
 
+  it("recovers from a one-off failure without leaving the section", async () => {
+    // App.tsx renders this from `activeKey === "checkinQr"`, so clicking the nav
+    // row again changes nothing and the component never remounts. Without a
+    // control inside the failure state, one dropped packet strands the shift
+    // manager on a dead screen with no visible way out — on the one section
+    // whose whole purpose is a single print action.
+    getCheckinQr.mockRejectedValueOnce(new Error("offline"));
+    renderInShell(<CheckinQrSection />);
+    await screen.findByRole("alert");
+
+    fireEvent.click(screen.getByRole("button", { name: "ניסיון נוסף" }));
+
+    expect(await screen.findByRole("img")).toBeInTheDocument();
+    // The failure goes with it — a stale alert beside a working code says the
+    // read is still broken.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(getCheckinQr).toHaveBeenCalledTimes(2);
+  });
+
   it("passes axe with zero violations on the loaded code", async () => {
     const { container } = renderInShell(<CheckinQrSection />);
     await screen.findByRole("img");

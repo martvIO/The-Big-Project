@@ -1,15 +1,25 @@
 """walk-in queue: queue_tickets (self-check-in, position computed on read)
 
-Revision ID: 0016
-Revises: 0015
+Revision ID: 0018
+Revises: 0017
+
+Built as 0016/down_revision 0015 so this branch stayed self-coherent while F19
+and F53 were still in flight in their own worktrees. Both merged first and took
+0016 and 0017, so the rebase produced exactly the collision 0017's header warned
+this feature about: two files declaring revision "0016", different filenames,
+merge textually clean, nothing in review looking wrong.
+test_exactly_one_migration_head named both heads in half a second.
+
+Renumbered here to the next free number, resolved from `alembic heads` on the
+rebased branch — never reserved ahead of a feature that had not merged.
 """
 
 from alembic import op
 
 from app.db.rls import enable_tenant_rls
 
-revision = "0016"
-down_revision = "0015"
+revision = "0018"
+down_revision = "0017"
 branch_labels = None
 depends_on = None
 

@@ -14,9 +14,17 @@ export function CheckinQrSection() {
   const { t } = useTranslation();
   const [qr, setQr] = useState<CheckinQrResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // A counter, not a callback: App.tsx renders this section from
+  // `activeKey === "checkinQr"`, so clicking «קוד סריקה» again does not change
+  // activeKey, does not remount and does not refetch. Without a control of its
+  // own, one dropped packet leaves the section dead until the shift manager
+  // guesses that visiting another section and coming back is the cure — on the
+  // one screen whose entire purpose is a single print action.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setLoadError(null);
     api
       .getCheckinQr()
       .then((loaded) => {
@@ -32,16 +40,21 @@ export function CheckinQrSection() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, attempt]);
 
   // No ref and no tabIndex={-1} on the heading, unlike StaffSection: nothing
   // here moves focus, and a programmatic focus target with no caller is dead
   // weight (DashboardSection states the same rule at its own heading).
   if (qr === null) {
     return loadError !== null ? (
-      <p role="alert" className="text-sm text-ink-muted">
-        {loadError}
-      </p>
+      <div className="space-y-4">
+        <p role="alert" className="text-sm text-ink-muted">
+          {loadError}
+        </p>
+        <Button type="button" onClick={() => setAttempt((n) => n + 1)}>
+          {t("checkinQr.retry")}
+        </Button>
+      </div>
     ) : (
       <Skeleton variant="text" lines={4} />
     );

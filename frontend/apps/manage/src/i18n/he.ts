@@ -777,5 +777,9 @@ export const he = {
 
     "checkinQr.printCta": "הדפסה",
     "checkinQr.loadFailed": "לא הצלחנו לטעון את קוד הסריקה כרגע.",
+    // The failure's own way out. Same wording as booking.retry — the console
+    // says one thing for one action — and it names no interval (§0 rule 9),
+    // because nothing here knows when the read will succeed.
+    "checkinQr.retry": "ניסיון נוסף",
   },
 } as const;

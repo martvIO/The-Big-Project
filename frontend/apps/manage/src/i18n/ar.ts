@@ -444,5 +444,6 @@ export const ar = {
     "checkinQr.urlHint": "אפשר גם להקליד את הכתובת בדפדפן.",
     "checkinQr.printCta": "הדפסה",
     "checkinQr.loadFailed": "לא הצלחנו לטעון את קוד הסריקה כרגע.",
+    "checkinQr.retry": "ניסיון נוסף",
   },
 } as const;

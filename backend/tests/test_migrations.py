@@ -1141,7 +1141,7 @@ def test_migration_queue_tickets_round_trips(migrated_db: str) -> None:
 
     try:
         assert exists()
-        command.downgrade(cfg, "0015")
+        command.downgrade(cfg, "0017")
         assert not exists()
         command.upgrade(cfg, "head")
         assert exists()
@@ -1405,11 +1405,18 @@ def test_migration_0017_round_trips(migrated_db: str) -> None:
     downgrade() drops both. Runs as the migration owner (the app role cannot
     ALTER) and mutates the live session-scoped schema.
 
-    `-1` rather than a hardcoded revision, and that is a stated departure rather
-    than a correction of anyone: all four shipped round-trips hardcode their
-    target. Three unmerged migrations are racing for a revision id as this
-    lands, and "one step back from head" survives the renumber — which keeps
-    this block a plain concatenation at merge instead of a hand edit.
+    `"0016"` — the revision this one REVISES — which is the shape all four
+    other round-trips in this file use.
+
+    It was written as `-1` on the reasoning that "one step back from head"
+    survives a renumber. That reasoning was wrong in the one direction it was
+    meant to cover: `-1` is one step back from CURRENT, and current is head, so
+    it stops naming 0017 the moment ANY migration stacks on top of it. F33
+    landed 0018 and this test began downgrading THAT — dropping queue_tickets,
+    leaving notes and tags in place, and asserting they were gone. It is red on
+    the first `pytest -m db` after the merge, in a file the merging branch did
+    not write. A relative target only holds while the block stays at head, which
+    is exactly the condition a feature branch cannot promise.
 
     Appended at the END of the file, after the env_py test, so it never shares
     an anchor with another feature's block again. It sits after the 0016 block
@@ -1426,7 +1433,7 @@ def test_migration_0017_round_trips(migrated_db: str) -> None:
     expected = {"notes": _NOTES_COLUMN, "tags": _TAGS_COLUMN}
     try:
         assert _customer_crm_columns(migrated_db) == expected
-        command.downgrade(cfg, "-1")
+        command.downgrade(cfg, "0016")
         assert _customer_crm_columns(migrated_db) == {}
         command.upgrade(cfg, "head")
         assert _customer_crm_columns(migrated_db) == expected

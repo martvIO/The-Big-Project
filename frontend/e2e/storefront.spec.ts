@@ -536,6 +536,16 @@ async function gotoSettled(page: Page, path: string): Promise<void> {
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   } else if (path === "/about") {
     await expect(page.getByRole("heading", { name: "שעות פעילות" })).toBeVisible();
+  } else if (path === "/checkin") {
+    // The submit, not the h1: the form is WITHHELD while the boutique fetch is
+    // in flight and again if it fails, so the heading is up over a skeleton and
+    // measuring it would measure nothing. Same trap gotoCheckin exists for —
+    // these two constants are declared further down the file and read at call
+    // time, which is after module evaluation.
+    await expect(page.getByRole("button", { name: CHECKIN_SUBMIT })).toBeVisible();
+  } else if (path.startsWith("/q/")) {
+    // The number itself, which is the last thing the position read fills in.
+    await expect(page.getByTestId("queue-number")).toBeVisible();
   } else {
     // /accessibility has no loading state by design; the boutique name is what
     // arrives late and swaps in over the brand fallback. .first() because the
@@ -693,7 +703,21 @@ for (const [name, path, list, boutique] of AXE_ROUTES) {
 
 // --- responsive --------------------------------------------------------------
 
-const ROUTES = ["/", `/dress/${GALLERY.id}`, "/about", "/accessibility"];
+// F33's two public routes are in this sweep and not only in their own block:
+// spec D12 puts 375/768/1440-with-no-horizontal-scroll in the a11y floor it
+// calls non-negotiable, and the storefront unit tests run in jsdom, which has no
+// layout engine. The two shapes at risk are the wrapping visit-type chip row
+// under the long Hebrew collection notice on /checkin, and the text-6xl position
+// number beside the flex-wrap freshness+pause row on /q/{id}. installApi already
+// seeds both; gotoSettled needed a tell for each.
+const ROUTES = [
+  "/",
+  `/dress/${GALLERY.id}`,
+  "/about",
+  "/accessibility",
+  "/checkin",
+  `/q/${TICKET_FIRST}`,
+];
 
 test("storefront: no horizontal scroll at 375 / 768 / 1440 on every route", async ({ page }) => {
   await installApi(page);
