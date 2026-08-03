@@ -20,11 +20,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.auth.dependencies import get_auth_service
+from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.booking.service import (
     BookingClaim,
     BookingNotFoundError,
+    BookingService,
     BookingThrottledError,
+    DepositOutcome,
     PhoneNotVerifiedError,
     SlotUnavailableError,
     TermsStaleError,
@@ -33,6 +36,7 @@ from app.booking.validation import BookingValidationError
 from app.main import create_app
 from app.models.booking import Booking
 from app.models.constants import BookingStatus
+from app.payments.service import DepositHold, PaymentService
 from app.security_headers import SECURITY_HEADERS
 from app.tenancy.middleware import TenantContext
 
@@ -72,6 +76,9 @@ class _Row:
 
 
 MANAGE_TOKEN = "manage-token-abc"
+DEPOSIT_AGOROT = 15_000
+SESSION_ID = "fake-7"
+REDIRECT_URL = f"/fake-pay?session={SESSION_ID}"
 
 
 class StubBookingService:
@@ -79,12 +86,26 @@ class StubBookingService:
     a call log — nothing else.
 
     `created` is programmable because the router branches on it: True is a fresh
-    claim (confirmation SMS), False is the 0009 replay (no token, no SMS)."""
+    claim (confirmation SMS), False is the 0009 replay (no token, no SMS).
+    `status` and `outcome` are programmable for the same reason on F19's deposit
+    path: the claim's intent and the deposit step's OUTCOME are different facts,
+    and MD4 is precisely the case where they disagree."""
 
-    def __init__(self, *, created: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        created: bool = True,
+        status: str = BookingStatus.CONFIRMED.value,
+        deposit_due: bool = False,
+        outcome: DepositOutcome | None = None,
+    ) -> None:
         self.error: Exception | None = None
         self.created = created
+        self.status = status
+        self.deposit_due = deposit_due
+        self.outcome = outcome
         self.calls: list[dict[str, Any]] = []
+        self.deposit_calls: list[dict[str, Any]] = []
 
     async def create_booking(self, tenant_id: uuid.UUID, **kwargs: Any) -> BookingClaim:
         if self.error is not None:
@@ -93,7 +114,7 @@ class StubBookingService:
         row = _Row(
             id=BOOKING_ID,
             starts_at=kwargs["starts_at"],
-            status=BookingStatus.CONFIRMED.value,
+            status=self.status,
             appointment_type_name="מדידת שמלה",
             dress_name=None,
             dress_size=None,
@@ -102,7 +123,17 @@ class StubBookingService:
             booking=cast(Booking, row),
             created=self.created,
             manage_token=MANAGE_TOKEN if self.created else None,
+            deposit_due=self.deposit_due,
+            deposit_amount_agorot=DEPOSIT_AGOROT if self.deposit_due else 0,
         )
+
+    async def open_deposit(
+        self, tenant_id: uuid.UUID, claim: BookingClaim, *, return_url: str
+    ) -> DepositOutcome:
+        self.deposit_calls.append({"tenant_id": tenant_id, "return_url": return_url})
+        if self.outcome is not None:
+            return self.outcome
+        return DepositOutcome(status=claim.booking.status, deposit_due=False)
 
 
 class StubCommsService:
@@ -183,6 +214,9 @@ def test_create_accepts_anonymous_and_returns_201() -> None:
         "appointment_type_name": "מדידת שמלה",
         "dress_name": None,
         "dress_size": None,
+        "deposit_due": False,
+        "redirect_url": None,
+        "payment_session_id": None,
     }
     assert "set-cookie" not in resp.headers
     assert resp.headers["cache-control"] == "no-store"
@@ -324,3 +358,207 @@ def test_a_rejected_claim_sends_nothing() -> None:
         resp = client.post(PATH, json=_body())
     assert resp.status_code == 409
     assert comms.confirmations == []
+
+
+# --- F19 D11: the deposit moves the SMS and adds three fields to the wire ---
+
+
+def _deposit_stub(**overrides: Any) -> StubBookingService:
+    """A claim that owes a deposit: committed `pending_payment`, hold opened."""
+    kwargs: dict[str, Any] = {
+        "status": BookingStatus.PENDING_PAYMENT.value,
+        "deposit_due": True,
+        "outcome": DepositOutcome(
+            status=BookingStatus.PENDING_PAYMENT.value,
+            deposit_due=True,
+            redirect_url=REDIRECT_URL,
+            payment_session_id=SESSION_ID,
+        ),
+    }
+    kwargs.update(overrides)
+    return StubBookingService(**kwargs)
+
+
+def test_a_deposit_booking_answers_pending_payment_with_the_checkout_link() -> None:
+    client, stub, comms = _client_with_comms(_deposit_stub())
+    with client:
+        resp = client.post(PATH, json=_body())
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["status"] == BookingStatus.PENDING_PAYMENT.value
+    assert body["deposit_due"] is True
+    assert body["redirect_url"] == REDIRECT_URL
+    assert body["payment_session_id"] == SESSION_ID
+    # The whole point of D11's ordering: no "your appointment is confirmed"
+    # before a single agora is taken.
+    assert comms.confirmations == []
+    # Post-commit, and pointed back at the storefront she is standing on.
+    [call] = stub.deposit_calls
+    assert call["tenant_id"] == TENANT.id
+    assert call["return_url"] == "http://bella.localtest.me/"
+
+
+def test_the_create_hands_the_tenants_settings_to_the_predicate() -> None:
+    """D19's master toggle lives in `tenants.settings`, and an ABSENT toggle
+    reads as off — so a router that forgot this argument would silently book
+    every deposit-required appointment for free."""
+    client, stub, _ = _client_with_comms()
+    with client:
+        client.post(PATH, json=_body())
+    [call] = stub.calls
+    assert call["settings"] is TENANT.settings
+
+
+def test_a_booking_with_no_deposit_carries_neither_link_nor_flag() -> None:
+    client, stub, comms = _client_with_comms()
+    with client:
+        resp = client.post(PATH, json=_body())
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["status"] == BookingStatus.CONFIRMED.value
+    assert (body["deposit_due"], body["redirect_url"], body["payment_session_id"]) == (
+        False,
+        None,
+        None,
+    )
+    assert comms.confirmations == [(BOOKING_ID, MANAGE_TOKEN)]
+    # Called on this path too — it is the service that decides there is nothing
+    # to open, so the router cannot forget the branch that owes money.
+    assert len(stub.deposit_calls) == 1
+
+
+def test_the_replay_branch_hands_back_the_same_link() -> None:
+    """D11b. The lost-201 retry lands on 0009's replay path, and the hold it
+    converges onto is the FIRST one — same session, same hosted page. A second
+    link here would be a second payable page for one appointment."""
+    client, _, comms = _client_with_comms(_deposit_stub(created=False))
+    with client:
+        first = client.post(PATH, json=_body())
+        second = client.post(PATH, json=_body())
+    assert first.status_code == second.status_code == 201
+    assert first.json()["redirect_url"] == second.json()["redirect_url"] == REDIRECT_URL
+    assert first.json()["payment_session_id"] == second.json()["payment_session_id"] == SESSION_ID
+    assert comms.confirmations == []
+
+
+def test_md4_a_compensated_booking_is_confirmed_and_texted() -> None:
+    """MD4 / D11a at the wire: the claim owed a deposit, the gateway was
+    unreachable, the compensating transaction booked her anyway — so she gets
+    the ordinary confirmation SMS and no checkout link, and the response shows
+    `confirmed` even though the row this handler holds still reads
+    `pending_payment`."""
+    stub = _deposit_stub(
+        outcome=DepositOutcome(status=BookingStatus.CONFIRMED.value, deposit_due=False)
+    )
+    client, _, comms = _client_with_comms(stub)
+    with client:
+        resp = client.post(PATH, json=_body())
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["status"] == BookingStatus.CONFIRMED.value
+    assert (body["deposit_due"], body["redirect_url"], body["payment_session_id"]) == (
+        False,
+        None,
+        None,
+    )
+    assert comms.confirmations == [(BOOKING_ID, MANAGE_TOKEN)]
+
+
+# --- F19 D11b: BookingService.open_deposit, against a fake PaymentService ---
+#
+# No database: the success and converge paths never open a session. The
+# compensating path does, and its assertions live in test_deposit_create_db.py.
+
+
+@dataclasses.dataclass
+class _FakeHoldPayment:
+    provider_session_id: str
+
+
+class _FakePaymentService:
+    def __init__(self, *, created: bool, session_id: str, redirect_url: str | None) -> None:
+        self.hold = DepositHold(
+            payment=cast(Any, _FakeHoldPayment(provider_session_id=session_id)),
+            redirect_url=redirect_url,
+            created=created,
+        )
+        self.calls: list[dict[str, Any]] = []
+
+    async def open_deposit(self, tenant_id: uuid.UUID, **kwargs: Any) -> DepositHold:
+        self.calls.append({"tenant_id": tenant_id, **kwargs})
+        return self.hold
+
+
+def _service(payments: _FakePaymentService) -> BookingService:
+    limiter = FixedWindowRateLimiter(max_attempts=1000, window_seconds=60, clock=lambda: 0.0)
+    return BookingService(
+        cast(Any, None),
+        otp=cast(Any, None),
+        create_limiter=limiter,
+        phone_limiter=limiter,
+        payments=cast(PaymentService, payments),
+        deposit_hold_seconds=900,
+    )
+
+
+def _claim(*, status: str, deposit_due: bool = True) -> BookingClaim:
+    row = _Row(
+        id=BOOKING_ID,
+        starts_at=STARTS_AT,
+        status=status,
+        appointment_type_name="מדידת שמלה",
+        dress_name=None,
+        dress_size=None,
+    )
+    return BookingClaim(
+        booking=cast(Booking, row),
+        created=False,
+        manage_token=None,
+        deposit_due=deposit_due,
+        deposit_amount_agorot=DEPOSIT_AGOROT,
+    )
+
+
+async def test_open_deposit_returns_the_stored_link_on_the_converge_path() -> None:
+    payments = _FakePaymentService(created=False, session_id=SESSION_ID, redirect_url=REDIRECT_URL)
+    outcome = await _service(payments).open_deposit(
+        TENANT.id,
+        _claim(status=BookingStatus.PENDING_PAYMENT.value),
+        return_url="http://bella.localtest.me/",
+    )
+    assert outcome == DepositOutcome(
+        status=BookingStatus.PENDING_PAYMENT.value,
+        deposit_due=True,
+        redirect_url=REDIRECT_URL,
+        payment_session_id=SESSION_ID,
+    )
+    [call] = payments.calls
+    assert call["booking_id"] == BOOKING_ID
+    assert call["amount_agorot"] == DEPOSIT_AGOROT
+    assert call["hold_seconds"] == 900
+
+
+async def test_open_deposit_does_nothing_when_no_deposit_is_due() -> None:
+    payments = _FakePaymentService(created=True, session_id=SESSION_ID, redirect_url=REDIRECT_URL)
+    outcome = await _service(payments).open_deposit(
+        TENANT.id,
+        _claim(status=BookingStatus.CONFIRMED.value, deposit_due=False),
+        return_url="http://bella.localtest.me/",
+    )
+    assert outcome == DepositOutcome(status=BookingStatus.CONFIRMED.value, deposit_due=False)
+    assert payments.calls == []
+
+
+async def test_a_replay_of_an_already_paid_booking_opens_no_second_hold() -> None:
+    """`active_at`'s predicate is `status != 'cancelled'`, so a replay can hand
+    back a booking she has ALREADY paid for. `live_pending_for_booking` would
+    find no pending row to converge onto and mint a second hosted page — a
+    second charge for one appointment. The status guard is what stops it."""
+    payments = _FakePaymentService(created=True, session_id="fake-2", redirect_url="/fake-pay?x")
+    outcome = await _service(payments).open_deposit(
+        TENANT.id,
+        _claim(status=BookingStatus.CONFIRMED.value),
+        return_url="http://bella.localtest.me/",
+    )
+    assert outcome == DepositOutcome(status=BookingStatus.CONFIRMED.value, deposit_due=False)
+    assert payments.calls == []

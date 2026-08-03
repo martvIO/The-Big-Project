@@ -14,6 +14,7 @@ second one, guarded by 0009's index. See step 4b.
 
 import dataclasses
 import datetime
+import logging
 import uuid
 from collections.abc import Mapping
 
@@ -32,6 +33,7 @@ from app.booking.validation import (
 )
 from app.catalog.validation import normalize_size_label
 from app.db.repositories.appointment_types import AppointmentTypesRepository
+from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.availability import (
     AvailabilityExceptionsRepository,
     AvailabilityRulesRepository,
@@ -40,17 +42,22 @@ from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
+from app.db.repositories.payments import PaymentsRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
 from app.models.appointment_type import AppointmentType
 from app.models.booking import Booking
-from app.models.constants import ScheduledMessageKind
+from app.models.constants import AuditAction, BookingStatus, ScheduledMessageKind
 from app.notifications.service import OtpService
 from app.notifications.validation import normalize_israeli_mobile
-from app.payments.service import GatewayCredentialService
+from app.payments.base import GatewayNotConnectedError, GatewayUnavailableError
+from app.payments.secretbox import SecretBoxNotConfiguredError, SecretDecryptError
+from app.payments.service import GatewayCredentialService, PaymentService
 from app.storefront.validation import Clock
+
+logger = logging.getLogger("app")
 
 # Past the grid's own publishable ceiling, so rejecting anything beyond it can
 # never cost a real booking. TWO days of slack, not one: the ceiling is a
@@ -58,6 +65,22 @@ from app.storefront.validation import Clock
 # now and the ceiling shifts every local wall time an hour later in UTC — which
 # at +1 day ate the last half-hour of the final day's grid.
 BOOKABLE_HORIZON = datetime.timedelta(days=SLOT_WINDOW_MAX_DAYS + 2)
+
+# Spec default (D6). A constructor argument rather than a read of Settings here,
+# so this module keeps no opinion about deployment: main.py passes
+# `settings.deposit_hold_seconds`.
+DEFAULT_DEPOSIT_HOLD_SECONDS = 900
+
+# D11a's compensated set: every way `open_deposit` can fail with the booking
+# ALREADY committed as `pending_payment`. `PaymentAlreadyHeldError` is
+# deliberately absent — it means a hold exists, which is the converge case D11b
+# covers, not a failure to take one.
+DEPOSIT_COMPENSATED_ERRORS = (
+    GatewayUnavailableError,
+    GatewayNotConnectedError,
+    SecretDecryptError,
+    SecretBoxNotConfiguredError,
+)
 
 
 def deposit_due(
@@ -152,6 +175,32 @@ class BookingClaim:
     # caller that predates deposits reads "nothing to collect" rather than
     # inventing a charge.
     deposit_due: bool = False
+    # The type's snapshot at claim time, carried because opening the hold is a
+    # POST-COMMIT step outside this transaction and nothing out there has read
+    # the appointment type. Meaningless when `deposit_due` is False.
+    deposit_amount_agorot: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class DepositOutcome:
+    """What the post-commit deposit step (D11) tells the create handler.
+
+    `deposit_due` here is the OUTCOME, not the claim's intent: MD4's
+    compensating path answers False on a booking whose claim said True, because
+    the gateway was unreachable and the appointment now stands with no deposit
+    taken. The handler branches on THIS field for both the response and the
+    confirmation SMS, so "texted her a confirmation before an agora was taken"
+    and "took her deposit and told her nothing" are ruled out by one condition.
+
+    `status` is the booking's status AFTER the step, and it has to travel here
+    because the compensating transition wrote `confirmed` in its OWN session —
+    the row the handler is holding still reads `pending_payment`.
+    """
+
+    status: str
+    deposit_due: bool
+    redirect_url: str | None = None
+    payment_session_id: str | None = None
 
 
 class BookingService:
@@ -164,6 +213,8 @@ class BookingService:
         phone_limiter: FixedWindowRateLimiter,
         clock: Clock | None = None,
         gateway_credentials: GatewayCredentialService | None = None,
+        payments: PaymentService | None = None,
+        deposit_hold_seconds: int = DEFAULT_DEPOSIT_HOLD_SECONDS,
     ) -> None:
         self._session_factory = session_factory
         self._otp = otp
@@ -171,6 +222,13 @@ class BookingService:
         # reads as NOT connected. Unwired must never read as connected: every
         # branch that could take money is opt-in.
         self._gateway_credentials = gateway_credentials
+        # None here is NOT the same "opt-in" case: `deposit_due` already said
+        # money is owed and the booking is already committed as
+        # `pending_payment`, so an unwired PaymentService is a wiring bug, and
+        # the safe answer to it is MD4's compensation — not a held seat nobody
+        # can pay for.
+        self._payments = payments
+        self._deposit_hold_seconds = deposit_hold_seconds
         self._create_limiter = create_limiter
         # A SEPARATE instance, not a second key on create_limiter: max_attempts
         # lives on the limiter, not per key, so two keys on one instance share
@@ -187,6 +245,8 @@ class BookingService:
         self._rules = AvailabilityRulesRepository()
         self._exceptions = AvailabilityExceptionsRepository()
         self._scheduled = ScheduledMessagesRepository()
+        self._payment_rows = PaymentsRepository()
+        self._audit = AuditLogRepository()
 
     async def create_booking(
         self,
@@ -359,7 +419,11 @@ class BookingService:
                     # (only its sha256 survives), and a replay must not resend
                     # the confirmation SMS anyway. Both facts are the same fact.
                     return BookingClaim(
-                        booking=replayed, created=False, manage_token=None, deposit_due=due
+                        booking=replayed,
+                        created=False,
+                        manage_token=None,
+                        deposit_due=due,
+                        deposit_amount_agorot=type_row.deposit_amount_agorot or 0,
                     )
 
             # 5. Re-materialize the grid and assert the instant is offered —
@@ -413,6 +477,16 @@ class BookingService:
                     dress_size=snapshot_size,
                     notes=notes,
                     manage_token_hash=manage_token_hash(manage_token),
+                    # D11: create THEN pay. Paying first cannot hold the seat, so
+                    # the row is claimed by the advisory-lock protocol above and
+                    # the payment becomes a transition on a row that exists. The
+                    # seat is occupied from this instant — every occupancy
+                    # predicate excludes only `cancelled`.
+                    status=(
+                        BookingStatus.PENDING_PAYMENT.value
+                        if due
+                        else BookingStatus.CONFIRMED.value
+                    ),
                 )
             except IntegrityError as exc:
                 # Lost a race the advisory lock should have prevented — the
@@ -433,5 +507,117 @@ class BookingService:
                     manage_token=manage_token,
                 )
             return BookingClaim(
-                booking=booking, created=True, manage_token=manage_token, deposit_due=due
+                booking=booking,
+                created=True,
+                manage_token=manage_token,
+                deposit_due=due,
+                deposit_amount_agorot=type_row.deposit_amount_agorot or 0,
             )
+
+    async def open_deposit(
+        self,
+        tenant_id: uuid.UUID,
+        claim: BookingClaim,
+        *,
+        return_url: str,
+    ) -> DepositOutcome:
+        """D11's post-commit step, called on BOTH claim branches (D11b).
+
+        Post-commit for the same reason `send_confirmation` is: `PaymentService`
+        structurally opens its OWN sessions and re-takes the per-tenant advisory
+        lock `create_booking` holds until COMMIT, so folding the hold into the
+        claim's transaction is not merely unwise, it deadlocks.
+
+        The hold is opened only on a booking that is actually AWAITING payment.
+        On the fresh path that is always true; on the 0009 replay path it is the
+        guard that matters, because `active_at`'s predicate is
+        `status != 'cancelled'` — so a replay can hand back a booking she has
+        already PAID for, and `live_pending_for_booking` would find no pending
+        row to converge onto and mint a second hosted page. She would be charged
+        twice for one appointment. An unpaid hold replays into the converge
+        path, gets the stored `redirect_url` back and calls no gateway at all.
+        """
+        if not claim.deposit_due or claim.booking.status != BookingStatus.PENDING_PAYMENT.value:
+            return DepositOutcome(status=claim.booking.status, deposit_due=False)
+        if self._payments is None:
+            logger.warning(
+                "deposit due for booking %s but no payment service is wired", claim.booking.id
+            )
+            return await self._book_without_deposit(tenant_id, claim)
+        try:
+            hold = await self._payments.open_deposit(
+                tenant_id,
+                booking_id=claim.booking.id,
+                amount_agorot=claim.deposit_amount_agorot,
+                hold_seconds=self._deposit_hold_seconds,
+                return_url=return_url,
+            )
+        except DEPOSIT_COMPENSATED_ERRORS as exc:
+            logger.warning(
+                "deposit checkout unavailable for booking %s", claim.booking.id, exc_info=exc
+            )
+            return await self._book_without_deposit(tenant_id, claim)
+        return DepositOutcome(
+            status=claim.booking.status,
+            deposit_due=True,
+            redirect_url=hold.redirect_url,
+            payment_session_id=hold.payment.provider_session_id,
+        )
+
+    async def _book_without_deposit(
+        self, tenant_id: uuid.UUID, claim: BookingClaim
+    ) -> DepositOutcome:
+        """MD4 (a) via D11a, and it is a COMPENSATING transaction, not a tidy-up.
+
+        The booking is already committed as `pending_payment`. Leave it there and
+        the seat is held forever: `active_seats_at` counts it, the slot-seat
+        index blocks the next bride, 0009's index blocks even this bride
+        rebooking her own instant, and D6's sweeper — the only writer that can
+        move a row out of `pending_payment` — finds no `payments` row to sweep,
+        because `open_deposit` raised before it wrote one.
+
+        Three writes, one session, therefore atomic: the transition back to
+        `confirmed`, A5's `failed` payments row (without which the owner console
+        cannot tell this booking from an ordinary non-deposit one), and MD4's
+        audit row. The caller then sends the ordinary confirmation SMS the
+        deposit path had suppressed.
+        """
+        provider = (
+            self._gateway_credentials.gateway.provider
+            if self._gateway_credentials is not None
+            else None
+        )
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            booking = await self._bookings.set_status(
+                session,
+                tenant_id,
+                claim.booking.id,
+                to=BookingStatus.CONFIRMED.value,
+                allowed_from=(BookingStatus.PENDING_PAYMENT.value,),
+            )
+            if provider is not None:
+                await self._payment_rows.record_unavailable(
+                    session,
+                    tenant_id,
+                    booking_id=claim.booking.id,
+                    provider=provider,
+                    amount_agorot=claim.deposit_amount_agorot,
+                )
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.GATEWAY_UNAVAILABLE_AT_CHECKOUT.value,
+                entity="bookings",
+                details={
+                    "booking_id": str(claim.booking.id),
+                    "amount_agorot": claim.deposit_amount_agorot,
+                },
+            )
+        # None back from set_status means a concurrent writer moved the row
+        # first, and its status — not the one this request intended — is what
+        # the wire must carry. Reporting `confirmed` for a row somebody else
+        # cancelled would be the one lie this whole path exists to avoid.
+        return DepositOutcome(
+            status=booking.status if booking is not None else claim.booking.status,
+            deposit_due=False,
+        )

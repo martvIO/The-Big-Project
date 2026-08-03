@@ -8,6 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.constants import PaymentStatus
 from app.models.payment import Payment
 
+# The one value `record_unavailable` writes, named so the owner console and
+# F21's audit read the same string the writer wrote.
+GATEWAY_UNAVAILABLE_ERROR = "gateway unavailable at checkout"
+
 
 class PaymentsRepository:
     """Tenant-scoped via RLS; the explicit tenant_id predicate is redundant
@@ -44,6 +48,47 @@ class PaymentsRepository:
             provider_session_id=provider_session_id,
             redirect_url=redirect_url,
             hold_expires_at=hold_expires_at,
+        )
+        session.add(row)
+        await session.flush()
+        await session.refresh(row)
+        return row
+
+    async def record_unavailable(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        *,
+        booking_id: UUID,
+        provider: str,
+        amount_agorot: int,
+    ) -> Payment:
+        """MD4's marker, and the first writer `PaymentStatus.FAILED` has ever had
+        (F19 A5).
+
+        The compensating transaction books WITHOUT the deposit when the gateway
+        is unreachable at checkout — and it raises BEFORE `insert` runs, so
+        without this row the booking carries no `payments` row at all and
+        `payment_status` reads `None`: byte-identical, on the one field the
+        owner console renders, to an ordinary non-deposit booking. This row is
+        the entire difference between "no deposit was ever owed" and "a deposit
+        was owed and we could not take it".
+
+        `provider_session_id`, `redirect_url` and `hold_expires_at` are all left
+        NULL because nothing was ever minted at the provider — there is no
+        session, no page and no hold to expire. `insert` requires all three,
+        which is why this is its own method rather than three more optional
+        parameters on it: a caller who omitted them there would create a
+        malformed PENDING row, and the sweeper would then have to reason about
+        a hold with no expiry.
+        """
+        row = Payment(
+            tenant_id=tenant_id,
+            booking_id=booking_id,
+            provider=provider,
+            amount_agorot=amount_agorot,
+            status=PaymentStatus.FAILED.value,
+            error=GATEWAY_UNAVAILABLE_ERROR,
         )
         session.add(row)
         await session.flush()

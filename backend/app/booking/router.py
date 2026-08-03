@@ -21,6 +21,10 @@ when the claim actually created a booking. It is post-commit because
 hang inside the booking transaction would block commits — and it is fire-and-
 forget because turning a committed booking into a 503 is a lie the F14 review
 already fought once.
+
+**The deposit hold is opened in the same position and for the same reason**
+(F19 D11), and it moves the SMS: a booking that owes a deposit is committed as
+`pending_payment` and gets no confirmation until the money is in.
 """
 
 from typing import Annotated
@@ -91,13 +95,30 @@ async def create_booking(
         dress_id=body.dress_id,
         dress_size=body.dress_size,
         notes=body.notes,
+        # D19's master toggle rides in from the resolved tenant. Omit it and
+        # `deposit_due` reads an absent `deposits_enabled` as OFF — every
+        # booking through this route would silently skip the deposit.
+        settings=tenant.settings,
     )
-    if claim.created and claim.manage_token is not None:
+    # D11: the hold is opened HERE, post-commit, for the same reason the
+    # confirmation SMS is fired here — PaymentService opens its own sessions and
+    # re-takes the advisory lock the claim held until COMMIT. `return_url` is
+    # the request's own origin rather than a configured host: the bride must
+    # come back to the storefront she is standing on, and that is the one thing
+    # the request already knows for certain.
+    deposit = await service.open_deposit(tenant.id, claim, return_url=str(request.base_url))
+    if claim.created and claim.manage_token is not None and not deposit.deposit_due:
         # `created` AND a token: two spellings of one fact, because the 0009
         # replay path carries no raw token. Awaited rather than backgrounded so
         # the send happens inside the request's own lifetime — it never raises
         # (send_confirmation swallows both provider exceptions after their
         # evidence exists), so it cannot cost the caller their 201.
+        #
+        # AND no deposit outstanding (D11): confirming an appointment before a
+        # single agora is taken is a promise the boutique has not been paid for.
+        # The condition reads the OUTCOME, not the claim, which is what makes
+        # MD4's compensated booking — gateway unreachable, appointment stands
+        # with no deposit — send the ordinary confirmation it is owed.
         await comms.send_confirmation(
             CommsTenant.from_settings(
                 tenant_id=tenant.id, slug=tenant.slug, name=tenant.name, settings=tenant.settings
@@ -109,10 +130,17 @@ async def create_booking(
     return BookingCreateResponse(
         id=row.id,
         starts_at=row.starts_at,
-        status=row.status,
+        # From the outcome, not the row: MD4's compensating transition wrote
+        # `confirmed` in its own session, so `row.status` is a stale
+        # `pending_payment` on exactly the path where the difference is the
+        # whole point.
+        status=deposit.status,
         appointment_type_name=row.appointment_type_name,
         dress_name=row.dress_name,
         dress_size=row.dress_size,
+        deposit_due=deposit.deposit_due,
+        redirect_url=deposit.redirect_url,
+        payment_session_id=deposit.payment_session_id,
     )
 
 
