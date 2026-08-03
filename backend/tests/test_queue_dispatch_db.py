@@ -606,8 +606,12 @@ async def test_tenant_b_take_next_cannot_reach_tenant_a_s_queue(app_role_url: st
     `claim_next`'s EXPLICIT `tenant_id` predicate (the "redundant
     defence-in-depth" the repository docstrings claim, which is not redundant at
     all if RLS is ever mis-bound), not RLS. RLS on these two tables is F33's
-    `test_queue_isolation.py` and F36's `test_fitting_rooms_isolation.py`, and
-    the full five-verb cross-tenant probe is Task 8's row.
+    `test_queue_isolation.py` and F36's `test_fitting_rooms_isolation.py`; the
+    ONE thing F58 adds to that surface — a pointer with no foreign key behind it,
+    which is the only join in the chain that can be aimed outside the tenant
+    holding it — is pinned by `test_fitting_rooms_isolation.py`'s
+    `..._foreign_ticket_pointer_on_a_local_assignment_resolves_to_nothing`,
+    written WITHOUT a tenant predicate precisely so that the swap reds it.
     """
     engine, factory = _factory(app_role_url)
     tenant_a = uuid.uuid4()
@@ -1654,8 +1658,12 @@ async def test_tenant_b_reaches_none_of_tenant_a_s_tickets(app_role_url: str) ->
 
     ⚠ Same vacuity caveat as take-next's probe, and it was RE-RUN here: swapping
     `app_role_url` for `migrated_db` leaves this green, so what it measures is
-    the repositories' EXPLICIT `tenant_id` predicates rather than RLS. RLS on
-    `queue_tickets` is F33's `test_queue_isolation.py`.
+    the repositories' EXPLICIT `tenant_id` predicates rather than RLS — the
+    "defence in depth" half, which is the half that survives a mis-bound policy
+    and is therefore worth a case, but must not be labelled as the other one.
+    RLS on `queue_tickets` is F33's `test_queue_isolation.py`, and F58's own
+    pointer is `test_fitting_rooms_isolation.py`'s
+    `..._foreign_ticket_pointer_on_a_local_assignment_resolves_to_nothing`.
     """
     engine, factory = _factory(app_role_url)
     tenant_a = uuid.uuid4()
