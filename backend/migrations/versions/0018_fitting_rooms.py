@@ -187,9 +187,15 @@ def upgrade() -> None:
     op.execute(_updated_at_trigger("fitting_assignment_dresses"))
 
     # Forgetting enable_tenant_rls fails a DIFFERENT file's test
-    # (test_tenant_isolation.py's tenant_id scan). Forgetting the GRANT fails
-    # NOTHING until the app role touches the table, and then it is a
-    # `permission denied` from a route.
+    # (test_tenant_isolation.py's tenant_id scan).
+    #
+    # The GRANT is REDUNDANT and is kept as belt-and-braces, which is the house
+    # form (0004, 0005, 0014, 0016, 0017 all say so). 0002's ALTER DEFAULT
+    # PRIVILEGES already grants full CRUD on every table a later migration
+    # creates as this role, so deleting this line changes nothing — verified by
+    # mutation against test_fitting_rooms_isolation.py, which stayed green. What
+    # it buys is a table created out-of-band by a different deploy role, which is
+    # exactly what 0002's own comment says it is for.
     for table in ("fitting_rooms", "fitting_room_assignments", "fitting_assignment_dresses"):
         op.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO app_user")
         for statement in enable_tenant_rls(table):
