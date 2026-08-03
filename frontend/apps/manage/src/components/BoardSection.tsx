@@ -6,45 +6,20 @@ import { api, ApiError } from "../api";
 import type { OwnerBookingDetail, OwnerBookingRow } from "../api";
 import { bookingErrorText, isolateLtr, statusBadge } from "../lib/booking";
 import { jerusalemTime, plainDate, todayJerusalem } from "../lib/jerusalem";
+import { IDLE_STOP_MINUTES, usePoll } from "../lib/usePoll";
+import type { TickOutcome } from "../lib/usePoll";
 
-// P-1 / spec Q-1. One client constant: if the pilot or F29 says five seconds is
-// too expensive, halving the load is this line and the UI does not change.
-const POLL_INTERVAL_MS = 5_000;
-// D4(6)'s cap, doubling from the base. D3 declines a server-side read limiter
-// on this router — there is no attacker, only a fleet of loyal boards pointed
-// at a sick server — so the throttle has to be the client's or there is none.
-const MAX_BACKOFF_MS = 60_000;
-// P-8, resolved by the implementation plan (C3) rather than by the user, and
-// carried in the run report as a one-line overturn. NOT the prototype's 45
-// seconds: that window exists so the state is reachable in a review, and
-// shipping it would read as a bug.
-const IDLE_STOP_MS = 600_000;
-const IDLE_STOP_MINUTES = IDLE_STOP_MS / 60_000;
+// The poll's six mechanisms, its three constants and the {401,403} terminal
+// classifier moved to lib/usePoll.ts in F57 — the second caller, which is the
+// reopening condition F34's D13 named. Nothing about this component's behaviour
+// changed, and BoardSection.test.tsx passing with a ZERO-LINE DIFF is the gate
+// that says so.
+//
 // Mirrors BOOKING_LIST_DEFAULT_LIMIT and deliberately NOT the server's maximum:
 // the router declares le=BOOKING_LIST_MAX_LIMIT, so a client pinned to today's
 // ceiling would start 422-ing the day the ceiling drops. Ask for fifty, and say
 // so when the day is bigger.
 const PAGE_LIMIT = 50;
-
-type Mode = "running" | "paused" | "idle";
-type Terminal = "session" | "access";
-
-// The terminal set is {401, 403}, not {401}. Deactivation ends in a 401
-// (staff_users.by_id filters deleted_at, resolve_session returns None); a
-// mid-shift DEMOTION ends in a 403 (the session resolves fine and RoleGate
-// raises). A board that stopped only on the 401 would keep polling a revoked
-// role forever while the demotion had no visible effect — silently defeating
-// "a role change bites on the very next request" on the one screen in the
-// product that keeps making requests after a revocation.
-function terminalOf(error: unknown): Terminal | null {
-  if (!(error instanceof ApiError)) {
-    return null;
-  }
-  if (error.status === 401) {
-    return "session";
-  }
-  return error.status === 403 ? "access" : null;
-}
 
 function holdsFocus(bookingId: string): boolean {
   const active = document.activeElement;
@@ -63,8 +38,6 @@ export function BoardSection() {
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [terminal, setTerminal] = useState<Terminal | null>(null);
-  const [mode, setMode] = useState<Mode>("running");
   const [cue, setCue] = useState("");
   const [busyIds, setBusyIds] = useState<readonly string[]>([]);
   const [stranded, setStranded] = useState<readonly string[]>([]);
@@ -75,76 +48,28 @@ export function BoardSection() {
   const rowAlertRef = useRef<HTMLParagraphElement>(null);
   const dividerRef = useRef<HTMLLIElement>(null);
   const scrolledRef = useRef(false);
-  // The timer always calls the LATEST tick, so the loop reads current state
-  // without a ref mirror of every field it needs.
-  const tickRef = useRef<() => void>(() => {});
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const idleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const backoffRef = useRef(POLL_INTERVAL_MS);
-  // One monotonic generation. A poll applies its result only if the generation
-  // it was issued under is unchanged; mutations, the date roll, the manual
-  // retry and resume all bump it.
-  const generationRef = useRef(0);
   const dayRef = useRef(day);
-  const runningRef = useRef(true);
   const rowsRef = useRef<OwnerBookingRow[] | null>(null);
+  // Kept in the caller, deliberately (D10). A `runExclusive` wrapper was
+  // declined: `run` returning "suppressed" is the same observable behaviour —
+  // zero requests during a mutation and NO timer armed during one — with a union
+  // member instead of a three-member wrapper API.
   const mutationsRef = useRef(0);
+  // Also the caller's: the pointer-hold POLICY is board-shaped, and the hook
+  // deliberately does not supply it. FloorPanel writes its own.
   const holdRef = useRef(false);
+  // The hook's `run` always calls the LATEST tick, so the loop reads current
+  // state without a ref mirror of every field it needs — and `tick` may close
+  // over `poll`, which does not exist until the line below.
+  const tickRef = useRef<() => TickOutcome>(() => {});
 
-  const clearTick = () => {
-    if (timerRef.current !== null) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  };
-
-  const clearIdle = () => {
-    if (idleRef.current !== null) {
-      clearTimeout(idleRef.current);
-      idleRef.current = null;
-    }
-  };
-
-  // THE ONE ARMING SITE. Every caller is a request's .finally() or a user
-  // intent, which is what makes "at most one poll in flight per tab" a property
-  // of the construction rather than of a flag somebody has to keep right.
-  const schedule = (ms: number) => {
-    clearTick();
-    // document.hidden pauses the loop, and honestly rather than as an
-    // optimisation: browsers already throttle background timers to >=1/minute,
-    // so an unpaused loop would silently become a slow one and the board would
-    // look live while being a minute stale.
-    if (!runningRef.current || document.hidden) {
-      return;
-    }
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null;
-      tickRef.current();
-    }, ms);
-  };
-
-  const armIdle = () => {
-    clearIdle();
-    if (!runningRef.current) {
-      return;
-    }
-    idleRef.current = setTimeout(() => {
-      idleRef.current = null;
-      runningRef.current = false;
-      clearTick();
-      setMode("idle");
-      // Names the cause: the difference between "I paused this" and "this
-      // paused itself" is the whole difference between a control and a bug.
-      setCue(t("board.idleStopped", { minutes: IDLE_STOP_MINUTES }));
-    }, IDLE_STOP_MS);
-  };
-
-  const stop = (next: Terminal) => {
-    runningRef.current = false;
-    clearTick();
-    clearIdle();
-    setTerminal(next);
-  };
+  const poll = usePoll({
+    run: () => tickRef.current(),
+    // Names the cause: the difference between "I paused this" and "this paused
+    // itself" is the whole difference between a control and a bug.
+    onIdleStop: () => setCue(t("board.idleStopped", { minutes: IDLE_STOP_MINUTES })),
+  });
+  const { mode, terminal } = poll;
 
   const applyRows = (items: OwnerBookingRow[]) => {
     const current = rowsRef.current;
@@ -171,10 +96,10 @@ export function BoardSection() {
   };
 
   const load = async (targetDay: string) => {
-    const generation = generationRef.current;
+    const generation = poll.generation();
     try {
       const result = await api.listBookings({ date: targetDay, offset: 0, limit: PAGE_LIMIT });
-      if (generation !== generationRef.current) {
+      if (!poll.isCurrent(generation)) {
         return;
       }
       applyRows(result.items);
@@ -189,14 +114,12 @@ export function BoardSection() {
       // already corrected the row — and on a row that repainted to `cancelled`
       // the control matrix leaves no way to clear it from that row at all.
       setRowError(null);
-      backoffRef.current = POLL_INTERVAL_MS;
+      poll.succeeded();
     } catch (error) {
-      if (generation !== generationRef.current) {
+      if (!poll.isCurrent(generation)) {
         return;
       }
-      const end = terminalOf(error);
-      if (end !== null) {
-        stop(end);
+      if (poll.fail(error)) {
         return;
       }
       // Stale-and-labelled beats empty: blanking to the outage message would
@@ -206,19 +129,22 @@ export function BoardSection() {
       } else {
         setStale(true);
       }
-      backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+      poll.failed();
     } finally {
-      // schedule() no-ops once the loop is stopped, so a terminal, a pause and
+      // reschedule() no-ops once the loop is stopped, so a terminal, a pause and
       // an idle stop all fall out of the same guard.
-      if (generation === generationRef.current && mutationsRef.current === 0) {
-        schedule(backoffRef.current);
+      if (poll.isCurrent(generation) && mutationsRef.current === 0) {
+        poll.reschedule();
       }
     }
   };
 
-  const tick = () => {
-    if (!runningRef.current || document.hidden || mutationsRef.current > 0) {
-      return;
+  // The hook has already checked that the loop is running and the tab is
+  // visible; what is left is the two board-shaped early returns D10 keeps here.
+  const tick = (): TickOutcome => {
+    if (mutationsRef.current > 0) {
+      // Arms NOTHING. The single re-arm is mutate()'s own .finally().
+      return "suppressed";
     }
     // A pointerdown holds the NEXT repaint and is consumed by it: an arrival
     // line appearing on an earlier row grows it and slides every control below
@@ -227,73 +153,29 @@ export function BoardSection() {
     // one interval and can never stall the board.
     if (holdRef.current) {
       holdRef.current = false;
-      schedule(backoffRef.current);
-      return;
+      // Re-armed by the hook at the CURRENT gap, backoff untouched — a clean
+      // tick would reset it to base and a held tick during a backoff would
+      // start fetching at 5s.
+      return "held";
     }
     // Recomputed every tick, never captured at mount: a counter tablet crosses
     // midnight and would otherwise keep asking for yesterday.
     const today = todayJerusalem();
     if (today !== dayRef.current) {
       dayRef.current = today;
-      generationRef.current += 1;
+      poll.bump();
       setDay(today);
     }
     void load(dayRef.current);
   };
 
-  useEffect(() => {
-    tickRef.current = tick;
-  });
-
-  useEffect(() => {
-    void load(dayRef.current);
-    return () => {
-      // clearTick() alone cancels only the timer armed RIGHT NOW. A request in
-      // flight at unmount still reaches its .finally() and arms a fresh one, and
-      // nothing in tick -> load -> finally -> schedule touches React state, so
-      // the loop would outlive the component forever — one orphan per nav-away.
-      // This is also what makes "at most one poll in flight per tab by
-      // construction" true rather than merely intended.
-      runningRef.current = false;
-      clearTick();
-      clearIdle();
-    };
-  }, []);
-
-  useEffect(() => {
-    const onVisibility = () => {
-      if (document.hidden) {
-        clearTick();
-        return;
-      }
-      if (!runningRef.current) {
-        return;
-      }
-      // Fetch at once rather than waiting out an interval: the board is stale
-      // by however long it was hidden, and five more seconds of a wrong board
-      // is the worst moment to add.
-      generationRef.current += 1;
-      clearTick();
-      tickRef.current();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, []);
-
-  useEffect(() => {
-    armIdle();
-    const reset = () => armIdle();
-    const types = ["pointerdown", "keydown", "focusin", "scroll"] as const;
-    for (const type of types) {
-      window.addEventListener(type, reset, { passive: true });
-    }
-    return () => {
-      clearIdle();
-      for (const type of types) {
-        window.removeEventListener(type, reset);
-      }
-    };
-  }, []);
+  // Assigned during render, NOT in an effect, and that ordering is load-bearing:
+  // usePoll's mount effect is registered before any effect in this component, so
+  // an effect-assigned tickRef would still hold its no-op placeholder when the
+  // hook fires the FIRST load — the board would mount empty and only populate
+  // five seconds later. Writing it here means it is current before any effect
+  // runs. The ref is never read during render, so this stays pure enough.
+  tickRef.current = tick;
 
   useEffect(() => {
     // Keeping the departing row is only half the repair: the control we just
@@ -333,32 +215,16 @@ export function BoardSection() {
   }, [rows]);
 
   const pause = () => {
-    runningRef.current = false;
-    clearTick();
-    clearIdle();
-    setMode("paused");
+    poll.pause();
     setCue(t("board.paused"));
   };
 
   const resume = () => {
-    runningRef.current = true;
-    setMode("running");
-    // A resume is a fresh user intent, not a continuation of a backed-off
-    // retry: a control that inherited a sixty-second gap would look like a
-    // control that did not work.
-    backoffRef.current = POLL_INTERVAL_MS;
-    generationRef.current += 1;
     setCue(t("board.resumed"));
-    armIdle();
-    clearTick();
-    void load(dayRef.current);
+    poll.resume();
   };
 
-  const retry = () => {
-    generationRef.current += 1;
-    clearTick();
-    void load(dayRef.current);
-  };
+  const retry = () => poll.refresh();
 
   const mutate = async (booking: OwnerBookingRow, kind: "in" | "undo") => {
     setBusyIds((current) => [...current, booking.id]);
@@ -367,8 +233,8 @@ export function BoardSection() {
     // The loop issues no tick while a mutation is in flight, so the row cannot
     // be repainted underneath the request; the bump discards the one poll that
     // could still be in the air.
-    clearTick();
-    generationRef.current += 1;
+    poll.clearTick();
+    poll.bump();
     try {
       const detail: OwnerBookingDetail =
         kind === "in"
@@ -392,9 +258,7 @@ export function BoardSection() {
       // one rule instead of two.
       cueRef.current?.focus();
     } catch (error) {
-      const end = terminalOf(error);
-      if (end !== null) {
-        stop(end);
+      if (poll.fail(error)) {
         return;
       }
       setRowError({
@@ -415,7 +279,7 @@ export function BoardSection() {
       // path on purpose: a rejected check-in must not park the loop either, or
       // the board silently stops converging the first time anybody acts.
       if (mutationsRef.current === 0) {
-        schedule(backoffRef.current);
+        poll.reschedule();
       }
     }
   };
