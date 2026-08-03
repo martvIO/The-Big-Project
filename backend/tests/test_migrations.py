@@ -2049,3 +2049,199 @@ def test_migration_alteration_tickets_round_trips(migrated_db: str) -> None:
         assert _alteration_columns(migrated_db)["due_date"] == ("date", "NO")
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F37: the sos alert table ---
+
+_SOS_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'sos_alerts'"
+)
+# D2, as a property of the SCHEMA rather than of a paragraph. The index a later
+# reader would reach for — (tenant_id, raised_by, target_staff_user_id) WHERE
+# status = 'open' — is DEFEATED BY NULL-DISTINCTNESS in the common case (a NULL
+# target IS the shift-manager route) and would forbid the legitimate double page
+# in the rare one. An index that guards everything except the case it was
+# written for is worse than none, because it is a guarantee a reviewer believes.
+_SOS_UNIQUE_INDEXES = (
+    "SELECT count(*) FROM pg_index WHERE indrelid = 'sos_alerts'::regclass "
+    "AND indisunique AND NOT indisprimary"
+)
+_SOS_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'sos_alerts'::regclass AND conname = :name"
+)
+_SOS_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE tablename = 'sos_alerts' AND indexname = :name"
+)
+_SOS_STATUS_CHECK = "sos_alerts_status_check"
+_SOS_INDEX_NAME = "idx_sos_alerts_live"
+# CAPTURED FROM A LIVE 16.x SERVER, never transcribed from the migration source.
+# Postgres deparses `IN (...)` into `= ANY (ARRAY[...])`, adds ::text casts,
+# re-parenthesises every operand of an AND and schema-qualifies the table — so a
+# literal that merely LOOKS right pins nothing, which is exactly the failure
+# this pair exists to prevent for whoever adds a fifth status next.
+_SOS_STATUS_CHECK_DEF = (
+    "CHECK ((status = ANY (ARRAY['open'::text, 'accepted'::text, "
+    "'resolved'::text, 'cancelled'::text])))"
+)
+_SOS_INDEX_DEF_PINNED = (
+    "CREATE INDEX idx_sos_alerts_live ON public.sos_alerts USING btree (tenant_id, created_at) "
+    "WHERE ((status = ANY (ARRAY['open'::text, 'accepted'::text])) AND (deleted_at IS NULL))"
+)
+_SOS_ALL_COLUMNS = {
+    "id",
+    "tenant_id",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+    "raised_by",
+    "target_staff_user_id",
+    "fitting_room_assignment_id",
+    "note",
+    "status",
+    "accepted_by",
+    "acknowledged_at",
+}
+
+
+def _sos_columns(url: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_SOS_COLUMNS))).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _sos_pinned_definitions(url: str) -> tuple[str, str]:
+    async def read() -> tuple[str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                check = await conn.execute(text(_SOS_CONSTRAINT_DEF), {"name": _SOS_STATUS_CHECK})
+                index = await conn.execute(text(_SOS_INDEX_DEF), {"name": _SOS_INDEX_NAME})
+                return (str(check.scalar_one()), str(index.scalar_one()))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_the_sos_alerts_migration_creates_the_table(migrated_db: str) -> None:
+    """Set equality on the column list, so a thirteenth column cannot arrive
+    unreviewed on the one table in the product that carries an emergency.
+
+    `raised_by` is the only NOT NULL of the six domain columns and that is D3:
+    who is calling is never body-supplied and never unknown. Every other pointer
+    is nullable because a page must survive the boutique being in any state at
+    all — no room, a released assignment, a colleague who went home."""
+    columns = _sos_columns(migrated_db)
+    assert set(columns) == _SOS_ALL_COLUMNS
+    assert columns["raised_by"] == ("uuid", "NO")
+    # NULL means the shift-manager ROLE — and it also means "a named colleague
+    # turned out to be unreachable and the raise rerouted", which is why the
+    # audit row carries the requested target and this column cannot (D3, D13).
+    assert columns["target_staff_user_id"] == ("uuid", "YES")
+    assert columns["fitting_room_assignment_id"] == ("uuid", "YES")
+    assert columns["note"] == ("text", "YES")
+    assert columns["status"] == ("text", "NO")
+    # Written by the SAME statement as `status` (D4), so «accepted with nobody»
+    # is unrepresentable — but nullable, because an open alert has no owner.
+    assert columns["accepted_by"] == ("uuid", "YES")
+    for stamp in ("created_at", "updated_at", "deleted_at", "acknowledged_at"):
+        assert columns[stamp][0] == "timestamp with time zone", stamp
+    assert columns["created_at"][1] == "NO"
+    assert columns["acknowledged_at"][1] == "YES"
+
+
+@pytest.mark.db
+def test_the_sos_alerts_definitions_are_pinned(migrated_db: str) -> None:
+    """The highest-value test in this migration, and what it guards is a FUTURE
+    edit: the day anybody adds a fifth status they collide with a pinned literal
+    and a review, instead of colliding with nothing.
+
+    Keyed to `head` — i.e. AFTER this feature's migration, whatever number it
+    ended up with — never to a revision id.
+
+    The index row fails loudly if the partial predicate is dropped, which would
+    put every resolved and cancelled alert back on the poll's access path, and
+    it fails if UNIQUE is ever added."""
+    status_check, index = _sos_pinned_definitions(migrated_db)
+    assert status_check == _SOS_STATUS_CHECK_DEF
+    assert index == _SOS_INDEX_DEF_PINNED
+
+
+@pytest.mark.db
+def test_sos_alerts_has_no_unique_index_but_the_primary_key(migrated_db: str) -> None:
+    """D2's decision, expressed as an assertion, and it is the ONLY test in the
+    suite that a well-meaning `(tenant_id, raised_by) WHERE status = 'open'`
+    would fail.
+
+    F37's structural guarantee is not an index — it is the conditional
+    `UPDATE ... WHERE status = 'open'`, which constrains a TRANSITION and not a
+    population, and therefore needs no index at all."""
+
+    async def read() -> int:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                return int((await conn.execute(text(_SOS_UNIQUE_INDEXES))).scalar_one())
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(read()) == 0
+
+
+@pytest.mark.db
+def test_the_sos_alerts_migration_round_trips(migrated_db: str) -> None:
+    """Both directions, 0013's rule: a downgrade that silently no-ops stays
+    green while shipping a migration that cannot be rolled back.
+
+    ⚠ The target is `_parent_of("sos alerts")` and NEVER `command.downgrade(cfg,
+    "-1")`. F36's shipped note records `test_migration_0017_round_trips` breaking
+    BY BEING LANDED ON: `-1` meant "one step back from somebody else's head", so
+    it downgraded the fitting-room tables and then asserted about customers.
+    F37 is the first migration to land on top of that helper, and this test is
+    the proof it cost nothing.
+
+    ⚠ The mutation for that line — swap `_parent_of` for `-1` — STAYS GREEN
+    today, because from the current head there is exactly one step back to take.
+    It reds the day the next feature lands a migration on top, which is F36's
+    defect reproduced. Performed, green, restored; recorded here so nobody
+    "simplifies" it back.
+
+    The finally is not decoration: leaving the schema down drops a table the ORM
+    still maps, so every later db test in this shared session would fail with
+    UndefinedTable somewhere unrelated to itself."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("sos alerts")
+
+    def exists() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text(_TABLE_EXISTS), {"name": "sos_alerts"})
+                    return bool(result.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists()
+        command.downgrade(cfg, down_to)
+        assert not exists()
+        command.upgrade(cfg, "head")
+        assert exists()
+        assert set(_sos_columns(migrated_db)) == _SOS_ALL_COLUMNS
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
