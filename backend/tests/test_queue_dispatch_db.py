@@ -222,7 +222,10 @@ async def test_take_next_dispatches_the_earliest_waiting_customer(app_role_url: 
             tenant_id, room_id, staff_user_id=None, actor=_actor(tenant_id, staff_id)
         )
 
-        assert read.row.room_id == room_id
+        assert read.room.row.room_id == room_id
+        # The queue the dispatch left behind rides the same answer: the two women
+        # still waiting, and never the one now in the room.
+        assert [entry.name for entry in read.waitlist.entries] == ["נועה", "מיכל"]
         assert (await _ticket(factory, tenant_id, requeued)).status == (
             QueueTicketStatus.IN_SERVICE.value
         )

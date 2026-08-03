@@ -59,15 +59,24 @@ from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
 from app.floor.validation import (
     QueueEmptyError,
+    QueueTicketChangedError,
+    QueueTicketNotWaitingError,
     RoomOccupiedError,
     StaffOccupiedError,
     normalize_room_label,
 )
 from app.models.booking import Booking
-from app.models.constants import AuditAction, BookingStatus, StaffCardStatus, StaffRole
+from app.models.constants import (
+    AuditAction,
+    BookingStatus,
+    QueueTicketStatus,
+    StaffCardStatus,
+    StaffRole,
+)
 from app.models.dress import Dress
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.staff_user import StaffUser
+from app.queue.validation import QueueTicketNotFoundError
 from app.storefront.validation import BOUTIQUE_TIMEZONE, today_jerusalem
 
 # Frozen as a module constant so the membership test reads as the rule it is.
@@ -539,7 +548,7 @@ class FloorService:
 
     async def take_next(
         self, tenant_id: UUID, room_id: UUID, *, staff_user_id: UUID | None, actor: StaffContext
-    ) -> RoomRead:
+    ) -> DispatchRead:
         """The head of today's queue into this room, in ONE transaction (D3).
 
         ⚠ **NOTHING INSIDE THE `async with` MAY `return` AFTER THE TICKET UPDATE
@@ -585,9 +594,10 @@ class FloorService:
            6. the audit row IN THE SAME TRANSACTION so a lost race cannot leave a
            trail claiming a dispatch that did not happen, 7. the room read.
 
-        ⚠ The answer is the ROOM only. D2's waitlist half of `DispatchResult`
-        arrives with `QueueTicketsRepository.waiting_for_panel`; nothing here
-        renders a queue yet.
+        The answer is the tile AND the queue, because they are two halves of one
+        act: a client that patched the tile from this response but waited up to
+        five seconds for the row to leave the list would render the same woman as
+        both in-service and waiting.
         """
         target_staff_id = staff_user_id or actor.id
         self._authorize(target_staff_id, actor)
@@ -626,7 +636,7 @@ class FloorService:
                         "mode": "take_next",
                     },
                 )
-                return await self._room_read(session, tenant_id, room_id)
+                return await self._dispatch_read(session, tenant_id, room_id)
         except IntegrityError as error:
             # ⚠ THE TRANSACTION IS ALREADY GONE — the exception left the
             # `async with`, which rolled it back. The ticket is `waiting` again
@@ -691,6 +701,221 @@ class FloorService:
         # A recognised violation with nobody left to name: the winner released in
         # the gap. «החדר נתפס זה עתה. נסי שוב.»
         return RoomOccupiedError(None)
+
+    async def assign(
+        self,
+        tenant_id: UUID,
+        room_id: UUID,
+        *,
+        queue_ticket_id: UUID,
+        staff_user_id: UUID | None,
+        actor: StaffContext,
+    ) -> DispatchRead:
+        """Push-assign: `take_next` with step 3 naming a ticket instead of
+        draining the queue (D4).
+
+        **Everything else is take-next's, deliberately and line for line** — the
+        same `_authorize` before any read, the same room lock, the same step 2b,
+        the same `try` around the whole `async with`, the same absence of a
+        savepoint and the same absence of an idempotence branch. Read
+        `take_next`'s docstring; every word of the ⚠ block applies here, and the
+        stranded-customer failure it describes is reachable from this verb by
+        exactly the same edit.
+
+        ⚠ **`claim_next` MUST NOT be reachable from here.** A push-assign that
+        quietly served the head of the queue would put a woman the manager was
+        not looking at into the room she was.
+
+        Rowcount 0 on the ticket is TWO answers and the read is where they are
+        told apart — `status_of`, never `by_id` (D2).
+        """
+        target_staff_id = staff_user_id or actor.id
+        self._authorize(target_staff_id, actor)
+        try:
+            async with tenant_session(self._sessions, tenant_id) as session:
+                room = await self._rooms.by_id_for_update(session, tenant_id, room_id)
+                if room is None or not room.is_active:
+                    raise DomainNotFoundError("fitting_room")
+                occupant = await self._assignments.occupant_of_room(session, tenant_id, room_id)
+                if occupant is not None:
+                    raise RoomOccupiedError(
+                        await self._occupant_details(session, tenant_id, occupant)
+                    )
+                ticket = await self._tickets.claim_by_id(session, tenant_id, queue_ticket_id)
+                if ticket is None:
+                    # Unreachable third branch, and it stays a raise rather than a
+                    # fall-through: this verb's predicate is `status_of`'s exactly
+                    # and nothing in the product moves a ticket back to `waiting`,
+                    # so a live waiting row here means two statements of one
+                    # transaction disagreed. «רענני ונסי שוב» is the only honest
+                    # remedy for that.
+                    raise QueueTicketChangedError(
+                        {
+                            "skip_count": str(
+                                await self._ticket_refusal(session, tenant_id, queue_ticket_id)
+                            )
+                        }
+                    )
+                assignment = await self._assignments.claim(
+                    session,
+                    tenant_id,
+                    room_id=room_id,
+                    staff_id=target_staff_id,
+                    booking_id=None,
+                    queue_ticket_id=ticket.id,
+                )
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.QUEUE_TICKET_DISPATCHED,
+                    actor_id=actor.id,
+                    entity=str(ticket.id),
+                    details={
+                        "ticket": str(ticket.id),
+                        "room": str(room_id),
+                        "assignment": str(assignment.id),
+                        "staff": str(target_staff_id),
+                        "mode": "assign",
+                    },
+                )
+                return await self._dispatch_read(session, tenant_id, room_id)
+        except IntegrityError as error:
+            raise await self._occupied_error(tenant_id, room_id, target_staff_id, error) from error
+
+    async def call(self, tenant_id: UUID, ticket_id: UUID, *, actor: StaffContext) -> WaitlistRead:
+        """The summons (D7). No `_authorize`: a call has no target STAFFER, so
+        there is nothing for a self-or-elevated rule to compare, and the router's
+        five-role gate is the whole check.
+
+        ⚠ **ROWCOUNT 0 HAS THREE CAUSES HERE, NOT D4'S TWO, AND THE THIRD IS THE
+        ORDINARY ONE.** The extra `called_at IS NULL` conjunct adds it: she is
+        already called. That is a 200 with the current waitlist and NO audit row —
+        she wanted her called and she is called, and a {called → called} entry
+        would be noise in a trail this area has four rows in. A builder
+        implementing D4's two-answer table literally falls through here with no
+        branch at all, which is a silent no-op reported as success or a 500.
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._tickets.call(session, tenant_id, ticket_id, now=at)
+            if row is None:
+                # Raises on the two shared causes; a return means she was already
+                # called, which is the third.
+                await self._ticket_refusal(session, tenant_id, ticket_id)
+            else:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.QUEUE_TICKET_CALLED,
+                    actor_id=actor.id,
+                    entity=str(ticket_id),
+                    # `row.called_at`, not `at`: on the winning write they are
+                    # equal, and reading it off the statement keeps this honest if
+                    # the writer ever stops taking the caller's clock.
+                    details={"ticket": str(ticket_id), "called_at": _isoformat(row.called_at)},
+                )
+            return await self._waitlist(session, tenant_id)
+
+    async def skip(
+        self, tenant_id: UUID, ticket_id: UUID, *, seen_skip_count: int, actor: StaffContext
+    ) -> WaitlistRead:
+        """Skip-to-back, and the second skip removes (D6). `ELEVATED` at the
+        route, so there is no target-dependent check to make here either.
+
+        ⚠ **Rowcount 0 is THREE answers and the third one is what stops two
+        ordinary single taps removing a customer.** The row is live and still
+        `waiting`, so what failed is `skip_count = :seen_skip_count`: a colleague
+        skipped her between this manager's render and her tap, and escalating on
+        a count nobody saw would remove her with the confirm — gated on
+        `skip_count >= 1` — never rendered on either device. 409
+        `QUEUE_TICKET_CHANGED` carries the count the server actually holds; the
+        next tick renders 1 and the next press correctly opens the confirm.
+
+        The audit row's `status` is read off the statement's own RETURNING rather
+        than re-derived in Python: the `CASE` is the authority on whether this
+        press removed her.
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._tickets.skip(
+                session, tenant_id, ticket_id, now=at, seen_skip_count=seen_skip_count
+            )
+            if row is None:
+                raise QueueTicketChangedError(
+                    {"skip_count": str(await self._ticket_refusal(session, tenant_id, ticket_id))}
+                )
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.QUEUE_TICKET_SKIPPED,
+                actor_id=actor.id,
+                entity=str(ticket_id),
+                details={
+                    "ticket": str(ticket_id),
+                    "skip_count": row.skip_count,
+                    "status": row.status,
+                },
+            )
+            return await self._waitlist(session, tenant_id)
+
+    async def remove(
+        self, tenant_id: UUID, ticket_id: UUID, *, actor: StaffContext
+    ) -> WaitlistRead:
+        """The no-show and Ruling 3's duplicate, which are the same act (D8).
+
+        Destructive with no undo, so the confirm in front of it and this row
+        behind it are what the design carries instead of a restore verb — one
+        more route, one more gate, one more audit value and one more control, to
+        undo an act that already has a confirm in front of it.
+
+        Rowcount 0 really does have only D4's two causes here: no `skip_count`
+        conjunct and no `called_at` one.
+        """
+        async with tenant_session(self._sessions, tenant_id) as session:
+            if not await self._tickets.remove(session, tenant_id, ticket_id):
+                # See `assign`: the third branch is unreachable and the honest
+                # answer to a state this table cannot produce is "reload".
+                raise QueueTicketChangedError(
+                    {"skip_count": str(await self._ticket_refusal(session, tenant_id, ticket_id))}
+                )
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.QUEUE_TICKET_REMOVED,
+                actor_id=actor.id,
+                entity=str(ticket_id),
+                details={"ticket": str(ticket_id)},
+            )
+            return await self._waitlist(session, tenant_id)
+
+    async def _ticket_refusal(self, session: AsyncSession, tenant_id: UUID, ticket_id: UUID) -> int:
+        """The rowcount-0 read, shared by the four verbs that can take one.
+
+        It RAISES the two causes every one of them shares — gone (or swept, or
+        another tenant's) is a 404; no longer `waiting` is a 409 naming the state
+        — and RETURNS the live `skip_count` when the row is still waiting,
+        because THAT fact means something different on each verb and is therefore
+        the verb's to answer: a re-call on `call`, a stale count on `skip`, and
+        an unreachable disagreement on `assign` and `remove`.
+
+        ⚠ **`status_of` and never `by_id`.** The projection is what keeps a phone
+        and a consent timestamp out of a session that is running ORM-enabled
+        UPDATEs, and — measured, not assumed — an entity read here answers the
+        PRE-skip count out of the identity map, so `skip` would refuse a caller
+        who sent the value it had just been told.
+
+        ⚠ **Nothing has been written when this runs.** Every caller reaches it on
+        a rowcount of 0, so raising out of `tenant_session` rolls back a
+        transaction that changed nothing — which is why these raises are safe
+        where a `return` after the dispatch verbs' ticket write would not be.
+        """
+        found = await self._tickets.status_of(session, tenant_id, ticket_id)
+        if found is None:
+            raise QueueTicketNotFoundError
+        status, skip_count = found
+        if status != QueueTicketStatus.WAITING.value:
+            raise QueueTicketNotWaitingError({"status": status})
+        return skip_count
 
     async def release(
         self, tenant_id: UUID, assignment_id: UUID, *, actor: StaffContext
@@ -1019,6 +1244,17 @@ class FloorService:
             datetime.datetime.combine(
                 today + datetime.timedelta(days=1), datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
             ),
+        )
+
+    async def _dispatch_read(
+        self, session: AsyncSession, tenant_id: UUID, room_id: UUID
+    ) -> DispatchRead:
+        """What both dispatch verbs answer, on the session that made the write —
+        so the tile and the queue are read from ONE committed state and cannot
+        disagree about the woman who just moved between them."""
+        return DispatchRead(
+            room=await self._room_read(session, tenant_id, room_id),
+            waitlist=await self._waitlist(session, tenant_id),
         )
 
     async def _room_read(self, session: AsyncSession, tenant_id: UUID, room_id: UUID) -> RoomRead:
