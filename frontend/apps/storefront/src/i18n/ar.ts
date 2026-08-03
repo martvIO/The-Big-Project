@@ -44,9 +44,28 @@ export const ar = {
       invalidHint: "לכל שאלה על התור, אפשר להתקשר לבוטיק.",
       loadFailed: "לא הצלחנו להציג את פרטי התור כרגע.",
       retry: "ניסיון נוסף",
+      // F19.
+      awaitingPayment: "התור שמור עבורך וממתין לתשלום המקדמה.",
+      cancelConsequenceDeposit: "המקדמה מטופלת בהתאם למדיניות הביטולים של הבוטיק.",
     },
     booking: {
       confirmKeepScreen: "פרטי התור נשמרו אצלנו, וכדאי בכל זאת לצלם את המסך. אנחנו נחכה לך.",
+      // F19 — the deposit hand-off's five states.
+      payTitle: "תשלום מקדמה",
+      payHandoff: "מעבירים אותך לתשלום",
+      payManualHint: "אם הדף לא נפתח מעצמו, אפשר לעבור אליו מכאן.",
+      payManualCta: "מעבר לתשלום",
+      payAwaiting: "מאשרים את התשלום",
+      payDeclined: "התשלום לא הושלם",
+      payDeclinedBody: "אפשר להשלים את התשלום על אותה קביעת תור ובאותו סכום.",
+      payExpired: "הזמן שמור לך פג",
+      payUnresolved:
+        "עדיין לא קיבלנו אישור על התשלום. אין צורך לשלם שוב — נשמח שתתקשרי אלינו ונבדוק יחד.",
+    },
+    // F19. The first `errors` key to reach this bundle — the block exists here
+    // now so the next feature appends rather than re-deciding where it goes.
+    errors: {
+      bookingAwaitingPayment: "התור הזה ממתין לתשלום המקדמה, ולכן אי אפשר לעדכן אותו כרגע.",
     },
   },
 } as const;

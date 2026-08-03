@@ -122,6 +122,13 @@ class Settings(BaseSettings):
     # a code change, and a missed window self-heals on the next tick because the
     # claim is `send_after <= now()` rather than an exact-time match.
     worker_poll_interval_seconds: int = 60
+    # How long a deposit hold holds the seat before the sweeper releases it
+    # (F19 D6). Deliberately NOT one of the recorded money decisions: one env
+    # var, reversible in a deploy, no data migration. Its only irreversible
+    # consequence is the width of the expiry-vs-webhook race, and 15 minutes is
+    # long enough for a bride to find her card and short enough that an
+    # abandoned checkout does not hold a Saturday morning slot.
+    deposit_hold_seconds: int = 900
 
     # Payments carry deployment identity only (which adapter, which key
     # manager); product policy — field caps, the KMS blob ceiling, the AAD

@@ -41,6 +41,8 @@ function row(overrides: Partial<OwnerBookingRow> = {}): OwnerBookingRow {
     customer_name: "מיכל לוי",
     appointment_type_name: "מדידה ראשונה",
     dress_name: "שמלת אלמה",
+    payment_status: null,
+    refund_due_agorot: null,
     ...overrides,
   };
 }

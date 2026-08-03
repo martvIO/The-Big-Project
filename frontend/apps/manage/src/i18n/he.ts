@@ -77,6 +77,33 @@ export const he = {
     "booking.statusCompleted": "התקיים",
     "booking.statusNoShow": "לא הגיעה",
     "booking.statusCancelled": "בוטל",
+    // F19 D14: the fifth status. Without it the badge Map's fallback rendered
+    // the literal LTR «pending_payment» inside this RTL console.
+    "booking.statusPendingPayment": "ממתין לתשלום",
+    // The fallback itself, now that it can only mean a status this build has
+    // never heard of. Hebrew, so a future sixth value degrades into a chip the
+    // owner can read rather than a wire token she cannot.
+    "booking.statusOther": "מצב לא מוכר",
+
+    // F19 D18 — the ONLY owner-facing payment surface in the product. All seven
+    // values of 0012's CHECK carry a label, not just the four F19 writes.
+    "booking.payment": "תשלום",
+    "booking.paymentPending": "בהמתנה",
+    "booking.paymentPaid": "שולם",
+    "booking.paymentFailed": "נכשל",
+    "booking.paymentExpired": "פג תוקף",
+    "booking.paymentRefundDue": "זיכוי לביצוע",
+    "booking.paymentRefunded": "זוכה",
+    "booking.paymentForfeited": "חולט",
+    "booking.paymentOther": "מצב תשלום לא מוכר",
+    // A1/D16: computed by the server, never stored, rendered through <Price>.
+    "booking.refundDue": "סכום להחזר",
+    // The two combinations that need a human. Both open with «דרושה פעולה» so
+    // the marker never depends on colour to be read.
+    "booking.paymentActionCancelledPaid":
+      "דרושה פעולה: התור בוטל והפיקדון עדיין מוחזק בבוטיק.",
+    "booking.paymentActionNoDeposit":
+      "דרושה פעולה: התור נקבע ללא פיקדון, משום שספק הסליקה לא היה זמין בעת ההזמנה.",
 
     // The detail — chrome and facts.
     "booking.back": "חזרה לרשימה",
@@ -114,8 +141,20 @@ export const he = {
     "booking.actionsHeading": "פעולות",
     "booking.deliveryNotice":
       "אין באפשרותנו לאמת שהודעות נמסרו ללקוחה. אם חשוב לוודא, אפשר להתקשר אליה.",
+    // Survives on every cancelled booking with NO deposit held. On the one row
+    // where a deposit IS held it is false the day MD1 merges, and
+    // `booking.cancelledPaidActions` below takes its place there.
     "booking.cancelledNoActions":
       "תור שבוטל אינו ניתן לשחזור. לקביעת מועד חדש, הלקוחה מזמינה מחדש דרך אתר הבוטיק.",
+    // F19 MD1. The row the sentence above would lie about: her money is here and
+    // her time is gone, and the owner can give her a new one.
+    "booking.cancelledPaidActions":
+      "התור בוטל והפיקדון עדיין מוחזק בבוטיק. אפשר לקבוע ללקוחה מועד חדש, והתור יחזור לסטטוס מאושר.",
+    // F19 D14 — the sixth branch. No owner action exists here: every one of them
+    // answers 409 on an unpaid hold, and the seat frees itself on the sweeper's
+    // clock, so the honest screen offers nothing and says why.
+    "booking.awaitingPaymentNoActions":
+      "התור ממתין לתשלום הפיקדון. עד להשלמת התשלום אין פעולות זמינות, ואם התשלום לא יושלם המועד יתפנה מעצמו.",
 
     // Cancel — the only irreversible act.
     "booking.cancelCta": "ביטול התור",
@@ -145,8 +184,17 @@ export const he = {
     // old link dies, because reschedule only rotates the token when no pending
     // reminder exists to inherit from (D11).
     "booking.rescheduleConsequence": "המועד יתעדכן, והקישור של הלקוחה יצביע על המועד החדש.",
+    // F19 MD1: on a cancelled booking the same click ALSO un-cancels, and an
+    // owner must be told she is un-cancelling before she taps.
+    "booking.rescheduleConsequenceRestore":
+      "המועד יתעדכן, התור יחזור לסטטוס מאושר, והקישור של הלקוחה יצביע על המועד החדש.",
+    "booking.rescheduleRestoreCta": "קביעת מועד חדש ושחזור התור",
     "booking.rescheduleConfirm": "עדכון המועד",
     "booking.rescheduleDone": "המועד עודכן.",
+    // MD1: one sentence for both restores — with a new time and with the
+    // same one — because it names what changed (the status) and where the
+    // booking landed, and is true either way.
+    "booking.rescheduleRestoreDone": "התור הוחזר לסטטוס מאושר במועד שנבחר.",
     // The dialog's slot-read failure REPLACES the picker, and the picker owns
     // the date control that would otherwise refetch — so this branch needs its
     // own way out. The list's own outage does not: its date control is above

@@ -114,12 +114,18 @@ def week_buckets(window: HistoryWindow, facts: Sequence[BookingFact]) -> list[We
     return [WeekBucket(week_start=start, bookings=counts[start]) for start in sorted(counts)]
 
 
-def status_totals(facts: Sequence[BookingFact]) -> StatusTotals:
-    """All four CHECK-pinned statuses, counted once.
+def status_totals(facts: Sequence[BookingFact], *, pending_payment: int = 0) -> StatusTotals:
+    """All five CHECK-pinned statuses, counted once.
 
     `sum(week_buckets(...).bookings) == confirmed + no_show + completed` is the
     consistency invariant `build_history` is pure-tested against — a no-show
     still occupied its seat, and only a cancellation freed one.
+
+    `pending_payment` is PASSED IN rather than counted, because
+    `DashboardService.dashboard` filters those rows out of `facts` before any
+    fold sees them (D14): counting here would answer zero forever. Taking the
+    unfiltered count as an argument is what keeps the number visible while
+    keeping a live checkout out of the invariant above.
     """
     counts = Counter(fact.status for fact in facts)
     return StatusTotals(
@@ -127,11 +133,14 @@ def status_totals(facts: Sequence[BookingFact]) -> StatusTotals:
         cancelled=counts[BookingStatus.CANCELLED.value],
         no_show=counts[BookingStatus.NO_SHOW.value],
         completed=counts[BookingStatus.COMPLETED.value],
+        pending_payment=pending_payment,
     )
 
 
 def cancellation(facts: Sequence[BookingFact]) -> tuple[float | None, int, int]:
-    """`(rate, by_customer, by_owner)` — the rate over ALL FOUR statuses.
+    """`(rate, by_customer, by_owner)` — the rate over every status the panel
+    counts, which is the four real outcomes: `pending_payment` never reaches
+    this fold (D14) and `cancelled_by = 'expired'` is dropped below (MD5).
 
     Attribution is free: `cancelled_by` is already in the projection and
     CHECK-pinned to `('customer','owner')`, with `BookingsRepository.cancel` as
@@ -141,11 +150,24 @@ def cancellation(facts: Sequence[BookingFact]) -> tuple[float | None, int, int]:
     Both counts are guarded on `status = 'cancelled'`, which is what makes
     `by_customer + by_owner <= status_totals.cancelled` hold structurally. It is
     `<=` and not `==`: a row cancelled before migration 0010 added the column
-    carries NULL and is in neither bucket (Risk 11).
+    carries NULL and is in neither bucket (Risk 11). F19 widens that gap on
+    purpose — an expired hold is `cancelled` in the totals and in neither
+    attribution bucket nor this rate.
+
+    **MD5: `cancelled_by = 'expired'` is in NEITHER the numerator NOR the
+    denominator.** Freeing an abandoned checkout means writing
+    `status = 'cancelled'` (D2 — the only writer that frees a seat), so the row
+    arrives here already reading `cancelled`; filtering `pending_payment`
+    upstream does nothing for it, because it is a different row in a different
+    state. Left in, the owner reads "31%" where the truth is "8% plus twelve
+    checkouts that were never appointments", and she steers the boutique on the
+    wrong number. The exclusion has to reach the DENOMINATOR too — dropping it
+    from the numerator alone is the half that silently changes nothing.
     """
-    cancelled = [fact for fact in facts if fact.status == BookingStatus.CANCELLED.value]
+    counted = [fact for fact in facts if fact.cancelled_by != BookingCancelledBy.EXPIRED.value]
+    cancelled = [fact for fact in counted if fact.status == BookingStatus.CANCELLED.value]
     attributed = Counter(fact.cancelled_by for fact in cancelled)
-    rate = len(cancelled) / len(facts) if facts else None
+    rate = len(cancelled) / len(counted) if counted else None
     return (
         rate,
         attributed[BookingCancelledBy.CUSTOMER.value],
@@ -278,9 +300,16 @@ def build_history(
     window: HistoryWindow,
     facts: Sequence[BookingFact],
     history: Mapping[UUID, CustomerHistory],
+    *,
+    pending_payment: int = 0,
 ) -> HistoryPanel:
     """The whole history panel from one projection — the folds' single entry
     point, so the shape invariants have one call to assert against.
+
+    `facts` is expected to carry NO `pending_payment` rows: its caller strips
+    them once, before the cohort fold (D14). This function does not re-strip
+    them, because the whole point of the single filter is that no fold owns the
+    predicate — the count arrives as `pending_payment` instead.
 
     The window filter is re-applied here even though `list_window_facts` reads
     exactly this range in SQL. That is what makes D2's exclusion of the current,
@@ -291,7 +320,7 @@ def build_history(
     in_window = [
         fact for fact in facts if window.from_instant <= fact.starts_at < window.until_instant
     ]
-    totals = status_totals(in_window)
+    totals = status_totals(in_window, pending_payment=pending_payment)
     rate, by_customer, by_owner = cancellation(in_window)
     return HistoryPanel(
         from_date=window.first_week_start,
@@ -358,12 +387,32 @@ class DashboardService:
         # `forward_capacity`, in one place, with the comment on it.
         forward_end = today + datetime.timedelta(days=FORWARD_WINDOW_DAYS - 1)
         async with tenant_session(self._session_factory, tenant_id) as session:
-            facts = await self._bookings.list_window_facts(
+            window_facts = await self._bookings.list_window_facts(
                 session,
                 tenant_id,
                 from_instant=window.from_instant,
                 until_instant=window.until_instant,
             )
+            # ONE predicate, HERE, for six consumers (D14). A checkout in
+            # progress is not an appointment: counting it would make "bookings
+            # last week" move as brides open and abandon payment pages.
+            #
+            # `list_window_facts` keeps its "EVERY status" contract — F20 and
+            # F52 read it — so the predicate belongs at the consumer, and it
+            # belongs ONCE. A `continue` per fold plus a field on StatusTotals
+            # covers `week_buckets` and `status_totals` and leaves FOUR wrong:
+            #   * `cancellation` divides by `len(facts)`, so a live checkout
+            #     sits in the DENOMINATOR of the headline cancellation rate;
+            #   * `top_types` counts an unpaid hold as a booking in the chart;
+            #   * `customer_mix` puts a bride who never paid into the cohort;
+            #   * the `cohort_ids` fold below sends her id to the history read
+            #     and into the repeat-rate denominator.
+            facts = [
+                fact for fact in window_facts if fact.status != BookingStatus.PENDING_PAYMENT.value
+            ]
+            # The UNFILTERED count, the one number on the panel that is allowed
+            # to see a checkout in progress (MD5's volume signal for Risk 3).
+            pending_payment = len(window_facts) - len(facts)
             # The cohort `customer_mix` folds — distinct customer_id on
             # non-cancelled facts — so the history read is called with exactly
             # the ids it will be looked up by, and never with a wider set.
@@ -385,7 +434,7 @@ class DashboardService:
             )
         return DashboardResponse(
             generated_on=today,
-            history=build_history(window, facts, history),
+            history=build_history(window, facts, history, pending_payment=pending_payment),
             forward=ForwardPanel(
                 from_date=today,
                 to_date=forward_end,

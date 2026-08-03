@@ -72,6 +72,8 @@ function detail(overrides: Partial<OwnerBookingDetail> = {}): OwnerBookingDetail
     cancelled_at: null,
     cancelled_by: null,
     manage_link_issued: true,
+    payment_status: null,
+    refund_due_agorot: null,
     ...overrides,
   };
 }
@@ -88,6 +90,8 @@ function listRow(overrides: Partial<OwnerBookingRow> = {}): OwnerBookingListResp
         customer_name: "מיכל לוי",
         appointment_type_name: "מדידה ראשונה",
         dress_name: "שמלת אלמה",
+        payment_status: null,
+        refund_due_agorot: null,
         ...overrides,
       },
     ],
@@ -1012,6 +1016,200 @@ describe("RescheduleDialog", () => {
   }, 20000);
 });
 
+describe("BookingDetail — the fifth status (F19 D14)", () => {
+  const RESCHEDULE = "שינוי מועד";
+  const RESEND = "הנפקת קישור ניהול חדש";
+  const PHONE = "תיקון מספר הטלפון";
+  const CANCEL = "ביטול התור";
+  const NO_SHOW = "סימון: לא הגיעה";
+  const COMPLETE = "סימון: התקיים";
+  const REOPEN = "החזרה לסטטוס מאושר";
+  const RESTORE = "קביעת מועד חדש ושחזור התור";
+  const ALL = [RESCHEDULE, RESEND, PHONE, CANCEL, NO_SHOW, COMPLETE, REOPEN, RESTORE];
+
+  async function controlsFor(overrides: Partial<OwnerBookingDetail>) {
+    mount(overrides);
+    await screen.findByText("הלקוחה");
+    return ALL.filter((name) => screen.queryByRole("button", { name }) !== null);
+  }
+
+  it("renders a real Hebrew badge, never the raw LTR wire value", async () => {
+    mount({ status: "pending_payment", payment_status: "pending" });
+    await screen.findByText("הלקוחה");
+
+    expect(screen.getByTestId("booking-status")).toHaveTextContent("ממתין לתשלום");
+    expect(screen.getByTestId("booking-status")).not.toHaveTextContent("pending_payment");
+  });
+
+  it("is the SIXTH branch — a state, and no owner actions at all", async () => {
+    // Before this branch a pending_payment booking satisfied none of the five
+    // booleans, so the panel rendered with no state and no action set. Every
+    // owner verb 409s on an unpaid hold, so none is offered.
+    expect(await controlsFor({ status: "pending_payment", starts_at: FUTURE })).toEqual([]);
+    expect(
+      screen.getByText(
+        "התור ממתין לתשלום הפיקדון. עד להשלמת התשלום אין פעולות זמינות, ואם התשלום לא יושלם המועד יתפנה מעצמו.",
+      ),
+    ).toBeInTheDocument();
+    // Nothing will be sent from here, so the standing delivery limit is not
+    // stated either — same rule the cancelled branch follows.
+    expect(screen.queryByText(/אין באפשרותנו לאמת/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("BookingDetail payment surface (F19 D18 / A1)", () => {
+  it("renders payment_status as its own badge, distinct from the status chip", async () => {
+    mount({ status: "confirmed", payment_status: "paid" });
+    await screen.findByText("הלקוחה");
+
+    expect(screen.getByText("תשלום")).toBeInTheDocument();
+    expect(screen.getByTestId("booking-payment")).toHaveTextContent("שולם");
+    expect(screen.getByTestId("booking-status")).toHaveTextContent("מאושר");
+  });
+
+  it("shows nothing at all when no payment row exists", async () => {
+    mount({ payment_status: null, refund_due_agorot: null });
+    await screen.findByText("הלקוחה");
+
+    expect(screen.queryByTestId("booking-payment")).toBeNull();
+    expect(screen.queryByTestId("booking-payment-action")).toBeNull();
+    expect(screen.queryByText("סכום להחזר")).toBeNull();
+  });
+
+  it("marks the first action-needed case — cancelled, and the deposit still held", async () => {
+    mount({ status: "cancelled", payment_status: "paid", cancelled_at: PAST });
+    await screen.findByText("הלקוחה");
+
+    const marker = screen.getByTestId("booking-payment-action");
+    expect(marker).toHaveTextContent("דרושה פעולה: התור בוטל והפיקדון עדיין מוחזק בבוטיק.");
+    // The Hebrew opens with «דרושה פעולה», so the marker never depends on colour.
+    expect(marker.textContent?.startsWith("דרושה פעולה")).toBe(true);
+  });
+
+  it("marks the second — MD4's confirmed booking that took no deposit", async () => {
+    mount({ status: "confirmed", payment_status: "failed" });
+    await screen.findByText("הלקוחה");
+
+    expect(screen.getByTestId("booking-payment-action")).toHaveTextContent(
+      "דרושה פעולה: התור נקבע ללא פיקדון, משום שספק הסליקה לא היה זמין בעת ההזמנה.",
+    );
+    expect(screen.getByTestId("booking-payment")).toHaveTextContent("נכשל");
+  });
+
+  it("stays quiet on an ordinary paid booking and an ordinary expired hold", async () => {
+    mount({ status: "confirmed", payment_status: "paid" });
+    await screen.findByText("הלקוחה");
+    expect(screen.queryByTestId("booking-payment-action")).toBeNull();
+    cleanup();
+
+    vi.clearAllMocks();
+    mount({ status: "cancelled", payment_status: "expired" });
+    await screen.findByText("הלקוחה");
+    expect(screen.queryByTestId("booking-payment-action")).toBeNull();
+  });
+
+  it("renders refund_due_agorot through <Price> — agorot are integers to the render", async () => {
+    // D15: 25000 agorot is ₪250, divided by 100 exactly once, inside the shared
+    // component, in an LTR-isolated run.
+    mount({ status: "cancelled", payment_status: "paid", refund_due_agorot: 25000 });
+    await screen.findByText("הלקוחה");
+
+    expect(screen.getByText("סכום להחזר")).toBeInTheDocument();
+    const amount = screen.getByText("250 ₪");
+    expect(amount.tagName).toBe("BDI");
+    expect(amount).toHaveAttribute("dir", "ltr");
+    // The raw agorot never reach the page.
+    expect(screen.queryByText(/25000/)).toBeNull();
+  });
+
+  it("renders a zero refund as ₪0 rather than hiding the row", async () => {
+    // Outside the window the whole deposit is forfeit; that is a fact the owner
+    // needs, and a hidden row reads as "not computed".
+    mount({ status: "cancelled", payment_status: "paid", refund_due_agorot: 0 });
+    await screen.findByText("הלקוחה");
+    expect(screen.getByText("0 ₪")).toBeInTheDocument();
+  });
+});
+
+describe("BookingDetail — MD1's reschedule on a cancelled, paid booking", () => {
+  const RESTORE = "קביעת מועד חדש ושחזור התור";
+
+  it("offers the action, and replaces the sentence that would contradict it", async () => {
+    mount({ status: "cancelled", payment_status: "paid", cancelled_at: PAST });
+    await screen.findByText("פעולות");
+
+    expect(screen.getByRole("button", { name: RESTORE })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "התור בוטל והפיקדון עדיין מוחזק בבוטיק. אפשר לקבוע ללקוחה מועד חדש, והתור יחזור לסטטוס מאושר.",
+      ),
+    ).toBeInTheDocument();
+    // The shipped sentence becomes FALSE on exactly this row the day MD1 merges,
+    // and would otherwise render directly above the button that disproves it.
+    expect(screen.queryByText(/תור שבוטל אינו ניתן לשחזור/)).toBeNull();
+    // An action exists here, so the standing delivery limit is stated.
+    expect(screen.getByText(/אין באפשרותנו לאמת/)).toBeInTheDocument();
+  });
+
+  it("is ABSENT on a cancelled booking with no deposit held", async () => {
+    mount({ status: "cancelled", payment_status: null, cancelled_at: PAST });
+    await screen.findByText("פעולות");
+
+    expect(screen.queryByRole("button", { name: RESTORE })).toBeNull();
+    expect(screen.getByText(/תור שבוטל אינו ניתן לשחזור/)).toBeInTheDocument();
+  });
+
+  it("is ABSENT when the deposit expired or failed rather than landing", async () => {
+    for (const payment of ["expired", "failed", "pending"]) {
+      vi.clearAllMocks();
+      mount({ status: "cancelled", payment_status: payment, cancelled_at: PAST });
+      await screen.findByText("פעולות");
+      expect(screen.queryByRole("button", { name: RESTORE })).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("opens the reschedule dialog — the button behind D18's marker is live", async () => {
+    mount({ status: "cancelled", payment_status: "paid", cancelled_at: PAST });
+    listManageSlots.mockResolvedValue({ slots: [slot("2099-08-04T08:30:00Z")] });
+
+    fireEvent.click(await screen.findByRole("button", { name: RESTORE }));
+
+    expect(dialogOf("שינוי מועד התור")).toBeInTheDocument();
+  });
+
+  it("announces the un-cancel even when the time did not move, and keeps focus", async () => {
+    // The starts_at comparison alone cannot see this: MD1's widened UPDATE also
+    // restores the status, and a restore at the SAME time is a real change. The
+    // branch rendering the trigger unmounts with it, so a missing cue would also
+    // strand focus on <body> (WCAG 2.4.3).
+    mount({ status: "cancelled", payment_status: "paid", cancelled_at: PAST });
+    listManageSlots.mockResolvedValue({ slots: [] });
+    fireEvent.click(await screen.findByRole("button", { name: RESTORE }));
+
+    const dialog = dialogOf("שינוי מועד התור");
+    rescheduleBooking.mockResolvedValue(
+      detail({ status: "confirmed", payment_status: "paid", cancelled_at: null }),
+    );
+    fireEvent.click(await within(dialog).findByRole("button", { name: "עדכון המועד" }));
+
+    expect(await screen.findByText("התור הוחזר לסטטוס מאושר במועד שנבחר.")).toBeInTheDocument();
+    // …and not the time-moved sentence, which did not happen.
+    expect(screen.queryByText("המועד עודכן.")).toBeNull();
+    // Focus never drops to <body>: the restore trigger unmounts, and the shared
+    // ref follows the live booking's own reschedule control into the branch that
+    // replaces it. The cue is announced by role="status" either way.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "שינוי מועד" })).toHaveFocus(),
+    );
+    expect(document.body).not.toHaveFocus();
+    // The row is no longer an anomaly, so the marker and its button are gone.
+    expect(screen.queryByTestId("booking-payment-action")).toBeNull();
+    expect(screen.queryByRole("button", { name: RESTORE })).toBeNull();
+  });
+});
+
 describe("BookingDetail accessibility", () => {
   it("passes axe with zero violations on a live booking", async () => {
     getBooking.mockResolvedValue(detail());
@@ -1030,6 +1228,27 @@ describe("BookingDetail accessibility", () => {
       <BookingDetail bookingId="b1" onBack={vi.fn()} onBookingChanged={vi.fn()} />,
     );
     fireEvent.click(await screen.findByRole("button", { name: "תיקון מספר הטלפון" }));
+
+    const results = await run(container);
+    expect(results.violations).toEqual([]);
+  }, 20000);
+
+  it("passes axe with the payment badge, the marker and the refund all rendered", async () => {
+    // The one screen that carries every F19 addition at once: a second Badge, a
+    // text-danger marker and a <Price> run, inside an RTL panel.
+    getBooking.mockResolvedValue(
+      detail({
+        status: "cancelled",
+        payment_status: "paid",
+        refund_due_agorot: 25000,
+        cancelled_at: "2099-08-02T09:00:00Z",
+        cancelled_by: "customer",
+      }),
+    );
+    const { container } = renderInShell(
+      <BookingDetail bookingId="b1" onBack={vi.fn()} onBookingChanged={vi.fn()} />,
+    );
+    await screen.findByRole("heading", { name: "הפגישה" });
 
     const results = await run(container);
     expect(results.violations).toEqual([]);

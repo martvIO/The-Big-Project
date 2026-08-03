@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Badge, Card, DateField, EmptyState, Skeleton } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { OwnerBookingDetail, OwnerBookingRow } from "../api";
-import { isolateLtr, statusBadge } from "../lib/booking";
+import { isolateLtr, paymentActionKey, paymentBadge, statusBadge } from "../lib/booking";
 import { jerusalemTime, todayJerusalem } from "../lib/jerusalem";
 import { BookingDetail } from "./BookingDetail";
 
@@ -142,6 +142,18 @@ export function BookingsSection() {
             <ul className="divide-y divide-border">
               {rows.map((booking) => {
                 const badge = statusBadge(booking.status);
+                // D18/MD4: the money fact belongs on the ROW, not only behind a
+                // tap. A provider outage books a morning of confirmed
+                // appointments with no deposit, and every one of them has the
+                // same status chip as an ordinary booking — so a marker only in
+                // the detail is the reconciliation-day discovery MD4 exists to
+                // prevent.
+                const payment =
+                  booking.payment_status === null ? null : paymentBadge(booking.payment_status);
+                // Non-null only for `paid`+`cancelled` and `failed`+`confirmed`,
+                // both of which have a payment_status — so it never renders
+                // without its chip.
+                const action = paymentActionKey(booking.status, booking.payment_status);
                 return (
                   <li key={booking.id}>
                     {/* One affordance per row: the whole row opens the detail.
@@ -174,6 +186,27 @@ export function BookingsSection() {
                         {booking.dress_name !== null && (
                           <span className="block text-sm text-ink-muted">
                             <bdi>{booking.dress_name}</bdi>
+                          </span>
+                        )}
+                        {payment !== null && (
+                          // Its own line, below the meta: a second Badge beside
+                          // the status chip would compete with it for meaning,
+                          // and these two disagree on exactly the rows that
+                          // matter. The sentence is the same one the detail
+                          // states — colour is never the signal, it opens
+                          // «דרושה פעולה».
+                          <span className="flex flex-wrap items-center gap-2">
+                            <Badge variant={payment.variant} data-testid="booking-row-payment">
+                              {t(payment.labelKey)}
+                            </Badge>
+                            {action !== null && (
+                              <span
+                                data-testid="booking-row-payment-action"
+                                className="text-sm text-danger"
+                              >
+                                {t(action)}
+                              </span>
+                            )}
                           </span>
                         )}
                       </span>

@@ -24,6 +24,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.booking.comms_templates import (
+    PAYMENT_RECEIVED_NO_SLOT_BODY,
     confirmation_sms_body,
     manage_link,
     mask_manage_link,
@@ -95,6 +96,7 @@ async def upsert_reminder(
     now: datetime.datetime,
     bookings: BookingsRepository,
     scheduled: ScheduledMessagesRepository,
+    token: str | None = None,
 ) -> datetime.datetime | None:
     """An UPSERT, never a re-target — and that distinction is the whole point.
 
@@ -111,6 +113,13 @@ async def upsert_reminder(
     stale pending row and clear its token in the window. `reschedule_reminder`
     below is the one-line wrapper that opens its own `tenant_session`.
 
+    `token`, when given, is a raw manage token the CALLER has already committed
+    the hash of in this same transaction — F19's deferred confirm (D13). It wins
+    over the carried one, and it must: `set_manage_token_hash` overwrites
+    unconditionally, so a row inheriting the old token would carry a link that
+    the caller's own write has just invalidated. Defaulted, so F15's
+    `reschedule_reminder` caller is unchanged.
+
     Returns the new `send_after`, or None when the new time is inside the
     suppression window.
     """
@@ -125,14 +134,14 @@ async def upsert_reminder(
     )
     if send_after is None:
         return None
-    token = carried
-    if token is None:
+    row_token = token if token is not None else carried
+    if row_token is None:
         # Nothing pending to inherit the link from, and the hash is
         # one-way, so the new row needs a new token. Only reached when
         # the prior reminder already sent.
-        token = mint_manage_token()
+        row_token = mint_manage_token()
         await bookings.set_manage_token_hash(
-            session, tenant_id, booking_id, token_hash=manage_token_hash(token)
+            session, tenant_id, booking_id, token_hash=manage_token_hash(row_token)
         )
     await scheduled.insert(
         session,
@@ -140,7 +149,7 @@ async def upsert_reminder(
         booking_id=booking_id,
         kind=ScheduledMessageKind.REMINDER.value,
         send_after=send_after,
-        manage_token=token,
+        manage_token=row_token,
     )
     return send_after
 
@@ -260,6 +269,33 @@ class BookingCommsService:
         )
         return await self._deliver(
             tenant.id, phone=phone, body=body, kind=MessageKind.OWNER_CANCEL, booking=booking
+        )
+
+    async def notify_payment_received_no_slot(
+        self, tenant: CommsTenant, *, booking: Booking
+    ) -> bool:
+        """F19 MD2's seam: her deposit settled after the hold had already been
+        swept and her seat given away, and the rebind could not put her back.
+
+        `notify_owner_cancel`'s shape minus the token, because the body carries
+        no manage link — so `_deliver` gets `token=None`, `log_body` stays None,
+        and there is nothing in the stored evidence to mask. It exists because
+        `_deliver` is private and no shipped public method carries this kind;
+        this is the ONLY path in the whole flow where a customer's money moved
+        and nothing else would tell her.
+        """
+        if not self._notifications.is_configured:
+            logger.warning("SMS not configured — no no-slot notice for booking %s", booking.id)
+            return False
+        phone = await self._customer_phone(tenant.id, booking.customer_id)
+        if phone is None:
+            return False
+        return await self._deliver(
+            tenant.id,
+            phone=phone,
+            body=PAYMENT_RECEIVED_NO_SLOT_BODY,
+            kind=MessageKind.PAYMENT_RECEIVED_NO_SLOT,
+            booking=booking,
         )
 
     async def notify_owner_reschedule(self, tenant: CommsTenant, *, booking: Booking) -> bool:

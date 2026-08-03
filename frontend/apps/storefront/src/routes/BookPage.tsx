@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { FormEvent, Ref } from "react";
+import type { FormEvent, MouseEvent as ReactMouseEvent, Ref } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
+  ButtonLink,
   Card,
   Checkbox,
   Input,
@@ -20,6 +21,7 @@ import type {
   AppointmentTypeRow,
   BookingCreateRequest,
   BookingCreateResponse,
+  PaymentStatusResponse,
   SlotRow,
   StorefrontDetail,
   StorefrontTerms,
@@ -28,7 +30,7 @@ import { ContactCard } from "../components/ContactCard";
 import { SizeChips } from "../components/booking/SizeChips";
 import { TypePicker } from "../components/booking/TypePicker";
 import { useBoutique } from "../components/StorefrontLayout";
-import { Link, navigate } from "../router";
+import { Link, handOff, navigate, shouldIntercept } from "../router";
 import type { BookStep } from "../router";
 import {
   MAX_BOOKING_NOTES_LENGTH,
@@ -139,6 +141,67 @@ const CONFIRM_DATE = new Intl.DateTimeFormat("he-IL", {
   month: "numeric",
   year: "numeric",
 });
+
+// The deposit poll. A plain interval — pre-decided #23 rules out any realtime
+// vendor — and it exists because THE WEBHOOK IS AUTHORITATIVE, NOT THE RETURN
+// REDIRECT: coming back from the hosted page proves she pressed a button, not
+// that money moved.
+const PAY_POLL_INTERVAL_MS = 3_000;
+// ~60 seconds of asking. Deliberately NOT the hold (deposit_hold_seconds, 15
+// minutes by default): this is how long she waits on a spinner before the
+// screen stops pretending and hands her the phone. Unbounded, it is a request
+// storm that never reaches an answer either.
+const PAY_POLL_MAX_ATTEMPTS = 20;
+
+// What the poll has settled on. "awaiting" is the only non-terminal value and
+// the only one that arms the interval.
+type PayOutcome = "awaiting" | "paid" | "declined" | "expired" | "unresolved";
+
+// What the pay step is SHOWING, which is not the same thing: the hand-off and
+// the wait are both "awaiting" to the poll and two different screens to her.
+// Deriving it once is what lets the announcement below be guaranteed to match
+// what is rendered, rather than two ternaries that agree until one is edited.
+type PayState = Exclude<PayOutcome, "paid"> | "handoff";
+
+const PAY_ANNOUNCE: Record<PayState, string> = {
+  handoff: "booking.payHandoff",
+  awaiting: "booking.payAwaiting",
+  declined: "booking.payDeclined",
+  expired: "booking.payExpired",
+  unresolved: "booking.payUnresolved",
+};
+
+function payOutcomeOf(facts: PaymentStatusResponse): PayOutcome {
+  // The BOOKING, not the payment, is what makes the confirmation screen true.
+  // The webhook commits `payments -> paid` in its own transaction and confirms
+  // the booking in a second one, so "paid" with the booking still held is the
+  // crash window a redelivery repairs — confirming an appointment the server
+  // has not confirmed is exactly the claim this screen must not make.
+  if (facts.booking_status === "confirmed") return "paid";
+  // NOT a status value, because no status value can say it. A declined hold is
+  // deliberately left `pending` server-side so the sweeper owns the seat and a
+  // retried card settles the SAME hold — which is the retry this screen offers.
+  // `payment_status: "failed"` exists but is written only where no provider
+  // session was ever minted, so it can never reach this poll at all.
+  if (facts.declined) return "declined";
+  if (facts.payment_status === "expired" || facts.booking_status === "cancelled") return "expired";
+  return "awaiting";
+}
+
+/**
+ * The provider's hosted page, or undefined.
+ *
+ * `safeHref` is the right instinct and the wrong tool: its allowlist demands a
+ * scheme, and the dev gateway returns a ROOT-RELATIVE "/fake-pay?session=…", so
+ * the whole dev flow would render a hand-off with no link. One predicate covers
+ * both real shapes; `javascript:` matches neither, and the second alternative
+ * excludes "//evil.example" — a protocol-relative URL is not a local path.
+ */
+function checkoutHref(url: string | null | undefined): string | undefined {
+  const trimmed = url?.trim();
+  if (trimmed === undefined || trimmed === "") return undefined;
+  return /^(https?:\/\/|\/[^/])/.test(trimmed) ? trimmed : undefined;
+}
 
 interface EntryData {
   // null = the boutique has published no policy — D5, the phone-only entry.
@@ -326,6 +389,11 @@ export function BookPage({ step, dressId }: BookPageProps) {
   // events: the cooldown ending and the submit starting.
   const [polite, setPolite] = useState<string | null>(null);
   const [booked, setBooked] = useState<BookingCreateResponse | null>(null);
+  const [payOutcome, setPayOutcome] = useState<PayOutcome>("awaiting");
+  // The link already handed off to. A back navigation out of the hosted page is
+  // the common return, not the rare one, and re-issuing the redirect on the
+  // render that follows it would trap her in a loop between the two sites.
+  const handedOff = useRef<string | null>(null);
   const typeRef = useRef<HTMLInputElement>(null);
   const timeRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -484,6 +552,31 @@ export function BookPage({ step, dressId }: BookPageProps) {
   const suffix = dressId === undefined ? "" : `/${encodeURIComponent(dressId)}`;
   const previousStep = PREVIOUS_STEP[step];
 
+  // The poll credential, from memory while the flow still has it and from the
+  // URL once the hand-off has unloaded the app. It rides in the query string
+  // deliberately: device storage is banned on this surface, the create response
+  // lives in memory alone, and without it EVERY return path lands on a page
+  // that cannot ask about her money. It is not a credential — it authorises
+  // nothing but a status read, and the browser already visited it inside the
+  // checkout URL — and it is POSTed in a body, never sent as a query parameter.
+  const paySession =
+    booked?.payment_session_id ?? new URLSearchParams(window.location.search).get("session");
+  const checkoutUrl = checkoutHref(booked?.redirect_url);
+
+  // The order is the order of certainty. A terminal poll answer wins over the
+  // hand-off, because a bride who came back and paid must not be sent to a
+  // checkout again; and "nothing to ask about" collapses into the unresolved
+  // state rather than a wait, because a spinner with nothing behind it is the
+  // worst thing this screen can be. `paid` never reaches here — it redirects.
+  const payState: PayState =
+    payOutcome === "paid" || payOutcome === "awaiting"
+      ? paySession === null
+        ? "unresolved"
+        : checkoutUrl !== undefined
+          ? "handoff"
+          : "awaiting"
+      : payOutcome;
+
   const terms = entry?.terms ?? null;
   const accepted = terms !== null && acceptedVersion === terms.version;
   // A bound dress with no active sizes cannot produce a valid payload — the
@@ -517,7 +610,11 @@ export function BookPage({ step, dressId }: BookPageProps) {
       navigate(`/book/confirm${suffix}`, { replace: true });
       return;
     }
-    if (step === "slot" || step === "confirm") return;
+    // `pay` is exempt for `confirm`'s reason and one more: the booking is
+    // already WRITTEN when this step is reached, and it may already have been
+    // paid for. Bouncing her to step one would invite a second appointment and,
+    // on a deposit-required type, a second deposit.
+    if (step === "slot" || step === "confirm" || step === "pay") return;
     if (flow.startsAt === null || flow.typeId === null) {
       navigate(`/book/slot${suffix}`, { replace: true });
       return;
@@ -529,6 +626,57 @@ export function BookPage({ step, dressId }: BookPageProps) {
       navigate(`/book/terms${suffix}`, { replace: true });
     }
   }, [step, flow.startsAt, flow.typeId, acceptedVersion, suffix, booked]);
+
+  // The hand-off itself. Once per link — see `handedOff`.
+  useEffect(() => {
+    const url = step === "pay" ? checkoutUrl : undefined;
+    if (url === undefined || handedOff.current === url) return;
+    handedOff.current = url;
+    handOff.leave(url);
+  }, [step, checkoutUrl]);
+
+  // The poll. Bounded, and terminal-stopped by its own dep: the outcome leaving
+  // "awaiting" tears the interval down rather than leaving it running behind a
+  // condition somebody has to remember to write.
+  useEffect(() => {
+    if (step !== "pay" || paySession === null || payOutcome !== "awaiting") return;
+    let attempts = 0;
+    let stopped = false;
+    const ask = async () => {
+      attempts += 1;
+      // A 429, a dropped connection and a session the server has not written
+      // yet are all "no answer yet": each spends an attempt and the interval
+      // carries on. Only the bound ends the poll without a terminal answer.
+      const facts = await api.paymentStatus(paySession).catch(() => null);
+      if (stopped) return;
+      const outcome = facts === null ? "awaiting" : payOutcomeOf(facts);
+      if (outcome !== "awaiting") {
+        setPayOutcome(outcome);
+        return;
+      }
+      if (attempts >= PAY_POLL_MAX_ATTEMPTS) setPayOutcome("unresolved");
+    };
+    // Immediately, then on the interval: on a cold return the answer is usually
+    // already there, and a first tick three seconds into a blank wait is three
+    // seconds of a bride wondering whether her card was charged.
+    void ask();
+    const timer = setInterval(() => {
+      void ask();
+    }, PAY_POLL_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [step, paySession, payOutcome]);
+
+  // Paid: hand her to the EXISTING confirmation screen, unchanged. `replace`,
+  // although this is not a guard redirect — pushed, Back lands on the pay step,
+  // which re-polls, re-confirms and pushes forward again forever.
+  useEffect(() => {
+    if (step === "pay" && payOutcome === "paid") {
+      navigate(`/book/confirm${suffix}`, { replace: true });
+    }
+  }, [step, payOutcome, suffix]);
 
   const clearError = (field: keyof FieldErrors) => {
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
@@ -706,6 +854,47 @@ export function BookPage({ step, dressId }: BookPageProps) {
     navigate(`/book/terms${suffix}`);
   };
 
+  // Where a written booking sends her, and it is ONE decision for BOTH create
+  // call sites: the R20 reissue below can come back deposit-due too, and
+  // landing that on the confirmation screen would confirm an appointment
+  // nobody has paid for. `deposit_due` is the whole discriminator — it is FALSE
+  // on the path where the gateway was unreachable and the booking stands with
+  // no deposit taken.
+  //
+  // The session rides in the URL because a hand-off out of the app IS a reload:
+  // without it every return path lands on a page that cannot ask about her
+  // money, and device storage is banned on this surface.
+  const afterBooking = (created: BookingCreateResponse): string =>
+    created.deposit_due && created.payment_session_id !== null
+      ? `/book/pay${suffix}?session=${encodeURIComponent(created.payment_session_id)}`
+      : `/book/confirm${suffix}`;
+
+  /**
+   * The expired hold's way out, and clearing the written booking is the WHOLE
+   * point of it — not housekeeping.
+   *
+   * The guard above forwards `verify` to `/book/confirm` whenever a booking is
+   * in memory, which is right while that booking is alive and wrong the moment
+   * the sweeper cancelled it: without this the rebook link walks her three
+   * steps forward into a dead appointment and offers her no fourth. The slot
+   * list is re-read for the same reason — the seat she is being sent back for
+   * is the one her own expiry just freed.
+   */
+  const rebookAfterExpiry = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    // The app's delegated click handler would navigate this href on its own,
+    // but it cannot reach component state — so the navigation is taken here,
+    // on the same terms Link takes it. shouldIntercept keeps a middle-click or
+    // a cmd-click opening a new tab; defaultPrevented then makes the delegated
+    // handler stand down, so the two can never both fire.
+    if (!shouldIntercept(event, event.currentTarget)) return;
+    event.preventDefault();
+    setBooked(null);
+    setPayOutcome("awaiting");
+    setFlow((current) => ({ ...current, startsAt: null }));
+    retry();
+    navigate(`/book/slot${suffix}`);
+  };
+
   // ONE code, three causes, and the wire carries no discriminator: a withdrawn
   // type, an archived dress and a deleted size variant all answer 404. The two
   // reads that can tell them apart run while the submit button is still
@@ -762,8 +951,11 @@ export function BookPage({ step, dressId }: BookPageProps) {
       return;
     }
     setBooked(created);
+    // A new hold is a new wait. Left over, a terminal outcome from an earlier
+    // hold would render this one already settled.
+    setPayOutcome("awaiting");
     setReturnReason("dress");
-    navigate(`/book/confirm${suffix}`);
+    navigate(afterBooking(created));
   };
 
   const submit = async () => {
@@ -826,7 +1018,8 @@ export function BookPage({ step, dressId }: BookPageProps) {
     try {
       const created = await book(binding);
       setBooked(created);
-      navigate(`/book/confirm${suffix}`);
+      setPayOutcome("awaiting");
+      navigate(afterBooking(created));
     } catch (error: unknown) {
       const key = errorMessageKey(error);
       if (key === "errors.phoneNotVerified") {
@@ -927,7 +1120,9 @@ export function BookPage({ step, dressId }: BookPageProps) {
         )
       )}
 
-      {step !== "confirm" && exitKey === null && <Stepper step={step} />}
+      {/* `pay` is outside the stepper for `confirm`'s reason: the four dots are
+          the steps she fills in, and this one is a wait on a third party. */}
+      {step !== "confirm" && step !== "pay" && exitKey === null && <Stepper step={step} />}
 
       <div className="flex flex-col gap-2">
         <h1 className="font-display text-2xl text-ink">
@@ -935,7 +1130,12 @@ export function BookPage({ step, dressId }: BookPageProps) {
             ? t("document.book")
             : step === "confirm"
               ? confirmHeading
-              : t(STEP_LABEL_KEYS[step])}
+              : step === "pay"
+                ? // ONE static h1 over all five payment states: an h1 that
+                  // changed with the poll's answer would rewrite the page's own
+                  // name under a screen reader, mid-wait.
+                  t("booking.payTitle")
+                : t(STEP_LABEL_KEYS[step])}
         </h1>
         <span aria-hidden="true" className="h-px w-12 bg-gold" />
       </div>
@@ -1359,6 +1559,100 @@ export function BookPage({ step, dressId }: BookPageProps) {
             </form>
           </>
         ))}
+
+      {/* THE DEPOSIT HAND-OFF. Five states, and `paid` is not among them: it
+          redirects to the confirmation screen, which is not redesigned here. */}
+      {step === "pay" && (
+        <>
+          {payState === "expired" ? (
+            <>
+              <p className="max-w-[60ch] text-lg text-ink">{t("booking.payExpired")}</p>
+              {/* The seat is gone — the sweeper freed it — so the way out is the
+                  ordinary slot picker. The checkout link is deliberately
+                  absent: it would take her money for a time she no longer has.
+                  The label is the manage page's, one Hebrew for one action. */}
+              <div className="flex">
+                <ButtonLink
+                  href={`/book/slot${suffix}`}
+                  onClick={rebookAfterExpiry}
+                  className="w-full sm:w-auto"
+                >
+                  {t("manage.rebookCta")}
+                </ButtonLink>
+              </div>
+            </>
+          ) : payState === "declined" ? (
+            <>
+              <p className="max-w-[60ch] text-lg text-ink">{t("booking.payDeclined")}</p>
+              <p className="max-w-[60ch] text-base text-ink-muted">
+                {t("booking.payDeclinedBody")}
+              </p>
+              {/* The SAME link. A retry converges onto the same hold and the
+                  server hands back the same URL, which is why there is no
+                  second label and no second amount anywhere on this branch.
+
+                  Reached cold — a reload after the decline — there is no link
+                  in memory to offer, and a sentence inviting her to finish
+                  paying with no control under it is an instruction she cannot
+                  follow. The phone takes its place, the shape the verify step's
+                  own dead ends use. */}
+              {checkoutUrl !== undefined ? (
+                <div className="flex">
+                  <ButtonLink href={checkoutUrl} rel="external" className="w-full sm:w-auto">
+                    {t("booking.payManualCta")}
+                  </ButtonLink>
+                </div>
+              ) : boutique === null ? (
+                <p className="max-w-[60ch] text-base text-ink-muted">
+                  {t("booking.contactUnavailable")}
+                </p>
+              ) : (
+                <ContactCard boutique={boutique} />
+              )}
+            </>
+          ) : payState === "unresolved" ? (
+            // The bounded attempts ran out with no terminal answer — or the URL
+            // arrived with nothing to ask about. It may NOT say the payment
+            // failed: her card may well have been charged, and the webhook may
+            // simply be late. Muted, and the phone under it, because this is
+            // the one state the product cannot resolve by itself.
+            <PhoneOnly messageKey="booking.payUnresolved" muted />
+          ) : payState === "handoff" && checkoutUrl !== undefined ? (
+            <>
+              <p className="max-w-[60ch] text-lg text-ink">{t("booking.payHandoff")}</p>
+              {/* NOT decoration. A browser that blocks the automatic redirect
+                  leaves this link as the only way to the money, so it ships
+                  with the state rather than after a timeout a stalled tab never
+                  reaches. rel="external" because the dev gateway's page is
+                  same-origin and the app's delegated click handler would
+                  otherwise swallow it into a route that does not exist. */}
+              <p className="max-w-[60ch] text-base text-ink-muted">{t("booking.payManualHint")}</p>
+              <div className="flex">
+                <ButtonLink href={checkoutUrl} rel="external" className="w-full sm:w-auto">
+                  {t("booking.payManualCta")}
+                </ButtonLink>
+              </div>
+            </>
+          ) : (
+            <Card className="flex flex-col gap-4">
+              <p className="text-lg text-ink">{t("booking.payAwaiting")}</p>
+              <Skeleton variant="text" lines={2} />
+            </Card>
+          )}
+
+          {/* ONE region for the whole step, and it is the only thing that tells
+              a screen reader the answer arrived: every transition here is driven
+              by the POLL, not by a tap, so there is no control to move focus
+              from and moving it anyway would be a 3.2.1 defect of its own. R30's
+              rule holds — aria-busy on a plain div is announced by neither
+              VoiceOver nor NVDA — and it holds for the outcomes too, not just
+              the wait. Polite, never assertive: she is watching this screen,
+              and an alert is for something that interrupts. */}
+          <VisuallyHidden>
+            <span role="status">{t(PAY_ANNOUNCE[payState])}</span>
+          </VisuallyHidden>
+        </>
+      )}
 
       {step === "confirm" &&
         (booked === null ? (

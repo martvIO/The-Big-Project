@@ -105,6 +105,7 @@ async def test_payments_are_invisible_and_unsettleable_across_tenants(app_role_u
                 provider=PROVIDER,
                 amount_agorot=15000,
                 provider_session_id="fake-1",
+                redirect_url="https://pay.example/fake-1",
                 hold_expires_at=LATER,
             )
             payment_id = row.id

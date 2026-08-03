@@ -41,10 +41,12 @@ from app.auth.dependencies import get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.booking.owner import (
+    BookingPayment,
     BookingTransitionInvalidError,
     CustomerAlreadyBookedError,
     OwnerMutation,
     OwnerResendThrottledError,
+    refund_due_agorot,
 )
 from app.booking.service import BookingNotFoundError, SlotUnavailableError
 from app.booking.slots import Slot
@@ -188,6 +190,9 @@ class FakeOwnerBookingService:
         self.changed = True
         self.manage_token: str | None = "raw-token-xyz"
         self.slots: list[Slot] = [Slot(starts_at=STARTS_AT, capacity=2, booked=1)]
+        # D18: most bookings have no payment row at all, so the empty map is the
+        # ordinary case and both new fields render null.
+        self.payments: dict[uuid.UUID, BookingPayment] = {}
 
     def _record(self, method: str, /, **kwargs: Any) -> None:
         self.calls.append((method, kwargs))
@@ -215,6 +220,12 @@ class FakeOwnerBookingService:
     ) -> dict[uuid.UUID, Customer]:
         self._record("customers_for", tenant_id=tenant_id, customer_ids=set(customer_ids))
         return {CUSTOMER_ID: _customer()}
+
+    async def payments_for(
+        self, tenant_id: uuid.UUID, bookings: Any
+    ) -> dict[uuid.UUID, BookingPayment]:
+        self._record("payments_for", tenant_id=tenant_id, booking_ids=[row.id for row in bookings])
+        return self.payments
 
     async def list_slots(
         self,
@@ -448,8 +459,41 @@ def test_the_list_applies_the_documented_defaults() -> None:
             "customer_name": "נועה",
             "appointment_type_name": "מדידת שמלה",
             "dress_name": "Aurora",
+            # D18 / A1: null on a booking with no payment row, which is every
+            # booking a deposits-off boutique takes.
+            "payment_status": None,
+            "refund_due_agorot": None,
         }
     ]
+
+
+def test_the_list_row_carries_the_payment_marker_and_the_refund_number() -> None:
+    """D18's marker and A1's number, on the row the owner already loads every
+    morning — no new route, no nav row. `paid` on a `cancelled` booking is the
+    action-needed case, and MD1's reschedule is the button behind it."""
+    fake = FakeOwnerBookingService()
+    fake.booking = _booking(status=BookingStatus.CANCELLED.value)
+    fake.payments = {BOOKING_ID: BookingPayment(status="paid", refund_due_agorot=25_000)}
+    with _client(fake) as client:
+        row = client.get(LIST_PATH).json()["items"][0]
+    assert (row["status"], row["payment_status"]) == ("cancelled", "paid")
+    assert row["refund_due_agorot"] == 25_000
+    # One batch read behind the page, never one per row (D18).
+    assert fake.call("payments_for")["booking_ids"] == [BOOKING_ID]
+
+
+def test_the_detail_inherits_the_payment_marker() -> None:
+    """`OwnerBookingDetail(OwnerBookingRow)`, so the detail panel renders the
+    same two fields with no second source of truth."""
+    fake = FakeOwnerBookingService()
+    fake.payments = {
+        BOOKING_ID: BookingPayment(status="failed", refund_due_agorot=None),
+    }
+    with _client(fake) as client:
+        body = client.get(DETAIL_PATH).json()
+    # MD4's marker: booked without a deposit because the provider was unreachable.
+    assert body["payment_status"] == "failed"
+    assert body["refund_due_agorot"] is None
 
 
 def test_the_list_row_carries_neither_the_phone_nor_the_notes() -> None:
@@ -528,6 +572,8 @@ def test_the_detail_carries_the_phone_the_notes_and_the_terms_evidence() -> None
         "customer_name": "נועה",
         "appointment_type_name": "מדידת שמלה",
         "dress_name": "Aurora",
+        "payment_status": None,
+        "refund_due_agorot": None,
         "customer_phone": "+972501234567",
         "notes": "מגיעה עם אמא",
         "dress_id": str(DRESS_ID),
@@ -975,3 +1021,50 @@ def test_an_owner_booking_read_from_a_foreign_origin_is_allowed() -> None:
     with _client(fake) as client:
         resp = client.get(DETAIL_PATH, headers={"origin": "http://evil.localtest.me"})
     assert resp.status_code == 200
+
+
+# --- A1's refund computation (D16: computed, never written) ---
+#
+# The number is DISPLAY only. F19 writes no `refund_due` / `refunded` /
+# `forfeited` row, because the port ships no `refund()` — so the whole of this
+# decision is the function below and the field it feeds.
+
+DEPOSIT = 50_000
+CUTOFF_HOURS = 48
+STARTS = datetime.datetime(2026, 8, 2, 7, 0, tzinfo=datetime.UTC)
+
+
+def _refund(at: datetime.datetime, *, forfeit_percent: int = 50, amount: int = DEPOSIT) -> int:
+    return refund_due_agorot(
+        amount_agorot=amount,
+        starts_at=STARTS,
+        at=at,
+        refundable_until_hours_before=CUTOFF_HOURS,
+        forfeit_percent=forfeit_percent,
+    )
+
+
+def test_inside_the_window_the_whole_deposit_is_refund_due() -> None:
+    assert _refund(STARTS - datetime.timedelta(hours=CUTOFF_HOURS + 1)) == DEPOSIT
+
+
+def test_the_cutoff_instant_itself_is_still_inside_the_window() -> None:
+    """ "Refundable until 48 hours before" includes the 48th hour. The boundary
+    is stated because the alternative silently forfeits half a deposit for a
+    bride who cancelled exactly on time."""
+    assert _refund(STARTS - datetime.timedelta(hours=CUTOFF_HOURS)) == DEPOSIT
+
+
+def test_outside_the_window_the_forfeit_is_deducted() -> None:
+    assert _refund(STARTS - datetime.timedelta(hours=CUTOFF_HOURS - 1)) == DEPOSIT // 2
+
+
+def test_a_full_forfeit_leaves_nothing_due() -> None:
+    assert _refund(STARTS, forfeit_percent=100) == 0
+
+
+def test_the_rounding_agora_goes_to_the_customer() -> None:
+    """Integer agorot end to end (D15), so 50% of 501 has to land somewhere. It
+    lands on the side of the person whose money it is: the boutique forfeits
+    `amount * percent // 100` and she is refunded the remainder."""
+    assert _refund(STARTS, amount=501) == 501 - 250

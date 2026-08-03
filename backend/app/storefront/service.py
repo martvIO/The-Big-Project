@@ -24,9 +24,11 @@ unchanged; the storefront makes no storage network call at all.
 import dataclasses
 import datetime
 import uuid
+from collections.abc import Mapping
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.booking.service import deposit_due
 from app.booking.slots import Slot, materialize_slots
 from app.booking.validation import SLOT_WINDOW_DEFAULT_DAYS, SLOT_WINDOW_MAX_DAYS
 from app.catalog.service import CatalogNotFoundError, MediaView, sign_media
@@ -45,6 +47,7 @@ from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.dress import Dress
 from app.models.terms_version import TermsVersion
+from app.payments.service import GatewayCredentialService
 from app.storage.base import MediaStorage
 from app.storefront.validation import (
     BOUTIQUE_TIMEZONE,
@@ -110,10 +113,15 @@ class StorefrontService:
         *,
         media_storage: MediaStorage,
         clock: Clock | None = None,
+        gateway_credentials: GatewayCredentialService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._storage = media_storage
         self._clock = clock
+        # D10. The service, not the repository: the disclosure has to run the
+        # USE path's predicate, and `is_connected` is where that lives. None =
+        # no gateway service wired, which reads as not connected.
+        self._gateway_credentials = gateway_credentials
         self._dresses = DressesRepository()
         self._variants = DressVariantsRepository()
         self._media = DressMediaRepository()
@@ -226,8 +234,10 @@ class StorefrontService:
             now=now.astimezone(datetime.UTC),
         )
 
-    async def list_appointment_types(self, tenant_id: uuid.UUID) -> list[AppointmentType]:
-        """One statement. Active types only — `list_active` pins
+    async def list_appointment_types(
+        self, tenant_id: uuid.UUID, *, settings: Mapping[str, object] | None = None
+    ) -> list[AppointmentType]:
+        """Two statements now. Active types only — `list_active` pins
         `deleted_at IS NULL`, so an archived type leaves the public surface the
         same way an archived dress does.
 
@@ -235,9 +245,26 @@ class StorefrontService:
         ANONYMOUS visitor cannot be classified as one, so a server-side filter
         here would be theatre. The field ships so the UI can label the option;
         real enforcement waits for a client identity (E5).
+
+        The second statement is D10's gateway read, asked ONCE for the page
+        rather than once per type, inside the session this method already opens
+        — an extra indexed statement on an open connection, on a route that is
+        already throttled. `settings` is the resolved TenantContext's; ABSENT
+        reads as deposits-off, so a caller that has not been taught to pass it
+        discloses no deposit rather than one it cannot collect.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
-            return await self._appointment_types.list_active(session, tenant_id)
+            rows = await self._appointment_types.list_active(session, tenant_id)
+            connected = self._gateway_credentials is not None and (
+                await self._gateway_credentials.is_connected(tenant_id, session)
+            )
+        # AFTER the session has committed and closed, deliberately: these rows
+        # are detached here, so clearing the pair below is a projection and can
+        # never be flushed back as a write.
+        return [
+            row if deposit_due(settings, row, gateway_connected=connected) else hide_deposit(row)
+            for row in rows
+        ]
 
     async def get_terms(self, tenant_id: uuid.UUID) -> TermsVersion:
         """One statement. A boutique that never published a policy has nothing
@@ -271,6 +298,27 @@ class StorefrontService:
             hours=rules,
             exceptions=exceptions[:UPCOMING_EXCEPTIONS_LIMIT],
         )
+
+
+def hide_deposit(row: AppointmentType) -> AppointmentType:
+    """F17's Q1, applied to one row: with no collectable deposit the storefront
+    hides it entirely and books as if deposits were off.
+
+    Cleared ON THE ROW rather than omitted from the wire because the row is the
+    projection's only input — `public_appointment_type` copies the pair field by
+    field — so "no deposit is owed" has to be true of what it copies. That is
+    also the STRONGER disclosure: `{required: false, amount: null}` is exactly
+    what a type that never had a deposit ships, whereas an omitted pair would be
+    a distinguishable third state telling an anonymous visitor that THIS
+    boutique wants a deposit and currently cannot take one.
+
+    Call it only on a detached row (the session has committed and closed) — on
+    an attached one SQLAlchemy would flush the clear into the boutique's own
+    configuration.
+    """
+    row.deposit_required = False
+    row.deposit_amount_agorot = None
+    return row
 
 
 def slot_window(

@@ -25,7 +25,7 @@ import uuid
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -39,6 +39,7 @@ from app.auth.service import StaffContext
 from app.auth.tokens import hash_token
 from app.booking.comms import BookingCommsService, CommsTenant
 from app.booking.manage import (
+    BookingAwaitingPaymentError,
     BookingLinkInvalidError,
     ManageBookingService,
     ManageTenant,
@@ -57,6 +58,7 @@ from app.db.repositories.availability import AvailabilityRulesRepository
 from app.db.repositories.bookings import BookingsRepository, CheckInOutcome
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.otp_codes import OtpCodesRepository
+from app.db.repositories.payments import PaymentsRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
@@ -67,9 +69,11 @@ from app.models.constants import (
     AuditAction,
     BookingCancelledBy,
     BookingStatus,
+    PaymentStatus,
     ScheduledMessageKind,
     StaffRole,
 )
+from app.models.payment import Payment
 from app.notifications.fake import FakeSmsSender
 from app.notifications.service import NotificationService, OtpService
 from app.notifications.unconfigured import UnconfiguredSmsSender
@@ -1626,5 +1630,394 @@ async def test_the_day_list_carries_the_arrival_timestamp(app_role_url: str) -> 
         )
         assert total == 1
         assert rows[0].checked_in_at == NOW
+    finally:
+        await engine.dispose()
+
+
+# --- F19: the owner's payment marker, MD1's button, and the bride's page ----
+#
+# **Cleanup is not optional below.** `bookings.status = 'pending_payment'` and
+# `cancelled_by = 'expired'` are the two values migration 0015's downgrade
+# narrows out of their CHECKs, and Postgres refuses that while any row still
+# holds one — a leak here reds seven unrelated migration round-trip tests. Every
+# test that writes either value deletes its bookings in a `finally`.
+# `payments` rows are left: 0012 REVOKEs DELETE on that table from app_user.
+
+
+async def _pay(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    booking_id: uuid.UUID,
+    *,
+    status: str = PaymentStatus.PAID.value,
+    amount_agorot: int = 50_000,
+) -> uuid.UUID:
+    async with tenant_session(factory, tenant_id) as session:
+        row = await PaymentsRepository().insert(
+            session,
+            tenant_id=tenant_id,
+            booking_id=booking_id,
+            provider="fake",
+            amount_agorot=amount_agorot,
+            provider_session_id=f"sess-{uuid.uuid4().hex[:12]}",
+            redirect_url="https://pay.example.test/checkout/abc",
+            hold_expires_at=NOW + datetime.timedelta(minutes=15),
+        )
+        payment_id = row.id
+        if status != PaymentStatus.PENDING.value:
+            await session.execute(
+                update(Payment)
+                .where(Payment.id == payment_id)
+                .values(status=status)
+                .execution_options(synchronize_session=False)
+            )
+    return payment_id
+
+
+async def _release(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    booking_id: uuid.UUID,
+    *,
+    by: str,
+) -> None:
+    """What the sweeper does to an abandoned hold, minus the sweeper: the seat
+    is freed and the cancellation is attributed. Driving the real sweeper is
+    `test_deposit_sweeper_db.py`'s job — this file needs the resulting ROW."""
+    async with tenant_session(factory, tenant_id) as session:
+        await BookingsRepository().cancel(session, tenant_id, booking_id, at=NOW, by=by)
+
+
+async def _set_status(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    booking_id: uuid.UUID,
+    *,
+    status: str,
+) -> None:
+    async with tenant_session(factory, tenant_id) as session:
+        await session.execute(
+            update(Booking)
+            .where(Booking.id == booking_id)
+            .values(status=status)
+            .execution_options(synchronize_session=False)
+        )
+
+
+async def _purge(
+    engine: AsyncEngine, factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID
+) -> None:
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            await session.execute(delete(Booking).where(Booking.tenant_id == tenant_id))
+    finally:
+        await engine.dispose()
+
+
+async def test_the_day_list_carries_the_payment_marker_and_the_refund_number(
+    app_role_url: str,
+) -> None:
+    """D18 and A1 together, on the list the owner already loads every morning.
+
+    The number is COMPUTED from the terms version she ACCEPTED (48h / 50% here)
+    against `starts_at` — F19 writes no `refund_due` row anywhere, because the
+    port ships no `refund()`. This cancel is far outside the window's cutoff, so
+    the whole deposit is due back.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=2)
+        paid = (await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)).booking
+        plain = (await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)).booking
+        await _pay(factory, tenant_id, paid.id)
+
+        owner = _owner(factory)
+        rows, _ = await owner.list_day(
+            tenant_id, date=TARGET_DATE, offset=0, limit=BOOKING_LIST_DEFAULT_LIMIT
+        )
+        markers = await owner.payments_for(tenant_id, rows)
+
+        assert markers[paid.id].status == PaymentStatus.PAID.value
+        assert markers[paid.id].refund_due_agorot == 50_000
+        # A booking with no payment row is simply absent — which is every
+        # booking a deposits-off boutique takes.
+        assert plain.id not in markers
+    finally:
+        await engine.dispose()
+
+
+async def test_the_marker_names_no_refund_for_money_that_never_moved(
+    app_role_url: str,
+) -> None:
+    """MD4's `failed` row is a booking that deliberately took NO deposit, so
+    "refund due" is not a smaller number on it — it is no number at all."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        booking = (await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)).booking
+        await _pay(factory, tenant_id, booking.id, status=PaymentStatus.FAILED.value)
+
+        markers = await _owner(factory).payments_for(tenant_id, [booking])
+
+        assert markers[booking.id].status == PaymentStatus.FAILED.value
+        assert markers[booking.id].refund_due_agorot is None
+    finally:
+        await engine.dispose()
+
+
+async def test_md1_a_cancelled_booking_that_still_holds_her_deposit_moves(
+    app_role_url: str,
+) -> None:
+    """MD1, and the assertion that fails if the widened writer forgets to clear
+    the evidence: the resulting row is `confirmed` with `cancelled_at` AND
+    `cancelled_by` BOTH NULL.
+
+    A row reading `confirmed` while carrying cancel evidence is the exact defect
+    D2 declines `set_status` over, and both columns feed F52's attribution and
+    F20's compliance read.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        booking_id = claim.booking.id
+        await _pay(factory, tenant_id, booking_id)
+        # Her money landed after the sweeper had already released the seat.
+        await _release(factory, tenant_id, booking_id, by=BookingCancelledBy.EXPIRED.value)
+
+        moved = (
+            await _owner(factory).reschedule(
+                tenant_id, booking_id, new_starts_at=SLOT_B, staff=_staff(tenant_id)
+            )
+        ).booking
+
+        assert moved.status == BookingStatus.CONFIRMED.value
+        assert (moved.cancelled_at, moved.cancelled_by) == (None, None)
+        assert moved.starts_at == SLOT_B
+        stored = await _row(factory, tenant_id, booking_id)
+        assert stored is not None
+        assert (stored.status, stored.cancelled_at, stored.cancelled_by) == (
+            BookingStatus.CONFIRMED.value,
+            None,
+            None,
+        )
+        # The seat is really hers again: 0008's index excludes only `cancelled`.
+        async with tenant_session(factory, tenant_id) as session:
+            assert await BookingsRepository().active_seats_at(
+                session, tenant_id, starts_at=SLOT_B
+            ) == {1}
+        # The one surviving trace that the row was ever cancelled.
+        moves = [
+            entry
+            for entry in await _audit(factory, tenant_id)
+            if entry.action == AuditAction.BOOKING_RESCHEDULED.value
+        ]
+        assert moves[0].details["restored_from"] == BookingStatus.CANCELLED.value
+    finally:
+        await _purge(engine, factory, tenant_id)
+
+
+async def test_md1_her_own_time_is_a_real_move_for_a_cancelled_row(
+    app_role_url: str,
+) -> None:
+    """The common case: nobody took her slot after all. A cancelled row holds
+    NOTHING — both partial unique indexes exclude it — so rescheduling onto the
+    instant it already names must NOT hit the no-op short-circuit."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        booking_id = claim.booking.id
+        await _pay(factory, tenant_id, booking_id)
+        await _release(factory, tenant_id, booking_id, by=BookingCancelledBy.EXPIRED.value)
+
+        result = await _owner(factory).reschedule(
+            tenant_id, booking_id, new_starts_at=SLOT_A, staff=_staff(tenant_id)
+        )
+
+        assert result.changed is True
+        assert result.booking.starts_at == SLOT_A
+        assert (result.booking.status, result.booking.cancelled_by) == (
+            BookingStatus.CONFIRMED.value,
+            None,
+        )
+    finally:
+        await _purge(engine, factory, tenant_id)
+
+
+async def test_md1_a_cancelled_booking_with_no_deposit_is_still_terminal(
+    app_role_url: str,
+) -> None:
+    """MD1 widened the guard for ONE case. Undoing an ordinary customer cancel
+    is not a scheduling operation, and the seat has been publicly bookable ever
+    since."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        await _release(factory, tenant_id, claim.booking.id, by=BookingCancelledBy.CUSTOMER.value)
+
+        with pytest.raises(BookingTransitionInvalidError):
+            await _owner(factory).reschedule(
+                tenant_id, claim.booking.id, new_starts_at=SLOT_B, staff=_staff(tenant_id)
+            )
+        stored = await _row(factory, tenant_id, claim.booking.id)
+        assert stored is not None and stored.status == BookingStatus.CANCELLED.value
+    finally:
+        await engine.dispose()
+
+
+async def test_md1_an_unpaid_hold_is_never_rescheduled(app_role_url: str) -> None:
+    """`pending_payment` is refused with everything else: the money is not in,
+    the sweeper owns that row, and the owner's remedy for a stuck hold is to
+    wait one tick."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        booking_id = claim.booking.id
+        await _set_status(
+            factory, tenant_id, booking_id, status=BookingStatus.PENDING_PAYMENT.value
+        )
+        await _pay(factory, tenant_id, booking_id, status=PaymentStatus.PENDING.value)
+
+        with pytest.raises(BookingTransitionInvalidError):
+            await _owner(factory).reschedule(
+                tenant_id, booking_id, new_starts_at=SLOT_B, staff=_staff(tenant_id)
+            )
+        assert await _audit(factory, tenant_id) == []
+    finally:
+        await _purge(engine, factory, tenant_id)
+
+
+async def test_md1_a_restore_that_collides_is_a_409_and_never_a_500(
+    app_role_url: str,
+) -> None:
+    """Race row #15: she rebooked the same instant herself before the late
+    payment landed. Restoring the cancelled row re-enters 0009's per-customer
+    partial unique index, and `main.py` registers NO `IntegrityError` handler —
+    so an uncaught flush here is a 500 on the one path this feature exists for.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=2)
+        phone = _phone()
+        stranded = (
+            await _claim(factory, tenant_id, type_id, starts_at=SLOT_A, phone=phone)
+        ).booking
+        await _pay(factory, tenant_id, stranded.id)
+        await _release(factory, tenant_id, stranded.id, by=BookingCancelledBy.EXPIRED.value)
+        # She rebooked the very same instant herself, so 0009's index is taken.
+        live = (await _claim(factory, tenant_id, type_id, starts_at=SLOT_A, phone=phone)).booking
+        assert live.id != stranded.id
+
+        with pytest.raises(SlotUnavailableError):
+            await _owner(factory).reschedule(
+                tenant_id, stranded.id, new_starts_at=SLOT_B, staff=_staff(tenant_id)
+            )
+        # Nothing committed: the stranded row is still cancelled, her live one
+        # still stands, and the deposit question is F29's, not this button's.
+        stored = await _row(factory, tenant_id, stranded.id)
+        assert stored is not None and stored.status == BookingStatus.CANCELLED.value
+        assert await _audit(factory, tenant_id) == []
+    finally:
+        await _purge(engine, factory, tenant_id)
+
+
+# --- A2 / A3: the bride's own tokenized page -------------------------------
+
+
+async def test_an_unpaid_hold_still_answers_her_page_and_refuses_both_verbs(
+    app_role_url: str,
+) -> None:
+    """A2. `by_manage_token_hash` carries no status predicate on purpose — an
+    honest "awaiting payment" beats a dead link for someone re-opening her SMS —
+    so the LOOKUP answers and only the two ACTIONS refuse. Shipped, the page
+    rendered an unpaid hold as an appointment that stands, with a live cancel
+    button, and both verbs would have ACTED on it.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        token = claim.manage_token
+        assert token is not None
+        await _set_status(
+            factory, tenant_id, claim.booking.id, status=BookingStatus.PENDING_PAYMENT.value
+        )
+        manage = _manage(factory)
+
+        answered = await manage.lookup(_manage_tenant(tenant_id), token=token)
+        assert answered.booking.status == BookingStatus.PENDING_PAYMENT.value
+
+        with pytest.raises(BookingAwaitingPaymentError):
+            await manage.confirm_attendance(_manage_tenant(tenant_id), token=token)
+        with pytest.raises(BookingAwaitingPaymentError):
+            await manage.cancel(_manage_tenant(tenant_id), token=token)
+
+        # Neither verb wrote: the sweeper owns this row's next transition and
+        # attributes it 'expired', not 'customer'.
+        stored = await _row(factory, tenant_id, claim.booking.id)
+        assert stored is not None
+        assert stored.status == BookingStatus.PENDING_PAYMENT.value
+        assert (stored.attendance_confirmed_at, stored.cancelled_at) == (None, None)
+    finally:
+        await _purge(engine, factory, tenant_id)
+
+
+async def test_her_page_says_a_deposit_was_taken_only_when_one_actually_was(
+    app_role_url: str,
+) -> None:
+    """A3, and MD3 cannot ship without it: `cancelConsequenceDeposit` renders on
+    ANY booking that took a deposit — including a `confirmed` one paid weeks ago
+    — so `status` alone cannot answer it, and the shipped "cancelling is free"
+    sentence survives only where this is False."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=2)
+        free = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        paid = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        assert free.manage_token is not None and paid.manage_token is not None
+        await _pay(factory, tenant_id, paid.booking.id)
+        manage = _manage(factory)
+
+        assert (
+            await manage.lookup(_manage_tenant(tenant_id), token=paid.manage_token)
+        ).booking.deposit_taken is True
+        assert (
+            await manage.lookup(_manage_tenant(tenant_id), token=free.manage_token)
+        ).booking.deposit_taken is False
+    finally:
+        await engine.dispose()
+
+
+async def test_a_hold_that_was_never_honoured_is_not_a_deposit_taken(
+    app_role_url: str,
+) -> None:
+    """A swept `expired` hold means no money moved, which is exactly when
+    "cancelling is free" is still a TRUE sentence — the one case where reading
+    `deposit_taken` off the existence of a payments row would be wrong."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=1)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        assert claim.manage_token is not None
+        await _pay(factory, tenant_id, claim.booking.id, status=PaymentStatus.EXPIRED.value)
+
+        answered = await _manage(factory).lookup(
+            _manage_tenant(tenant_id), token=claim.manage_token
+        )
+
+        assert answered.booking.deposit_taken is False
     finally:
         await engine.dispose()

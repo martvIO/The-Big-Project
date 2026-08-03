@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -17,6 +18,40 @@ from app.models.constants import StaffRole
 from app.models.staff_user import StaffUser
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
+def _alembic_config() -> Config:
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    return cfg
+
+
+def test_exactly_one_migration_head() -> None:
+    """Two migrations claiming one revision id is the failure mode that parallel
+    feature branches actually hit, and it is invisible to every other guard.
+
+    The filenames differ, so git merges both files cleanly and reports no
+    conflict. Nothing in review looks wrong. The first symptom is
+    `alembic upgrade head` refusing to run against a branched history, which
+    surfaces as every `db`-marked test erroring at fixture setup with a message
+    about multiple heads — on CI, in a job that was green on the branch an hour
+    earlier, with a diff that touched no migration.
+
+    So this assertion is deliberately NOT `db`-marked: it needs no database and
+    no Docker, which means it runs in `make test` on a laptop and fails BEFORE
+    the push that would have caused it. It reads the revision graph off the
+    filesystem, exactly as alembic does.
+
+    Not pinned to a literal head value — that would rot on every migration and
+    teach whoever hits it to update the literal without reading why.
+    """
+    heads = ScriptDirectory.from_config(_alembic_config()).get_heads()
+    assert len(heads) == 1, (
+        f"alembic has {len(heads)} heads: {sorted(heads)}. Two migrations declare the same "
+        "`down_revision`, which almost always means two feature branches each claimed the "
+        "next number. Renumber the later one: set its `revision` to follow the other and "
+        "point its `down_revision` at it, and rename the file to match."
+    )
 
 
 @pytest.mark.db
@@ -511,7 +546,21 @@ _INDEX_DEF = "SELECT indexdef FROM pg_indexes WHERE tablename = 'bookings' AND i
 # right would pin nothing.
 _STATUS_CHECK_DEF = (
     "CHECK ((status = ANY (ARRAY['confirmed'::text, 'cancelled'::text, "
-    "'no_show'::text, 'completed'::text])))"
+    "'no_show'::text, 'completed'::text, 'pending_payment'::text])))"
+)
+# 'pending_payment' was appended by F19, and this literal changing IS the
+# deliberate review F34 asked for — see the test below. Re-captured from a real
+# 16.x server after the widening, never hand-edited: the value F19 would have
+# GUESSED (appending to the pre-existing string) happens to be right here only
+# because the new value sorts last in the ARRAY as written, and that is luck
+# rather than a rule.
+_CANCELLED_BY_CHECK_DEF = (
+    "CHECK ((cancelled_by = ANY (ARRAY['customer'::text, 'owner'::text, 'expired'::text])))"
+)
+_PENDING_PAYMENT_INDEX_DEF = (
+    "CREATE INDEX idx_bookings_pending_payment ON public.bookings "
+    "USING btree (tenant_id, created_at) "
+    "WHERE ((deleted_at IS NULL) AND (status = 'pending_payment'::text))"
 )
 _SLOT_SEAT_INDEX_DEF = (
     "CREATE UNIQUE INDEX idx_bookings_slot_seat_unique ON public.bookings "
@@ -573,6 +622,19 @@ def test_the_booking_check_in_migration_leaves_the_status_check_and_both_unique_
     instead of rhetorical: when E4 widens the CHECK for 'pending_payment' it
     collides with a pinned literal and a deliberate review, instead of colliding
     with nothing.
+
+    **That collision has now happened, and the guard did its job.** F19 widened
+    the status CHECK with 'pending_payment' and this assertion went red on the
+    first local db run, which is the outcome F34 designed for. The literal was
+    re-captured from a live server and updated deliberately.
+
+    What matters is what did NOT change: BOTH index assertions below stayed
+    green through that widening, un-edited. That is F19's D1 claim — a held seat
+    is an occupied seat, needing no index change and no occupancy-query change —
+    proved by this test rather than asserted by its spec. If a future feature
+    finds itself editing _SLOT_SEAT_INDEX_DEF or _CUSTOMER_STARTS_INDEX_DEF, it
+    is changing what frees a seat, and that is a much larger decision than a
+    migration.
 
     Keyed to `head` — i.e. AFTER this feature's migration, whatever number it
     ended up with — and never to a hardcoded revision id (D2). The migration id
@@ -753,3 +815,169 @@ def test_running_env_py_does_not_disable_the_app_logger() -> None:
         root.handlers[:] = previous_handlers
         root.setLevel(previous_level)
         app_logger.disabled = False
+
+
+def _column_type(url: str, table: str, column: str) -> tuple[str, str] | None:
+    async def read() -> tuple[str, str] | None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                row = (
+                    await conn.execute(
+                        text(
+                            "SELECT data_type, is_nullable FROM information_schema.columns "
+                            "WHERE table_name = :t AND column_name = :c"
+                        ),
+                        {"t": table, "c": column},
+                    )
+                ).first()
+                return (str(row[0]), str(row[1])) if row else None
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _one(url: str, sql: str, params: dict[str, str] | None = None) -> str | None:
+    async def read() -> str | None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                row = (await conn.execute(text(sql), params or {})).first()
+                return str(row[0]) if row else None
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_the_deposit_migration_pins_its_two_widened_checks_and_its_new_index(
+    migrated_db: str,
+) -> None:
+    """The F34 discipline applied to F19's own three statements, and for the same
+    reason: the next feature that widens one of these should collide with a
+    literal and a review rather than with nothing.
+
+    All three are captured from a live 16.x server, never hand-written — Postgres
+    deparses `IN (...)` to `= ANY (ARRAY[...])`, parenthesises index predicates
+    and schema-qualifies the table, so a transcription of what the migration
+    SAYS would pin nothing and redden CI on a green build.
+
+    The index assertion carries the load for D6 claim 2: if the WHERE clause
+    stops being partial on 'pending_payment', the orphan sweep silently becomes
+    a sequential scan of the whole bookings table on every worker tick.
+    """
+    assert _one(migrated_db, _STATUS_CONSTRAINT_DEF) == _STATUS_CHECK_DEF
+    assert (
+        _one(
+            migrated_db,
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'bookings'::regclass AND conname = 'bookings_cancelled_by_check'",
+        )
+        == _CANCELLED_BY_CHECK_DEF
+    )
+    assert (
+        _one(migrated_db, _INDEX_DEF, {"name": "idx_bookings_pending_payment"})
+        == _PENDING_PAYMENT_INDEX_DEF
+    )
+
+
+_BOOKING_PROBE_INSERT = (
+    "INSERT INTO bookings (tenant_id, customer_id, appointment_type_id, starts_at, seat_index, "
+    "terms_version_accepted, terms_accepted_at, appointment_type_name, status, cancelled_by) "
+    "VALUES (uuid_generate_v4(), uuid_generate_v4(), uuid_generate_v4(), now(), 1, 1, now(), "
+    "'probe', :status, :cancelled_by)"
+)
+
+
+@pytest.mark.db
+def test_the_widened_checks_admit_the_new_values_and_still_reject_an_unknown_one(
+    migrated_db: str,
+) -> None:
+    """A CHECK that admits everything is not a widened CHECK, it is a dropped one
+    — and the drop-then-add in F19's migration is exactly the shape that fails
+    that way if the re-add is malformed. So both halves are asserted for both
+    columns: the new value goes in, and a value nobody declared still does not.
+
+    Probes the REAL `bookings` table inside a rolled-back transaction, the
+    _STAFF_INSERT pattern already in this file. The first draft of this test
+    probed a `CREATE TEMP TABLE (LIKE bookings INCLUDING CONSTRAINTS)` instead
+    and was quietly worthless: LIKE copies CHECK constraints but NOT defaults,
+    so `created_at` and `status` came through NOT NULL with no default and every
+    probe failed on a null violation. Both NEGATIVE assertions then passed for
+    entirely the wrong reason, and only the positive one exposed it. A test that
+    can pass while proving nothing is worse than no test — hence the real table.
+
+    Every probe supplies `status` explicitly, including the cancelled_by ones:
+    relying on the column default would make the cancelled_by halves depend on
+    the status CHECK too, and a single failure would no longer localise.
+    """
+
+    async def probe() -> list[bool]:
+        engine = create_async_engine(migrated_db)
+        results: list[bool] = []
+        try:
+            for status, cancelled_by in (
+                ("pending_payment", None),
+                ("not_a_real_status", None),
+                ("cancelled", "expired"),
+                ("cancelled", "not_a_real_actor"),
+            ):
+                async with engine.connect() as conn:
+                    trans = await conn.begin()
+                    try:
+                        await conn.execute(
+                            text(_BOOKING_PROBE_INSERT),
+                            {
+                                "status": status,
+                                "cancelled_by": cancelled_by,
+                            },
+                        )
+                        results.append(True)
+                    except (IntegrityError, DBAPIError):
+                        results.append(False)
+                    finally:
+                        await trans.rollback()
+            return results
+        finally:
+            await engine.dispose()
+
+    status_ok, status_junk, cancelled_ok, cancelled_junk = asyncio.run(probe())
+    assert status_ok, "the widened status CHECK must admit 'pending_payment'"
+    assert not status_junk, "the status CHECK must still reject an undeclared value"
+    assert cancelled_ok, "the widened cancelled_by CHECK must admit 'expired'"
+    assert not cancelled_junk, "the cancelled_by CHECK must still reject an undeclared value"
+
+
+@pytest.mark.db
+def test_the_deposit_migration_round_trips(migrated_db: str) -> None:
+    """Both directions, which is 0013's rule: a downgrade that silently no-ops
+    stays green while shipping a migration that cannot be rolled back.
+
+    LAST among the schema-mutating tests in this file and owns no fixtures, for
+    the reason test_migration_0014_round_trips states — the shared session-scoped
+    schema is left at head by the `finally`, and leaving it lower drops columns
+    the ORM still maps, so every later db test in the session would fail with
+    UndefinedColumn somewhere unrelated to itself.
+    """
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    # `down_revision` is typed as str | list | tuple because alembic supports
+    # merge revisions with several parents. This project has exactly one head
+    # (test_exactly_one_migration_head) and no merges, so anything but a plain
+    # str here means the history grew a shape no other test in this file expects.
+    down_to = ScriptDirectory.from_config(_alembic_config()).get_revision("head").down_revision
+    assert isinstance(down_to, str), f"expected a single-parent head, got {down_to!r}"
+    try:
+        assert _column_type(migrated_db, "payments", "redirect_url") == ("text", "YES")
+        assert _one(migrated_db, _INDEX_DEF, {"name": "idx_bookings_pending_payment"}) is not None
+
+        command.downgrade(cfg, down_to)
+
+        assert _column_type(migrated_db, "payments", "redirect_url") is None
+        assert _one(migrated_db, _INDEX_DEF, {"name": "idx_bookings_pending_payment"}) is None
+        assert _one(migrated_db, _STATUS_CONSTRAINT_DEF) != _STATUS_CHECK_DEF
+    finally:
+        command.upgrade(cfg, "head")

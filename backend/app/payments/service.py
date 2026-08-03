@@ -57,6 +57,14 @@ def _utc_now() -> datetime.datetime:
     return datetime.datetime.now(datetime.UTC)
 
 
+# `_record_decline` writes this and `is_declined` reads it, and they must be the
+# SAME string: a declined hold deliberately stays `pending` (see the docstring
+# there), so this column is the only place the row records that her card was
+# refused. Two hand-typed copies would silently stop the return page from ever
+# reaching its declined state.
+DECLINE_ERROR = "declined: webhook reported the charge was not paid"
+
+
 class GatewayThrottledError(Exception):
     """The connect or validate budget tripped. Its own class like every other
     throttle in this codebase; the F21 reparenting note on StorefrontThrottledError
@@ -318,6 +326,35 @@ class GatewayCredentialService:
             raise GatewayNotConnectedError
         return await self._decrypt(tenant_id, row.ciphertext, provider=provider)
 
+    async def is_connected(self, tenant_id: UUID, session: AsyncSession) -> bool:
+        """The DISCLOSURE path (D10): would `credentials_for` succeed right now?
+
+        The same THREE checks the USE path runs, and it runs them by CALLING
+        `_require_provider` rather than restating it, so the two cannot drift:
+        the adapter is configured, the secret box is configured, and the active
+        row's status is 'valid'.
+
+        A weaker predicate is the bug this method exists to prevent. A bare
+        `active_for_provider` read filters only tenant + provider +
+        `deleted_at IS NULL`, so a boutique whose credential `revalidate`
+        flipped to 'invalid', or a deployment with no secret box, would be shown
+        the deposit on the storefront and then meet a 409 or a 503 at
+        booking-create — the dead-calendar outcome F17's Gate 1 Q1 exists to
+        prevent.
+
+        Takes NEITHER limiter, decrypts nothing and returns no ciphertext:
+        `status()`'s rule, that reading "are we connected" must never touch key
+        material, applies here for the same reason. The session is the
+        CALLER's, so this folds into a transaction that is already open — one
+        indexed statement, no second connection.
+        """
+        try:
+            provider = self._require_provider()
+        except (GatewayNotConfiguredError, SecretBoxNotConfiguredError):
+            return False
+        row = await self._credentials.active_for_provider(session, tenant_id, provider=provider)
+        return row is not None and row.status == GatewayCredentialStatus.VALID.value
+
     async def verification_credentials_for(self, tenant_id: UUID) -> GatewayCredentials:
         """The VERIFICATION path (D20): the newest row for (tenant, provider),
         ignoring deleted_at AND status. Called by settle_from_webhook only.
@@ -493,11 +530,19 @@ class PaymentService:
                 session, tenant_id, booking_id=booking_id
             )
             if existing is not None:
-                # No gateway call at ALL on this path (D23) — which is also why
-                # redirect_url is None: 0012 stores the session id, not the
-                # hosted-page URL, and minting a fresh one here is exactly the
-                # orphaned-session bug the ordering exists to prevent.
-                return DepositHold(payment=existing, redirect_url=None, created=False)
+                # No gateway call at ALL on this path (D23), and F19 is what
+                # makes that survivable: the stored `redirect_url` is handed
+                # back, so a double-tap and the 0009 replay branch converge onto
+                # the SAME hold and get a WORKING link. F17 returned None here
+                # with a comment saying the field existed "to force F19 to
+                # decide what a retry does" — D8 is that decision.
+                #
+                # Minting a fresh session instead would be the orphaned-payable-
+                # session bug this ordering exists to prevent: two live hosted
+                # pages against one booking, either of which can take money.
+                return DepositHold(
+                    payment=existing, redirect_url=existing.redirect_url, created=False
+                )
 
             payment_session = await self._gateway.create_session(
                 credentials,
@@ -514,6 +559,7 @@ class PaymentService:
                     provider=provider,
                     amount_agorot=amount_agorot,
                     provider_session_id=payment_session.provider_session_id,
+                    redirect_url=payment_session.redirect_url,
                     hold_expires_at=now + datetime.timedelta(seconds=hold_seconds),
                 )
             except IntegrityError as exc:
@@ -559,6 +605,10 @@ class PaymentService:
         # leave its evidence in a transaction that commits, and the transaction
         # that reports the failure raises.
         mismatch_id: UUID | None = None
+        # Same shape as `mismatch_id` and for the same reason: an unmatched
+        # session id has to leave evidence in a transaction that COMMITS, and
+        # the transaction that reports the failure raises.
+        unmatched = False
         async with tenant_session(self._session_factory, tenant_id) as session:
             already = await self._payments.by_provider_transaction_id(
                 session, tenant_id, provider=provider, transaction_id=event.provider_transaction_id
@@ -572,12 +622,37 @@ class PaymentService:
                 session, tenant_id, provider=provider, session_id=event.provider_session_id
             )
             if row is None:
-                raise GatewayWebhookInvalidError
-
-            if not event.paid:
+                # F19 D9. A SIGNATURE-VALID webhook matching no payment row is
+                # the most dangerous outcome this method has: real money moved at
+                # the provider and the platform has nothing to attach it to. The
+                # likeliest cause is an unregistered or wrong-subdomain webhook
+                # URL, which is Risk 1.
+                #
+                # As shipped this raised right here — and `tenant_session` is
+                # `session.begin()`, so the raise rolled the transaction back and
+                # the ONLY trace of a real charge was a 400 in an access log.
+                #
+                # The evidence is therefore written INSIDE this transaction and
+                # the raise deferred until after it commits, which is exactly the
+                # `mismatch_id` shape below. Writing it in a SEPARATE transaction
+                # would work too, and would be wrong: the dedup read above and
+                # the settle below have to stay in one transaction for the
+                # exactly-once guarantee, and splitting the method to make room
+                # for an audit row would trade a race for a log line.
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.GATEWAY_WEBHOOK_UNMATCHED.value,
+                    entity="payments",
+                    details={
+                        "provider": provider,
+                        "provider_session_id": event.provider_session_id,
+                    },
+                )
+                unmatched = True
+            elif not event.paid:
                 return await self._record_decline(session, tenant_id, row, provider=provider)
-
-            if event.amount_agorot == row.amount_agorot:
+            elif event.amount_agorot == row.amount_agorot:
                 settled = await self._payments.settle(
                     session,
                     tenant_id,
@@ -594,15 +669,70 @@ class PaymentService:
                     provider,
                     transaction_id=event.provider_transaction_id,
                 )
-            mismatch_id = row.id
+            else:
+                mismatch_id = row.id
+
+        if unmatched:
+            # Stays a 400, deliberately: a provider that retries is exactly what
+            # you want when the row might yet appear (a redirect that beat the
+            # insert), and the audit row above is what makes the PERMANENT case
+            # findable when it never does.
+            raise GatewayWebhookInvalidError
 
         # Outside the transaction above, so the evidence COMMITS (D14): the
         # amount assertion is attacker-reachable input even behind a valid
         # signature — pre-decided #21 makes the amount check doctrine for
         # refunds, and a settlement is the same class of write with the same
         # failure mode.
-        await self._record_amount_mismatch(tenant_id, mismatch_id, provider=provider, event=event)
+        # Guarded rather than asserted. Reaching here with `mismatch_id` unset is
+        # unreachable — every other branch above returns or sets `unmatched` —
+        # but the branch chain now makes that invisible to the type checker, and
+        # the honest guard costs one line while an `assert` would trade a 400 for
+        # an AssertionError on the money path if the chain ever grows a hole.
+        if mismatch_id is not None:
+            await self._record_amount_mismatch(
+                tenant_id, mismatch_id, provider=provider, event=event
+            )
         raise GatewayWebhookInvalidError
+
+    async def honour_late_settlement(
+        self, tenant_id: UUID, *, payment_id: UUID, transaction_id: str, paid_at: datetime.datetime
+    ) -> Payment | None:
+        """Her money arrived after the hold expired. F17's Gate 1 Q4 ruled it in
+        its own second sentence — *"HONOUR IT, and alert the owner. The deposit
+        is marked paid."* — and set the re-ask condition as "F19 implements;
+        re-asked at its Gate 1 only if the flow contradicts it". Nothing in this
+        flow contradicts it, so this is F17's ruling being implemented, not a
+        reopened question. What F19 found is that the shipped code had no WRITER
+        for it: `settle` is guarded `WHERE status='pending'` and matches nothing
+        against an expired row.
+
+        **This wrapper is not ceremony.** `models/payment.py` states that
+        `PaymentService` is this table's single writer — "no adapter and no
+        future caller can skip this row" — and F19 is the first feature that
+        could break that. A webhook route reaching into `PaymentsRepository`
+        directly for `settle_late` would break it on day one, which is why the
+        route calls only this. Same rule as `open_deposit` and
+        `settle_from_webhook`.
+
+        `None` back means a prior delivery already honoured it — the guarded
+        UPDATE matched nothing — and the caller must stop rather than confirm a
+        booking twice. Deciding that from the `.returning()` scalar rather than
+        from a re-read is the same rule the repository's own docstrings give.
+
+        Does NOT touch `bookings`, for `settle_from_webhook`'s stated reason: the
+        rebind is a seat decision and it needs the per-tenant advisory lock and
+        both occupancy reads (D5). A payments service reaching into the booking
+        domain is the coupling that would take that ordering away from F19.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            return await self._payments.settle_late(
+                session,
+                tenant_id,
+                payment_id,
+                provider_transaction_id=transaction_id,
+                paid_at=paid_at,
+            )
 
     async def _record_decline(
         self, session: AsyncSession, tenant_id: UUID, row: Payment, *, provider: str
@@ -624,10 +754,14 @@ class PaymentService:
         Leaving the hold pending is the point: F19's expiry sweeper frees the
         seat on its own clock, and a retried card can still settle the same hold.
         Writing 'failed' here would pre-empt that policy exactly as the mismatch
-        branch refuses to."""
-        marked = await self._payments.record_error(
-            session, tenant_id, row.id, error="declined: webhook reported the charge was not paid"
-        )
+        branch refuses to.
+
+        Which makes `DECLINE_ERROR` load-bearing rather than a log line: because
+        the status stays 'pending', this column is the ONLY fact on the row that
+        says her card was refused, and `webhook_router.is_declined` reads it back
+        to serve the return page's declined screen. Change the string in one
+        place and that screen silently stops rendering."""
+        marked = await self._payments.record_error(session, tenant_id, row.id, error=DECLINE_ERROR)
         await self._audit.record(
             session,
             tenant_id=tenant_id,

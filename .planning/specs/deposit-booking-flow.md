@@ -13,6 +13,83 @@
 
 ---
 
+## AMENDED 2026-08-03 at the plan phase — corrections C1–C8 and five coverage defects
+
+**This section governs wherever it and the text below disagree.** It records what a code recon found
+against this spec at pick time, and what a completeness pass over the plan found missing from it.
+Nothing here reopens a ruling; every item is either a stale citation or a decision the spec left
+implicit and the plan could not build without.
+
+### Stale citations — the rulings are unaffected, only the line numbers moved
+
+- **C1 — the migration is NOT 0014.** `0014_booking_check_in.py` is F34's, shipped. Three features
+  are in flight in three worktrees: F57 holds 0015, F33 holds 0016, so F19 lands **0017** and must
+  not open its PR until both merge. It is BUILT against 0015/down_revision 0014 so its own branch is
+  self-coherent and its `db` tests can run, then renumbered at rebase. Every "0014" below means
+  "F19's migration". A fast, no-DB `test_exactly_one_migration_head` now guards the collision, which
+  git cannot see (the filenames differ and the merge is textually clean).
+- **C2 — `db/repositories/bookings.py`**: `insert` :89, `active_at` :149, `active_seats_at` :168,
+  `by_manage_token_hash` :183, `set_status` :431, `cancel` :473 with its `confirmed` guard at **:510**
+  (this spec says :346), `reschedule` :525, `list_window_facts` :666.
+- **C3 — `dashboard/service.py`**: `cancellation` :148, `top_types` :206, `customer_mix` :251,
+  `cohort_ids` :370, and the `list_window_facts` call spans :361–366. D14's ruling is unchanged.
+- **C4 — `main.py`**: the unbuilt `PaymentService` singleton comment is at **:709-712**, not :698-701.
+- **C5 — `constants.py` is a live merge surface** (F57 is widening `StaffRole` in it concurrently).
+  Also: the message_log enum is **`MessageKind`**, not `MessageLogKind`; `ScheduledMessageKind` is a
+  different enum and D6 declines to widen it.
+- **C6 — `test_payments_service.py:921-925`** reaches the late branch by hand-setting
+  `row.status = EXPIRED`. F19's tests must drive expiry **through the sweeper** or the sweeper is
+  never the thing under test.
+- **C7 — `bookings.source` does not exist.** It is F50's, unbuilt.
+- **C8 — D22–D25 are F17's decision numbers**, inherited by reference. F19 defines D1–D21 plus
+  D11a/D11b. There is no F19 D22–D25 to implement.
+
+### Five coverage defects, and how each is resolved
+
+**A1 — D16's live consumer is the OWNER's marker, not the bride's screen.** D16 says the
+refund/forfeit number is computed and "two surfaces consume it". One of those two is MD3's cancel
+screen — but MD3's **interim deliberately names no number**, and the two variants that would render
+it are the parked item. So the bride-side render arrives WITH the parked copy, not with this feature.
+The owner's marker is the one live consumer, and it ships: **`OwnerBookingRow.refund_due_agorot:
+int | None`**, computed from `terms_versions.refundable_until_hours_before` / `forfeit_percent`
+against `bookings.terms_version_accepted` + `starts_at`. F19 still writes **no** `refund_due` /
+`refunded` / `forfeited` row — the port has no `refund()` and D16's "recorded, never executed" stands.
+
+**A2 — D14's backend half was in no task.** `app/booking/manage.py` branches only on `CANCELLED`
+(:131, :158), so a `pending_payment` booking renders on the bride's tokenized page as an appointment
+that stands, with a live cancel button, and `confirm_attendance` / `cancel` would ACT on an unpaid
+hold. Both must raise on `PENDING_PAYMENT`, and the lookup must render an awaiting-payment state.
+`by_manage_token_hash` has **no status predicate at all** (:183), which is exactly why the service
+must carry this guard rather than the repository.
+
+**A3 — MD3 was unbuildable: nothing on the wire said a deposit exists.** `ManageBookingFacts`
+(`booking/schemas.py:64-75`) carries `starts_at, status, attendance_confirmed_at,
+appointment_type_name, dress_name, dress_size` and no payment fact. `status` alone cannot answer it —
+MD3 must render on **any booking with a deposit**, including a `confirmed` one that was already paid.
+So `ManageBookingFacts` gains **`deposit_taken: bool`**, and `cancelConsequenceDeposit` branches on
+it. Without this field MD3's hard constraint — *must not merge with `cancelConsequenceFree` rendering
+on a deposit booking* — cannot be met at all, which makes this the highest-priority item in the list.
+
+**A4 — MD2's SMS had a body in the copy deck and no code path.** `comms_templates.py` has four bodies
+and four `*_MAX_SEGMENTS` constants; F19 adds a fifth of each, plus a public
+`BookingCommsService.notify_payment_received_no_slot(...)` — `_deliver` is private and there is no
+existing public method the honour path can call.
+
+**A5 — MD4's marker was unrenderable.** D11a's compensating path raises **before**
+`PaymentsRepository.insert` runs, so there is no `payments` row, so `payment_status` is `None` —
+byte-identical to an ordinary non-deposit booking. Yet the testing section asserts the row "carries
+MD4's marker". **Resolution: the compensating transaction WRITES a payments row** with
+`status='failed'` and `error='gateway unavailable at checkout'`, via a dedicated
+`PaymentsRepository.record_unavailable(...)`. `PaymentStatus.FAILED` already exists in the CHECK with
+no writer, and `constants.py` records that F19's brief names every remaining transition. This keeps
+**one** field — `payment_status` — answering every owner-visible case, instead of adding a second
+discriminator sourced from `audit_log`, which is not an owner surface and has no batch read.
+
+**A6 — D15 is zero work, stated so it is not filed as missing.** `packages/ui/src/components/Price.tsx`
+already renders agorot through `Intl.NumberFormat` inside `<bdi dir="ltr">`. No task needed.
+
+---
+
 ## Money decisions — recorded, not gated
 
 Gate 1 is self-approved, so these five are **positions this spec takes**, not questions it asks. They keep their original dependency order — **MD1 governs MD2 and MD3**, because those two are copy and MD1 decides what that copy is allowed to promise — and each keeps the evidence, the declined alternatives and the costing the question form carried, because that is what makes a decision auditable rather than merely made.

@@ -98,6 +98,7 @@ class BookingsRepository:
         terms_version_accepted: int,
         terms_accepted_at: datetime,
         appointment_type_name: str,
+        status: str = BookingStatus.CONFIRMED.value,
         dress_id: UUID | None = None,
         dress_name: str | None = None,
         dress_size: str | None = None,
@@ -115,13 +116,20 @@ class BookingsRepository:
         without it (the index is the backstop), but a writer that skips the
         lock races the read and hands honest customers a spurious 409. F15's
         owner-side reschedule is the next caller; owner-side creation is out of
-        F15 (Interview Q6) and belongs to the owner-created-bookings spec."""
+        F15 (Interview Q6) and belongs to the owner-created-bookings spec.
+
+        `status` defaults to the model's own server default, so every pre-F19
+        caller is byte-identical. F19's deposit flow passes `pending_payment`:
+        the booking claims the seat FIRST and the money arrives second, and a
+        held seat is an occupied seat because every occupancy predicate here
+        excludes `cancelled` and nothing else."""
         row = Booking(
             tenant_id=tenant_id,
             customer_id=customer_id,
             appointment_type_id=appointment_type_id,
             starts_at=starts_at,
             seat_index=seat_index,
+            status=status,
             terms_version_accepted=terms_version_accepted,
             terms_accepted_at=terms_accepted_at,
             appointment_type_name=appointment_type_name,
@@ -478,6 +486,7 @@ class BookingsRepository:
         *,
         at: datetime,
         by: str,
+        allowed_from: tuple[str, ...] = (BookingStatus.CONFIRMED.value,),
         not_before: datetime | None = None,
     ) -> Booking | None:
         """One statement, and the seat is freed structurally: both partial unique
@@ -485,9 +494,17 @@ class BookingsRepository:
         `status = 'cancelled'`, so this simultaneously returns the seat to the
         grid and re-opens the idempotency slot for a rebook at the same instant.
 
-        Guarded on `status = 'confirmed'` so a repeat cancel writes nothing and
+        Guarded on `status IN allowed_from` so a repeat cancel writes nothing and
         keeps the first cancellation's evidence — the caller re-reads and renders
         the same cancelled state.
+
+        `allowed_from` defaults to `('confirmed',)`, which is every pre-F19
+        caller unchanged. F19's expiry sweeper passes `('pending_payment',)`
+        (D2): releasing an abandoned deposit hold is the same write with the
+        same evidence, so it gets one widened keyword rather than a SECOND
+        writer of `cancelled_at`/`cancelled_by`. The default is also what keeps
+        the sweeper's rows invisible to the owner and customer paths, which must
+        409 on an unpaid hold rather than cancel it out from under the gateway.
 
         `None` means the predicate matched nothing, and reading it off the
         `.returning()` scalar is the ONLY way to know that. The re-read cannot
@@ -507,7 +524,7 @@ class BookingsRepository:
         predicate = [
             Booking.tenant_id == tenant_id,
             Booking.id == booking_id,
-            Booking.status == BookingStatus.CONFIRMED.value,
+            Booking.status.in_(allowed_from),
             Booking.deleted_at.is_(None),
         ]
         if not_before is not None:
@@ -516,6 +533,76 @@ class BookingsRepository:
             update(Booking)
             .where(*predicate)
             .values(status=BookingStatus.CANCELLED.value, cancelled_at=at, cancelled_by=by)
+            .returning(Booking.id)
+        )
+        if (await session.execute(stmt)).scalar_one_or_none() is None:
+            return None
+        return await self.by_id(session, tenant_id, booking_id)
+
+    async def rebind(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        booking_id: UUID,
+        *,
+        seat_index: int,
+        allowed_from: tuple[str, ...],
+        not_before: datetime,
+    ) -> Booking | None:
+        """F19 D5 step 3: a deposit that arrived after the hold was swept buys
+        back the seat she chose. One guarded UPDATE — status, seat, and the
+        clearing of the cancel evidence, together or not at all.
+
+        **It is not `set_status`.** That writer emits `.values(status=to)` and
+        NOTHING else by design (its own docstring says so), and it cannot carry
+        `seat_index`. Splitting the rebind into two statements would open a
+        window where the row reads `confirmed` at a STALE seat index — and
+        because `create_booking` hands freed seat numbers back out, that stale
+        index is very likely ANOTHER BRIDE'S SEAT.
+
+        **The cancel evidence is cleared.** A row reading `confirmed` while
+        still carrying `cancelled_at`/`cancelled_by` is the exact defect that
+        made `set_status` wrong for the cancel path, and those two columns feed
+        F52's attribution and F20's compliance read. The cancellation was
+        undone; the RECORD of it survives in the `GATEWAY_LATE_SETTLEMENT` audit
+        row and in `payments.error`.
+
+        **`not_before` is REQUIRED**, unlike on its sibling writers, where it is
+        an opt-in keyword. The provider's retry budget against a 15-minute hold
+        is unknowable until a real PSP exists, so a delivery that arrives hours
+        or days late is not a hypothetical: without the bound it would flip a
+        PAST booking to `confirmed`, mint a fresh manage token, and text the
+        bride "your appointment is confirmed" for a date that has already
+        passed, while silently re-occupying a seat in a past slot.
+
+        **`allowed_from` admits BOTH `cancelled` and `pending_payment`.**
+        `cancelled` is the ordinary case. `pending_payment` is the belt for a
+        sweeper ordering race: if the sweeper's payments UPDATE has committed
+        but its booking cancel has not yet been observed, the booking is still
+        `pending_payment`, and a narrow `('cancelled',)` would match nothing and
+        file a FALSE "seat taken" alert on a seat that is in fact free.
+
+        `None` means the predicate matched nothing, read off the `.returning()`
+        scalar for the reason `cancel` documents. It is not an error: D5 step 4
+        (hold the money, alert the owner) is the honest answer to a seat that is
+        no longer free, and `IntegrityError` from either partial unique index
+        routes to that same branch in the caller.
+        """
+        stmt = (
+            update(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.id == booking_id,
+                Booking.status.in_(allowed_from),
+                Booking.starts_at > not_before,
+                Booking.deleted_at.is_(None),
+            )
+            .values(
+                status=BookingStatus.CONFIRMED.value,
+                seat_index=seat_index,
+                cancelled_at=None,
+                cancelled_by=None,
+            )
             .returning(Booking.id)
         )
         if (await session.execute(stmt)).scalar_one_or_none() is None:

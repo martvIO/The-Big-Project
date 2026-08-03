@@ -54,12 +54,17 @@ class DressMediaStatus(StrEnum):
 
 
 class MessageKind(StrEnum):
-    # The DB pins this exact set (0007); F16 consumes the lifecycle kinds.
+    # The DB pins this exact set (0007, widened by F19's migration); F16
+    # consumes the lifecycle kinds.
     OTP = "otp"
     CONFIRMATION = "confirmation"
     REMINDER = "reminder"
     OWNER_CANCEL = "owner_cancel"
     OWNER_RESCHEDULE = "owner_reschedule"
+    # F19 MD2: her money arrived after her seat had already been given away.
+    # The deposit is held and the boutique will call — this body promises no
+    # refund and names no new time, because neither is decided at send time.
+    PAYMENT_RECEIVED_NO_SLOT = "payment_received_no_slot"
 
 
 class MessageStatus(StrEnum):
@@ -69,20 +74,36 @@ class MessageStatus(StrEnum):
 
 
 class BookingStatus(StrEnum):
-    # The DB pins this exact set (0008); E4 widens it with 'pending_payment'.
-    # Only CANCELLED frees a seat — the slot-seat unique index and every
-    # occupancy query exclude it and nothing else.
+    # The DB pins this exact set (0008, widened by F19's migration). Only
+    # CANCELLED frees a seat — the slot-seat unique index and every occupancy
+    # query exclude it and nothing else.
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
     NO_SHOW = "no_show"
     COMPLETED = "completed"
+    # F19's deposit hold: the seat IS claimed, the money is not in yet. Because
+    # every occupancy predicate excludes only CANCELLED, a held seat is an
+    # occupied seat with no index change and no query change — which is the
+    # entire reason this is a status rather than a booking_holds table.
+    #
+    # Nothing but the sweeper can move a row OUT of this state: every owner and
+    # customer verb 409s on an unpaid hold, so the sweeper is the only writer
+    # that turns it into CANCELLED and the webhook confirm is the only one that
+    # turns it into CONFIRMED.
+    PENDING_PAYMENT = "pending_payment"
 
 
 class BookingCancelledBy(StrEnum):
-    # The DB pins this exact set (0010). F15's owner cancel is the 'owner'
-    # writer; the value predates it so E4 needed no second migration.
+    # The DB pins this exact set (0010, widened by F19's migration). F15's owner
+    # cancel is the 'owner' writer; the value predates it so E4 needed no second
+    # migration for that one.
     CUSTOMER = "customer"
     OWNER = "owner"
+    # F19 MD5. Nobody cancelled it — the deposit hold ran out. Its own value
+    # rather than reusing 'customer' because MD5 turns on telling them apart: an
+    # abandoned checkout must not count against the boutique's headline
+    # cancellation rate, and `cancelled_by` is the only column that can say so.
+    EXPIRED = "expired"
 
 
 class ScheduledMessageKind(StrEnum):
@@ -204,6 +225,36 @@ class AuditAction(StrEnum):
     # searches for, and one WHERE action = … is the whole point of the split.
     GATEWAY_DUPLICATE_TRANSACTION = "gateway_duplicate_transaction"
     GATEWAY_LATE_SETTLEMENT = "gateway_late_settlement"
+    # F19's deposit flow. Same fact as every block above: audit_log.action is
+    # plain TEXT with no CHECK (0003), so these need no migration. The last two
+    # have NO actor and are failure-path writes, so they follow the
+    # commit-before-raise pattern the four above them use.
+    #
+    # The hold's own lifecycle. OPENED and EXPIRED are separate values rather
+    # than one DEPOSIT_HOLD row with a state in `details` for the reason the
+    # BOOKING_* block gives: "how many holds did we open and how many did we
+    # lose" is the question this table gets asked, and each stays one WHERE.
+    DEPOSIT_HOLD_OPENED = "deposit_hold_opened"
+    DEPOSIT_HOLD_EXPIRED = "deposit_hold_expired"
+    # The late-payment fork, and the two values are the whole point of D5: the
+    # money arrived after the seat was freed, and either it bought the seat back
+    # or it did not. UNRESOLVED is the one a human must act on — the owner is
+    # holding money for an appointment that no longer exists — so it must be
+    # findable without a JSONB predicate over a shared action value.
+    DEPOSIT_LATE_HONOURED = "deposit_late_honoured"
+    DEPOSIT_LATE_UNRESOLVED = "deposit_late_unresolved"
+    # A signature-valid webhook whose provider_session_id matches NO payment row.
+    # Real money moved and the platform has no row to attach it to — an
+    # unregistered or wrong-subdomain webhook URL is the likeliest cause. Without
+    # this value the event's only trace is a 400 in an access log, because the
+    # raise happens INSIDE `async with tenant_session` (which is session.begin())
+    # and the transaction rolls back.
+    GATEWAY_WEBHOOK_UNMATCHED = "gateway_webhook_unmatched"
+    # MD4: the gateway was unreachable at checkout, so the booking was confirmed
+    # with NO deposit taken. Not an error the bride ever sees — she gets an
+    # ordinary confirmation — which is exactly why the owner needs a record that
+    # this appointment is unsecured.
+    GATEWAY_UNAVAILABLE_AT_CHECKOUT = "gateway_unavailable_at_checkout"
 
 
 class PlatformAuditAction(StrEnum):

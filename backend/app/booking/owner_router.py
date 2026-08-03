@@ -38,6 +38,7 @@ from app.auth.service import StaffContext
 from app.booking.comms import BookingCommsService, CommsTenant
 from app.booking.owner import (
     MAX_LIST_OFFSET,
+    BookingPayment,
     OwnerBookingService,
     OwnerMutation,
 )
@@ -96,7 +97,9 @@ def _comms_tenant(tenant: TenantContext) -> CommsTenant:
     )
 
 
-def _row_fields(booking: Booking, customer: Customer | None) -> dict[str, object]:
+def _row_fields(
+    booking: Booking, customer: Customer | None, payment: BookingPayment | None
+) -> dict[str, object]:
     return {
         "id": booking.id,
         "starts_at": booking.starts_at,
@@ -108,16 +111,25 @@ def _row_fields(booking: Booking, customer: Customer | None) -> dict[str, object
         "customer_name": customer.name if customer is not None else "",
         "appointment_type_name": booking.appointment_type_name,
         "dress_name": booking.dress_name,
+        # D18 / A1. Null on every booking with no payment row, which is every
+        # booking a deposits-off boutique takes — the field is the marker, not a
+        # claim that a deposit was expected.
+        "payment_status": payment.status if payment is not None else None,
+        "refund_due_agorot": payment.refund_due_agorot if payment is not None else None,
     }
 
 
-def _row(booking: Booking, customer: Customer | None) -> OwnerBookingRow:
-    return OwnerBookingRow(**_row_fields(booking, customer))  # type: ignore[arg-type]
+def _row(
+    booking: Booking, customer: Customer | None, payment: BookingPayment | None
+) -> OwnerBookingRow:
+    return OwnerBookingRow(**_row_fields(booking, customer, payment))  # type: ignore[arg-type]
 
 
-def _detail(booking: Booking, customer: Customer | None) -> OwnerBookingDetail:
+def _detail(
+    booking: Booking, customer: Customer | None, payment: BookingPayment | None
+) -> OwnerBookingDetail:
     return OwnerBookingDetail(
-        **_row_fields(booking, customer),  # type: ignore[arg-type]
+        **_row_fields(booking, customer, payment),  # type: ignore[arg-type]
         customer_phone=customer.phone if customer is not None else "",
         notes=booking.notes,
         dress_id=booking.dress_id,
@@ -149,7 +161,11 @@ async def _customers(
 async def _detail_of(
     service: OwnerBookingService, tenant_id: uuid.UUID, booking: Booking
 ) -> OwnerBookingDetail:
-    return _detail(booking, await _customer_of(service, tenant_id, booking))
+    return _detail(
+        booking,
+        await _customer_of(service, tenant_id, booking),
+        (await service.payments_for(tenant_id, [booking])).get(booking.id),
+    )
 
 
 @router.get("/bookings")
@@ -174,8 +190,10 @@ async def list_bookings(
     tenant = get_current_tenant(request)
     rows, total = await service.list_day(tenant.id, date=date, offset=offset, limit=limit)
     customers = await _customers(service, tenant.id, {row.customer_id for row in rows})
+    # One batch read behind the page, never one per row (D18).
+    payments = await service.payments_for(tenant.id, rows)
     return OwnerBookingListResponse(
-        items=[_row(row, customers.get(row.customer_id)) for row in rows],
+        items=[_row(row, customers.get(row.customer_id), payments.get(row.id)) for row in rows],
         total=total,
         offset=offset,
         limit=limit,

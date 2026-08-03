@@ -47,10 +47,18 @@ from app.booking.validation import BOOKING_LIST_DEFAULT_LIMIT, BOOKING_LIST_MAX_
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.bookings import BookingsRepository, CheckInOutcome
 from app.db.repositories.customers import CustomersRepository
+from app.db.repositories.payments import PaymentsRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.errors import DomainValidationError
 from app.models.booking import Booking
-from app.models.constants import AuditAction, BookingCancelledBy, BookingStatus, StaffRole
+from app.models.constants import (
+    AuditAction,
+    BookingCancelledBy,
+    BookingStatus,
+    PaymentStatus,
+    StaffRole,
+)
+from app.models.payment import Payment
 from app.storefront.service import StorefrontService
 from app.storefront.validation import BOUTIQUE_TIMEZONE
 
@@ -429,6 +437,7 @@ class _Writes:
         self.set_phone: list[dict[str, Any]] = []
         self.rotations: list[dict[str, Any]] = []
         self.repoint: list[dict[str, Any]] = []
+        self.rebind: list[dict[str, Any]] = []
 
 
 def _install(
@@ -436,6 +445,7 @@ def _install(
     booking: Booking | None,
     *,
     write_result: Any = _UNSET,
+    payment_status: str | None = None,
 ) -> _Writes:
     writes = _Writes(booking)
 
@@ -518,9 +528,21 @@ def _install(
             {"action": action, "actor_id": actor_id, "entity": entity, "details": details}
         )
 
+    async def _by_booking_ids(
+        self: object, session: object, tenant_id: uuid.UUID, booking_ids: Any
+    ) -> dict[uuid.UUID, Any]:
+        # F19 D18/MD1. Default None — most bookings have no payment row at all,
+        # which is every booking a deposits-off boutique takes, and it is also
+        # what keeps an ordinary cancelled booking terminal.
+        writes.order.append("by_booking_ids")
+        if payment_status is None or booking is None:
+            return {}
+        return {booking.id: Payment(status=payment_status, amount_agorot=50_000)}
+
     monkeypatch.setattr(BookingsRepository, "by_id", _by_id)
     monkeypatch.setattr(BookingsRepository, "set_status", _set_status)
     monkeypatch.setattr(BookingsRepository, "cancel", _cancel)
+    monkeypatch.setattr(PaymentsRepository, "by_booking_ids", _by_booking_ids)
     monkeypatch.setattr(ScheduledMessagesRepository, "cancel_pending", _cancel_pending)
     monkeypatch.setattr(AuditLogRepository, "record", _record)
     return writes
@@ -854,6 +876,7 @@ def _install_reschedule(
     seats: set[int] | None = None,
     collision: Booking | None = None,
     result: Any = _UNSET,
+    rebind_result: Any = _UNSET,
     reminder: datetime.datetime | None = None,
 ) -> None:
     """Layers the reschedule-only collaborators onto `_install`'s recorder."""
@@ -902,6 +925,36 @@ def _install_reschedule(
         assert writes.loaded is not None
         return _derive(writes.loaded, starts_at=starts_at, seat_index=seat_index)
 
+    async def _rebind(
+        self: object,
+        session: object,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        seat_index: int,
+        allowed_from: tuple[str, ...],
+        not_before: datetime.datetime,
+    ) -> Booking | None:
+        # MD1's restore. The ONE writer, already shipped for D5's rebind — a
+        # second one would be a second place for the "restored without clearing
+        # `cancelled_at`" defect to live.
+        writes.order.append("rebind")
+        writes.rebind.append(
+            {"seat_index": seat_index, "allowed_from": allowed_from, "not_before": not_before}
+        )
+        if isinstance(rebind_result, BaseException):
+            raise rebind_result
+        if rebind_result is not _UNSET:
+            return cast(Booking | None, rebind_result)
+        assert writes.loaded is not None
+        return _derive(
+            writes.loaded,
+            status=CONFIRMED,
+            seat_index=seat_index,
+            cancelled_at=None,
+            cancelled_by=None,
+        )
+
     async def _upsert_reminder(session: object, **kwargs: object) -> datetime.datetime | None:
         writes.order.append("upsert_reminder")
         writes.reminder.append(dict(kwargs))
@@ -912,6 +965,7 @@ def _install_reschedule(
     monkeypatch.setattr(BookingsRepository, "active_at", _active_at)
     monkeypatch.setattr(BookingsRepository, "active_seats_at", _active_seats_at)
     monkeypatch.setattr(BookingsRepository, "reschedule", _reschedule)
+    monkeypatch.setattr(BookingsRepository, "rebind", _rebind)
 
 
 # --- step 0: the horizon guard, before any arithmetic ---
@@ -990,15 +1044,126 @@ async def test_rescheduling_an_unknown_booking_is_a_404(monkeypatch: pytest.Monk
         await _service().reschedule(TENANT_ID, uuid.uuid4(), new_starts_at=TARGET, staff=STAFF)
 
 
-@pytest.mark.parametrize("status", [CANCELLED, NO_SHOW, COMPLETED])
+@pytest.mark.parametrize("status", [NO_SHOW, COMPLETED, BookingStatus.PENDING_PAYMENT.value])
 async def test_only_a_confirmed_booking_moves(monkeypatch: pytest.MonkeyPatch, status: str) -> None:
+    """`pending_payment` is refused with the attendance outcomes and NOT with
+    MD1's `cancelled` (D14): the money is not in, the sweeper owns that row, and
+    moving a live checkout's seat would hand the bride a hosted page for a time
+    she no longer holds. Her remedy for a stuck hold is to wait one tick."""
     booking = _booking(status=status, starts_at=FUTURE)
-    writes = _install(monkeypatch, booking)
+    writes = _install(monkeypatch, booking, payment_status=PaymentStatus.PAID.value)
     _install_reschedule(monkeypatch, writes, slot=_slot())
     with pytest.raises(BookingTransitionInvalidError):
         await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
     assert writes.audit == []
     assert writes.reschedule == []
+    assert writes.rebind == []
+
+
+@pytest.mark.parametrize(
+    "payment_status",
+    [None, PaymentStatus.PENDING.value, PaymentStatus.EXPIRED.value, PaymentStatus.FAILED.value],
+)
+async def test_a_cancelled_booking_without_her_money_on_it_stays_terminal(
+    monkeypatch: pytest.MonkeyPatch, payment_status: str | None
+) -> None:
+    """MD1 widened the guard for ONE case and no other. `paid` and nothing
+    else: a pending hold is a checkout in flight, an `expired` one was never
+    honoured, and MD4's `failed` row is a booking that deliberately took no
+    deposit. Undoing an ordinary cancel is not a scheduling operation, and the
+    seat has been publicly bookable ever since."""
+    booking = _booking(status=CANCELLED, starts_at=FUTURE, cancelled_at=NOW)
+    writes = _install(monkeypatch, booking, payment_status=payment_status)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+    with pytest.raises(BookingTransitionInvalidError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert writes.audit == []
+    assert (writes.reschedule, writes.rebind) == ([], [])
+
+
+async def test_md1_a_cancelled_booking_that_still_holds_her_deposit_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MD1: her money stays connected to the thing she bought. The restore runs
+    through the SHIPPED `rebind` — the one writer that clears the cancel
+    evidence in the same UPDATE — and only then does the ordinary move run, so
+    there is exactly one place the "restored while still reading cancelled"
+    defect could live and it is already guarded."""
+    booking = _booking(
+        status=CANCELLED,
+        starts_at=FUTURE,
+        cancelled_at=NOW,
+        cancelled_by=BookingCancelledBy.EXPIRED.value,
+    )
+    writes = _install(monkeypatch, booking, payment_status=PaymentStatus.PAID.value)
+    _install_reschedule(monkeypatch, writes, slot=_slot(), seats={2})
+
+    result = await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+
+    assert result.booking.status == CONFIRMED
+    assert (result.booking.cancelled_at, result.booking.cancelled_by) == (None, None)
+    # The restore precedes the move, and admits `cancelled` only.
+    assert writes.rebind[0]["allowed_from"] == (CANCELLED,)
+    assert writes.order.index("rebind") < writes.order.index("reschedule")
+    # The seat it parks on is transient: one past the highest in use at her OLD
+    # instant, so it cannot collide with whoever took her time — which is the
+    # precise case MD1 exists for. Step 7's LOWEST-free seat overwrites it in
+    # the same transaction, so the parking index never commits.
+    assert writes.rebind[0]["seat_index"] == 3
+    assert writes.reschedule[0]["seat_index"] == 1
+    # The only surviving evidence on the row that it was ever cancelled.
+    assert writes.audit[0]["details"]["restored_from"] == CANCELLED
+
+
+async def test_md1_the_reschedule_off_cancelled_is_the_button_behind_the_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Her own time is often free again by the time the owner phones, so
+    "same instant" is a real move for a cancelled row and must not hit the
+    no-op short-circuit — a cancelled booking holds NOTHING, both partial
+    unique indexes exclude it."""
+    booking = _booking(status=CANCELLED, starts_at=TARGET, cancelled_at=NOW, cancelled_by="expired")
+    writes = _install(monkeypatch, booking, payment_status=PaymentStatus.PAID.value)
+    _install_reschedule(monkeypatch, writes, slot=_slot())
+
+    result = await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+
+    assert result.changed is True
+    assert result.booking.status == CONFIRMED
+    assert writes.reschedule[0]["starts_at"] == TARGET
+
+
+async def test_md1_a_restore_that_loses_to_a_concurrent_write_commits_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`rebind` answers `None` off its `.returning()` scalar when the predicate
+    matched nothing — somebody moved the row between the guard and here. Roll
+    back rather than commit a half-restored booking."""
+    booking = _booking(status=CANCELLED, starts_at=FUTURE, cancelled_at=NOW)
+    writes = _install(monkeypatch, booking, payment_status=PaymentStatus.PAID.value)
+    _install_reschedule(monkeypatch, writes, slot=_slot(), rebind_result=None)
+    with pytest.raises(BookingTransitionInvalidError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert (writes.reschedule, writes.audit) == ([], [])
+
+
+async def test_md1_a_collision_on_the_restore_is_a_409_and_never_a_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reschedule off `cancelled` re-enters BOTH partial unique indexes, and
+    `main.py` registers no `IntegrityError` handler — so an uncaught flush here
+    is a 500 on the one path this feature exists to serve."""
+    booking = _booking(status=CANCELLED, starts_at=FUTURE, cancelled_at=NOW)
+    writes = _install(monkeypatch, booking, payment_status=PaymentStatus.PAID.value)
+    _install_reschedule(
+        monkeypatch,
+        writes,
+        slot=_slot(),
+        rebind_result=IntegrityError("insert", {}, Exception("duplicate key")),
+    )
+    with pytest.raises(SlotUnavailableError):
+        await _service().reschedule(TENANT_ID, booking.id, new_starts_at=TARGET, staff=STAFF)
+    assert writes.audit == []
 
 
 async def test_a_past_booking_cannot_be_rewritten_into_next_week(

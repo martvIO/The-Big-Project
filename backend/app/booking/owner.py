@@ -34,7 +34,9 @@ from app.db.repositories.availability import (
 )
 from app.db.repositories.bookings import BookingsRepository, CheckInOutcome
 from app.db.repositories.customers import CustomersRepository
+from app.db.repositories.payments import PaymentsRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
+from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainValidationError
 from app.models.booking import Booking
@@ -42,9 +44,11 @@ from app.models.constants import (
     AuditAction,
     BookingCancelledBy,
     BookingStatus,
+    PaymentStatus,
     ScheduledMessageKind,
 )
 from app.models.customer import Customer
+from app.models.terms_version import TermsVersion
 from app.notifications.validation import normalize_israeli_mobile
 from app.storefront.service import StorefrontService
 from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock
@@ -92,6 +96,55 @@ def _last4(phone: str | None) -> str | None:
     return phone[-4:] if phone else None
 
 
+def refund_due_agorot(
+    *,
+    amount_agorot: int,
+    starts_at: datetime.datetime,
+    at: datetime.datetime,
+    refundable_until_hours_before: int,
+    forfeit_percent: int,
+) -> int:
+    """D16, and A1's live consumer is the owner's marker.
+
+    COMPUTED, never stored: the port ships no `refund()` and `forfeit_percent`
+    is a percentage, so F19 writes no `refund_due` / `refunded` / `forfeited`
+    row anywhere — this number is rendered and nothing else. F29 owns execution.
+
+    Both inputs come from the terms version she ACCEPTED, never the current one:
+    a boutique that republishes its policy must not retroactively rewrite what a
+    booked bride is owed.
+
+    `at` is the instant the consequence is evaluated at — `cancelled_at` on a
+    cancelled booking, `now` on a live one, which is `owner.cancel`'s own stated
+    rule. The cutoff hour itself is still INSIDE the window: "refundable until 48
+    hours before" includes the 48th, and the alternative silently forfeits half a
+    deposit for a bride who cancelled exactly on time.
+
+    The rounding agora goes to the customer: the boutique forfeits the floor of
+    its percentage and she is refunded the remainder (D15 — integer agorot end
+    to end, so it has to land somewhere and this is the side it lands on).
+    """
+    cutoff = starts_at - datetime.timedelta(hours=refundable_until_hours_before)
+    if at <= cutoff:
+        return amount_agorot
+    return amount_agorot - amount_agorot * forfeit_percent // 100
+
+
+@dataclasses.dataclass(frozen=True)
+class BookingPayment:
+    """What the owner's row says about the money on one booking (D18 + A1).
+
+    ONE field answers every owner-visible case rather than a second
+    discriminator sourced from `audit_log` (which no router reads): `paid` on a
+    `cancelled` booking is the action-needed marker MD1's reschedule is the
+    button behind, and `failed` is MD4's "booked without a deposit, the payment
+    provider was unavailable".
+    """
+
+    status: str
+    refund_due_agorot: int | None
+
+
 @dataclasses.dataclass(frozen=True)
 class OwnerMutation:
     """What every owner mutation answers, and why it is not a bare `Booking` —
@@ -135,6 +188,8 @@ class OwnerBookingService:
         self._clock = clock
         self._bookings = BookingsRepository()
         self._customers = CustomersRepository()
+        self._payments = PaymentsRepository()
+        self._terms = TermsVersionsRepository()
         self._scheduled = ScheduledMessagesRepository()
         self._audit = AuditLogRepository()
         self._rules = AvailabilityRulesRepository()
@@ -214,6 +269,62 @@ class OwnerBookingService:
         async with tenant_session(self._session_factory, tenant_id) as session:
             rows = await self._customers.by_ids(session, tenant_id, ids)
         return {row.id: row for row in rows}
+
+    async def payments_for(
+        self, tenant_id: uuid.UUID, bookings: Iterable[Booking]
+    ) -> dict[uuid.UUID, BookingPayment]:
+        """The marker on every row that has one (D18), keyed for the caller.
+
+        ONE batch read behind the page, never one per row — the
+        `customers_for` precedent, and the reason `by_booking_ids` exists.
+        Bookings with no payment row are simply absent from the map, which is
+        every booking a deposits-off boutique takes.
+
+        The terms lookup is per DISTINCT accepted version rather than per row,
+        and only for the paid ones: a day's bookings almost always share one
+        version, so this is one extra statement, not N.
+        """
+        rows = list(bookings)
+        if not rows:
+            return {}
+        now = self._now()
+        facts: dict[uuid.UUID, BookingPayment] = {}
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            payments = await self._payments.by_booking_ids(
+                session, tenant_id, [row.id for row in rows]
+            )
+            if not payments:
+                return {}
+            accepted: dict[int, TermsVersion | None] = {}
+            for booking in rows:
+                payment = payments.get(booking.id)
+                if payment is None:
+                    continue
+                refund: int | None = None
+                # Only money actually taken has a refund question. A pending
+                # hold, a swept `expired` one and MD4's `failed` marker all mean
+                # nothing moved, so the honest answer is no number at all.
+                if payment.status == PaymentStatus.PAID.value:
+                    version = booking.terms_version_accepted
+                    if version not in accepted:
+                        accepted[version] = await self._terms.by_version(
+                            session, tenant_id, version
+                        )
+                    terms = accepted[version]
+                    if terms is not None:
+                        refund = refund_due_agorot(
+                            amount_agorot=payment.amount_agorot,
+                            starts_at=booking.starts_at,
+                            # The consequence is evaluated at the moment she
+                            # cancelled, not at the moment the owner opened the
+                            # list — `owner.cancel`'s own rule, and the reason a
+                            # cancel is refused on an attended booking.
+                            at=booking.cancelled_at or now,
+                            refundable_until_hours_before=terms.refundable_until_hours_before,
+                            forfeit_percent=terms.forfeit_percent,
+                        )
+                facts[booking.id] = BookingPayment(status=payment.status, refund_due_agorot=refund)
+        return facts
 
     async def list_slots(
         self,
@@ -548,6 +659,17 @@ class OwnerBookingService:
 
         Eight steps in one transaction, and the ORDER is the correctness
         argument, not an implementation detail.
+
+        **MD1 widened step 2 to admit `cancelled`, and ONLY with her money still
+        on the row.** A bride whose deposit landed after the sweeper released her
+        seat keeps the deposit and gets a new time; this is the button behind
+        D18's marker, and without it that marker tells the owner THAT something
+        is wrong with nothing to do about it. Her alternative was rebooking on
+        the storefront, which opens a SECOND hold and charges a SECOND deposit.
+
+        Not D5's rebind, which restores her own seat at her own time
+        automatically when it is still free. This is what the owner does
+        afterwards, by hand and by phone, when it is not.
         """
         now = self._now()
         # 0. Before ANY arithmetic on `new_starts_at`. `AwareDatetime` accepts
@@ -577,24 +699,41 @@ class OwnerBookingService:
                 {"tenant_id": str(tenant_id)},
             )
 
-            # 2. Load and guard. Only a confirmed FUTURE booking moves: a
-            #    cancelled one is terminal, and a past one is an attendance
-            #    question — rewriting its `starts_at` would overwrite the record
-            #    D3 forbids lying about and text the bride a confirmation for
-            #    the appointment she missed.
+            # 2. Load and guard. A FUTURE booking that is confirmed, or one that
+            #    is cancelled and still holds her deposit (MD1). A past one is an
+            #    attendance question either way — rewriting its `starts_at` would
+            #    overwrite the record D3 forbids lying about and text the bride a
+            #    confirmation for the appointment she missed.
             booking = await self._bookings.by_id(session, tenant_id, booking_id)
             if booking is None:
                 raise BookingNotFoundError
-            if booking.status != BookingStatus.CONFIRMED.value:
+            if booking.status not in (
+                BookingStatus.CONFIRMED.value,
+                BookingStatus.CANCELLED.value,
+            ):
+                # `pending_payment` is refused with everything else: the money is
+                # not in, the sweeper owns that row, and moving a live checkout's
+                # seat would hand the bride a hosted page for a time she no
+                # longer holds.
                 raise BookingTransitionInvalidError(f"reschedule from {booking.status}")
             if booking.starts_at <= now:
                 raise BookingTransitionInvalidError("reschedule after starts_at")
+            restoring = booking.status == BookingStatus.CANCELLED.value
+            if restoring and not await self._holds_a_paid_deposit(session, tenant_id, booking_id):
+                # A cancellation with no money behind it is terminal, exactly as
+                # it was before MD1: undoing an ordinary customer or owner cancel
+                # is not a scheduling operation, and the seat has been publicly
+                # bookable ever since.
+                raise BookingTransitionInvalidError("reschedule from cancelled without a deposit")
 
             # 3. The no-op, and it is load-bearing rather than a nicety:
             #    `active_at` and `active_seats_at` have no booking-id exclusion,
             #    so a move to the instant this row already holds would find
             #    itself and 409 a capacity-1 booking against its own seat.
-            if new_starts_at == booking.starts_at:
+            #    A cancelled row holds NOTHING — both partial unique indexes
+            #    exclude it — so the same instant is a real move for it, and the
+            #    common one: her own time is often free again.
+            if new_starts_at == booking.starts_at and not restoring:
                 return OwnerMutation(booking=booking, changed=False)
 
             # 4. One call buys past instants, off-grid times, closed and
@@ -650,6 +789,10 @@ class OwnerBookingService:
             old_starts_at = booking.starts_at
             old_seat_index = booking.seat_index
             try:
+                if restoring:
+                    await self._restore(
+                        session, tenant_id, booking_id, starts_at=old_starts_at, now=now
+                    )
                 updated = await self._bookings.reschedule(
                     session,
                     tenant_id,
@@ -698,6 +841,12 @@ class OwnerBookingService:
                     "new_starts_at": slot.starts_at.isoformat(),
                     "old_seat_index": old_seat_index,
                     "new_seat_index": seat_index,
+                    # Only on MD1's branch, so the confirmed path's row is
+                    # unchanged. It is also the ONLY surviving evidence on this
+                    # row that the booking was ever cancelled: the restore clears
+                    # `cancelled_at` and `cancelled_by` by design (D5), and
+                    # `bookings` has no history table.
+                    **({"restored_from": BookingStatus.CANCELLED.value} if restoring else {}),
                 },
             )
             result = OwnerMutation(booking=updated)
@@ -709,6 +858,64 @@ class OwnerBookingService:
         # post-send value to branch on anyway.
         self._sms_limiter.record_failure(budget)
         return result
+
+    async def _holds_a_paid_deposit(
+        self, session: AsyncSession, tenant_id: uuid.UUID, booking_id: uuid.UUID
+    ) -> bool:
+        """MD1's precondition: her money is still on this booking.
+
+        `paid` and nothing else. A pending hold is a checkout in flight, an
+        `expired` one is a hold that was never honoured, and MD4's `failed` row
+        is a booking that deliberately took no deposit — none of the three is a
+        reason to resurrect a cancelled appointment, and doing so on the strength
+        of `cancelled_by = 'expired'` alone would resurrect every ABANDONED
+        checkout, which is the common case and has no money behind it at all.
+        """
+        payment = (await self._payments.by_booking_ids(session, tenant_id, [booking_id])).get(
+            booking_id
+        )
+        return payment is not None and payment.status == PaymentStatus.PAID.value
+
+    async def _restore(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        *,
+        starts_at: datetime.datetime,
+        now: datetime.datetime,
+    ) -> None:
+        """MD1's first statement: `cancelled` back to `confirmed`, with the
+        cancel evidence cleared in the SAME update.
+
+        `rebind` is that writer and F19 already shipped it — a second one would
+        be a second place for the "restore without clearing `cancelled_at`"
+        defect to live, and a row reading `confirmed` while carrying cancel
+        evidence is exactly what D2 refuses `set_status` over. Both columns feed
+        F52's attribution and F20's compliance read.
+
+        **The seat it parks on is transient and never commits.** `rebind` cannot
+        move `starts_at`, so between it and step 7's move the row is briefly back
+        at its ORIGINAL instant — where `idx_bookings_slot_seat_unique` applies
+        again the moment it stops being `cancelled`. Parking on her old seat, or
+        on the target's, would collide with whoever took her time, which is the
+        precise case MD1 exists for: the 409 would land on the only bookings this
+        feature can help. One index past the highest seat in use at that instant
+        is free by construction; step 7 overwrites it in the same transaction.
+        """
+        occupied = await self._bookings.active_seats_at(session, tenant_id, starts_at=starts_at)
+        restored = await self._bookings.rebind(
+            session,
+            tenant_id,
+            booking_id,
+            seat_index=max(occupied, default=0) + 1,
+            allowed_from=(BookingStatus.CANCELLED.value,),
+            not_before=now,
+        )
+        if restored is None:
+            # Somebody moved the row between step 2 and here. Roll back rather
+            # than commit a half-restored booking.
+            raise BookingTransitionInvalidError("restore lost to a concurrent write")
 
     @staticmethod
     def _sms_budget_key(tenant_id: uuid.UUID) -> str:

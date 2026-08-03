@@ -117,6 +117,13 @@ export const he = {
       // is about an hour, so "try again in a moment" would be a lie.
       bookingBudget:
         "ניסית לקבוע כמה תורים בזמן קצר. אפשר לנסות שוב עוד כשעה, ואפשר פשוט להתקשר אלינו ונקבע יחד מועד.",
+      // A 409 on confirm-attendance or cancel against an unpaid hold (F19 A2).
+      // Its OWN code on the wire rather than a reuse of BOOKING_CANCELLED, and
+      // its own string here for the same reason: an unpaid hold is neither
+      // cancelled nor standing, and the cancelled copy would tell a bride
+      // mid-checkout that her appointment is gone. The manage page suppresses
+      // both controls, so this is the belt for a screen that was already open.
+      bookingAwaitingPayment: "התור הזה ממתין לתשלום המקדמה, ולכן אי אפשר לעדכן אותו כרגע.",
     },
 
     gallery: {
@@ -252,6 +259,38 @@ export const he = {
       // booking behind it. It may not assert one it has no evidence for.
       confirmCold: "אם השלמת את קביעת התור, הוא קיים — ואפשר להתקשר ונאשר לך את הפרטים.",
 
+      // --- the deposit hand-off (F19). Five states on one step. -------------
+      //
+      // ONE static h1 over all five: the poll's answer changes what the page
+      // SAYS, and an h1 that changed with it would rewrite the page's own name
+      // under a screen reader mid-wait.
+      payTitle: "תשלום מקדמה",
+      // State A. The automatic redirect fires beside it, and the two keys below
+      // are the fallback for a browser that blocks it — on this surface a
+      // blocked redirect with no visible link is a dead end on her money.
+      payHandoff: "מעבירים אותך לתשלום",
+      payManualHint: "אם הדף לא נפתח מעצמו, אפשר לעבור אליו מכאן.",
+      // Serves the hand-off AND the decline: it is the SAME hold and the SAME
+      // link (D8/D11b), so a second label promising a second attempt would be
+      // describing something the product does not do.
+      payManualCta: "מעבר לתשלום",
+      // State B. Deliberately present-tense and unfinished: the webhook is what
+      // makes a payment true, and coming back from the hosted page proves only
+      // that she pressed a button.
+      payAwaiting: "מאשרים את התשלום",
+      // State D. Not "the payment failed" as an accusation, and no sum: the hold
+      // already fixed the amount and this screen may not restate it.
+      payDeclined: "התשלום לא הושלם",
+      payDeclinedBody: "אפשר להשלים את התשלום על אותה קביעת תור ובאותו סכום.",
+      // State E. The seat was freed by the sweeper, so the way forward is the
+      // ordinary slot picker and NOT the old checkout link.
+      payExpired: "הזמן שמור לך פג",
+      // The state that gets forgotten: the bounded poll ran out with no terminal
+      // answer. It may not say the payment failed — her card may well have been
+      // charged — and it must say "do not pay again" before anything else.
+      payUnresolved:
+        "עדיין לא קיבלנו אישור על התשלום. אין צורך לשלם שוב — נשמח שתתקשרי אלינו ונבדוק יחד.",
+
       typeGoneRepick: "סוג הפגישה שבחרת כבר אינו זמין. אפשר לבחור סוג אחר מהרשימה המעודכנת.",
       dressGoneGeneric:
         "השמלה שבחרת כבר אינה זמינה. אפשר להמשיך ולקבוע פגישת מדידה רגילה — נשמח למצוא איתך דגמים דומים.",
@@ -295,9 +334,30 @@ export const he = {
       // deposit that was never taken would be a lie. The in/out-of-window split
       // ships as structure and E4 swaps the out-of-window key.
       cancelConsequenceFree: "לא נגבה תשלום על התור, כך שהביטול אינו כרוך בעלות.",
+      // MD3, and the edit F19 cannot merge without. The sentence above becomes
+      // FALSE the day a deposit exists — for a bride who has already read it —
+      // so this one replaces it on ANY booking that took a deposit, branching on
+      // the wire's `deposit_taken` and NOT on status: a confirmed booking paid
+      // weeks ago has a deposit too.
+      //
+      // Neutral by design and INTERIM. The two window-specific sentences — the
+      // deposit comes back, the boutique keeps some of it — are the one item
+      // parked for the user, because they tell a bride who paid a deposit what she is
+      // entitled to be repaid, and no engineer may invent that. This one is true
+      // under either answer, names no sum and no window, and becomes a string
+      // swap when they land.
+      cancelConsequenceDeposit: "המקדמה מטופלת בהתאם למדיניות הביטולים של הבוטיק.",
       // The screen's only `danger` control — the click that destroys.
       cancelConfirm: "אישור הביטול",
       cancelKeep: "השארת התור",
+
+      // An unpaid deposit hold (F19 A2). Its own state beside the cancelled one:
+      // the seat IS claimed and the appointment is neither cancelled nor
+      // standing, so both actions are absent rather than disabled — the server
+      // 409s on either regardless, and there is nothing to word on a control
+      // that cannot act. `invalidHint` is reused beneath it: the payload carries
+      // no checkout link, so the phone is the whole of the way forward.
+      awaitingPayment: "התור שמור עבורך וממתין לתשלום המקדמה.",
 
       // The cancelled state's line, and what the status region announces. Plain
       // fact, no guilt.

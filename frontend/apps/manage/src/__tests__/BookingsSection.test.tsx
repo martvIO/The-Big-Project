@@ -33,6 +33,8 @@ function row(overrides: Partial<OwnerBookingRow> = {}): OwnerBookingRow {
     customer_name: "מיכל לוי",
     appointment_type_name: "מדידה ראשונה",
     dress_name: "שמלת אלמה",
+    payment_status: null,
+    refund_due_agorot: null,
     ...overrides,
   };
 }
@@ -238,12 +240,101 @@ describe("BookingsSection status badges", () => {
   });
 });
 
+describe("BookingsSection payment marker", () => {
+  // D18/MD4: the marker's whole point is that the shortfall is visible WITHOUT
+  // opening the booking. A row that reads identically to an ordinary one is the
+  // "discovered at reconciliation" outcome MD4 exists to prevent.
+  it("distinguishes a cancelled-but-paid row from an ordinary one (race row #5)", async () => {
+    listBookings.mockResolvedValue(
+      day([
+        row({ id: "b1", customer_name: "מיכל לוי" }),
+        row({
+          id: "b2",
+          status: "cancelled",
+          payment_status: "paid",
+          customer_name: "נועה כהן",
+        }),
+      ]),
+    );
+    render(<BookingsSection />);
+    await screen.findByText("נועה כהן");
+
+    const [ordinary, flagged] = screen.getAllByRole("listitem");
+    // The WORD, not the hue — greyscale and forced-colours have to carry it.
+    expect(within(flagged).getByTestId("booking-row-payment")).toHaveTextContent("שולם");
+    expect(within(flagged).getByTestId("booking-row-payment-action")).toHaveTextContent(
+      "דרושה פעולה: התור בוטל והפיקדון עדיין מוחזק בבוטיק.",
+    );
+    expect(within(ordinary).queryByTestId("booking-row-payment")).toBeNull();
+    expect(within(ordinary).queryByTestId("booking-row-payment-action")).toBeNull();
+  });
+
+  it("distinguishes MD4's confirmed-but-unpaid row from an ordinary one", async () => {
+    listBookings.mockResolvedValue(
+      day([
+        row({ id: "b1", customer_name: "מיכל לוי" }),
+        row({
+          id: "b2",
+          status: "confirmed",
+          payment_status: "failed",
+          customer_name: "שיר אברהם",
+        }),
+      ]),
+    );
+    render(<BookingsSection />);
+    await screen.findByText("שיר אברהם");
+
+    const [ordinary, flagged] = screen.getAllByRole("listitem");
+    expect(within(flagged).getByTestId("booking-row-payment")).toHaveTextContent("נכשל");
+    expect(within(flagged).getByTestId("booking-row-payment-action")).toHaveTextContent(
+      "דרושה פעולה: התור נקבע ללא פיקדון, משום שספק הסליקה לא היה זמין בעת ההזמנה.",
+    );
+    // Both rows stand `confirmed`: the status chip alone cannot tell them apart,
+    // which is the entire defect.
+    expect(within(flagged).getByTestId("booking-status")).toHaveTextContent("מאושר");
+    expect(within(ordinary).getByTestId("booking-status")).toHaveTextContent("מאושר");
+    expect(within(ordinary).queryByTestId("booking-row-payment-action")).toBeNull();
+  });
+
+  it("does not cry wolf on the ordinary paid booking", async () => {
+    listBookings.mockResolvedValue(day([row({ payment_status: "paid" })]));
+    render(<BookingsSection />);
+    await screen.findByText("מיכל לוי");
+
+    // The chip states the money fact; only the two combinations that need a
+    // human get the action sentence.
+    expect(screen.getByTestId("booking-row-payment")).toHaveTextContent("שולם");
+    expect(screen.queryByTestId("booking-row-payment-action")).toBeNull();
+  });
+
+  it("keeps the status chip the only status Badge on a flagged row", async () => {
+    listBookings.mockResolvedValue(
+      day([row({ status: "cancelled", payment_status: "paid" })]),
+    );
+    render(<BookingsSection />);
+    await screen.findByText("מיכל לוי");
+
+    const item = screen.getByRole("listitem");
+    expect(within(item).getAllByTestId("booking-status")).toHaveLength(1);
+    // One affordance per row still — the marker adds no second tab stop.
+    expect(within(item).getAllByRole("button")).toHaveLength(1);
+  });
+});
+
 describe("BookingsSection accessibility", () => {
   it("passes axe with zero violations on the loaded list", async () => {
     listBookings.mockResolvedValue(
       day([
         row({ id: "b1", status: "confirmed", attendance_confirmed_at: "2026-08-03T09:00:00Z" }),
-        row({ id: "b2", status: "cancelled", customer_name: "נועה כהן", dress_name: null }),
+        // Carries D18's marker: the danger text inside a row button is the one
+        // contrast pairing the list did not previously have.
+        row({
+          id: "b2",
+          status: "cancelled",
+          payment_status: "paid",
+          customer_name: "נועה כהן",
+          dress_name: null,
+        }),
       ]),
     );
     const { container } = renderInShell(<BookingsSection />);

@@ -1157,6 +1157,271 @@ async def test_undo_check_in_answers_missing_for_a_soft_deleted_row(app_role_url
         await engine.dispose()
 
 
+# --- F19: the deposit hold's two writers ---
+
+
+async def test_cancel_allowed_from_widens_to_the_deposit_hold(app_role_url: str) -> None:
+    """F19 D2: the sweeper's seat release is `cancel` with one widened guard, not
+    a second writer of `cancelled_at`/`cancelled_by`.
+
+    The default is `('confirmed',)`, so every shipped caller is byte-identical —
+    and that default is exactly what makes the sweeper's row invisible to them:
+    no owner or customer path can cancel an unpaid hold out from under the
+    gateway.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            confirmed_customer = await customers.upsert(
+                session, tenant_id, phone=_phone(), name="נועה"
+            )
+            held_customer = await customers.upsert(session, tenant_id, phone=_phone(), name="רות")
+            confirmed = await _insert_booking(
+                bookings, session, tenant_id, confirmed_customer.id, starts_at=T0, seat_index=1
+            )
+            held = await _insert_booking(
+                bookings,
+                session,
+                tenant_id,
+                held_customer.id,
+                starts_at=T0,
+                seat_index=2,
+                status=BookingStatus.PENDING_PAYMENT.value,
+            )
+            assert held.status == BookingStatus.PENDING_PAYMENT.value
+            # A held seat is an OCCUPIED seat: every occupancy predicate excludes
+            # `cancelled` and nothing else.
+            assert await bookings.active_seats_at(session, tenant_id, starts_at=T0) == {1, 2}
+
+            # The default guard refuses the hold...
+            assert (
+                await bookings.cancel(
+                    session, tenant_id, held.id, at=NOW, by=BookingCancelledBy.EXPIRED.value
+                )
+                is None
+            )
+            still_held = await bookings.by_id(session, tenant_id, held.id)
+            assert still_held is not None
+            assert still_held.status == BookingStatus.PENDING_PAYMENT.value
+
+            # ...and the sweeper's guard refuses a confirmed booking, which is
+            # what stops a stray sweep from cancelling a paid appointment.
+            assert (
+                await bookings.cancel(
+                    session,
+                    tenant_id,
+                    confirmed.id,
+                    at=NOW,
+                    by=BookingCancelledBy.EXPIRED.value,
+                    allowed_from=(BookingStatus.PENDING_PAYMENT.value,),
+                )
+                is None
+            )
+
+            swept = await bookings.cancel(
+                session,
+                tenant_id,
+                held.id,
+                at=NOW,
+                by=BookingCancelledBy.EXPIRED.value,
+                allowed_from=(BookingStatus.PENDING_PAYMENT.value,),
+            )
+            assert swept is not None
+            assert swept.status == BookingStatus.CANCELLED.value
+            assert swept.cancelled_at == NOW
+            # MD5: nobody cancelled it, the hold ran out — and `cancelled_by` is
+            # the only column that can keep it out of the cancellation rate.
+            assert swept.cancelled_by == BookingCancelledBy.EXPIRED.value
+            assert await bookings.active_seats_at(session, tenant_id, starts_at=T0) == {1}
+
+            # The shipped confirmed path is untouched by the new keyword.
+            cancelled = await bookings.cancel(
+                session, tenant_id, confirmed.id, at=NOW, by=BookingCancelledBy.OWNER.value
+            )
+            assert cancelled is not None
+            assert cancelled.status == BookingStatus.CANCELLED.value
+    finally:
+        await engine.dispose()
+
+
+async def test_rebind_reinstates_the_seat_and_clears_the_cancel_evidence(
+    app_role_url: str,
+) -> None:
+    """F19 D5 step 3, as ONE statement. Splitting it would leave a window where
+    the row reads `confirmed` at a stale seat index — and because `create_booking`
+    hands freed seat numbers back out, that stale index is very likely another
+    bride's seat.
+
+    Both `cancelled_at` and `cancelled_by` are cleared, because a row reading
+    `confirmed` while carrying cancel evidence is the exact defect that made
+    `set_status` wrong for the cancel path, and those two columns feed F52's
+    attribution and F20's compliance read.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="מאיה")
+            booking = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=1
+            )
+            swept = await bookings.cancel(
+                session, tenant_id, booking.id, at=NOW, by=BookingCancelledBy.EXPIRED.value
+            )
+            assert swept is not None
+
+            reinstated = await bookings.rebind(
+                session,
+                tenant_id,
+                booking.id,
+                seat_index=3,
+                allowed_from=(
+                    BookingStatus.CANCELLED.value,
+                    BookingStatus.PENDING_PAYMENT.value,
+                ),
+                not_before=NOW,
+            )
+            assert reinstated is not None
+            assert reinstated.status == BookingStatus.CONFIRMED.value
+            assert reinstated.seat_index == 3
+            assert reinstated.cancelled_at is None
+            assert reinstated.cancelled_by is None
+            assert await bookings.active_seats_at(session, tenant_id, starts_at=T0) == {3}
+    finally:
+        await engine.dispose()
+
+
+async def test_rebind_admits_the_hold_status_for_the_sweeper_ordering_race(
+    app_role_url: str,
+) -> None:
+    """D5's fourth bullet, and D6 race #13. If the sweeper's payments UPDATE has
+    committed but its booking cancel has not been observed, the booking is still
+    `pending_payment` — a narrow `('cancelled',)` would match nothing and file a
+    FALSE "seat taken" alert on a seat that is in fact free."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="שירה")
+            held = await _insert_booking(
+                bookings,
+                session,
+                tenant_id,
+                customer.id,
+                starts_at=T0,
+                seat_index=1,
+                status=BookingStatus.PENDING_PAYMENT.value,
+            )
+
+            assert (
+                await bookings.rebind(
+                    session,
+                    tenant_id,
+                    held.id,
+                    seat_index=1,
+                    allowed_from=(BookingStatus.CANCELLED.value,),
+                    not_before=NOW,
+                )
+                is None
+            )
+
+            honoured = await bookings.rebind(
+                session,
+                tenant_id,
+                held.id,
+                seat_index=1,
+                allowed_from=(
+                    BookingStatus.CANCELLED.value,
+                    BookingStatus.PENDING_PAYMENT.value,
+                ),
+                not_before=NOW,
+            )
+            assert honoured is not None
+            assert honoured.status == BookingStatus.CONFIRMED.value
+            assert honoured.seat_index == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_rebind_refuses_a_past_booking_and_an_unknown_id(app_role_url: str) -> None:
+    """`not_before` is REQUIRED on this writer, unlike on its siblings. The
+    provider's retry budget against a 15-minute hold is unknowable until a real
+    PSP exists, so without the bound a delivery days late would flip a PAST
+    booking to `confirmed`, mint a fresh manage token, and text the bride
+    "your appointment is confirmed" for a date that has already gone — while
+    silently re-occupying a seat in a past slot.
+
+    Every miss is `None`, never an exception: D5 step 4 is a real branch (alert
+    the owner, hold the money), not an error path."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customers = CustomersRepository()
+    bookings = BookingsRepository()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await customers.upsert(session, tenant_id, phone=_phone(), name="תמר")
+            past = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=PAST_SLOT, seat_index=1
+            )
+            await bookings.cancel(
+                session, tenant_id, past.id, at=NOW, by=BookingCancelledBy.EXPIRED.value
+            )
+
+            assert (
+                await bookings.rebind(
+                    session,
+                    tenant_id,
+                    past.id,
+                    seat_index=1,
+                    allowed_from=(BookingStatus.CANCELLED.value,),
+                    not_before=NOW,
+                )
+                is None
+            )
+            unchanged = await bookings.by_id(session, tenant_id, past.id)
+            assert unchanged is not None
+            assert unchanged.status == BookingStatus.CANCELLED.value
+            assert unchanged.cancelled_by == BookingCancelledBy.EXPIRED.value
+
+            assert (
+                await bookings.rebind(
+                    session,
+                    tenant_id,
+                    uuid.uuid4(),
+                    seat_index=1,
+                    allowed_from=(BookingStatus.CANCELLED.value,),
+                    not_before=NOW,
+                )
+                is None
+            )
+
+            future = await _insert_booking(
+                bookings, session, tenant_id, customer.id, starts_at=T0, seat_index=1
+            )
+            future.deleted_at = datetime.datetime.now(datetime.UTC)
+            await session.flush()
+            assert (
+                await bookings.rebind(
+                    session,
+                    tenant_id,
+                    future.id,
+                    seat_index=2,
+                    allowed_from=(BookingStatus.CONFIRMED.value,),
+                    not_before=NOW,
+                )
+                is None
+            )
+    finally:
+        await engine.dispose()
+
+
 def _f13_table_count(url: str) -> int:
     async def count() -> int:
         engine = create_async_engine(url)

@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Badge, Button, Card, Input, Modal, Skeleton } from "@boutique/ui";
+import { Badge, Button, Card, Input, Modal, Price, Skeleton } from "@boutique/ui";
 import { api, ApiError, errorMessage } from "../api";
 import type { OwnerBookingDetail } from "../api";
-import { bookingErrorText, isolateLtr, statusBadge } from "../lib/booking";
+import {
+  bookingErrorText,
+  isolateLtr,
+  paymentActionKey,
+  paymentBadge,
+  statusBadge,
+} from "../lib/booking";
 import { jerusalemDate, jerusalemTime } from "../lib/jerusalem";
 import { RescheduleDialog } from "./RescheduleDialog";
 
@@ -203,6 +209,15 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
   const isNoShow = detail?.status === "no_show";
   const isCompleted = detail?.status === "completed";
   const isCancelled = detail?.status === "cancelled";
+  // The sixth branch. A `pending_payment` booking satisfied none of the five
+  // above, so this panel used to render with no state and no action set at all.
+  const isAwaitingPayment = detail?.status === "pending_payment";
+  // MD1: the deposit is held and the appointment is gone. This is the one
+  // cancelled booking that is not a dead end — `owner.reschedule` is widened to
+  // admit it, restoring the booking in the same UPDATE that moves it.
+  const cancelledPaid = isCancelled && detail?.payment_status === "paid";
+  const paymentAction =
+    detail === null ? null : paymentActionKey(detail.status, detail.payment_status);
   const busy = pending !== null;
 
   return (
@@ -384,6 +399,35 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
                     : t("booking.cancelledByCustomer")}
                 </Fact>
               )}
+              {/* D18. A second Badge on the screen, in a different region from
+                  the status chip that owns the heading — the money fact is not
+                  a restatement of the appointment's state, and on exactly the
+                  two rows below the two disagree. */}
+              {detail.payment_status !== null && (
+                <Fact label={t("booking.payment")}>
+                  <Badge
+                    variant={paymentBadge(detail.payment_status).variant}
+                    data-testid="booking-payment"
+                  >
+                    {t(paymentBadge(detail.payment_status).labelKey)}
+                  </Badge>
+                </Fact>
+              )}
+              {/* A1/D15: integer agorot on the wire, divided by 100 exactly
+                  once, inside <Price>, which already isolates the run. */}
+              {detail.refund_due_agorot !== null && (
+                <Fact label={t("booking.refundDue")}>
+                  <Price agorot={detail.refund_due_agorot} visible hiddenLabel="" />
+                </Fact>
+              )}
+              {paymentAction !== null && (
+                // Not role="alert": nothing just happened, this is a standing
+                // fact about the row. Colour is not the signal either — the
+                // sentence opens «דרושה פעולה».
+                <p data-testid="booking-payment-action" className="text-sm text-danger">
+                  {t(paymentAction)}
+                </p>
+              )}
             </div>
 
             <div className="space-y-2 border-t border-border pt-4">
@@ -408,10 +452,41 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
           <Card className="space-y-4">
             <h3 className="text-base font-semibold text-ink">{t("booking.actionsHeading")}</h3>
 
-            {isCancelled ? (
-              // `cancelled` is terminal and owner-created bookings are out of
-              // scope, so the honest remedy is the storefront rebook.
+            {cancelledPaid ? (
+              // MD1. «תור שבוטל אינו ניתן לשחזור» is FALSE on this one row from
+              // the day the widened writer merges, and it would otherwise render
+              // directly above the button that disproves it.
+              <>
+                <p className="text-sm text-ink-muted">{t("booking.cancelledPaidActions")}</p>
+                <p className="text-sm text-ink-muted">{t("booking.deliveryNotice")}</p>
+                <Button
+                  // The same ref as the live-confirmed trigger below, on
+                  // purpose: the two branches are mutually exclusive, and after
+                  // a successful restore the ref follows the control that
+                  // replaces this one — so the dialog's focus return lands on a
+                  // real button instead of <body>.
+                  ref={rescheduleTriggerRef}
+                  variant="secondary"
+                  size="md"
+                  fullWidthMobile
+                  disabled={busy}
+                  onClick={() => setRescheduling(true)}
+                >
+                  {t("booking.rescheduleRestoreCta")}
+                </Button>
+              </>
+            ) : isCancelled ? (
+              // `cancelled` with no deposit held is terminal and owner-created
+              // bookings are out of scope, so the honest remedy is the
+              // storefront rebook.
               <p className="text-sm text-ink-muted">{t("booking.cancelledNoActions")}</p>
+            ) : isAwaitingPayment ? (
+              // The sixth branch. NO owner actions: confirm-attendance, cancel,
+              // no-show, complete, reschedule and resend all 409 on an unpaid
+              // hold, and the sweeper frees the seat on its own clock — so a
+              // control here would be a trap and a disabled one an unexplained
+              // wall.
+              <p className="text-sm text-ink-muted">{t("booking.awaitingPaymentNoActions")}</p>
             ) : (
               <>
                 {/* The Risk 3(a) discharge, stated positively once. Muted, not
@@ -607,6 +682,15 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
                 setRescheduling(false);
                 setDetail(next);
                 onBookingChanged(next);
+                // MD1: off `cancelled` the same UPDATE also restores the
+                // booking, so a restore at the SAME time is a real change that
+                // the starts_at comparison below cannot see — and the branch
+                // that renders the trigger unmounts with it, so without a cue
+                // the focus rescue has nothing to move to and lands on <body>.
+                if (next.status !== detail.status) {
+                  setCue(t("booking.rescheduleRestoreDone"));
+                  return;
+                }
                 // The booking's own time is always present and pre-selected
                 // (D6), so re-submitting it unchanged is one tap away and the
                 // server short-circuits it to a no-op 200 — no audit row, no

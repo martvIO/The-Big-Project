@@ -7,16 +7,24 @@ module that first runs on CI, and the definitions are exactly where this
 feature can be silently wrong.
 """
 
+import contextlib
 import datetime
 import uuid
+from collections.abc import AsyncIterator, Sequence
+from typing import cast
 
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+import app.dashboard.service as dashboard_service
 from app.booking.slots import Slot
-from app.booking.slots_io import grid_totals
+from app.booking.slots_io import ForwardCapacity, grid_totals
 from app.booking.validation import jerusalem_day_index
-from app.dashboard.schemas import WeekBucket
+from app.dashboard.schemas import DashboardResponse, WeekBucket
 from app.dashboard.service import (
     HISTORY_WEEKS,
     TOP_APPOINTMENT_TYPES,
+    DashboardService,
     build_history,
     cancellation,
     customer_mix,
@@ -27,7 +35,7 @@ from app.dashboard.service import (
     week_buckets,
 )
 from app.db.repositories.bookings import BookingFact, CustomerHistory
-from app.models.constants import BookingStatus
+from app.models.constants import BookingCancelledBy, BookingStatus
 from app.storefront.validation import BOUTIQUE_TIMEZONE
 
 # Israel 2026: DST starts Fri 27 Mar (02:00→03:00), ends Sun 25 Oct (02:00→01:00).
@@ -842,3 +850,173 @@ def test_booked_never_exceeds_capacity_and_utilization_is_their_quotient() -> No
 
         assert totals.booked <= totals.capacity
         assert totals.utilization == totals.booked / totals.capacity
+
+
+# --- F19: the pending_payment filter, and MD5 ---------------------------------
+#
+# `DashboardService.dashboard` is exercised here rather than in the `db` module
+# because the thing under test is a list comprehension, not a statement: a
+# duck-typed repository, a no-op `tenant_session` and an all-zero forward panel
+# leave the six folds as the only live code. No database, no `create_app`.
+
+
+class _FakeBookings:
+    """Duck-typed BookingsRepository: answers the window projection from a fixed
+    list and RECORDS the cohort ids the history read was called with — that fold
+    is the sixth consumer, and the only one no pure test can reach."""
+
+    def __init__(self, facts: list[BookingFact]) -> None:
+        self.facts = facts
+        self.cohort_ids: list[uuid.UUID] = []
+
+    async def list_window_facts(
+        self,
+        session: object,
+        tenant_id: uuid.UUID,
+        *,
+        from_instant: datetime.datetime,
+        until_instant: datetime.datetime,
+    ) -> list[BookingFact]:
+        return self.facts
+
+    async def history_by_customer(
+        self,
+        session: object,
+        tenant_id: uuid.UUID,
+        customer_ids: Sequence[uuid.UUID],
+        *,
+        until_instant: datetime.datetime,
+    ) -> dict[uuid.UUID, CustomerHistory]:
+        self.cohort_ids = list(customer_ids)
+        return {}
+
+
+@contextlib.asynccontextmanager
+async def _no_session(session_factory: object, tenant_id: uuid.UUID) -> AsyncIterator[None]:
+    yield None
+
+
+async def _no_forward(session: object, **kwargs: object) -> ForwardCapacity:
+    return ForwardCapacity(capacity=0, booked=0)
+
+
+async def _dashboard(
+    monkeypatch: pytest.MonkeyPatch, facts: list[BookingFact]
+) -> tuple[DashboardResponse, _FakeBookings]:
+    monkeypatch.setattr(dashboard_service, "tenant_session", _no_session)
+    monkeypatch.setattr(dashboard_service, "forward_capacity", _no_forward)
+    service = DashboardService(
+        cast("async_sessionmaker[AsyncSession]", None),
+        clock=lambda: _utc(NORMATIVE_TODAY.year, NORMATIVE_TODAY.month, NORMATIVE_TODAY.day),
+    )
+    fake = _FakeBookings(facts)
+    service._bookings = fake  # type: ignore[assignment]
+    return await service.dashboard(uuid.uuid4()), fake
+
+
+async def test_a_checkout_in_progress_is_in_no_bar_and_in_no_cancellation_denominator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Two appointments, one of them cancelled, plus one bride sitting on a
+    # payment page. The rate is 1/2. Left in `facts` it would read 1/3, and the
+    # boutique's headline number would move as brides abandon checkouts.
+    response, _ = await _dashboard(
+        monkeypatch,
+        [
+            _fact(_utc(2026, 6, 10)),
+            _fact(
+                _utc(2026, 6, 11),
+                status=BookingStatus.CANCELLED.value,
+                cancelled_by=BookingCancelledBy.CUSTOMER.value,
+            ),
+            _fact(_utc(2026, 6, 12), status=BookingStatus.PENDING_PAYMENT.value),
+        ],
+    )
+    panel = response.history
+
+    assert panel.cancellation_rate == 0.5
+    assert sum(bucket.bookings for bucket in panel.weeks) == 1
+
+
+async def test_a_checkout_in_progress_does_not_raise_its_types_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, _ = await _dashboard(
+        monkeypatch,
+        [
+            _fact(_utc(2026, 6, 10)),
+            _fact(_utc(2026, 6, 12), status=BookingStatus.PENDING_PAYMENT.value),
+        ],
+    )
+
+    assert [row.bookings for row in response.history.appointment_types] == [1]
+
+
+async def test_a_bride_who_never_paid_is_in_neither_the_cohort_nor_the_history_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Both sites at once: `customer_mix`'s cohort (and so the repeat-rate
+    # denominator) and the `cohort_ids` fold that feeds `history_by_customer`.
+    response, fake = await _dashboard(
+        monkeypatch,
+        [
+            _fact(_utc(2026, 6, 10), customer_id=BRIDE_A),
+            _fact(
+                _utc(2026, 6, 12),
+                status=BookingStatus.PENDING_PAYMENT.value,
+                customer_id=BRIDE_B,
+            ),
+        ],
+    )
+
+    assert response.history.customers.total == 1
+    assert fake.cohort_ids == [BRIDE_A]
+
+
+async def test_the_unfiltered_pending_count_ships_and_the_sum_invariant_still_balances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, _ = await _dashboard(
+        monkeypatch,
+        [
+            _fact(_utc(2026, 6, 10)),
+            _fact(_utc(2026, 6, 10), status=BookingStatus.NO_SHOW.value),
+            _fact(_utc(2026, 7, 20), status=BookingStatus.COMPLETED.value),
+            _fact(_utc(2026, 6, 12), status=BookingStatus.PENDING_PAYMENT.value),
+            _fact(_utc(2026, 6, 13), status=BookingStatus.PENDING_PAYMENT.value),
+        ],
+    )
+    panel = response.history
+    totals = panel.status_totals
+
+    assert totals.pending_payment == 2
+    assert sum(bucket.bookings for bucket in panel.weeks) == (
+        totals.confirmed + totals.no_show + totals.completed
+    )
+    assert sum(bucket.bookings for bucket in panel.weeks) == 3
+
+
+def test_an_expired_hold_is_in_neither_the_numerator_nor_the_denominator() -> None:
+    # MD5, and the half that silently does nothing if it is missed is the
+    # DENOMINATOR. The expired hold is already `cancelled` by the time it gets
+    # here — D2's writer is the only one that frees a seat — so filtering
+    # `pending_payment` upstream does not touch it.
+    expired = _fact(
+        _utc(2026, 6, 12),
+        status=BookingStatus.CANCELLED.value,
+        cancelled_by=BookingCancelledBy.EXPIRED.value,
+    )
+    by_customer_row = _fact(
+        _utc(2026, 6, 11),
+        status=BookingStatus.CANCELLED.value,
+        cancelled_by=BookingCancelledBy.CUSTOMER.value,
+    )
+    facts = [_fact(_utc(2026, 6, 10)), by_customer_row, expired]
+
+    rate, by_customer, by_owner = cancellation(facts)
+
+    # 1/2, not 1/3 (expired in the denominator) and not 2/3 (in both).
+    assert rate == 0.5
+    assert (by_customer, by_owner) == (1, 0)
+    # The customer-cancelled row is in BOTH: drop it and the rate goes to zero.
+    assert cancellation([facts[0], expired]) == (0.0, 0, 0)
