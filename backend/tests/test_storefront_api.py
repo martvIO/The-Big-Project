@@ -596,6 +596,19 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         "/storefront/booking/lookup",
         "/storefront/booking/confirm-attendance",
         "/storefront/booking/cancel",
+        # F19's deposit surface — the FOURTH sibling on this prefix, and the
+        # first one a THIRD PARTY calls. The webhook is authenticated by HMAC
+        # over the raw body and by nothing else: no cookie, no session, no
+        # bearer. It is a sibling rather than a route on the GET-only read
+        # router for a reason that is not stylistic — that router carries a
+        # per-tenant _throttle, and 429-ing a provider's retry burst turns a
+        # transient outage into permanently unconfirmed bookings and money that
+        # moved with no row behind it.
+        "/storefront/payments/webhook",
+        # POST for a read, the /booking/lookup precedent. Keyed on the provider
+        # session id and NOT the manage token (D13): the deposit path suppresses
+        # the confirmation SMS, so she never receives a manage link to poll with.
+        "/storefront/booking/payment-status",
     }
     # Singular /booking/* must never collide with the plural /bookings create.
     assert "/storefront/bookings" not in {

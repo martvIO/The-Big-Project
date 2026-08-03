@@ -28,6 +28,7 @@ from app.auth.staff_router import router as staff_router
 from app.booking.comms import BookingCommsService
 from app.booking.manage import (
     BookingAlreadyStartedError,
+    BookingAwaitingPaymentError,
     BookingCancelledError,
     BookingLinkInvalidError,
     BookingLookupThrottledError,
@@ -109,8 +110,11 @@ from app.payments.secretbox import (
 from app.payments.service import (
     GatewayCredentialService,
     GatewayThrottledError,
+    PaymentService,
 )
 from app.payments.unconfigured import UnconfiguredGateway
+from app.payments.webhook_router import DepositBookingService
+from app.payments.webhook_router import router as webhook_router
 from app.security_headers import SecurityHeadersMiddleware
 from app.storage.base import (
     MediaNotConfiguredError,
@@ -240,6 +244,16 @@ BOOKING_ALREADY_STARTED_BODY = {
 }
 BOOKING_CANCELLED_BODY = {
     "error": {"code": "BOOKING_CANCELLED", "message": "This appointment was cancelled."}
+}
+# Its OWN code rather than a reuse of BOOKING_CANCELLED (F19 D14, A2): an unpaid
+# hold is neither cancelled nor standing, and the storefront renders a THIRD
+# state off this distinction. Reusing the cancelled code would tell a bride
+# mid-checkout that her appointment was cancelled.
+BOOKING_AWAITING_PAYMENT_BODY = {
+    "error": {
+        "code": "BOOKING_AWAITING_PAYMENT",
+        "message": "This appointment is waiting for payment.",
+    }
 }
 # ONE body for every refused owner transition — an illegal status pair, a
 # no-show before the appointment, a cancel after it (D19).
@@ -711,10 +725,23 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             clock=time.monotonic,
         ),
     )
-    # PaymentService is deliberately NOT on app.state: nothing reads it until
-    # F19 builds the deposit flow and the webhook route, and a wired singleton
-    # with no consumer is a thing a reviewer has to check rather than a thing
-    # that works.
+    # F19 is the consumer the comment that used to sit here was waiting for.
+    # PaymentService stays the single writer of `payments`; the booking-side
+    # half is DepositBookingService, and the two are separate because
+    # settle_from_webhook and honour_late_settlement each state in their own
+    # docstrings that they do not touch `bookings` — a seat decision needs the
+    # advisory lock and the occupancy reads that live in the booking domain.
+    app.state.payment_service = PaymentService(
+        get_session_factory(),
+        gateway=app.state.payment_gateway,
+        credentials=app.state.gateway_credential_service,
+    )
+    app.state.deposit_booking_service = DepositBookingService(
+        get_session_factory(),
+        payments=app.state.payment_service,
+        credentials=app.state.gateway_credential_service,
+        comms=app.state.booking_comms_service,
+    )
 
     @app.exception_handler(TenantNotResolvedError)
     async def _tenant_not_resolved(request: Request, exc: TenantNotResolvedError) -> JSONResponse:
@@ -892,6 +919,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _booking_cancelled(request: Request, exc: BookingCancelledError) -> JSONResponse:
         return JSONResponse(BOOKING_CANCELLED_BODY, status_code=409)
 
+    @app.exception_handler(BookingAwaitingPaymentError)
+    async def _booking_awaiting_payment(
+        request: Request, exc: BookingAwaitingPaymentError
+    ) -> JSONResponse:
+        # 409, the same class as every other refused verb on the bride's page.
+        # Without this registration the guard added in F19 A2 is an unhandled
+        # 500 on the tokenized page — a worse outcome than the bug it fixes.
+        return JSONResponse(BOOKING_AWAITING_PAYMENT_BODY, status_code=409)
+
     @app.exception_handler(BookingLookupThrottledError)
     async def _booking_lookup_throttled(
         request: Request, exc: BookingLookupThrottledError
@@ -1065,6 +1101,12 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # tokenized manage routes. Same anonymous posture as the OTP pair; asserted
     # in test_booking_api.py and test_booking_manage_api.py.
     app.include_router(booking_router)
+    # The FOURTH /storefront sibling (F19 D9): the provider webhook and the
+    # payment-status poll. Deliberately NOT routes on storefront_router — that
+    # router carries a per-tenant _throttle, and 429-ing a provider's retry
+    # burst would turn a transient outage into permanently unconfirmed bookings
+    # and unrecorded money.
+    app.include_router(webhook_router)
     # LAST, after every router: the mounts and the catch-all only ever see what
     # no API route claimed.
     _register_spas(app)
