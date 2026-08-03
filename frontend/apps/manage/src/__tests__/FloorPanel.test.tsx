@@ -4,8 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
 import type { FloorResponse, Occupancy, Room, StaffCard } from "../api";
 import { FloorPanel } from "../components/FloorPanel";
+import { SosProvider } from "../lib/sos";
 import { IDLE_STOP_MS, POLL_INTERVAL_MS } from "../lib/usePoll";
 
+// ⚠ F37 INFRASTRUCTURE, NOT AN EXPECTATION. FloorPanel now renders SosCentre,
+// which reads useSos() — and that hook THROWS outside the provider, deliberately
+// (loud beats inert for an emergency channel). So the render helper gains the
+// provider and the api mock gains getSos, exactly as F36 added listFloorClients
+// here. Every assertion below is untouched.
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
@@ -19,6 +25,11 @@ vi.mock("../api", async () => {
       // fires on mount. Infrastructure, not an expectation — every assertion
       // below is untouched (spec D15).
       listFloorClients: vi.fn(),
+      getSos: vi.fn(),
+      raiseSos: vi.fn(),
+      acceptSos: vi.fn(),
+      resolveSos: vi.fn(),
+      cancelSos: vi.fn(),
     },
   };
 });
@@ -28,6 +39,7 @@ const getFloor = vi.mocked(api.getFloor);
 const startStaffBreak = vi.mocked(api.startStaffBreak);
 const endStaffBreak = vi.mocked(api.endStaffBreak);
 const listFloorClients = vi.mocked(api.listFloorClients);
+const getSos = vi.mocked(api.getSos);
 
 // 11:07Z is 14:07 in Jerusalem (IDT, UTC+3) and 07:07 in New York — and the test
 // script pins TZ=America/New_York, so an unzoned read prints 07:07 and every
@@ -76,7 +88,11 @@ function occupancy(overrides: Partial<Occupancy> = {}): Occupancy {
 const ME = card({ id: SELF_ID, display_name: "דנה כהן", role: "owner" });
 
 function mount(props: { selfId?: string; role?: string } = {}) {
-  return render(<FloorPanel selfId={props.selfId ?? SELF_ID} role={props.role ?? "owner"} />);
+  return render(
+    <SosProvider>
+      <FloorPanel selfId={props.selfId ?? SELF_ID} role={props.role ?? "owner"} />
+    </SosProvider>,
+  );
 }
 
 beforeEach(() => {
@@ -87,6 +103,8 @@ beforeEach(() => {
   endStaffBreak.mockReset();
   listFloorClients.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
+  getSos.mockReset();
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
 });
 
 afterEach(() => {
@@ -858,21 +876,39 @@ describe("accessibility", () => {
     expect(control).toHaveTextContent("להפסקה");
   });
 
-  it("renders exactly one h2 and exactly one h3 — the rooms subsection", async () => {
-    // ⚠ THE ONE SHIPPED EXPECTATION F36 EDITS, and it is edited because its
-    // PREMISE was falsified rather than because the extraction drifted. F57's
-    // deck justified having no h3 with «the panel has no groups»; F36 gives it
-    // one, and the h3 is also the rooms panel's focus-rescue target (deck F-1,
-    // DC-10), so it renders in EVERY state including the empty one — which is
-    // exactly what this fixture, with its defaulted `rooms: []`, exercises.
-    // Nothing else in this file moves.
+  it("renders exactly one h2 and TWO h3s — the SOS centre and the rooms subsection", async () => {
+    // ⚠ THE ONE SHIPPED EXPECTATION F36 EDITED AND F37 EDITS AGAIN, and both
+    // times for the same reason: its PREMISE was falsified, not the extraction
+    // drifted. F57 justified having no h3 with «the panel has no groups»; F36
+    // gave it one; F37 gives it a second, because SosCentre brings «קריאות עזרה»
+    // as a sibling of F36's «חדרי מדידה» and the deck's own a11y contract says
+    // so in as many words. The ORDER is the assertion that carries weight: an
+    // active emergency outranks a room list, so the SOS heading comes FIRST.
+    //
+    // Nothing else in this file moves. (Deck F-4 records that FloorPanel's h2
+    // «צוות בקומה» now names one third of its own content and that F58 is the PR
+    // that earns the rename — F37 does not rename it, because a copy change on a
+    // shipped panel is exactly the edit the zero-diff rule exists to catch.)
     getFloor.mockResolvedValue(floor([card()]));
     mount();
     await screen.findByText("נועה לוי");
 
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
-    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(1);
-    expect(screen.getByRole("heading", { level: 3 })).toHaveTextContent("חדרי מדידה");
+    const subsections = screen.getAllByRole("heading", { level: 3 });
+    expect(subsections).toHaveLength(2);
+    expect(subsections.map((node) => node.textContent)).toEqual(["קריאות עזרה", "חדרי מדידה"]);
+  });
+
+  it("places the SOS centre ABOVE the rooms panel and the rooms above the staff list", async () => {
+    // An active emergency outranks a room list, and a room list outranks the
+    // reference the staff cards are. DOM order is reading order is tab order.
+    getFloor.mockResolvedValue(floor([card()]));
+    const { container } = mount();
+    await screen.findByText("נועה לוי");
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("קריאות עזרה")).toBeLessThan(text.indexOf("חדרי מדידה"));
+    expect(text.indexOf("חדרי מדידה")).toBeLessThan(text.indexOf("נועה לוי"));
   });
 
   it("passes axe with zero violations", async () => {

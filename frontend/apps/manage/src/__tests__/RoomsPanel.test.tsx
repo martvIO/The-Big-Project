@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
 import type { FloorResponse, Room, RoomAssignment, StaffCard } from "../api";
 import { FloorPanel } from "../components/FloorPanel";
+import { SosProvider } from "../lib/sos";
 import { POLL_INTERVAL_MS } from "../lib/usePoll";
 
 // ⚠ RoomsPanel is mounted THROUGH FloorPanel and never on its own. It is a
@@ -12,6 +13,11 @@ import { POLL_INTERVAL_MS } from "../lib/usePoll";
 // the shared cue region, the re-arm after a refused action — is only reachable
 // with the real parent above it. A direct render would stub exactly the
 // mechanisms the panel's correctness depends on.
+// ⚠ F37 INFRASTRUCTURE, NOT AN EXPECTATION. FloorPanel now renders SosCentre,
+// which reads useSos() — and that hook THROWS outside the provider, deliberately
+// (loud beats inert for an emergency channel). So the render helper gains the
+// provider and the api mock gains getSos, exactly as F36 added listFloorClients
+// here. Every assertion below is untouched.
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
@@ -22,6 +28,11 @@ vi.mock("../api", async () => {
       startStaffBreak: vi.fn(),
       endStaffBreak: vi.fn(),
       listFloorClients: vi.fn(),
+      getSos: vi.fn(),
+      raiseSos: vi.fn(),
+      acceptSos: vi.fn(),
+      resolveSos: vi.fn(),
+      cancelSos: vi.fn(),
       claimRoom: vi.fn(),
       releaseAssignment: vi.fn(),
       removeAssignmentDress: vi.fn(),
@@ -32,6 +43,7 @@ vi.mock("../api", async () => {
 const { api, ApiError } = await import("../api");
 const getFloor = vi.mocked(api.getFloor);
 const listFloorClients = vi.mocked(api.listFloorClients);
+const getSos = vi.mocked(api.getSos);
 const claimRoom = vi.mocked(api.claimRoom);
 const releaseAssignment = vi.mocked(api.releaseAssignment);
 const removeAssignmentDress = vi.mocked(api.removeAssignmentDress);
@@ -92,7 +104,11 @@ function floor(rooms: Room[], cards: StaffCard[] = [staff()]): FloorResponse {
 }
 
 function mount(props: { selfId?: string; role?: string } = {}) {
-  return render(<FloorPanel selfId={props.selfId ?? SELF_ID} role={props.role ?? "owner"} />);
+  return render(
+    <SosProvider>
+      <FloorPanel selfId={props.selfId ?? SELF_ID} role={props.role ?? "owner"} />
+    </SosProvider>,
+  );
 }
 
 // Tiles are keyed by room id and carry it as a data attribute — the same shape
@@ -114,6 +130,8 @@ beforeEach(() => {
   releaseAssignment.mockReset();
   removeAssignmentDress.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
+  getSos.mockReset();
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
 });
 
 afterEach(() => {

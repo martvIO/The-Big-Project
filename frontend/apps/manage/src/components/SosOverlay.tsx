@@ -66,7 +66,9 @@ function focusedCardId(): string | null {
   if (!(active instanceof Element)) {
     return null;
   }
-  return active.closest("[data-alert-id]")?.getAttribute("data-alert-id") ?? null;
+  return (
+    active.closest("[data-alert-id]")?.getAttribute("data-alert-id") ?? null
+  );
 }
 
 export function SosOverlay() {
@@ -75,12 +77,19 @@ export function SosOverlay() {
   const { alerts, terminal, channelDown, accept } = useSos();
 
   const [dismissed, setDismissed] = useState<readonly string[]>([]);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // ⚠ A LIST AND NOT ONE ID. An `if (busyId !== null) return;` guard makes a tap
+  // on a SECOND rising card, while the first accept is in flight, a silent
+  // no-op — on the one screen where a tap that does nothing is unforgivable.
+  // The control's own `loading` → `disabled` is what stops a double tap on the
+  // same card, which is the case that actually needs stopping.
+  const [busyIds, setBusyIds] = useState<readonly string[]>([]);
   // Carries the interpolated NAME beside its text: the name renders inside a
   // bare <bdi> and a flat string cannot say where it starts.
-  const [cardError, setCardError] = useState<{ id: string; text: string; name: string | null } | null>(
-    null,
-  );
+  const [cardError, setCardError] = useState<{
+    id: string;
+    text: string;
+    name: string | null;
+  } | null>(null);
 
   const baseId = useId();
   const cardRefs = useRef(new Map<string, HTMLElement | null>());
@@ -100,7 +109,9 @@ export function SosOverlay() {
   // escalated cards are therefore at the top of the stack with no second sort
   // and no special case. ISO instants compare lexicographically.
   const rising = alerts
-    .filter((alert) => isRising(alert) && !dismissed.includes(dismissKey(alert)))
+    .filter(
+      (alert) => isRising(alert) && !dismissed.includes(dismissKey(alert)),
+    )
     .sort((a, b) => a.created_at.localeCompare(b.created_at));
   const hiddenLive = alerts.filter(
     (alert) => isRising(alert) && dismissed.includes(dismissKey(alert)),
@@ -129,7 +140,10 @@ export function SosOverlay() {
       // overlay empties.
       const at = previous.indexOf(held);
       departingRef.current = {
-        nextId: risingIds.length === 0 ? null : (risingIds[Math.min(at, risingIds.length - 1)] ?? null),
+        nextId:
+          risingIds.length === 0
+            ? null
+            : (risingIds[Math.min(at, risingIds.length - 1)] ?? null),
       };
     }
     renderedIdsRef.current = risingIds;
@@ -244,7 +258,10 @@ export function SosOverlay() {
       const target = event.target;
       // Inside the overlay Esc means dismiss, and the container's own handler
       // owns it — this listener is the route IN and nothing else.
-      if (target instanceof Node && overlayRef.current?.contains(target) === true) {
+      if (
+        target instanceof Node &&
+        overlayRef.current?.contains(target) === true
+      ) {
         return;
       }
       // F36's three shipped <dialog>s and SosRaiseDialog own their own Esc
@@ -290,7 +307,8 @@ export function SosOverlay() {
       return;
     }
     const target = event.target;
-    const held = target instanceof Element ? target.closest("[data-alert-id]") : null;
+    const held =
+      target instanceof Element ? target.closest("[data-alert-id]") : null;
     const id = held?.getAttribute("data-alert-id") ?? rising[0]?.id;
     const alert = rising.find((one) => one.id === id);
     if (alert !== undefined) {
@@ -307,17 +325,33 @@ export function SosOverlay() {
         // it does not know beats an empty interpolation on this surface.
         setCardError(
           name === undefined
-            ? { id: alert.id, text: t("sos.error.alreadyAcceptedUnknown"), name: null }
-            : { id: alert.id, text: t("sos.error.SOS_ALREADY_ACCEPTED", { name }), name },
+            ? {
+                id: alert.id,
+                text: t("sos.error.alreadyAcceptedUnknown"),
+                name: null,
+              }
+            : {
+                id: alert.id,
+                text: t("sos.error.SOS_ALREADY_ACCEPTED", { name }),
+                name,
+              },
         );
         return;
       }
       if (failure.code === "SOS_CLOSED") {
-        setCardError({ id: alert.id, text: t("sos.error.SOS_CLOSED"), name: null });
+        setCardError({
+          id: alert.id,
+          text: t("sos.error.SOS_CLOSED"),
+          name: null,
+        });
         return;
       }
       if (failure.status === 404) {
-        setCardError({ id: alert.id, text: t("sos.error.notFound"), name: null });
+        setCardError({
+          id: alert.id,
+          text: t("sos.error.notFound"),
+          name: null,
+        });
         return;
       }
     }
@@ -326,18 +360,19 @@ export function SosOverlay() {
     // targeted device and still escalating — so «נסי שוב» is exactly right and
     // naming the manual fallback would be wrong. That distinction is real and
     // is why the raise has a different string.
-    setCardError({ id: alert.id, text: t("sos.error.actionFailed"), name: null });
+    setCardError({
+      id: alert.id,
+      text: t("sos.error.actionFailed"),
+      name: null,
+    });
   };
 
   const answer = async (alert: SosAlert) => {
-    if (busyId !== null) {
-      return;
-    }
-    setBusyId(alert.id);
+    setBusyIds((current) => [...current, alert.id]);
     setCardError(null);
     actedRef.current = alert.id;
     const failure = await accept(alert.id);
-    setBusyId(null);
+    setBusyIds((current) => current.filter((id) => id !== alert.id));
     if (failure !== null) {
       refuse(alert, failure);
       return;
@@ -432,7 +467,9 @@ export function SosOverlay() {
                               renders «בחדר חדר 2» — and it carries no Field
                               bound at all, so «2» is fully supported and the
                               atomic utterance needs the prefix to parse. */}
-                          <span className="sr-only">{t("sos.roomA11yPrefix")}</span>{" "}
+                          <span className="sr-only">
+                            {t("sos.roomA11yPrefix")}
+                          </span>{" "}
                           <bdi>{alert.room_label}</bdi>
                         </>
                       )}
@@ -466,7 +503,9 @@ export function SosOverlay() {
                     </p>
                   )}
                   {alert.stalled && (
-                    <p className="mt-2 text-base font-semibold text-danger">{t("sos.stalled")}</p>
+                    <p className="mt-2 text-base font-semibold text-danger">
+                      {t("sos.stalled")}
+                    </p>
                   )}
 
                   {cardError?.id === alert.id && (
@@ -499,7 +538,7 @@ export function SosOverlay() {
                       variant="primary"
                       size="lg"
                       fullWidthMobile
-                      loading={busyId === alert.id}
+                      loading={busyIds.includes(alert.id)}
                       aria-label={t("sos.acceptAria", { name })}
                       onClick={() => void answer(alert)}
                     >

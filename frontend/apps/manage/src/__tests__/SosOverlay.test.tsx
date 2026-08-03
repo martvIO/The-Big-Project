@@ -205,7 +205,11 @@ describe("what renders, and the normal state is nothing", () => {
   it("renders one card per rising alert, OLDEST FIRST, whatever order they arrive in", async () => {
     getSos.mockResolvedValue(
       page([
-        alertRow({ id: ALERT_B, created_at: LATER_AT, raised_by_name: "נועה לוי" }),
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: "נועה לוי",
+        }),
         alertRow({ id: ALERT_A, created_at: RAISED_AT }),
       ]),
     );
@@ -248,7 +252,9 @@ describe("AC16 — the role=alert element's text is byte-identical from mount to
       await vi.advanceTimersByTimeAsync(5_000);
     });
     await screen.findByText("ללא מענה");
-    expect(within(card(ALERT_A)).getByRole("alert").textContent).toBe(announced);
+    expect(within(card(ALERT_A)).getByRole("alert").textContent).toBe(
+      announced,
+    );
 
     getSos.mockResolvedValue(
       page([alertRow({ status: "accepted", escalated: false, stalled: true })]),
@@ -257,12 +263,16 @@ describe("AC16 — the role=alert element's text is byte-identical from mount to
       await vi.advanceTimersByTimeAsync(2_000);
     });
     await screen.findByText("אין תזוזה מאז שאושרה");
-    expect(within(card(ALERT_A)).getByRole("alert").textContent).toBe(announced);
+    expect(within(card(ALERT_A)).getByRole("alert").textContent).toBe(
+      announced,
+    );
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
-    expect(within(card(ALERT_A)).getByRole("alert").textContent).toBe(announced);
+    expect(within(card(ALERT_A)).getByRole("alert").textContent).toBe(
+      announced,
+    );
     // The escalation clause is a SIBLING: still on the card, outside the region.
     expect(card(ALERT_A)).toHaveTextContent("אין תזוזה מאז שאושרה");
   });
@@ -275,7 +285,14 @@ describe("AC16 — the role=alert element's text is byte-identical from mount to
     const announced = first.textContent;
 
     getSos.mockResolvedValue(
-      page([alertRow(), alertRow({ id: ALERT_B, created_at: LATER_AT, raised_by_name: "נועה לוי" })]),
+      page([
+        alertRow(),
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: "נועה לוי",
+        }),
+      ]),
     );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
@@ -311,7 +328,9 @@ describe("AC14 — the overlay does not steal focus, in all three branches", () 
     expect(field.value).toBe("0501234567");
     // The alert is STILL announced: role="alert" interrupts a screen reader
     // WITHOUT taking focus, which is the whole reason that role exists.
-    expect(within(card(ALERT_A)).getByRole("alert")).toHaveTextContent("דנה כהן קוראת לעזרה");
+    expect(within(card(ALERT_A)).getByRole("alert")).toHaveTextContent(
+      "דנה כהן קוראת לעזרה",
+    );
   });
 
   it("(b) moves focus to the CARD CONTAINER when nothing holds it — never to the accept control", async () => {
@@ -350,7 +369,9 @@ describe("AC14 — the overlay does not steal focus, in all three branches", () 
     await screen.findByText("דנה כהן");
 
     expect(document.activeElement).toBe(nav);
-    expect(within(card(ALERT_A)).getByRole("alert")).toHaveTextContent("דנה כהן קוראת לעזרה");
+    expect(within(card(ALERT_A)).getByRole("alert")).toHaveTextContent(
+      "דנה כהן קוראת לעזרה",
+    );
   });
 
   it("does NOT move focus for a SECOND card arriving while the first overlay is open", async () => {
@@ -364,7 +385,14 @@ describe("AC14 — the overlay does not steal focus, in all three branches", () 
     accept.focus();
 
     getSos.mockResolvedValue(
-      page([alertRow(), alertRow({ id: ALERT_B, created_at: LATER_AT, raised_by_name: "נועה לוי" })]),
+      page([
+        alertRow(),
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: "נועה לוי",
+        }),
+      ]),
     );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
@@ -391,7 +419,14 @@ describe("AC14 — the overlay does not steal focus, in all three branches", () 
     expect(document.activeElement).toBe(document.body);
 
     getSos.mockResolvedValue(
-      page([alertRow(), alertRow({ id: ALERT_B, created_at: LATER_AT, raised_by_name: "נועה לוי" })]),
+      page([
+        alertRow(),
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: "נועה לוי",
+        }),
+      ]),
     );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
@@ -411,22 +446,35 @@ describe("AC15 — MOVE B, MOVE C and MOVE D", () => {
     await screen.findByText("דנה כהן");
     within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }).focus();
 
-    fireEvent.click(within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }));
+    fireEvent.click(
+      within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }),
+    );
 
     await waitFor(() => expect(cards()).toHaveLength(0));
-    expect(document.activeElement).toBe(document.getElementById("console-main"));
+    expect(document.activeElement).toBe(
+      document.getElementById("console-main"),
+    );
     expect(document.activeElement).not.toBe(document.body);
   });
 
   it("MOVE C — a card leaving with siblings remaining lands on the NEXT CARD'S CONTAINER, not its button", async () => {
     getSos.mockResolvedValue(
-      page([alertRow(), alertRow({ id: ALERT_B, created_at: LATER_AT, raised_by_name: "נועה לוי" })]),
+      page([
+        alertRow(),
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: "נועה לוי",
+        }),
+      ]),
     );
     mount();
     await screen.findByText("נועה לוי");
     within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }).focus();
 
-    fireEvent.click(within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }));
+    fireEvent.click(
+      within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }),
+    );
 
     await waitFor(() => expect(cards()).toHaveLength(1));
     // DC-1 again, and it is WORSE here than on arrival: parking focus on a
@@ -440,14 +488,29 @@ describe("AC15 — MOVE B, MOVE C and MOVE D", () => {
     // The steal direction. A test asserting «focus moved to X» cannot fail when
     // focus is taken from somewhere it should not have been.
     getSos.mockResolvedValue(
-      page([alertRow(), alertRow({ id: ALERT_B, created_at: LATER_AT, raised_by_name: "נועה לוי" })]),
+      page([
+        alertRow(),
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: "נועה לוי",
+        }),
+      ]),
     );
     mount();
     await screen.findByText("נועה לוי");
     const field = screen.getByLabelText("טלפון") as HTMLInputElement;
     field.focus();
 
-    getSos.mockResolvedValue(page([alertRow({ id: ALERT_B, created_at: LATER_AT, raised_by_name: "נועה לוי" })]));
+    getSos.mockResolvedValue(
+      page([
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: "נועה לוי",
+        }),
+      ]),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
@@ -463,7 +526,9 @@ describe("AC15 — MOVE B, MOVE C and MOVE D", () => {
     const accept = acceptControl(ALERT_A);
     accept.focus();
     acceptSos.mockRejectedValue(
-      new ApiError(409, "SOS_ALREADY_ACCEPTED", "taken", { staff_display_name: "נועה לוי" }),
+      new ApiError(409, "SOS_ALREADY_ACCEPTED", "taken", {
+        staff_display_name: "נועה לוי",
+      }),
     );
 
     fireEvent.click(accept);
@@ -471,7 +536,9 @@ describe("AC15 — MOVE B, MOVE C and MOVE D", () => {
     // browser blurs it here — jsdom does not, and F57's equivalent test was
     // vacuous for exactly this reason.
     accept.blur();
-    await waitFor(() => expect(card(ALERT_A)).toHaveTextContent("נועה לוי כבר מגיעה."));
+    await waitFor(() =>
+      expect(card(ALERT_A)).toHaveTextContent("נועה לוי כבר מגיעה."),
+    );
 
     const alerts = within(card(ALERT_A)).getAllByRole("alert");
     expect(document.activeElement).toBe(alerts[alerts.length - 1]);
@@ -503,7 +570,9 @@ describe("AC15 — MOVE B, MOVE C and MOVE D", () => {
       );
       await Promise.resolve();
     });
-    await waitFor(() => expect(card(ALERT_A)).toHaveTextContent("נועה לוי כבר מגיעה."));
+    await waitFor(() =>
+      expect(card(ALERT_A)).toHaveTextContent("נועה לוי כבר מגיעה."),
+    );
 
     expect(document.activeElement).toBe(field);
     expect(field.value).toBe("0509999999");
@@ -533,23 +602,33 @@ describe("the accept, and every sentence its refusals can carry", () => {
     mount();
     await screen.findByText("דנה כהן");
 
-    acceptSos.mockRejectedValueOnce(new ApiError(409, "SOS_ALREADY_ACCEPTED", "taken"));
+    acceptSos.mockRejectedValueOnce(
+      new ApiError(409, "SOS_ALREADY_ACCEPTED", "taken"),
+    );
     fireEvent.click(acceptControl(ALERT_A));
-    await waitFor(() => expect(card(ALERT_A)).toHaveTextContent("מישהי אחרת כבר מגיעה."));
+    await waitFor(() =>
+      expect(card(ALERT_A)).toHaveTextContent("מישהי אחרת כבר מגיעה."),
+    );
 
     acceptSos.mockRejectedValueOnce(new ApiError(409, "SOS_CLOSED", "closed"));
     fireEvent.click(acceptControl(ALERT_A));
-    await waitFor(() => expect(card(ALERT_A)).toHaveTextContent("הקריאה כבר נסגרה."));
+    await waitFor(() =>
+      expect(card(ALERT_A)).toHaveTextContent("הקריאה כבר נסגרה."),
+    );
 
     acceptSos.mockRejectedValueOnce(new ApiError(404, "NOT_FOUND", "gone"));
     fireEvent.click(acceptControl(ALERT_A));
-    await waitFor(() => expect(card(ALERT_A)).toHaveTextContent("הקריאה כבר לא פתוחה."));
+    await waitFor(() =>
+      expect(card(ALERT_A)).toHaveTextContent("הקריאה כבר לא פתוחה."),
+    );
     // A 404 is NOT terminal: the card is still there and the loop still runs.
     expect(cards()).toHaveLength(1);
 
     acceptSos.mockRejectedValueOnce(new Error("wifi"));
     fireEvent.click(acceptControl(ALERT_A));
-    await waitFor(() => expect(card(ALERT_A)).toHaveTextContent("הפעולה לא הושלמה. נסי שוב."));
+    await waitFor(() =>
+      expect(card(ALERT_A)).toHaveTextContent("הפעולה לא הושלמה. נסי שוב."),
+    );
     expect(card(ALERT_A)).not.toHaveTextContent("אירעה שגיאה בלתי צפויה");
   });
 });
@@ -579,7 +658,9 @@ describe("AC29 — an action from the overlay confirms through the SHIPPED app-l
     mount();
     await screen.findByText("דנה כהן");
 
-    fireEvent.click(within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }));
+    fireEvent.click(
+      within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }),
+    );
 
     const status = await screen.findByRole("status");
     expect(status).toHaveTextContent("ההתראה הוסתרה.");
@@ -625,7 +706,11 @@ describe("AC17 — Esc, and the keyboard route IN that MOVE A alone does not pro
 
   it("does NOT run while a Modal is open — F36's three shipped dialogs keep their own Esc", async () => {
     getSos.mockResolvedValue(page([alertRow()]));
-    mount(<Modal open onClose={() => {}} title="העברה לעמיתה">גוף</Modal>);
+    mount(
+      <Modal open onClose={() => {}} title="העברה לעמיתה">
+        גוף
+      </Modal>,
+    );
     await screen.findByText("דנה כהן");
     const field = screen.getByLabelText("טלפון");
     field.focus();
@@ -669,7 +754,9 @@ describe("AC28 — a dismissal is never permanent", () => {
     getSos.mockResolvedValue(page([alertRow()]));
     mount();
     await screen.findByText("דנה כהן");
-    fireEvent.click(within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }));
+    fireEvent.click(
+      within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }),
+    );
     await waitFor(() => expect(cards()).toHaveLength(0));
 
     getSos.mockResolvedValue(page([alertRow({ escalated: true })]));
@@ -681,7 +768,9 @@ describe("AC28 — a dismissal is never permanent", () => {
     expect(card(ALERT_A)).toHaveTextContent("ללא מענה");
 
     // …and exactly once: a second dismiss silences it again.
-    fireEvent.click(within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }));
+    fireEvent.click(
+      within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }),
+    );
     await waitFor(() => expect(cards()).toHaveLength(0));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
@@ -694,12 +783,23 @@ describe("AC28 — a dismissal is never permanent", () => {
     // other eleven the dismiss set is the ONLY state, so without this a
     // dismissal is total and permanent for a live emergency.
     getSos.mockResolvedValue(
-      page([alertRow(), alertRow({ id: ALERT_B, created_at: LATER_AT, raised_by_name: "נועה לוי" })]),
+      page([
+        alertRow(),
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: "נועה לוי",
+        }),
+      ]),
     );
     mount();
     await screen.findByText("נועה לוי");
-    fireEvent.click(within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }));
-    fireEvent.click(within(card(ALERT_B)).getByRole("button", { name: /הסתרה/ }));
+    fireEvent.click(
+      within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }),
+    );
+    fireEvent.click(
+      within(card(ALERT_B)).getByRole("button", { name: /הסתרה/ }),
+    );
     await waitFor(() => expect(cards()).toHaveLength(0));
 
     const reopen = screen.getByRole("button", { name: /קריאות עזרה/ });
@@ -713,15 +813,23 @@ describe("AC28 — a dismissal is never permanent", () => {
     getSos.mockResolvedValue(page([alertRow()]));
     mount();
     await screen.findByText("דנה כהן");
-    fireEvent.click(within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /קריאות עזרה/ })).toBeInTheDocument());
+    fireEvent.click(
+      within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /קריאות עזרה/ }),
+      ).toBeInTheDocument(),
+    );
 
     getSos.mockResolvedValue(page([]));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
     });
 
-    await waitFor(() => expect(screen.queryByRole("button", { name: /קריאות עזרה/ })).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /קריאות עזרה/ })).toBeNull(),
+    );
   });
 });
 
@@ -741,7 +849,9 @@ describe("AC27 — the channel never dies silently", () => {
     );
     await screen.findByText("ערוץ הקריאות אינו פעיל.");
 
-    expect(screen.getByRole("button", { name: "רענון הדף" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "רענון הדף" }),
+    ).toBeInTheDocument();
     expect(ended).not.toHaveBeenCalled();
   });
 
@@ -791,7 +901,13 @@ describe("axe", () => {
     getSos.mockResolvedValue(
       page([
         alertRow({ escalated: true }),
-        alertRow({ id: ALERT_B, created_at: LATER_AT, raised_by_name: null, room_label: null, note: null }),
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: null,
+          room_label: null,
+          note: null,
+        }),
       ]),
     );
     const { container } = mount();

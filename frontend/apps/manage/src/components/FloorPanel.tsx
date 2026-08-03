@@ -11,6 +11,7 @@ import { roleLabelKey } from "../lib/roles";
 import { IDLE_STOP_MINUTES, usePoll } from "../lib/usePoll";
 import type { TickOutcome } from "../lib/usePoll";
 import { RoomsPanel } from "./RoomsPanel";
+import { SosCentre } from "./SosCentre";
 
 // F57. The floor's staff cards: a name, a role and a live status, plus the break
 // toggle the status is derived from.
@@ -112,6 +113,12 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   // `load` runs outside render and closes over a stale `cardError`, so the id it
   // needs is mirrored here.
   const cardErrorRef = useRef<{ id: string; text: string } | null>(null);
+  // ⚠ THE RAISE DIALOG'S TRIGGER, HELD HERE AND NOT IN RoomsPanel. RoomsPanel's
+  // own MOVE-4 effect is keyed on ITS `openDialog` state, which never changes
+  // for a dialog this panel owns — so the effect would never run, the native
+  // <dialog>'s own return would have no target, and focus would drop to <body>
+  // for something the user did. The trigger element travels UP instead.
+  const sosTriggerRef = useRef<HTMLButtonElement | null>(null);
   const mutationsRef = useRef(0);
   // The pointer hold is the CALLER's — usePoll deliberately does not supply it
   // (D10), and this panel needs its own because the since-line renders only on a
@@ -124,6 +131,11 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   // tile by a holder line, a role line, a client line, an elapsed line, a dress
   // list and two more controls — directly above the tile a finger is already
   // travelling toward.
+  //
+  // ⚠ F37 adds one more case and NO code: an SOS-centre row appearing ABOVE the
+  // rooms panel moves every tile below it, directly under a travelling finger —
+  // and that row arrives from a loop this hold does not govern, so the hold
+  // covers the repaint it can and the emergency arrives regardless.
   const holdRef = useRef(false);
   const tickRef = useRef<() => TickOutcome>(() => {});
 
@@ -601,6 +613,23 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
           )}
         </div>
       )}
+
+      {/* ABOVE the rooms (spec D16): an active emergency outranks a room list.
+          A CHILD for three reasons — it needs the staff list the raise dialog's
+          target Select reads, it needs `paused` so the pause control does not
+          lie, and it uses this panel's ONE role="status" cue and ONE SC 2.2.2
+          control, so the board gains no third pause button. Its alerts come from
+          the app-level poll, which is the one place this feature deliberately
+          reaches past this component. */}
+      <SosCentre
+        selfId={selfId}
+        role={role}
+        paused={stopped}
+        onCue={setCue}
+        onRaise={(trigger) => {
+          sosTriggerRef.current = trigger;
+        }}
+      />
 
       {/* ABOVE the staff list (spec D15): a staffer opens this screen to find a
           free room, so the staff cards are the reference and the rooms are the

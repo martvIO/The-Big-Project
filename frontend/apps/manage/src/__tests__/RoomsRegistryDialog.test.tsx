@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
 import type { FloorResponse, Room, RoomAssignment, StaffCard } from "../api";
 import { FloorPanel } from "../components/FloorPanel";
+import { SosProvider } from "../lib/sos";
 import { MAX_SORT_ORDER } from "../validation";
 import { POLL_INTERVAL_MS } from "../lib/usePoll";
 
@@ -12,6 +13,11 @@ import { POLL_INTERVAL_MS } from "../lib/usePoll";
 // fallback to the rooms h3 are all statements about what happens to this dialog
 // while a five-second poll runs underneath it. A direct render would stub
 // exactly the thing under test.
+// ⚠ F37 INFRASTRUCTURE, NOT AN EXPECTATION. FloorPanel now renders SosCentre,
+// which reads useSos() — and that hook THROWS outside the provider, deliberately
+// (loud beats inert for an emergency channel). So the render helper gains the
+// provider and the api mock gains getSos, exactly as F36 added listFloorClients
+// here. Every assertion below is untouched.
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
@@ -22,6 +28,11 @@ vi.mock("../api", async () => {
       startStaffBreak: vi.fn(),
       endStaffBreak: vi.fn(),
       listFloorClients: vi.fn(),
+      getSos: vi.fn(),
+      raiseSos: vi.fn(),
+      acceptSos: vi.fn(),
+      resolveSos: vi.fn(),
+      cancelSos: vi.fn(),
       claimRoom: vi.fn(),
       releaseAssignment: vi.fn(),
       removeAssignmentDress: vi.fn(),
@@ -35,6 +46,7 @@ vi.mock("../api", async () => {
 const { api, ApiError } = await import("../api");
 const getFloor = vi.mocked(api.getFloor);
 const listFloorClients = vi.mocked(api.listFloorClients);
+const getSos = vi.mocked(api.getSos);
 const createRoom = vi.mocked(api.createRoom);
 const updateRoom = vi.mocked(api.updateRoom);
 const deleteRoom = vi.mocked(api.deleteRoom);
@@ -87,7 +99,11 @@ function floor(rooms: Room[]): FloorResponse {
 }
 
 function mount(role = "owner") {
-  return render(<FloorPanel selfId={SELF_ID} role={role} />);
+  return render(
+    <SosProvider>
+      <FloorPanel selfId={SELF_ID} role={role} />
+    </SosProvider>,
+  );
 }
 
 // jsdom keeps a top-layer <dialog> out of the accessibility tree the way a
@@ -125,6 +141,8 @@ beforeEach(() => {
   updateRoom.mockReset();
   deleteRoom.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
+  getSos.mockReset();
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
   getFloor.mockResolvedValue(floor([room(), room({ id: ROOM_B, label: "הבמה", sort_order: 2 })]));
 });
 
