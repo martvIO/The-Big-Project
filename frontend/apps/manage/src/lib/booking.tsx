@@ -17,12 +17,55 @@ const STATUS = new Map<string, { variant: BadgeVariant; labelKey: string }>([
   ["completed", { variant: "neutral", labelKey: "booking.statusCompleted" }],
   ["no_show", { variant: "warning", labelKey: "booking.statusNoShow" }],
   ["cancelled", { variant: "muted", labelKey: "booking.statusCancelled" }],
+  // F19 D14. The fifth status, and the reason the fallback below was a latent
+  // bug rather than a safety net: it rendered the literal LTR "pending_payment"
+  // inside a Hebrew RTL console the day the backend grew it. `warning` because
+  // the hold is in flight — not `danger`, which stays reserved for something the
+  // owner must fix, and a checkout she cannot hurry is not that.
+  ["pending_payment", { variant: "warning", labelKey: "booking.statusPendingPayment" }],
 ]);
 
 export function statusBadge(status: string): { variant: BadgeVariant; labelKey: string } {
-  // A status outside the four can only come from a backend that grew a fifth
-  // one; render the raw value rather than an empty chip.
-  return STATUS.get(status) ?? { variant: "neutral", labelKey: status };
+  // Now genuinely unreachable — `bookings.status` is pinned to these five by
+  // 0008's CHECK — and kept as a chip with Hebrew in it rather than a raw value.
+  return STATUS.get(status) ?? { variant: "neutral", labelKey: "booking.statusOther" };
+}
+
+// F19 D18: the ONLY owner-facing payment surface in the product. All seven
+// values of 0012's CHECK are mapped, not just the four F19 writes — mapping the
+// writers-of-today is exactly how `statusBadge` acquired its raw-value hole.
+const PAYMENT = new Map<string, { variant: BadgeVariant; labelKey: string }>([
+  ["pending", { variant: "warning", labelKey: "booking.paymentPending" }],
+  ["paid", { variant: "success", labelKey: "booking.paymentPaid" }],
+  // MD4: a `failed` row means the appointment was booked and no deposit was
+  // taken, which is real money missing — the one payment state that is the
+  // owner's to act on.
+  ["failed", { variant: "danger", labelKey: "booking.paymentFailed" }],
+  ["expired", { variant: "muted", labelKey: "booking.paymentExpired" }],
+  ["refund_due", { variant: "warning", labelKey: "booking.paymentRefundDue" }],
+  ["refunded", { variant: "neutral", labelKey: "booking.paymentRefunded" }],
+  ["forfeited", { variant: "neutral", labelKey: "booking.paymentForfeited" }],
+]);
+
+export function paymentBadge(status: string): { variant: BadgeVariant; labelKey: string } {
+  return PAYMENT.get(status) ?? { variant: "neutral", labelKey: "booking.paymentOther" };
+}
+
+// D18's action-needed marker: the two combinations that need a human, and
+// nothing else. Both are invisible in `status` alone, which is why D18 puts
+// `payment_status` on the row the owner already opens every morning.
+export function paymentActionKey(status: string, paymentStatus: string | null): string | null {
+  if (paymentStatus === "paid" && status === "cancelled") {
+    // Her money is held and her appointment is gone. MD1's reschedule is the
+    // button behind this sentence.
+    return "booking.paymentActionCancelledPaid";
+  }
+  if (paymentStatus === "failed" && status === "confirmed") {
+    // MD4: the provider was unreachable at checkout, so the booking was taken
+    // without a deposit and the boutique's forfeit policy has nothing behind it.
+    return "booking.paymentActionNoDeposit";
+  }
+  return null;
 }
 
 // i18next interpolates into a flat string, so a {{count}} or {{phone}} run lands

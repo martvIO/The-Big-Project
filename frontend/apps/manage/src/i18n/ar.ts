@@ -38,6 +38,8 @@ export const ar = {
     "booking.statusCompleted": "התקיים",
     "booking.statusNoShow": "לא הגיעה",
     "booking.statusCancelled": "בוטל",
+    "booking.statusPendingPayment": "ממתין לתשלום",
+    "booking.statusOther": "מצב לא מוכר",
     "booking.back": "חזרה לרשימה",
     "booking.detailTitle": "פרטי התור",
     "booking.detailLoading": "טוען את פרטי התור…",
@@ -62,6 +64,20 @@ export const ar = {
     "booking.cancelledBy": "בוטל על ידי",
     "booking.cancelledByOwner": "הבוטיק",
     "booking.cancelledByCustomer": "הלקוחה",
+    "booking.payment": "תשלום",
+    "booking.paymentPending": "בהמתנה",
+    "booking.paymentPaid": "שולם",
+    "booking.paymentFailed": "נכשל",
+    "booking.paymentExpired": "פג תוקף",
+    "booking.paymentRefundDue": "זיכוי לביצוע",
+    "booking.paymentRefunded": "זוכה",
+    "booking.paymentForfeited": "חולט",
+    "booking.paymentOther": "מצב תשלום לא מוכר",
+    "booking.refundDue": "סכום להחזר",
+    "booking.paymentActionCancelledPaid":
+      "דרושה פעולה: התור בוטל והפיקדון עדיין מוחזק בבוטיק.",
+    "booking.paymentActionNoDeposit":
+      "דרושה פעולה: התור נקבע ללא פיקדון, משום שספק הסליקה לא היה זמין בעת ההזמנה.",
     "booking.notesHeading": "הערות הלקוחה",
     "booking.notesEmpty": "הלקוחה לא הוסיפה הערות.",
     "booking.actionsHeading": "פעולות",
@@ -69,6 +85,10 @@ export const ar = {
       "אין באפשרותנו לאמת שהודעות נמסרו ללקוחה. אם חשוב לוודא, אפשר להתקשר אליה.",
     "booking.cancelledNoActions":
       "תור שבוטל אינו ניתן לשחזור. לקביעת מועד חדש, הלקוחה מזמינה מחדש דרך אתר הבוטיק.",
+    "booking.cancelledPaidActions":
+      "התור בוטל והפיקדון עדיין מוחזק בבוטיק. אפשר לקבוע ללקוחה מועד חדש, והתור יחזור לסטטוס מאושר.",
+    "booking.awaitingPaymentNoActions":
+      "התור ממתין לתשלום הפיקדון. עד להשלמת התשלום אין פעולות זמינות, ואם התשלום לא יושלם המועד יתפנה מעצמו.",
     "booking.cancelCta": "ביטול התור",
     "booking.cancelModalTitle": "לבטל את התור?",
     "booking.cancelModalBody":
@@ -86,8 +106,12 @@ export const ar = {
     "booking.rescheduleTitle": "שינוי מועד התור",
     "booking.rescheduleCurrent": "המועד הנוכחי:",
     "booking.rescheduleConsequence": "המועד יתעדכן, והקישור של הלקוחה יצביע על המועד החדש.",
+    "booking.rescheduleConsequenceRestore":
+      "המועד יתעדכן, התור יחזור לסטטוס מאושר, והקישור של הלקוחה יצביע על המועד החדש.",
+    "booking.rescheduleRestoreCta": "קביעת מועד חדש ושחזור התור",
     "booking.rescheduleConfirm": "עדכון המועד",
     "booking.rescheduleDone": "המועד עודכן.",
+    "booking.rescheduleRestoreDone": "התור הוחזר לסטטוס מאושר במועד שנבחר.",
     "booking.retry": "ניסיון נוסף",
     "booking.pickDate": "תאריך",
     "booking.pickTime": "שעה",

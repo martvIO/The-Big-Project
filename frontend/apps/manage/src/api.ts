@@ -296,6 +296,17 @@ export interface OwnerBookingRow {
   customer_name: string;
   appointment_type_name: string;
   dress_name: string | null;
+  // F19 D18: the ONLY owner-facing payment surface in the product, on the list
+  // she already loads every morning — no new route, no nav row. `paid` on a
+  // `cancelled` booking is the action-needed marker (MD1's reschedule is the
+  // button behind it), and `failed` is MD4's "booked without a deposit, the
+  // provider was unavailable". Null wherever no payment row exists.
+  payment_status: string | null;
+  // F19 A1/D16: COMPUTED by the server from the accepted terms version against
+  // `starts_at`, never stored — F19 writes no refund row anywhere, because the
+  // port ships no refund(). Integer agorot on the wire (D15); the division by
+  // 100 happens once, inside <Price>, at render.
+  refund_due_agorot: number | null;
 }
 
 export interface OwnerBookingListResponse {
