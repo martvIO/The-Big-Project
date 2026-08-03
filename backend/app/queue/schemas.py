@@ -1,5 +1,5 @@
-"""Wire shapes for the public check-in surface. Narrow models, never inherited
-from a richer manage schema — the F10 rule.
+"""Wire shapes for the public check-in surface and the public wall board.
+Narrow models, never inherited from a richer manage schema — the F10 rule.
 
 Generous ceilings here, not product policy: the real bounds (the 80-char name,
 the Israeli-mobile shape, the two visit types) live in `validation.py` and
@@ -49,13 +49,28 @@ class TicketView(BaseModel):
     the response is IDENTICAL whether or not that phone was already in today's
     queue.
 
-    What it deliberately omits, each for its own reason: her NAME (she typed
-    it; echoing it back over an anonymous endpoint keyed by a guessable-in-
-    principle id is a PII disclosure for zero product value), her PHONE (same,
-    worse), her VISIT_TYPE (nothing renders it), CREATED_AT (the freshness
-    signal is the client's own last-fetch time), MARKETING_OPT_IN_AT (nothing
-    in F33 reads consent), anything about any OTHER ticket, and every operator
-    provenance column — tenant_id, queue_day, skip_count, requeued_at.
+    What it deliberately omits, each for its own reason: her NAME (see below),
+    her PHONE (echoing it back over an anonymous endpoint keyed by a
+    guessable-in-principle id is a PII disclosure for zero product value), her
+    VISIT_TYPE (nothing renders it), CREATED_AT (the freshness signal is the
+    client's own last-fetch time), MARKETING_OPT_IN_AT (nothing in F33 reads
+    consent), anything about any OTHER ticket, and every operator provenance
+    column — tenant_id, queue_day, skip_count, requeued_at.
+
+    ⚠ The NAME omission is DEFENCE-IN-DEPTH from F59 onward, not a closed
+    channel, and that is a correction rather than a note. Until F59 this
+    docstring said the name was withheld because echoing it over an anonymous
+    id-keyed endpoint discloses PII for no product value. That reason still
+    holds for THIS route, but F59 restores the disclosure through a second one:
+    `POST /storefront/checkin/position` answers a position for any ticket id
+    anonymously, and `POST /storefront/queue` answers the first names at
+    positions 1…BOARD_ROW_LIMIT anonymously, so anyone holding a ticket id that
+    is not theirs — the shared phone and the door tablet the check-in copy
+    already names — reads the holder's first name in two requests whenever she
+    is near the front. Leaving the old sentence standing would be a security
+    rationale the product no longer keeps. The residual is bounded by
+    `board_display_name` having already run: what the correlation yields is one
+    token, at most BOARD_NAME_MAX characters, never a surname, never a phone.
     """
 
     # The capability. Issued exactly once, at creation, in the response to the
@@ -68,6 +83,47 @@ class TicketView(BaseModel):
     # ISO-8601 UTC once a manager calls her forward. F58 writes it; F33 reads it
     # so the screen can say "go to the counter" instead of showing 1 forever.
     called_at: datetime.datetime | None
+
+
+class QueueBoardEntry(BaseModel):
+    """One row on a television seen from three to five metres by a room full of
+    strangers. Three fields, and the third is a boolean.
+
+    ⚠ THERE IS NO `id` HERE AND THERE MUST NEVER BE ONE. The ticket id is F33's
+    capability, issued exactly once at creation and by no other server path
+    ever; a board that returned ids would hand every passer-by — and every
+    crawler, and anyone on the internet with the boutique's slug — a live,
+    pollable capability over every woman's visit, five at a time, refreshed
+    every five seconds, forever. A test asserts the field set rather than
+    trusting this comment.
+
+    Plain BaseModel, not ForbidExtraModel: there is no request model to forbid
+    extras on. The route takes no body at all.
+    """
+
+    position: int
+    # Already derived and already truncated (`board_display_name`). The wire
+    # never carries the stored `name`.
+    first_name: str
+    # A boolean, not `called_at`. The wall needs to know WHETHER, not WHEN;
+    # shipping the instant would let anyone watching time how long a named woman
+    # has been standing at the counter, and nothing on the board renders it.
+    called: bool
+
+
+class QueueBoardView(BaseModel):
+    """The WHOLE body of `POST /storefront/queue`. Always 200, one shape, no
+    branch — an empty queue is `{"entries": [], "waiting_total": 0}` rather than
+    a 404, because a screen that errors when nobody is waiting would render its
+    error arm for most of the shop day."""
+
+    entries: list[QueueBoardEntry]
+    # The UNTRUNCATED count, which is what the overflow line subtracts from. It
+    # counts waiting TICKETS, not women: there is no uniqueness on this table
+    # beyond the primary key, so one woman who re-scanned the QR is two rows and
+    # counts twice. F58 owns the merge; the board must not deduplicate, because
+    # the only key that would is `phone` and no read here is keyed on it.
+    waiting_total: int
 
 
 class CheckinQrResponse(BaseModel):
