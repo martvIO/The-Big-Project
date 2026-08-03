@@ -609,6 +609,13 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         # session id and NOT the manage token (D13): the deposit path suppresses
         # the confirmation SMS, so she never receives a manage link to poll with.
         "/storefront/booking/payment-status",
+        # F33's walk-in check-in — the FIFTH sibling, and both routes are POSTs
+        # INCLUDING the read, for the reason above: the ticket id is the
+        # capability and a GET would put it in the query string. Posture asserted
+        # in test_checkin_api.py. Note that the six ROUTES-parametrized guards
+        # below needed no edit, because F33 registers no new GET here.
+        "/storefront/checkin",
+        "/storefront/checkin/position",
     }
     # Singular /booking/* must never collide with the plural /bookings create.
     assert "/storefront/bookings" not in {

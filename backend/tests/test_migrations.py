@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import uuid
 from pathlib import Path
@@ -14,7 +15,8 @@ from sqlalchemy.pool import NullPool
 
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
-from app.models.constants import StaffRole
+from app.models.constants import QueueTicketStatus, StaffRole, VisitType
+from app.models.queue_ticket import QueueTicket
 from app.models.staff_user import StaffUser
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -786,6 +788,368 @@ def test_migration_floor_roles_round_trips(migrated_db: str) -> None:
         command.upgrade(cfg, "head")  # idempotent when already at head
 
 
+# --- F33: the walk-in queue ticket table ---
+
+_QUEUE_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'queue_tickets'"
+)
+_CUSTOMERS_OPT_IN = (
+    "SELECT count(*) FROM information_schema.columns "
+    "WHERE table_name = 'customers' AND column_name = 'marketing_opt_in_at'"
+)
+# Ruling 3's assertion, and it is the one that must never pass by accident: the
+# dedup index was a targeted day-long denial of service on one named person AND
+# a free, silent presence oracle, and NOTHING in the shipped product can free
+# its key (status transitions are F58's, the sweep is F20's). Re-adding any
+# uniqueness reddens here rather than quietly restoring both defects.
+_QUEUE_UNIQUE_INDEXES = (
+    "SELECT count(*) FROM pg_index WHERE indrelid = 'queue_tickets'::regclass "
+    "AND indisunique AND NOT indisprimary"
+)
+_QUEUE_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'queue_tickets'::regclass AND conname = :name"
+)
+_QUEUE_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE tablename = 'queue_tickets' AND indexname = :name"
+)
+_QUEUE_INDEX_NAME = "idx_queue_tickets_tenant_day_active"
+_VISIT_TYPE_CHECK = "queue_tickets_visit_type_check"
+_STATUS_CHECK = "queue_tickets_status_check"
+_SKIP_COUNT_CHECK = "queue_tickets_skip_count_check"
+# Spelled as POSTGRES deparses them, not as the migration wrote them: both
+# pg_get_constraintdef and pg_indexes.indexdef normalise (IN (...) becomes
+# = ANY (ARRAY[...]), every element gains a ::text cast, predicates get
+# parenthesised and the schema is qualified). CAPTURED from a real 16.x server
+# rather than transcribed from the migration source, because a literal that
+# merely looks right would pin nothing — which is the whole failure mode this
+# test exists to prevent for whoever adds a fifth status next (F58).
+_VISIT_TYPE_CHECK_DEF = "CHECK ((visit_type = ANY (ARRAY['bride'::text, 'evening'::text])))"
+_STATUS_CHECK_DEF_QUEUE = (
+    "CHECK ((status = ANY (ARRAY['waiting'::text, 'in_service'::text, "
+    "'done'::text, 'removed'::text])))"
+)
+_SKIP_COUNT_CHECK_DEF = "CHECK ((skip_count >= 0))"
+_QUEUE_INDEX_DEF_PINNED = (
+    "CREATE INDEX idx_queue_tickets_tenant_day_active ON public.queue_tickets "
+    "USING btree (tenant_id, queue_day) WHERE (deleted_at IS NULL)"
+)
+
+_QUEUE_INSERT = (
+    "INSERT INTO queue_tickets "
+    "(tenant_id, queue_day, name, phone, visit_type, status, skip_count) "
+    "VALUES (uuid_generate_v4(), DATE '2026-08-03', 'Probe', '+972501234567', "
+    ":visit_type, :status, :skip_count)"
+)
+_DROP_STATUS_CHECK = f"ALTER TABLE queue_tickets DROP CONSTRAINT {_STATUS_CHECK}"
+# The migration's own CHECK expression VERBATIM: the populated-table test proves
+# the migration could actually be applied to live data, so it must run the real
+# ALTER and not a paraphrase.
+_ADD_STATUS_CHECK = (
+    f"ALTER TABLE queue_tickets ADD CONSTRAINT {_STATUS_CHECK} "
+    "CHECK (status IN ('waiting','in_service','done','removed'))"
+)
+UNKNOWN_QUEUE_STATUS = "no-such-status"
+
+
+def _queue_columns(url: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_QUEUE_COLUMNS))).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _queue_pinned_definitions(url: str) -> tuple[str, str, str, str]:
+    async def read() -> tuple[str, str, str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                out = []
+                for name in (_VISIT_TYPE_CHECK, _STATUS_CHECK, _SKIP_COUNT_CHECK):
+                    result = await conn.execute(text(_QUEUE_CONSTRAINT_DEF), {"name": name})
+                    out.append(str(result.scalar_one()))
+                index = await conn.execute(text(_QUEUE_INDEX_DEF), {"name": _QUEUE_INDEX_NAME})
+                out.append(str(index.scalar_one()))
+                return (out[0], out[1], out[2], out[3])
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _queue_insert_admitted(url: str, **values: object) -> bool:
+    """One INSERT against the three CHECKs, rolled back either way — the
+    superuser axis, which reaches the constraint but not the GRANTs or RLS."""
+    params: dict = {"visit_type": "bride", "status": "waiting", "skip_count": 0}
+    params.update(values)
+
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(text(_QUEUE_INSERT), params)
+                except IntegrityError:
+                    return False
+                finally:
+                    await trans.rollback()
+                return True
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+def _queue_status_check_accepts(url: str, seeded_statuses: list[str]) -> bool:
+    """DROP the status CHECK, seed rows, and try to re-add the migration's exact
+    expression over them — `_constraint_accepts` above, for the other table.
+
+    Postgres runs DDL transactionally, so each call (the DROP included) rolls
+    back whole and the session-scoped container ends as it started."""
+
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(text(_DROP_STATUS_CHECK))
+                    for status in seeded_statuses:
+                        await conn.execute(
+                            text(_QUEUE_INSERT),
+                            {"visit_type": "bride", "status": status, "skip_count": 0},
+                        )
+                    await conn.execute(text(_ADD_STATUS_CHECK))
+                    return True
+                except DBAPIError as exc:
+                    assert _STATUS_CHECK in str(exc)
+                    return False
+                finally:
+                    await trans.rollback()
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+@pytest.mark.db
+def test_the_queue_tickets_migration_creates_the_scoping_and_consent_columns(
+    migrated_db: str,
+) -> None:
+    """`queue_day` is a stored DATE and not an expression over `created_at` (D4):
+    an expression makes the day the DATABASE's clock, and the whole Jerusalem
+    boundary suite is only writable because the value comes from the injectable
+    Clock instead.
+
+    `marketing_opt_in_at` is nullable — NULL is the only "no consent on record"
+    sentinel, so a default or a NOT NULL would have to invent a second one."""
+    columns = _queue_columns(migrated_db)
+    assert columns["queue_day"] == ("date", "NO")
+    assert columns["marketing_opt_in_at"] == ("timestamp with time zone", "YES")
+    assert columns["skip_count"] == ("integer", "NO")
+    assert columns["called_at"] == ("timestamp with time zone", "YES")
+    assert columns["requeued_at"] == ("timestamp with time zone", "YES")
+
+
+@pytest.mark.db
+def test_customers_gained_no_marketing_consent_column(migrated_db: str) -> None:
+    """Ruling 2: the consent timestamp lands on `queue_tickets` and F33 never
+    touches `customers` at all. A later reader who "helpfully" re-adds the ADD
+    COLUMN half reddens here instead of quietly reopening the write path — the
+    one whose overwrite-the-name behaviour was the forgery vector."""
+
+    async def read() -> int:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                return int((await conn.execute(text(_CUSTOMERS_OPT_IN))).scalar_one())
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(read()) == 0
+
+
+@pytest.mark.db
+def test_the_queue_tickets_migration_pins_its_checks_and_its_one_index(migrated_db: str) -> None:
+    """The highest-value test in F33, and what it guards is a FUTURE edit.
+
+    Keyed to `head` — i.e. AFTER this feature's migration, whatever number it
+    ended up with — and never to a hardcoded revision id, so a literal here would
+    not rot the first time another feature lands a migration first.
+
+    The index row is the one that fails loudly if someone re-adds UNIQUE."""
+    visit_type, status, skip_count, index = _queue_pinned_definitions(migrated_db)
+    assert visit_type == _VISIT_TYPE_CHECK_DEF
+    assert status == _STATUS_CHECK_DEF_QUEUE
+    assert skip_count == _SKIP_COUNT_CHECK_DEF
+    assert index == _QUEUE_INDEX_DEF_PINNED
+
+
+@pytest.mark.db
+def test_queue_tickets_carries_no_unique_index_but_the_primary_key(migrated_db: str) -> None:
+    """Ruling 3, as a property of the SCHEMA rather than of a paragraph.
+
+    A later reader who wants uniqueness back must first answer both of the
+    findings that killed it: who frees the key when nothing in the shipped
+    product can write a status, and what does the refusal disclose about a woman
+    whose number a stranger typed in."""
+
+    async def read() -> int:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                return int((await conn.execute(text(_QUEUE_UNIQUE_INDEXES))).scalar_one())
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(read()) == 0
+
+
+@pytest.mark.db
+def test_the_queue_checks_admit_exactly_their_enums_and_nothing_else(migrated_db: str) -> None:
+    """Iterated from the live enums rather than listing today's values: the day a
+    fifth status is added, either the migration widened the CHECK with it and
+    this covers it for free, or it did not and this is the red."""
+    for visit_type in VisitType:
+        assert _queue_insert_admitted(migrated_db, visit_type=visit_type.value), visit_type
+    for status in QueueTicketStatus:
+        assert _queue_insert_admitted(migrated_db, status=status.value), status
+    assert _queue_insert_admitted(migrated_db, skip_count=0)
+    assert _queue_insert_admitted(migrated_db, skip_count=7)
+
+    assert not _queue_insert_admitted(migrated_db, visit_type="groom")
+    assert not _queue_insert_admitted(migrated_db, status=UNKNOWN_QUEUE_STATUS)
+    assert not _queue_insert_admitted(migrated_db, skip_count=-1)
+
+
+@pytest.mark.db
+def test_the_app_role_can_move_a_ticket_to_in_service_but_not_to_an_unknown_status(
+    app_role_url: str,
+) -> None:
+    """The CHECK against the APP role and against UPDATE — the two axes the probe
+    above leaves open (it connects as the container superuser and only INSERTs).
+    The positive half is also F58's pre-flight: boutique_app really can write a
+    status transition past the constraint, under forced RLS, with only its
+    GRANTs.
+
+    The leftover row is left under its own random tenant_id holding a LEGAL
+    status, which matters twice: every tenant-scoped reader in the suite cannot
+    see it (RLS), and the populated-table test below re-adds the status CHECK
+    over the whole table and must still succeed with it present."""
+
+    async def check() -> None:
+        engine = create_async_engine(app_role_url, poolclass=NullPool)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        tenant_id = uuid.uuid4()
+        try:
+            async with tenant_session(factory, tenant_id) as session:
+                ticket = QueueTicket(
+                    tenant_id=tenant_id,
+                    queue_day=datetime.date(2026, 8, 3),
+                    name="Probe",
+                    phone="+972501234567",
+                    visit_type=VisitType.BRIDE.value,
+                )
+                session.add(ticket)
+                await session.flush()
+                ticket_id = ticket.id
+
+            async with tenant_session(factory, tenant_id) as session:
+                await session.execute(
+                    update(QueueTicket)
+                    .where(QueueTicket.id == ticket_id)
+                    .values(status=QueueTicketStatus.IN_SERVICE.value)
+                )
+
+            # Its own session: the refused statement aborts its transaction, and
+            # an aborted transaction cannot be reused for the read-back.
+            with pytest.raises(IntegrityError):
+                async with tenant_session(factory, tenant_id) as session:
+                    await session.execute(
+                        update(QueueTicket)
+                        .where(QueueTicket.id == ticket_id)
+                        .values(status=UNKNOWN_QUEUE_STATUS)
+                    )
+
+            async with tenant_session(factory, tenant_id) as session:
+                stored = await session.scalar(
+                    select(QueueTicket.status).where(QueueTicket.id == ticket_id)
+                )
+            # The refusal changed nothing — not even partially.
+            assert stored == QueueTicketStatus.IN_SERVICE.value
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check())
+
+
+@pytest.mark.db
+def test_adding_the_queue_status_check_validates_existing_rows(migrated_db: str) -> None:
+    """The migration's CHECK arrives with the table, so it cannot fail on live
+    data today — but F58 widens this set, and the ALTER it will need is this one.
+    Both halves: legal rows present -> the constraint is added; an unknown-status
+    row present -> it is REFUSED. Without the second half a NOT VALID constraint
+    would pass the first and prove nothing."""
+    assert (
+        _queue_status_check_accepts(
+            migrated_db, [QueueTicketStatus.WAITING.value, QueueTicketStatus.DONE.value]
+        )
+        is True
+    )
+    assert _queue_status_check_accepts(migrated_db, [UNKNOWN_QUEUE_STATUS]) is False
+
+
+@pytest.mark.db
+def test_migration_queue_tickets_round_trips(migrated_db: str) -> None:
+    """upgrade() creates the table; downgrade() drops it. Runs as the migration
+    owner (the app role cannot CREATE TABLE) and mutates the live session-scoped
+    schema, so it is LAST among the schema-mutating tests in this file and owns
+    no fixtures.
+
+    Probes BOTH directions rather than only the end state, which is 0013's own
+    rule: a downgrade that silently no-ops would stay green while shipping a
+    migration that cannot be rolled back.
+
+    The target is the revision this one REVISES, which is what `alembic heads`
+    answered at build time — never a revision id of F33's own. The finally is not
+    decoration: leaving the schema down drops a table the ORM still maps, so
+    every later queue db test in the shared container would fail with
+    UndefinedTable somewhere unrelated to itself."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+
+    def exists() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text(_TABLE_EXISTS), {"name": "queue_tickets"})
+                    return bool(result.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists()
+        command.downgrade(cfg, "0017")
+        assert not exists()
+        command.upgrade(cfg, "head")
+        assert exists()
+        assert _queue_columns(migrated_db)["queue_day"] == ("date", "NO")
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
 def test_running_env_py_does_not_disable_the_app_logger() -> None:
     """Unmarked and offline (`sql=True` runs env.py and touches no database), so
     this guard runs in the fast suite that the db-marked tests are deselected
@@ -1041,11 +1405,18 @@ def test_migration_0017_round_trips(migrated_db: str) -> None:
     downgrade() drops both. Runs as the migration owner (the app role cannot
     ALTER) and mutates the live session-scoped schema.
 
-    `-1` rather than a hardcoded revision, and that is a stated departure rather
-    than a correction of anyone: all four shipped round-trips hardcode their
-    target. Three unmerged migrations are racing for a revision id as this
-    lands, and "one step back from head" survives the renumber — which keeps
-    this block a plain concatenation at merge instead of a hand edit.
+    `"0016"` — the revision this one REVISES — which is the shape all four
+    other round-trips in this file use.
+
+    It was written as `-1` on the reasoning that "one step back from head"
+    survives a renumber. That reasoning was wrong in the one direction it was
+    meant to cover: `-1` is one step back from CURRENT, and current is head, so
+    it stops naming 0017 the moment ANY migration stacks on top of it. F33
+    landed 0018 and this test began downgrading THAT — dropping queue_tickets,
+    leaving notes and tags in place, and asserting they were gone. It is red on
+    the first `pytest -m db` after the merge, in a file the merging branch did
+    not write. A relative target only holds while the block stays at head, which
+    is exactly the condition a feature branch cannot promise.
 
     Appended at the END of the file, after the env_py test, so it never shares
     an anchor with another feature's block again. It sits after the 0016 block
@@ -1062,7 +1433,7 @@ def test_migration_0017_round_trips(migrated_db: str) -> None:
     expected = {"notes": _NOTES_COLUMN, "tags": _TAGS_COLUMN}
     try:
         assert _customer_crm_columns(migrated_db) == expected
-        command.downgrade(cfg, "-1")
+        command.downgrade(cfg, "0016")
         assert _customer_crm_columns(migrated_db) == {}
         command.upgrade(cfg, "head")
         assert _customer_crm_columns(migrated_db) == expected

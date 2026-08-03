@@ -331,6 +331,87 @@ describe("storefront endpoints", () => {
   });
 });
 
+// F33's walk-in queue. BOTH routes are POSTs, including the read: a GET would
+// put the ticket id — which IS the capability — into every access log, proxy
+// trace and Referer header on the path, once every five seconds for the length
+// of her visit.
+describe("the check-in endpoints", () => {
+  const TICKET = {
+    id: "11111111-2222-3333-4444-555555555555",
+    status: "waiting",
+    position: 3,
+    called_at: null,
+  };
+
+  it("posts the check-in with the backend's exact snake_case field names", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(201, TICKET));
+
+    const created = await api.createCheckin({
+      name: "נועה",
+      phone: "0501234567",
+      visit_type: "bride",
+      marketing_opt_in: false,
+    });
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/storefront/checkin");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("omit");
+    expect(JSON.parse(init.body as string)).toEqual({
+      name: "נועה",
+      phone: "0501234567",
+      visit_type: "bride",
+      marketing_opt_in: false,
+    });
+    // No case conversion, ever, on this client: the wire shape IS the type.
+    expect(created).toEqual(TICKET);
+    expect(created.called_at).toBeNull();
+  });
+
+  it("carries the ticket id in the position BODY, never in a path or a query", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, TICKET));
+
+    await api.getQueuePosition("11111111-2222-3333-4444-555555555555");
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/storefront/checkin/position");
+    expect(path).not.toContain("11111111");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("omit");
+    expect(JSON.parse(init.body as string)).toEqual({
+      ticket_id: "11111111-2222-3333-4444-555555555555",
+    });
+  });
+
+  it("hands the create's error straight through — 429 is the shared throttle copy", async () => {
+    // The create has ONE success shape (Ruling 3): every well-formed create
+    // mints a ticket and answers 201, so the only branch the page can take is
+    // the error one, and F33 adds no error code of its own.
+    stubFetch(() =>
+      jsonResponse(429, {
+        error: { code: "TOO_MANY_ATTEMPTS", message: "Too many attempts. Try again later." },
+      }),
+    );
+    const error: unknown = await api
+      .createCheckin({ name: "נועה", phone: "0501234567", visit_type: "evening", marketing_opt_in: true })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(errorMessageKey(error)).toBe("errors.tooManyAttempts");
+  });
+
+  it("maps the position read's terminals to keys that already exist", async () => {
+    // No new `case` in errorMessageKey: an unknown ticket is NOT_FOUND and a
+    // malformed one is the platform's VALIDATION_ERROR, both already mapped.
+    expect(errorMessageKey(new ApiError(404, "NOT_FOUND", "Resource not found."))).toBe(
+      "errors.notFound",
+    );
+    expect(errorMessageKey(new ApiError(400, "VALIDATION_ERROR", "bad id"))).toBe(
+      "errors.validation",
+    );
+  });
+});
+
 // isNotFound folds 400 VALIDATION_ERROR into "dress gone" — correct on the
 // dress detail, where a malformed id is the only 400, and WRONG on the booking
 // POST, where a schema 400 is a form problem, not a vanished dress. This pins

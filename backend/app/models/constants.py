@@ -93,6 +93,29 @@ class BookingStatus(StrEnum):
     PENDING_PAYMENT = "pending_payment"
 
 
+class QueueTicketStatus(StrEnum):
+    # The DB pins this exact set (F33's migration); F58 is the feature that
+    # widens it, and test_the_queue_tickets_migration_pins_its_checks_and_its_one_index
+    # holds the deparsed literal so that widening collides with a review.
+    #
+    # F33 writes only the WAITING default — every transition out of it is F58's,
+    # which is why nothing in the shipped product can currently reach a terminal.
+    # WAITING and IN_SERVICE are the live states; DONE and REMOVED are terminal
+    # and are what stop the customer's poll.
+    WAITING = "waiting"
+    IN_SERVICE = "in_service"
+    DONE = "done"
+    REMOVED = "removed"
+
+
+class VisitType(StrEnum):
+    # The DB pins this exact set (F33's migration). Bride-priority ordering is
+    # explicitly NOT built (e6-instore-realtime.md:74): this column records what
+    # she is here for, and nothing sorts on it.
+    BRIDE = "bride"
+    EVENING = "evening"
+
+
 class BookingCancelledBy(StrEnum):
     # The DB pins this exact set (0010, widened by F19's migration). F15's owner
     # cancel is the 'owner' writer; the value predates it so E4 needed no second

@@ -1,2 +1,48 @@
 @import "tailwindcss";
 @import "@boutique/ui/theme.css";
+
+/* F33's check-in code is the console's only screen meant to leave the building:
+   it is printed once and stuck on the boutique door. On paper the header, the
+   nav and the section's own explanatory copy are chrome, so the sheet is
+   ISOLATED rather than merely restyled.
+
+   `visibility` and not `display: none` — hiding the ancestors outright takes
+   the sheet down with them, so this hides every element and re-shows only the
+   sheet's own subtree. Logical inset properties: the whole product is RTL.
+
+   EVERY rule below is gated on `body:has(.print-sheet)`, and that gate is the
+   whole correctness of this block rather than a refinement of it. index.css is
+   imported once by main.tsx, so an ungated `body * { visibility: hidden }`
+   applies on every route of the console — and `.print-sheet` exists in exactly
+   one component. An owner on «תורים» or «לוח היום» pressing Cmd+P to file the
+   day's bookings would get blank paper: `visibility: hidden` still reserves the
+   layout, so the sheets come out the right size and empty. `:has()` is Baseline
+   2023 and this app already ships Tailwind 4, which needs it anyway.
+   Pinned in e2e/a11y.spec.ts against a real print-media emulation, because
+   jsdom applies no stylesheet and cannot see any of this. */
+@media print {
+  body:has(.print-sheet) * {
+    visibility: hidden;
+  }
+
+  body:has(.print-sheet) .print-sheet,
+  body:has(.print-sheet) .print-sheet * {
+    visibility: visible;
+  }
+
+  .print-sheet {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    width: 100%;
+    border: 0;
+  }
+
+  /* The server's SVG is 37 units square, one per QR module. A door is read from
+     a metre away, so the printed code is sized in physical units rather than
+     inheriting the screen's 224px. */
+  .print-sheet img {
+    width: 10cm;
+    height: 10cm;
+  }
+}

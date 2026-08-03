@@ -434,5 +434,16 @@ export const ar = {
     "customers.messageStatusFailed": "נכשלה",
     "customers.error.NOT_AUTHORIZED":
       "אין הרשאה לצפות בכרטיסי הלקוחות כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+    "nav.checkinQr": "קוד סריקה",
+    "checkinQr.heading": "קוד סריקה לרישום לתור",
+    "checkinQr.intro":
+      "אפשר להדפיס את הדף הזה ולתלות אותו בכניסה. מי שסורקת את הקוד מגיעה ישירות לטופס הרישום לתור.",
+    "checkinQr.posterLine": "לרישום לתור אפשר לסרוק את הקוד",
+    "checkinQr.imageAlt": "קוד QR שמוביל לטופס הרישום לתור",
+    "checkinQr.urlLabel": "כתובת הרישום:",
+    "checkinQr.urlHint": "אפשר גם להקליד את הכתובת בדפדפן.",
+    "checkinQr.printCta": "הדפסה",
+    "checkinQr.loadFailed": "לא הצלחנו לטעון את קוד הסריקה כרגע.",
+    "checkinQr.retry": "ניסיון נוסף",
   },
 } as const;

@@ -118,6 +118,11 @@ from app.payments.service import (
 from app.payments.unconfigured import UnconfiguredGateway
 from app.payments.webhook_router import DepositBookingService
 from app.payments.webhook_router import router as webhook_router
+from app.queue.manage_router import router as queue_manage_router
+from app.queue.qr import CheckinQrService
+from app.queue.router import router as queue_router
+from app.queue.service import QueueService
+from app.queue.validation import CheckinThrottledError
 from app.security_headers import SecurityHeadersMiddleware
 from app.storage.base import (
     MediaNotConfiguredError,
@@ -706,6 +711,52 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             clock=time.monotonic,
         ),
     )
+    # F33's walk-in queue. THREE limiter instances, and the rule this file has
+    # already stated four times is the reason: max_attempts lives on the
+    # LIMITER, so a second key on an existing budget could never trip first.
+    # Concretely, reusing the OTP budgets would let a bride-heavy morning close
+    # the door queue (and the per-phone half answers a spent allowance with a
+    # silent 204, so the failure would be invisible); reusing booking-create's
+    # would let a morning of walk-ins close the front door; reusing the
+    # storefront read brake would let one leaked position-poll loop 429 the
+    # catalog for every shopper on the site.
+    #
+    # All three live here rather than on app.state because only the service has
+    # what their keys need — the parsed body for the ticket key, the lookup
+    # result for the miss key — which is also what keeps the new router at
+    # dependencies=[Depends(_no_store)], byte-identical in posture to the OTP
+    # and booking siblings.
+    app.state.queue_service = QueueService(
+        get_session_factory(),
+        create_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.checkin_create_max_per_window,
+            window_seconds=settings.checkin_create_window_seconds,
+            clock=time.monotonic,
+        ),
+        # Its own instance again. Keyed on the ticket id the caller already
+        # holds, so a 429 on it discloses nothing.
+        position_ticket_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.checkin_position_max_per_ticket_window,
+            window_seconds=settings.checkin_position_ticket_window_seconds,
+            clock=time.monotonic,
+        ),
+        # And a third. Sharing this one with the ticket budget above would give
+        # the ticket key the miss ceiling and the two would trip each other —
+        # which is the same rule, stated for the case where it is least obvious
+        # because both keys belong to the same feature.
+        position_miss_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.checkin_position_max_misses_per_window,
+            window_seconds=settings.checkin_position_miss_window_seconds,
+            clock=time.monotonic,
+        ),
+    )
+    # base_domain, not the request's own host: the URL a poster carries has to
+    # resolve to the tenant's own storefront in dev, staging and production
+    # alike, and Settings is where deployment identity lives. Its own service
+    # rather than a method on QueueService above — it needs no session factory,
+    # no limiter and no clock, and threading base_domain through the anonymous
+    # surface's service to reach a /manage read would be the larger change.
+    app.state.checkin_qr_service = CheckinQrService(base_domain=settings.base_domain)
 
     app.state.payment_gateway = _build_payment_gateway(settings)
     app.state.secret_box = _build_secret_box(settings)
@@ -1067,6 +1118,20 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _gateway_throttled(request: Request, exc: GatewayThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
 
+    # The TENTH handler returning this same shared body, and F33's only new
+    # handler: QueueTicketNotFoundError inherits DomainNotFoundError, so the 404
+    # needs none. One class for all three check-in budgets, because all three
+    # keys are about a boutique or about a ticket the caller already holds and
+    # none is about a person — which is what makes one shared 429 safe here
+    # where the OTP surface needed two different answers. No Retry-After: the
+    # shared body names no duration, every window is a Settings field so it can
+    # change without a deploy, and a header naming a wait would contradict the
+    # next .env edit. The F21 reparenting note on StorefrontThrottledError
+    # covers this one too.
+    @app.exception_handler(CheckinThrottledError)
+    async def _checkin_throttled(request: Request, exc: CheckinThrottledError) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(boutique_router)
@@ -1107,6 +1172,12 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # whichever was included first. The ROUTES table in test_customers_api.py is
     # what keeps that honest for these three.
     app.include_router(customers_router)
+    # The NINTH /manage router, after the customers one and deliberately BEFORE
+    # storefront_router: every /manage router stays contiguous and ahead of the
+    # anonymous surfaces. Same shadowing hazard as the eight above, now with
+    # nine surfaces on one prefix — the ROUTES table in test_checkin_qr_api.py
+    # is what keeps this one honest.
+    app.include_router(queue_manage_router)
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
     app.include_router(storefront_router)
@@ -1132,6 +1203,13 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # impossible in production. F18 DELETES this line and app/payments/fake_pay.py
     # when a real adapter's hosted page replaces it.
     register_fake_pay(app, settings)
+    # The FIFTH /storefront sibling: F33's walk-in check-in and its position
+    # read, both POSTs. Same anonymous posture as the other three, asserted in
+    # test_checkin_api.py. Same shadowing hazard as every router above — a
+    # duplicated (method, path) would silently win or lose on include order —
+    # and the explicit /storefront path literal in test_storefront_api.py is
+    # what keeps this pair honest.
+    app.include_router(queue_router)
     # LAST, after every router: the mounts and the catch-all only ever see what
     # no API route claimed.
     _register_spas(app)
