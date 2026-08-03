@@ -255,6 +255,22 @@ class AuditAction(StrEnum):
     # ordinary confirmation — which is exactly why the owner needs a record that
     # this appointment is unsecured.
     GATEWAY_UNAVAILABLE_AT_CHECKOUT = "gateway_unavailable_at_checkout"
+    # F53's customer CRM (D8). Same fact as every block above: audit_log.action
+    # is plain TEXT with no CHECK (0003), so this needs no migration.
+    #
+    # ONE value, not CUSTOMER_NOTES_UPDATED + CUSTOMER_TAGS_UPDATED. The split
+    # criterion this file applies is not "is this a distinct field" — it is "is
+    # this a distinct question a security audit actually asks of this table",
+    # and nobody will ever ask it "who edited tags but not notes". Which of the
+    # two moved rides in `details` as FIELD NAMES ONLY.
+    #
+    # Field names only is a deliberate departure from STAFF_UPDATED's
+    # {from, to} directly above, and the asymmetry is the point: a display name
+    # is a label a staffer chose for herself, while customer notes are free text
+    # written ABOUT A THIRD PARTY who never sees them. audit_log has no
+    # retention policy and platform operators read across tenants, so copying a
+    # bride's notes here would export them out of the tenant that owns them.
+    CUSTOMER_UPDATED = "customer_updated"
 
 
 class PlatformAuditAction(StrEnum):

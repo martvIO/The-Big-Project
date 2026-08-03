@@ -5,6 +5,7 @@ import {
   EU_SIZE_QUICK_LIST,
   formatIlsAmount,
   ilsFromAgorot,
+  MAX_CUSTOMER_NOTES_LENGTH,
   MAX_DEPOSIT_AMOUNT_AGOROT,
   MAX_DISPLAY_NAME_LENGTH,
   MAX_DRESS_DESCRIPTION_LENGTH,
@@ -15,6 +16,8 @@ import {
   MAX_SEARCH_LENGTH,
   MAX_SIZE_LABEL_LENGTH,
   MAX_SORT_ORDER,
+  MAX_TAG_LENGTH,
+  MAX_TAGS,
   MAX_UPLOAD_BYTES,
   MAX_VARIANT_QUANTITY,
   MAX_VARIANTS_PER_DRESS,
@@ -22,9 +25,11 @@ import {
   MIN_UPLOAD_BYTES,
   normalizeSizeLabel,
   validateAppointmentType,
+  validateCustomerNotes,
   validateDress,
   validateExceptionTimes,
   validateStaffDraft,
+  validateTag,
   validateTerms,
   validateUploadFile,
   validateVariants,
@@ -446,5 +451,77 @@ describe("validateStaffDraft", () => {
   // against them and they push an owner toward `Boutique1!`).
   it("has no opinion about the email or the password's composition", () => {
     expect(validateStaffDraft({ ...good, password: "aaaaaaaaaaaa" })).toBeNull();
+  });
+});
+
+// --- customers CRM (Feature 53) ---
+
+describe("validateTag", () => {
+  it("accepts an ordinary tag against an empty chip list", () => {
+    expect(validateTag("VIP", [])).toBeNull();
+  });
+
+  it("rejects one character over the cap and accepts the cap exactly", () => {
+    expect(validateTag("א".repeat(MAX_TAG_LENGTH), [])).toBeNull();
+    expect(validateTag("א".repeat(MAX_TAG_LENGTH + 1), [])).toBe("customers.tagTooLong");
+  });
+
+  // The whole C0 set plus DEL, NOT the notes class: \t, \n and \r are the three
+  // characters that separate the two, and a newline inside a TEXT[] element
+  // renders a two-line chip. Getting the backend import backwards is invisible
+  // until exactly these three.
+  it("rejects tab, newline and return along with the rest of C0", () => {
+    for (const bad of ["\x00", "a\tb", "a\nb", "a\rb", "a\x7fb"]) {
+      expect(validateTag(bad, [])).toBe("customers.tagInvalid");
+    }
+  });
+
+  // Both sides strip before they judge, and BOTH strips count U+000B as
+  // whitespace — JS trim() and Python str.strip() agree — so a tag that is
+  // nothing but control whitespace is a BLANK tag the server drops silently
+  // (normalize_tags: `if not tag: continue`), never an invalid one. The caller
+  // drops it with no message for the same reason. Asserted rather than left
+  // implicit: the obvious test here says "customers.tagInvalid" and would have
+  // forced the client to refuse something the server accepts.
+  it("treats a control-whitespace-only tag as blank, the way the server does", () => {
+    expect(validateTag("\x0b", [])).toBeNull();
+    expect(validateTag("  ", [])).toBeNull();
+  });
+
+  // normalize_tags dedups casefolded and keeps the first occurrence, so a
+  // re-cased duplicate would silently vanish on save.
+  it("rejects a case-insensitive duplicate of an existing chip", () => {
+    expect(validateTag(" vip ", ["VIP"])).toBe("customers.tagDuplicate");
+  });
+
+  it("reports a full card only once the tag itself is legal", () => {
+    const full = Array.from({ length: MAX_TAGS }, (_, i) => `tag${i}`);
+    expect(validateTag("חדשה", full)).toBe("customers.tagsFull");
+    // Still the length message, not "full" — she gets the fault she can see.
+    expect(validateTag("א".repeat(MAX_TAG_LENGTH + 1), full)).toBe("customers.tagTooLong");
+    expect(validateTag("חדשה", full.slice(0, MAX_TAGS - 1))).toBeNull();
+  });
+});
+
+describe("validateCustomerNotes", () => {
+  it("accepts the cap exactly and rejects one character over", () => {
+    expect(validateCustomerNotes("a".repeat(MAX_CUSTOMER_NOTES_LENGTH))).toBeNull();
+    expect(validateCustomerNotes("a".repeat(MAX_CUSTOMER_NOTES_LENGTH + 1))).toBe(
+      "customers.notesTooLong",
+    );
+  });
+
+  // A paragraph keeps its whitespace; the U+000B a paste out of Word carries is
+  // the one maxLength cannot catch and the only trigger customers.notesInvalid
+  // has in the whole feature.
+  it("keeps tab, newline and return but rejects the rest of C0", () => {
+    expect(validateCustomerNotes("שורה\nשנייה\tעם\rהחזרה")).toBeNull();
+    expect(validateCustomerNotes("הודבק\x0bמ-Word")).toBe("customers.notesInvalid");
+    expect(validateCustomerNotes("\x00")).toBe("customers.notesInvalid");
+  });
+
+  // Empty string means CLEARED, never an error — boutique/validation.py:110.
+  it("accepts an empty string", () => {
+    expect(validateCustomerNotes("")).toBeNull();
   });
 });

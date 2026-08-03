@@ -2,9 +2,9 @@
 
 Two frontend files restate backend bounds so the user sees an immediate Hebrew
 error instead of a round-trip 400: `frontend/apps/manage/src/validation.ts`
-mirrors `app/catalog/validation.py` **and `app/auth/schemas.py`**, and
-`frontend/apps/storefront/src/validation.ts` mirrors
-`app/booking/validation.py`. Nothing enforces that the copies agree, and the
+mirrors `app/catalog/validation.py`, `app/auth/schemas.py` **and
+`app/customers/validation.py`**, and `frontend/apps/storefront/src/validation.ts`
+mirrors `app/booking/validation.py`. Nothing enforces that the copies agree, and the
 failure mode is silent: raise a cap on one side only and the client either
 rejects a legal value or lets an illegal one reach the API before it refuses.
 
@@ -38,6 +38,7 @@ from app.auth import schemas as auth_schemas
 from app.booking import validation as booking_validation
 from app.booking.validation import jerusalem_day_index
 from app.catalog import validation as catalog_validation
+from app.customers import validation as customers_validation
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANAGE_VALIDATION_TS = REPO_ROOT / "frontend/apps/manage/src/validation.ts"
@@ -78,6 +79,24 @@ MIRRORS = (
             "MAX_DISPLAY_NAME_LENGTH",
         ),
         id="manage-staff",
+    ),
+    # F53's four. MAX_SEARCH_TERM_LENGTH is the one a reader would call
+    # server-only: it is not a write bound at all, it is `Query(max_length=…)` on
+    # the list route. It rides here because the console applies it as `maxLength`
+    # on the search box, and without that mirror a pasted over-long term answers
+    # 400, the catch sets loadError, and the list renders «אפשר לנסות שוב בעוד
+    # רגע» — a wait-and-retry message for an input error that fails identically
+    # on every retry.
+    pytest.param(
+        MANAGE_VALIDATION_TS,
+        customers_validation,
+        (
+            "MAX_TAG_LENGTH",
+            "MAX_TAGS",
+            "MAX_CUSTOMER_NOTES_LENGTH",
+            "MAX_SEARCH_TERM_LENGTH",
+        ),
+        id="manage-customers",
     ),
     pytest.param(
         STOREFRONT_VALIDATION_TS,
@@ -140,13 +159,20 @@ _MIRRORED_PATTERNS = (
 )
 
 
-def test_control_character_classes_match_the_backend() -> None:
+# Both consoles now carry the pair: the storefront for the booking form, the
+# manage console for a customer's notes and tags. `app/customers/validation.py`
+# imports the two classes straight out of `app/booking/validation.py` rather than
+# restating them, so one backend module is still the single authority for both
+# rows here.
+@pytest.mark.parametrize("path", (STOREFRONT_VALIDATION_TS, MANAGE_VALIDATION_TS))
+def test_control_character_classes_match_the_backend(path: Path) -> None:
     declared = {
-        match.group("name"): match.group("body")
-        for match in _TS_REGEX_RE.finditer(_source(STOREFRONT_VALIDATION_TS))
+        match.group("name"): match.group("body") for match in _TS_REGEX_RE.finditer(_source(path))
     }
     for ts_name, py_name in _MIRRORED_PATTERNS:
-        assert ts_name in declared, f"storefront validation.ts does not declare {ts_name}"
+        # Names the file under test: the message used to say "storefront"
+        # unconditionally, which sent a manage failure to the wrong file.
+        assert ts_name in declared, f"{path.name} in {path.parent} does not declare {ts_name}"
         assert declared[ts_name] == getattr(booking_validation, py_name).pattern
 
 

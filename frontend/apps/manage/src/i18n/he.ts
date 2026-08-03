@@ -658,5 +658,96 @@ export const he = {
     "staff.roleReception": "קבלה",
     "staff.roleSalesAssistant": "יועצת מכירות",
     "staff.roleSeamstress": "תופרת",
+
+    // --- F53, customers CRM ---
+    //
+    // The SMS-log heading is «יומן הודעות» — "message log" — and NEVER
+    // «הודעות שנשלחו». Two reasons and the second is the one that matters:
+    // «נשלחו» trips the register guard below, and the log renders
+    // status = 'failed' rows, so a heading saying "messages that were sent"
+    // over messages that were not sent is exactly the lie that guard exists to
+    // prevent. Same for the status word: 'sent' means the PROVIDER accepted the
+    // message and returned an id, not that a handset received it — so
+    // «הועברה לספק», which is true and promises no delivery this product
+    // cannot observe.
+    "nav.customers": "לקוחות",
+    "customers.heading": "לקוחות",
+    "customers.searchLabel": "חיפוש לפי שם או טלפון",
+    "customers.searchPlaceholder": "שם או מספר טלפון",
+    "customers.listLoading": "טוען את רשימת הלקוחות…",
+    // Base key only, no _one/_other — the booking.dayCount shape.
+    "customers.count": "לקוחות ברשימה: {{count}}",
+    // `offset` is pinned to 0 and there is no pager, so `customers.count` above
+    // announces the count under the SEARCH PREDICATE, which is not the length
+    // of the list beneath it. Without this line a boutique with 60 customers
+    // reads «לקוחות ברשימה: 60» over 50 rows and nothing says the rest exist.
+    // Two numbers, mid-sentence with Hebrew on both sides — the
+    // customers.messagesTruncated shape, so neither run needs isolating.
+    "customers.listTruncated": "מוצגות {{count}} מתוך {{total}} לקוחות.",
+    "customers.loadFailed":
+      "לא ניתן לטעון את רשימת הלקוחות כרגע. אפשר לנסות שוב בעוד רגע.",
+    // Two empty states, never one: telling a boutique with 200 customers that
+    // it has none is a different (and wrong) sentence.
+    "customers.emptyTitle": "אין עדיין לקוחות",
+    "customers.emptyBody":
+      "לקוחה נוספת לרשימה אחרי שהיא מאמתת את מספר הטלפון שלה וקובעת תור.",
+    "customers.noResultsTitle": "אין תוצאות לחיפוש הזה",
+    "customers.noResultsBody": "אפשר לנסות שם חלקי או ספרות מתוך מספר הטלפון.",
+    "customers.back": "חזרה לרשימה",
+    "customers.detailLoading": "טוען את פרטי הלקוחה…",
+    "customers.detailFailed": "לא ניתן לטעון את פרטי הלקוחה כרגע.",
+    // Also the NOT_FOUND map target: a 404 and another tenant's id are
+    // indistinguishable by design, so they read the same.
+    "customers.notFound": "הלקוחה הזו לא נמצאה. ייתכן שהכרטיס הוסר.",
+    "customers.phoneLabel": "טלפון",
+    "customers.notesLabel": "הערות",
+    // The one honest thing to say about who reads them.
+    "customers.notesHelp": "ההערות נשמרות בכרטיס ונראות לצוות הבוטיק בלבד.",
+    "customers.notesPlaceholder": "מה כדאי לזכור לפעם הבאה",
+    // The numbers in this line and the three below sit mid-sentence with Hebrew
+    // on both sides, which the bidi algorithm already handles — and `help` is
+    // typed string, so isolateLtr (a ReactNode) could not be used there anyway.
+    "customers.notesTooLong": "ההערות יכולות להכיל עד {{length}} תווים.",
+    "customers.notesInvalid": "ההערות מכילות תווים שאי אפשר לשמור.",
+    "customers.tagsLabel": "תגיות",
+    "customers.tagsHelp": "עד {{max}} תגיות, עד {{length}} תווים לתגית.",
+    "customers.tagAddLabel": "תגית חדשה",
+    "customers.tagAdd": "הוספה",
+    "customers.tagRemove": "הסרה",
+    // Starts with customers.tagRemove — WCAG 2.5.3, asserted in i18n.test.ts.
+    "customers.tagRemoveAria": "הסרה של התגית {{tag}}",
+    "customers.tagsEmpty": "אין תגיות בכרטיס הזה.",
+    // Names the remedy rather than only the wall.
+    "customers.tagsFull": "אי אפשר להוסיף עוד תגיות. אפשר להסיר תגית קיימת ולנסות שוב.",
+    "customers.tagTooLong": "תגית יכולה להכיל עד {{length}} תווים.",
+    "customers.tagDuplicate": "התגית הזו כבר קיימת בכרטיס.",
+    "customers.tagInvalid": "התגית מכילה תווים שאי אפשר לשמור.",
+    "customers.save": "שמירה",
+    "customers.saved": "השינויים נשמרו",
+    "customers.saveFailed": "לא ניתן לשמור את השינויים כרגע.",
+    "customers.bookingsHeading": "היסטוריית תורים",
+    "customers.bookingsEmpty": "אין עדיין תורים בכרטיס הזה.",
+    "customers.bookingsTruncated": "מוצגים {{count}} התורים האחרונים.",
+    "customers.messagesHeading": "יומן הודעות",
+    "customers.messagesHelp": "יומן לקריאה בלבד. אי אפשר לערוך או למחוק רשומה.",
+    "customers.messagesEmpty": "אין עדיין רשומות ביומן ההודעות.",
+    // Two numbers. {{total}} is messages_total — the send volume the fifty-row
+    // window cannot show, because OTP rows are always the newest.
+    "customers.messagesTruncated": "מוצגות {{count}} מתוך {{total}} רשומות ביומן.",
+    "customers.messageKindOtp": "קוד אימות",
+    "customers.messageKindConfirmation": "אישור תור",
+    "customers.messageKindReminder": "תזכורת",
+    "customers.messageKindOwnerCancel": "ביטול מטעם הבוטיק",
+    "customers.messageKindOwnerReschedule": "שינוי מועד מטעם הבוטיק",
+    "customers.messageStatusQueued": "בהמתנה",
+    "customers.messageStatusSent": "הועברה לספק",
+    // The row the log exists to be able to show.
+    "customers.messageStatusFailed": "נכשלה",
+    // Names no role and nothing that changed — the server ships ONE 403 body so
+    // a probe cannot learn which roles exist. «כרגע» is load-bearing: a
+    // re-promotion restores access, so a sentence implying a permanent door
+    // would be a guess the server never made.
+    "customers.error.NOT_AUTHORIZED":
+      "אין הרשאה לצפות בכרטיסי הלקוחות כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
   },
 } as const;

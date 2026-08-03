@@ -705,6 +705,42 @@ class BookingsRepository:
         )
         return list((await session.execute(stmt)).scalars().all())
 
+    async def list_recent_for_customer(
+        self, session: AsyncSession, tenant_id: UUID, *, customer_id: UUID, limit: int
+    ) -> list[Booking]:
+        """The CRM screen's booking-history panel (F53 D4). Rides
+        idx_bookings_tenant_customer, same as `list_live_for_customer` above.
+
+        **Every status, cancelled included, and no lower bound on `starts_at`** —
+        which is the whole reason this is a second method rather than a call to
+        that one. `list_live_for_customer` is F15's re-mint feed: it pins
+        `status = 'confirmed'` and `starts_at > after` because it answers "which
+        manage links must be reissued". Reused here it would show a bride with
+        three past cancellations an empty history, and "she cancelled twice" is
+        precisely the fact this screen exists to surface — `list_day`'s argument,
+        one panel over.
+
+        **The `id` tiebreak is not decoration**, the same sentence
+        `MessageLogRepository.list_for_customer` writes about `created_at`.
+        `starts_at` ties are DESIGNED FOR here: both partial unique indexes are
+        `WHERE deleted_at IS NULL AND status <> 'cancelled'`, and 0009's comment
+        says why — "a customer who cancels can rebook the very same time" — while
+        this read deliberately admits cancelled rows. Under a LIMIT a tie at the
+        boundary decides which row is DROPPED, not merely where it sits, so
+        without a total order the panel can show a different set on a refresh.
+        """
+        stmt = (
+            select(Booking)
+            .where(
+                Booking.tenant_id == tenant_id,
+                Booking.customer_id == customer_id,
+                Booking.deleted_at.is_(None),
+            )
+            .order_by(Booking.starts_at.desc(), Booking.id.desc())
+            .limit(limit)
+        )
+        return list((await session.execute(stmt)).scalars().all())
+
     async def list_confirmed_without_manage_token(
         self, session: AsyncSession, tenant_id: UUID, *, after: datetime, limit: int
     ) -> list[Booking]:

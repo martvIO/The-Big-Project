@@ -70,6 +70,8 @@ from app.catalog.service import (
 from app.catalog.validation import PENDING_MEDIA_TTL_SECONDS
 from app.core.config import Settings, get_settings
 from app.csrf import CsrfOriginMiddleware
+from app.customers.router import router as customers_router
+from app.customers.service import CustomersService
 from app.dashboard.router import router as dashboard_router
 from app.dashboard.service import DashboardService
 from app.db.session import ensure_safe_database_role, get_session_factory
@@ -580,6 +582,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # No clock wired, same as the dashboard: the parameter exists so the db suite
     # can freeze the break timestamp, and production reads a real one.
     app.state.floor_service = FloorService(get_session_factory())
+    # No clock: nothing the CRM answers is time-derived — the booking history is
+    # ordered by starts_at with no window and the SMS log has no band.
+    app.state.customers_service = CustomersService(get_session_factory())
     app.state.login_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.login_max_attempts,
         window_seconds=settings.login_window_seconds,
@@ -1097,6 +1102,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # test_staff_role_gating.py imports that table, so these four rows also get
     # a real end-to-end 403 assertion rather than only the structural one.
     app.include_router(gateway_router)
+    # The EIGHTH, after the gateway one. Same hazard again, now with eight
+    # surfaces on one prefix: a duplicated (method, path) would silently shadow
+    # whichever was included first. The ROUTES table in test_customers_api.py is
+    # what keeps that honest for these three.
+    app.include_router(customers_router)
     # Its own prefix, never under /manage: CsrfOriginMiddleware and any future
     # edge rule keyed on /manage must not cover — or exempt — anonymous traffic.
     app.include_router(storefront_router)

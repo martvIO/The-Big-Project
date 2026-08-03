@@ -6,6 +6,7 @@ import type { Staff } from "./api";
 import { BoardSection } from "./components/BoardSection";
 import { BookingsSection } from "./components/BookingsSection";
 import { CatalogSection } from "./components/CatalogSection";
+import { CustomersSection } from "./components/CustomersSection";
 import { DashboardSection } from "./components/DashboardSection";
 import { GatewaySection } from "./components/GatewaySection";
 import { HoursSection } from "./components/HoursSection";
@@ -24,6 +25,7 @@ type SectionKey =
   | "terms"
   | "catalog"
   | "bookings"
+  | "customers"
   | "board"
   | "staff"
   | "gateway"
@@ -70,6 +72,21 @@ const NAV: readonly NavItem[] = [
   { key: "terms", labelKey: "nav.terms", roles: ALL },
   { key: "catalog", labelKey: "nav.catalog", roles: ALL },
   { key: "bookings", labelKey: "nav.bookings", roles: ALL },
+  // Immediately after «תורים»: a customer card is where a row in that list
+  // leads, and the front desk reads the two together. `roles: ALL` because the
+  // server admits a shift manager on every /manage/customers route — a hidden
+  // door here would be this array lying about the API rather than mirroring it.
+  //
+  // ⚠ A RECORDED DEPARTURE from spec D10 and the plan, which both place this row
+  // "after `board`, before `staff`". Taken deliberately, not by accident: D10
+  // was written before F57 merged, when `board` was the last both-roles row, so
+  // "after board" and "adjacent to the work" were the same position. They no
+  // longer are — `floor` now sits between `board` and `staff`, so obeying D10
+  // literally would put «לקוחות» after a row that only reception, sales
+  // assistants and seamstresses can see, splitting the two lists the front desk
+  // reads together. Position is the only thing at stake; nothing behavioural
+  // depends on it.
+  { key: "customers", labelKey: "nav.customers", roles: ALL },
   // The board sits AFTER «תורים» and not at the top, which is what keeps Q-5 =
   // NO true structurally: the landing section is row 0 above, and nothing
   // inserted below it can displace either the initial `section` or the
@@ -169,6 +186,7 @@ export function App() {
         {activeKey === "terms" && <TermsSection role={staff.role} />}
         {activeKey === "catalog" && <CatalogSection />}
         {activeKey === "bookings" && <BookingsSection />}
+        {activeKey === "customers" && <CustomersSection />}
         {/* The panel goes AFTER the board, never before: above it, the panel
             grows as breaks start and pushes the board's one-shot scrollIntoView
             target — the «עכשיו» divider — back out of view. */}

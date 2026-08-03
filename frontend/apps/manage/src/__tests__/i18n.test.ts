@@ -41,7 +41,11 @@ const HE_F34 = entries(he.translation, (key) => key === "nav.board" || key.start
 // are `staff.`-namespaced and ride in HE_F51, which is where they belong: the
 // namespace names the payload, not the feature that added the key.
 const HE_F57 = entries(he.translation, (key) => key === "nav.floor" || key.startsWith("floor."));
-const HE = [...HE_F15, ...HE_F51, ...HE_F52, ...HE_F17, ...HE_F34, ...HE_F57];
+const HE_F53 = entries(
+  he.translation,
+  (key) => key === "nav.customers" || key.startsWith("customers."),
+);
+const HE = [...HE_F15, ...HE_F51, ...HE_F52, ...HE_F17, ...HE_F34, ...HE_F57, ...HE_F53];
 
 describe("F15 keys resolve", () => {
   it("carries the whole copy deck", () => {
@@ -232,6 +236,71 @@ describe("F34 board keys resolve", () => {
     expect(i18n.t("board.undoAria", { name: "מיכל לוי", time: "09:30" })).toMatch(
       new RegExp(`^${i18n.t("board.undo")}`),
     );
+  });
+});
+
+describe("F53 customers keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // 52 rows: nav.customers plus 51 under customers.*.
+    expect(HE_F53.length).toBeGreaterThanOrEqual(49);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // Declaring the constant and forgetting the spread is the failure the
+    // comment above HE_F17 records: the resolve check, both register guards and
+    // the `ar` parity guard would all silently skip every key in this block and
+    // stay green. Nothing else in this file notices — so this asserts the fold
+    // itself rather than trusting it.
+    expect(HE.map(([key]) => key)).toContain("nav.customers");
+  });
+
+  it("resolves the eleventh nav item beside the nested nav object", () => {
+    expect(i18n.t("nav.customers")).toBe("לקוחות");
+  });
+
+  it("names the log a LOG and not a send history", () => {
+    // The heading is the one string that decides what the panel claims to be.
+    // «היסטוריית הודעות» would read as a delivery record; the log is a record
+    // of what this product ASKED a provider to send, which is a different fact
+    // — and the register guard below only catches the verb, not the noun.
+    expect(i18n.t("customers.messagesHeading")).toBe("יומן הודעות");
+  });
+
+  it("resolves every message kind and status the log renders", () => {
+    // The section maps MessageKind/MessageStatus through these; an unresolved
+    // key would render `customers.messageKindOtp` into a cell and no other
+    // assertion in the suite would see it.
+    for (const suffix of [
+      "KindOtp",
+      "KindConfirmation",
+      "KindReminder",
+      "KindOwnerCancel",
+      "KindOwnerReschedule",
+      "StatusQueued",
+      "StatusSent",
+      "StatusFailed",
+    ]) {
+      const key = `customers.message${suffix}`;
+      expect(i18n.t(key)).not.toBe(key);
+    }
+  });
+
+  it("starts the tag-remove accessible name with its visible label (WCAG 2.5.3)", () => {
+    expect(i18n.t("customers.tagRemoveAria", { tag: "כלה" })).toMatch(
+      new RegExp(`^${i18n.t("customers.tagRemove")}`),
+    );
+  });
+
+  it("keeps the 403 body generic — no role, and nothing about what changed", () => {
+    const body = i18n.t("customers.error.NOT_AUTHORIZED");
+    // The same rule F34's board body follows: the server ships ONE 403 body for
+    // every unadmitted role so a probe cannot learn which roles exist, and a
+    // screen may not say which role the reader now holds.
+    for (const word of ["אחראית משמרת", "תפקיד", "בוטלו", "הוסרה", "שונה"]) {
+      expect(body).not.toContain(word);
+    }
+    // «כרגע» is load-bearing: a re-promotion restores access.
+    expect(body).toContain("כרגע");
   });
 });
 

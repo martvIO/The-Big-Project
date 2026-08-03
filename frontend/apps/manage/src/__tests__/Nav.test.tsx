@@ -23,6 +23,15 @@ vi.mock("../api", async () => {
       getTerms: pending,
       listDresses: pending,
       listBookings: pending,
+      // Defensive, and — unlike getDashboard above — it currently pins nothing:
+      // removing it reddens no test. CustomersSection puts its whole fetch
+      // inside a 300ms setTimeout and clears it on unmount, so within a nav test
+      // the call never lands. Kept anyway because the day that debounce moves,
+      // the failure is `TypeError: api.listCustomers is not a function` on every
+      // customers test — an error named after the nav rather than the section.
+      // Verified by mutation rather than assumed: this line was deleted and the
+      // suite stayed green.
+      listCustomers: pending,
       listStaff: pending,
       // Without this every one of the nav tests below red-fails on mount with
       // `TypeError: api.getDashboard is not a function` — an error that names
@@ -62,13 +71,18 @@ const NAV_LABELS = [
   "מדיניות ביטולים",
   "שמלות",
   "תורים",
+  // F53, immediately after «תורים»: a customer card is what a row in that list
+  // leads to, and reading them next to each other is how the front desk uses
+  // both. `roles: ALL` — the server's RoleGate admits a shift manager on every
+  // /manage/customers route, so hiding the door would be a lie about the API.
+  "לקוחות",
   // F34, after «תורים» and before the owner-only rows. A board a shift manager
   // cannot open is not a shift manager's board (spec D5) — and inserting it
   // HERE rather than at the top is what keeps Q-5 = NO true structurally: the
   // landing section is NAV row 0 and nothing below it can displace it.
   "לוח היום",
   // The two owner-only rows, last. Everything above is `roles: ALL`, which is
-  // what keeps the shift_manager assertions below a `.slice(0, 8)`.
+  // what keeps the shift_manager assertions below a `.slice(0, 9)`.
   "צוות",
   "סליקה ותשלומים",
 ];
@@ -86,18 +100,18 @@ beforeEach(() => {
 });
 
 describe("the console nav is role-filtered", () => {
-  it("shows an owner all ten sections including Staff and the gateway", async () => {
+  it("shows an owner all eleven sections including Staff and the gateway", async () => {
     me.mockResolvedValue(staff("owner"));
     render(<App />);
     await screen.findByRole("navigation");
     expect(navItems()).toEqual(NAV_LABELS);
   });
 
-  it("shows a shift manager eight sections and neither owner-only one", async () => {
+  it("shows a shift manager nine sections and neither owner-only one", async () => {
     me.mockResolvedValue(staff("shift_manager"));
     render(<App />);
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 8));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 9));
     expect(screen.queryByRole("button", { name: "צוות" })).toBeNull();
     // Cosmetics only — the control is the server's owner-only RoleGate, which
     // refuses her on all four /manage/gateway routes with a 403. The filter
@@ -128,12 +142,18 @@ describe("the console nav is role-filtered", () => {
     },
   );
 
-  it("keeps the owner's ten and the shift manager's eight free of the floor row", () => {
+  it("keeps the owner's eleven and the shift manager's nine free of the floor row", () => {
     // The floor panel reaches those two roles UNDER «לוח היום», never as a
-    // second nav row — spec D11, and the reason there is no eleventh label in
+    // second nav row — spec D11, and the reason there is no twelfth label in
     // NAV_LABELS above.
+    //
+    // The three numbers in this file's assertions (this length, the owner's
+    // count at :103, the shift manager's `.slice(0, 9)` at :110) move TOGETHER
+    // every time a `roles: ALL` row is added, and the test NAME carries them in
+    // words as well. F53 moved four of the five and left this one at ten, which
+    // is why it is spelled out here: a nav row is five coordinated edits, not one.
     expect(NAV_LABELS).not.toContain("הצוות בקומה");
-    expect(NAV_LABELS).toHaveLength(10);
+    expect(NAV_LABELS).toHaveLength(11);
   });
 
   it("does not white-screen on a role the enum does not know", async () => {
@@ -181,7 +201,7 @@ describe("an unreachable section falls back to the first reachable one", () => {
     fireEvent.click(screen.getByRole("button", { name: "כניסה" }));
 
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 8));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 9));
     // reachable[0] is now the dashboard, not «פרופיל והגדרות» — the fallback
     // lands her on the console's landing section rather than a settings form.
     await waitFor(() =>
@@ -210,6 +230,21 @@ describe("the board section is wired to its nav row", () => {
     // panels) rather than something to collapse.
     expect(screen.getByTestId("board-cue")).toHaveTextContent("טוען את לוח היום…");
     expect(screen.getByTestId("floor-cue")).toBeInTheDocument();
+  });
+});
+
+describe("the customers section is wired to its nav row", () => {
+  it.each(["owner", "shift_manager"])("opens the customer list for a %s", async (role) => {
+    // The section's own suite covers its behaviour; this is the render branch,
+    // which nothing else would notice was missing — App.tsx can carry the
+    // SectionKey, the NAV row and the label and still render nothing.
+    me.mockResolvedValue(staff(role));
+    render(<App />);
+    await screen.findByRole("navigation");
+
+    fireEvent.click(screen.getByRole("button", { name: "לקוחות" }));
+    expect(screen.getByRole("heading", { name: "לקוחות" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("טוען את רשימת הלקוחות…");
   });
 });
 

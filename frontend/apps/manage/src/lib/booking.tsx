@@ -135,3 +135,46 @@ export function bookingErrorText(error: unknown, t: (key: string) => string): st
   }
   return errorMessage(error);
 }
+
+// F53's map, and it lives beside bookingErrorText for the same reason that one
+// does: CustomersSection imports CustomerDetail and both need this, which is
+// exactly the cycle this file was created to avoid.
+//
+// Kept BY HAND and pinned by nothing — a code renamed server-side falls
+// silently through to the English message rather than failing a build. That is
+// the correction F51's review forced onto StaffSection's MAPPED_CODES, recorded
+// here rather than discovered again.
+const CUSTOMER_ERROR_KEYS = new Map<string, string>([
+  // A 404 and another tenant's id are indistinguishable by design under RLS, so
+  // they read the same.
+  ["NOT_FOUND", "customers.notFound"],
+  ["NOT_AUTHORIZED", "customers.error.NOT_AUTHORIZED"],
+]);
+
+// `fallbackKey` is the register for every code this map does not own, and EVERY
+// F53 caller passes one — the read paths their outage key, the save path
+// `customers.saveFailed`. A 500 on a list is an outage and the owner needs a
+// Hebrew sentence, not the server's English one; a failed save is the same.
+//
+// The save path used to pass nothing, on the theory that VALIDATION_ERROR was
+// the only unmapped code it could produce and its per-field message cannot be
+// reproduced client-side. That was false: test_customers_api.py derives the live
+// code set from the app and it includes NOT_AUTHENTICATED — the 401 a session
+// expiring mid-edit produces, which rendered "Authentication required." into an
+// RTL console, in the one alert this screen moves focus to.
+//
+// `null` therefore stays reachable only for bookingErrorText's shape, not for
+// any F53 caller. A new caller that wants the server's English must ask for it.
+export function customerErrorText(
+  error: unknown,
+  t: (key: string) => string,
+  fallbackKey: string | null = null,
+): string {
+  if (error instanceof ApiError) {
+    const key = CUSTOMER_ERROR_KEYS.get(error.code);
+    if (key !== undefined) {
+      return t(key);
+    }
+  }
+  return fallbackKey === null ? errorMessage(error) : t(fallbackKey);
+}

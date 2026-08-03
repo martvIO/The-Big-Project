@@ -530,6 +530,91 @@ export interface DashboardResponse {
   forward: ForwardPanel;
 }
 
+// --- customers wire types (mirror backend/app/customers/schemas.py) ---
+//
+// Mirrored field-for-field in SNAKE_CASE, same as every block above: there is
+// no case-conversion layer in this repo, so a camelCase interface compiles fine
+// and reads `undefined` at runtime on every field.
+//
+// `created_at` is deliberately on neither shape. F52's D7 established that
+// `customers.created_at` is meaningless as a "first seen" date after F15's
+// phone-correction collision branch re-points a booking at an existing row, so
+// a customer's row can post-date her own first booking.
+
+export interface CustomerRow {
+  id: string;
+  name: string;
+  phone: string;
+  tags: string[];
+}
+
+export interface CustomerListResponse {
+  items: CustomerRow[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface CustomerBookingRow {
+  id: string;
+  starts_at: string;
+  status: string;
+  // The snapshot taken when the booking was made, not the live type name:
+  // history must render as what the customer agreed to.
+  appointment_type_name: string;
+}
+
+// Five fields. `provider_message_id`, `error` and `phone` are all on the row
+// server-side and none of them ship — `kind` and `status` are the RAW enum
+// values and the console maps each through its own key table, falling back to
+// the raw value for an unknown one.
+export interface SmsLogRow {
+  id: string;
+  created_at: string;
+  kind: string;
+  status: string;
+  body: string;
+}
+
+// Named `…Response`, not `CustomerDetail`, because `CustomerDetail` is the
+// COMPONENT in components/CustomerDetail.tsx. The shipped pair avoids exactly
+// this: the component is `BookingDetail` and the wire type is
+// `OwnerBookingDetail`. Under the workspace's `isolatedModules: true` a
+// colliding value import is a hard error, and any file needing both names at
+// once could not import them at all. The backend model stays `CustomerDetail`;
+// there is no component in Python to collide with.
+export interface CustomerDetailResponse {
+  id: string;
+  name: string;
+  phone: string;
+  notes: string | null;
+  tags: string[];
+  bookings: CustomerBookingRow[];
+  messages: SmsLogRow[];
+  // The send volume the fifty-row window cannot show: OTP rows are written by
+  // an anonymous endpoint and are always the newest, so fifty of them evict
+  // every confirmation and reminder from the window.
+  messages_total: number;
+}
+
+// Optional, NOT nullable: an omitted key is "unchanged" on the wire, and the
+// client must never send `null` for a field it did not touch. `""` and `[]`
+// mean CLEAR.
+export interface UpdateCustomerRequest {
+  notes?: string;
+  tags?: string[];
+}
+
+export interface CustomerListQuery {
+  q: string;
+  offset: number;
+  limit: number;
+}
+
+function customerPath(customerId: string): string {
+  return `/manage/customers/${encodeURIComponent(customerId)}`;
+}
+
 // --- endpoints ---
 
 export const api = {
@@ -711,6 +796,36 @@ export const api = {
   listManageSlots(from: string, to: string): Promise<OwnerSlotListResponse> {
     const params = new URLSearchParams({ from, to });
     return apiFetch(`/manage/slots?${params.toString()}`);
+  },
+
+  // Both roles: a shift manager sees the same card the owner does and edits the
+  // same notes. The gate is router-level server-side.
+  listCustomers(query: CustomerListQuery): Promise<CustomerListResponse> {
+    const params = new URLSearchParams({
+      offset: String(query.offset),
+      limit: String(query.limit),
+    });
+    // Omitted rather than sent empty: a blank box means "everyone", and the
+    // server drops a whitespace-only term anyway — sending `q=` would put two
+    // spellings of one intent in the access log for no gain.
+    if (query.q.trim() !== "") {
+      params.set("q", query.q.trim());
+    }
+    return apiFetch(`/manage/customers?${params.toString()}`);
+  },
+  getCustomer(customerId: string): Promise<CustomerDetailResponse> {
+    return apiFetch(customerPath(customerId));
+  },
+  // Partial by design — an omitted key means "unchanged", and the server reads
+  // an all-unchanged patch as a no-op that writes no audit row. The response is
+  // the WHOLE detail, panels included, so the caller can replace state with it:
+  // a response carrying only the customers row would blank the booking history
+  // and the SMS log the instant the owner pressed save.
+  updateCustomer(
+    customerId: string,
+    body: UpdateCustomerRequest,
+  ): Promise<CustomerDetailResponse> {
+    return apiFetch(customerPath(customerId), { method: "PATCH", body });
   },
 
   // Owner-only, all four: the server's RoleGate is the control, and a shift
