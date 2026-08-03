@@ -145,6 +145,25 @@ describe("F-fail / F-stale", () => {
     expect(screen.getByRole("button", { name: "רענון" })).toBeInTheDocument();
   });
 
+  it("drops «רענון» in the outage state once the loop is stopped", async () => {
+    // copy.md §2 forbids this adjacency BY NAME: «רענון» beside «חידוש» is two
+    // Hebrew words a hurried reader will not tell apart, and the resume control
+    // is the affordance once stopped. The stale branch was already guarded; the
+    // F-fail outage branch was not, and this state is new in F57 — the board
+    // cannot reach it, because BoardSection renders its freshness row only when
+    // rows !== null. BoardSection.test.tsx pins the same invariant for the
+    // sibling component; this is its FloorPanel twin.
+    getFloor.mockRejectedValue(new ApiError(500, "SERVER_ERROR", "boom"));
+    mount();
+    await screen.findByText("לא הצלחנו לטעון את רשימת הצוות כרגע.");
+    expect(screen.getByRole("button", { name: "רענון" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /השהיה/ }));
+
+    expect(screen.queryByRole("button", { name: "רענון" })).toBeNull();
+    expect(screen.getByRole("button", { name: /חידוש/ })).toBeInTheDocument();
+  });
+
   it("KEEPS the cards and marks them stale when a later tick fails", async () => {
     getFloor.mockResolvedValueOnce(floor([card()]));
     mount();
@@ -412,9 +431,81 @@ describe("the break toggle", () => {
     control.focus();
     fireEvent.click(control);
 
+    // ⚠ REPRODUCE THE BLUR, or this test cannot fail. jsdom does NOT blur a
+    // focused element when it becomes `disabled`, and HTMLElement.blur() returns
+    // early on a disabled one — so without this the button stays focused for the
+    // whole request, the restore effect's `activeElement === body` guard is never
+    // true, and the assertion below is satisfied purely by the button renaming in
+    // place. A real browser blurs it. Verified: with these three lines the test
+    // reddens when the restore effect is deleted; without them it stays green.
+    const heading = screen.getByRole("heading", { level: 2 });
+    heading.focus();
+    heading.blur();
+    expect(document.activeElement).toBe(document.body);
+
     await waitFor(() =>
       expect(document.activeElement).toHaveAccessibleName("חזרה — נועה לוי"),
     );
+  });
+
+  it("suppresses every tick while a toggle is in flight", async () => {
+    // Pins FloorPanel's `mutationsRef.current > 0 -> "suppressed"` branch, which
+    // had NO coverage anywhere: deleting those three lines left all 484 tests
+    // green. usePoll's own "suppressed" case cannot cover it — in the hook,
+    // "suppressed" and `void` take the identical empty branch, so the mechanism
+    // only exists here.
+    getFloor.mockResolvedValue(floor([card()]));
+    startStaffBreak.mockReturnValue(new Promise(() => {}));
+    mount();
+    await screen.findByText("נועה לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: /להפסקה/ }));
+    await waitFor(() => expect(startStaffBreak).toHaveBeenCalled());
+    const before = getFloor.mock.calls.length;
+
+    // ⚠ The reachable path is the VISIBILITYCHANGE refetch, not the timer:
+    // `toggle` calls poll.clearTick() so no timer is armed during a mutation,
+    // which is why a timer-only assertion here is vacuous. TWO callers invoke
+    // the tick DIRECTLY rather than through the timer — the visibilitychange
+    // handler and poll.refresh() behind «רענון» — so either can arrive
+    // mid-mutation, and `mutationsRef.current > 0 -> "suppressed"` is what stops
+    // it repainting the row under the request. The guard lives in tick() rather
+    // than at either call site precisely because there are two.
+    await act(async () => {
+      Object.defineProperty(document, "hidden", { configurable: true, value: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+      Object.defineProperty(document, "hidden", { configurable: true, value: false });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    expect(getFloor).toHaveBeenCalledTimes(before);
+    await advance(POLL_INTERVAL_MS * 3);
+    expect(getFloor).toHaveBeenCalledTimes(before);
+  });
+
+  it("hands focus back when a successful poll clears the focused in-card alert", async () => {
+    // ⚠ REGRESSION. The alert is focused by the failure effect; the very next
+    // successful tick calls setCardError(null) and unmounts it — five seconds
+    // later, with NO user action. Removing a focused node drops activeElement to
+    // <body>, so her next Tab restarts at the skip link. WCAG 2.4.3, and the
+    // departing-card rescue cannot cover it because a 5xx leaves the colleague
+    // in the list.
+    getFloor.mockResolvedValue(floor([card()]));
+    startStaffBreak.mockRejectedValue(new ApiError(500, "SERVER_ERROR", "boom"));
+    mount();
+    await screen.findByText("נועה לוי");
+
+    const control = screen.getByRole("button", { name: /להפסקה/ });
+    control.focus();
+    fireEvent.click(control);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("alert")));
+
+    // The next tick succeeds and removes the alert.
+    await advance(POLL_INTERVAL_MS);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toHaveAccessibleName("להפסקה — נועה לוי");
   });
 
   it("moves focus to the in-card alert after a FAILURE", async () => {

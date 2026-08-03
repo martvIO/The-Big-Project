@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { StrictMode, useRef } from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
@@ -16,11 +16,25 @@ import type { Poll, TickOutcome } from "../lib/usePoll";
  * with a ZERO-LINE DIFF is the acceptance gate for the six mechanisms.
  *
  * ⚠ THAT GATE IS NECESSARY AND NOT SUFFICIENT, which is what this file is for.
- * Two of the loop's behaviours are NOT covered by any of those 61 blocks — the
- * "held" tick's re-arm gap and the "suppressed" tick arming nothing — so the
+ * The "held" tick's re-arm gap is not covered by any of those 61 blocks, so the
  * zero-edit gate alone could go green over a changed loop, on the one component
- * in the console that has already shipped two loop bugs. Both are pinned by name
- * below, plus the unmount fix that was one of F34's two review blockers.
+ * in the console that has already shipped two loop bugs. It is pinned by name
+ * below, with the unmount fix that was one of F34's two review blockers and the
+ * mount effect's idempotence.
+ *
+ * ⚠ THE "suppressed" OUTCOME IS NOT PINNED HERE, and an earlier version of this
+ * docstring claimed it was. INSIDE THE HOOK, "suppressed" and `void` take the
+ * identical empty branch — neither arms anything — so no line of usePoll.ts can
+ * be deleted to redden a "suppressed" test, and the case below is byte-equivalent
+ * to the `void` one already covered by "runs once at mount and then once per
+ * interval". The third union member is a CALLER contract, and the mechanism lives
+ * in FloorPanel: `mutationsRef.current > 0 -> "suppressed"`. It is pinned in
+ * FloorPanel.test.tsx ("suppresses every tick while a toggle is in flight"),
+ * against the visibilitychange refetch — one of the TWO callers that invoke the
+ * tick directly rather than through the timer (the other is poll.refresh(),
+ * behind «רענון»), which is what lets either arrive mid-mutation once toggle()
+ * has cleared the armed timer. The guard lives in FloorPanel's tick() rather
+ * than at either call site precisely because there are two.
  */
 
 // A harness component: drives the hook, records every tick, and exposes the Poll
@@ -140,6 +154,37 @@ describe("the unmount fix", () => {
     view.unmount();
     advance(POLL_INTERVAL_MS * 5);
     expect(runs).toHaveLength(1);
+  });
+});
+
+describe("the mount effect is idempotent", () => {
+  it("keeps polling after a StrictMode setup -> cleanup -> setup cycle", () => {
+    // ⚠ REGRESSION. The cleanup sets runningRef false and nothing but resume()
+    // ever sets it true, so without a re-arm at the top of the effect body a
+    // second setup leaves the loop permanently dead: schedule() returns early on
+    // every re-arm and armIdle() never arms, while `mode` stays "running" so the
+    // UI shows a pause control for a loop that is not polling.
+    //
+    // main.tsx wraps <App/> in <StrictMode>, which performs exactly this cycle
+    // on every mount in development. BoardSection has carried the same shape
+    // since F34, so this one line fixes both callers.
+    runs = [];
+    render(
+      <StrictMode>
+        <Harness
+          onRun={(generation) => runs.push(generation)}
+          expose={(value) => {
+            poll = value;
+          }}
+        />
+      </StrictMode>,
+    );
+    const afterMount = runs.length;
+
+    act(() => poll.reschedule());
+    advance(POLL_INTERVAL_MS);
+
+    expect(runs.length).toBeGreaterThan(afterMount);
   });
 });
 
@@ -378,10 +423,10 @@ describe("the two TickOutcome divergences the zero-edit gate cannot see", () => 
   });
 
   it('a "suppressed" tick arms no timer at all', () => {
-    // ⚠ Also uncovered by the zero-edit gate. The shipped board returns from
-    // tick() with NO schedule() while a mutation is in flight; the single re-arm
-    // is that mutation's own .finally(). A clean-tick re-arm here would arm
-    // timers DURING a mutation.
+    // Documents the hook's half of the contract: a "suppressed" outcome arms
+    // nothing. ⚠ NOT a mutation target — see the file docstring: inside the hook
+    // this is byte-equivalent to the `void` case, and the mechanism that makes it
+    // matter is FloorPanel's, pinned there.
     mount({ outcome: () => "suppressed" });
     act(() => poll.reschedule());
     advance(POLL_INTERVAL_MS);

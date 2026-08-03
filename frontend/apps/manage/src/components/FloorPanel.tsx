@@ -72,6 +72,13 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   const restoreFocusRef = useRef<string | null>(null);
   const cardsRef = useRef<StaffCard[] | null>(null);
   const focusHeadingRef = useRef(false);
+  // Set when a SUCCESSFUL POLL is about to unmount the focused in-card alert.
+  // Distinct from restoreFocusRef, which the [busyIds] effect owns and which
+  // does not fire here — the toggle finished long ago.
+  const reclaimFocusRef = useRef<string | null>(null);
+  // `load` runs outside render and closes over a stale `cardError`, so the id it
+  // needs is mirrored here.
+  const cardErrorRef = useRef<{ id: string; text: string } | null>(null);
   const mutationsRef = useRef(0);
   // The pointer hold is the CALLER's — usePoll deliberately does not supply it
   // (D10), and this panel needs its own because the since-line renders only on a
@@ -105,6 +112,20 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
       setUpdatedAt(new Date().toISOString());
       setStale(false);
       setLoadFailed(false);
+      // ⚠ The alert we are about to remove may be HOLDING FOCUS: the failure
+      // effect below moves focus into it, and this clear runs on the very next
+      // successful tick — about five seconds later, with no user action at all.
+      // Removing a focused node drops document.activeElement to <body>, so her
+      // next Tab restarts at the skip link.
+      //
+      // The departing-card rescue cannot cover this one: the card is still in
+      // the incoming list (a 5xx or a dropped request leaves the colleague
+      // live), so `departingCardHoldsFocus` is false. Hand focus back to that
+      // card's own control — where she was when she tapped — and fall back to
+      // the heading if the control is gone.
+      if (cardAlertRef.current !== null && document.activeElement === cardAlertRef.current) {
+        reclaimFocusRef.current = cardErrorRef.current?.id ?? null;
+      }
       // The in-card alert promises «הרשימה תתוקן בעדכון הבא» and this is the
       // update that keeps it.
       setCardError(null);
@@ -146,6 +167,9 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   // any effect in this component, so an effect-assigned ref would still hold its
   // placeholder when the hook fires the FIRST load.
   tickRef.current = tick;
+  // Mirrored during render for the same reason tickRef is: `load` runs outside
+  // render and would otherwise close over a stale `cardError`.
+  cardErrorRef.current = cardError;
 
   useEffect(() => {
     // A pointerdown holds the NEXT repaint and is consumed by it. Consumed
@@ -203,7 +227,26 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
     // times, because axe cannot see a focus move that never happened.
     if (cardError !== null) {
       cardAlertRef.current?.focus();
+      return;
     }
+    // …and when it is CLEARED by a successful poll while it held focus, hand
+    // focus back to that card's own control — where she was when she tapped.
+    //
+    // Keyed on `cardError` and NOT on `cards`, deliberately: a poll that returns
+    // an unchanged list may hand `setCards` an identical reference, React bails
+    // out of the update and a [cards] effect would never run. `cardError`
+    // transitions non-null -> null on exactly this path, every time.
+    const reclaim = reclaimFocusRef.current;
+    reclaimFocusRef.current = null;
+    if (reclaim === null || document.activeElement !== document.body) {
+      return;
+    }
+    const control = controlRefs.current.get(reclaim);
+    if (control !== undefined && control !== null) {
+      control.focus();
+      return;
+    }
+    headingRef.current?.focus();
   }, [cardError]);
 
   useEffect(() => {
@@ -447,14 +490,23 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
           <p role="alert" className="text-sm text-ink-muted">
             {t("staff.loadFailed")}
           </p>
-          <Button
-            variant="secondary"
-            size="md"
-            fullWidthMobile={false}
-            onClick={() => poll.refresh()}
-          >
-            {t("floor.refresh")}
-          </Button>
+          {/* NOT while stopped. copy.md §2 forbids this adjacency by name:
+              «רענון» beside «חידוש» is two Hebrew words a hurried reader will
+              not tell apart, and the resume control is the affordance there.
+              The stale branch above is guarded the same way. This state is new
+              in F57 — the board cannot reach it, because BoardSection renders
+              its freshness row only when rows !== null, whereas F-fail here
+              renders it so a backing-off loop can still be stopped. */}
+          {!stopped && (
+            <Button
+              variant="secondary"
+              size="md"
+              fullWidthMobile={false}
+              onClick={() => poll.refresh()}
+            >
+              {t("floor.refresh")}
+            </Button>
+          )}
         </div>
       )}
 

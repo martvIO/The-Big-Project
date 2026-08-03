@@ -202,6 +202,20 @@ export function usePoll({ run, onIdleStop }: PollOptions): Poll {
   });
 
   useEffect(() => {
+    // ⚠ FIRST, and it is what makes this effect IDEMPOTENT. The cleanup below
+    // sets runningRef false and nothing else ever sets it true except resume(),
+    // so without this line a setup -> cleanup -> setup cycle leaves the loop
+    // permanently dead: schedule() returns early on every re-arm and armIdle()
+    // never arms, while `mode` stays "running" so the UI shows a pause control
+    // for a loop that is not polling.
+    //
+    // React requires effects to survive that cycle, and main.tsx wraps <App/> in
+    // <StrictMode>, which performs exactly it on every mount in development.
+    // INHERITED, NOT INTRODUCED: BoardSection has carried this since F34 (its
+    // runningRef is useRef(true) with the same cleanup and no re-arm), so the
+    // shipped board's dev loop dies on its second mount too. Extracting the hook
+    // is what makes one line fix both callers.
+    runningRef.current = true;
     runRef.current(generationRef.current);
     return () => {
       // ⚠ THE UNMOUNT FIX, moved here verbatim from BoardSection with its
