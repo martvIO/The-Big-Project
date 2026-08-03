@@ -804,3 +804,131 @@ async def test_the_view_of_one_alert_answers_a_closed_one_too(app_role_url: str)
         assert missing is None
     finally:
         await engine.dispose()
+
+
+# --- the two closers ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("accepted_first", [False, True])
+async def test_a_resolve_closes_an_alert_from_either_live_state(
+    app_role_url: str, accepted_first: bool
+) -> None:
+    """The emergency is over either way — that is what «resolve» means, and it is
+    the whole asymmetry with cancel, which may only close an OPEN one."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        alert_id = await _insert_alert(factory, tenant_id, raised_by=staff_id)
+        if accepted_first:
+            async with tenant_session(factory, tenant_id) as session:
+                await SosAlertsRepository().accept(
+                    session, tenant_id, alert_id, actor_id=staff_id, at=NOW
+                )
+        async with tenant_session(factory, tenant_id) as session:
+            wrote, row = await SosAlertsRepository().resolve(session, tenant_id, alert_id)
+        assert wrote is True
+        assert row is not None
+        assert row.status == SosStatus.RESOLVED
+        # ⚠ Neither closer touches `accepted_by` or `acknowledged_at`. «Did
+        # anybody answer?» is answerable from the pair of audit rows and from
+        # this column, which is why there is no `resolved_by`.
+        assert (row.accepted_by is not None) is accepted_first
+    finally:
+        await engine.dispose()
+
+
+async def test_a_second_resolve_reports_no_write_and_the_live_row(app_role_url: str) -> None:
+    """Rowcount 0 with a row back is NOT an error one layer up: she wanted it
+    closed, and it is closed."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        alert_id = await _insert_alert(factory, tenant_id, raised_by=staff_id)
+        repo = SosAlertsRepository()
+        async with tenant_session(factory, tenant_id) as session:
+            await repo.resolve(session, tenant_id, alert_id)
+        async with tenant_session(factory, tenant_id) as session:
+            wrote, row = await repo.resolve(session, tenant_id, alert_id)
+        assert wrote is False
+        assert row is not None
+        assert row.status == SosStatus.RESOLVED
+    finally:
+        await engine.dispose()
+
+
+async def test_a_cancel_closes_an_open_alert(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        alert_id = await _insert_alert(factory, tenant_id, raised_by=staff_id)
+        async with tenant_session(factory, tenant_id) as session:
+            wrote, row = await SosAlertsRepository().cancel(session, tenant_id, alert_id)
+        assert wrote is True
+        assert row is not None
+        assert row.status == SosStatus.CANCELLED
+    finally:
+        await engine.dispose()
+
+
+async def test_a_cancel_never_closes_an_accepted_alert(app_role_url: str) -> None:
+    """⚠ **`status = 'open'` ONLY, and widening it to resolve's pair is the
+    mutation.** A colleague is already walking to that curtain: cancelling behind
+    her sends her to an empty room and teaches her that accepting means nothing.
+    The row comes back so the service can NAME her in the 409."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        dana = await _seed_staff(factory, tenant_id, display_name="Dana")
+        alert_id = await _insert_alert(factory, tenant_id, raised_by=raiser)
+        repo = SosAlertsRepository()
+        async with tenant_session(factory, tenant_id) as session:
+            await repo.accept(session, tenant_id, alert_id, actor_id=dana, at=NOW)
+        async with tenant_session(factory, tenant_id) as session:
+            wrote, row = await repo.cancel(session, tenant_id, alert_id)
+        assert wrote is False
+        assert row is not None
+        assert row.status == SosStatus.ACCEPTED
+        assert row.accepted_by == dana
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("verb", ["resolve", "cancel"])
+async def test_closing_a_missing_alert_reports_neither_a_write_nor_a_row(
+    app_role_url: str, verb: str
+) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        await _seed_staff(factory, tenant_id)
+        async with tenant_session(factory, tenant_id) as session:
+            wrote, row = await getattr(SosAlertsRepository(), verb)(
+                session, tenant_id, uuid.uuid4()
+            )
+        assert wrote is False
+        assert row is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("verb", ["resolve", "cancel"])
+async def test_neither_closer_touches_another_tenants_alert(app_role_url: str, verb: str) -> None:
+    engine, factory = _factory(app_role_url)
+    mine, theirs = uuid.uuid4(), uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, theirs)
+        alert_id = await _insert_alert(factory, theirs, raised_by=raiser)
+        async with tenant_session(factory, mine) as session:
+            wrote, row = await getattr(SosAlertsRepository(), verb)(session, mine, alert_id)
+        assert wrote is False
+        assert row is None
+        async with tenant_session(factory, theirs) as session:
+            stored = await session.scalar(select(SosAlert).where(SosAlert.id == alert_id))
+        assert stored is not None
+        assert stored.status == SosStatus.OPEN
+    finally:
+        await engine.dispose()

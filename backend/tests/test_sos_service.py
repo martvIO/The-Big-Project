@@ -1043,3 +1043,248 @@ async def test_the_payload_derives_the_three_booleans_against_one_server_now(
     assert read.alerts[0].alert is old
     assert read.alerts[0].row.raised_by_name == "נועה"
     assert read.alerts[0].row.room_label == "חדר 2"
+
+
+# --- VERBS 3 and 4: resolve and cancel ---------------------------------------
+
+
+def _install_close(
+    monkeypatch: pytest.MonkeyPatch,
+    verb: str,
+    *,
+    row: SosAlert | None,
+    wrote: bool = True,
+    after: SosAlert | None = _UNSET,
+    acceptor: StaffUser | None = None,
+) -> _Recorder:
+    recorder = _Recorder()
+
+    async def _by_id(
+        _self: object, _session: object, _tenant_id: uuid.UUID, _alert_id: uuid.UUID
+    ) -> SosAlert | None:
+        recorder.order.append("by_id")
+        return row
+
+    async def _close(
+        _self: object, _session: object, _tenant_id: uuid.UUID, alert_id: uuid.UUID
+    ) -> tuple[bool, SosAlert | None]:
+        recorder.order.append(verb)
+        answered = row if after is _UNSET else after
+        # ⚠ The REAL writer's ORM-enabled UPDATE stamps the new status onto the
+        # identity-mapped instance the caller already read, which is exactly what
+        # poisons a `from_status` captured too late. A monkeypatched repository
+        # cannot do that, so this fake deliberately does not fake it either — the
+        # capture ORDER is pinned in `test_sos_db.py` and can be nowhere else.
+        return wrote, answered
+
+    async def _staff_by_id(
+        _self: object, _session: object, _tenant_id: uuid.UUID, staff_id: uuid.UUID
+    ) -> StaffUser | None:
+        recorder.order.append("staff_by_id")
+        return acceptor
+
+    async def _view_of(
+        _self: object, _session: object, _tenant_id: uuid.UUID, _alert_id: uuid.UUID
+    ) -> SosAlertRow | None:
+        recorder.order.append("view_of")
+        answered = row if after is _UNSET else after
+        return _view(answered) if answered is not None else None
+
+    monkeypatch.setattr(SosAlertsRepository, "by_id", _by_id)
+    monkeypatch.setattr(SosAlertsRepository, verb, _close)
+    monkeypatch.setattr(SosAlertsRepository, "view_of", _view_of)
+    monkeypatch.setattr(StaffUsersRepository, "by_id", _staff_by_id)
+    _install_audit(monkeypatch, recorder)
+    return recorder
+
+
+@pytest.mark.parametrize("status", [SosStatus.OPEN, SosStatus.ACCEPTED])
+async def test_the_raiser_may_resolve_her_own_page(
+    monkeypatch: pytest.MonkeyPatch, status: SosStatus
+) -> None:
+    """From either live state: «she sorted it» closes an accepted alert as
+    readily as an open one, and it is the remedy the cancel's 409 points at."""
+    actor = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(raised_by=actor.id, status=status)
+    closed = _alert(id=row.id, raised_by=actor.id, status=SosStatus.RESOLVED)
+    recorder = _install_close(monkeypatch, "resolve", row=row, after=closed)
+    result = await _service().resolve_sos(TENANT_ID, row.id, actor=actor)
+    assert result.alert.status == SosStatus.RESOLVED
+    assert recorder.audit[0]["action"] == AuditAction.SOS_RESOLVED
+    assert recorder.audit[0]["details"] == {"alert": str(row.id), "from_status": status}
+
+
+async def test_the_acceptor_may_resolve_but_may_not_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ **The asymmetry, and it is the whole of D5's second half.** She is the
+    one standing at the curtain, so she is the one who can say it is over. Cancel
+    is the RAISER's word — «never mind» — and a responder who could cancel could
+    close somebody else's live emergency."""
+    actor = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(status=SosStatus.ACCEPTED, accepted_by=actor.id, acknowledged_at=NOW)
+    _install_close(monkeypatch, "resolve", row=row, after=_alert(status=SosStatus.RESOLVED))
+    assert (
+        await _service().resolve_sos(TENANT_ID, row.id, actor=actor)
+    ).alert.status == SosStatus.RESOLVED
+
+    recorder = _install_close(monkeypatch, "cancel", row=row)
+    with pytest.raises(DomainNotFoundError):
+        await _service().cancel_sos(TENANT_ID, row.id, actor=actor)
+    assert "cancel" not in recorder.order
+
+
+@pytest.mark.parametrize("verb", ["resolve", "cancel"])
+@pytest.mark.parametrize("role", ELEVATED)
+async def test_an_elevated_caller_may_close_anything(
+    monkeypatch: pytest.MonkeyPatch, verb: str, role: StaffRole
+) -> None:
+    """The legitimate case the wide permission exists for: a shift manager
+    clearing up after a page that resolved itself."""
+    actor = _actor(role)
+    row = _alert()
+    _install_close(monkeypatch, verb, row=row, after=_alert(status=SosStatus.RESOLVED))
+    assert await getattr(_service(), f"{verb}_sos")(TENANT_ID, row.id, actor=actor) is not None
+
+
+@pytest.mark.parametrize("verb", ["resolve", "cancel"])
+async def test_a_stranger_cannot_close_and_never_reaches_the_writer(
+    monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    """⚠ **404, byte-identical to a missing id**, and the load-bearing assertion
+    is that the WRITER was never reached: "an error was raised" would still hold
+    if the permission check ran after the UPDATE."""
+    stranger = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(status=SosStatus.ACCEPTED, accepted_by=uuid.uuid4(), acknowledged_at=NOW)
+    recorder = _install_close(monkeypatch, verb, row=row)
+    with pytest.raises(DomainNotFoundError):
+        await getattr(_service(), f"{verb}_sos")(TENANT_ID, row.id, actor=stranger)
+    assert verb not in recorder.order
+    assert recorder.audit == []
+    # …and the 404 carries NO name. ⚠ THE ordering rule in D5 whose violation
+    # LEAKS rather than errors: a 409 handed to a caller who may not act would
+    # disclose a staff display name the 404-not-403 rule exists to withhold.
+    assert "staff_by_id" not in recorder.order
+
+
+@pytest.mark.parametrize("verb", ["resolve", "cancel"])
+@pytest.mark.parametrize("status", [SosStatus.RESOLVED, SosStatus.CANCELLED])
+async def test_closing_an_already_closed_alert_is_a_200_with_no_audit_row(
+    monkeypatch: pytest.MonkeyPatch, verb: str, status: SosStatus
+) -> None:
+    """⚠ **Rowcount 0 with a live row back is a 200, not a 404.** She wanted it
+    closed; it is closed. F36's «she wanted the room free and the room is free»,
+    applied to a state machine instead of a timestamp — and the second closer
+    would otherwise get an error for being right."""
+    actor = _actor(StaffRole.OWNER)
+    row = _alert(status=status)
+    recorder = _install_close(monkeypatch, verb, row=row, wrote=False, after=row)
+    result = await getattr(_service(), f"{verb}_sos")(TENANT_ID, row.id, actor=actor)
+    assert result.alert.status == status
+    assert recorder.audit == []
+
+
+@pytest.mark.parametrize("verb", ["resolve", "cancel"])
+async def test_a_close_whose_row_vanished_is_a_404(
+    monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    row = _alert()
+    _install_close(monkeypatch, verb, row=row, wrote=False, after=None)
+    with pytest.raises(DomainNotFoundError):
+        await getattr(_service(), f"{verb}_sos")(TENANT_ID, row.id, actor=_actor(StaffRole.OWNER))
+
+
+@pytest.mark.parametrize(("verb", "status"), [("resolve", SosStatus.OPEN), ("cancel", "open")])
+async def test_a_zero_row_close_that_reads_back_live_raises_rather_than_returning_none(
+    monkeypatch: pytest.MonkeyPatch, verb: str, status: str
+) -> None:
+    """⚠ **Unreachable and STILL an `else: raise`** — F41's finding reproduced
+    deliberately: an "impossible" branch with no `else` returns `None` and 500s
+    with no message. The UPDATE would have matched, and nothing moves a row back
+    to a state its own predicate covers."""
+    row = _alert(status=status)
+    _install_close(monkeypatch, verb, row=row, wrote=False, after=row)
+    with pytest.raises(RuntimeError):
+        await getattr(_service(), f"{verb}_sos")(TENANT_ID, row.id, actor=_actor(StaffRole.OWNER))
+
+
+async def test_cancelling_an_accepted_alert_is_a_409_that_names_the_acceptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ **The asymmetry with resolve, and it is the point.** A colleague is
+    already walking to that curtain; silently cancelling would send her to an
+    empty room and teach her that accepting means nothing. The raiser's remedy is
+    one word over — «נפתר» — which is what actually happened.
+
+    The 409 REUSES D4's code, its optional `details` and its Hebrew, so the
+    asymmetry costs no new error and no new sentence."""
+    dana = _staff_user("דנה כהן")
+    actor = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(raised_by=actor.id, status=SosStatus.ACCEPTED, accepted_by=dana.id)
+    recorder = _install_close(monkeypatch, "cancel", row=row, wrote=False, after=row, acceptor=dana)
+    with pytest.raises(SosAlreadyAcceptedError) as raised:
+        await _service().cancel_sos(TENANT_ID, row.id, actor=actor)
+    assert raised.value.details == {"staff_display_name": "דנה כהן"}
+    assert recorder.audit == []
+
+
+async def test_cancelling_an_accepted_alert_whose_acceptor_was_removed_names_nobody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`details` is OPTIONAL and the key is ABSENT — the path
+    `sos.error.cancelAfterAcceptUnknown` exists for."""
+    actor = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(raised_by=actor.id, status=SosStatus.ACCEPTED, accepted_by=uuid.uuid4())
+    _install_close(monkeypatch, "cancel", row=row, wrote=False, after=row, acceptor=None)
+    with pytest.raises(SosAlreadyAcceptedError) as raised:
+        await _service().cancel_sos(TENANT_ID, row.id, actor=actor)
+    assert raised.value.details is None
+
+
+async def test_a_resolve_of_an_accepted_alert_is_not_a_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mirror of the test above, and the pair IS D5: resolve closes from
+    either live state, cancel from `open` only."""
+    actor = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(raised_by=actor.id, status=SosStatus.ACCEPTED, accepted_by=uuid.uuid4())
+    _install_close(monkeypatch, "resolve", row=row, after=_alert(status=SosStatus.RESOLVED))
+    result = await _service().resolve_sos(TENANT_ID, row.id, actor=actor)
+    assert result.alert.status == SosStatus.RESOLVED
+
+
+async def test_the_cancel_audit_row_carries_the_alert_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No `from_status`: cancel closes from ONE state, so recording which would
+    be recording the predicate."""
+    actor = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(raised_by=actor.id)
+    recorder = _install_close(
+        monkeypatch, "cancel", row=row, after=_alert(status=SosStatus.CANCELLED)
+    )
+    await _service().cancel_sos(TENANT_ID, row.id, actor=actor)
+    assert recorder.audit[0]["action"] == AuditAction.SOS_CANCELLED
+    assert recorder.audit[0]["details"] == {"alert": str(row.id)}
+
+
+@pytest.mark.parametrize("verb", ["resolve", "cancel"])
+async def test_the_named_target_may_not_close_a_page_she_has_not_accepted(
+    monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    """⚠ **THE row that pins the permission check itself, and without it the
+    whole check can be DELETED with every other test still green** — mutation
+    run, and this test is why it is here.
+
+    She is the one row that is VISIBLE but not permitted: the audience clause
+    lets a named target see her page, and every other refused caller is already
+    refused one line earlier by `_visible_to`. Her verb is «אני מגיעה» — closing
+    a page she has not answered would take somebody else's emergency off every
+    screen in the boutique."""
+    named = _actor(StaffRole.SEAMSTRESS)
+    row = _alert(target_staff_user_id=named.id)
+    recorder = _install_close(monkeypatch, verb, row=row)
+    with pytest.raises(DomainNotFoundError):
+        await getattr(_service(), f"{verb}_sos")(TENANT_ID, row.id, actor=named)
+    assert verb not in recorder.order
+    assert recorder.audit == []

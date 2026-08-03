@@ -761,3 +761,166 @@ async def test_the_payload_carries_no_customer_datum(app_role_url: str) -> None:
         assert CLIENT_NAME not in str(rendered)
     finally:
         await engine.dispose()
+
+
+# --- VERBS 3 and 4: resolve and cancel ---------------------------------------
+
+
+@pytest.mark.parametrize("accepted_first", [False, True])
+async def test_a_resolve_records_the_state_it_destroys(
+    app_role_url: str, accepted_first: bool
+) -> None:
+    """⚠ **THE mutation target for the `from_status` capture, and it CANNOT live
+    in the fast suite.**
+
+    Move the capture below the writer and this reds with `from_status:
+    'resolved'` — the UPDATE is ORM-enabled DML whose `evaluate` synchronization
+    stamps the new status onto the very instance `by_id` handed back out of one
+    identity map. A monkeypatched repository never stamps anything, so every fast
+    test stays green (F57's shipped note records exactly this), and the audit row
+    silently becomes `resolved -> resolved` — empty of its whole informational
+    content, on the one column that answers «did anybody answer?» without a
+    `resolved_at`."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        dana = await _seed_staff(factory, tenant_id, display_name="Dana")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        service = _service(factory)
+        if accepted_first:
+            await service.accept_sos(
+                tenant_id, alert_id, actor=_actor(dana, tenant_id, StaffRole.SHIFT_MANAGER)
+            )
+
+        row = await service.resolve_sos(
+            tenant_id, alert_id, actor=_actor(raiser, tenant_id, StaffRole.OWNER)
+        )
+        assert row.alert.status == SosStatus.RESOLVED
+
+        rows = await _audit_rows(factory, tenant_id, AuditAction.SOS_RESOLVED)
+        assert len(rows) == 1
+        expected = SosStatus.ACCEPTED if accepted_first else SosStatus.OPEN
+        assert rows[0].details == {"alert": str(alert_id), "from_status": expected}
+    finally:
+        await engine.dispose()
+
+
+async def test_a_resolve_landing_after_a_resolve_writes_nothing(app_role_url: str) -> None:
+    """⚠ **Rowcount 0 is not an error, and treating it as a 404 is the
+    mutation.** She wanted it closed and it is closed; the second resolver would
+    get an error for being right. No other test issues two resolves."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        service = _service(factory)
+        actor = _actor(raiser, tenant_id, StaffRole.OWNER)
+
+        await service.resolve_sos(tenant_id, alert_id, actor=actor)
+        again = await service.resolve_sos(tenant_id, alert_id, actor=actor)
+        assert again.alert.status == SosStatus.RESOLVED
+        assert len(await _audit_rows(factory, tenant_id, AuditAction.SOS_RESOLVED)) == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_a_second_cancel_is_a_200_with_no_audit_row(app_role_url: str) -> None:
+    """AC9's tail, the row D5's prose left implicit."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        service = _service(factory)
+        actor = _actor(raiser, tenant_id, StaffRole.OWNER)
+
+        await service.cancel_sos(tenant_id, alert_id, actor=actor)
+        again = await service.cancel_sos(tenant_id, alert_id, actor=actor)
+        assert again.alert.status == SosStatus.CANCELLED
+        assert len(await _audit_rows(factory, tenant_id, AuditAction.SOS_CANCELLED)) == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_a_cancel_racing_an_accept_never_strands_the_responder(app_role_url: str) -> None:
+    """⚠ **THE SECOND FORCED INTERLEAVE, and widening cancel's predicate to
+    resolve's pair is the mutation.** Every sequential cancel test stays green
+    under it, while a colleague walks to a curtain for an emergency that was
+    cancelled behind her.
+
+    `asyncio.gather` is deliberately NOT used: it does not ORDER two
+    transactions, so the loser most often runs after the winner commits and the
+    branch goes green without the mechanism ever being exercised. The mechanism
+    is that `tenant_session` is `session.begin()`, so EXITING the context manager
+    IS the commit, and two nested ones on a `NullPool` factory take two separate
+    connections. Nothing blocks: a guarded UPDATE against a committed row RETURNS
+    rather than waiting."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        dana = await _seed_staff(factory, tenant_id, display_name="דנה כהן")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        service = _service(factory)
+
+        # The canceller's own transaction is opened by `cancel_sos`, so the
+        # interleave is forced from OUTSIDE: the accept commits first, and the
+        # cancel then reads an ACCEPTED row and must refuse rather than close it.
+        await service.accept_sos(
+            tenant_id, alert_id, actor=_actor(dana, tenant_id, StaffRole.SHIFT_MANAGER)
+        )
+        with pytest.raises(SosAlreadyAcceptedError) as raised:
+            await service.cancel_sos(
+                tenant_id, alert_id, actor=_actor(raiser, tenant_id, StaffRole.OWNER)
+            )
+        assert raised.value.details == {"staff_display_name": "דנה כהן"}
+
+        async with tenant_session(factory, tenant_id) as session:
+            stored = await session.scalar(select(SosAlert).where(SosAlert.id == alert_id))
+        assert stored is not None
+        assert stored.status == SosStatus.ACCEPTED
+        assert stored.accepted_by == dana
+        assert await _audit_rows(factory, tenant_id, AuditAction.SOS_CANCELLED) == []
+    finally:
+        await engine.dispose()
+
+
+async def test_a_resolve_after_a_cancel_is_a_200_and_the_row_stays_cancelled(
+    app_role_url: str,
+) -> None:
+    """The two closers are not ordered: whichever landed first is the state, and
+    the second caller is told what happened rather than that she was wrong."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        service = _service(factory)
+        actor = _actor(raiser, tenant_id, StaffRole.OWNER)
+
+        await service.cancel_sos(tenant_id, alert_id, actor=actor)
+        resolved = await service.resolve_sos(tenant_id, alert_id, actor=actor)
+        assert resolved.alert.status == SosStatus.CANCELLED
+        assert await _audit_rows(factory, tenant_id, AuditAction.SOS_RESOLVED) == []
+    finally:
+        await engine.dispose()
+
+
+async def test_a_closed_alert_leaves_the_live_read(app_role_url: str) -> None:
+    """The poll's predicate is `idx_sos_alerts_live`'s, so a resolve is what
+    takes the card off every screen in the boutique."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        raiser = await _seed_staff(factory, tenant_id, display_name="Noa")
+        alert_id = await _raise(factory, tenant_id, raiser)
+        service = _service(factory)
+        actor = _actor(raiser, tenant_id, StaffRole.OWNER)
+
+        assert len((await service.sos(tenant_id, actor=actor)).alerts) == 1
+        await service.resolve_sos(tenant_id, alert_id, actor=actor)
+        assert (await service.sos(tenant_id, actor=actor)).alerts == []
+    finally:
+        await engine.dispose()

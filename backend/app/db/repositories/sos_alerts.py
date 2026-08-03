@@ -157,6 +157,62 @@ class SosAlertsRepository:
         refreshed = await self._refreshed(session, tenant_id, alert_id)
         return wrote.scalar_one_or_none() is not None, refreshed
 
+    async def resolve(
+        self, session: AsyncSession, tenant_id: uuid.UUID, alert_id: uuid.UUID
+    ) -> tuple[bool, SosAlert | None]:
+        """From EITHER live state. The emergency is over."""
+        return await self._close(session, tenant_id, alert_id, to=SosStatus.RESOLVED)
+
+    async def cancel(
+        self, session: AsyncSession, tenant_id: uuid.UUID, alert_id: uuid.UUID
+    ) -> tuple[bool, SosAlert | None]:
+        """⚠ **From `open` ONLY, and the asymmetry with `resolve` IS the point.**
+
+        A colleague who tapped «אני מגיעה» is already walking to that curtain.
+        Cancelling behind her sends her to an empty room and teaches her that
+        accepting means nothing — the exact erosion this feature exists to
+        prevent. The row still comes back, because the service's answer is a 409
+        that NAMES her, and the raiser's remedy is one word over: resolve, which
+        is what actually happened.
+        """
+        return await self._close(session, tenant_id, alert_id, to=SosStatus.CANCELLED)
+
+    async def _close(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        alert_id: uuid.UUID,
+        *,
+        to: SosStatus,
+    ) -> tuple[bool, SosAlert | None]:
+        """`accept`'s guarded UPDATE with a different destination, and the state
+        it may leave from is derived from that destination rather than passed:
+        the two closers differ in exactly one way and a caller able to choose
+        both independently could spell a transition neither verb has.
+
+        Neither closer touches `accepted_by` or `acknowledged_at`. «Did anybody
+        answer?» is answerable from the surviving pair plus the audit trail,
+        which is D1's argument for shipping no `resolved_at` and no
+        `resolved_by`.
+
+        `(False, row)` is NOT an error one layer up when the row is already
+        closed — she wanted it closed and it is closed. `(False, None)` is gone.
+        """
+        allowed = LIVE_STATUSES if to == SosStatus.RESOLVED else (SosStatus.OPEN,)
+        wrote = await session.execute(
+            update(SosAlert)
+            .where(
+                SosAlert.tenant_id == tenant_id,
+                SosAlert.id == alert_id,
+                SosAlert.status.in_(allowed),
+                SosAlert.deleted_at.is_(None),
+            )
+            .values(status=to)
+            .returning(SosAlert.id)
+        )
+        refreshed = await self._refreshed(session, tenant_id, alert_id)
+        return wrote.scalar_one_or_none() is not None, refreshed
+
     async def live_for(
         self, session: AsyncSession, tenant_id: uuid.UUID, *, actor_id: uuid.UUID | None
     ) -> list[SosAlertRow]:

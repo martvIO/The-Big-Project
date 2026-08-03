@@ -1090,6 +1090,102 @@ class FloorService:
                 raise DomainNotFoundError("sos_alert")
             return await self._refuse_accept(session, tenant_id, after)
 
+    async def resolve_sos(self, tenant_id: UUID, alert_id: UUID, *, actor: StaffContext) -> SosRead:
+        """«נפתר» — the emergency is over, from EITHER live state.
+
+        D4's six-step order: read (no status filter) -> visibility 404 ->
+        permission 404 -> the conditional UPDATE -> the rowcount-0 discriminator.
+
+        ⚠ **The permission check PRECEDES the discriminator and that ordering is
+        load-bearing**: a 409 carrying `{"staff_display_name": "דנה"}` handed to a
+        caller who may not act would leak a staff name the 404-not-403 rule
+        exists to withhold.
+
+        Permitted = the raiser, the acceptor, or elevated. *Declined "anyone may
+        resolve any alert": closing somebody else's open emergency is the one
+        destructive act on this surface, and the elevated path already covers the
+        legitimate case — a shift manager clearing up after a page that resolved
+        itself.*
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._sos.by_id(session, tenant_id, alert_id)
+            if row is None or not _visible_to(row, actor=actor):
+                raise DomainNotFoundError("sos_alert")
+            if not (actor.id in (row.raised_by, row.accepted_by) or actor.role in ELEVATED_ROLES):
+                raise DomainNotFoundError("sos_alert")
+
+            # ⚠ **CAPTURED BEFORE THE WRITER RUNS, and this line is the whole
+            # test.** The UPDATE below is ORM-enabled DML whose `evaluate`
+            # synchronization stamps 'resolved' onto the same identity-mapped
+            # instance `by_id` just handed back, so reading `row.status`
+            # afterwards records `resolved -> resolved` and empties the audit row
+            # of its entire informational content. Fourth appearance of this trap
+            # in the repo, and the only one where the destroyed value is a STATE
+            # rather than a timestamp — and it is why «did anybody answer?» needs
+            # no `resolved_at` column.
+            from_status = row.status
+
+            wrote, after = await self._sos.resolve(session, tenant_id, alert_id)
+            if wrote:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.SOS_RESOLVED,
+                    actor_id=actor.id,
+                    entity=str(alert_id),
+                    details={"alert": str(alert_id), "from_status": from_status},
+                )
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+
+            if after is None:
+                raise DomainNotFoundError("sos_alert")
+            if after.status in (SosStatus.RESOLVED, SosStatus.CANCELLED):
+                # She wanted it closed; it is closed. A 200 with no audit row.
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+            raise RuntimeError(f"sos resolve matched no row but reads back {after.status!r}")
+
+    async def cancel_sos(self, tenant_id: UUID, alert_id: UUID, *, actor: StaffContext) -> SosRead:
+        """«ביטול» — never mind, from `open` ONLY.
+
+        Same six-step order, a narrower permitted set (the raiser or elevated —
+        ⚠ **not the acceptor**, who has resolve) and its own discriminator, whose
+        first row is the asymmetry: cancelling an ACCEPTED alert is a 409 naming
+        the acceptor, because a colleague is already walking to that curtain and
+        cancelling behind her would teach her that accepting means nothing.
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._sos.by_id(session, tenant_id, alert_id)
+            if row is None or not _visible_to(row, actor=actor):
+                raise DomainNotFoundError("sos_alert")
+            if not (row.raised_by == actor.id or actor.role in ELEVATED_ROLES):
+                raise DomainNotFoundError("sos_alert")
+
+            wrote, after = await self._sos.cancel(session, tenant_id, alert_id)
+            if wrote:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.SOS_CANCELLED,
+                    actor_id=actor.id,
+                    entity=str(alert_id),
+                    # No `from_status`: cancel closes from ONE state, so
+                    # recording which would be recording the predicate.
+                    details={"alert": str(alert_id)},
+                )
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+
+            if after is None:
+                raise DomainNotFoundError("sos_alert")
+            if after.status == SosStatus.ACCEPTED:
+                raise SosAlreadyAcceptedError(
+                    await self._name_of(session, tenant_id, after.accepted_by)
+                )
+            if after.status in (SosStatus.RESOLVED, SosStatus.CANCELLED):
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+            raise RuntimeError(f"sos cancel matched no row but reads back {after.status!r}")
+
     async def _refuse_accept(
         self, session: AsyncSession, tenant_id: UUID, row: SosAlert
     ) -> NoReturn:
