@@ -443,5 +443,68 @@ describe("the floor client", () => {
       stubFetch(() => jsonResponse(status, { error: { code, message: "…" } }));
       await expect(api.startStaffBreak("id")).rejects.toMatchObject({ status, code });
     }
+
+// --- customers CRM (Feature 53) ---
+
+const CUSTOMER_ID = "33333333-4444-5555-6666-777777777777";
+
+describe("customer endpoints", () => {
+  it("sends paging plus the trimmed search term as query parameters", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, { items: [], total: 0, offset: 0, limit: 50 }),
+    );
+    await api.listCustomers({ q: "  מיכל  ", offset: 50, limit: 50 });
+    const [path] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const query = new URL(path, "https://bella.example.test").searchParams;
+    expect(path.startsWith("/manage/customers?")).toBe(true);
+    expect(query.get("q")).toBe("מיכל");
+    expect(query.get("offset")).toBe("50");
+    expect(query.get("limit")).toBe("50");
+  });
+
+  // A blank box means "everyone", and the server drops a whitespace-only term
+  // anyway — sending `q=` would put two spellings of one intent in the access
+  // log for no gain.
+  it("omits a whitespace-only term rather than sending a blank filter", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, { items: [], total: 0, offset: 0, limit: 50 }),
+    );
+    await api.listCustomers({ q: "   ", offset: 0, limit: 50 });
+    const [path] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).not.toContain("q=");
+  });
+
+  it("reads one customer by id and encodes it into the path", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.getCustomer("a b/c");
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/customers/a%20b%2Fc");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET" });
+  });
+
+  // Real verbs and a path parameter are the shipped /manage convention — three
+  // router docstrings say so. Partial by design: an omitted key means
+  // "unchanged", and the server reads an all-unchanged patch as a no-op that
+  // writes no audit row.
+  it("patches only the fields it was given, under PATCH", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.updateCustomer(CUSTOMER_ID, { tags: ["VIP", "כלה"] });
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe(`/manage/customers/${CUSTOMER_ID}`);
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({ tags: ["VIP", "כלה"] });
+  });
+
+  it("can clear both mutable fields in one patch", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.updateCustomer(CUSTOMER_ID, { notes: "", tags: [] });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ notes: "", tags: [] });
+  });
+
+  it("surfaces a 404 as an ApiError code the detail can map", async () => {
+    stubFetch(() => jsonResponse(404, { error: { code: "NOT_FOUND", message: "…" } }));
+    await expect(api.getCustomer(CUSTOMER_ID)).rejects.toMatchObject({
+      status: 404,
+      code: "NOT_FOUND",
+    });
   });
 });
