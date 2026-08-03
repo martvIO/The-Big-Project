@@ -225,7 +225,10 @@ type BookingEndpoint =
   // a GET would put the manage token in the query string.
   | "booking/lookup"
   | "booking/confirm-attendance"
-  | "booking/cancel";
+  | "booking/cancel"
+  // F33's walk-in create. Its sibling read, /storefront/checkin/position, is
+  // deliberately NOT here — see the ticket map below.
+  | "checkin";
 
 const BOOKING_PATHS: Record<string, BookingEndpoint> = {
   "/storefront/terms": "terms",
@@ -237,6 +240,7 @@ const BOOKING_PATHS: Record<string, BookingEndpoint> = {
   "/storefront/booking/lookup": "booking/lookup",
   "/storefront/booking/confirm-attendance": "booking/confirm-attendance",
   "/storefront/booking/cancel": "booking/cancel",
+  "/storefront/checkin": "checkin",
 };
 
 type BookingReplies = Record<BookingEndpoint, Reply[]>;
@@ -333,6 +337,43 @@ function slotBody(instants: string[]): unknown {
 
 const ALL_SLOTS = [SLOT_1000, SLOT_1045, SLOT_1130, SLOT_NEXT_DAY];
 
+// --- F33 walk-in queue fixtures ----------------------------------------------
+//
+// Ruling 3 removed server-side dedup entirely, so there is no null branch, no
+// envelope and no already-in-queue reply to fixture: the create always creates
+// and always answers a full TicketView. TWO ids because a second submission of
+// the same phone mints a SECOND ticket — a one-element queue would answer the
+// same id twice and hide the one thing the second journey exists to state.
+
+const TICKET_FIRST = "qt-e2e-first";
+const TICKET_SECOND = "qt-e2e-second";
+
+// The whole wire shape of both check-in routes, and it is four fields. Nothing
+// here names her, and nothing here is about anybody else's ticket.
+function ticketBody(
+  id: string,
+  overrides: { status?: string; position?: number | null; called_at?: string | null } = {},
+): unknown {
+  return {
+    id,
+    status: overrides.status ?? "waiting",
+    position: overrides.position === undefined ? 3 : overrides.position,
+    called_at: overrides.called_at ?? null,
+  };
+}
+
+// The position read is the ONE endpoint whose answer depends on WHICH ticket
+// asked, so it is keyed off the request body instead of being a reply queue: the
+// second journey leaves two live tickets behind it, and a queue consumed in
+// order would hand the second ticket's body to the first ticket's page on
+// whichever 5s poll tick happened to land first. Consecutive positions on
+// purpose — that is exactly what Ruling 3 costs when one phone checks in twice,
+// and the e2e should show it rather than smooth it over.
+const QUEUE_TICKETS: Record<string, unknown> = {
+  [TICKET_FIRST]: ticketBody(TICKET_FIRST, { position: 3 }),
+  [TICKET_SECOND]: ticketBody(TICKET_SECOND, { position: 4 }),
+};
+
 function bookingFixture(): BookingReplies {
   return {
     terms: [ok(TERMS_V3)],
@@ -347,6 +388,12 @@ function bookingFixture(): BookingReplies {
       ok(manageBody({ attendance_confirmed_at: "2099-01-03T08:00:00Z" })),
     ],
     "booking/cancel": [ok(manageBody({ status: "cancelled" }))],
+    // 201 both times, same shape both times: the create has one outcome and the
+    // second submission of one phone is not a different case.
+    checkin: [
+      { status: 201, body: ticketBody(TICKET_FIRST) },
+      { status: 201, body: ticketBody(TICKET_SECOND) },
+    ],
   };
 }
 
@@ -361,6 +408,7 @@ async function installApi(
   list: ListVariant = "populated",
   boutique: unknown = BOUTIQUE,
   booking: Partial<BookingReplies> = {},
+  tickets: Record<string, unknown> = QUEUE_TICKETS,
 ): Promise<void> {
   const replies: BookingReplies = { ...bookingFixture(), ...booking };
   await page.route("**/storefront/**", async (route) => {
@@ -376,6 +424,15 @@ async function installApi(
 
     if (pathname === "/storefront/boutique") {
       await send(boutique);
+      return;
+    }
+    // Before the queue lookup, because it is answered from the body rather than
+    // from a queue. An unseeded id is the 404 the page reads as "this ticket is
+    // gone" — the same answer an unknown, swept or mistyped one gets.
+    if (pathname === "/storefront/checkin/position") {
+      const asked = (route.request().postDataJSON() as { ticket_id: string }).ticket_id;
+      const seeded = tickets[asked];
+      await send(seeded ?? NOT_FOUND_BODY, seeded ? 200 : 404);
       return;
     }
     const endpoint = BOOKING_PATHS[pathname];
@@ -2223,4 +2280,207 @@ test("storefront manage: renders no BookingCTA bar @375", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 900 });
   await gotoManage(page);
   await expect(ctaBar(page)).toHaveCount(0);
+});
+
+// =============================================================================
+// F33 — the walk-in queue: /checkin and /q/{ticket_id}
+// =============================================================================
+//
+// The QR taped to the shop window opens /checkin, and every well-formed submit
+// mints a ticket and navigates straight to that ticket's own page. There is no
+// second outcome — Ruling 3 deleted server-side dedup, so a phone that is
+// already in the queue is answered exactly like one that is not — which is why
+// the second journey below asserts a SECOND ticket rather than a refusal.
+
+const CHECKIN_HEADING = "רישום לתור";
+const VISIT_BRIDE = "מדידת כלה";
+const CHECKIN_SUBMIT = "הצטרפות לתור";
+const VISIT_TYPE_REQUIRED = "צריך לבחור סוג ביקור כדי להמשיך";
+const LAST_FROM_DEVICE = "הרישום האחרון שנעשה מהמכשיר הזה";
+const POSITION_HEADING = "מקומך בתור";
+const WAITING = "ממתינה";
+const UPDATED_AT = "עודכן";
+const PAUSE = "השהיית העדכון";
+const VISIT_CLOSED = "הביקור הזה הסתיים.";
+const BACK_TO_CHECKIN = "רישום לתור חדש";
+
+// The form is WITHHELD while the boutique fetch is in flight and again if it
+// fails — both counsel-gated strings interpolate the controller's name — so the
+// submit button, not the h1, is the tell that real content and not a skeleton is
+// on screen. Same trap gotoSettled and gotoManage exist for.
+async function gotoCheckin(page: Page): Promise<void> {
+  await page.goto(`${STOREFRONT}/checkin`);
+  await expect(page.getByRole("button", { name: CHECKIN_SUBMIT })).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+}
+
+// Three fields and one button, located the way a woman standing in a doorway
+// finds them: by their visible Hebrew labels. NAME_LABEL and PHONE_LABEL are the
+// booking flow's own constants because they are the same two strings — if the
+// surfaces ever diverge, this is where it shows.
+async function fillCheckin(page: Page): Promise<void> {
+  await page.getByLabel(NAME_LABEL).fill(CUSTOMER_NAME);
+  await page.getByLabel(PHONE_LABEL).fill(TYPED_PHONE);
+  await chip(page, VISIT_BRIDE).click();
+  await expect(page.getByRole("radio", { name: VISIT_BRIDE, exact: true })).toBeChecked();
+}
+
+// The submit and the create's own response together. waitForResponse is armed
+// BEFORE the click, so nothing here depends on how fast the fixture answers.
+async function submitCheckin(page: Page): Promise<{ status: number; body: unknown }> {
+  const [response] = await Promise.all([
+    page.waitForResponse((r) => new URL(r.url()).pathname === "/storefront/checkin"),
+    page.getByRole("button", { name: CHECKIN_SUBMIT }).click(),
+  ]);
+  return { status: response.status(), body: (await response.json()) as unknown };
+}
+
+function captureCheckins(page: Page): unknown[] {
+  const posted: unknown[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/storefront/checkin") {
+      posted.push(request.postDataJSON());
+    }
+  });
+  return posted;
+}
+
+// --- journey 1: the happy path ------------------------------------------------
+
+test("storefront check-in: the form mints a ticket and lands on that ticket's own position page", async ({
+  page,
+}) => {
+  await installApi(page);
+  const posted = captureCheckins(page);
+
+  await gotoCheckin(page);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(CHECKIN_HEADING);
+  await fillCheckin(page);
+  const created = await submitCheckin(page);
+
+  expect(created.status, "the create is a 201 with a ticket, always").toBe(201);
+  await expect(page).toHaveURL(`${STOREFRONT}/q/${TICKET_FIRST}`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(POSITION_HEADING);
+  await expect(page.getByTestId("queue-number")).toHaveText("3");
+  await expect(page.getByText(WAITING)).toBeVisible();
+  // SC 2.2.2's mechanism, and the freshness line it belongs to, are both on
+  // screen — axe has no rule for either, so a browser has to look.
+  await expect(page.getByTestId("queue-freshness")).toContainText(UPDATED_AT);
+  await expect(page.getByRole("button", { name: PAUSE })).toBeVisible();
+  // hasBookingBar() is catalog-and-dress, so this route reserves no CTA gutter.
+  await expect(ctaBar(page)).toHaveCount(0);
+
+  // Four fields on the wire, the phone normalised on the client, and no fifth
+  // thing — nothing about the device, the tab or any earlier visit.
+  expect(posted).toEqual([
+    { name: CUSTOMER_NAME, phone: WIRE_PHONE, visit_type: "bride", marketing_opt_in: false },
+  ]);
+  // The pointer is the ticket id and nothing else: no phone number ever reaches
+  // the device's store (D8).
+  expect(await page.evaluate(() => sessionStorage.getItem("checkin:ticket"))).toBe(TICKET_FIRST);
+});
+
+test("storefront check-in: zero axe A/AA violations — the form, the form in error, and the live position", async ({
+  page,
+}) => {
+  await installApi(page);
+  await gotoCheckin(page);
+  expect(await axeViolations(page), "the form").toEqual([]);
+
+  // Errors surface on submit and nowhere else, so this is the state she
+  // actually meets: three live alerts wired to their own fields at once.
+  await page.getByRole("button", { name: CHECKIN_SUBMIT }).click();
+  await expect(page.getByText(VISIT_TYPE_REQUIRED)).toBeVisible();
+  expect(await axeViolations(page), "the form in error").toEqual([]);
+
+  await fillCheckin(page);
+  await submitCheckin(page);
+  await expect(page.getByTestId("queue-number")).toHaveText("3");
+  await page.evaluate(() => document.fonts.ready);
+  expect(await axeViolations(page), "the live position").toEqual([]);
+});
+
+test("storefront check-in: a finished visit says so, drops the pause control and offers a fresh check-in", async ({
+  page,
+}) => {
+  // SEEDED, never driven. F33 ships no way to close a ticket — every status
+  // transition is F58's — so a test written as "poll until it goes done" would
+  // hang rather than fail.
+  await installApi(
+    page,
+    "populated",
+    BOUTIQUE,
+    {},
+    { [TICKET_FIRST]: ticketBody(TICKET_FIRST, { status: "done", position: null }) },
+  );
+  await page.goto(`${STOREFRONT}/q/${TICKET_FIRST}`);
+
+  await expect(page.getByText(VISIT_CLOSED)).toBeVisible();
+  await expect(page.getByTestId("queue-number")).toHaveCount(0);
+  // Offering a pause for a loop that can never run again is a lie about the
+  // page, so the whole freshness row goes with the terminal.
+  await expect(page.getByRole("button", { name: PAUSE })).toHaveCount(0);
+  await expect(page.getByTestId("queue-freshness")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: BACK_TO_CHECKIN })).toHaveAttribute(
+    "href",
+    "/checkin",
+  );
+  await page.evaluate(() => document.fonts.ready);
+  expect(await axeViolations(page)).toEqual([]);
+});
+
+// --- journey 2: Ruling 3, the second check-in ---------------------------------
+
+test("storefront check-in: a second check-in with the same phone mints a SECOND ticket and reads exactly like the first", async ({
+  page,
+}) => {
+  await installApi(page);
+  const posted = captureCheckins(page);
+
+  await gotoCheckin(page);
+  await fillCheckin(page);
+  const first = await submitCheckin(page);
+  await expect(page).toHaveURL(`${STOREFRONT}/q/${TICKET_FIRST}`);
+  await expect(page.getByTestId("queue-number")).toHaveText("3");
+
+  // Back to the form in the SAME tab, which is the only case the courtesy
+  // pointer covers. It offers the last check-in made from this device — never a
+  // claim to know where she is — and the form stays fully usable under it.
+  await gotoCheckin(page);
+  await expect(page.getByRole("link", { name: LAST_FROM_DEVICE })).toHaveAttribute(
+    "href",
+    `/q/${TICKET_FIRST}`,
+  );
+
+  // The same phone, deliberately. Under Ruling 3 this is not a duplicate to be
+  // refused, de-duplicated or answered differently — it is a second walk-in.
+  await fillCheckin(page);
+  const second = await submitCheckin(page);
+
+  await expect(page).toHaveURL(`${STOREFRONT}/q/${TICKET_SECOND}`);
+  // A live ticket of its own, one place behind the first. That is the honest
+  // cost of the ruling, on screen, rather than a state that says "you are
+  // already in the queue" and hands over somebody's position.
+  await expect(page.getByTestId("queue-number")).toHaveText("4");
+  await expect(page.getByRole("button", { name: PAUSE })).toBeVisible();
+  // Nothing refused anything, on either screen.
+  await expect(page.getByRole("alert")).toHaveCount(0);
+
+  // The two submissions carried the identical phone...
+  expect(posted).toHaveLength(2);
+  expect(posted[0], "the second submission changed something").toEqual(posted[1]);
+  // ...and the two responses are indistinguishable on the wire: same status,
+  // same key set, differing only in the id that was minted. THAT identity is the
+  // security property — a stranger who submits a woman's mobile receives a
+  // ticket of his own and learns nothing whatsoever about her. An `existing`
+  // flag, a `ticket` envelope or a second status code all redden here.
+  const keys = (body: unknown) => Object.keys(body as Record<string, unknown>).sort();
+  expect(second.status).toBe(first.status);
+  expect(keys(first.body)).toEqual(["called_at", "id", "position", "status"]);
+  expect(keys(second.body)).toEqual(keys(first.body));
+  expect((second.body as { id: string }).id).not.toBe((first.body as { id: string }).id);
+
+  // Every create overwrites the pointer, so it names the most recent check-in
+  // from this tab and never an older one.
+  expect(await page.evaluate(() => sessionStorage.getItem("checkin:ticket"))).toBe(TICKET_SECOND);
 });
