@@ -107,6 +107,8 @@ export const ar = {
       retry: "ניסיון נוסף",
       pause: "השהיית העדכון",
       resume: "חידוש העדכון",
+      pausedCue: "העדכון האוטומטי הושהה",
+      resumedCue: "העדכון האוטומטי חודש",
       updatedAt: "עודכן",
       staleAt: "העדכון האחרון היה",
       pausedAt: "העדכון מושהה. עודכן",

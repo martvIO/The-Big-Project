@@ -10,6 +10,7 @@ import { BookPage } from "./routes/BookPage";
 import { CatalogPage } from "./routes/CatalogPage";
 import { DressPage } from "./routes/DressPage";
 import { ManageBookingPage } from "./routes/ManageBookingPage";
+import { QueuePositionPage } from "./routes/QueuePositionPage";
 
 // ponytail: hand-rolled router. The workspace carries no router dependency and
 // the storefront has a handful of flat routes, so this is ~90 lines instead of
@@ -338,10 +339,12 @@ export function Router() {
       return <BookPage step={match.step} dressId={match.dressId} />;
     case "manage":
       return <ManageBookingPage token={match.token} />;
+    case "queuePosition":
+      return <QueuePositionPage ticketId={match.ticketId} />;
     // ⚠ A missing `case` compiles clean and renders the dress grid under the
-    // route's own title, because of the fallthrough below. `checkin` and
-    // `queuePosition` are matched above and land their arms with their pages;
-    // until then this comment is the only marker that they have not.
+    // route's own title, because of the fallthrough below. `checkin` is matched
+    // above and lands its arm with its page; until then this comment is the only
+    // marker that it has not.
     default:
       return <CatalogPage />;
   }

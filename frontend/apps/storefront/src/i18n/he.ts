@@ -461,6 +461,11 @@ export const he = {
       // rule that the name IS the label.
       pause: "השהיית העדכון",
       resume: "חידוש העדכון",
+      // Announced through the one role="status" region, because a screen reader
+      // does not reliably re-announce the name of an already-focused control
+      // that renamed itself under the press. User-initiated, so D12 admits them.
+      pausedCue: "העדכון האוטומטי הושהה",
+      resumedCue: "העדכון האוטומטי חודש",
       // Three freshness states that read differently AS TEXT — a class-only
       // difference is exactly the colour-alone defect this is meant to catch.
       // All past tense: «עודכן 14:07» says this was true at 14:07, never
