@@ -23,29 +23,26 @@ config:
   merge_gate: .claude/scripts/merge-gate.sh
 
 current: F33                    # F57 (PR #33), F19 (PR #34) and F53 (PR #35) ALL MERGED 2026-08-03.
-                                # MAIN'S HEAD IS NOW MIGRATION 0016 (F19). The MIGRATION CHAIN
-                                # block below is still the rule; its "head is 0015" line moved once
-                                # more, which is exactly why the rule replaced the grid.
-                                # TWO FEATURES IN FLIGHT. F53 belongs to ANOTHER SESSION and is
-                                # not this loop's to touch (user instruction 2026-08-03).
+                                # MAIN'S HEAD IS NOW MIGRATION 0017 (F53's customer_crm_fields).
+                                # ONE FEATURE IN FLIGHT: F33, and it is this loop's.
                                 #
                                 # ==== MIGRATION CHAIN — NOW A RULE, NOT A FIXED GRID ====
-                                # main's head is 0016 (F19, merged 2026-08-03; it took the next
-                                # free number rather than reserving 0017 behind F33, because a
-                                # migration whose down_revision does not yet exist cannot pass CI
-                                # at all — reserving blocks a finished feature on an unfinished
-                                # one). Every fixed number
-                                # this file previously assigned (F33=0016, F19=0017, F53=0018) was
-                                # derived from a head of 0014 and is now OFF BY ONE. Do not read
-                                # them as current. THE RULE THAT REPLACES THEM:
+                                # THE GRID MOVED THREE TIMES IN ONE DAY, WHICH IS THE WHOLE ARGUMENT.
+                                # It said head=0014 at breakfast; F57 made it 0015, F19 made it 0016,
+                                # F53 made it 0017 — and F33, which was BUILT at 0016 against a head
+                                # of 0015, now collides with F19's shipped 0016_deposit_flow and must
+                                # ship as 0018/down_revision 0017. Not one of the four fixed numbers
+                                # this file originally assigned (F33=0016, F19=0017, F53=0018)
+                                # survived contact. Do not read any of them as current.
+                                # THE RULE THAT REPLACES THEM:
                                 #   Resolve your revision id from `alembic heads` on main
                                 #   IMMEDIATELY BEFORE the rebase that precedes your push, and
                                 #   make the migration the LAST commit on the branch so the
                                 #   renumber costs one amend to one file nothing else references.
-                                # This is what F53's own entry already said, and it is the only
-                                # form that survives three sessions landing in an order none of
-                                # them controls. EXPECTED landing order, not a reservation:
-                                # F19 (nearly done) -> F33 (building) -> F53 (building).
+                                # Each feature takes the next FREE number rather than reserving one
+                                # behind an unfinished sibling: a migration whose down_revision does
+                                # not yet exist cannot pass CI at all, so reserving would block a
+                                # finished feature on an unfinished one.
                                 # The ordering rule is UNCHANGED and is the load-bearing one:
                                 # do not OPEN a PR while a lower-numbered migration is still
                                 # unmerged. CI tests the merge result, and two files claiming one
@@ -59,23 +56,28 @@ current: F33                    # F57 (PR #33), F19 (PR #34) and F53 (PR #35) AL
                                 # BUILDS against head+1 so it is self-coherent and its db tests
                                 # run, then renumbers at rebase.
                                 #
-                                # ==== WHO OWNS WHAT, 2026-08-03 12:48 ====
-                                # THREE SESSIONS ARE LIVE IN THIS REPO AT ONCE. Verified by file
-                                # mtimes, not by assumption — check the same way before touching a
-                                # worktree that is not yours (`find .worktrees/<slug> -mmin -15`;
-                                # note BSD find has no -newermt).
-                                #   F19  .worktrees/deposit-booking-flow — ANOTHER SESSION, ACTIVE.
-                                #        Writing as of 12:47 (a declined-state fix: DECLINE_ERROR
-                                #        hoisted to a shared constant, is_declined() on the poll,
-                                #        a db test for the round trip). 15 commits + uncommitted
-                                #        work. DO NOT rebase, renumber, push or review it.
-                                #   F53  .worktrees/customers-crm — ANOTHER SESSION, ACTIVE, and
-                                #        the user named it explicitly. 8 commits. Hands off.
-                                #   F33  .worktrees/qr-walkin-queue — UNOWNED. Spec and plan are
-                                #        written (887 + 838 lines) and were left UNTRACKED in the
-                                #        main checkout by the session that wrote them; the worktree
-                                #        holds only an 8-line conftest.py addition and no commits.
-                                #        THIS LOOP TOOK IT.
+                                # ==== WHO OWNS WHAT — RESOLVED 2026-08-03 16:30 ====
+                                # THREE SESSIONS WERE LIVE AT ONCE THIS MORNING. Two have since
+                                # shipped and only F33 is still in flight:
+                                #   F19  MERGED as PR #34 (10:01Z), migration 0016_deposit_flow.
+                                #   F53  MERGED as PR #35 (12:54Z), migration 0017_customer_crm_fields.
+                                #   F33  .worktrees/qr-walkin-queue — THIS LOOP's, in flight.
+                                # THE LIVENESS CHECK THAT MADE THIS SAFE IS WORTH KEEPING. At 12:48
+                                # the F19 worktree looked finished and abandoned — 15 commits, a
+                                # CLEAN `git status`, nothing new in the log for hours — and this
+                                # loop was one command away from rebasing it. Ninety seconds later
+                                # it had five modified files: that session was mid-build with
+                                # everything uncommitted, and it went on to merge. A session
+                                # BETWEEN COMMITS is invisible to `git log` and to a single
+                                # `git status`. The only reliable test is a file-mtime sweep:
+                                #   find ".worktrees/<slug>" -type f -mmin -15 \
+                                #     -not -path "*/.git/*" -not -path "*/node_modules/*" \
+                                #     -not -path "*/__pycache__/*" -not -name "*.pyc"
+                                # ⚠ BSD/macOS `find` has NO `-newermt` (GNU only). It does not
+                                # error — it silently returns nothing, which reads exactly like
+                                # "no session is active" and is the most dangerous possible false
+                                # negative. Use `-mmin -N`, and filter the caches (.ruff_cache,
+                                # .mypy_cache, dist/) or every worktree looks live.
                                 #
                                 # ---- historical: how these four came to be in flight ----
                                 # (kept because the reasoning still governs which entry is pickable)
@@ -365,14 +367,34 @@ queue:
       write instead of a renumbering pass.
       Public storefront /checkin route, 3 fields (name, phone, bride/evening).
       The POST goes on a NEW mutating router — app/storefront/router.py is
-      contractually GET-only — with its OWN FixedWindowRateLimiter instances,
-      per-tenant and per-phone. One budget = one instance: never reuse the OTP or
-      booking limiters, or a busy bride morning locks the door queue.
-      Dedup on (tenant, phone, day). Live-position view polls its own public GET
-      keyed by the ticket UUID (the id is the capability; the response carries
-      position + ahead-count + status and echoes no PII). One static printed QR per
-      boutique (#30), rendered in manage. Auto-delete days after the visit stays
-      F20's retention job's second consumer. Hebrew only; ar keys untranslated.
+      contractually GET-only — with its OWN FixedWindowRateLimiter instances.
+      One budget = one instance: never reuse the OTP or booking limiters, or a
+      busy bride morning locks the door queue.
+      ⚠ "Dedup on (tenant, phone, day)" AND the per-phone limiter WERE in this note
+      and are BOTH DELETED — see the spec's RULING 3, which supersedes this line and
+      is the single most important thing about this feature. A later reader who wants
+      dedup back must answer its two arguments first, because both are security, not
+      taste. (1) THE ORACLE: with dedup, submitting a phone that IS in the queue got a
+      distinguishable answer — free, silent, unbounded, no row written, no evidence
+      anywhere — so anyone could test whether a named woman was standing in a named
+      boutique. (2) THE DENIAL, which is worse: the dedup key was freed only by a
+      status change or a soft delete, and F33 ships NEITHER (the staff view that would
+      write them is F58), so ONE anonymous POST with a known mobile denied that woman a
+      queue slot for the rest of the boutique day, with no remedy anywhere in F33.
+      So the create ALWAYS creates and ALWAYS returns a full TicketView: one response
+      shape, no branch, identical whether or not that phone is already queued. That
+      identity IS the security property. Deleted with it: the partial unique index, the
+      advisory lock, the Python pre-check, the IntegrityError path, the {"ticket": null}
+      branch, the CheckinCreateResponse envelope and the per-phone create limiter.
+      A duplicate ticket is now a REAL, EXPECTED outcome that F58 merges or removes —
+      that is the accepted cost. Re-scan comfort moved to a sessionStorage pointer that
+      dies with the tab and is explicitly NOT a security control.
+      Live-position view polls its own public GET keyed by the ticket UUID (the id is
+      the capability; the response carries position + ahead-count + status and echoes
+      no PII). One static printed QR per boutique (#30), rendered server-side in manage
+      via `segno` (pure Python, zero transitive deps — the manage bundle grows by
+      nothing and the print page is a plain <img>). Auto-delete days after the visit
+      stays F20's retention job's second consumer. Hebrew only; ar keys untranslated.
   - id: F58
     slug: floor-dispatch
     epic: E6
