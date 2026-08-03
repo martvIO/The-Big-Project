@@ -98,15 +98,24 @@ const NAV_LABELS = [
   // HERE rather than at the top is what keeps Q-5 = NO true structurally: the
   // landing section is NAV row 0 and nothing below it can displace it.
   "לוח היום",
+  // F41, IMMEDIATELY AFTER the `floor` row in App.tsx's NAV — which is the same
+  // slot as "after «לוח היום» and before «צוות»" in this owner-filtered list,
+  // because `floor` carries FLOOR_ONLY and the owner never sees it. The two
+  // phrasings are not in conflict and neither may be "fixed" against the other.
+  //
+  // Its roles are owner + shift_manager + SEAMSTRESS, which is why it sits above
+  // the owner-only pair, inside the shift manager's slice, and why the seamstress
+  // case below is no longer shared with reception and sales assistants.
+  "תפירה",
   // F33, after the board and before the owner-only rows. Both console roles
   // reach it: the payload is the public URL printed on a sign in the window and
   // a picture of it, so locking a shift manager out of reprinting a torn poster
   // would be a support ticket for no security gain. In App.tsx's NAV it sits
   // after the `floor` row, which neither of these two roles can see — hence
-  // position 9 here and not 10.
+  // position 10 here and not 11.
   "קוד סריקה",
-  // The two owner-only rows, last. Everything above is `roles: ALL`, which is
-  // what keeps the shift_manager assertions below a `.slice(0, 10)`.
+  // The two owner-only rows, last. Everything above is reachable by a shift
+  // manager, which is what keeps the assertions below a `.slice(0, 11)`.
   "צוות",
   "סליקה ותשלומים",
 ];
@@ -124,18 +133,18 @@ beforeEach(() => {
 });
 
 describe("the console nav is role-filtered", () => {
-  it("shows an owner all twelve sections including Staff and the gateway", async () => {
+  it("shows an owner all thirteen sections including Staff and the gateway", async () => {
     me.mockResolvedValue(staff("owner"));
     render(<App />);
     await screen.findByRole("navigation");
     expect(navItems()).toEqual(NAV_LABELS);
   });
 
-  it("shows a shift manager ten sections and neither owner-only one", async () => {
+  it("shows a shift manager eleven sections and neither owner-only one", async () => {
     me.mockResolvedValue(staff("shift_manager"));
     render(<App />);
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 10));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 11));
     expect(screen.queryByRole("button", { name: "צוות" })).toBeNull();
     // Cosmetics only — the control is the server's owner-only RoleGate, which
     // refuses her on all four /manage/gateway routes with a 403. The filter
@@ -143,7 +152,12 @@ describe("the console nav is role-filtered", () => {
     expect(screen.queryByRole("button", { name: "סליקה ותשלומים" })).toBeNull();
   });
 
-  it.each(["reception", "sales_assistant", "seamstress"])(
+  // ⚠ SPLIT at F41, and the split is the point. This `it.each` used to carry
+  // "seamstress" as a third case asserting the same single row; the atelier
+  // admits her and no longer does. Leaving her in and widening the expectation
+  // would have quietly widened it for reception and sales assistants too, which
+  // is the one thing this block exists to pin.
+  it.each(["reception", "sales_assistant"])(
     "shows %s exactly one row and lands her on the floor",
     async (role) => {
       // ⚠ The count is the assertion, not a detail. F57 ADDED a row rather than
@@ -166,18 +180,38 @@ describe("the console nav is role-filtered", () => {
     },
   );
 
-  it("keeps the owner's twelve and the shift manager's ten free of the floor row", () => {
+  it("shows a seamstress the floor panel and the atelier, in that order", async () => {
+    // ⚠ THE ORDER IN THIS ASSERTION IS THE WHOLE TEST. It is what fails if the
+    // atelier NAV row went in BEFORE `floor` instead of after — which would also
+    // move `reachable[0]?.key` and land her on the atelier instead of the floor,
+    // with no edit to useState("dashboard") anywhere to say so.
+    //
+    // Its pair is the owner's thirteen-entry assertion above: give the row
+    // FLOOR_ONLY by mistake and that one reds while this one stays green; put
+    // the row in the wrong slot and this one reds while that one stays green.
+    // Neither number alone pins the row.
+    me.mockResolvedValue(staff("seamstress"));
+    render(<App />);
+    await screen.findByRole("navigation");
+
+    expect(navItems()).toEqual(["הצוות בקומה", "תפירה"]);
+    expect(screen.queryByRole("button", { name: "לוח היום" })).toBeNull();
+    // Still LANDS on the floor, not on the atelier.
+    expect(screen.getByRole("heading", { name: "צוות בקומה" })).toBeInTheDocument();
+  });
+
+  it("keeps the owner's thirteen and the shift manager's eleven free of the floor row", () => {
     // The floor panel reaches those two roles UNDER «לוח היום», never as a
     // second nav row — spec D11, and the reason «הצוות בקומה» is absent from
-    // NAV_LABELS above even though App.tsx's NAV has thirteen rows.
+    // NAV_LABELS above even though App.tsx's NAV has fourteen rows.
     //
     // The three numbers in this file's assertions (this length, the owner's
-    // count, the shift manager's `.slice(0, 10)`) move TOGETHER every time a
-    // `roles: ALL` row is added, and the test NAMES carry them in words as well.
-    // F53 moved four of the five and left this one at ten, which is why it is
-    // spelled out here: a nav row is five coordinated edits, not one.
+    // count, the shift manager's `.slice(0, 11)`) move TOGETHER every time a row
+    // a shift manager can reach is added, and the test NAMES carry them in words
+    // as well. F53 moved four of the five and left this one behind, which is why
+    // it is spelled out here: a nav row is five coordinated edits, not one.
     expect(NAV_LABELS).not.toContain("הצוות בקומה");
-    expect(NAV_LABELS).toHaveLength(12);
+    expect(NAV_LABELS).toHaveLength(13);
   });
 
   it("does not white-screen on a role the enum does not know", async () => {
@@ -225,7 +259,7 @@ describe("an unreachable section falls back to the first reachable one", () => {
     fireEvent.click(screen.getByRole("button", { name: "כניסה" }));
 
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 10));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 11));
     // reachable[0] is now the dashboard, not «פרופיל והגדרות» — the fallback
     // lands her on the console's landing section rather than a settings form.
     await waitFor(() =>

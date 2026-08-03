@@ -3,6 +3,7 @@ import i18n from "../i18n";
 import { ar } from "../i18n/ar";
 import { he } from "../i18n/he";
 import { ROLE_LABEL_KEY } from "../lib/roles";
+import { STAGE_LABEL_KEY } from "../lib/stages";
 
 // Console copy is transcribed into he.ts as DOTTED LITERAL keys, one per row of
 // the feature's copy.md. i18next resolves those through `ignoreJSONStructure`
@@ -596,6 +597,13 @@ describe("F41 atelier keys resolve", () => {
     const body = i18n.t("atelier.emptyBody");
     for (const stage of ["intake", "inProgress", "qc", "ready", "delivered"]) {
       expect(body).toContain(i18n.t(`atelier.stage.${stage}`));
+    }
+    // And through the map the board actually reads, so a key present here but
+    // absent from `lib/stages.ts` — or the reverse — is caught. The
+    // `Record<TicketStage, string>` type catches a MISSING MEMBER; only this
+    // catches a member pointing at a key that does not exist.
+    for (const key of Object.values(STAGE_LABEL_KEY)) {
+      expect(i18n.t(key)).not.toBe(key);
     }
   });
 
