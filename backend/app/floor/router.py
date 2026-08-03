@@ -1,5 +1,6 @@
 """The floor: the read, the two break toggles, the room registry, the claim and
-its dress bindings, and the two one-shot pickers — thirteen routes on /manage.
+its dress bindings, the two one-shot pickers and F58's five dispatch verbs —
+eighteen routes on /manage.
 
 **A SEVENTH router on /manage.** Registered after dashboard_router in
 create_app(), carrying the same shadowing warning the other six includes carry —
@@ -54,10 +55,12 @@ The distinction that keeps D11's conclusion right — two loops stay two loops:
                                  fetched when the panel mounts and after a
                                  claim, never on the tick.
 
-**Four routes NARROW that gate to owner + shift_manager**, per-route, composing
-by intersection (`auth/dependencies.py:44-45`): the three registry verbs, and
-`handover`. The registry is configuration — a seamstress renaming the boutique's
-rooms is not a capability anything asks for. `handover` is there rather than in
+**SIX routes NARROW that gate to owner + shift_manager**, per-route, composing
+by intersection (`auth/dependencies.py:44-45`): the three registry verbs,
+`handover`, and F58's `skip` and `remove`. The registry is configuration — a
+seamstress renaming the boutique's rooms is not a capability anything asks for.
+Skip re-orders a stranger's place in a queue and its second press removes her;
+remove takes a real customer out of it, irreversibly. `handover` is there rather than in
 the service because its predicate depends on nothing about the target, which is
 precisely what `RoleGate` is; the claim's and the release's are target-dependent
 (self OR elevated) and genuinely cannot live in a gate.
@@ -82,18 +85,20 @@ paths (`dashboard/router.py:17-26` argues this at length).
 points the dependency arrow backwards to save three lines;
 `auth/staff_router.py:22-27` records the decision.
 
-**No rate limiter**: no /manage router carries one and F36 does not introduce the
-first. The TEN mutating routes ARE fenced by CsrfOriginMiddleware (`csrf.py:48`
-gates on `request.method in MUTATING_METHODS`, a method test rather than a path
-list, so the eight F36 adds are fenced by construction); the THREE GETs are not,
-and their protection is the session cookie and the role gate, alone.
+**No rate limiter**: no /manage router carries one and neither F36 nor F58
+introduces the first. The FIFTEEN mutating routes ARE fenced by
+CsrfOriginMiddleware (`csrf.py:48` gates on `request.method in MUTATING_METHODS`,
+a method test rather than a path list, so the eight F36 adds and the five F58
+adds are fenced by construction); the THREE GETs are not, and their protection is
+the session cookie and the role gate, alone.
 
 **Every path's second segment is `floor`, so `vite.config.ts` needs no edit** —
 `test_spa_serving.py` asserts SET EQUALITY between the live route table's second
 segments and the manage dev proxy's alternation, and a mismatch breaks only a
 developer's machine while production, CI and the whole suite stay green. Mounting
-the registry at `/manage/rooms` would have cost that edit; `/manage/floor/rooms`
-costs nothing and reads better anyway.
+the registry at `/manage/rooms` would have cost that edit, and so would F58's
+`/manage/queue/{id}/call`; `/manage/floor/…` costs nothing and reads better
+anyway.
 
 **Real HTTP verbs and a path parameter for the target.** The `.claude/rules` RPC
 / `@QueryValue` guidance is Kotlin boilerplate for another codebase; the shipped
@@ -109,15 +114,20 @@ from app.auth.dependencies import get_current_staff, require_role
 from app.auth.service import StaffContext
 from app.floor.schemas import (
     AddDressRequest,
+    AssignRequest,
     ClaimRoomRequest,
     CreateRoomRequest,
+    DispatchResult,
     FloorClientList,
     FloorDressList,
     FloorResponse,
     HandoverRequest,
     Room,
+    SkipRequest,
     StaffCard,
+    TakeNextRequest,
     UpdateRoomRequest,
+    Waitlist,
 )
 from app.floor.service import FloorService, RoomRead
 from app.models.constants import StaffRole
@@ -338,6 +348,110 @@ async def remove_dress(
 
 
 # --- F36: the two one-shot pickers (D16) --------------------------------------
+
+
+# --- F58: the five dispatch verbs (D11) ---------------------------------------
+#
+# ⚠ **EVERY PATH'S SECOND SEGMENT IS `floor`**, so `apps/manage/vite.config.ts`
+# needs no edit. `test_spa_serving.py` asserts SET EQUALITY between the live
+# route table's second segments and the manage dev proxy's alternation, and a
+# mismatch breaks ONLY a developer's machine while production, CI and the whole
+# suite stay green, serving the SPA shell where the API should be.
+# `/manage/queue/{id}/call` reads better and costs exactly that edit.
+
+
+@router.post("/floor/rooms/{room_id}/take-next")
+async def take_next(
+    request: Request,
+    room_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+    body: TakeNextRequest,
+) -> DispatchResult:
+    """⚠ `body.staff_user_id` is the TARGET, never the actor — `claim_room`'s
+    rule on the verb that puts a named customer in a room. The service's
+    `_authorize` is its first statement, before any read, because a 403 raised
+    after one is an existence oracle."""
+    return DispatchResult.from_read(
+        await service.take_next(
+            get_current_tenant(request).id,
+            room_id,
+            staff_user_id=body.staff_user_id,
+            actor=staff,
+        )
+    )
+
+
+@router.post("/floor/rooms/{room_id}/assign")
+async def assign_from_queue(
+    request: Request,
+    room_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+    body: AssignRequest,
+) -> DispatchResult:
+    return DispatchResult.from_read(
+        await service.assign(
+            get_current_tenant(request).id,
+            room_id,
+            queue_ticket_id=body.queue_ticket_id,
+            staff_user_id=body.staff_user_id,
+            actor=staff,
+        )
+    )
+
+
+@router.post("/floor/queue/{ticket_id}/call")
+async def call_queue_ticket(
+    request: Request, ticket_id: uuid.UUID, service: Service, staff: Staff
+) -> Waitlist:
+    """ALL FIVE ROLES, and no service-side check either: a summons is not
+    destructive and has no target STAFFER, so there is nothing for a
+    self-or-elevated rule to compare. Reception, a sales assistant and a
+    seamstress all legitimately call the next woman forward."""
+    return Waitlist.from_read(
+        await service.call(get_current_tenant(request).id, ticket_id, actor=staff)
+    )
+
+
+@router.post("/floor/queue/{ticket_id}/skip", dependencies=[ELEVATED])
+async def skip_queue_ticket(
+    request: Request, ticket_id: uuid.UUID, service: Service, staff: Staff, body: SkipRequest
+) -> Waitlist:
+    """⚠ `ELEVATED`, and the ABSENCE of this route from `FLOOR_OPEN` is the
+    assertion that the tightening is real.
+
+    There is no middle gate available and that is structural rather than a
+    preference: `test_the_floor_roles_reach_exactly_the_floor_routes` classifies
+    on the INTERSECTION and then asserts that a floor route admits ALL THREE
+    floor roles or none, so `require_role(OWNER, SHIFT_MANAGER, RECEPTION)` would
+    red a test its own docstring declares untouchable. Every route in this
+    product is all-five or exactly-two. The product cost is real and recorded: a
+    reception staffer cannot skip a no-show — she calls a shift manager.
+
+    `body.seen_skip_count` is the value her tile RENDERED, and it is what stops
+    two ordinary single taps removing a customer with the confirm bypassed.
+    """
+    return Waitlist.from_read(
+        await service.skip(
+            get_current_tenant(request).id,
+            ticket_id,
+            seen_skip_count=body.seen_skip_count,
+            actor=staff,
+        )
+    )
+
+
+@router.post("/floor/queue/{ticket_id}/remove", dependencies=[ELEVATED])
+async def remove_queue_ticket(
+    request: Request, ticket_id: uuid.UUID, service: Service, staff: Staff
+) -> Waitlist:
+    """`ELEVATED` for skip's reason: this takes a real customer out of the queue,
+    irreversibly and with no restore verb. No body — the target is the ticket and
+    there is nothing to say about it."""
+    return Waitlist.from_read(
+        await service.remove(get_current_tenant(request).id, ticket_id, actor=staff)
+    )
 
 
 @router.get("/floor/dresses")

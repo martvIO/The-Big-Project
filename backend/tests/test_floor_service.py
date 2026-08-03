@@ -2198,7 +2198,7 @@ async def test_an_elevated_role_may_push_assign_for_anybody(
 async def test_a_floor_role_push_assigning_for_a_colleague_is_refused_without_reading_anything(
     monkeypatch: pytest.MonkeyPatch, role: StaffRole
 ) -> None:
-    """The empty `order` is the assertion. `_authorize` now has SEVEN call sites
+    """The empty `order` is the assertion. `_authorize` now has FIVE call sites
     and every one of them is its method's first statement — a 403 raised after a
     read is an existence oracle for room ids AND, on this verb, for ticket ids.
 

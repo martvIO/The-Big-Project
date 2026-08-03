@@ -88,6 +88,18 @@ BIND_PATH = f"{ASSIGNMENT_PATH}/dresses"
 UNBIND_PATH = f"{BIND_PATH}/{BINDING_ID}"
 DRESS_LIST_PATH = "/manage/floor/dresses"
 CLIENT_LIST_PATH = "/manage/floor/clients"
+# F58. Every path's SECOND SEGMENT is `floor`, which is what keeps
+# `apps/manage/vite.config.ts` unedited — `test_spa_serving.py` asserts SET
+# EQUALITY between the live route table's second segments and the manage dev
+# proxy's alternation, and a mismatch breaks ONLY a developer's machine while
+# production, CI and the whole suite stay green, serving the SPA shell where the
+# API should be. `/manage/queue/{id}/call` reads better and costs exactly that.
+TAKE_NEXT_PATH = f"{ROOM_PATH}/take-next"
+ASSIGN_PATH = f"{ROOM_PATH}/assign"
+QUEUE_PATH = f"/manage/floor/queue/{TICKET_ID}"
+CALL_PATH = f"{QUEUE_PATH}/call"
+SKIP_PATH = f"{QUEUE_PATH}/skip"
+REMOVE_PATH = f"{QUEUE_PATH}/remove"
 
 BREAK_BEGAN = datetime.datetime(2026, 8, 2, 9, 5, tzinfo=datetime.UTC)
 # F36's one new envelope field: the server's instant at serialisation, which is
@@ -118,6 +130,14 @@ FLOOR_OPEN_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("DELETE", UNBIND_PATH, None),
     ("GET", DRESS_LIST_PATH, None),
     ("GET", CLIENT_LIST_PATH, None),
+    # F58's three. Take-next and assign carry a TARGET-dependent rule (herself,
+    # or elevated on anyone) which no RoleGate can express, so they are open here
+    # and refused in the service — the claim's rule verbatim. `call` has no
+    # target staffer at all: a summons is not destructive, and reception, a sales
+    # assistant and a seamstress all legitimately call the next woman forward.
+    ("POST", TAKE_NEXT_PATH, {}),
+    ("POST", ASSIGN_PATH, {"queue_ticket_id": str(TICKET_ID)}),
+    ("POST", CALL_PATH, None),
 ]
 
 FLOOR_TIGHTENED_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
@@ -125,6 +145,14 @@ FLOOR_TIGHTENED_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("PATCH", ROOM_PATH, {"label": "חדר 4"}),
     ("DELETE", ROOM_PATH, None),
     ("POST", HANDOVER_PATH, {"staff_user_id": str(TARGET_ID)}),
+    # F58's two, and their ABSENCE from FLOOR_OPEN_ROUTES is the assertion. Skip
+    # re-orders a stranger's place in a queue and its second press removes her;
+    # remove takes a real customer out of it, irreversibly. There is no middle
+    # gate available — `test_the_floor_roles_reach_exactly_the_floor_routes`
+    # admits all five or exactly two — so the product cost is recorded rather
+    # than engineered around: a reception staffer calls a shift manager.
+    ("POST", SKIP_PATH, {"seen_skip_count": 0}),
+    ("POST", REMOVE_PATH, None),
 ]
 
 FLOOR_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
@@ -440,6 +468,84 @@ class FakeFloorService:
             actor_id=actor.id,
         )
 
+    # --- F58: the five dispatch methods, in D11's order ---------------------
+
+    async def take_next(
+        self,
+        tenant_id: uuid.UUID,
+        room_id: uuid.UUID,
+        *,
+        staff_user_id: uuid.UUID | None,
+        actor: StaffContext,
+    ) -> DispatchRead:
+        return self._dispatch(
+            "take_next",
+            tenant_id=tenant_id,
+            room_id=room_id,
+            staff_user_id=staff_user_id,
+            actor_id=actor.id,
+        )
+
+    async def assign(
+        self,
+        tenant_id: uuid.UUID,
+        room_id: uuid.UUID,
+        *,
+        queue_ticket_id: uuid.UUID,
+        staff_user_id: uuid.UUID | None,
+        actor: StaffContext,
+    ) -> DispatchRead:
+        return self._dispatch(
+            "assign",
+            tenant_id=tenant_id,
+            room_id=room_id,
+            queue_ticket_id=queue_ticket_id,
+            staff_user_id=staff_user_id,
+            actor_id=actor.id,
+        )
+
+    async def call(
+        self, tenant_id: uuid.UUID, ticket_id: uuid.UUID, *, actor: StaffContext
+    ) -> WaitlistRead:
+        return self._queue("call", tenant_id=tenant_id, ticket_id=ticket_id, actor_id=actor.id)
+
+    async def skip(
+        self,
+        tenant_id: uuid.UUID,
+        ticket_id: uuid.UUID,
+        *,
+        seen_skip_count: int,
+        actor: StaffContext,
+    ) -> WaitlistRead:
+        return self._queue(
+            "skip",
+            tenant_id=tenant_id,
+            ticket_id=ticket_id,
+            seen_skip_count=seen_skip_count,
+            actor_id=actor.id,
+        )
+
+    async def remove(
+        self, tenant_id: uuid.UUID, ticket_id: uuid.UUID, *, actor: StaffContext
+    ) -> WaitlistRead:
+        return self._queue("remove", tenant_id=tenant_id, ticket_id=ticket_id, actor_id=actor.id)
+
+    def _dispatch(self, method: str, **kwargs: Any) -> DispatchRead:
+        self._record(method, **kwargs)
+        if self.raises is not None:
+            raise self.raises
+        if self.missing:
+            raise DomainNotFoundError("fitting_room")
+        return self.dispatch
+
+    def _queue(self, method: str, **kwargs: Any) -> WaitlistRead:
+        self._record(method, **kwargs)
+        if self.raises is not None:
+            raise self.raises
+        if self.missing:
+            raise DomainNotFoundError("queue_ticket")
+        return self.waitlist
+
     async def dresses(self, tenant_id: uuid.UUID) -> DressPickerRead:
         self._record("dresses", tenant_id=tenant_id)
         if self.raises is not None:
@@ -541,7 +647,7 @@ def test_the_route_table_names_every_live_floor_route() -> None:
         for method in (getattr(route, "methods", None) or ())
         if getattr(route, "path", "").startswith("/manage/floor")
     }
-    assert len(live) == 13, sorted(live)
+    assert len(live) == 18, sorted(live)
     assert len({(method, path) for method, path, _ in FLOOR_ROUTES}) == len(FLOOR_ROUTES)
     assert len(FLOOR_ROUTES) == len(live), (
         f"the route table has {len(FLOOR_ROUTES)} rows for {len(live)} live routes: {sorted(live)}"
@@ -552,7 +658,7 @@ def test_every_route_is_wired_and_reaches_the_service() -> None:
     """SEVEN routers now mount prefix="/manage": a path collision would silently
     shadow, and a 404 here is what catches it.
 
-    THIRTEEN rows after F36, and the count comes from D10's table rather than
+    EIGHTEEN rows after F58, and the count comes from D11's table rather than
     from prose — a table sized by counting sentences reds this walk on a 404 the
     first time it runs."""
     for method, path, body in FLOOR_ROUTES:
@@ -834,6 +940,7 @@ def test_every_mutation_answers_the_same_room_shape() -> None:
     answer would show up here as a key-set difference."""
     fake = FakeFloorService()
     fake.room_read = RoomRead(row=_room_row(occupied=True), bindings=[])
+    fake.dispatch = DispatchRead(room=fake.room_read, waitlist=fake.waitlist)
     keys = {"id", "label", "sort_order", "is_active", "assignment"}
     with _client(fake) as client:
         for method, path, body in FLOOR_ROUTES:
@@ -842,9 +949,20 @@ def test_every_mutation_answers_the_same_room_shape() -> None:
                 CLIENT_LIST_PATH,
                 START_PATH,
                 END_PATH,
+                # F58's three queue verbs answer a `Waitlist` and no tile: they
+                # act on a ROW, and the row is gone from the list they answer
+                # with. They have their own shape assertion below.
+                CALL_PATH,
+                SKIP_PATH,
+                REMOVE_PATH,
             }:
                 continue
             answered = client.request(method, path, json=body).json()
+            # The two dispatch verbs answer the tile AND the queue, so the tile
+            # is one level down — and it is the SAME shape, which is the point.
+            if path in {TAKE_NEXT_PATH, ASSIGN_PATH}:
+                assert set(answered) == {"room", "waitlist"}, f"{method} {path}"
+                answered = answered["room"]
             assert set(answered) == keys, f"{method} {path} answered {sorted(answered)}"
             assert answered["assignment"] is not None
 
@@ -1147,14 +1265,14 @@ def test_no_other_error_body_in_main_carries_a_details_key() -> None:
 
 
 def test_every_mutating_verb_with_a_mismatched_origin_is_refused() -> None:
-    """All TEN mutating routes ARE fenced — CsrfOriginMiddleware gates on
+    """All FIFTEEN mutating routes ARE fenced — CsrfOriginMiddleware gates on
     `request.method in MUTATING_METHODS` (csrf.py:15,48), which is a METHOD test
     and not a path list, so the eight F36 adds are fenced by construction. That
     is asserted rather than assumed because "by construction" is the sentence
     that stops being true the day somebody adds a GET that writes."""
     fake = FakeFloorService()
     mutating = [(m, p, b) for m, p, b in FLOOR_ROUTES if m != "GET"]
-    assert len(mutating) == 10
+    assert len(mutating) == 15
     with _client(fake) as client:
         for method, path, body in mutating:
             resp = client.request(
