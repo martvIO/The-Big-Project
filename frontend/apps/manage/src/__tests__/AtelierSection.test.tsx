@@ -25,6 +25,11 @@ vi.mock("../api", async () => {
 const { api, ApiError } = await import("../api");
 const getAtelierBoard = vi.mocked(api.getAtelierBoard);
 const advanceStage = vi.mocked(api.advanceStage);
+const undoStage = vi.mocked(api.undoStage);
+const assignTicket = vi.mocked(api.assignTicket);
+const createTicket = vi.mocked(api.createTicket);
+const updateTicket = vi.mocked(api.updateTicket);
+const deleteTicket = vi.mocked(api.deleteTicket);
 
 // 11:07Z is 14:07 in Jerusalem (IDT, UTC+3) and 07:07 in New York — and the test
 // script pins TZ=America/New_York, so an unzoned read prints 07:07 and every
@@ -33,6 +38,7 @@ const NOW = "2026-08-04T11:07:00Z";
 
 const OWNER_ID = "11111111-1111-1111-1111-111111111111";
 const NOA_ID = "22222222-2222-2222-2222-222222222222";
+const OTHER_SEAMSTRESS = "33333333-3333-3333-3333-333333333333";
 const T1 = "aaaaaaaa-0000-0000-0000-000000000001";
 const T2 = "aaaaaaaa-0000-0000-0000-000000000002";
 
@@ -83,11 +89,24 @@ function mount(props: { selfId?: string; role?: string } = {}) {
   return render(<AtelierSection selfId={props.selfId ?? OWNER_ID} role={props.role ?? "owner"} />);
 }
 
+// Both Modals mount at SECTION level and are always in the tree, so a dialog is
+// addressed by its TITLE and its openness is read off the element.
+function openDialog(title: string): HTMLElement {
+  const dialog = screen.getByRole("dialog", { hidden: true, name: title });
+  expect((dialog as HTMLDialogElement).open).toBe(true);
+  return dialog;
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(NOW));
   getAtelierBoard.mockReset();
   advanceStage.mockReset();
+  undoStage.mockReset();
+  assignTicket.mockReset();
+  createTicket.mockReset();
+  updateTicket.mockReset();
+  deleteTicket.mockReset();
 });
 
 afterEach(() => {
@@ -730,5 +749,758 @@ describe("the board states", () => {
     });
     await advanceTimers(POLL_INTERVAL_MS);
     expect(getAtelierBoard.mock.calls.length).toBeGreaterThan(before);
+  });
+});
+
+// --- §3.2: nothing on this board mutates on `change` -------------------------
+
+describe("the select -> draft -> commit split (WCAG 3.2.2 On Input, Level A)", () => {
+  it("`{ArrowDown}{ArrowDown}` on the skip Select calls api.advanceStage ZERO times", async () => {
+    // ⚠ On Windows Chrome and Firefox a CLOSED native <select> changes its value
+    // and fires `change` on EVERY arrow keypress — which is why two `change`
+    // events are the faithful model here and user-event's keyboard is not (it
+    // does not simulate it at all). A keyboard user on an `in_progress` card
+    // arrowing to «נמסר» would otherwise fire three advances — three timestamps,
+    // three audit rows, three column moves and three focus moves — before
+    // committing to anything. Under the five-timestamp state machine those
+    // stamps ARE the trail, and each needs its own undo call to reverse.
+    getAtelierBoard.mockResolvedValue(board([ticket({ stage: "in_progress" })]));
+    advanceStage.mockResolvedValue(ticket({ stage: "ready" }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const select = screen.getByRole("combobox", { name: "העברה לשלב — מיכל לוי" });
+    fireEvent.change(select, { target: { value: "ready" } });
+    fireEvent.change(select, { target: { value: "delivered" } });
+    fireEvent.change(select, { target: { value: "ready" } });
+
+    expect(advanceStage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "העברה — מיכל לוי" }));
+    await waitFor(() => expect(advanceStage).toHaveBeenCalledTimes(1));
+    expect(advanceStage).toHaveBeenCalledWith(T1, "ready");
+  });
+
+  it("`{ArrowDown}{ArrowDown}` on the assign Select calls api.assignTicket ZERO times", async () => {
+    // The named mutation must red BOTH pairs. If only one reds, the other select
+    // was missed.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    assignTicket.mockResolvedValue(ticket({ assigned_staff_user_id: NOA_ID }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const select = screen.getByRole("combobox", { name: "תופרת — מיכל לוי" });
+    fireEvent.change(select, { target: { value: NOA_ID } });
+    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.change(select, { target: { value: NOA_ID } });
+
+    expect(assignTicket).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "שיוך — מיכל לוי" }));
+    await waitFor(() => expect(assignTicket).toHaveBeenCalledTimes(1));
+    expect(assignTicket).toHaveBeenCalledWith(T1, NOA_ID);
+  });
+
+  it("sends null to RELEASE through the elevated Select, as a value and not an omission", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket({ assigned_staff_user_id: NOA_ID })]));
+    assignTicket.mockResolvedValue(ticket({ assigned_staff_user_id: null }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "תופרת — מיכל לוי" }), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "שיוך — מיכל לוי" }));
+
+    await waitFor(() => expect(assignTicket).toHaveBeenCalledWith(T1, null));
+  });
+
+  it("disables each commit Button until its sibling draft is set", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket({ stage: "in_progress" })]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const commit = screen.getByRole("button", { name: "העברה — מיכל לוי" });
+    expect(commit).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: "העברה לשלב — מיכל לוי" }), {
+      target: { value: "ready" },
+    });
+    expect(commit).not.toBeDisabled();
+  });
+});
+
+// --- §2.3: the control matrix, asserted AS COSMETICS -------------------------
+
+describe("which controls exist — the two authorization axes, rendered", () => {
+  it("drops «לשלב הבא» on a delivered card", async () => {
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ stage: "delivered", delivered_at: "2026-08-03T09:00:00Z" })]),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.queryByRole("button", { name: /לשלב הבא/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "ביטול שלב — מיכל לוי" })).toBeInTheDocument();
+  });
+
+  it("renders the skip pair only when TWO OR MORE later stages exist", async () => {
+    // With exactly one, the skip control offers what «לשלב הבא» already does,
+    // and a board that offers one act twice has to be read twice.
+    getAtelierBoard.mockResolvedValue(board([ticket({ stage: "ready" })]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.queryByRole("combobox", { name: /העברה לשלב/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" })).toBeInTheDocument();
+  });
+
+  it("drops «ביטול שלב» at intake, because intake cannot be undone", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.queryByRole("button", { name: /ביטול שלב/ })).toBeNull();
+  });
+
+  it("gives an elevated user the assign Select and «שיוך», and a seamstress «לקחת»", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    const elevated = mount({ role: "shift_manager" });
+    await screen.findByText("מיכל לוי");
+    expect(screen.getByRole("combobox", { name: "תופרת — מיכל לוי" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /לקחת/ })).toBeNull();
+    elevated.unmount();
+
+    mount({ role: "seamstress", selfId: NOA_ID });
+    await screen.findByText("מיכל לוי");
+    expect(screen.queryByRole("combobox", { name: /תופרת/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "לקחת — מיכל לוי" })).toBeInTheDocument();
+  });
+
+  it("gives a seamstress «לשחרר» on her own ticket and «עריכה» with it", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket({ assigned_staff_user_id: NOA_ID })]));
+    mount({ role: "seamstress", selfId: NOA_ID });
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.getByRole("button", { name: "לשחרר — מיכל לוי" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "עריכה — מיכל לוי" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /מחיקה/ })).toBeNull();
+  });
+
+  it("refuses «עריכה» to a seamstress on an UNASSIGNED ticket she may still advance", async () => {
+    // D3's per-verb asymmetry, rendered: she advances an unassigned ticket and
+    // may not update one that is not hers.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount({ role: "seamstress", selfId: NOA_ID });
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /עריכה/ })).toBeNull();
+  });
+
+  it("shows a seamstress the FACTS and NO CONTROLS AT ALL on a colleague's ticket", async () => {
+    // ⚠ No disabled buttons, no lock glyph, no «אין לך הרשאה» line. A disabled
+    // control with no explanation is worse than an absent one; an explanation
+    // would teach the permission model on a screen she opens fifty times a
+    // shift; and either would be the client asserting a rule the server owns.
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ assigned_staff_user_id: NOA_ID })], {
+        seamstresses: [
+          { id: NOA_ID, display_name: "נועה לוי", assignable: true },
+          { id: OTHER_SEAMSTRESS, display_name: "רותם", assignable: true },
+        ],
+      }),
+    );
+    mount({ role: "seamstress", selfId: OTHER_SEAMSTRESS });
+    await screen.findByText("מיכל לוי");
+
+    const card = screen.getByText("מיכל לוי").closest("li") as HTMLElement;
+    expect(within(card).queryAllByRole("button")).toHaveLength(0);
+    expect(within(card).queryAllByRole("combobox")).toHaveLength(0);
+    // …and the facts are all still there.
+    expect(within(card).getByText(/יעד/)).toBeInTheDocument();
+    expect(within(card).getByText("להרים 4 ס״מ, לצרף חגורה")).toBeInTheDocument();
+  });
+
+  it("gives «מחיקה» to an elevated user only, as the screen's one danger control", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.getByRole("button", { name: "מחיקה — מיכל לוי" })).toBeInTheDocument();
+  });
+});
+
+// --- C8: target size, asserted as a CLASS ------------------------------------
+
+describe("target size", () => {
+  it("renders one control of each kind at the 44px floor", async () => {
+    // Select.tsx declares NO min-height (`px-3 py-2 text-base` lands near 42),
+    // so the class on both <select>s is not optional.
+    getAtelierBoard.mockResolvedValue(board([ticket({ stage: "in_progress" })]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    for (const name of [
+      "לשלב הבא — מיכל לוי",
+      "העברה — מיכל לוי",
+      "שיוך — מיכל לוי",
+      "ביטול שלב — מיכל לוי",
+      "עריכה — מיכל לוי",
+      "מחיקה — מיכל לוי",
+    ]) {
+      expect(screen.getByRole("button", { name })).toHaveClass("min-h-11");
+    }
+    for (const name of ["העברה לשלב — מיכל לוי", "תופרת — מיכל לוי"]) {
+      expect(screen.getByRole("combobox", { name })).toHaveClass("min-h-11");
+    }
+  });
+
+  it("carries no `size=\"sm\"` anywhere in the tree", async () => {
+    // A card carrying up to seven controls in 295px is exactly the layout in
+    // which someone reaches for `sm`. The answer is that the card is tall, not
+    // that the targets are small — this console runs on staff phones.
+    getAtelierBoard.mockResolvedValue(board([ticket({ stage: "in_progress" })]));
+    const { container } = mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(container.querySelectorAll(".min-h-9")).toHaveLength(0);
+  });
+});
+
+// --- §2.1 / §2.2 / §2.4: the card's facts ------------------------------------
+
+describe("the card's facts", () => {
+  it("never truncates, clips, ellipsises or line-clamps anything", async () => {
+    // ⚠ `notes` is the one that LOOKS like it wants a clamp and is the one where
+    // a clamp does the most damage: the note IS the work order, and «עריכה» is
+    // refused to a seamstress on a ticket that is not hers — so a clamp would
+    // hide the instruction from precisely the person doing the work.
+    const long = "א".repeat(400);
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ notes: long, dress_name: "ולנטינה — גרסת ערב עם שובל ארוך במיוחד" })]),
+    );
+    const { container } = mount();
+    await screen.findByText(long);
+
+    expect(screen.getByText(long)).toBeInTheDocument();
+    expect(screen.getByText(/ולנטינה — גרסת ערב/)).toBeInTheDocument();
+    for (const banned of [".line-clamp-1", ".line-clamp-2", ".line-clamp-3", ".truncate"]) {
+      expect(container.querySelectorAll(banned)).toHaveLength(0);
+    }
+    expect(screen.getByText(long).closest("p")).toHaveClass("break-words");
+  });
+
+  it("carries the WORD «באיחור» plus an escalated due line, and tints the card NOTHING", async () => {
+    // Colour is never the signal. On a 60-card column a wall of red stops
+    // meaning anything.
+    getAtelierBoard.mockResolvedValue(board([ticket({ overdue: true })]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.getByText("באיחור")).toBeInTheDocument();
+    expect(screen.getByText(/יעד/)).toHaveClass("font-semibold", "text-danger");
+    // The card itself gets NOTHING — the only danger boundary in the subtree is
+    // the Badge's own border, which is reinforcement of a word that is already
+    // there.
+    const surface = screen.getByText("מיכל לוי").closest("li")?.firstElementChild as HTMLElement;
+    expect(surface.className).not.toMatch(/danger/);
+    expect(Array.from(surface.querySelectorAll(".border-danger"))).toEqual([
+      screen.getByText("באיחור"),
+    ]);
+  });
+
+  it("renders EXACTLY ONE Badge per card and never the stage", async () => {
+    // The stage is the column heading; repeating it is 295px spent restating the
+    // region plus a second place to keep true.
+    getAtelierBoard.mockResolvedValue(board([ticket({ overdue: true, stage: "qc" })]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const card = screen.getByText("מיכל לוי").closest("li") as HTMLElement;
+    expect(within(card).getAllByText(/באיחור/)).toHaveLength(1);
+    expect(card.textContent).not.toContain("בקרה");
+  });
+
+  it("carries NOTHING on an overdue DELIVERED ticket — it is history", async () => {
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ stage: "delivered", delivered_at: "2026-08-03T09:00:00Z", overdue: false })]),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.queryByText("באיחור")).toBeNull();
+  });
+
+  it("says «לא משויך» as muted words on an unassigned ticket", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    // ⚠ Scoped to the card: «לא משויך» is ALSO the release option in the
+    // elevated assign Select, which is the same word doing the same job in two
+    // places by design.
+    const card = screen.getByText("מיכל לוי").closest("li") as HTMLElement;
+    expect(within(card).getByText(/· לא משויך/)).toBeInTheDocument();
+  });
+
+  it("reads «תופרת שאינה פעילה» FROM THE WIRE'S FLAG, not from absence", async () => {
+    // F51's staff CRUD can re-role or retire a seamstress and knows nothing
+    // about this table, so the flag is what makes this a fact rather than an
+    // inference — and it is the signal a manager needs to reassign.
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ assigned_staff_user_id: NOA_ID })], {
+        seamstresses: [{ id: NOA_ID, display_name: "נועה לוי", assignable: false }],
+      }),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.getByText(/תופרת שאינה פעילה/)).toBeInTheDocument();
+    const card = screen.getByText("מיכל לוי").closest("li") as HTMLElement;
+    expect(within(card).queryByText("נועה לוי")).toBeNull();
+  });
+
+  it("falls back to «{{minutes}} דק׳» when the stored minutes match no live band", async () => {
+    // The visible consequence of "minutes persist, never the label": a boutique
+    // that re-tuned «חצי יום» from 240 to 300 must not have older tickets
+    // silently re-valued.
+    getAtelierBoard.mockResolvedValue(board([ticket({ effort_minutes: 300 })]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(screen.getByText(/300 דק׳/)).toBeInTheDocument();
+  });
+
+  it("omits the dress line entirely when both halves are null", async () => {
+    // An alteration on the bride's own gown has no catalog row at all, so
+    // absence is normal and is not rendered as an empty slot.
+    getAtelierBoard.mockResolvedValue(board([ticket({ dress_name: null, dress_size: null })]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const card = screen.getByText("מיכל לוי").closest("li") as HTMLElement;
+    expect(within(card).queryByText("ולנטינה")).toBeNull();
+    expect(card.textContent).not.toContain(" · 38");
+  });
+});
+
+// --- C5: the error mapping ---------------------------------------------------
+
+describe("a refused write", () => {
+  it("names the two conflict codes and the 404 in their own sentences", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    advanceStage.mockRejectedValue(
+      new ApiError(409, "TICKET_STAGE_CONFLICT", "ticket has moved on"),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("הכרטיס כבר התקדם."),
+    );
+    // A board-level error names no ticket, so the alert is INSIDE the card.
+    expect(screen.getByRole("alert").closest("[data-ticket-id]")).not.toBeNull();
+  });
+
+  it("names a lost claim race in its own sentence, and does NOT name the winner", async () => {
+    // The console does not have her name at the moment of the refusal, and the
+    // next tick renders it on the card.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    assignTicket.mockRejectedValue(
+      new ApiError(409, "TICKET_ALREADY_ASSIGNED", "claimed"),
+    );
+    mount({ role: "seamstress", selfId: NOA_ID });
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "לקחת — מיכל לוי" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("הכרטיס כבר משויך."),
+    );
+    expect(screen.getByRole("alert").textContent).not.toContain("נועה");
+  });
+
+  it("treats a 404 as an in-card alert and NOT as terminal", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    advanceStage.mockRejectedValue(new ApiError(404, "NOT_FOUND", "gone"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("הכרטיס כבר לא קיים."),
+    );
+    // A ticket vanishing is a fact about the ticket, not about her access.
+    expect(screen.queryByText("אין הרשאה לצפות בלוח התפירה כרגע.")).toBeNull();
+    expect(screen.getByText("מיכל לוי")).toBeInTheDocument();
+  });
+
+  it("renders `atelier.error.rejected` for an UNMAPPED code and NEVER the response's message", async () => {
+    // ⚠ THE STRUCTURAL GUARANTEE: main.py's *_BODY literals are ENGLISH, and
+    // this console is Hebrew-only. A `default:` branch is what makes «no English
+    // body can reach this console» true of every code F41 or a later feature
+    // adds; a per-code map would leave the next new code uncovered.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    advanceStage.mockRejectedValue(
+      new ApiError(400, "VALIDATION_ERROR", "stage is not a valid TicketStage"),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("הפעולה נדחתה."),
+    );
+    expect(screen.getByRole("alert").textContent).not.toContain("stage is not a valid");
+  });
+
+  it("makes a write's 403 TERMINAL, on the same {401,403} rule the ticks use", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    advanceStage.mockRejectedValue(new ApiError(403, "NOT_AUTHORIZED", "no"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("אין הרשאה לצפות בלוח התפירה כרגע."),
+    );
+  });
+});
+
+// --- §7: the intake / edit dialog -------------------------------------------
+
+describe("the intake and edit dialog", () => {
+  it("opens on «כרטיס חדש» with NO dress Select, an EMPTY due date and «שעה» selected", async () => {
+    // ⚠ THE CATALOG PICKER IS CUT: the board payload carries no dresses, the
+    // only source is a route gated owner + shift_manager while this dialog
+    // admits a seamstress, and the card renders no image — so `dress_id` has no
+    // reader on this surface. The free-text field ships alone.
+    //
+    // The due date defaults to EMPTY and never to today: it is the one field a
+    // hurried user must not be able to accept by not looking at it.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "כרטיס חדש" }));
+    const dialog = openDialog("כרטיס חדש");
+
+    expect(within(dialog).queryByLabelText("שמלה")).toBeNull();
+    expect(within(dialog).getByLabelText("שם השמלה")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("תאריך יעד")).toHaveValue("");
+    expect(within(dialog).getByLabelText("הערכת זמן")).toHaveValue("one_hour");
+    expect(within(dialog).getByLabelText("שם הלקוחה")).toHaveValue("");
+  });
+
+  it("labels every band option with the WORD AND its tenant-resolved minutes", async () => {
+    // F41 ships no editor for the mapping and F42 owns it, so showing the number
+    // at the moment the estimate is made is what lets an owner discover on day
+    // one that the platform thinks her half-day is four hours. An <option> takes
+    // no markup, so the numeric run is bracketed by Hebrew on both sides.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "כרטיס חדש" }));
+    const dialog = openDialog("כרטיס חדש");
+
+    const options = within(dialog)
+      .getByLabelText("הערכת זמן")
+      .querySelectorAll("option");
+    expect(Array.from(options).map((option) => option.textContent)).toEqual([
+      "חצי שעה · 30 דק׳",
+      "שעה · 60 דק׳",
+      "שעתיים · 120 דק׳",
+      "חצי יום · 240 דק׳",
+      "יום מלא · 480 דק׳",
+    ]);
+  });
+
+  it("refuses an empty name, an unparseable phone and a missing due date before the request", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "כרטיס חדש" }));
+    const dialog = openDialog("כרטיס חדש");
+    fireEvent.change(within(dialog).getByLabelText("טלפון"), { target: { value: "12345" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "פתיחת כרטיס" }));
+
+    expect(createTicket).not.toHaveBeenCalled();
+    expect(within(dialog).getByText("צריך שם לקוחה.")).toBeInTheDocument();
+    expect(within(dialog).getByText("מספר הטלפון אינו תקין.")).toBeInTheDocument();
+    expect(within(dialog).getByText("צריך תאריך יעד.")).toBeInTheDocument();
+  });
+
+  it("WARNS on a past due date and never blocks it", async () => {
+    // The server agrees: no lower bound, 200 on create and on update. A dress
+    // that was due yesterday is exactly the ticket a boutique most needs to
+    // open, and a form that refuses it sends the seamstress to WhatsApp.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    createTicket.mockResolvedValue(ticket({ id: T2, customer_name: "רותם כהן" }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "כרטיס חדש" }));
+    const dialog = openDialog("כרטיס חדש");
+    fireEvent.change(within(dialog).getByLabelText("שם הלקוחה"), {
+      target: { value: "רותם כהן" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("טלפון"), {
+      target: { value: "052-1234567" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("תאריך יעד"), {
+      target: { value: "2026-07-01" },
+    });
+
+    expect(within(dialog).getByText("התאריך שנבחר כבר עבר. אפשר להמשיך.")).toBeInTheDocument();
+    // No `min` attribute either — the warning is the whole mechanism.
+    expect(within(dialog).getByLabelText("תאריך יעד")).not.toHaveAttribute("min");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "פתיחת כרטיס" }));
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1));
+    expect(createTicket).toHaveBeenCalledWith({
+      customer_name: "רותם כהן",
+      customer_phone: "052-1234567",
+      due_date: "2026-07-01",
+      effort_band: "one_hour",
+      assigned_staff_user_id: null,
+      dress_id: null,
+      dress_name: null,
+      dress_size: null,
+      notes: null,
+    });
+  });
+
+  it("closes on success and announces the BRIDE, because focus went back to the trigger", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    createTicket.mockResolvedValue(ticket({ id: T2, customer_name: "רותם כהן" }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "כרטיס חדש" }));
+    const dialog = openDialog("כרטיס חדש");
+    fireEvent.change(within(dialog).getByLabelText("שם הלקוחה"), {
+      target: { value: "רותם כהן" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("טלפון"), {
+      target: { value: "0521234567" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("תאריך יעד"), {
+      target: { value: "2026-09-01" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "פתיחת כרטיס" }));
+
+    await waitFor(() => expect((dialog as HTMLDialogElement).open).toBe(false));
+    expect(screen.getByTestId("atelier-cue")).toHaveTextContent("רותם כהן — נפתח כרטיס.");
+    // …and the card is on the board, patched from the response rather than
+    // waited for.
+    expect(
+      within(screen.getByRole("list", { name: "התקבל" })).getByText("רותם כהן"),
+    ).toBeInTheDocument();
+  });
+
+  it("counts the notes field so «the board never truncates a note» is honest", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "כרטיס חדש" }));
+    const dialog = openDialog("כרטיס חדש");
+    const notes = within(dialog).getByLabelText("הערות");
+
+    expect(notes).toHaveAttribute("maxlength", "500");
+    fireEvent.change(notes, { target: { value: "להרים" } });
+    expect(within(dialog).getByText(/5 \/ 500/)).toBeInTheDocument();
+  });
+
+  it("opens «עריכה» prefilled, with the customer as a STATIC LINE and not a field", async () => {
+    // A ticket opened for the wrong bride is a delete, not an edit.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "עריכה — מיכל לוי" }));
+    const dialog = openDialog("עריכת כרטיס");
+
+    expect(within(dialog).queryByLabelText("שם הלקוחה")).toBeNull();
+    expect(within(dialog).queryByLabelText("טלפון")).toBeNull();
+    expect(within(dialog).getByText("מיכל לוי")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("תאריך יעד")).toHaveValue("2026-08-12");
+    expect(within(dialog).getByLabelText("הערכת זמן")).toHaveValue("two_hours");
+    expect(within(dialog).getByLabelText("שם השמלה")).toHaveValue("ולנטינה");
+  });
+
+  it("round-trips a due date and a band through a FULL REPLACE and renders the server's row", async () => {
+    // Every editable field, never a partial patch: with optional fields an
+    // omitted key and an explicitly cleared one are the same request, so a
+    // console that forgot `notes` would silently delete a bride's measurements.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    updateTicket.mockResolvedValue(
+      ticket({ due_date: "2026-09-30", effort_minutes: 240 }),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "עריכה — מיכל לוי" }));
+    const dialog = openDialog("עריכת כרטיס");
+    fireEvent.change(within(dialog).getByLabelText("תאריך יעד"), {
+      target: { value: "2026-09-30" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("הערכת זמן"), {
+      target: { value: "half_day" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "שמירה" }));
+
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledTimes(1));
+    expect(updateTicket).toHaveBeenCalledWith(T1, {
+      due_date: "2026-09-30",
+      effort_band: "half_day",
+      dress_id: null,
+      dress_name: "ולנטינה",
+      dress_size: "38",
+      notes: "להרים 4 ס״מ, לצרף חגורה",
+    });
+    await waitFor(() => expect(screen.getByText(/30\.9\.2026/)).toBeInTheDocument());
+    expect(screen.getByText(/חצי יום/)).toBeInTheDocument();
+  });
+
+  it("puts a server refusal in ONE alert INSIDE the dialog, above the footer", async () => {
+    // ⚠ Never a Toast behind a modal, and never a message the dialog dismisses
+    // itself to show. This is where the horizon 400 lands, and it is what keeps
+    // main.py's ENGLISH body out of a Hebrew dialog.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    updateTicket.mockRejectedValue(
+      new ApiError(400, "VALIDATION_ERROR", "due_date is too far in the future"),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "עריכה — מיכל לוי" }));
+    const dialog = openDialog("עריכת כרטיס");
+    fireEvent.click(within(dialog).getByRole("button", { name: "שמירה" }));
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        "הפעולה נדחתה. כדאי לבדוק את הפרטים ולנסות שוב.",
+      ),
+    );
+    expect((dialog as HTMLDialogElement).open).toBe(true);
+    expect(dialog.textContent).not.toContain("due_date is too far");
+  });
+});
+
+// --- C6: both dialogs mount at SECTION level ---------------------------------
+
+describe("C6 — the dialogs are siblings of the column grid", () => {
+  it("survives three ticks that reorder and REMOVE cards, with the draft intact", async () => {
+    // Their open state and draft live in the section's state keyed by ticket id,
+    // so a repaint of the list they were opened from cannot unmount them.
+    getAtelierBoard.mockResolvedValue(board([ticket(), ticket({ id: T2, customer_name: "רותם" })]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "עריכה — מיכל לוי" }));
+    const dialog = openDialog("עריכת כרטיס");
+    fireEvent.change(within(dialog).getByLabelText("הערות"), {
+      target: { value: "לקצר עוד 2 ס״מ" },
+    });
+
+    // A colleague deletes it, then the board comes back reordered.
+    getAtelierBoard.mockResolvedValue(board([ticket({ id: T2, customer_name: "רותם" })]));
+    await advanceTimers(POLL_INTERVAL_MS);
+    await advanceTimers(POLL_INTERVAL_MS);
+    await advanceTimers(POLL_INTERVAL_MS);
+
+    expect((dialog as HTMLDialogElement).open).toBe(true);
+    expect(within(dialog).getByLabelText("הערות")).toHaveValue("לקצר עוד 2 ס״מ");
+  });
+});
+
+// --- §7.4: «מחיקה» asks before it writes -------------------------------------
+
+describe("the delete confirm", () => {
+  it("calls NOTHING until the confirm is activated, and names the bride", async () => {
+    // There is no un-delete, which is why this is the one act on the board that
+    // asks before it writes.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    deleteTicket.mockResolvedValue({ ok: true });
+    const { container } = mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "מחיקה — מיכל לוי" }));
+    const dialog = openDialog("מחיקת כרטיס");
+
+    expect(deleteTicket).not.toHaveBeenCalled();
+    expect(dialog).toHaveTextContent("הכרטיס של מיכל לוי יימחק מהלוח. לא ניתן לשחזר אותו.");
+    // The bride's name rides a bare <bdi> here too.
+    expect(within(dialog).getByText("מיכל לוי").tagName).toBe("BDI");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "מחיקה" }));
+    await waitFor(() => expect(deleteTicket).toHaveBeenCalledWith(T1));
+    // The card leaves the board — asserted on the card itself, because the CUE
+    // names the bride too and is the only thing left that says which ticket
+    // went.
+    await waitFor(() => expect(container.querySelectorAll("[data-ticket-id]")).toHaveLength(0));
+    expect(screen.getByTestId("atelier-cue")).toHaveTextContent("מיכל לוי — הכרטיס נמחק.");
+  });
+
+  it("dismisses without writing", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "מחיקה — מיכל לוי" }));
+    const dialog = openDialog("מחיקת כרטיס");
+    fireEvent.click(within(dialog).getByRole("button", { name: "ביטול" }));
+
+    await waitFor(() => expect((dialog as HTMLDialogElement).open).toBe(false));
+    expect(deleteTicket).not.toHaveBeenCalled();
+    expect(screen.getByText("מיכל לוי")).toBeInTheDocument();
+  });
+});
+
+// --- C7: the terminal DEFERS while a dialog is open --------------------------
+
+describe("C7 — a terminal while a dialog is open", () => {
+  it("keeps the dialog and its typed draft, and renders the terminal only after dismissal", async () => {
+    // A terminal transition that unmounted the section under an open dialog
+    // would silently discard typed work.
+    getAtelierBoard.mockResolvedValueOnce(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.click(screen.getByRole("button", { name: "כרטיס חדש" }));
+    const dialog = openDialog("כרטיס חדש");
+    fireEvent.change(within(dialog).getByLabelText("שם הלקוחה"), {
+      target: { value: "רותם כהן" },
+    });
+
+    const before = getAtelierBoard.mock.calls.length;
+    getAtelierBoard.mockRejectedValue(new ApiError(401, "NOT_AUTHENTICATED", "gone"));
+    await advanceTimers(POLL_INTERVAL_MS);
+    // The 401 actually LANDED — without this the rest of the test asserts that
+    // nothing happened after nothing happened.
+    expect(getAtelierBoard.mock.calls.length).toBeGreaterThan(before);
+
+    // ⚠ RE-QUERIED FROM THE LIVE DOCUMENT, never the node captured before the
+    // tick. A detached <dialog> keeps its `open` attribute and all its children,
+    // so asserting on the captured reference passes just as well when the
+    // section unmounted underneath it — the same class of vacuity as a focus
+    // test that never reproduces the blur.
+    const live = screen.getByRole("dialog", { hidden: true, name: "כרטיס חדש" });
+    expect(live).toBeInTheDocument();
+    expect((live as HTMLDialogElement).open).toBe(true);
+    expect(within(live).getByLabelText("שם הלקוחה")).toHaveValue("רותם כהן");
+    expect(screen.queryByText("תוקף החיבור פג. צריך להתחבר מחדש.")).toBeNull();
+
+    fireEvent.click(within(live).getByRole("button", { name: "ביטול" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("תוקף החיבור פג."),
+    );
+    // …and it takes focus: the dialog's own focus-return targets a trigger the
+    // terminal panel has just unmounted, which would otherwise land on <body>.
+    expect(document.activeElement).toBe(screen.getByRole("alert"));
   });
 });
