@@ -367,12 +367,12 @@ def test_status_is_break_iff_a_break_is_open() -> None:
     assert card_status(_staff_user(break_started_at=None)) is StaffCardStatus.AVAILABLE
 
 
-def test_the_card_status_wire_literals_are_exactly_available_and_break() -> None:
-    """⚠ SET EQUALITY, and it is the test that fails if `occupied` is pre-added.
+def test_the_card_status_wire_literals_are_exactly_available_break_and_occupied() -> None:
+    """⚠ SET EQUALITY, and it is still the test that refuses a value with no
+    writer.
 
-    F36 gives `occupied` a writer and widens this in the same PR. Adding the
-    literal now would ship a status nothing can ever produce — exactly what
-    `ScheduledMessageKind` and `GatewayCredentialStatus` refuse, and what
-    `PaymentStatus`'s departure is written up as a RISK rather than a precedent.
+    F36 gives `occupied` one — an open `fitting_room_assignments` row — and
+    widens this in the same PR, which is `ScheduledMessageKind`'s rule MET
+    rather than waived. A fourth value added ahead of its producer fails here.
     """
-    assert {status.value for status in StaffCardStatus} == {"available", "break"}
+    assert {status.value for status in StaffCardStatus} == {"available", "break", "occupied"}

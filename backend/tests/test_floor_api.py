@@ -21,10 +21,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app import main as app_main
 from app.auth.dependencies import get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.errors import DomainNotFoundError
+from app.floor.validation import RoomOccupiedError, StaffOccupiedError
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.constants import StaffCardStatus, StaffRole
 from app.models.staff_user import StaffUser
@@ -129,10 +131,15 @@ class FakeFloorService:
     target id and the SESSION's actor, in that shape.
     """
 
-    def __init__(self, *, missing: bool = False) -> None:
+    def __init__(self, *, missing: bool = False, raises: Exception | None = None) -> None:
         self.floor_calls: list[uuid.UUID] = []
         self.toggle_calls: list[dict[str, Any]] = []
         self.missing = missing
+        # F36: the two 409 handlers are app-level, so any route that reaches the
+        # service can prove their bodies. The break route is the one that exists
+        # in this task; the rooms routes assert the same handlers through their
+        # own paths once they land.
+        self.raises = raises
 
     async def floor(self, tenant_id: uuid.UUID) -> list[StaffUser]:
         self.floor_calls.append(tenant_id)
@@ -167,6 +174,8 @@ class FakeFloorService:
         self.toggle_calls.append(
             {"verb": verb, "tenant_id": tenant_id, "staff_id": staff_id, "actor_id": actor.id}
         )
+        if self.raises is not None:
+            raise self.raises
         if self.missing:
             raise DomainNotFoundError("staff_user")
         return _staff_user(staff_id, role=StaffRole.SEAMSTRESS.value, break_started_at=began)
@@ -357,11 +366,13 @@ def test_no_card_carries_an_email_or_any_credential() -> None:
     assert keys & {"email", "password_hash", "tenant_id", "deleted_at"} == set()
 
 
-def test_the_card_status_wire_literals_are_exactly_available_and_break() -> None:
-    """SET EQUALITY. Fails if `occupied` is pre-added before F36 gives it a
-    writer — asserted here as well as in test_floor_service.py because this is
-    the module that pins the WIRE."""
-    assert {status.value for status in StaffCardStatus} == {"available", "break"}
+def test_the_card_status_wire_literals_are_exactly_available_break_and_occupied() -> None:
+    """SET EQUALITY, and it stays one. F36 is the PR that gives `occupied` a
+    writer — an open `fitting_room_assignments` row — so the literal and its
+    producer land together, which is the whole of the ScheduledMessageKind rule.
+    A FOURTH value arriving without one fails here, in the module that pins the
+    WIRE, as well as in test_floor_service.py."""
+    assert {status.value for status in StaffCardStatus} == {"available", "break", "occupied"}
 
 
 # --- the error table ---
@@ -374,6 +385,75 @@ def test_a_missing_target_is_a_404() -> None:
             resp = client.post(path)
             assert resp.status_code == 404
             assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_a_room_occupied_conflict_is_a_409_that_names_the_occupant() -> None:
+    """The ruling requires the 409 to NAME the current occupant, and `message`
+    is English prose the console never renders for a MAPPED code — so the datum
+    has to travel in `details` or it is unreachable by the UI."""
+    fake = FakeFloorService(raises=RoomOccupiedError({"staff_display_name": "דנה"}))
+    with _client(fake) as client:
+        resp = client.post(START_PATH)
+    assert resp.status_code == 409
+    assert resp.json() == {
+        "error": {
+            "code": "ROOM_OCCUPIED",
+            "message": "This fitting room is already claimed.",
+            "details": {"staff_display_name": "דנה"},
+        }
+    }
+
+
+def test_a_staff_occupied_conflict_is_a_409_that_names_the_room() -> None:
+    fake = FakeFloorService(raises=StaffOccupiedError({"room_label": "חדר 2"}))
+    with _client(fake) as client:
+        resp = client.post(START_PATH)
+    assert resp.status_code == 409
+    assert resp.json() == {
+        "error": {
+            "code": "STAFF_OCCUPIED",
+            "message": "That staff member is already in a fitting room.",
+            "details": {"room_label": "חדר 2"},
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [(RoomOccupiedError, "ROOM_OCCUPIED"), (StaffOccupiedError, "STAFF_OCCUPIED")],
+)
+def test_an_occupancy_conflict_omits_details_entirely_when_nobody_is_there(
+    error: type[Exception], code: str
+) -> None:
+    """⚠ The key is ABSENT, never `{"staff_display_name": null}`.
+
+    The loser blocks on the winner's uncommitted index key and gets the
+    violation when the winner commits; in that gap the winner can release, and
+    there is then no occupant to name. A null would break the console's
+    `Record<string, string>` type and render «{{name}} כבר בחדר הזה.» with an
+    empty interpolation on a legally binding surface.
+    """
+    with _client(FakeFloorService(raises=error())) as client:
+        resp = client.post(START_PATH)
+    assert resp.status_code == 409
+    assert resp.json() == {"error": {"code": code, "message": resp.json()["error"]["message"]}}
+    assert "details" not in resp.json()["error"]
+
+
+def test_no_other_error_body_in_main_carries_a_details_key() -> None:
+    """`details` extends the shipped `{"code", "message"}` envelope, and the set
+    of bodies that carry it is a thing a reviewer should be able to enumerate.
+    Every other module-level `*_BODY` in `main.py` is a frozen two-key dict, and
+    the two new ones are frozen two-key dicts too — the third key is built at
+    RAISE time by the handler, never stored."""
+    bodies = {
+        name: value
+        for name, value in vars(app_main).items()
+        if name.endswith("_BODY") and isinstance(value, dict)
+    }
+    assert {"ROOM_OCCUPIED_BODY", "STAFF_OCCUPIED_BODY"} <= set(bodies)
+    for name, body in bodies.items():
+        assert set(body["error"]) == {"code", "message"}, name
 
 
 def test_a_toggle_with_a_mismatched_origin_is_refused() -> None:

@@ -3,6 +3,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -78,6 +79,7 @@ from app.db.session import ensure_safe_database_role, get_session_factory
 from app.errors import DomainNotFoundError, DomainValidationError
 from app.floor.router import router as floor_router
 from app.floor.service import FloorService
+from app.floor.validation import RoomOccupiedError, StaffOccupiedError
 from app.notifications.base import SmsNotConfiguredError, SmsSender, SmsSendError
 from app.notifications.fake import FakeSmsSender
 from app.notifications.router import router as otp_router
@@ -323,6 +325,40 @@ PAYMENT_ALREADY_HELD_BODY = {
         "message": "A deposit is already pending for this booking.",
     }
 }
+# F36's two, and they are the ONLY bodies in this module that can grow a third
+# key. Two codes rather than one with a discriminating `details`: two causes, two
+# Hebrew sentences, two remedies (take another room vs. release her other room
+# first), and a `details`-key sniff in the console is a worse place for that
+# branch than an error code. Both are frozen two-key dicts HERE — `details` is
+# added by the handler, at raise time, from a copy.
+ROOM_OCCUPIED_BODY = {
+    "error": {"code": "ROOM_OCCUPIED", "message": "This fitting room is already claimed."}
+}
+STAFF_OCCUPIED_BODY = {
+    "error": {
+        "code": "STAFF_OCCUPIED",
+        "message": "That staff member is already in a fitting room.",
+    }
+}
+
+
+def _occupied_body(base: dict[str, Any], details: dict[str, str] | None) -> dict[str, Any]:
+    """The `DomainValidationError` technique: a fixed body plus one value known
+    only at raise time.
+
+    ⚠ Copies rather than mutates — `base["error"]` is a module constant shared by
+    every request, and stamping `details` onto it would leak one boutique's
+    staffer name into the next tenant's 409.
+
+    ⚠ Falsy `details` OMITS the key entirely rather than writing a null. The
+    occupant can release between the index violation and the occupant read, and
+    a 409 that names nobody is better than «{{name}} כבר בחדר הזה.» rendering
+    with an empty interpolation on a legally binding surface.
+    """
+    error = dict(base["error"])
+    if details:
+        error["details"] = details
+    return {"error": error}
 
 
 # The built SPAs: Frontend/apps/{manage,storefront}/dist copied to
@@ -1060,6 +1096,18 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     @app.exception_handler(PaymentAlreadyHeldError)
     async def _payment_already_held(request: Request, exc: PaymentAlreadyHeldError) -> JSONResponse:
         return JSONResponse(PAYMENT_ALREADY_HELD_BODY, status_code=409)
+
+    # F36's two. 409, not 400: the request is well-formed — a partial unique
+    # index refused it, and the ruling requires the body to NAME the current
+    # occupant. `message` is English prose the console never renders for a MAPPED
+    # code, so the datum has to travel in `details` or the UI cannot reach it.
+    @app.exception_handler(RoomOccupiedError)
+    async def _room_occupied(request: Request, exc: RoomOccupiedError) -> JSONResponse:
+        return JSONResponse(_occupied_body(ROOM_OCCUPIED_BODY, exc.details), status_code=409)
+
+    @app.exception_handler(StaffOccupiedError)
+    async def _staff_occupied(request: Request, exc: StaffOccupiedError) -> JSONResponse:
+        return JSONResponse(_occupied_body(STAFF_OCCUPIED_BODY, exc.details), status_code=409)
 
     # Its own class like the other four throttles; the F21 reparenting note on
     # StorefrontThrottledError covers this one too.
