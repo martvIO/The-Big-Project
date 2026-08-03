@@ -113,6 +113,34 @@ const F19_KEYS = [
   "errors.bookingAwaitingPayment",
 ];
 
+// F59 / spec D13. The check-in notice is the notice AT THE MOMENT OF COLLECTION,
+// and F59 makes the shipped value incomplete: the first word of the name she
+// types is now published on an unauthenticated URL anyone with the boutique's
+// address can open. The amendment says exactly that.
+//
+// ⚠ THIS IS THE ONLY ASSERTION IN THE FEATURE THAT FAILS IF D13 IS REVERTED, and
+// it is written against the resource bundle rather than through t() for the
+// reason this whole file exists: CheckinPage.test.tsx renders
+// t("checkin.notice", { boutique }) and compares it against the same bundle, so
+// it passes byte-identically against the UNAMENDED value and can never detect
+// the amendment. Written through t(), this one would inherit that vacuity.
+//
+// The phrase pinned is the public-web-page clause and not the whole sentence:
+// the Hebrew is the user's to edit post-merge, but a rewrite that drops the
+// public page and goes back to "a screen in the boutique" is a notice narrower
+// than the truth, which is the defect D13 exists to correct.
+const PUBLIC_PAGE_CLAUSE = "עמוד אינטרנט ציבורי";
+
+describe("the collection notice names the public web page", () => {
+  it.each(["he", "ar"])("%s carries the D13 clause", (locale) => {
+    const bundle = locale === "he" ? he.translation : ar.translation;
+    const notice = resolve("checkin.notice", bundle);
+
+    expect(typeof notice).toBe("string");
+    expect(notice as string).toContain(PUBLIC_PAGE_CLAUSE);
+  });
+});
+
 describe("the ar bundle", () => {
   it("carries every key F19 added to he.ts", () => {
     // A scanner that matched nothing would make the assertion below vacuous.

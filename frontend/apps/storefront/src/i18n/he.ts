@@ -26,6 +26,12 @@ export const he = {
       // and a tab strip is read over a shoulder in a shop.
       checkin: "רישום לתור",
       queuePosition: "מקומך בתור",
+      // The wall board (F59). ONE title for every state, carrying no name and no
+      // number — the same rule, and a board title is read over a shoulder by
+      // more people than any other in the product. Not «התור עכשיו»: «עכשיו» is
+      // a liveness claim the poll cannot keep, and a tab title has no freshness
+      // line beside it to qualify it.
+      queueBoard: "לוח התור",
     },
 
     catalog: {
@@ -419,9 +425,38 @@ export const he = {
       visitTypeRequired: "צריך לבחור סוג ביקור כדי להמשיך",
 
       // INTERIM, counsel-gated. Names the boutique, the purpose, the retention
-      // window, and the exception for the contact detail an opt-in keeps.
+      // window, the exception for the contact detail an opt-in keeps — and, from
+      // F59, the queue board.
+      //
+      // ⚠ THE BOARD CLAUSE IS THE ONE PRIVACY-LAW CHANGE F59 FORCES, and the
+      // wording is load-bearing three times over.
+      //
+      // It names A PUBLIC WEB PAGE, not "a screen in the boutique". The board is
+      // served by an anonymous, unauthenticated route on the boutique's own
+      // address and refreshed every five seconds, so a notice describing in-shop
+      // display would be affirmatively NARROWER than the processing — which at
+      // the moment of collection is worse than the current silence, because it
+      // becomes an express representation she can rely on.
+      //
+      // It says THE FIRST WORD OF THE NAME SHE ENTERED, never "her first name
+      // and not her surname". The derivation is the first whitespace-delimited
+      // token of whatever she typed, and «כהן נועה» is ordinary Israeli
+      // form-filling — so the promise the comfortable wording makes is one the
+      // code cannot keep.
+      //
+      // And «הם» became «הפרטים» in the marketing sentence, which is a REQUIRED
+      // collateral edit rather than a tidy: the insertion puts «מספר הטלפון
+      // שלך» between the subject and its pronoun, so «הם» would read as *the
+      // phone number will not be used*.
+      //
+      // Still INTERIM: the open counsel gate gains a fifth item beside the
+      // boutique, the purpose, the retention window and the opted-in exception —
+      // what must the notice say about a first name published on a public,
+      // unauthenticated web page? Asserted in i18n-keys.test.ts against the
+      // bundle, because the CheckinPage render test compares t() output against
+      // this same value and passes byte-identically either way.
       notice:
-        "הפרטים שאת ממלאת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך — ונמחקים כמה ימים לאחר הביקור. הם לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה; אם סימנת אותה, השם ומספר הטלפון יישמרו לצורך זה עד שתבקשי להסיר את ההסכמה.",
+        "הפרטים שאת ממלאת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך — ונמחקים כמה ימים לאחר הביקור. מקומך בתור והמילה הראשונה בשם שהזנת מוצגים בלוח התור של הבוטיק — עמוד אינטרנט ציבורי שכל מי שיודע את כתובת האתר של הבוטיק יכול לפתוח, ולא רק מסך שנמצא בתוך החנות. מספר הטלפון שלך לא מוצג שם. הפרטים לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה; אם סימנת אותה, השם ומספר הטלפון יישמרו לצורך זה עד שתבקשי להסיר את ההסכמה.",
       // INTERIM, counsel-gated. This is the operative consent text, so it names
       // who sends, by what channel, about what, and how to stop.
       optIn:
@@ -474,6 +509,68 @@ export const he = {
       updatedAt: "עודכן",
       staleAt: "העדכון האחרון היה",
       pausedAt: "העדכון מושהה. עודכן",
+    },
+
+    // F59's wall board, /queue. EIGHT keys and no more: the freshness leads, the
+    // pause pair, the two cues and the retry label all RESOLVE from checkin.*
+    // above rather than being re-declared here. The two screens hang in the same
+    // shop and their vocabulary must not diverge — and a second spelling of
+    // «השהיית העדכון» is a second string to keep right forever.
+    //
+    // Read on a television from three to five metres by a room of strangers, so
+    // every string states and none reassures. Nothing here claims the board is
+    // live: it polls, and «בזמן אמת» is a claim it cannot keep for one interval.
+    queueBoard: {
+      // The page's single h1, and a fact that stays true before AND after F58
+      // starts stamping called_at. Not «הבאות בתור», which implies an order of
+      // service the product cannot promise while every row is `waiting`.
+      heading: "ממתינות בתור",
+      // The state the screen is in for most of the day. A fact, not a fault:
+      // «אין מה להציג» describes the software and «התור ריק» reads as a fault on
+      // a wall in a shop with customers in it. «כרגע» is qualified by the
+      // freshness line beside it, which is why the empty state renders one —
+      // without it an empty board is indistinguishable from a crashed board.
+      empty: "אין כרגע ממתינות",
+      // The one genuinely useful thing an empty board can say. It names no
+      // physical location: the QR sign is a printed artefact the boutique places
+      // wherever it likes, so «בכניסה» would be a claim about the world.
+      emptyHint: "אפשר להצטרף לתור בסריקת הקוד שבבוטיק.",
+      // Rendered only when waiting_total exceeds the rows on screen, with the
+      // count COMPUTED as the difference and never echoed.
+      //
+      // «בתור» rather than «ממתינות», for two independent reasons. Grammar: the
+      // count is 1 the moment a sixth ticket exists, «ועוד 1 ממתינות» needs the
+      // singular, and «בתור» is a prepositional phrase that does not inflect for
+      // number — so every value is grammatical without four Hebrew plural forms.
+      // Truth: under F33's Ruling 3 one woman can hold two tickets, so the
+      // quantity counts PLACES rather than women, which is exactly what
+      // waiting_total is. The product cannot count women without a read keyed on
+      // phone, and the queue repository forbids one by design.
+      //
+      // No <bdi> around the count and none needed: a digit run between two
+      // Hebrew runs resolves as it should with no isolation, and the storefront
+      // ships no isolateLtr helper to reach for.
+      overflow: "ועוד {{count}} בתור",
+      // Beside the name on a called row — THE WORD that keeps the highlight out
+      // of SC 1.4.1, because a background alone is invisible to a woman with a
+      // colour-vision difference sitting four metres away, which is the entire
+      // audience. Its own key rather than a reuse of checkin.called
+      // («אפשר לגשת לדלפק»): that string is permission granted to the holder on
+      // her own phone, and at this size it is roughly 590px of type in a row
+      // that fits about nine characters.
+      //
+      // ⚠ Unreachable until F58 ships — nothing in the product writes called_at
+      // — so it renders only against a stubbed API client.
+      called: "גשי לדלפק",
+      // The first load only; the region carrying it unmounts on the first
+      // settled response. Feminine plural, matching the two shipped storefront
+      // loading strings it sits beside.
+      loading: "טוענות את לוח התור",
+      // The first request failed and nothing ever loaded. At the name scale,
+      // because the room must be able to tell a broken board from an empty one:
+      // a blank screen reads as «אין ממתינות» and a woman acts on it. The loop
+      // keeps running underneath, so nothing here promises a retry.
+      loadFailed: "לא הצלחנו להציג את לוח התור כרגע.",
     },
 
     contact: {
