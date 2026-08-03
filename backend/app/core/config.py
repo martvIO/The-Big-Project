@@ -194,6 +194,26 @@ class Settings(BaseSettings):
     # rate against a 122-bit id space.
     checkin_position_max_misses_per_window: int = 120
     checkin_position_miss_window_seconds: int = 60
+    # F59's board budget, and a FOURTH limiter instance for the same reason the
+    # three above are three. Its traffic shape is unlike every other anonymous
+    # surface in this product: a wall screen is a single device polling forever
+    # at an even cadence, whether or not anybody is in the shop.
+    #
+    # The arithmetic must count PHONES, not screens, because the key is per
+    # TENANT and every woman in the salon who opens the same public URL lands on
+    # it — which is an ordinary thing to do with a URL that is public by ruling,
+    # and is the load-bearing half of this page's pause-control argument:
+    #   2 wall screens at a 5s beat ....................  24 req/min
+    #   up to 18 phones in the room on a busy Sunday ... 216 req/min
+    #   design target, 20 concurrent viewers ........... 240 req/min
+    #   ceiling at 2.5x the target ..................... 600 req/min
+    # A screens-only reading gave 120, which is TEN concurrent viewers — two
+    # screens and eight phones exactly — and the board only grows all day until
+    # F58 ships, so the wall would start backing off at the one moment it
+    # matters. 600 is 50 concurrent pollers, above any bridal salon, and still
+    # kills a scripted reader: at 50 rps the budget is gone in 12 seconds.
+    queue_board_max_per_window: int = 600
+    queue_board_window_seconds: int = 60
 
     @property
     def secure_cookies(self) -> bool:

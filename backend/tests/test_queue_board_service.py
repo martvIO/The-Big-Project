@@ -8,11 +8,34 @@ woman is on a screen a room full of strangers can read — the absence of a
 ticket id from the wire model, and the metering.
 """
 
-import pytest
+import datetime
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any, NamedTuple, cast
 
+import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from app.auth.rate_limit import FixedWindowRateLimiter
 from app.booking.validation import BookingValidationError, validate_customer_name
+from app.core.config import Settings
+from app.main import create_app
 from app.queue.schemas import QueueBoardEntry, QueueBoardView
-from app.queue.validation import BOARD_NAME_MAX, BOARD_ROW_LIMIT, board_display_name
+from app.queue.service import QueueService
+from app.queue.validation import (
+    BOARD_NAME_MAX,
+    BOARD_ROW_LIMIT,
+    CheckinThrottledError,
+    board_display_name,
+)
+from app.storefront.validation import Clock
+
+TENANT_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
+# 20:00Z on 2026-07-18 is 23:00 Jerusalem the SAME day. A UTC-derived date would
+# agree here and disagree at 21:30Z, which is why the boundary pair is below.
+NOW = datetime.datetime(2026, 7, 18, 20, 0, tzinfo=datetime.UTC)
+JERUSALEM_DAY = datetime.date(2026, 7, 18)
 
 # --- D5: the first-name derivation, every decided case ---
 
@@ -119,3 +142,253 @@ def test_called_is_a_boolean_and_never_the_instant() -> None:
 def test_an_empty_board_is_a_real_view_and_never_a_null() -> None:
     view = QueueBoardView(entries=[], waiting_total=0)
     assert view.model_dump() == {"entries": [], "waiting_total": 0}
+
+
+# --- D6: the board service, its own budget, and the clock it reads once ---
+
+
+class _FakeTransaction:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _BoardRow(NamedTuple):
+    name: str
+    called_at: datetime.datetime | None
+
+
+class _FakeResult:
+    def __init__(self, rows: list[_BoardRow], total: int) -> None:
+        self._rows = rows
+        self._total = total
+
+    def all(self) -> list[_BoardRow]:
+        return self._rows
+
+    def scalar_one(self) -> int:
+        return self._total
+
+
+class _FakeSession:
+    """The `test_checkin_service.py` scaffold: enough surface for
+    `tenant_session` and the REAL `QueueTicketsRepository`, so a statement
+    escaping to a real session raises here instead of passing silently. The
+    repository is real on purpose — a fake one would let the service and the
+    query drift apart, which is the one failure this feature cannot afford.
+
+    `statements` holds the SELECT objects, not `str()` of them: `execute`
+    answers a canned result whatever it is handed, so any claim about a WHERE
+    clause or a LIMIT has to read the statement itself.
+    """
+
+    def __init__(self, rows: list[_BoardRow] | None = None, total: int | None = None) -> None:
+        self.rows = rows if rows is not None else []
+        self.total = total if total is not None else len(self.rows)
+        self.statements: list[Any] = []
+
+    def begin(self) -> _FakeTransaction:
+        return _FakeTransaction()
+
+    async def execute(self, *args: object, **kwargs: object) -> _FakeResult:
+        if args:
+            self.statements.append(args[0])
+        return _FakeResult(self.rows, self.total)
+
+
+def _board_select(session: _FakeSession) -> Any:
+    """statements[0] is `tenant_session`'s own `set_config`; [1] is the board's
+    projection and [2] its count. Named rather than indexed inline so the next
+    reader does not have to rediscover that the session binding is a
+    statement."""
+    return session.statements[1]
+
+
+def _factory(session: _FakeSession) -> Any:
+    @asynccontextmanager
+    async def factory() -> AsyncIterator[_FakeSession]:
+        yield session
+
+    return factory
+
+
+def _service(
+    session: _FakeSession | None = None,
+    *,
+    board_limiter: FixedWindowRateLimiter | None = None,
+    clock: Clock | None = None,
+) -> QueueService:
+    return QueueService(
+        cast(async_sessionmaker, _factory(session if session is not None else _FakeSession())),
+        create_limiter=FixedWindowRateLimiter(200, 3600.0, lambda: 0.0),
+        position_ticket_limiter=FixedWindowRateLimiter(30, 60.0, lambda: 0.0),
+        position_miss_limiter=FixedWindowRateLimiter(120, 60.0, lambda: 0.0),
+        board_limiter=board_limiter or FixedWindowRateLimiter(600, 60.0, lambda: 0.0),
+        clock=clock or (lambda: NOW),
+    )
+
+
+async def test_the_board_numbers_its_entries_from_one_in_list_order() -> None:
+    """The positions are the SERVER's, derived from the order the repository
+    returned. A client that renumbered would be free to disagree with her phone,
+    and the whole point of the read is that it cannot."""
+    session = _FakeSession([_BoardRow(f"א{index}", None) for index in range(3)], total=3)
+    view = await _service(session).board(TENANT_ID)
+    assert [entry.position for entry in view.entries] == [1, 2, 3]
+    assert [entry.first_name for entry in view.entries] == ["א0", "א1", "א2"]
+
+
+async def test_called_is_derived_from_the_instant_and_the_instant_never_reaches_the_view() -> None:
+    called = datetime.datetime(2026, 7, 18, 20, 30, tzinfo=datetime.UTC)
+    session = _FakeSession([_BoardRow("נועה", called), _BoardRow("מיכל", None)], total=2)
+    view = await _service(session).board(TENANT_ID)
+    assert [entry.called for entry in view.entries] == [True, False]
+    assert str(called.hour) not in view.model_dump_json()
+    assert view.model_dump() == {
+        "entries": [
+            {"position": 1, "first_name": "נועה", "called": True},
+            {"position": 2, "first_name": "מיכל", "called": False},
+        ],
+        "waiting_total": 2,
+    }
+
+
+async def test_the_service_derives_the_first_name_and_never_ships_the_stored_one() -> None:
+    session = _FakeSession([_BoardRow("נועה כהן", None)], total=1)
+    view = await _service(session).board(TENANT_ID)
+    assert view.entries[0].first_name == "נועה"
+    assert "כהן" not in view.model_dump_json()
+
+
+async def test_an_empty_board_is_a_view_and_never_a_miss() -> None:
+    """There is no miss branch and there must not be one: every resolvable
+    tenant has a board, empty or not. A 404 on an empty queue would render the
+    screen's error arm for most of the shop day."""
+    view = await _service(_FakeSession([], total=0)).board(TENANT_ID)
+    assert view.model_dump() == {"entries": [], "waiting_total": 0}
+
+
+async def test_the_total_is_the_repositorys_count_and_not_the_row_count() -> None:
+    """The overflow line's only source. `len(entries)` is capped, so it would
+    say «ועוד 0» forever, silently, on a wall."""
+    session = _FakeSession([_BoardRow(f"א{index}", None) for index in range(BOARD_ROW_LIMIT)])
+    session.total = 9
+    view = await _service(session).board(TENANT_ID)
+    assert len(view.entries) == BOARD_ROW_LIMIT
+    assert view.waiting_total == 9
+
+
+async def test_the_cap_is_the_servers_and_it_is_in_the_sql() -> None:
+    """D4: at most BOARD_ROW_LIMIT names leave the database whatever the queue
+    length. A client-side cap would ship forty names to a browser and render
+    five — forty names in a network trace and in any intermediary that ignores
+    no-store."""
+    session = _FakeSession([_BoardRow("נועה", None)], total=1)
+    await _service(session).board(TENANT_ID)
+    assert _board_select(session)._limit == BOARD_ROW_LIMIT
+
+
+async def test_the_board_reads_todays_jerusalem_day_from_the_injected_clock() -> None:
+    """The one clock read in the feature, and it is on the SERVER. The request
+    carries no date at all, so the board empties at midnight Jerusalem with zero
+    client-side date logic — on a screen expected to be mounted for months.
+
+    Asserted on the statement's bound value, because the fake answers the same
+    rows whatever it is handed."""
+    session = _FakeSession([_BoardRow("נועה", None)], total=1)
+    await _service(session).board(TENANT_ID)
+    assert _board_select(session).compile().params["queue_day_1"] == JERUSALEM_DAY
+
+
+async def test_the_jerusalem_day_rolls_before_the_utc_day_does() -> None:
+    """21:30Z on the 18th is 00:30 Jerusalem on the 19th. The boutique's queue
+    has already turned over; the UTC calendar has not."""
+    session = _FakeSession([_BoardRow("נועה", None)], total=1)
+    await _service(
+        session, clock=lambda: datetime.datetime(2026, 7, 18, 21, 30, tzinfo=datetime.UTC)
+    ).board(TENANT_ID)
+    bound = _board_select(session).compile().params
+    assert bound["queue_day_1"] == datetime.date(2026, 7, 19)
+    assert JERUSALEM_DAY not in bound.values()
+
+
+# --- the fourth budget ---
+
+
+async def test_the_board_budget_is_charged_on_every_read_including_an_empty_one() -> None:
+    """The cost is the query, not the rows: two index scans per request, twelve
+    times a minute per screen, forever."""
+    limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    await _service(_FakeSession([], total=0), board_limiter=limiter).board(TENANT_ID)
+    assert limiter.is_blocked(f"queue:board:{TENANT_ID}") is True
+
+
+async def test_a_spent_board_budget_throttles_the_next_read() -> None:
+    limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    service = _service(_FakeSession([_BoardRow("נועה", None)], total=1), board_limiter=limiter)
+    await service.board(TENANT_ID)
+    with pytest.raises(CheckinThrottledError):
+        await service.board(TENANT_ID)
+
+
+async def test_the_board_budget_is_keyed_on_the_boutique_and_never_on_a_person() -> None:
+    """What keeps the shared TOO_MANY_ATTEMPTS body safe here: the key is an
+    operational fact about a shop, so a 429 discloses nothing about anybody."""
+    limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    await _service(board_limiter=limiter).board(TENANT_ID)
+    assert limiter.is_blocked(f"queue:board:{TENANT_ID}") is True
+    assert limiter.is_blocked(f"queue:board:{uuid.uuid4()}") is False
+
+
+async def test_a_spent_board_budget_leaves_the_three_check_in_budgets_alone() -> None:
+    """ONE BUDGET, ONE INSTANCE. Two keys on one FixedWindowRateLimiter share
+    one ceiling, so a flooded wall screen must not be able to 429 a woman
+    scanning the QR at the door."""
+    board_limiter = FixedWindowRateLimiter(1, 60.0, lambda: 0.0)
+    service = _service(board_limiter=board_limiter)
+    await service.board(TENANT_ID)
+    with pytest.raises(CheckinThrottledError):
+        await service.board(TENANT_ID)
+    assert board_limiter.is_blocked(f"checkin:{TENANT_ID}") is False
+
+
+def test_the_app_wires_four_distinct_limiter_instances_into_the_queue_service() -> None:
+    """⚠ THE assertion that catches a builder reaching for an existing instance.
+
+    `max_attempts` lives on the LIMITER, so one instance is one ceiling however
+    many keys it holds. Reusing any of the three shipped budgets is the failure
+    D6 works the arithmetic against: one wall screen is 720 reads/hour, which is
+    3.6x the ENTIRE check-in create ceiling and would spend it seventeen minutes
+    into the shop day — closing the front door to every woman scanning the QR.
+
+    Read off the real `create_app` wiring rather than a service this test built,
+    because main.py is where the mistake would be made.
+    """
+    service = create_app().state.queue_service
+    limiters = [
+        service._create_limiter,
+        service._position_ticket_limiter,
+        service._position_miss_limiter,
+        service._board_limiter,
+    ]
+    assert len({id(limiter) for limiter in limiters}) == 4
+    # Four objects is not enough on its own: a FOURTH instance built from
+    # another feature's settings is four objects with the wrong ceiling, and at
+    # the miss brake's 120/60s the board holds ten concurrent viewers — two
+    # screens and eight phones, which is the ordinary afternoon this feature
+    # exists for. The wired budget must be the BOARD's.
+    settings = Settings()
+    assert service._board_limiter._max == settings.queue_board_max_per_window
+    assert service._board_limiter._window == settings.queue_board_window_seconds
+
+
+def test_the_board_budget_has_its_own_two_settings_fields() -> None:
+    """Tunable during an incident without a deploy, the `checkin_*` precedent.
+    The number is sized against CONCURRENT VIEWERS — screens plus the phones in
+    the room, which D11 deliberately puts on this same key — not against screens
+    alone."""
+    settings = Settings()
+    assert settings.queue_board_max_per_window == 600
+    assert settings.queue_board_window_seconds == 60

@@ -66,6 +66,7 @@ def _service(factory: async_sessionmaker[AsyncSession]) -> QueueService:
         create_limiter=FixedWindowRateLimiter(200, 3600.0, lambda: 0.0),
         position_ticket_limiter=FixedWindowRateLimiter(30, 60.0, lambda: 0.0),
         position_miss_limiter=FixedWindowRateLimiter(120, 60.0, lambda: 0.0),
+        board_limiter=FixedWindowRateLimiter(600, 60.0, lambda: 0.0),
         clock=lambda: NOW,
     )
 
