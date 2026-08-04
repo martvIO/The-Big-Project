@@ -123,3 +123,21 @@ class TenantsRepository:
                 .order_by(Tenant.created_at)
             )
             return list((await session.execute(stmt)).scalars().all())
+
+    async def list_all(self) -> list[Tenant]:
+        """EVERY tenant row — no status filter and no deleted_at filter. The
+        retention runner's enumeration, and nothing else's (F20 D21).
+
+        The missing filters are the point, not an oversight. `suspend()` and
+        `soft_delete()` are shipped operator commands, so `list_active()` would
+        freeze a suspended or off-boarded boutique's data with no clock ever
+        applied — forever. The retention duty does not lapse when the
+        controller's account does, and "a boutique may not choose its own
+        retention" has to bind through suspension too.
+
+        `list_active()` stays the SMS poller's: skipping a suspended tenant
+        there is correct, because a suspended boutique should not be texting.
+        """
+        async with self._session_factory() as session:
+            stmt = select(Tenant).order_by(Tenant.created_at)
+            return list((await session.execute(stmt)).scalars().all())

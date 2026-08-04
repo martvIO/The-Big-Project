@@ -199,3 +199,86 @@ def test_the_superseded_credential_retention_default_is_ninety_days() -> None:
     # D21's blanking clock, read by F20. A security number with no legal
     # counterparty — unlike the payments period, which Gate 1 Q3 set at 7 years.
     assert Settings(app_env="dev").gateway_superseded_credential_retention_days == 90
+
+
+# --- F20's retention clocks -------------------------------------------------
+#
+# The only config in this repo where a typo is UNRECOVERABLE DATA LOSS, so the
+# floors are tested against the realistic fat-finger — a DROPPED DIGIT — and not
+# only against the literal `=0` a first draft would guard. Each floor sits within
+# an order of magnitude of the default it guards, which is what makes a
+# one-digit-short value trip it.
+
+
+def test_retention_ships_disarmed() -> None:
+    """Gate 1 Q2. An unattended, irreversible, chunked mass-DELETE against a
+    database with no tested restore does not ship armed — the job ships complete
+    and turning it on is one env var."""
+    assert Settings(app_env="dev").retention_enabled is False
+    assert Settings(app_env="dev", retention_enabled=True).retention_enabled is True
+
+
+def test_the_retention_defaults_are_the_specified_periods() -> None:
+    settings = Settings(app_env="dev")
+    assert settings.retention_otp_seconds == 15 * 60
+    assert settings.retention_queue_ticket_seconds == 7 * 24 * 3600
+    assert settings.retention_message_log_seconds == 730 * 24 * 3600
+    assert settings.retention_bookings_seconds == 365 * 7 * 24 * 3600
+    assert settings.retention_orphan_customer_seconds == 30 * 24 * 3600
+    assert settings.retention_poll_interval_seconds == 3600
+
+
+def test_the_otp_retention_floor_is_computed_from_the_two_ttls_not_written_as_a_number() -> None:
+    """Asserted by COMPUTING it, so a future TTL change moves the test with the
+    code. 15 minutes is EXACTLY `OTP_TTL_SECONDS + VERIFICATION_TOKEN_TTL_SECONDS`
+    — the margin is zero — so the floor equals the default and there is nothing
+    below it to allow."""
+    from app.notifications.validation import OTP_TTL_SECONDS, VERIFICATION_TOKEN_TTL_SECONDS
+
+    floor = OTP_TTL_SECONDS + VERIFICATION_TOKEN_TTL_SECONDS
+    assert Settings(app_env="dev").retention_otp_seconds == floor
+    Settings(app_env="dev", retention_otp_seconds=floor)
+    with pytest.raises(ValidationError, match="RETENTION_OTP_SECONDS"):
+        Settings(app_env="dev", retention_otp_seconds=floor - 1)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        # A dropped digit, per class. RETENTION_OTP_SECONDS=60 is the case that
+        # matters most: it boots clean under a naive `>= 60` floor and then purges
+        # every OTP row a minute after send, so no booking in the platform can be
+        # completed and there is no error anywhere to explain it.
+        ("retention_otp_seconds", 90),
+        ("retention_queue_ticket_seconds", 60_480),
+        ("retention_message_log_seconds", 6_307_200),
+        ("retention_bookings_seconds", 22_075_200),
+        ("retention_orphan_customer_seconds", 259_200),
+        # ...and the literal zero a first draft would have stopped at.
+        ("retention_otp_seconds", 0),
+        ("retention_queue_ticket_seconds", 0),
+        ("retention_message_log_seconds", 0),
+        ("retention_bookings_seconds", 0),
+        ("retention_orphan_customer_seconds", 0),
+        ("retention_poll_interval_seconds", 0),
+    ],
+)
+def test_a_retention_period_below_its_floor_is_a_boot_failure(field: str, value: int) -> None:
+    with pytest.raises(ValidationError, match=field.upper()):
+        Settings.model_validate({"app_env": "dev", field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("retention_queue_ticket_seconds", 2 * 24 * 3600),
+        ("retention_message_log_seconds", 180 * 24 * 3600),
+        ("retention_bookings_seconds", 3 * 365 * 24 * 3600),
+        ("retention_orphan_customer_seconds", 7 * 24 * 3600),
+        ("retention_poll_interval_seconds", 60),
+    ],
+)
+def test_a_retention_period_exactly_at_its_floor_boots(field: str, value: int) -> None:
+    """The boundary in the other direction: a floor that rejected its own value
+    would make the documented minimum unusable."""
+    assert getattr(Settings.model_validate({"app_env": "dev", field: value}), field) == value
