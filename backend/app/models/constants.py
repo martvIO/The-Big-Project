@@ -187,6 +187,26 @@ class VisitType(StrEnum):
     EVENING = "evening"
 
 
+class BookingSource(StrEnum):
+    """Which surface created a booking. The DB pins this exact set
+    (`bookings_source_check`, 0025).
+
+    It is the DISCRIMINATOR for `bookings_terms_evidence_check`, not a label: a
+    NULL `terms_version_accepted` is legal on WALK_IN and on nothing else, and
+    without this column that NULL would also be indistinguishable from a
+    storefront booking that lost its evidence to a bug.
+
+    F50's remote/scheduled half will want a third member ('owner'). Adding it here
+    and to the source CHECK is NOT enough on its own — the terms CHECK enumerates
+    the exemption rather than the requirement, so a third value with no terms
+    evidence is a FAILING INSERT until its author decides about terms on purpose.
+    That failure is the hand-off, and it is deliberate.
+    """
+
+    STOREFRONT = "storefront"
+    WALK_IN = "walk_in"
+
+
 class BookingCancelledBy(StrEnum):
     # The DB pins this exact set (0010, widened by F19's migration). F15's owner
     # cancel is the 'owner' writer; the value predates it so E4 needed no second
@@ -282,6 +302,16 @@ class AuditAction(StrEnum):
     # arrived, and who took it back", and each stays one WHERE action = ….
     BOOKING_CHECKED_IN = "booking_checked_in"
     BOOKING_CHECK_IN_UNDONE = "booking_check_in_undone"
+    # F50's owner-created walk-in (D6). Same fact as every block here:
+    # audit_log.action is plain TEXT with no CHECK (0003), so this needs no
+    # migration.
+    #
+    # This row is the ONLY record of WHO created a booking that carries no terms
+    # evidence, which is what makes it the audit entry that most earns its place
+    # in this area. Its `details` carry the two ids and NEITHER the phone NOR the
+    # name — `customer_id` resolves both, and F20's rule for its own rows is
+    # `phone_last4` and never the number.
+    BOOKING_WALK_IN_CREATED = "booking_walk_in_created"
     # F51's owner-only staff section (D8). Same fact as the BOOKING_* block above:
     # audit_log.action is plain TEXT with no CHECK, so these need no migration.
     # Role change and password reset keep their own values rather than folding

@@ -51,6 +51,7 @@ from app.booking.schemas import (
     OwnerSlotRow,
     PhoneCorrectionRequest,
     RescheduleRequest,
+    WalkInBookingRequest,
 )
 from app.booking.slots import Slot
 from app.booking.validation import BOOKING_LIST_DEFAULT_LIMIT, BOOKING_LIST_MAX_LIMIT
@@ -116,6 +117,12 @@ def _row_fields(
         # claim that a deposit was expected.
         "payment_status": payment.status if payment is not None else None,
         "refund_due_agorot": payment.refund_due_agorot if payment is not None else None,
+        # F50 / D8. On the ROW and not only the detail, the same exception
+        # `checked_in_at` above takes and for the same reason: the shift board only
+        # ever reads the list. It is also what makes the detail's nullable terms
+        # pair readable — a null version alone cannot say whether nobody accepted
+        # anything or something broke.
+        "source": booking.source,
     }
 
 
@@ -198,6 +205,40 @@ async def list_bookings(
         offset=offset,
         limit=limit,
     )
+
+
+# F50's create, and the ONLY route on this router with no booking id — there is no
+# booking yet. A verb sub-path on the COLLECTION, the `/no-show` `/complete`
+# `/check-in` shape one level up. It cannot shadow and cannot be shadowed: every
+# other POST here is `/bookings/{booking_id}/<verb>`, two segments deeper.
+#
+# No route-level `dependencies=`: it inherits the router's
+# (OWNER, SHIFT_MANAGER) gate and deliberately does NOT join
+# test_staff_role_gating's OWNER_ONLY set. A shift manager runs the floor, and a
+# board she cannot act on is not a shift manager's board.
+#
+# Sends nothing, so it takes no `Comms`: the service returns `manage_token=None`
+# because a walk-in gets no SMS control link at all (D2).
+@router.post("/bookings/walk-in")
+async def create_walk_in_booking(
+    request: Request, staff: Owner, service: Service, body: WalkInBookingRequest
+) -> OwnerBookingDetail:
+    """A real booking for a customer the boutique already holds, starting now and
+    already checked in — so every floor verb downstream works on it because it is
+    an ordinary booking.
+
+    An unknown customer, an ERASED customer and an unknown or archived appointment
+    type are one indistinguishable 404. That is `BookingNotFoundError`'s own rule
+    and it is also the right disclosure answer: this route must not tell an
+    authenticated caller which of the two ids was the bad one."""
+    tenant = get_current_tenant(request)
+    result = await service.create_walk_in(
+        tenant.id,
+        customer_id=body.customer_id,
+        appointment_type_id=body.appointment_type_id,
+        staff=staff,
+    )
+    return await _detail_of(service, tenant.id, result.booking)
 
 
 @router.get("/bookings/{booking_id}")

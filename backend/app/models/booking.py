@@ -43,10 +43,26 @@ class Booking(StandardColumns, Base):
     # written through her own tokenized link, and F15's /confirm refuses to touch
     # it in writing. A staffer's tap does not get to speak for her.
     checked_in_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    # WHICH SURFACE CREATED THIS BOOKING (F50 D1) — 'storefront' | 'walk_in', a DB
+    # CHECK. Not decoration and not analytics: it is the DISCRIMINATOR the
+    # `bookings_terms_evidence_check` below needs, because without it a NULL
+    # `terms_version_accepted` has two indistinguishable meanings — "a staffer
+    # created this row and nobody accepted anything" and "a storefront booking lost
+    # its evidence to a bug" — and only the first is legal.
+    source: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'storefront'"))
     # A pointer into the append-only terms_versions table, never a copy of the
     # text: the number is permanent evidence at a fraction of the size.
-    terms_version_accepted: Mapped[int] = mapped_column(Integer, nullable=False)
-    terms_accepted_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    #
+    # NULLABLE SINCE F50, and the NULL is bounded rather than free: 0025's
+    # `bookings_terms_evidence_check` admits it ONLY on `source = 'walk_in'`, which
+    # is the one path where nobody accepted anything and stamping a version would
+    # be manufacturing legal evidence. Every reader must narrow — a reader that
+    # assumes evidence exists is right for every row it sees in development and
+    # wrong for the first walk-in (spec Risk 3).
+    terms_version_accepted: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
     appointment_type_name: Mapped[str] = mapped_column(Text, nullable=False)
     dress_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     dress_name: Mapped[str | None] = mapped_column(Text, nullable=True)

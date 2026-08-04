@@ -234,7 +234,19 @@ class PrivacyService:
                 .scalars()
                 .all()
             )
-            versions = sorted({row.terms_version_accepted for row in bookings})
+            # The `is not None` is F50's, and it is the difference between this
+            # route answering and 500-ing: a walk-in booking carries NO terms
+            # evidence (0025 made the two columns nullable, bounded to
+            # `source = 'walk_in'`), and `sorted()` over a set holding None raises
+            # TypeError. §13 is a legally-mandated answer; it must not be the one
+            # route that falls over on a row the product creates on purpose.
+            versions = sorted(
+                {
+                    row.terms_version_accepted
+                    for row in bookings
+                    if row.terms_version_accepted is not None
+                }
+            )
             terms = (
                 []
                 if not versions

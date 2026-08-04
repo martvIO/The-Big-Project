@@ -122,8 +122,14 @@ class ExportedBooking(BaseModel):
     notes: str | None
     attendance_confirmed_at: datetime.datetime | None
     checked_in_at: datetime.datetime | None
-    terms_version_accepted: int
-    terms_accepted_at: datetime.datetime
+    # NULLABLE since F50: a walk-in booking genuinely has no terms evidence, and
+    # the §13 answer must SHOW THAT ABSENCE rather than invent a version or refuse
+    # to serialise. `ExportedBooking(...)` is constructed explicitly in the service,
+    # and a plain BaseModel validates on construction — non-optional here is a
+    # ValidationError, i.e. a 500 on the one route the Privacy Protection Authority
+    # is the audience for.
+    terms_version_accepted: int | None
+    terms_accepted_at: datetime.datetime | None
     cancelled_at: datetime.datetime | None
     cancelled_by: str | None
 

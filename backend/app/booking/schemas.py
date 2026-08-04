@@ -154,6 +154,12 @@ class OwnerBookingRow(BaseModel):
     customer_name: str
     appointment_type_name: str
     dress_name: str | None
+    # F50: which surface created this booking, 'storefront' | 'walk_in'. On the ROW
+    # and not only the detail, for the reason `checked_in_at` above is — the shift
+    # board only ever reads the list. It is also the DISCRIMINATOR the nullable
+    # terms pair on the detail below needs: a null version alone cannot say whether
+    # nobody accepted anything or something broke (D8).
+    source: str
     # F19 D18: the ONLY owner-facing payment surface in the product, on the list
     # she already loads every morning — no new route, no nav row. `paid` on a
     # `cancelled` booking is the action-needed marker (MD1's reschedule is the
@@ -202,8 +208,12 @@ class OwnerBookingDetail(OwnerBookingRow):
     dress_size: str | None
     seat_index: int
     created_at: datetime.datetime
-    terms_version_accepted: int
-    terms_accepted_at: datetime.datetime
+    # NULLABLE since F50, on both, and always as a PAIR — a walk-in booking has no
+    # terms evidence because nobody accepted anything, and `source` on the row
+    # above is what says WHY the pair is null rather than leaving the console
+    # guessing between "created in the boutique" and "something broke".
+    terms_version_accepted: int | None
+    terms_accepted_at: datetime.datetime | None
     cancelled_at: datetime.datetime | None
     cancelled_by: str | None
     manage_link_issued: bool
@@ -233,3 +243,36 @@ class RescheduleRequest(ForbidExtraModel):
 
 class PhoneCorrectionRequest(ForbidExtraModel):
     phone: str = Field(min_length=1, max_length=MAX_PHONE_INPUT_LENGTH)
+
+
+class WalkInBookingRequest(ForbidExtraModel):
+    """TWO REQUIRED UUIDS, AND EVERY ABSENCE IS A RULING (F50 D3).
+
+    No name and no phone: a staffer picking a customer the boutique already holds
+    OBTAINS NOTHING FROM THE SUBJECT, so this is not a §11 collection point, owes
+    no notice, and needs no public-facing Hebrew. A dialog that typed a name and a
+    number would be a fourth collection point whose notice could only be delivered
+    by instructing a staffer to recite it aloud — unenforceable delivery dressed as
+    compliance. An unknown customer is a 404 and F33's `/checkin` form is her
+    route in.
+
+    No `marketing_consent`, and the correct value is NO FIELD rather than `false`:
+    a field is something a caller can set, and an absent field is the only spelling
+    of "this surface cannot express consent" that a future caller cannot flip.
+
+    No `starts_at`: the instant is the server's `now` and that is a safety
+    mechanism before it is a timestamp — it puts the row outside four SHIPPED
+    writers (the manage-link backfill's feed, `_guard_live`'s rotation guard,
+    `owner.cancel`'s future-only split, and the reminder band). Letting a staffer
+    pick a time re-arms all four, which is exactly why that is the remote half.
+
+    No `notes`: a staffer's free text about a bride is personal data obtained NOT
+    from her, on the one path that otherwise collects nothing — and `customers.notes`
+    is the shipped home for it.
+
+    `ForbidExtraModel`, so any of the above arriving anyway is a 400 rather than a
+    silently ignored key.
+    """
+
+    customer_id: uuid.UUID
+    appointment_type_id: uuid.UUID

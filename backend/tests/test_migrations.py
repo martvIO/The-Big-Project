@@ -2648,7 +2648,7 @@ def _privacy_constraint_def(url: str, name: str) -> str | None:
     return asyncio.run(read())
 
 
-def _privacy_probe(url: str, statements: list[str], constraint: str) -> bool:
+def _constraint_probe(url: str, statements: list[str], constraint: str) -> bool:
     """Run `statements` in ONE transaction and answer whether the LAST one was
     admitted; roll the whole thing back either way.
 
@@ -2658,6 +2658,10 @@ def _privacy_probe(url: str, statements: list[str], constraint: str) -> bool:
     transactionally, so even the DROP unwinds and the session-scoped container
     ends as it started, which is what keeps a seeded consent row out of the way of
     every other module sharing it.
+
+    Table-agnostic, and named so since F50: the `customers` consent block below
+    and the `bookings` walk-in block at the end of this file are the same
+    experiment on two tables, and a second copy would be a second place to drift.
 
     The refusal half asserts the CONSTRAINT NAME appears in the error. Without it
     a probe that failed for an unrelated reason — a NOT NULL, a typo in the
@@ -2747,11 +2751,15 @@ def test_the_marketing_source_check_admits_only_booking_form(migrated_db: str) -
     `'walk_in'` is refused BY NAME because that is the value a later reader will
     reach for first, and DR-10 is the argument they need to read before adding
     it."""
-    assert _privacy_probe(migrated_db, [_customer_insert(source="'booking_form'")], _SOURCE_CHECK)
-    assert _privacy_probe(migrated_db, [_customer_insert(source="NULL")], _SOURCE_CHECK)
+    assert _constraint_probe(
+        migrated_db, [_customer_insert(source="'booking_form'")], _SOURCE_CHECK
+    )
+    assert _constraint_probe(migrated_db, [_customer_insert(source="NULL")], _SOURCE_CHECK)
 
-    assert not _privacy_probe(migrated_db, [_customer_insert(source="'walk_in'")], _SOURCE_CHECK)
-    assert not _privacy_probe(migrated_db, [_customer_insert(source="'nonsense'")], _SOURCE_CHECK)
+    assert not _constraint_probe(migrated_db, [_customer_insert(source="'walk_in'")], _SOURCE_CHECK)
+    assert not _constraint_probe(
+        migrated_db, [_customer_insert(source="'nonsense'")], _SOURCE_CHECK
+    )
 
 
 @pytest.mark.db
@@ -2772,15 +2780,15 @@ def test_the_withdraw_check_refuses_a_withdrawal_with_no_consent_behind_it(
     `AND marketing_consent_at IS NOT NULL` in its WHERE, so this CHECK is
     UNREACHABLE through the application — which is the point. It is the fence
     against a hand-written UPDATE, not against the code path."""
-    assert _privacy_probe(migrated_db, [_customer_insert()], _WITHDRAW_CHECK)
-    assert _privacy_probe(migrated_db, [_customer_insert(consent_at="now()")], _WITHDRAW_CHECK)
-    assert _privacy_probe(
+    assert _constraint_probe(migrated_db, [_customer_insert()], _WITHDRAW_CHECK)
+    assert _constraint_probe(migrated_db, [_customer_insert(consent_at="now()")], _WITHDRAW_CHECK)
+    assert _constraint_probe(
         migrated_db,
         [_customer_insert(consent_at="now()", withdrawn_at="now()")],
         _WITHDRAW_CHECK,
     )
 
-    assert not _privacy_probe(
+    assert not _constraint_probe(
         migrated_db, [_customer_insert(withdrawn_at="now()")], _WITHDRAW_CHECK
     )
 
@@ -2797,18 +2805,18 @@ def test_adding_the_privacy_checks_validates_existing_rows(migrated_db: str) -> 
     migration's comment would be a lie — which is the 0011 precedent this borrows
     (`test_adding_the_role_check_validates_existing_rows`) and the reason it is
     borrowed rather than restated."""
-    assert _privacy_probe(
+    assert _constraint_probe(
         migrated_db,
         [_DROP_SOURCE_CHECK, _customer_insert(source="'booking_form'"), _ADD_SOURCE_CHECK],
         _SOURCE_CHECK,
     )
-    assert not _privacy_probe(
+    assert not _constraint_probe(
         migrated_db,
         [_DROP_SOURCE_CHECK, _customer_insert(source="'walk_in'"), _ADD_SOURCE_CHECK],
         _SOURCE_CHECK,
     )
 
-    assert _privacy_probe(
+    assert _constraint_probe(
         migrated_db,
         [
             _DROP_WITHDRAW_CHECK,
@@ -2817,7 +2825,7 @@ def test_adding_the_privacy_checks_validates_existing_rows(migrated_db: str) -> 
         ],
         _WITHDRAW_CHECK,
     )
-    assert not _privacy_probe(
+    assert not _constraint_probe(
         migrated_db,
         [_DROP_WITHDRAW_CHECK, _customer_insert(withdrawn_at="now()"), _ADD_WITHDRAW_CHECK],
         _WITHDRAW_CHECK,
@@ -2873,4 +2881,484 @@ def test_the_privacy_migration_round_trips(migrated_db: str) -> None:
         assert _privacy_columns(migrated_db) == expected
         assert checks() == (_SOURCE_CHECK_DEF, _WITHDRAW_CHECK_DEF)
     finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- 0025: bookings.source, the two named CHECKs, and the two dropped NOT NULLs ---
+
+_BOOKINGS_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'bookings'::regclass AND conname = :name"
+)
+_SOURCE_COLUMN = (
+    "SELECT data_type || '|' || is_nullable || '|' || coalesce(column_default, '-') "
+    "FROM information_schema.columns "
+    "WHERE table_name = 'bookings' AND column_name = 'source'"
+)
+_TERMS_NULLABLE = (
+    "SELECT string_agg(column_name || '=' || is_nullable, ',' ORDER BY column_name) "
+    "FROM information_schema.columns WHERE table_name = 'bookings' "
+    "AND column_name IN ('terms_version_accepted', 'terms_accepted_at')"
+)
+
+_BOOKING_SOURCE_CHECK = "bookings_source_check"
+_TERMS_EVIDENCE_CHECK = "bookings_terms_evidence_check"
+# 0008's INLINE `CHECK (terms_version_accepted > 0)`, under the name POSTGRES
+# generated for it. F50 deliberately does not touch it — a CHECK over a NULL
+# evaluates to NULL, not FALSE, so it passes on a walk-in row unedited. The
+# generated name is spelled here, in a TEST, precisely because the migration must
+# not depend on it.
+_POSITIVE_VERSION_CHECK = "bookings_terms_version_accepted_check"
+
+# Spelled as POSTGRES deparses them and captured from a real 16.x server, never
+# transcribed from the migration source: `IN (...)` becomes `= ANY (ARRAY[...])`
+# and every operand gets parenthesised. A literal that merely looks right pins
+# nothing.
+_BOOKING_SOURCE_CHECK_DEF = "CHECK ((source = ANY (ARRAY['storefront'::text, 'walk_in'::text])))"
+# ⚠ THE DIRECTION IS THE WHOLE DESIGN. `source = 'walk_in' OR (...)` enumerates
+# the EXEMPTION; the inverse spelling `source <> 'storefront' OR (...)` says the
+# same thing today and the OPPOSITE thing tomorrow. The two are behaviourally
+# identical on every value that exists now, which is why
+# test_the_terms_evidence_check_refuses_an_undeclared_source below is the ONLY
+# test in this feature that can tell them apart — read its body, not its name.
+_TERMS_EVIDENCE_CHECK_DEF = (
+    "CHECK (((source = 'walk_in'::text) OR ((terms_version_accepted IS NOT NULL) "
+    "AND (terms_accepted_at IS NOT NULL))))"
+)
+
+# 0025's two ADD CONSTRAINT statements, VERBATIM — the populated-table tests below
+# prove the migration's own claim, so they must run the real ALTER and not a
+# paraphrase. The DROPs deliberately omit the `IF EXISTS` the downgrade carries: a
+# probe that silently no-ops when the constraint is already gone would make every
+# half below pass vacuously.
+_ADD_BOOKING_SOURCE_CHECK = (
+    f"ALTER TABLE bookings ADD CONSTRAINT {_BOOKING_SOURCE_CHECK} "
+    "CHECK (source IN ('storefront','walk_in'))"
+)
+_DROP_BOOKING_SOURCE_CHECK = f"ALTER TABLE bookings DROP CONSTRAINT {_BOOKING_SOURCE_CHECK}"
+_ADD_TERMS_EVIDENCE_CHECK = (
+    f"ALTER TABLE bookings ADD CONSTRAINT {_TERMS_EVIDENCE_CHECK} "
+    "CHECK (source = 'walk_in' OR "
+    "(terms_version_accepted IS NOT NULL AND terms_accepted_at IS NOT NULL))"
+)
+_DROP_TERMS_EVIDENCE_CHECK = f"ALTER TABLE bookings DROP CONSTRAINT {_TERMS_EVIDENCE_CHECK}"
+
+
+def _booking_probe_insert(
+    *,
+    source: str | None = "'walk_in'",
+    terms_version: str = "NULL",
+    terms_accepted_at: str = "NULL",
+) -> str:
+    """One `bookings` row, with `source` and the two terms columns spelled as SQL
+    FRAGMENTS rather than bound parameters — `_customer_insert`'s reason, which is
+    that asyncpg refuses an untyped NULL parameter and the `::int`/`::timestamptz`
+    casts binding would need are then doing all the work anyway.
+
+    `source=None` omits the column entirely, which is how the DEFAULT is probed:
+    it is the only spelling that distinguishes "the default wrote 'storefront'"
+    from "the test wrote 'storefront'".
+
+    Every row mints its own tenant AND its own customer, so neither partial unique
+    index (`idx_bookings_slot_seat_unique`, `idx_bookings_tenant_customer_starts_unique`)
+    can collide between probes even at `now()`.
+    """
+    columns = (
+        "tenant_id, customer_id, appointment_type_id, starts_at, seat_index, status, "
+        "terms_version_accepted, terms_accepted_at, appointment_type_name"
+    )
+    values = (
+        "uuid_generate_v4(), uuid_generate_v4(), uuid_generate_v4(), now(), 1, 'confirmed', "
+        f"{terms_version}, {terms_accepted_at}, 'probe'"
+    )
+    if source is not None:
+        columns += ", source"
+        values += f", {source}"
+    return f"INSERT INTO bookings ({columns}) VALUES ({values})"
+
+
+@pytest.mark.db
+def test_the_walk_in_migration_pins_both_new_check_definitions(migrated_db: str) -> None:
+    """Both constraints NAMED and each its own statement (0011's shape), which is
+    what makes the remote half's widening a one-line edit rather than a guess at a
+    Postgres-generated name.
+
+    Keyed to `head` — i.e. AFTER this feature's migration, whatever number it
+    ended up with — never to a hardcoded revision id, so this does not rot the
+    first time another feature lands a migration on top.
+
+    The terms row is where whoever adds `'owner'` to the source CHECK collides,
+    and it is deliberately where they collide: an undeclared source with no terms
+    evidence is a FAILING INSERT until its author decides about terms on purpose.
+    """
+    assert (
+        _one(migrated_db, _BOOKINGS_CONSTRAINT_DEF, {"name": _BOOKING_SOURCE_CHECK})
+        == _BOOKING_SOURCE_CHECK_DEF
+    )
+    assert (
+        _one(migrated_db, _BOOKINGS_CONSTRAINT_DEF, {"name": _TERMS_EVIDENCE_CHECK})
+        == _TERMS_EVIDENCE_CHECK_DEF
+    )
+
+
+@pytest.mark.db
+def test_source_is_not_null_with_a_storefront_default_and_both_terms_columns_are_nullable(
+    migrated_db: str,
+) -> None:
+    """The three column-level facts the CHECK above rests on, read off the
+    catalog rather than inferred from behaviour.
+
+    NOT NULL DEFAULT 'storefront' is metadata-only in PG 11+, and the default is
+    load-bearing rather than convenient: it is what makes the terms CHECK true of
+    100% of existing rows with NO backfill UPDATE."""
+    assert _one(migrated_db, _SOURCE_COLUMN) == "text|NO|'storefront'::text"
+    assert _one(migrated_db, _TERMS_NULLABLE) == "terms_accepted_at=YES,terms_version_accepted=YES"
+
+
+@pytest.mark.db
+def test_source_defaults_to_storefront_on_a_row_that_names_no_source(migrated_db: str) -> None:
+    """An INSERT that omits the column reads back 'storefront' — which is the
+    property every PRE-EXISTING row relies on, and the reason 0025 ships no
+    backfill UPDATE.
+
+    Deleting `DEFAULT 'storefront'` from the ADD COLUMN line reds this twice over:
+    the INSERT fails the NOT NULL outright, and were the NOT NULL dropped too the
+    read-back would be None rather than 'storefront'."""
+
+    async def probe() -> str | None:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(
+                        text(
+                            _booking_probe_insert(
+                                source=None, terms_version="1", terms_accepted_at="now()"
+                            )
+                        )
+                    )
+                    row = (
+                        await conn.execute(
+                            text(
+                                "SELECT source FROM bookings WHERE appointment_type_name = 'probe'"
+                            )
+                        )
+                    ).first()
+                    return None if row is None else str(row[0])
+                finally:
+                    await trans.rollback()
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(probe()) == "storefront"
+
+
+@pytest.mark.db
+def test_the_terms_evidence_check_exempts_only_walk_in(migrated_db: str) -> None:
+    """All four corners, because a CHECK that admits everything is not a
+    constraint.
+
+    The refused corner is the one the whole feature turns on: a STOREFRONT booking
+    with no terms evidence. Before 0025 that row was unrepresentable because the
+    two columns were NOT NULL; after 0025 this CHECK is the only thing standing
+    where those NOT NULLs stood, so if it does not refuse, the migration has
+    silently made it legal to take a public booking with nobody's acceptance
+    behind it."""
+    assert _constraint_probe(
+        migrated_db,
+        [_booking_probe_insert(source="'walk_in'")],
+        _TERMS_EVIDENCE_CHECK,
+    )
+    assert _constraint_probe(
+        migrated_db,
+        [_booking_probe_insert(source="'walk_in'", terms_version="1", terms_accepted_at="now()")],
+        _TERMS_EVIDENCE_CHECK,
+    )
+    assert _constraint_probe(
+        migrated_db,
+        [
+            _booking_probe_insert(
+                source="'storefront'", terms_version="1", terms_accepted_at="now()"
+            )
+        ],
+        _TERMS_EVIDENCE_CHECK,
+    )
+
+    assert not _constraint_probe(
+        migrated_db,
+        [_booking_probe_insert(source="'storefront'")],
+        _TERMS_EVIDENCE_CHECK,
+    )
+    # And half the evidence is not evidence: each column alone must still fail.
+    assert not _constraint_probe(
+        migrated_db,
+        [_booking_probe_insert(source="'storefront'", terms_version="1")],
+        _TERMS_EVIDENCE_CHECK,
+    )
+    assert not _constraint_probe(
+        migrated_db,
+        [_booking_probe_insert(source="'storefront'", terms_accepted_at="now()")],
+        _TERMS_EVIDENCE_CHECK,
+    )
+
+
+@pytest.mark.db
+def test_the_terms_evidence_check_refuses_an_undeclared_source(migrated_db: str) -> None:
+    """⚠ THE ONLY TEST IN THIS FEATURE THAT CAN TELL D1'S CONSTRAINT DIRECTION
+    FROM ITS INVERSE, and D1's central argument is untested prose without it.
+
+    `source = 'walk_in' OR (...)` and `source <> 'storefront' OR (...)` are
+    behaviourally IDENTICAL on every value `bookings_source_check` admits today.
+    They diverge only on a THIRD value — which is exactly the case the remote,
+    scheduled half of F50 will introduce when it adds 'owner'. Under the shipped
+    spelling that half hits a failing INSERT and has to decide about terms on
+    purpose; under the inverse it would silently inherit an exemption it must not
+    have.
+
+    So the probe drops `bookings_source_check` first — inside the transaction the
+    helper rolls back — because the source CHECK would otherwise refuse 'owner'
+    before the terms CHECK ever saw it, and the test would pass for the wrong
+    constraint's reason.
+
+    The positive half is not decoration: it proves the DROP actually took effect,
+    so the refusal below is attributable to the terms CHECK rather than to a
+    'owner' row being illegal for some other reason."""
+    assert _constraint_probe(
+        migrated_db,
+        [
+            _DROP_BOOKING_SOURCE_CHECK,
+            _booking_probe_insert(source="'owner'", terms_version="1", terms_accepted_at="now()"),
+        ],
+        _TERMS_EVIDENCE_CHECK,
+    )
+
+    assert not _constraint_probe(
+        migrated_db,
+        [_DROP_BOOKING_SOURCE_CHECK, _booking_probe_insert(source="'owner'")],
+        _TERMS_EVIDENCE_CHECK,
+    )
+
+
+@pytest.mark.db
+def test_the_source_check_admits_exactly_two_values(migrated_db: str) -> None:
+    """'storefront' and 'walk_in', and nothing else — 'queue' in particular, which
+    is the value a reader who half-remembers F33 reaches for first. A queue ticket
+    is NOT a booking (`models/queue_ticket.py:12-17`) and this CHECK is one of the
+    things that keeps the two tables from collapsing into each other."""
+    assert _constraint_probe(
+        migrated_db,
+        [
+            _booking_probe_insert(
+                source="'storefront'", terms_version="1", terms_accepted_at="now()"
+            )
+        ],
+        _BOOKING_SOURCE_CHECK,
+    )
+    assert _constraint_probe(
+        migrated_db, [_booking_probe_insert(source="'walk_in'")], _BOOKING_SOURCE_CHECK
+    )
+
+    assert not _constraint_probe(
+        migrated_db,
+        [_booking_probe_insert(source="'queue'", terms_version="1", terms_accepted_at="now()")],
+        _BOOKING_SOURCE_CHECK,
+    )
+    assert not _constraint_probe(
+        migrated_db,
+        [_booking_probe_insert(source="'owner'", terms_version="1", terms_accepted_at="now()")],
+        _BOOKING_SOURCE_CHECK,
+    )
+
+
+@pytest.mark.db
+def test_both_new_checks_are_droppable_by_name_and_validate_existing_rows(
+    migrated_db: str,
+) -> None:
+    """0011's ADD-CONSTRAINT-over-populated-rows claim, applied to 0025's two, and
+    the drop-by-name half is what proves each constraint really has the name the
+    migration gave it — replace either `ADD CONSTRAINT <name>` with an inline
+    CHECK on the ADD COLUMN and the Postgres-generated name makes the DROP fail
+    here.
+
+    Both halves each: a legal row present -> the constraint is added; an illegal
+    row present -> it is REFUSED. Without the second half a NOT VALID constraint
+    would pass the first and 0025's "cannot fail on live data" comment would be a
+    lie."""
+    assert _constraint_probe(
+        migrated_db,
+        [
+            _DROP_TERMS_EVIDENCE_CHECK,
+            _booking_probe_insert(source="'walk_in'"),
+            _ADD_TERMS_EVIDENCE_CHECK,
+        ],
+        _TERMS_EVIDENCE_CHECK,
+    )
+    assert not _constraint_probe(
+        migrated_db,
+        [
+            _DROP_TERMS_EVIDENCE_CHECK,
+            _DROP_BOOKING_SOURCE_CHECK,
+            _booking_probe_insert(source="'storefront'"),
+            _ADD_TERMS_EVIDENCE_CHECK,
+        ],
+        _TERMS_EVIDENCE_CHECK,
+    )
+
+    assert _constraint_probe(
+        migrated_db,
+        [
+            _DROP_BOOKING_SOURCE_CHECK,
+            _booking_probe_insert(source="'walk_in'"),
+            _ADD_BOOKING_SOURCE_CHECK,
+        ],
+        _BOOKING_SOURCE_CHECK,
+    )
+    assert not _constraint_probe(
+        migrated_db,
+        [
+            _DROP_BOOKING_SOURCE_CHECK,
+            _DROP_TERMS_EVIDENCE_CHECK,
+            _booking_probe_insert(source="'owner'"),
+            _ADD_BOOKING_SOURCE_CHECK,
+        ],
+        _BOOKING_SOURCE_CHECK,
+    )
+
+
+@pytest.mark.db
+def test_the_inline_positive_version_check_still_binds(migrated_db: str) -> None:
+    """0025 leaves 0008's inline `CHECK (terms_version_accepted > 0)` alone, and
+    this is that claim proved rather than asserted in a comment.
+
+    Two halves, and they are the two halves of "a CHECK over a NULL is not FALSE":
+    `0` on a storefront row still raises, so the constraint is still there and
+    still enforcing; NULL on a walk-in row does not, so dropping and re-adding it
+    would have bought nothing. Its Postgres-generated name is spelled in this test
+    and NOWHERE in the migration, which is the point."""
+    assert not _constraint_probe(
+        migrated_db,
+        [
+            _booking_probe_insert(
+                source="'storefront'", terms_version="0", terms_accepted_at="now()"
+            )
+        ],
+        _POSITIVE_VERSION_CHECK,
+    )
+    assert _constraint_probe(
+        migrated_db, [_booking_probe_insert(source="'walk_in'")], _POSITIVE_VERSION_CHECK
+    )
+
+
+@pytest.mark.db
+def test_the_walk_in_migration_round_trips(migrated_db: str) -> None:
+    """upgrade() adds one column and two CHECKs and widens two columns to NULL;
+    downgrade() undoes all five — ON A TABLE HOLDING NO WALK-IN ROW. The other
+    half of the downgrade, the one that must FAIL, is the test below.
+
+    Probes both directions rather than only the end state, which is 0013's rule: a
+    downgrade that silently no-ops stays green while shipping a migration that
+    cannot be rolled back.
+
+    The target is resolved by IDENTITY (`_parent_of`), never as a literal and
+    never as `-1`: this migration's number comes from `alembic heads` at build
+    time and is renumbered at the rebase that precedes the push.
+
+    The finally is not decoration. Left downgraded, the ORM maps a `source` column
+    `bookings` no longer has and declares two terms columns Optional that the
+    table has made NOT NULL again, so every later booking db test in this shared
+    session fails somewhere unrelated to itself."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("walk in bookings")
+
+    def checks() -> tuple[str | None, str | None]:
+        return (
+            _one(migrated_db, _BOOKINGS_CONSTRAINT_DEF, {"name": _BOOKING_SOURCE_CHECK}),
+            _one(migrated_db, _BOOKINGS_CONSTRAINT_DEF, {"name": _TERMS_EVIDENCE_CHECK}),
+        )
+
+    try:
+        assert _one(migrated_db, _SOURCE_COLUMN) == "text|NO|'storefront'::text"
+        assert checks() == (_BOOKING_SOURCE_CHECK_DEF, _TERMS_EVIDENCE_CHECK_DEF)
+
+        command.downgrade(cfg, down_to)
+        assert _one(migrated_db, _SOURCE_COLUMN) is None
+        assert checks() == (None, None)
+        # The NOT NULLs are back, which is the half a `DROP COLUMN`-only
+        # downgrade would leave undone while still passing the two above.
+        assert (
+            _one(migrated_db, _TERMS_NULLABLE) == "terms_accepted_at=NO,terms_version_accepted=NO"
+        )
+
+        command.upgrade(cfg, "head")
+        assert _one(migrated_db, _SOURCE_COLUMN) == "text|NO|'storefront'::text"
+        assert checks() == (_BOOKING_SOURCE_CHECK_DEF, _TERMS_EVIDENCE_CHECK_DEF)
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+@pytest.mark.db
+def test_the_downgrade_refuses_to_narrow_past_a_walk_in_row(migrated_db: str) -> None:
+    """0025's downgrade re-imposes the two NOT NULLs deliberately WITHOUT
+    `IF EXISTS`, deliberately without a pre-clean, and deliberately ABLE TO FAIL.
+    This is that failure asserted rather than described.
+
+    A row with NULL terms evidence must BLOCK the narrowing, because the only two
+    ways to make `SET NOT NULL` succeed are to DELETE real appointment records or
+    to stamp terms evidence nobody gave — and this feature exists because the
+    second one is not allowed. The alternative, a lenient downgrade, leaves the
+    database describing a state its own schema forbids. F57's
+    test_the_downgrade_refuses_to_narrow_past_a_floor_role_row is the precedent.
+
+    Adding a `DELETE FROM bookings WHERE source='walk_in'` or an
+    `UPDATE ... SET terms_version_accepted = 1` to `downgrade()` — the two lenient
+    forms the spec declined on the record — reds this. So does deleting either
+    `SET NOT NULL` line.
+
+    **`command.downgrade` is invoked for real**, not paraphrased into the two
+    ALTERs: the mutation this exists to catch is a pre-clean ADDED TO `downgrade()`,
+    and a test that ran the ALTERs itself would stay green through exactly that
+    edit. The seeded row must therefore be COMMITTED, which is what makes the
+    refusal reachable.
+
+    Postgres runs DDL transactionally and alembic wraps a migration in one
+    transaction, so the failure rolls back the two DROP CONSTRAINTs with it and the
+    shared session-scoped schema is left at head — asserted below rather than
+    assumed, because a half-applied schema would break every module after this one
+    somewhere unrelated to itself. The seeded row is deleted in the `finally`."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("walk in bookings")
+    marker = f"walk-in-refusal-{uuid.uuid4().hex[:8]}"
+
+    def run(statement: str) -> None:
+        async def execute() -> None:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.begin() as conn:
+                    await conn.execute(text(statement))
+            finally:
+                await engine.dispose()
+
+        asyncio.run(execute())
+
+    try:
+        run(_booking_probe_insert(source="'walk_in'").replace("'probe'", f"'{marker}'"))
+
+        with pytest.raises(Exception, match="terms_"):
+            command.downgrade(cfg, down_to)
+
+        # The refusal changed nothing — not even partially. Both constraints and
+        # the column survive, so the database still describes the state its own
+        # schema permits.
+        assert _one(migrated_db, _SOURCE_COLUMN) == "text|NO|'storefront'::text"
+        assert (
+            _one(migrated_db, _BOOKINGS_CONSTRAINT_DEF, {"name": _TERMS_EVIDENCE_CHECK})
+            == _TERMS_EVIDENCE_CHECK_DEF
+        )
+    finally:
+        run(f"DELETE FROM bookings WHERE appointment_type_name = '{marker}'")
         command.upgrade(cfg, "head")  # idempotent when already at head
