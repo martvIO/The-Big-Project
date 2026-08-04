@@ -2308,3 +2308,239 @@ def test_the_sos_alerts_migration_round_trips(migrated_db: str) -> None:
         assert set(_sos_columns(migrated_db)) == _SOS_ALL_COLUMNS
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F42: the seamstress's weekly capacity, and the assignee index F41 reserved ---
+
+_CAPACITY_COLUMN = (
+    "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+    "WHERE table_name = 'staff_users' AND column_name = 'weekly_capacity_hours'"
+)
+_CAPACITY_CHECK = "staff_users_weekly_capacity_hours_check"
+_CAPACITY_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    f"WHERE conrelid = 'staff_users'::regclass AND conname = '{_CAPACITY_CHECK}'"
+)
+_ASSIGNEE_INDEX_NAME = "idx_alteration_tickets_tenant_assignee"
+# Spelled as POSTGRES deparses them, not as the migration wrote them:
+# pg_get_constraintdef parenthesises every operand of an AND, and
+# pg_indexes.indexdef schema-qualifies the table, names the access method and
+# parenthesises — and REORDERS — the partial predicate. CAPTURED from a real
+# 16.x server rather than transcribed from the migration source, because a
+# literal that merely looks right would pin nothing.
+#
+# The index row is the one that fails loudly if someone drops the
+# `delivered_at IS NULL` half of the predicate — which would leave F42's load
+# aggregate scanning every ticket the boutique has ever delivered.
+_CAPACITY_CHECK_DEF = "CHECK (((weekly_capacity_hours >= 0) AND (weekly_capacity_hours <= 168)))"
+_ASSIGNEE_INDEX_DEF_PINNED = (
+    "CREATE INDEX idx_alteration_tickets_tenant_assignee ON public.alteration_tickets "
+    "USING btree (tenant_id, assigned_staff_user_id) "
+    "WHERE ((deleted_at IS NULL) AND (delivered_at IS NULL))"
+)
+
+_CAPACITY_EMAIL = "capacity@check.example"
+_CAPACITY_INSERT = (
+    "INSERT INTO staff_users "
+    "(tenant_id, email, password_hash, display_name, role, weekly_capacity_hours) "
+    f"VALUES (uuid_generate_v4(), '{_CAPACITY_EMAIL}', 'hash', 'Probe', 'owner', :hours)"
+)
+_CAPACITY_UPDATE = (
+    f"UPDATE staff_users SET weekly_capacity_hours = :hours WHERE email = '{_CAPACITY_EMAIL}'"
+)
+_CAPACITY_READ = f"SELECT weekly_capacity_hours FROM staff_users WHERE email = '{_CAPACITY_EMAIL}'"
+
+
+def _capacity_column(url: str) -> tuple[str, str, str | None] | None:
+    async def read() -> tuple[str, str, str | None] | None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                row = (await conn.execute(text(_CAPACITY_COLUMN))).first()
+                if row is None:
+                    return None
+                return (str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _capacity_pinned_definitions(url: str) -> tuple[str, str]:
+    async def read() -> tuple[str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                check = await conn.execute(text(_CAPACITY_CONSTRAINT_DEF))
+                index = await conn.execute(
+                    text(_ALTERATION_INDEX_DEF), {"name": _ASSIGNEE_INDEX_NAME}
+                )
+                return (str(check.scalar_one()), str(index.scalar_one()))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _capacity_write_admitted(url: str, hours: int) -> tuple[bool, int | None]:
+    """INSERT `hours`; if the CHECK refuses it, fall back to a legal row and try
+    the same value as an UPDATE. Answers `(admitted, what the row now holds)`.
+
+    The read-back is the half that matters: a refusal must change NOTHING, and a
+    CHECK that refused the INSERT but let the UPDATE through would pass a
+    boolean-only assertion. The refused statement aborts its (sub)transaction, so
+    the attempt runs inside a SAVEPOINT and the read-back runs outside it.
+
+    Rolled back whole either way — this module's rows are never committed, which
+    is also what keeps a `staff_users` row out of
+    test_adding_the_role_check_validates_existing_rows' way."""
+
+    async def probe() -> tuple[bool, int | None]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    admitted = True
+                    nested = await conn.begin_nested()
+                    try:
+                        await conn.execute(text(_CAPACITY_INSERT), {"hours": hours})
+                        await nested.commit()
+                    except IntegrityError:
+                        await nested.rollback()
+                        admitted = False
+                    if not admitted:
+                        await conn.execute(text(_CAPACITY_INSERT), {"hours": 40})
+                        nested = await conn.begin_nested()
+                        try:
+                            await conn.execute(text(_CAPACITY_UPDATE), {"hours": hours})
+                            await nested.commit()
+                            admitted = True
+                        except IntegrityError:
+                            await nested.rollback()
+                    stored = (await conn.execute(text(_CAPACITY_READ))).scalar_one()
+                    return admitted, (None if stored is None else int(stored))
+                finally:
+                    await trans.rollback()
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+@pytest.mark.db
+def test_the_capacity_column_exists_and_is_nullable(migrated_db: str) -> None:
+    """NULLABLE WITH NO DEFAULT, and both halves are the decision (D1/D2).
+
+    NULL is a real and meaningful state — "no capacity recorded for this person"
+    — and the panel has a designed rendering for it. A `DEFAULT 40` would write a
+    number nobody chose onto every existing row and make that state unreachable
+    and undetectable; it would also turn the one `ADD COLUMN` form Postgres does
+    as metadata only into a table rewrite.
+
+    ⚠ `test_every_tenant_id_table_has_forced_rls` needs no edit alongside this
+    and its silence is NOT evidence: F42 creates no table, so that walker has
+    nothing new to find. Adding a column to a table under a policy does not
+    change the policy."""
+    assert _capacity_column(migrated_db) == ("integer", "YES", None)
+
+
+@pytest.mark.db
+def test_the_capacity_definitions_are_pinned(migrated_db: str) -> None:
+    """The highest-value test in F42, and what it guards is a FUTURE edit.
+
+    Keyed to `head` — i.e. AFTER this feature's migration, whatever number it
+    ended up with — and never to a hardcoded revision id, so a literal here would
+    not rot the first time another feature lands a migration first.
+
+    Two rows. The CHECK is what a later reader collides with when they decide 168
+    is the wrong ceiling, or that 0 should not be legal. The index is the one that
+    fails loudly if someone drops the `delivered_at IS NULL` half of the partial
+    predicate: D3's aggregate is deliberately UNCAPPED, so that predicate is the
+    only thing bounding what it scans on a boutique that has been delivering for
+    two years."""
+    capacity_check, index = _capacity_pinned_definitions(migrated_db)
+    assert capacity_check == _CAPACITY_CHECK_DEF
+    assert index == _ASSIGNEE_INDEX_DEF_PINNED
+
+
+@pytest.mark.db
+def test_the_capacity_check_refuses_out_of_range(migrated_db: str) -> None:
+    """0 IS LEGAL AND IS NOT A TYPO: a shift manager setting 0 is saying "she is
+    not available this week", which is a thing the product should be able to say
+    and which the panel renders honestly. 168 is hours-in-a-week — a typo fence
+    in `effort_minutes CHECK (… <= 1440)`'s spirit, not a policy about labour
+    law.
+
+    Both edges from both sides, because a CHECK that admits everything is not a
+    bound — and each refusal is asserted to have changed NOTHING, not even
+    partially."""
+    assert _capacity_write_admitted(migrated_db, 0) == (True, 0)
+    assert _capacity_write_admitted(migrated_db, 168) == (True, 168)
+
+    assert _capacity_write_admitted(migrated_db, -1) == (False, 40)
+    assert _capacity_write_admitted(migrated_db, 169) == (False, 40)
+
+
+@pytest.mark.db
+def test_the_seamstress_capacity_migration_round_trips(migrated_db: str) -> None:
+    """upgrade() adds the column, the CHECK and the index; downgrade() removes
+    ALL THREE. Probes both directions rather than only the end state, which is
+    0013's rule: a downgrade that silently no-ops stays green while shipping a
+    migration that cannot be rolled back.
+
+    The target is resolved by IDENTITY (`_parent_of`), never as a literal and
+    never as `-1`: this migration's number comes from `alembic heads` at build
+    time and is renumbered at the rebase that precedes the push.
+
+    LAST in the file and owns no fixtures. The finally is not decoration: left
+    downgraded, the ORM maps a column `staff_users` no longer has, and every
+    later db test in this shared session fails with UndefinedColumn somewhere
+    unrelated to itself."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("seamstress capacity")
+
+    def index_present() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(
+                        text(_ALTERATION_INDEX_DEF), {"name": _ASSIGNEE_INDEX_NAME}
+                    )
+                    return result.first() is not None
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    def check_present() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text(_CAPACITY_CONSTRAINT_DEF))
+                    return result.first() is not None
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert _capacity_column(migrated_db) == ("integer", "YES", None)
+        assert check_present() is True
+        assert index_present() is True
+
+        command.downgrade(cfg, down_to)
+        assert _capacity_column(migrated_db) is None
+        assert check_present() is False
+        assert index_present() is False
+
+        command.upgrade(cfg, "head")
+        assert _capacity_column(migrated_db) == ("integer", "YES", None)
+        assert check_present() is True
+        assert index_present() is True
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
