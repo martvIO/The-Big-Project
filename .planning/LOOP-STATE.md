@@ -22,18 +22,48 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F33                    # F57 (PR #33), F19 (PR #34) and F53 (PR #35) ALL MERGED 2026-08-03.
-                                # MAIN'S HEAD IS NOW MIGRATION 0017 (F53's customer_crm_fields).
-                                # ONE FEATURE IN FLIGHT: F33, and it is this loop's.
+current: null                   # ⛔ NOTHING IS IN FLIGHT. No worktrees, no open feature PRs.
+                                # A fresh session starts at step 2 (pick the next feature).
                                 #
-                                # ==== MIGRATION CHAIN — NOW A RULE, NOT A FIXED GRID ====
-                                # THE GRID MOVED THREE TIMES IN ONE DAY, WHICH IS THE WHOLE ARGUMENT.
-                                # It said head=0014 at breakfast; F57 made it 0015, F19 made it 0016,
-                                # F53 made it 0017 — and F33, which was BUILT at 0016 against a head
-                                # of 0015, now collides with F19's shipped 0016_deposit_flow and must
-                                # ship as 0018/down_revision 0017. Not one of the four fixed numbers
-                                # this file originally assigned (F33=0016, F19=0017, F53=0018)
-                                # survived contact. Do not read any of them as current.
+                                # ==================================================================
+                                # ==== HANDOFF, 2026-08-04 — READ THIS FIRST ====
+                                # ==================================================================
+                                # THE FLOOR-MANAGEMENT PROGRAM IS COMPLETE. All ten features merged,
+                                # one PR each:
+                                #   F34 #32 · F57 #33 · F33 #36 · F36 #37 · F59 #38 · F41 #39
+                                #   F58 #40 · F37 #41 · F60 #42 · F42 #43
+                                # 23 of 46 queue entries are `merged`. main's migration head is 0023.
+                                # BOTH deployment_gates are CLEARED — nothing merged is un-launchable.
+                                # EPIC E7 IS COMPLETE (F36 + F37). E6 is complete except F35.
+                                #
+                                # THE NEXT PICK, by the loop's own rule (first `queued` entry in FILE
+                                # order whose deps are all merged and whose blocker is null), is
+                                # **F50** (walk-in bookings, the SMC-6 carveout). After that the
+                                # eligible set is F22, F24, F25, F27, F28, F35, F47, F49.
+                                #
+                                # ⚠ TWO THINGS ARE OWED BEFORE MORE FEATURES, and they are cheap:
+                                # (1) THE E7 EPIC-BOUNDARY QA PASS (loop step 9) has NOT been run.
+                                #     Full `make e2e` on main, confirm axe is zero-violation, a real
+                                #     Chromium click-through of the floor journeys via the Playwright
+                                #     MCP tools against `vite preview`, then `/brain-sync`. The floor
+                                #     program shipped ten features in two days and NOTHING has yet
+                                #     driven the assembled product in a real browser.
+                                # (2) THE `known_vacuous` AUDIT (see that block below). jsdom ships no
+                                #     <dialog>, so six shipped apps/manage test files that mount a
+                                #     Modal may carry focus assertions that CANNOT FAIL. Unaudited.
+                                #
+                                # THE WIDEST BLOCKER IS UNCHANGED AND IS THE USER'S: F20 is parked at
+                                # a legal Gate 1 with five questions, and F21, F29, F38, F39, F40 and
+                                # F45 are all unreachable behind it. See user_actions.
+                                #
+                                # ==== MIGRATION CHAIN — A RULE, NOT A FIXED GRID ====
+                                # THE GRID MOVED NINE TIMES IN TWO DAYS, WHICH IS THE WHOLE ARGUMENT.
+                                # It said head=0014 at breakfast on 2026-08-03; it is 0023 now, and
+                                # not one fixed number this file ever assigned survived contact.
+                                # F33 built at 0016 and shipped at 0018; F36 built at 0018 and shipped
+                                # at 0019; F41 built at 0019 and shipped at 0020; F37 built at 0021
+                                # and shipped at 0022; F42 built at 0022 and shipped at 0023.
+                                # Do not read any hardcoded number in this file as current.
                                 # THE RULE THAT REPLACES THEM:
                                 #   Resolve your revision id from `alembic heads` on main
                                 #   IMMEDIATELY BEFORE the rebase that precedes your push, and
@@ -919,7 +949,8 @@ queue:
     slug: seamstress-capacity
     epic: E9
     title: "Seamstress capacity hours + load bars + balanced assignment"
-    status: building
+    status: merged
+    pr: 43
     attempts: 1
     deps: [F41, F57]
     spec: .planning/specs/seamstress-capacity.md
@@ -956,6 +987,25 @@ queue:
       exist under the simplified model — a matrix's second dimension is time, which is the
       roster projection the same ruling drops. It ships as a LIST, which also discharges
       the keyboard requirement structurally.
+    shipped: >-
+      MERGED 2026-08-04 as PR #43, ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN.
+      Migration 0023_seamstress_capacity (built at 0022, renumbered when F37 took it).
+      Gates on the merged tree: 2235 backend fast, 750 backend db ON REAL POSTGRES,
+      104 ui / 1029 storefront / 1242 manage, 126 e2e.
+      **THIS COMPLETES THE FLOOR-MANAGEMENT PROGRAM — ALL TEN FEATURES MERGED.**
+      THE LOAD IS TWO SUMS AND THAT IS THE FEATURE: coalesce(sum(effort_minutes)
+      FILTER (WHERE due_date <= :horizon), 0) for the bar, plus the unfiltered sum for
+      the backlog. Dropping the FILTER reddens three tests. UNITS are isolated in
+      lib/capacity.ts and the negative half is asserted by grep — no `* 60` or `/ 60`
+      anywhere in app/atelier/ or the repository. A mutation replacing the aggregate
+      with a Python fold over board()'s tickets returns (500,500) against an asserted
+      (520,520) — the exact silent under-count a truncated board would cause.
+      MERGE WITH F60: three i18n conflicts. The second was NOT a straight
+      concatenation — both sides ended mid-`it` and SHARED the trailing `});\n});`
+      that closes whichever block comes last, so a naive union left an unclosed brace
+      and the file reported **"Tests no tests"** rather than a failure count. That is
+      the silent-death class; resolved and then VERIFIED by counting
+      103 (main) + 111 (F42) - 95 (base) = 119, an exact union.
     note: >-
       DESIGN GATE SELF-APPROVED by user ruling 2026-07-31 (Q2 had marked it novel)
       — build through it, do not park.
@@ -975,7 +1025,8 @@ queue:
     slug: guide-walkthrough
     epic: cross
     title: "Per-page guided walkthrough (Guide button)"
-    status: building
+    status: merged
+    pr: 42
     attempts: 1
     deps: [F34]
     spec: .planning/specs/guide-walkthrough.md
@@ -1005,6 +1056,26 @@ queue:
       NO NEW DEPENDENCY, and the spec argues it positively: a tour library sells a focus
       trap (already shipped), a positioning engine (nothing is anchored) and a step state
       machine (eleven lines of useState).
+    shipped: >-
+      MERGED 2026-08-04 as PR #42, ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN.
+      NO migration (alembic heads unchanged), NO new dependency (the diff over every
+      package.json and the lockfile is empty). Gates: 2111 backend fast, 104 ui /
+      1029 storefront / 1108 manage, 113 e2e (98 before).
+      ALL NINE FOCUS CRITERIA ARE PLAYWRIGHT TESTS, NOT VITEST — see `known_vacuous`.
+      THREE SPECIFICATION ERRORS THE BUILD CAUGHT, all worth knowing:
+      (1) The announcement effect as specified was BROKEN. Keyed on [index] with a
+      skip-ref armed in onClick, the first open already has index 0, so the effect never
+      runs, the ref stays armed, and it SWALLOWS THE FIRST «הבא» — step 2 is never
+      announced. Built as [index, open] with the open-guard before the ref check.
+      (2) A step key present in GUIDE_STEPS but MISSING from he.ts had nothing to catch
+      it — the plan's mutation pointed at a test that reads the TABLE, not the bundle, so
+      a typo'd key would render a raw key into a Hebrew dialog with every guard green.
+      A new test walks the table through i18n.t.
+      (3) The storefront value-parity test was VACUOUS as specified:
+      resolve(key, ar) === resolve(key, he) passes when NEITHER bundle has the key
+      (undefined === undefined). It went green against empty bundles until a
+      `typeof === "string"` leg was added.
+      Thirteen mutation checks were run, each observed red then restored.
     note: >-
       NEW 2026-07-31, deliberately LAST in the floor block — it is the brief's
       lowest-priority item and the only one that ships no capability. A «מדריך»
@@ -1987,6 +2058,59 @@ rulings_2026_07_31:             # the user supplied credentials; E4 unblocked
   - "ROLES: StaffRole widens to reception / sales_assistant / seamstress. Their first consumer is the floor program, which is the bar pre-decided #24 and constants.py both set for adding a role. 'sales_assistant' supersedes #24's 'sales' slug. F31's route walker default-denies all three on every existing /manage route; each floor feature admits them explicitly to its own surface, and F51's staff CRUD is NOT rebuilt — only its role select widens."
   - "ATELIER: the kanban states are the brief's intake -> in_progress -> qc -> ready -> delivered. Those LABELS supersede pre-decided #39's five names, and E9 had no QC state; #39's MECHANISM is untouched — five nullable TIMESTAMPTZ columns, no status enum. The date key is due_date, subsuming E9's wedding_date, because an evening gown has no wedding. F42 ships the SIMPLIFIED capacity model (weekly_capacity_hours per seamstress, load bar red when the sum of undelivered effort exceeds it) and its F40 roster dependency is DROPPED for this run — the roster projection is the recorded upgrade path, and F40 is an E8 feature nowhere near being built."
 ```
+
+## Session report — 2026-08-03 → 2026-08-04
+
+**The floor-management program is complete.** Ten features, one PR each, nine of them in this window.
+
+| # | Feature | PR | Migration | CI runs |
+|---|---|---|---|---|
+| F57 | Floor roles, break status, staff cards | #33 | 0015 | 1 |
+| F33 | QR self-check-in, queue tickets, live position | #36 | 0018 | 1 |
+| F36 | Fitting-room registry + assignment | #37 | 0019 | 1 |
+| F59 | Public wall-screen queue board | #38 | — | 1 |
+| F41 | Atelier tickets + kanban | #39 | 0020 | **3** |
+| F58 | Waitlist + dispatch | #40 | 0021 | 1 |
+| F37 | SOS paging | #41 | 0022 | 1 |
+| F60 | Guided walkthrough | #42 | — | 1 |
+| F42 | Seamstress capacity + load bars | #43 | 0023 | 1 |
+
+F19 (#34) and F53 (#35) merged in the same window from **other sessions** and were deliberately left alone; see the liveness note in `current:`.
+
+### What the reviews actually bought
+
+Every feature's review found something, and the pattern is worth recording: **the most dangerous findings were in the proofs, not the code.**
+
+- **F58** — the spec's stranding mutation was *vacuous*, so A8 (the one test discharging F33's deployment gate) asserted nothing. The rebuilt A8 *still* could not reach the `IntegrityError`. Only the third attempt bites.
+- **F41** — three tests that could not fail: a missing SQL `LIMIT` hidden behind a Python slice, `populate_existing=True` (only bites a stale identity map, so a single-writer test can never show it), and an undo clause whose target column was already NULL.
+- **F59** — the board-vs-position agreement test seeded five all-waiting rows, so widening the filter on one side alone added no rows and the alarm never fired.
+- **F60** — **jsdom ships no `<dialog>`**, so every vitest assertion about dialog focus, traps or Esc measures a stub. See `known_vacuous`.
+- **F42** — the load bar divided a *stock* by a *rate*: permanently red in a healthy shop, green on exactly the day it exists to warn about.
+- **F36** — the spec's 409 discriminator (`exc.orig.constraint_name`) is always `None` here, so **every 409 would have been a 500**.
+
+### Two CI reds, and only one was a defect
+
+**F41 red 1 was real and every local gate missed it.** A focus-restore effect with no dependency array cleared its intent before the repaint it awaited, dropping a seamstress's focus to `<body>` five seconds after a colleague touched her ticket. Local full-suite passed, the same test in isolation failed, CI failed — three behaviours; the margin is **exactly one event-loop turn**. The first fix was then refuted by an adversarial verifier for creating a focus *steal* in the other direction.
+
+**F41 red 2 was not a defect** — two tests timed out because their 150-card board *is* the mechanism (it makes React yield between commit and passive flush). Shrinking it would have deleted the defect rather than the delay.
+
+### Merge hazards this window taught
+
+- **Git can resolve a conflict cleanly and wrongly.** In the F37/F58 merge both sides had written `assert len(live) == 18`, so git merged that line with no marker while the true count was 23.
+- **A broken test file reports `Tests no tests`, not failures.** Hit twice — once for real in the F42/F60 i18n merge, where both sides ended mid-`it` and shared a trailing `});` so a naive union left an unclosed brace.
+- The remedy both times: **count tests against both parents** and require `main + HEAD − base`.
+
+### Owed, in priority order
+
+1. **The E7 epic-boundary QA pass** (loop step 9) — never run. Ten features shipped in two days and nothing has driven the assembled product in a real browser.
+2. **The `known_vacuous` audit** — six `apps/manage` test files mount a `Modal`; their focus assertions may be incapable of failing.
+3. `known_flaky` still holds two entries.
+
+### Next pick
+
+**F50** (walk-in bookings, SMC-6). Then F22, F24, F25, F27, F28, F35, F47, F49.
+
+---
 
 ## Run report
 

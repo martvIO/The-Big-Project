@@ -62,11 +62,23 @@ Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutiq
 | F20 `ppl-compliance` | Gate 1 awaiting USER approval — legal surface (Interview Q1), 5 questions at the spec's head. **This is the roadmap's widest blocker**: F21, F29, F38, F39, F40 and F45 are all unreachable behind it. |
 | F32 | Subsumed into F34 (SMC ruling 3) — never build. Kept for the record. |
 
-### The floor-management program (preempts everything, 2026-07-31)
+### The floor-management program — ✅ **COMPLETE 2026-08-04**
 
-`F34 ✅ → F57 ◐ → F36 → F33 → F58 → F59 → F37 → F41 → F42 → F60`
+`F34 ✅ → F57 ✅ → F36 ✅ → F33 ✅ → F58 ✅ → F59 ✅ → F37 ✅ → F41 ✅ → F42 ✅ → F60 ✅`
 
-Eight features remain. Detail in the FLOOR-MANAGEMENT block at the top of `LOOP-STATE.md`'s `queue:`, with per-feature spec-time guidance in `.planning/floor-program-review-2026-07-31.md`.
+All ten shipped, one PR each: F34 #32 · F57 #33 · F33 #36 · F36 #37 · F59 #38 · F41 #39 · F58 #40 · F37 #41 · F60 #42 · F42 #43. Nine of the ten landed on 2026-08-03/04; only F41 needed more than one CI run.
+
+The manager's floor terminal now exists end to end: live staff cards with break status, a fitting-room registry whose occupancy is structurally exclusive, QR self-check-in feeding a waitlist with atomic take-next dispatch, a public wall board, SOS paging with a read-time 30-second escalation, the atelier kanban with capacity load bars, and a per-section guided walkthrough.
+
+**Both deployment gates are cleared.** F33 and F59 merged behind a gate saying they were not launchable until F58 shipped — because F33 wrote queue tickets no surface rendered and F59's board would have frozen its top five names mid-morning. F58 discharged both.
+
+**Epic E7 is complete** (F36 + F37). E6 is complete except F35 (the notification bell, deliberately dropped from F37's deps and still queued as a later durable surface). E9 has F41 + F42 done; F43 and F44 remain.
+
+Detail per feature — including the defects each review caught — is in the `shipped:` blocks in `LOOP-STATE.md`'s `queue:`. Spec-time guidance is in `.planning/floor-program-review-2026-07-31.md`.
+
+⚠ **Owed at the next epic boundary**, recorded in `LOOP-STATE.md`:
+- the E7 boundary QA pass (full `make e2e` on `main`, zero-violation axe, a real-Chromium click-through, `/brain-sync`);
+- the `known_vacuous` audit — jsdom ships no `<dialog>`, so six shipped `apps/manage` test files that mount a `Modal` may contain focus assertions that cannot fail.
 
 ### Still outside the loop's reach — user actions
 
