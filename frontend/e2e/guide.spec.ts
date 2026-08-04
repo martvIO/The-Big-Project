@@ -116,6 +116,43 @@ async function axeViolations(page: Page): Promise<string[]> {
   );
 }
 
+// What the BROWSER exposes to assistive technology for one element, read from
+// Chromium's own accessibility tree over CDP. `toBeVisible`, `toBeFocused` and
+// `.click()` are all sighted/pointer facts and none of them changes when a node
+// leaves the AX tree — `showModal()` inerts the whole document, and inert
+// content is hidden from AT. Chromium-only, which this suite is
+// (`playwright.config.ts` declares one project).
+async function axState(
+  page: Page,
+  selector: string,
+): Promise<{ ignored: boolean; reasons: string[] }> {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Accessibility.enable");
+    const { root } = await cdp.send("DOM.getDocument");
+    const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+    // 0 is CDP's «no match». Reporting that as `ignored` would make an assertion
+    // on a typo'd selector pass — the vacuity class this file exists to prevent.
+    if (nodeId === 0) {
+      throw new Error(`axState: no element matched ${selector}`);
+    }
+    const { nodes } = await cdp.send("Accessibility.getPartialAXTree", {
+      nodeId,
+      fetchRelatives: false,
+    });
+    const node = nodes[0];
+    if (node === undefined) {
+      throw new Error(`axState: no AX node for ${selector}`);
+    }
+    return {
+      ignored: node.ignored,
+      reasons: (node.ignoredReasons ?? []).map((reason) => reason.name),
+    };
+  } finally {
+    await cdp.detach();
+  }
+}
+
 // --- the console under test --------------------------------------------------
 
 // The harness default identity is `reception`, and that is the right default
@@ -216,7 +253,21 @@ test("guide: opening it puts focus INSIDE the dialog, on the first control", asy
 async function expectOutsideTheConsole(page: Page): Promise<void> {
   await expect(page.getByRole("button", { name: LOGOUT })).not.toBeFocused();
   await expect(guideTrigger(page)).not.toBeFocused();
-  await expect(page.getByRole("navigation")).not.toBeFocused();
+  // ⚠ THE NAV LEG WAS `page.getByRole("navigation")`, WHICH WAS WRONG TWICE.
+  // (a) NOT UNIQUE: two navigation landmarks exist in this tree —
+  // `ConsoleShell.tsx:73` and `AtelierSection.tsx:997`'s `aria-label`ed rail —
+  // and it resolved to one only by accident of the harness identity. `staff()`
+  // defaults to `reception`, whose single reachable row is `floor`, so
+  // `AtelierSection` never mounts; an `owner` or `seamstress` fixture on «תפירה»
+  // would have failed BOTH callers on strict mode, i.e. with a diagnostic
+  // pointing at the wrong thing. (b) VACUOUS: a `<nav>` is not focusable, so
+  // `not.toBeFocused()` on the landmark itself could never fail. The nav's
+  // BUTTONS are the chrome this assertion is about.
+  //
+  // `header nav` and not `header + nav`: the nav is INSIDE the header
+  // (`ConsoleShell.tsx:50-99`), so the sibling combinator matches nothing. The
+  // atelier rail is inside `<main>`, so this is the console's, on every identity.
+  await expect(page.locator("header nav button:focus")).toHaveCount(0);
 }
 
 test("guide: Tab from the last control returns to the first, never the console", async ({
@@ -435,6 +486,72 @@ test("guide: a SECOND page arriving over a reopened guide closes it and stays an
   await expect(dialog(page)).toBeHidden();
   await expect(guideTrigger(page)).toBeFocused();
   await card(page, SECOND_ALERT_ID).getByRole("button", { name: acceptAria(MAYA) }).click();
+});
+
+// --- T7d — the same collision, read from the ACCESSIBILITY TREE ---------------
+
+// ⚠ ADDED AT REVIEW, BECAUSE T7's THREE LEGS MEASURE ONLY SIGHTED/POINTER FACTS
+// (`toBeVisible`, `toBeHidden`, `toBeFocused`, `.click()`) AND THE WHOLE
+// INERTNESS ARGUMENT IS AN AT ARGUMENT. Two claims, neither previously measured:
+//
+//   (a) the guide's `showModal()` really does remove the console from the
+//       accessibility tree, with Chromium naming `activeModalDialog` as the
+//       reason — this is the premise the deck cites five times and asserts none
+//       of. DELETION: `Modal.tsx:37` `showModal()` → `show()`. A non-modal
+//       <dialog> inerts nothing, so `#console-main` stays exposed and this
+//       reddens. PERFORMED, OBSERVED RED, RESTORED.
+//
+//   (b) once the guide closes, the arriving card's `role="alert"` region AND its
+//       «אני מגיעה» are back IN the tree — i.e. the close actually restores AT
+//       exposure and does not leave a stale ignored subtree. DELETION: delete
+//       `GuideOverlay`'s D6 effect; both come back `ignored: true` with reason
+//       `activeModalDialog`. PERFORMED, OBSERVED RED, RESTORED.
+//
+// ⚠ WHAT THIS DOES **NOT** MEASURE, STATED SO NOBODY READS MORE INTO IT. The
+// card is committed into the DOM in the commit that delivers the alert, while
+// the dialog still holds the top layer; `setOpen(false)` runs in a passive
+// effect and `dlg.close()` in the one after. Whether an assertive announcement
+// is QUEUED for a live region that was inserted while inert and un-inerted a
+// moment later is a screen-reader fact no browser API reports, and no
+// automated test in any framework can assert it.
+//
+// The residual risk is bounded and was weighed rather than waved through:
+// Chromium computes and serialises AX changes once per frame, in the
+// accessibility lifecycle phase, not synchronously at DOM mutation — so the
+// intermediate inert state is observable only if a frame boundary falls between
+// React's commit and its passive-effect flush (a MessageChannel task that
+// normally runs in the same frame). The fix that would close even that window is
+// `useLayoutEffect` in BOTH this component and `Modal.tsx:33-41`, and it is
+// DECLINED: it re-times `showModal()`/`close()` relative to paint for all
+// FIFTEEN shipped Modal call sites, to buy an improvement no test here or
+// anywhere can show. If an AT report ever lands, this is the note that says
+// where to start.
+test("guide: the console leaves the AX tree while it is open, and the SOS card is back in it once it closes", async ({
+  page,
+}) => {
+  const alerts: Reply[] = [ok(sosPayload([]))];
+  await gotoConsole(page, alerts);
+  await openGuide(page);
+
+  expect(await axState(page, "#console-main")).toEqual({
+    ignored: true,
+    reasons: ["activeModalDialog"],
+  });
+
+  retarget(alerts, ok(sosPayload([sosAlert({ raised_by_name: RONIT })])));
+  await expect(card(page, "sos-1")).toBeVisible({ timeout: 15_000 });
+  await expect(dialog(page)).toBeHidden();
+
+  // The live region itself (`SosOverlay.tsx:488`) and the control the emergency
+  // exists to reach, not the <article> wrapping them.
+  expect(await axState(page, 'article[data-alert-id="sos-1"] [role="alert"]')).toEqual({
+    ignored: false,
+    reasons: [],
+  });
+  expect(await axState(page, 'article[data-alert-id="sos-1"] button')).toEqual({
+    ignored: false,
+    reasons: [],
+  });
 });
 
 // --- T8 — Esc means one thing at a time --------------------------------------
