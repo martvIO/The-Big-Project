@@ -4,8 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
 import type { FloorResponse, Occupancy, Room, StaffCard, WaitlistEntry } from "../api";
 import { FloorPanel } from "../components/FloorPanel";
+import { SosProvider } from "../lib/sos";
 import { IDLE_STOP_MS, POLL_INTERVAL_MS } from "../lib/usePoll";
 
+// ⚠ F37 INFRASTRUCTURE, NOT AN EXPECTATION. FloorPanel now renders SosCentre,
+// which reads useSos() — and that hook THROWS outside the provider, deliberately
+// (loud beats inert for an emergency channel). So the render helper gains the
+// provider and the api mock gains getSos, exactly as F36 added listFloorClients
+// here. Every assertion below is untouched.
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
@@ -19,6 +25,11 @@ vi.mock("../api", async () => {
       // fires on mount. Infrastructure, not an expectation — every assertion
       // below is untouched (spec D15).
       listFloorClients: vi.fn(),
+      getSos: vi.fn(),
+      raiseSos: vi.fn(),
+      acceptSos: vi.fn(),
+      resolveSos: vi.fn(),
+      cancelSos: vi.fn(),
     },
   };
 });
@@ -28,6 +39,7 @@ const getFloor = vi.mocked(api.getFloor);
 const startStaffBreak = vi.mocked(api.startStaffBreak);
 const endStaffBreak = vi.mocked(api.endStaffBreak);
 const listFloorClients = vi.mocked(api.listFloorClients);
+const getSos = vi.mocked(api.getSos);
 
 // 11:07Z is 14:07 in Jerusalem (IDT, UTC+3) and 07:07 in New York — and the test
 // script pins TZ=America/New_York, so an unzoned read prints 07:07 and every
@@ -95,7 +107,11 @@ function occupancy(overrides: Partial<Occupancy> = {}): Occupancy {
 const ME = card({ id: SELF_ID, display_name: "דנה כהן", role: "owner" });
 
 function mount(props: { selfId?: string; role?: string } = {}) {
-  return render(<FloorPanel selfId={props.selfId ?? SELF_ID} role={props.role ?? "owner"} />);
+  return render(
+    <SosProvider>
+      <FloorPanel selfId={props.selfId ?? SELF_ID} role={props.role ?? "owner"} />
+    </SosProvider>,
+  );
 }
 
 beforeEach(() => {
@@ -106,6 +122,8 @@ beforeEach(() => {
   endStaffBreak.mockReset();
   listFloorClients.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
+  getSos.mockReset();
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
 });
 
 afterEach(() => {
@@ -877,31 +895,56 @@ describe("accessibility", () => {
     expect(control).toHaveTextContent("להפסקה");
   });
 
-  it("renders exactly one h2 and exactly TWO h3s — the rooms and the queue", async () => {
-    // ⚠ THE ONE SHIPPED EXPECTATION F36 EDITED, EDITED AGAIN BY F58 AND FOR THE
-    // SAME REASON: its PREMISE is falsified, not its rule. F57's deck justified
-    // having no h3 with «the panel has no groups»; F36 gave it one; F58 gives it
-    // a second, a peer of «חדרי מדידה» rather than a child of it. Both render in
-    // EVERY state including the empty one — which is exactly what this fixture,
-    // with its defaulted `rooms: []` and its empty waitlist, exercises — because
-    // each is its own panel's focus-rescue target for MOVES 3, 4 and 6.
+  it("renders exactly one h2 and THREE h3s — the SOS centre, the rooms and the queue", async () => {
+    // ⚠ THE ONE SHIPPED EXPECTATION F36 EDITED, EDITED AGAIN BY F58, AND AGAIN
+    // BY F37 AT THEIR MERGE — every time for the SAME reason: its PREMISE is
+    // falsified, not its rule. F57's deck justified having no h3 with «the panel
+    // has no groups»; F36 gave it one; F58 gave it a second, a peer of «חדרי
+    // מדידה» rather than a child of it; F37 gives it a third, «קריאות עזרה».
+    // All three render in EVERY state including the empty one — which is exactly
+    // what this fixture, with its defaulted `rooms: []` and its empty waitlist,
+    // exercises — because each is its own panel's focus-rescue target for MOVES
+    // 3, 4 and 6.
     //
     // ⚠ The plan's acceptance rule for this task («an edit to an existing
     // expectation means the change is wrong») does not reach this row, and the
     // comment F36 left here is the reason: the count is a LEDGER of the screen's
-    // subsections, so a third panel moves it by construction. What must not move
-    // is the h2 count and the requirement that every h3 be NAMED — both asserted
-    // below. Nothing else in this file moves.
+    // subsections, so a third and a fourth panel move it by construction. What
+    // must not move is the h2 count and the requirement that every h3 be NAMED —
+    // both asserted below.
+    //
+    // The ORDER is the assertion that carries weight: an active emergency
+    // outranks a room list, so «קריאות עזרה» comes FIRST, and the queue is what
+    // she acts FROM so it sits below the rooms she acts ON (F58's D15).
+    //
+    // (Deck F-4 records that FloorPanel's h2 «צוות בקומה» now names one quarter
+    // of its own content and that a later PR earns the rename — F37 does not
+    // rename it, because a copy change on a shipped panel is exactly the edit
+    // the zero-diff rule exists to catch.)
     getFloor.mockResolvedValue(floor([card()]));
     mount();
     await screen.findByText("נועה לוי");
 
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
     const subsections = screen.getAllByRole("heading", { level: 3 });
+    expect(subsections).toHaveLength(3);
     expect(subsections.map((node) => node.textContent)).toEqual([
+      "קריאות עזרה",
       "חדרי מדידה",
       "ממתינות בתור",
     ]);
+  });
+
+  it("places the SOS centre ABOVE the rooms panel and the rooms above the staff list", async () => {
+    // An active emergency outranks a room list, and a room list outranks the
+    // reference the staff cards are. DOM order is reading order is tab order.
+    getFloor.mockResolvedValue(floor([card()]));
+    const { container } = mount();
+    await screen.findByText("נועה לוי");
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("קריאות עזרה")).toBeLessThan(text.indexOf("חדרי מדידה"));
+    expect(text.indexOf("חדרי מדידה")).toBeLessThan(text.indexOf("נועה לוי"));
   });
 
   it("passes axe with zero violations", async () => {

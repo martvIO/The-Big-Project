@@ -106,7 +106,7 @@ MIRRORS = (
     pytest.param(
         MANAGE_VALIDATION_TS,
         floor_validation,
-        ("MAX_ROOM_LABEL_LENGTH",),
+        ("MAX_ROOM_LABEL_LENGTH", "MAX_SOS_NOTE_LENGTH"),
         id="manage-floor",
     ),
     pytest.param(

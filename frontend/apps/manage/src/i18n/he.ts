@@ -1541,5 +1541,259 @@ export const he = {
     // through psql. It names the bride because the confirm is being read at the
     // moment the wrong card might be the focused one.
     "atelier.deleteConfirmBody": "הכרטיס של {{name}} יימחק מהלוח. לא ניתן לשחזר אותו.",
+
+    // --- F37: the SOS page ---------------------------------------------------
+    //
+    // Transcribed from .planning/design/screens/sos-paging/copy.md, which is the
+    // single source for BOTH this file and ar.ts. Flat dotted keys, the shipped
+    // rooms.* / floor.* shape.
+    //
+    // ⚠ THE ONE RULE THAT COST THIS FEATURE ITS MOST NATURAL WORD: no string may
+    // claim, promise or hedge that a message was sent, in any tense, and
+    // i18n.test.ts enforces it as /נשלח|תישלח|בדרך/ over every value. «בדרך» is
+    // the natural Hebrew for "on my way", i.e. for the single most important
+    // button here. The guard is right and stays — it exists so no string in this
+    // console ever promises a message the product did not send, and the product
+    // sends none: this feature is in-app only, with no push, no SMS and no bell.
+    // Resolved by wording and never by an exception.
+    //
+    // ⚠ AND NO VALUE BELOW CARRIES A LITERAL DIGIT. Escalation and stall are
+    // named as STATES, never as durations: `escalated` is an unbounded boolean,
+    // so «ללא מענה כבר 30 שניות» would state a flat thirty seconds to a shift
+    // manager looking at a four-minute-old page, and in the SOS centre it would
+    // sit beside the elapsed line's «זה עתה» at t=31s.
+
+    // The card's first lines ARE the role="alert" region's children, so what is
+    // written here is exactly what a screen reader announces, once, on mount, as
+    // one atomic utterance. Nothing in this group may re-render with a different
+    // value on the same card or the whole card is re-announced assertively.
+    //
+    // Present tense and continuous — she is calling NOW. «קוראת לעזרה» rather
+    // than «צריכה עזרה»: the first is an act aimed at the reader, the second is
+    // a condition.
+    "sos.calling": "{{name}} קוראת לעזרה",
+    // Substituted into {{name}} when the raiser's staff row was removed
+    // mid-page. ⚠ FEMININE, which is why the ghost case needs no parallel key
+    // anywhere: «אשת צוות שאינה ברשימה קוראת לעזרה» is grammatical. Indefinite
+    // «אשת צוות», not F36's definite «אשת הצוות» — nothing on this card has
+    // named her before.
+    "sos.raiserGone": "אשת צוות שאינה ברשימה",
+    // ⚠ A LABEL, not a copy of a value, rendered sr-only INSIDE the region
+    // before the bare room label. The room label is unconstrained free text — a
+    // boutique that types «2» is fully supported — so without it the atomic
+    // utterance is «דנה כהן קוראת לעזרה 2 צריך סיכות». NOT an aria-label on the
+    // paragraph: ARIA prohibits naming a generic element, so that would ship a
+    // name nothing reads.
+    "sos.roomA11yPrefix": "מיקום",
+    // The room line when there is no room, which is ordinary rather than an
+    // edge: a seamstress at her table. The room pointer is deliberately
+    // permissive server-side so a stale or foreign id lands here rather than
+    // sending a responder to a stranger's curtain.
+    "sos.noRoom": "לא בחדר מדידה",
+    // ⚠ A SIBLING, outside the announced region, and ABSOLUTE. No countdown and
+    // no live counter anywhere in this feature: a ticking number inside a
+    // role="alert" re-announces on some screen readers and would drag SC 2.2.2
+    // onto a region whose whole argument is that it has nothing to pause.
+    "sos.since": "מאז {{time}}",
+    // ⚠ A SIBLING too, for the same reason. «ללא מענה» describes the alert's
+    // current state, which is what a shift manager triages on; «לא נענתה» would
+    // describe a completed non-event.
+    "sos.escalated": "ללא מענה",
+    // The second silence — accepted and unresolved — and the one thing between
+    // «דנה מגיעה» and an emergency nobody is answering. «מאז שאושרה» names the
+    // event, not a clock.
+    "sos.stalled": "אין תזוזה מאז שאושרה",
+
+    // ⚠ THE SINGLE MOST IMPORTANT BUTTON IN THIS FEATURE, and NOT «אני בדרך».
+    // First-person and present-continuous, and it commits her: «בסדר» or
+    // «קיבלתי» would acknowledge a MESSAGE; this acknowledges a PERSON, and the
+    // raiser is told the same word back one line below.
+    "sos.accept": "אני מגיעה",
+    // Several cards can be up at once and «אני מגיעה» three times is a screen
+    // reader dead end. Starts with the visible label (WCAG 2.5.3, Level A) and
+    // takes no markup, so the interpolated name needs no bidi treatment.
+    "sos.acceptAria": "אני מגיעה — הקריאה מ{{name}}",
+    // Per-device and in-memory: the alert stays open, keeps escalating and comes
+    // back on reload, because if it is still open it is still an emergency.
+    // «הסתרה» and not «סגירה» or «ביטול», both of which would claim it closed.
+    "sos.dismiss": "הסתרה",
+    "sos.dismissAria": "הסתרה — הקריאה מ{{name}}",
+
+    // The two app-level surfaces, which exist because on the eleven sections
+    // with no SOS centre there is no other region that could say this.
+    //
+    // Rendered on a 403 on the poll (⚠ terminal access, NOT a logout) or on a
+    // loop backed off beyond one tick. «Nothing renders» is not an acceptable
+    // state for an emergency receiver that has stopped receiving. It states the
+    // fact and nothing else: no apology, no guessed cause, no named interval.
+    // «ערוץ הקריאות» rather than «המערכת» — what is dead is this channel, not
+    // the console she is still using.
+    "sos.channelDown": "ערוץ הקריאות אינו פעיל.",
+    // ⚠ «רענון הדף» and NOT «רענון». The latter is floor.refresh, a different
+    // act — refetch the list — offered by a different control; this strip's only
+    // remedy is a page reload, and a button labelled «רענון» that reloads the
+    // whole page is a promise the word does not make. Its own key rather than a
+    // reuse of floor.reload because the strip renders on eleven sections where
+    // no floor.* string otherwise appears.
+    "sos.channelReload": "רענון הדף",
+    // The persistent affordance that re-opens a dismissed but still LIVE alert.
+    // Without it a dismissal on any of the eleven sections with no SOS centre is
+    // total and permanent — and the role-targeted route is the raise dialog's
+    // default, so that is the common path and not an edge.
+    "sos.dismissedCount": "קריאות עזרה · {{count}}",
+
+    // The SOS centre, on the two sections that have one.
+    "sos.centreHeading": "קריאות עזרה",
+    // ⚠ The state this panel is in almost always, which is why it is one muted
+    // line and not an EmptyState: 140px announcing that there is no emergency
+    // would make the absence of an emergency the visual centre of the floor
+    // screen. «אין עכשיו» — not right now, a state — rather than «אין», which
+    // reads like a fault or an empty registry.
+    "sos.centreEmpty": "אין עכשיו קריאות פתוחות.",
+    // The row's single Badge. The WORD carries the state; the colour never does
+    // — and on a full-screen red field that is not a formality.
+    "sos.statusOpen": "פתוחה",
+    // «מטופלת» — being handled — rather than «התקבלה», which would say only that
+    // somebody pressed a button.
+    "sos.statusAccepted": "מטופלת",
+    // ⚠ THE RAISER'S ANSWER, and the reason the tick drops to two seconds. The
+    // SAME VERB as the button, deliberately: she pressed «אני מגיעה» and the
+    // raiser reads «דנה כהן מגיעה.» — one word, two screens, no translation
+    // between them.
+    //
+    // ⚠ AND THE CLAIM IS DELIBERATELY STRONGER THAN THE FACT. The product knows
+    // an INTENTION — a button was pressed — and not a walk down a corridor. The
+    // alternative «{{name}} אישרה את הקריאה.» is system register on the one
+    // screen that must read like a person. What bounds the claim is the stall
+    // predicate at two minutes: if nothing moves, the card re-rises.
+    "sos.acceptedBy": "{{name}} מגיעה.",
+    // The acceptor's staff row was removed between her accept and this read. A
+    // sentence that admits it does not know beats «‎ כבר מגיעה.» with an empty
+    // interpolation on a legally binding surface.
+    "sos.acceptedByUnknown": "מישהי כבר מגיעה.",
+    // «נפתר» — the EMERGENCY resolved, not "the task completed" — and it is
+    // deliberately the same word the cancel refusal points at.
+    "sos.resolve": "נפתר",
+    "sos.resolveAria": "נפתר — הקריאה מ{{name}}",
+    // Rendered for the raiser or an elevated caller and only while the alert is
+    // open. «ביטול הקריאה» rather than a bare «ביטול», because on a row that
+    // also offers «נפתר» the reader must be able to tell "never mind" from "it
+    // is over".
+    "sos.cancel": "ביטול הקריאה",
+    // ⚠ The bare em-dash shape here and not «— הקריאה מ{{name}}»: the visible
+    // label already ends in «הקריאה», and the accessible name would otherwise
+    // read «ביטול הקריאה — הקריאה מדנה».
+    "sos.cancelAria": "ביטול הקריאה — {{name}}",
+
+    // BOTH raise triggers, one string — the room tile's fourth control and the
+    // SOS centre's heading-row trigger. Two keys holding one value are two
+    // things to keep true and twice the hand transcription into ar.ts. «קריאה
+    // לעזרה» and not «SOS»: the console ships no Latin abbreviation and a screen
+    // reader would spell it.
+    "sos.raise": "קריאה לעזרה",
+    // The TILE trigger's accessible name only — one tile per room and the
+    // visible label repeats. ⚠ Em-dash, value LAST: the boutique's own label
+    // carries its own noun, so «קריאה לעזרה מחדר {{room}}» would render «מחדר
+    // חדר 2».
+    "sos.raiseAria": "קריאה לעזרה — {{room}}",
+
+    // The raise dialog.
+    //
+    // Same words as the trigger, its own key: a heading and a button label are
+    // different roles and diverge the first time anybody edits one.
+    "sos.title": "קריאה לעזרה",
+    // The Select's LABEL, never a placeholder. A question, because that is what
+    // she is answering under pressure. «למי לקרוא» and not «נמענת» or «יעד» —
+    // system words on the one screen that must read like a person.
+    "sos.targetPick": "למי לקרוא",
+    // ⚠ The first option and the DEFAULT: the FALLBACK route, so it is the one
+    // choice a staffer under pressure never has to think about. The role, not a
+    // name, because that is what the column means. Its audience is not probed
+    // and can be empty — spec Risk 3(a) — so "never has to think about" is about
+    // the CHOICE and is not a delivery guarantee.
+    "sos.targetManager": "מנהלת המשמרת",
+    // The Input's LABEL. Four words is what a staffer holding a corset will
+    // type, so it asks for a thing and not a sentence: «מה צריך» and not
+    // «הערה», which invites prose.
+    "sos.notePick": "מה צריך",
+    // ⚠ It matters more here than anywhere else in the console: a staffer who
+    // believes the field is required will type something rather than tap send,
+    // and this is the one screen where two seconds is real.
+    "sos.noteOptional": "לא חובה",
+    // ⚠ «שליחת» is ש-ל-י-ח-ת and trips neither ban term. Checked, because it
+    // LOOKS like it should. The verb is safe precisely because it describes the
+    // act she is performing now, not a message the product claims to have
+    // delivered.
+    "sos.send": "שליחת הקריאה",
+
+    // The five cues. ⚠ They render in TWO different regions and that is
+    // deliberate: the SOS centre writes them into FloorPanel's single
+    // role="status", the overlay passes them to the app-level toast — because on
+    // the eleven sections with no centre there is no status region at all, and
+    // an accept would otherwise produce nothing but a red field disappearing.
+    //
+    // ⚠ «נרשמה», NEVER «נשלחה», and the wording is honest as well as compliant:
+    // what happened is that a ROW WAS WRITTEN, and whether a phone lights up
+    // depends on a colleague having a console open, which the product cannot
+    // promise.
+    "sos.raisedCue": "הקריאה נרשמה.",
+    "sos.acceptedCue": "הקריאה התקבלה.",
+    "sos.resolvedCue": "הקריאה נסגרה.",
+    "sos.cancelledCue": "הקריאה בוטלה.",
+    // ⚠ «הוסתרה» and not «נסגרה»: the alert is untouched on the server. A cue
+    // that said "closed" would be the one lie this feature cannot afford.
+    "sos.dismissedCue": "ההתראה הוסתרה.",
+    // ⚠ THE RAISE DIALOG'S BODY on a rerouted raise, not a transient cue — the
+    // dialog stays open and she must acknowledge it. Delivering the one message
+    // the ruling mandates as a polite cue, into a region the next cue
+    // overwrites, at the exact moment a dialog closes and focus moves, is the
+    // classic case AT drops — and it is unrecoverable, because `rerouted` is a
+    // fact about the REQUEST, so no centre row can ever say it again. Two
+    // sentences: what is not true, then what is. «לא מחוברת» rather than «לא
+    // בעבודה» — the product knows about sessions, not shifts.
+    "sos.rerouted": "{{name}} לא מחוברת עכשיו. הקריאה עברה למנהלת המשמרת.",
+    // «הבנתי» is an acknowledgement rather than a dismissal, which is the right
+    // interaction weight for a message the product needs her to have read.
+    "sos.reroutedAck": "הבנתי",
+
+    // The errors.
+    //
+    // The ruling's "a 409 NAMING THE OWNER", rendered. She has not lost
+    // anything — somebody is going.
+    "sos.error.SOS_ALREADY_ACCEPTED": "{{name}} כבר מגיעה.",
+    // The same 409 with the details key absent.
+    "sos.error.alreadyAcceptedUnknown": "מישהי אחרת כבר מגיעה.",
+    // Two codes and not one with a discriminating details: two causes, two
+    // sentences, TWO REMEDIES — go somewhere else, versus there is nothing to
+    // do.
+    "sos.error.SOS_CLOSED": "הקריאה כבר נסגרה.",
+    // ⚠ The asymmetry with resolve is the point: a colleague is already walking
+    // to that curtain, and silently cancelling would send her to an empty room
+    // and teach her that accepting means nothing. So the sentence carries the
+    // remedy, and the remedy is one word over.
+    "sos.error.cancelAfterAccept": "{{name}} כבר מגיעה. אפשר לסמן «נפתר» במקום.",
+    "sos.error.cancelAfterAcceptUnknown": "מישהי אחרת כבר מגיעה. אפשר לסמן «נפתר» במקום.",
+    // The alert was swept or never existed. NOT terminal, and it names the
+    // EVENT that repairs it rather than a duration.
+    "sos.error.notFound": "הקריאה כבר לא פתוחה. הרשימה תתוקן בעדכון הבא.",
+    // Unreachable client-side, because the note input caps at
+    // MAX_SOS_NOTE_LENGTH. The string exists anyway: the server's rule is the
+    // real one.
+    "sos.error.noteTooLong": "ההודעה ארוכה מדי.",
+    // Unreachable too — the dialog excludes her from the target list, which
+    // PREVENTS the error rather than explaining it.
+    "sos.error.selfTarget": "אי אפשר לקרוא לעצמך.",
+    // ⚠ The send did not complete — a 5xx, a dropped connection, a wifi
+    // blackspot inside a curtain, which is the single most likely real-world
+    // failure of a phone held behind a closed fitting-room curtain. Without this
+    // key the console falls through to the generic «נסי שוב» on the one screen
+    // where that alone is the wrong instruction. THE ONLY STRING IN THIS CONSOLE
+    // THAT NAMES THE MANUAL FALLBACK OUT LOUD.
+    "sos.error.raiseFailed": "הקריאה לא נרשמה. נסי שוב — או קראי בקול.",
+    // ⚠ Deliberately does NOT name the fallback, and the distinction is real: a
+    // failed accept means only that SHE did not claim it — the alert is still
+    // open, still rising on every other targeted device and still escalating —
+    // so nothing has been dropped and «נסי שוב» is exactly right.
+    "sos.error.actionFailed": "הפעולה לא הושלמה. נסי שוב.",
   },
 } as const;

@@ -46,6 +46,9 @@ from app.floor.service import (
     DispatchRead,
     DressPickerRead,
     FloorRead,
+    RaisedSos,
+    SosListRead,
+    SosRead,
     WaitlistRead,
     card_status,
 )
@@ -491,3 +494,144 @@ class AddDressRequest(ForbidExtraModel):
 
     dress_id: uuid.UUID
     size_label: str | None = Field(default=None, max_length=MAX_SIZE_LABEL_LENGTH)
+
+
+# --- F37: the SOS page --------------------------------------------------------
+
+
+class SosAlertView(BaseModel):
+    """One emergency, and the SAME shape all five routes answer.
+
+    ⚠ **THE SOS PAYLOAD CARRIES STAFF NAMES AND A ROOM LABEL. IT CARRIES NO
+    CUSTOMER DATUM OF ANY KIND, AND THE APP-LEVEL POLL IS EXACTLY WHY.**
+
+    `StaffCard` above carries `Occupancy.client_label`, a bride's name, and that
+    is defensible because `/manage/floor` is fetched only while the console is on
+    the board or the floor, by a component that unmounts on navigation. This
+    payload is fetched on EVERY section, every few seconds, for the whole shift —
+    the settings screen, the catalog, the gateway page. A name here would mean the
+    console holds a customer's name in memory and on the wire while nobody is
+    looking at a floor at all.
+
+    And it buys nothing. The responder needs to know WHO is calling and WHICH
+    curtain; F36's justification for its label was *"she has been called to room 3
+    and must know who is in it"*, and an SOS **already names the person who is in
+    it** — the colleague who raised it.
+
+    `escalated`, `stalled` and `for_me` are DERIVED on the server, per row, from
+    the one `server_now` the envelope carries. Put `for_me` in the console and the
+    audience rule exists twice, in two languages.
+    """
+
+    id: uuid.UUID
+    # open | accepted | resolved | cancelled — the CHECK in the migration is the
+    # pinned set, and the live read answers only the first two.
+    status: str
+    raised_by: uuid.UUID
+    # Null only if her staff row is gone entirely: the joins carry no
+    # `deleted_at` filter, so a colleague removed mid-page still has a name.
+    raised_by_name: str | None
+    # Null = the shift-manager ROLE. Also null when a named colleague turned out
+    # to be unreachable and the raise rerouted — the audit row keeps the pair
+    # this column cannot.
+    target_staff_user_id: uuid.UUID | None
+    target_name: str | None
+    # Null = no room on this page, which is ordinary.
+    room_label: str | None
+    note: str | None
+    accepted_by: uuid.UUID | None
+    accepted_by_name: str | None
+    acknowledged_at: datetime.datetime | None
+    created_at: datetime.datetime
+    escalated: bool
+    stalled: bool
+    for_me: bool
+
+    @classmethod
+    def from_read(cls, read: "SosRead") -> "SosAlertView":
+        """A PURE RENDERER of one pre-joined structure and three booleans the
+        service already derived. It issues no query, and keeping it that way is
+        what stops a customer join ever arriving by accident."""
+        alert = read.alert
+        return cls(
+            id=alert.id,
+            status=alert.status,
+            raised_by=alert.raised_by,
+            raised_by_name=read.row.raised_by_name,
+            target_staff_user_id=alert.target_staff_user_id,
+            target_name=read.row.target_name,
+            room_label=read.row.room_label,
+            note=alert.note,
+            accepted_by=alert.accepted_by,
+            accepted_by_name=read.row.accepted_by_name,
+            acknowledged_at=alert.acknowledged_at,
+            created_at=alert.created_at,
+            escalated=read.escalated,
+            stalled=read.stalled,
+            for_me=read.for_me,
+        )
+
+
+class SosResponse(BaseModel):
+    """An ENVELOPE for the same reason `FloorResponse` is one, plus a sharper
+    one: `server_now` is the instant both derived booleans AND the console's
+    elapsed line are computed against, so an escalated badge can never render
+    beside «כבר 0 דק'»."""
+
+    alerts: list[SosAlertView]
+    server_now: datetime.datetime
+
+    @classmethod
+    def from_read(cls, read: "SosListRead") -> "SosResponse":
+        return cls(
+            alerts=[SosAlertView.from_read(one) for one in read.alerts],
+            server_now=read.server_now,
+        )
+
+
+class RaisedAlert(BaseModel):
+    """The ONE answer in this feature that is not just the alert.
+
+    ⚠ `rerouted` is a fact about THIS REQUEST, not about the row, which is why it
+    cannot live on `SosAlertView`: nobody reading the alert later can know whether
+    a null target means «she asked for the shift manager» or «she asked for Dana
+    and Dana was logged out». *Declined: letting the console infer it by comparing
+    what it sent with what came back — correct today, and exactly the kind of
+    implicit contract that survives one refactor.*
+    """
+
+    alert: SosAlertView
+    rerouted: bool
+
+    @classmethod
+    def from_read(cls, raised: "RaisedSos") -> "RaisedAlert":
+        return cls(alert=SosAlertView.from_read(raised.sos), rerouted=raised.rerouted)
+
+
+# --- F37: the raise body ------------------------------------------------------
+
+
+class RaiseSosRequest(ForbidExtraModel):
+    """Every field optional, and all three defaults are the ORDINARY case.
+
+    ⚠ **`ForbidExtraModel` is load-bearing on this one body above every other in
+    the product.** `raised_by` is exactly the shape `FloorService._authorize`'s
+    docstring names as THE hazard — a body-supplied staff id doubling as the
+    caller's identity — and here it would let anyone page AS anyone. The acting
+    identity is the `StaffContext` from the session cookie and NOTHING on this
+    model may stand in for it: nobody raises a page as somebody else, not even an
+    owner, because an SOS is a first-person statement and an owner who needs help
+    raises her own.
+
+    `target_staff_user_id = None` is the shift-manager ROLE and is the default
+    because it is what a staffer alone with a bride actually taps.
+
+    ⚠ **`note` carries NO `Field(max_length=...)` bound**, `CreateRoomRequest`'s
+    rule for `CreateRoomRequest`'s reason: `normalize_sos_note` strips first and
+    bounds the stripped string, and a `max_length` here would refuse a legal
+    120-character note typed with a trailing space — on an emergency field.
+    """
+
+    target_staff_user_id: uuid.UUID | None = None
+    fitting_room_assignment_id: uuid.UUID | None = None
+    note: str | None = None

@@ -38,6 +38,7 @@ import dataclasses
 import datetime
 from collections import Counter
 from collections.abc import Callable
+from typing import NoReturn
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -59,6 +60,8 @@ from app.db.repositories.fitting_room_assignments import (
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
 from app.db.repositories.queue_tickets import WAITLIST_LIMIT, QueueTicketsRepository
+from app.db.repositories.sessions import SessionsRepository
+from app.db.repositories.sos_alerts import SosAlertRow, SosAlertsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
@@ -67,19 +70,25 @@ from app.floor.validation import (
     QueueTicketChangedError,
     QueueTicketNotWaitingError,
     RoomOccupiedError,
+    SosAlreadyAcceptedError,
+    SosClosedError,
+    SosValidationError,
     StaffOccupiedError,
     normalize_room_label,
+    normalize_sos_note,
 )
 from app.models.booking import Booking
 from app.models.constants import (
     AuditAction,
     BookingStatus,
     QueueTicketStatus,
+    SosStatus,
     StaffCardStatus,
     StaffRole,
 )
 from app.models.dress import Dress
 from app.models.fitting_assignment_dress import FittingAssignmentDress
+from app.models.sos_alert import SosAlert
 from app.models.staff_user import StaffUser
 from app.queue.validation import QueueTicketNotFoundError
 from app.storefront.validation import BOUTIQUE_TIMEZONE, today_jerusalem
@@ -88,6 +97,30 @@ from app.storefront.validation import BOUTIQUE_TIMEZONE, today_jerusalem
 # Spelled from the enum rather than as literals: a sixth role added to
 # StaffRole is NOT elevated by default, which is the safe direction to fail.
 ELEVATED_ROLES = frozenset({StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value})
+
+# F37's two read-time thresholds, and THE WORKER IS REJECTED — recorded here
+# because the alternative looks tempting and would be strictly worse:
+#
+#   * `app/worker.py` ticks at `worker_poll_interval_seconds`, DEFAULT 60, so a
+#     worker-stamped `escalated_at` would arrive up to a full minute late — TWICE
+#     the requirement — for a mechanism whose entire specification is thirty
+#     seconds;
+#   * it would introduce a WRITE THAT RACES a concurrent ack, two processes
+#     touching one row for a value nothing durable needs;
+#   * it would run O(tenants) queries per tick even when no boutique in the
+#     country has an open alert.
+#
+# Derived on read it adds zero latency beyond the poll, cannot race anything
+# because it writes nothing, and is the house compute-on-read pattern —
+# `card_status()` directly below, F36's occupancy, F43's ordinals.
+#
+# Both numbers move with pilot evidence and neither needs a migration or a
+# backfill to move: changing the constant changes every alert on the next tick.
+ESCALATION_AFTER = datetime.timedelta(seconds=30)
+# Two minutes because a responder walking the length of a boutique and resolving
+# on arrival takes well under it, and because a raiser told «דנה מגיעה» will wait
+# roughly that long before deciding nobody is coming.
+STALLED_AFTER = datetime.timedelta(minutes=2)
 
 # D16's two one-shot pickers. BOUNDS, not page sizes: neither list paginates and
 # neither is on the poll, so the number is "more than any boutique has" rather
@@ -189,6 +222,57 @@ class DispatchRead:
 
 
 @dataclasses.dataclass(frozen=True)
+class SosRead:
+    """One alert as a console sees it: the joined row, plus the three booleans
+    the SERVER derives so the rule exists once instead of twice.
+
+    Put `for_me` in the console and the audience rule lives in two languages, and
+    the day the escalation window moves one of them moves with it. Here it is
+    pure branches over a `StaffContext` and a row — a matrix against fakes, with
+    no database at all.
+    """
+
+    row: SosAlertRow
+    escalated: bool
+    stalled: bool
+    for_me: bool
+
+    @property
+    def alert(self) -> SosAlert:
+        return self.row.alert
+
+
+@dataclasses.dataclass(frozen=True)
+class SosListRead:
+    """The poll's envelope. `server_now` is the instant BOTH derived booleans and
+    the console's elapsed line are computed against — see `_escalated`."""
+
+    alerts: list[SosRead]
+    server_now: datetime.datetime
+
+
+@dataclasses.dataclass(frozen=True)
+class RaisedSos:
+    """What the raise answers, and it is the ONE mutation in this feature whose
+    answer is not just the row.
+
+    ⚠ `rerouted` is a fact about THIS REQUEST, not about the row, which is why
+    it cannot be inferred later: nobody reading the alert afterwards can know
+    whether `target_staff_user_id IS NULL` means "she asked for the shift
+    manager" or "she asked for Dana and Dana was logged out". The audit row keeps
+    the pair; this flag is what lets the raiser be TOLD, on screen, in the moment
+    it matters.
+
+    *Declined: letting the console infer it by comparing what it sent with what
+    came back — correct today, and exactly the kind of implicit contract that
+    survives one refactor.*
+    """
+
+    sos: SosRead
+    rerouted: bool
+
+
+@dataclasses.dataclass(frozen=True)
 class FloorRead:
     """The whole payload's data, pre-joined, so `FloorResponse.from_rows` renders
     and does not query.
@@ -256,6 +340,11 @@ class FloorService:
         self._variants = DressVariantsRepository()
         self._customers = CustomersRepository()
         self._tickets = QueueTicketsRepository()
+        self._sos = SosAlertsRepository()
+        # F37's reachability probe, and the ONLY reader of it. Named
+        # `_session_rows` because `self._sessions` is already the session
+        # FACTORY on this class — two very different things one letter apart.
+        self._session_rows = SessionsRepository()
         self._clock = clock or (lambda: datetime.datetime.now(datetime.UTC))
 
     async def floor(self, tenant_id: UUID) -> FloorRead:
@@ -1353,6 +1442,373 @@ class FloorService:
         start, end = self._today_window()
         return start <= booking.starts_at < end
 
+    # --- F37: the SOS page ----------------------------------------------------
+
+    async def sos(self, tenant_id: UUID, *, actor: StaffContext) -> SosListRead:
+        """The app-level poll's whole payload: one statement, then three pure
+        derivations per row against ONE `server_now`.
+
+        ⚠ **The audience clause is built in Python and an elevated caller gets no
+        extra predicate at all** — faster than binding a boolean into SQL, and
+        clearer. `ELEVATED_ROLES` is this layer's decision; the repository takes
+        an id and never a role.
+        """
+        server_now = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            rows = await self._sos.live_for(
+                session,
+                tenant_id,
+                actor_id=None if actor.role in ELEVATED_ROLES else actor.id,
+            )
+        return SosListRead(
+            alerts=[_sos_read(row, actor=actor, server_now=server_now) for row in rows],
+            server_now=server_now,
+        )
+
+    async def raise_sos(
+        self,
+        tenant_id: UUID,
+        *,
+        target_staff_user_id: UUID | None,
+        fitting_room_assignment_id: UUID | None,
+        note: str | None,
+        actor: StaffContext,
+    ) -> RaisedSos:
+        """One staffer asking for help, and it has exactly THREE failure modes:
+        401 (no session), 403 (a role outside the five — unreachable for a
+        signed-in staffer, since the router admits all five) and 400 (note too
+        long, or self-target).
+
+        ⚠ **NOTHING ABOUT THE STATE OF THE BOUTIQUE CAN REFUSE A PAGE.** Not a
+        missing room, not a deleted room, not a released assignment, not a
+        colleague who went home, not a colleague who does not exist, not an empty
+        shift, not another alert already open. That sentence IS «a page is never
+        silently dropped», and `test_nothing_about_the_boutique_can_refuse_a_page`
+        walks it as a table.
+
+        ⚠ **There is NO `_authorize` call here and its absence is the design.**
+        `_authorize`'s docstring names the hazard as a body-supplied
+        `staff_user_id` doubling as the caller's identity; this body carries a
+        TARGET and never an actor. `raised_by = actor.id`, full stop — nobody may
+        raise a page AS somebody else, not even an owner, because an SOS is a
+        first-person statement and an owner who needs help raises her own.
+        `RaiseSosRequest` is a `ForbidExtraModel`, so a body carrying `raised_by`
+        is a 400 rather than a silently ignored key.
+        """
+        note = normalize_sos_note(note)
+        if target_staff_user_id is not None and target_staff_user_id == actor.id:
+            # A self-page has no audience: it would sit open forever escalating
+            # to the shift manager for nothing, and the raiser never gets the
+            # overlay for her own page, so nothing would ever surface it to her
+            # either.
+            raise SosValidationError("cannot page yourself")
+
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            assignment_id = None
+            if fitting_room_assignment_id is not None:
+                # PERMISSIVE, and it must be HER OWN assignment. Unresolved ->
+                # store NULL and carry on: a stale room pointer must never refuse
+                # a page, and RLS makes a foreign tenant's id simply not resolve,
+                # so there is no leak and no oracle.
+                assignment = await self._sos.assignment_of(
+                    session, tenant_id, fitting_room_assignment_id, actor.id
+                )
+                assignment_id = assignment.id if assignment is not None else None
+
+            # PERMISSIVE, and this is THE no-reachable-target case. A named
+            # target must resolve to a live staff row AND hold a live session. If
+            # either check fails the alert is created with a NULL target —
+            # rerouted to the shift manager IN THE DATA and not merely in the UI
+            # — and the raiser is TOLD SO. The raise does not fail.
+            #
+            # ⚠ **THE ROLE ROUTE GETS NO PROBE, AND ITS AUDIENCE CAN BE EMPTY.**
+            # An earlier version of this comment discharged the epic's "no
+            # on-shift staffer in the requested role" by citing `auth/staff.py`'s
+            # last-owner invariant. That invariant reads
+            # `StaffUsersRepository.count_live_owners` — a `staff_users` ROW with
+            # `deleted_at IS NULL` — while reachability three lines below reads
+            # `SessionsRepository.has_live_session`, a `sessions` row that has not
+            # expired. Two meanings of "live" in one paragraph: the invariant
+            # proves an owner EXISTS, never that anyone is signed in. At 21:40
+            # with the owner's twelve-hour session expired and no shift manager
+            # logged in, a role-targeted page is created, `rerouted` is False,
+            # and `_for_me` is True on zero devices.
+            #
+            # Nor does escalation stand in for it here: for a NULL target
+            # `_for_me` already returns True for every elevated caller from t=0,
+            # so the thirty-second net adds no audience the role route did not
+            # already have.
+            #
+            # This is the spec's Risk 3(a), a KNOWN and ACCEPTED ceiling rather
+            # than an oversight — extending the probe to the role audience (a
+            # `SELECT EXISTS` over `sessions` joined to
+            # `staff_users.role IN ('owner','shift_manager')`, plus a distinct
+            # sentence on screen) is named there as the upgrade path and is
+            # deliberately not built in F37. The word "never" does not belong in
+            # this comment and must not come back.
+            target_id = target_staff_user_id
+            if target_id is not None:
+                target_row = await self._staff.by_id(session, tenant_id, target_id)
+                reachable = target_row is not None and await self._session_rows.has_live_session(
+                    session, tenant_id, target_id, at
+                )
+                if not reachable:
+                    target_id = None
+
+            alert = await self._sos.insert(
+                session,
+                tenant_id,
+                raised_by=actor.id,
+                target_staff_user_id=target_id,
+                fitting_room_assignment_id=assignment_id,
+                note=note,
+            )
+            rerouted = target_staff_user_id is not None and target_id is None
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.SOS_RAISED,
+                actor_id=actor.id,
+                entity=str(alert.id),
+                # ⚠ The requested_target / target PAIR is the whole point. The
+                # reroute writes NULL into the column, destroying the only record
+                # of whom she actually tried to page — `previous_break_started_at`
+                # and the handover `from`, third instance. Without the pair the
+                # trail says a page went to the shift manager and cannot say Dana
+                # was meant to get it.
+                details={
+                    "alert": str(alert.id),
+                    "requested_target": _str_or_none(target_staff_user_id),
+                    "target": _str_or_none(target_id),
+                    "rerouted": rerouted,
+                    "assignment": _str_or_none(assignment_id),
+                },
+            )
+            return RaisedSos(
+                sos=await self._sos_view(session, tenant_id, alert.id, actor=actor, at=at),
+                rerouted=rerouted,
+            )
+
+    async def _sos_view(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        alert_id: UUID,
+        *,
+        actor: StaffContext,
+        at: datetime.datetime,
+    ) -> SosRead:
+        """What every mutation answers: the SAME shape the poll's `alerts[]`
+        elements carry, read back from the database rather than assembled from
+        the request, so the console patches one card in place and cannot disagree
+        with itself.
+
+        A row that vanished between the write and this read is unrepresentable —
+        nothing hard-deletes an alert and there is no sweeper — so it raises
+        rather than returning `None` for a caller to mishandle.
+        """
+        row = await self._sos.view_of(session, tenant_id, alert_id)
+        if row is None:
+            raise RuntimeError(f"sos alert {alert_id} cannot be read back")
+        return _sos_read(row, actor=actor, server_now=at)
+
+    async def accept_sos(self, tenant_id: UUID, alert_id: UUID, *, actor: StaffContext) -> SosRead:
+        """«אני מגיעה» — and the ORDER of these steps IS the first-accept-owns
+        guarantee.
+
+        read (no status filter) -> visibility 404 -> permission 404 ->
+        IDEMPOTENCE -> the conditional UPDATE -> rowcount-0 discriminator.
+
+        ⚠ **Both refusals are 404 and byte-identical to a missing id.** Whose
+        alert it is can only be learned by READING it, so a 403 on a real id and
+        a 404 on a fake one would discriminate existence and let any staffer
+        enumerate the tenant's alerts.
+
+        ⚠ **IDEMPOTENCE IS RESOLVED BEFORE THE 409, keyed on the REQUEST.** She
+        tapped twice, or two of her devices did. Resolved after the 409 instead,
+        a double-tap tells her — by name — that SHE has it, as an error. Every
+        single-accept test stays green either way, which is why the ordering is
+        spelled out rather than left to the reader.
+
+        ⚠ **The raiser may not accept her own page — INCLUDING AN ELEVATED
+        RAISER, and the `raised_by` term is what makes that true.** The target
+        check alone refused a seamstress and let an owner straight through on the
+        elevated branch, and the damage is not cosmetic: `_escalated`
+        short-circuits on `status != OPEN`, so her own tap stops the alert rising
+        on EVERY device in the boutique for the two minutes `_stalled` takes,
+        while `_for_me`'s accepted branch returns `stalled and elevated` — False
+        for the raiser at every t. An owner alone on the floor silences her own
+        emergency permanently, one tap, with the raise dialog's DEFAULT target.
+        She has resolve and cancel.
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._sos.by_id(session, tenant_id, alert_id)
+            if row is None or not _visible_to(row, actor=actor):
+                raise DomainNotFoundError("sos_alert")
+            if row.raised_by == actor.id or not (
+                row.target_staff_user_id == actor.id or actor.role in ELEVATED_ROLES
+            ):
+                raise DomainNotFoundError("sos_alert")
+            if row.status == SosStatus.ACCEPTED and row.accepted_by == actor.id:
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+
+            wrote, after = await self._sos.accept(
+                session, tenant_id, alert_id, actor_id=actor.id, at=at
+            )
+            if wrote:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.SOS_ACCEPTED,
+                    actor_id=actor.id,
+                    entity=str(alert_id),
+                    details={"alert": str(alert_id), "raised_by": str(row.raised_by)},
+                )
+                if after is None:
+                    raise RuntimeError("sos accept wrote a row it cannot read back")
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+
+            if after is None:
+                raise DomainNotFoundError("sos_alert")
+            return await self._refuse_accept(session, tenant_id, after)
+
+    async def resolve_sos(self, tenant_id: UUID, alert_id: UUID, *, actor: StaffContext) -> SosRead:
+        """«נפתר» — the emergency is over, from EITHER live state.
+
+        D4's six-step order: read (no status filter) -> visibility 404 ->
+        permission 404 -> the conditional UPDATE -> the rowcount-0 discriminator.
+
+        ⚠ **The permission check PRECEDES the discriminator and that ordering is
+        load-bearing**: a 409 carrying `{"staff_display_name": "דנה"}` handed to a
+        caller who may not act would leak a staff name the 404-not-403 rule
+        exists to withhold.
+
+        Permitted = the raiser, the acceptor, or elevated. *Declined "anyone may
+        resolve any alert": closing somebody else's open emergency is the one
+        destructive act on this surface, and the elevated path already covers the
+        legitimate case — a shift manager clearing up after a page that resolved
+        itself.*
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._sos.by_id(session, tenant_id, alert_id)
+            if row is None or not _visible_to(row, actor=actor):
+                raise DomainNotFoundError("sos_alert")
+            if not (actor.id in (row.raised_by, row.accepted_by) or actor.role in ELEVATED_ROLES):
+                raise DomainNotFoundError("sos_alert")
+
+            # ⚠ **CAPTURED BEFORE THE WRITER RUNS, and this line is the whole
+            # test.** The UPDATE below is ORM-enabled DML whose `evaluate`
+            # synchronization stamps 'resolved' onto the same identity-mapped
+            # instance `by_id` just handed back, so reading `row.status`
+            # afterwards records `resolved -> resolved` and empties the audit row
+            # of its entire informational content. Fourth appearance of this trap
+            # in the repo, and the only one where the destroyed value is a STATE
+            # rather than a timestamp — and it is why «did anybody answer?» needs
+            # no `resolved_at` column.
+            from_status = row.status
+
+            wrote, after = await self._sos.resolve(session, tenant_id, alert_id)
+            if wrote:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.SOS_RESOLVED,
+                    actor_id=actor.id,
+                    entity=str(alert_id),
+                    details={"alert": str(alert_id), "from_status": from_status},
+                )
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+
+            if after is None:
+                raise DomainNotFoundError("sos_alert")
+            if after.status in (SosStatus.RESOLVED, SosStatus.CANCELLED):
+                # She wanted it closed; it is closed. A 200 with no audit row.
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+            raise RuntimeError(f"sos resolve matched no row but reads back {after.status!r}")
+
+    async def cancel_sos(self, tenant_id: UUID, alert_id: UUID, *, actor: StaffContext) -> SosRead:
+        """«ביטול» — never mind, from `open` ONLY.
+
+        Same six-step order, a narrower permitted set (the raiser or elevated —
+        ⚠ **not the acceptor**, who has resolve) and its own discriminator, whose
+        first row is the asymmetry: cancelling an ACCEPTED alert is a 409 naming
+        the acceptor, because a colleague is already walking to that curtain and
+        cancelling behind her would teach her that accepting means nothing.
+        """
+        at = self._clock()
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._sos.by_id(session, tenant_id, alert_id)
+            if row is None or not _visible_to(row, actor=actor):
+                raise DomainNotFoundError("sos_alert")
+            if not (row.raised_by == actor.id or actor.role in ELEVATED_ROLES):
+                raise DomainNotFoundError("sos_alert")
+
+            wrote, after = await self._sos.cancel(session, tenant_id, alert_id)
+            if wrote:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.SOS_CANCELLED,
+                    actor_id=actor.id,
+                    entity=str(alert_id),
+                    # No `from_status`: cancel closes from ONE state, so
+                    # recording which would be recording the predicate.
+                    details={"alert": str(alert_id)},
+                )
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+
+            if after is None:
+                raise DomainNotFoundError("sos_alert")
+            if after.status == SosStatus.ACCEPTED:
+                raise SosAlreadyAcceptedError(
+                    await self._name_of(session, tenant_id, after.accepted_by)
+                )
+            if after.status in (SosStatus.RESOLVED, SosStatus.CANCELLED):
+                return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)
+            raise RuntimeError(f"sos cancel matched no row but reads back {after.status!r}")
+
+    async def _refuse_accept(
+        self, session: AsyncSession, tenant_id: UUID, row: SosAlert
+    ) -> NoReturn:
+        """Rowcount 0 -> discriminate on the CURRENT status, which is the only
+        discriminator this feature has: there is no index, therefore no
+        constraint name to read.
+
+        ⚠ **The `open` branch is genuinely unreachable and STILL raises.** A
+        zero-row UPDATE takes no lock and the repo runs READ COMMITTED, so a
+        concurrent write can move the row between the UPDATE and the re-read —
+        but nothing moves a row BACK to `open`, and `uuid_generate_v4()` makes
+        delete-and-recreate-with-the-same-id impossible. It is spelled as a raise
+        rather than as a comment claiming impossibility because F41's review
+        found exactly that shape: an "impossible" branch with no `else` returns
+        `None` and 500s with no message.
+        """
+        if row.status in (SosStatus.RESOLVED, SosStatus.CANCELLED):
+            raise SosClosedError
+        if row.status == SosStatus.ACCEPTED:
+            raise SosAlreadyAcceptedError(await self._name_of(session, tenant_id, row.accepted_by))
+        raise RuntimeError(f"sos accept matched no row but reads back {row.status!r}")
+
+    async def _name_of(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID | None
+    ) -> dict[str, str] | None:
+        """The 409's `details`, and it is OPTIONAL — the key is ABSENT rather
+        than null when there is nobody to name.
+
+        `accepted_by` points at a `staff_users` row that staff removal can
+        soft-delete at any time, and the acceptor can be removed between her
+        accept and this read. «{{name}} כבר מגיעה.» rendering with an empty
+        interpolation on a legally binding surface is worse than a sentence that
+        admits it does not know.
+        """
+        if staff_id is None:
+            return None
+        row = await self._staff.by_id(session, tenant_id, staff_id)
+        return {"staff_display_name": row.display_name} if row is not None else None
+
     @staticmethod
     def _authorize(staff_id: UUID, actor: StaffContext) -> None:
         """The acting identity is `StaffContext`, resolved from the session
@@ -1371,3 +1827,124 @@ class FloorService:
 
 def _isoformat(value: datetime.datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _str_or_none(value: UUID | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+def _escalated(row: SosAlert, *, server_now: datetime.datetime) -> bool:
+    """OPEN, unacknowledged, and older than thirty seconds.
+
+    `status == 'open'` already implies `acknowledged_at IS NULL` — one UPDATE
+    writes both — and the second conjunct is spelled anyway so the predicate
+    reads as the rule rather than as a consequence of another decision.
+
+    ⚠ **TWO CLOCKS.** `created_at` is `server_default=text("now()")`, i.e. the
+    DATABASE host's transaction-start time, while `server_now` is the SERVICE's
+    Python clock — the same instant that goes on the wire and that the console's
+    elapsed line anchors on. The skew is NTP-bounded and irrelevant against a
+    thirty-second threshold read every two seconds, and one instant deciding both
+    is what stops the overlay disagreeing with itself.
+
+    ⚠ **AND THERE IS DELIBERATELY NO `max(timedelta(0), …)` CLAMP**, unlike
+    `lib/elapsed.ts` where the clamp is genuinely load-bearing. That returns a
+    RENDERED NUMBER, so a negative delta ships «כבר -1 דק'» to a screen. This
+    returns a BOOLEAN against a one-sided positive threshold:
+    `timedelta(seconds=-5) >= timedelta(seconds=30)` is already False, BYTE
+    IDENTICAL to the clamped result. A clamp here pins nothing — spec review ran
+    the "drop the clamp" mutation and it came back GREEN — so the negative-delta
+    case is an assertion and not a mutation target.
+
+    ⚠ **What escalation changes is whether the overlay RISES on her device, never
+    who may SEE the alert.** A shift manager sees every alert in her tenant from
+    t=0 because she is the fallback; if every one also rose full-screen she would
+    learn within a day to dismiss them unread.
+    """
+    if row.status != SosStatus.OPEN or row.acknowledged_at is not None:
+        return False
+    return server_now - row.created_at >= ESCALATION_AFTER
+
+
+def _stalled(row: SosAlert, *, server_now: datetime.datetime) -> bool:
+    """ACCEPTED two minutes ago and still not resolved — THE SECOND SILENCE.
+
+    ⚠ **This closes the hole `_escalated` opens, and without it the accept path
+    re-opens the one guarantee this feature exists to make.** `_escalated`
+    short-circuits on `status != OPEN` and `_for_me` returns False for any
+    non-open row, so **the instant anybody taps «אני מגיעה» the alert stops
+    escalating and stops rising on every device in the boutique, forever.** If
+    the acceptor's phone dies, her session drops, she is pulled into another
+    fitting, or she taps accept and forgets, nothing ever re-surfaces it: there
+    is no auto-resolve, no un-accept verb and no second threshold.
+
+    And it is worse than silence, because the raiser's screen reads «דנה מגיעה»
+    — she stops looking for help on the strength of a signal the product cannot
+    back. «A page is never silently dropped» is discharged on the CREATE path by
+    the reroute; this is the same sentence on the ACCEPT path.
+
+    Same zero-write mechanism as `_escalated`, same shared `server_now` anchor:
+    one more constant and one more branch, no column, no writer, no worker.
+    """
+    if row.status != SosStatus.ACCEPTED or row.acknowledged_at is None:
+        return False
+    return server_now - row.acknowledged_at >= STALLED_AFTER
+
+
+def _for_me(row: SosAlert, *, actor: StaffContext, escalated: bool, stalled: bool) -> bool:
+    """Whether the full-screen overlay RISES on THIS caller's device — a narrower
+    question than `_visible_to`'s, and the narrowing is the whole of D7.
+
+    ⚠ **The raiser never gets the overlay for her own page**, and this is the
+    sharpest of the small decisions. She is holding a bride's corset with one
+    hand and her phone in the other; a full-screen red interruption on her own
+    device, caused by her own tap, would be the product shouting at the person
+    who asked for quiet. She sees it in the SOS centre, and the thing she
+    actually needs — who is coming — arrives as the accept on the same tick.
+    """
+    if row.raised_by == actor.id:
+        return False
+    if row.status == SosStatus.ACCEPTED:
+        # An accepted alert is somebody's job — UNLESS nobody has moved on it for
+        # two minutes, at which point it is nobody's job again and the elevated
+        # fallback gets it back. D6's second silence, and the ONE branch that
+        # keeps the accept path non-silent.
+        return stalled and actor.role in ELEVATED_ROLES
+    if row.status != SosStatus.OPEN:
+        return False
+    if row.target_staff_user_id == actor.id:
+        return True
+    if actor.role in ELEVATED_ROLES:
+        return row.target_staff_user_id is None or escalated
+    return False
+
+
+def _sos_read(row: SosAlertRow, *, actor: StaffContext, server_now: datetime.datetime) -> SosRead:
+    """The three derivations, from ONE instant, in one place — so a card and its
+    badge can never be computed against two."""
+    escalated = _escalated(row.alert, server_now=server_now)
+    stalled = _stalled(row.alert, server_now=server_now)
+    return SosRead(
+        row=row,
+        escalated=escalated,
+        stalled=stalled,
+        for_me=_for_me(row.alert, actor=actor, escalated=escalated, stalled=stalled),
+    )
+
+
+def _visible_to(row: SosAlert, *, actor: StaffContext) -> bool:
+    """D7's audience rule, applied to ONE row that was read by id.
+
+    An elevated caller sees every alert in her tenant from the instant it is
+    raised — «never silently dropped» requires it, and she is the fallback.
+    Everybody else sees only the three alerts that are hers: the one she raised
+    (so she can see the accept), the one she was named on, and the one she owns.
+
+    ⚠ This is VISIBILITY and not RISING. Whether the full-screen overlay appears
+    on her device is a separate, narrower predicate — otherwise a shift manager
+    would get a red interruption for every seamstress-to-seamstress page in the
+    boutique and would learn within a day to dismiss them unread.
+    """
+    if actor.role in ELEVATED_ROLES:
+        return True
+    return actor.id in (row.raised_by, row.target_staff_user_id, row.accepted_by)

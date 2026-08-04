@@ -4,8 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
 import type { FloorResponse, Room, RoomAssignment, StaffCard } from "../api";
 import { FloorPanel } from "../components/FloorPanel";
+import { SosProvider } from "../lib/sos";
 import { POLL_INTERVAL_MS } from "../lib/usePoll";
 
+// ⚠ F37 INFRASTRUCTURE, NOT AN EXPECTATION. FloorPanel now renders SosCentre,
+// which reads useSos() — and that hook THROWS outside the provider, deliberately
+// (loud beats inert for an emergency channel). So the render helper gains the
+// provider and the api mock gains getSos, exactly as F36 added listFloorClients
+// here. Every assertion below is untouched.
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
@@ -16,6 +22,11 @@ vi.mock("../api", async () => {
       startStaffBreak: vi.fn(),
       endStaffBreak: vi.fn(),
       listFloorClients: vi.fn(),
+      getSos: vi.fn(),
+      raiseSos: vi.fn(),
+      acceptSos: vi.fn(),
+      resolveSos: vi.fn(),
+      cancelSos: vi.fn(),
       claimRoom: vi.fn(),
       releaseAssignment: vi.fn(),
       removeAssignmentDress: vi.fn(),
@@ -32,6 +43,7 @@ vi.mock("../api", async () => {
 const { api, ApiError } = await import("../api");
 const getFloor = vi.mocked(api.getFloor);
 const listFloorClients = vi.mocked(api.listFloorClients);
+const getSos = vi.mocked(api.getSos);
 const listFloorDresses = vi.mocked(api.listFloorDresses);
 const handoverAssignment = vi.mocked(api.handoverAssignment);
 
@@ -89,7 +101,11 @@ function floor(rooms: Room[], cards: StaffCard[] = [ME, HOLDER, card()]): FloorR
 }
 
 function mount(role = "owner") {
-  return render(<FloorPanel selfId={SELF_ID} role={role} />);
+  return render(
+    <SosProvider>
+      <FloorPanel selfId={SELF_ID} role={role} />
+    </SosProvider>,
+  );
 }
 
 function dialogs(): HTMLDialogElement[] {
@@ -118,6 +134,8 @@ beforeEach(() => {
   listFloorDresses.mockReset();
   handoverAssignment.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
+  getSos.mockReset();
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
   listFloorDresses.mockResolvedValue({ dresses: [], truncated: false });
   getFloor.mockResolvedValue(floor([room()]));
 });

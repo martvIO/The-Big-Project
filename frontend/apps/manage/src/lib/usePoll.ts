@@ -59,6 +59,27 @@ export interface PollOptions {
    * two modes and not one.
    */
   onIdleStop?: () => void;
+  /**
+   * Base gap between ticks. A NUMBER or a FUNCTION, and the function form is
+   * read AT ARM TIME inside succeeded()/resume() — the only shape that can
+   * switch the gap on the tick that OBSERVES the change rather than the one
+   * after. The shipped tick calls succeeded() inside the fetch's try and
+   * reschedule() in its .finally(), both in the same microtask chain as the
+   * response, so a gap mirrored at commit time is always one tick stale. F37's
+   * SOS loop runs at 5s idle and 2s while an alert is open, and one stale tick
+   * there is five seconds of a raiser not being told anybody is coming.
+   *
+   * Defaults to POLL_INTERVAL_MS, which is what keeps every shipped caller
+   * byte-identical.
+   */
+  intervalMs?: number | (() => number);
+  /**
+   * `null` DISABLES the idle stop. Exactly one caller passes it and its
+   * justification is at the call site: an emergency receiver that stops
+   * receiving after ten idle minutes is not degraded, it is dead — and dead
+   * silently. Defaults to IDLE_STOP_MS.
+   */
+  idleStopMs?: number | null;
 }
 
 export interface Poll {
@@ -107,7 +128,14 @@ export function terminalOf(error: unknown): PollTerminal | null {
   return error.status === 403 ? "access" : null;
 }
 
-export function usePoll({ run, onIdleStop }: PollOptions): Poll {
+function resolveInterval(interval: number | (() => number) | undefined): number {
+  if (interval === undefined) {
+    return POLL_INTERVAL_MS;
+  }
+  return typeof interval === "function" ? interval() : interval;
+}
+
+export function usePoll({ run, onIdleStop, intervalMs, idleStopMs }: PollOptions): Poll {
   const [mode, setMode] = useState<PollMode>("running");
   const [terminal, setTerminal] = useState<PollTerminal | null>(null);
 
@@ -116,7 +144,12 @@ export function usePoll({ run, onIdleStop }: PollOptions): Poll {
   const tickRef = useRef<() => void>(() => {});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const idleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const backoffRef = useRef(POLL_INTERVAL_MS);
+  const backoffRef = useRef(resolveInterval(intervalMs));
+  // ⚠ idleGapRef, NOT idleRef: idleRef above holds the idle TIMEOUT HANDLE and
+  // is read and written by clearIdle()/armIdle(). Reusing that name for the gap
+  // silently breaks the cancel.
+  const intervalRef = useRef(intervalMs);
+  const idleGapRef = useRef(idleStopMs);
   // One monotonic generation. A poll applies its result only if the generation
   // it was issued under is unchanged; mutations, the date roll, the manual retry
   // and resume all bump it.
@@ -128,6 +161,11 @@ export function usePoll({ run, onIdleStop }: PollOptions): Poll {
   useEffect(() => {
     runRef.current = run;
     idleStopRef.current = onIdleStop;
+    // Mirrored here rather than in an effect of their own. ⚠ The FUNCTION is
+    // what is stored, never its resolved value: resolving here would put the
+    // read back on the commit and reintroduce the stale tick.
+    intervalRef.current = intervalMs;
+    idleGapRef.current = idleStopMs;
   });
 
   const clearTick = () => {
@@ -164,6 +202,13 @@ export function usePoll({ run, onIdleStop }: PollOptions): Poll {
 
   const armIdle = () => {
     clearIdle();
+    // ⚠ AFTER clearIdle(), NEVER BEFORE. Return above that call and a timer
+    // armed while the gap was still a number survives the switch to null, so
+    // the loop idle-stops after the caller disabled the stop.
+    const gap = idleGapRef.current;
+    if (gap === null) {
+      return;
+    }
     if (!runningRef.current) {
       return;
     }
@@ -173,7 +218,7 @@ export function usePoll({ run, onIdleStop }: PollOptions): Poll {
       clearTick();
       setMode("idle");
       idleStopRef.current?.();
-    }, IDLE_STOP_MS);
+    }, gap ?? IDLE_STOP_MS);
   };
 
   const stop = (next: PollTerminal) => {
@@ -282,7 +327,7 @@ export function usePoll({ run, onIdleStop }: PollOptions): Poll {
       generationRef.current += 1;
     },
     succeeded: () => {
-      backoffRef.current = POLL_INTERVAL_MS;
+      backoffRef.current = resolveInterval(intervalRef.current);
     },
     failed: () => {
       backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
@@ -314,7 +359,7 @@ export function usePoll({ run, onIdleStop }: PollOptions): Poll {
       // A resume is a fresh user intent, not a continuation of a backed-off
       // retry: a control that inherited a sixty-second gap would look like a
       // control that did not work.
-      backoffRef.current = POLL_INTERVAL_MS;
+      backoffRef.current = resolveInterval(intervalRef.current);
       generationRef.current += 1;
       armIdle();
       clearTick();

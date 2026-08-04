@@ -39,14 +39,22 @@ import type { Poll, TickOutcome } from "../lib/usePoll";
 
 // A harness component: drives the hook, records every tick, and exposes the Poll
 // so a test can act on it the way a real caller would.
+//
+// F37 adds `intervalMs` and `idleStopMs` as PASS-THROUGHS. Omitting either is
+// byte-identical to the shipped harness, which is what keeps every block above
+// and below unedited (AC20).
 function Harness({
   outcome = () => undefined,
   onRun,
   expose,
+  intervalMs,
+  idleStopMs,
 }: {
   outcome?: () => TickOutcome;
   onRun?: (generation: number) => void;
   expose?: (poll: Poll) => void;
+  intervalMs?: number | (() => number);
+  idleStopMs?: number | null;
 }) {
   const pollRef = useRef<Poll | null>(null);
   const poll = usePoll({
@@ -54,6 +62,8 @@ function Harness({
       onRun?.(generation);
       return outcome();
     },
+    intervalMs,
+    idleStopMs,
   });
   pollRef.current = poll;
   expose?.(poll);
@@ -63,11 +73,19 @@ function Harness({
 let runs: number[];
 let poll: Poll;
 
-function mount(options: { outcome?: () => TickOutcome } = {}) {
+function mount(
+  options: {
+    outcome?: () => TickOutcome;
+    intervalMs?: number | (() => number);
+    idleStopMs?: number | null;
+  } = {},
+) {
   runs = [];
   return render(
     <Harness
       outcome={options.outcome}
+      intervalMs={options.intervalMs}
+      idleStopMs={options.idleStopMs}
       onRun={(generation) => runs.push(generation)}
       expose={(value) => {
         poll = value;
@@ -435,6 +453,188 @@ describe("the two TickOutcome divergences the zero-edit gate cannot see", () => 
     // …and armed nothing.
     advance(POLL_INTERVAL_MS * 10);
     expect(runs).toHaveLength(2);
+  });
+});
+
+describe("F37: intervalMs, and the five-second hole the obvious test walks past", () => {
+  it("governs the gap as a NUMBER", () => {
+    mount({ intervalMs: 2_000 });
+    act(() => poll.reschedule());
+    advance(1_999);
+    expect(runs).toHaveLength(1);
+    advance(1);
+    expect(runs).toHaveLength(2);
+  });
+
+  it("governs the gap as a FUNCTION, resolved when succeeded() is CALLED", () => {
+    // The function form's whole point: the value is read at the moment the tick
+    // resolves, not at the last React commit. Nothing re-renders between the
+    // write below and succeeded(), which is exactly the shipped tick's shape.
+    let gap = 5_000;
+    mount({ intervalMs: () => gap });
+    gap = 2_000;
+    act(() => {
+      poll.succeeded();
+      poll.reschedule();
+    });
+    advance(1_999);
+    expect(runs).toHaveLength(1);
+    advance(1);
+    expect(runs).toHaveLength(2);
+  });
+
+  it("succeeded() resets the backoff to the RESOLVED interval, not POLL_INTERVAL_MS", () => {
+    // The shipped line was `backoffRef.current = POLL_INTERVAL_MS`. Left as it
+    // was, the SOS loop's first successful tick would silently promote its
+    // 2-second cadence back to five.
+    mount({ intervalMs: 2_000 });
+    act(() => {
+      poll.failed();
+      poll.failed();
+      poll.succeeded();
+      poll.reschedule();
+    });
+    advance(1_999);
+    expect(runs).toHaveLength(1);
+    advance(1);
+    expect(runs).toHaveLength(2);
+  });
+
+  it("resume() resets to the RESOLVED interval too", () => {
+    mount({ intervalMs: 2_000 });
+    act(() => {
+      poll.failed();
+      poll.failed();
+      poll.pause();
+    });
+    act(() => poll.resume());
+    expect(runs).toHaveLength(2); // immediate
+    act(() => poll.reschedule());
+    advance(1_999);
+    expect(runs).toHaveLength(2);
+    advance(1);
+    expect(runs).toHaveLength(3);
+  });
+
+  it("switches the gap on the tick that OBSERVES the change, not the one after (AC20b)", () => {
+    // ⚠ ONE REAL TICK, and this is the block the weaker one below passes over.
+    //
+    // The shipped tick shape calls succeeded() inside the fetch's try and
+    // reschedule() in its .finally() — both in the SAME microtask chain as the
+    // response, i.e. before React commits anything. So a gap mirrored at commit
+    // time makes the tick that first observes an alert re-arm at 5 000 ms and
+    // the 2-second cadence start only on the tick AFTER — precisely when the
+    // raiser is waiting to see who is coming.
+    const hasAlert = { current: false };
+    runs = [];
+    render(
+      <Harness
+        intervalMs={() => (hasAlert.current ? 2_000 : 5_000)}
+        onRun={(generation) => {
+          runs.push(generation);
+          if (runs.length === 2) {
+            // This tick's response carries the first alert. The ref write sits
+            // on the line above succeeded(), which is where SosProvider's does.
+            hasAlert.current = true;
+          }
+          poll.succeeded();
+          poll.reschedule();
+        }}
+        expose={(value) => {
+          poll = value;
+        }}
+      />,
+    );
+    expect(runs).toHaveLength(1);
+
+    advance(4_999);
+    expect(runs).toHaveLength(1);
+    advance(1);
+    expect(runs).toHaveLength(2); // the tick that observes the alert
+
+    advance(1_999);
+    expect(runs).toHaveLength(2);
+    advance(1);
+    expect(runs).toHaveLength(3); // 2 000 ms later, NOT 5 000
+  });
+
+  it("takes a changed interval on the next re-arm — the weaker shape, kept deliberately", () => {
+    // ⚠ THIS BLOCK IS KEPT BECAUSE IT IS THE ONE THAT WOULD HAVE SHIPPED THE
+    // BUG. It re-renders the hook with a new prop and THEN ticks, so a gap
+    // mirrored at commit time passes it. It is here in addition to the block
+    // above and never instead of it; if this one ever becomes the only
+    // interval test, AC20b is unpinned.
+    runs = [];
+    const props = {
+      onRun: (generation: number) => runs.push(generation),
+      expose: (value: Poll) => {
+        poll = value;
+      },
+    };
+    const view = render(<Harness intervalMs={5_000} {...props} />);
+    view.rerender(<Harness intervalMs={2_000} {...props} />);
+    act(() => {
+      poll.succeeded();
+      poll.reschedule();
+    });
+    advance(2_000);
+    expect(runs).toHaveLength(2);
+  });
+});
+
+describe("F37: idleStopMs, and an emergency receiver that must not stop receiving", () => {
+  it("the default path is unchanged: POLL_INTERVAL_MS and IDLE_STOP_MS (AC20a)", () => {
+    // ⚠ MECHANICAL, not a review instruction. Every shipped caller passes
+    // neither field, so this block is the one that proves the two defaults are
+    // still the two constants.
+    mount();
+    act(() => {
+      poll.succeeded();
+      poll.reschedule();
+    });
+    advance(POLL_INTERVAL_MS - 1);
+    expect(runs).toHaveLength(1);
+    advance(1);
+    expect(runs).toHaveLength(2);
+
+    advance(IDLE_STOP_MS);
+    expect(poll.mode).toBe("idle");
+  });
+
+  it("null never idle-stops (AC19)", () => {
+    mount({ idleStopMs: null });
+    advance(IDLE_STOP_MS * 3);
+    expect(poll.mode).toBe("running");
+
+    act(() => poll.reschedule());
+    advance(POLL_INTERVAL_MS);
+    expect(runs).toHaveLength(2);
+  });
+
+  it("a timer already armed under a numeric gap does not survive the switch to null", () => {
+    // ⚠ THE ORDERING RULE, and it is the whole of D12's second trap. armIdle()
+    // opens with clearIdle(); put the null return ABOVE that call and the timer
+    // armed under the numeric gap is never cancelled, so the loop still
+    // idle-stops after the caller disabled the stop — a phone in an apron
+    // pocket that silently stops receiving pages.
+    runs = [];
+    const props = {
+      onRun: (generation: number) => runs.push(generation),
+      expose: (value: Poll) => {
+        poll = value;
+      },
+    };
+    const view = render(<Harness idleStopMs={IDLE_STOP_MS} {...props} />);
+    advance(IDLE_STOP_MS - 1_000); // a timer is armed and nearly due
+    expect(poll.mode).toBe("running");
+
+    view.rerender(<Harness idleStopMs={null} {...props} />);
+    act(() => {
+      window.dispatchEvent(new Event("keydown"));
+    });
+
+    advance(IDLE_STOP_MS * 2);
+    expect(poll.mode).toBe("running");
   });
 });
 

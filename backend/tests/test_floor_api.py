@@ -17,6 +17,9 @@ five roles; four compose `require_role(OWNER, SHIFT_MANAGER)` on top of the
 router's five and refuse the three floor roles. Both halves are sized from D10's
 table and nothing else — a count taken from prose reds the wiring walk on a 404
 the first time it runs.
+
+**F37 takes it to EIGHTEEN**, all five new rows in the OPEN half — fourteen open,
+four tightened — and the counts come from D9's table for D10's reason.
 """
 
 import datetime
@@ -35,6 +38,7 @@ from app.auth.dependencies import get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.db.repositories.fitting_rooms import RoomRow
+from app.db.repositories.sos_alerts import SosAlertRow
 from app.errors import DomainNotFoundError
 from app.floor import router as app_router
 from app.floor import schemas as app_schemas
@@ -44,7 +48,10 @@ from app.floor.service import (
     DispatchRead,
     DressPickerRead,
     FloorRead,
+    RaisedSos,
     RoomRead,
+    SosListRead,
+    SosRead,
     WaitlistEntryRead,
     WaitlistRead,
 )
@@ -53,13 +60,16 @@ from app.floor.validation import (
     QueueTicketChangedError,
     QueueTicketNotWaitingError,
     RoomOccupiedError,
+    SosAlreadyAcceptedError,
+    SosClosedError,
     StaffOccupiedError,
 )
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.booking import Booking
-from app.models.constants import StaffCardStatus, StaffRole
+from app.models.constants import SosStatus, StaffCardStatus, StaffRole
 from app.models.dress import Dress
 from app.models.fitting_assignment_dress import FittingAssignmentDress
+from app.models.sos_alert import SosAlert
 from app.models.staff_user import StaffUser
 from app.tenancy.middleware import TenantContext
 
@@ -72,6 +82,7 @@ ROOM_ID = uuid.uuid4()
 ASSIGNMENT_ID = uuid.uuid4()
 BINDING_ID = uuid.uuid4()
 DRESS_ID = uuid.uuid4()
+ALERT_ID = uuid.uuid4()
 TICKET_ID = uuid.uuid4()
 SECOND_TICKET_ID = uuid.uuid4()
 
@@ -88,6 +99,11 @@ BIND_PATH = f"{ASSIGNMENT_PATH}/dresses"
 UNBIND_PATH = f"{BIND_PATH}/{BINDING_ID}"
 DRESS_LIST_PATH = "/manage/floor/dresses"
 CLIENT_LIST_PATH = "/manage/floor/clients"
+SOS_PATH = "/manage/floor/sos"
+SOS_ALERT_PATH = f"{SOS_PATH}/{ALERT_ID}"
+SOS_ACCEPT_PATH = f"{SOS_ALERT_PATH}/accept"
+SOS_RESOLVE_PATH = f"{SOS_ALERT_PATH}/resolve"
+SOS_CANCEL_PATH = f"{SOS_ALERT_PATH}/cancel"
 # F58. Every path's SECOND SEGMENT is `floor`, which is what keeps
 # `apps/manage/vite.config.ts` unedited — `test_spa_serving.py` asserts SET
 # EQUALITY between the live route table's second segments and the manage dev
@@ -106,6 +122,9 @@ BREAK_BEGAN = datetime.datetime(2026, 8, 2, 9, 5, tzinfo=datetime.UTC)
 # what the console's «כבר 42 דק'» is computed against.
 SERVER_NOW = datetime.datetime(2026, 8, 2, 11, 20, tzinfo=datetime.UTC)
 STARTS_AT = datetime.datetime(2026, 8, 2, 6, 0, tzinfo=datetime.UTC)
+# F37: the alert's own `created_at`, seeded rather than defaulted so the wire
+# assertion is a literal.
+RAISED_AT = datetime.datetime(2026, 8, 2, 11, 19, tzinfo=datetime.UTC)
 
 # CONCRETE urls, not templates (plan C4). The structural walker in
 # test_staff_role_gating.py reads `route.path` and needs TEMPLATES, so it keeps
@@ -138,6 +157,14 @@ FLOOR_OPEN_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", TAKE_NEXT_PATH, {}),
     ("POST", ASSIGN_PATH, {"queue_ticket_id": str(TICKET_ID)}),
     ("POST", CALL_PATH, None),
+    # F37's five, and NONE of them is tightened — every rule in that feature
+    # reads the ROW (`target_staff_user_id`, `raised_by`, `accepted_by`) before
+    # it can decide, and no `RoleGate` can say "the person this alert names".
+    ("GET", SOS_PATH, None),
+    ("POST", SOS_PATH, {}),
+    ("POST", SOS_ACCEPT_PATH, None),
+    ("POST", SOS_RESOLVE_PATH, None),
+    ("POST", SOS_CANCEL_PATH, None),
 ]
 
 FLOOR_TIGHTENED_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
@@ -163,10 +190,10 @@ FLOOR_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
 # The spec's error table, verbatim. NOT_FOUND is the only one a service method
 # raises; the other three come from dependency solving or middleware.
 #
-# ⚠ SEVEN after F36, and every member is re-derived from a LIVE response below.
+# ⚠ NINE after F37, and every member is re-derived from a LIVE response below.
 # F57 shipped four and could not have shipped more: `VALIDATION_ERROR` had no
 # producer on this router until a route took a body, and the two 409s had no
-# handler. F36 lands all three at once — the registry's `ForbidExtraModel` body
+# handler. F36 landed all three at once — the registry's `ForbidExtraModel` body
 # and the two occupancy conflicts — so the set grows here, in the PR that gives
 # each of them a writer.
 SPEC_ERROR_CODES = {
@@ -177,14 +204,17 @@ SPEC_ERROR_CODES = {
     "ROOM_OCCUPIED",
     "STAFF_OCCUPIED",
     "CSRF_ORIGIN_MISMATCH",
-    # ⚠ TEN after F58, and the three it adds each needed a writer before they
-    # could be here: `QUEUE_EMPTY` has one the moment take-next lands, and the
-    # other two the moment any verb can refuse a ticket whose state moved. The
-    # set equality below is re-derived from LIVE responses, so a fourth code
+    # ⚠ TWELVE after F58 and F37, and the five they add each needed a writer
+    # before they could be here: `QUEUE_EMPTY` has one the moment take-next
+    # lands, the two ticket-state ones the moment any verb can refuse a ticket
+    # whose state moved, and the two SOS ones the moment accept can lose. The set
+    # equality below is re-derived from LIVE responses, so a thirteenth code
     # arriving without a test fails immediately.
     "QUEUE_EMPTY",
     "QUEUE_TICKET_NOT_WAITING",
     "QUEUE_TICKET_CHANGED",
+    "SOS_ALREADY_ACCEPTED",
+    "SOS_CLOSED",
 }
 
 # Kept in step with test_staff_role_gating.UNKNOWN_ROLE, which owns the tripwire
@@ -214,6 +244,43 @@ def _room_row(
         booking_id=None,
         client_label="מיכל" if occupied else None,
         assigned_at=BREAK_BEGAN if occupied else None,
+    )
+
+
+def sos_read(
+    *,
+    status: str = SosStatus.OPEN,
+    escalated: bool = False,
+    stalled: bool = False,
+    for_me: bool = True,
+    accepted_by: uuid.UUID | None = None,
+    acknowledged_at: datetime.datetime | None = None,
+    note: str | None = "צריך סיכות",
+) -> SosRead:
+    """One card, exported because test_sos_api.py pins the wire it renders."""
+    alert = SosAlert(
+        tenant_id=TENANT.id,
+        raised_by=STAFF_ID,
+        target_staff_user_id=TARGET_ID,
+        fitting_room_assignment_id=ASSIGNMENT_ID,
+        note=note,
+        status=status,
+    )
+    alert.id = ALERT_ID
+    alert.accepted_by = accepted_by
+    alert.acknowledged_at = acknowledged_at
+    alert.created_at = RAISED_AT
+    return SosRead(
+        row=SosAlertRow(
+            alert=alert,
+            raised_by_name="דנה כהן",
+            target_name="נועה לוי",
+            accepted_by_name="נועה לוי" if accepted_by is not None else None,
+            room_label="חדר 1",
+        ),
+        escalated=escalated,
+        stalled=stalled,
+        for_me=for_me,
     )
 
 
@@ -302,6 +369,12 @@ class FakeFloorService:
         # describe exactly that floor.
         self.waitlist = WaitlistRead(entries=[], truncated=False)
         self.dispatch = DispatchRead(room=self.room_read, waitlist=self.waitlist)
+        # F37: what the four mutating sos verbs answer — ONE shape, the same one
+        # the poll's `alerts[]` elements carry, so a route that invented its own
+        # would show up as a key-set difference in test_sos_api.py.
+        self.sos_read = sos_read()
+        self.sos_alerts: list[SosRead] = []
+        self.rerouted = False
 
     async def floor(self, tenant_id: uuid.UUID) -> FloorRead:
         self.floor_calls.append(tenant_id)
@@ -546,6 +619,58 @@ class FakeFloorService:
             raise DomainNotFoundError("queue_ticket")
         return self.waitlist
 
+    # --- F37: the five sos methods, in D9's order ---------------------------
+
+    async def sos(self, tenant_id: uuid.UUID, *, actor: StaffContext) -> SosListRead:
+        self._record("sos", tenant_id=tenant_id, actor_id=actor.id)
+        if self.raises is not None:
+            raise self.raises
+        return SosListRead(alerts=self.sos_alerts, server_now=SERVER_NOW)
+
+    async def raise_sos(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        target_staff_user_id: uuid.UUID | None,
+        fitting_room_assignment_id: uuid.UUID | None,
+        note: str | None,
+        actor: StaffContext,
+    ) -> RaisedSos:
+        self._record(
+            "raise_sos",
+            tenant_id=tenant_id,
+            target_staff_user_id=target_staff_user_id,
+            fitting_room_assignment_id=fitting_room_assignment_id,
+            note=note,
+            actor_id=actor.id,
+        )
+        if self.raises is not None:
+            raise self.raises
+        return RaisedSos(sos=self.sos_read, rerouted=self.rerouted)
+
+    async def accept_sos(
+        self, tenant_id: uuid.UUID, alert_id: uuid.UUID, *, actor: StaffContext
+    ) -> SosRead:
+        return self._sos("accept_sos", tenant_id=tenant_id, alert_id=alert_id, actor_id=actor.id)
+
+    async def resolve_sos(
+        self, tenant_id: uuid.UUID, alert_id: uuid.UUID, *, actor: StaffContext
+    ) -> SosRead:
+        return self._sos("resolve_sos", tenant_id=tenant_id, alert_id=alert_id, actor_id=actor.id)
+
+    async def cancel_sos(
+        self, tenant_id: uuid.UUID, alert_id: uuid.UUID, *, actor: StaffContext
+    ) -> SosRead:
+        return self._sos("cancel_sos", tenant_id=tenant_id, alert_id=alert_id, actor_id=actor.id)
+
+    def _sos(self, method: str, **kwargs: Any) -> SosRead:
+        self._record(method, **kwargs)
+        if self.raises is not None:
+            raise self.raises
+        if self.missing:
+            raise DomainNotFoundError("sos_alert")
+        return self.sos_read
+
     async def dresses(self, tenant_id: uuid.UUID) -> DressPickerRead:
         self._record("dresses", tenant_id=tenant_id)
         if self.raises is not None:
@@ -647,7 +772,7 @@ def test_the_route_table_names_every_live_floor_route() -> None:
         for method in (getattr(route, "methods", None) or ())
         if getattr(route, "path", "").startswith("/manage/floor")
     }
-    assert len(live) == 18, sorted(live)
+    assert len(live) == 23, sorted(live)
     assert len({(method, path) for method, path, _ in FLOOR_ROUTES}) == len(FLOOR_ROUTES)
     assert len(FLOOR_ROUTES) == len(live), (
         f"the route table has {len(FLOOR_ROUTES)} rows for {len(live)} live routes: {sorted(live)}"
@@ -658,8 +783,8 @@ def test_every_route_is_wired_and_reaches_the_service() -> None:
     """SEVEN routers now mount prefix="/manage": a path collision would silently
     shadow, and a 404 here is what catches it.
 
-    EIGHTEEN rows after F58, and the count comes from D11's table rather than
-    from prose — a table sized by counting sentences reds this walk on a 404 the
+    TWENTY-THREE rows after F58 and F37, and the count comes from D11's and D9's
+    tables rather than from prose — a table sized by counting sentences reds this walk on a 404 the
     first time it runs."""
     for method, path, body in FLOOR_ROUTES:
         fake = FakeFloorService()
@@ -761,7 +886,7 @@ def test_every_handler_passes_the_host_resolved_tenant() -> None:
     session-derived. The fake makes them disagree, so a handler reaching for the
     session's id fails here.
 
-    All THIRTEEN, not the three F57 shipped: the ten new handlers each spell
+    All EIGHTEEN, not the three F57 shipped: the ten new handlers each spell
     `get_current_tenant(request)` themselves, and a copy-paste that reached for
     `staff.tenant_id` instead would be invisible in production (the two agree) and
     catastrophic in a cross-tenant session."""
@@ -972,6 +1097,12 @@ def test_every_mutation_answers_the_same_room_shape() -> None:
                 CALL_PATH,
                 SKIP_PATH,
                 REMOVE_PATH,
+                # F37's five answer an ALERT, not a room. Their own one-shape
+                # assertion is test_sos_api.py's, by set equality.
+                SOS_PATH,
+                SOS_ACCEPT_PATH,
+                SOS_RESOLVE_PATH,
+                SOS_CANCEL_PATH,
             }:
                 continue
             answered = client.request(method, path, json=body).json()
@@ -1276,20 +1407,28 @@ def test_no_other_error_body_in_main_carries_a_details_key() -> None:
         for name, value in vars(app_main).items()
         if name.endswith("_BODY") and isinstance(value, dict)
     }
-    assert {"ROOM_OCCUPIED_BODY", "STAFF_OCCUPIED_BODY"} <= set(bodies)
+    assert {
+        "ROOM_OCCUPIED_BODY",
+        "STAFF_OCCUPIED_BODY",
+        "QUEUE_TICKET_NOT_WAITING_BODY",
+        "QUEUE_TICKET_CHANGED_BODY",
+        "SOS_ALREADY_ACCEPTED_BODY",
+        "SOS_CLOSED_BODY",
+    } <= set(bodies)
     for name, body in bodies.items():
         assert set(body["error"]) == {"code", "message"}, name
 
 
 def test_every_mutating_verb_with_a_mismatched_origin_is_refused() -> None:
-    """All FIFTEEN mutating routes ARE fenced — CsrfOriginMiddleware gates on
+    """All NINETEEN mutating routes ARE fenced — CsrfOriginMiddleware gates on
     `request.method in MUTATING_METHODS` (csrf.py:15,48), which is a METHOD test
-    and not a path list, so the eight F36 adds are fenced by construction. That
-    is asserted rather than assumed because "by construction" is the sentence
-    that stops being true the day somebody adds a GET that writes."""
+    and not a path list, so the eight F36 adds, the five F58 adds and the four
+    F37 adds are fenced by construction. That is asserted rather than assumed because
+    "by construction" is the sentence that stops being true the day somebody adds
+    a GET that writes."""
     fake = FakeFloorService()
     mutating = [(m, p, b) for m, p, b in FLOOR_ROUTES if m != "GET"]
-    assert len(mutating) == 15
+    assert len(mutating) == 19
     with _client(fake) as client:
         for method, path, body in mutating:
             resp = client.request(
@@ -1301,13 +1440,14 @@ def test_every_mutating_verb_with_a_mismatched_origin_is_refused() -> None:
     assert fake.calls == []
 
 
-def test_the_three_floor_reads_with_a_mismatched_origin_are_allowed() -> None:
+def test_the_four_floor_reads_with_a_mismatched_origin_are_allowed() -> None:
     """The GETs are NOT fenced, and that asymmetry is asserted rather than
     assumed: CsrfOriginMiddleware fences MUTATING_METHODS only. The protection on
-    the three reads is the session cookie and the role gate, alone."""
+    the four reads is the session cookie and the role gate, alone — and F37's is
+    the one that polls every section for a whole shift."""
     fake = FakeFloorService()
     with _client(fake) as client:
-        for path in (FLOOR_PATH, DRESS_LIST_PATH, CLIENT_LIST_PATH):
+        for path in (FLOOR_PATH, DRESS_LIST_PATH, CLIENT_LIST_PATH, SOS_PATH):
             resp = client.get(path, headers={"origin": "http://evil.localtest.me"})
             assert resp.status_code == 200, f"{path} → {resp.status_code}"
 
@@ -1508,9 +1648,10 @@ def test_every_spec_error_code_is_asserted() -> None:
     literal — and SET EQUALITY, so an error code added without a test here fails
     immediately.
 
-    SEVEN after F36. `VALIDATION_ERROR` becomes reachable on this router for the
-    first time because the registry takes a body; the two 409s become reachable
-    because the claim and the handover can conflict."""
+    NINE after F37. `VALIDATION_ERROR` became reachable on this router for the
+    first time in F36 because the registry takes a body, and the occupancy 409s
+    because the claim and the handover can conflict; the two SOS codes arrive
+    with the accept and the cancel, each with its own handler block."""
     observed = set()
     with _client(FakeFloorService(), authed=False) as client:
         observed.add(client.get(FLOOR_PATH).json()["error"]["code"])
@@ -1541,4 +1682,8 @@ def test_every_spec_error_code_is_asserted() -> None:
     ):
         with _client(FakeFloorService(raises=error)) as client:
             observed.add(client.post(START_PATH).json()["error"]["code"])
+    with _client(FakeFloorService(raises=SosAlreadyAcceptedError())) as client:
+        observed.add(client.post(SOS_ACCEPT_PATH).json()["error"]["code"])
+    with _client(FakeFloorService(raises=SosClosedError())) as client:
+        observed.add(client.post(SOS_ACCEPT_PATH).json()["error"]["code"])
     assert observed == SPEC_ERROR_CODES

@@ -414,6 +414,13 @@ function queuePath(ticketId: string): string {
   return `/manage/floor/queue/${encodeURIComponent(ticketId)}`;
 }
 
+// F37's five paths keep the same second segment for the same reason: the manage
+// dev proxy's alternation names `floor` and mounting at /manage/sos would have
+// cost an edit to vite.config.ts.
+function sosPath(alertId: string): string {
+  return `/manage/floor/sos/${encodeURIComponent(alertId)}`;
+}
+
 // --- staff wire types (mirror backend/app/auth/schemas.py) ---
 
 // F57 widened this to five. StaffMember, CreateStaffRequest and
@@ -593,6 +600,86 @@ export interface Waitlist {
 export interface DispatchResult {
   room: Room;
   waitlist: Waitlist;
+}
+
+// --- F37: the SOS page (mirror backend/app/floor/schemas.py) ------------------
+
+// The migration's CHECK is the pinned set; the live read answers only the first
+// two, which is why the console's tick-rate condition is `{open, accepted}` and
+// not `for_me`.
+export type SosStatus = "open" | "accepted" | "resolved" | "cancelled";
+
+/**
+ * One emergency, and the SAME shape all five routes answer.
+ *
+ * ⚠ **IT CARRIES STAFF NAMES AND A ROOM LABEL AND NO CUSTOMER DATUM OF ANY
+ * KIND, AND THE APP-LEVEL POLL IS EXACTLY WHY.** `Occupancy.client_label` above
+ * is a bride's name and is defensible because `/manage/floor` is fetched only
+ * while the console is on the board or the floor, by a component that unmounts
+ * on navigation. This payload is fetched on EVERY section, every few seconds,
+ * for a whole shift. A name here would mean the console holds a customer's name
+ * in memory and on the wire while nobody is looking at a floor at all — and it
+ * would buy nothing, because an SOS already names the person in the room.
+ *
+ * `escalated`, `stalled` and `for_me` are DERIVED on the server, per row,
+ * against the one `server_now` the envelope carries. Deriving them here would
+ * put the audience rule in the product twice, in two languages.
+ */
+export interface SosAlert {
+  id: string;
+  status: SosStatus;
+  raised_by: string;
+  // Null only if her staff row is gone entirely — the joins carry no
+  // `deleted_at` filter, so a colleague removed mid-page still has a name.
+  raised_by_name: string | null;
+  // Null = the shift-manager ROLE. Also null when a named colleague turned out
+  // to be unreachable and the raise rerouted.
+  target_staff_user_id: string | null;
+  target_name: string | null;
+  // Null = no room on this page, which is ordinary: a seamstress at her table.
+  room_label: string | null;
+  note: string | null;
+  accepted_by: string | null;
+  accepted_by_name: string | null;
+  acknowledged_at: string | null;
+  created_at: string;
+  escalated: boolean;
+  stalled: boolean;
+  for_me: boolean;
+}
+
+// An ENVELOPE for FloorResponse's reason plus a sharper one: `server_now` is the
+// instant BOTH derived booleans and the console's elapsed line are computed
+// against, so an escalated badge can never render beside «כבר 0 דק'».
+export interface SosResponse {
+  alerts: SosAlert[];
+  server_now: string;
+}
+
+// ⚠ `rerouted` is a fact about THIS REQUEST and not about the row, which is why
+// it cannot live on SosAlert: nobody reading the alert later can know whether a
+// null target means «she asked for the shift manager» or «she asked for Dana and
+// Dana was logged out». The dialog renders it and stays open for it.
+export interface RaisedAlert {
+  alert: SosAlert;
+  rerouted: boolean;
+}
+
+// Every field optional and all three defaults are the ORDINARY case.
+// `target_staff_user_id: null` is the shift-manager ROLE — the FALLBACK route,
+// and what a staffer alone with a bride taps. It is not probed for reachability
+// and its audience CAN be empty (spec Risk 3(a)): the last-owner invariant
+// guarantees an owner ROW exists, not that anyone is signed in.
+//
+// ⚠ There is deliberately no `raised_by`. The acting identity is the session
+// cookie and nothing on this body may stand in for it: nobody raises a page as
+// somebody else, not even an owner, because an SOS is a first-person statement.
+// The server's model is a ForbidExtraModel, so a key added here that is not
+// there answers 400 on the one request that must never fail for a shape reason.
+export interface RaiseSosRequest {
+  target_staff_user_id?: string | null;
+  fitting_room_assignment_id?: string | null;
+  note?: string | null;
 }
 
 // --- F36: the request bodies (the backend's snake_case, sent verbatim) --------
@@ -1215,6 +1302,28 @@ export const api = {
   },
   listFloorClients(): Promise<FloorClientList> {
     return apiFetch("/manage/floor/clients");
+  },
+
+  // F37's five. The read is the app-level poll's ONE statement — it runs on
+  // every section of the console, which is what the payload's missing customer
+  // datum is for. The three action verbs answer the SAME alert shape the read
+  // does, so a card patches in place from the server's own row.
+  getSos(): Promise<SosResponse> {
+    return apiFetch("/manage/floor/sos");
+  },
+  raiseSos(body: RaiseSosRequest): Promise<RaisedAlert> {
+    return apiFetch("/manage/floor/sos", { method: "POST", body });
+  },
+  // No body on any of the three: the target is the alert id and there is
+  // nothing to say about it (releaseAssignment's reasoning, one router over).
+  acceptSos(alertId: string): Promise<SosAlert> {
+    return apiFetch(`${sosPath(alertId)}/accept`, { method: "POST" });
+  },
+  resolveSos(alertId: string): Promise<SosAlert> {
+    return apiFetch(`${sosPath(alertId)}/resolve`, { method: "POST" });
+  },
+  cancelSos(alertId: string): Promise<SosAlert> {
+    return apiFetch(`${sosPath(alertId)}/cancel`, { method: "POST" });
   },
   rescheduleBooking(bookingId: string, startsAt: string): Promise<OwnerBookingDetail> {
     return apiFetch(`${bookingPath(bookingId)}/reschedule`, {

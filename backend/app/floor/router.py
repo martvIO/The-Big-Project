@@ -1,6 +1,6 @@
 """The floor: the read, the two break toggles, the room registry, the claim and
-its dress bindings, the two one-shot pickers and F58's five dispatch verbs —
-eighteen routes on /manage.
+its dress bindings, the two one-shot pickers, F58's five dispatch verbs and F37's
+SOS page — twenty-three routes on /manage.
 
 **A SEVENTH router on /manage.** Registered after dashboard_router in
 create_app(), carrying the same shadowing warning the other six includes carry —
@@ -55,6 +55,10 @@ The distinction that keeps D11's conclusion right — two loops stay two loops:
                                  fetched when the panel mounts and after a
                                  claim, never on the tick.
 
+**F37 adds five routes and tightens NONE** — every rule on the SOS page reads the
+alert row, and a `RoleGate` can express only a pure role predicate. See the
+section comment above those five.
+
 **SIX routes NARROW that gate to owner + shift_manager**, per-route, composing
 by intersection (`auth/dependencies.py:44-45`): the three registry verbs,
 `handover`, and F58's `skip` and `remove`. The registry is configuration — a
@@ -85,11 +89,12 @@ paths (`dashboard/router.py:17-26` argues this at length).
 points the dependency arrow backwards to save three lines;
 `auth/staff_router.py:22-27` records the decision.
 
-**No rate limiter**: no /manage router carries one and neither F36 nor F58
-introduces the first. The FIFTEEN mutating routes ARE fenced by
+**No rate limiter**: no /manage router carries one and none of F36, F58 or F37
+introduces the first. The NINETEEN mutating routes ARE fenced by
 CsrfOriginMiddleware (`csrf.py:48` gates on `request.method in MUTATING_METHODS`,
-a method test rather than a path list, so the eight F36 adds and the five F58
-adds are fenced by construction); the THREE GETs are not, and their protection is
+a method test rather than a path list, so the eight F36 adds, the five F58 adds
+and the four F37 adds are fenced by construction); the FOUR GETs are not, and
+their protection is
 the session cookie and the role gate, alone.
 
 **Every path's second segment is `floor`, so `vite.config.ts` needs no edit** —
@@ -122,8 +127,12 @@ from app.floor.schemas import (
     FloorDressList,
     FloorResponse,
     HandoverRequest,
+    RaisedAlert,
+    RaiseSosRequest,
     Room,
     SkipRequest,
+    SosAlertView,
+    SosResponse,
     StaffCard,
     TakeNextRequest,
     UpdateRoomRequest,
@@ -465,3 +474,84 @@ async def list_clients(request: Request, service: Service) -> FloorClientList:
     """The ONLY producer of `booking_id` anywhere in the console. Today's
     arrivals — checked in and still in the building — never the day book."""
     return FloorClientList.from_read(await service.clients(get_current_tenant(request).id))
+
+
+# --- F37: the SOS page (all five roles, NOTHING tightened) --------------------
+#
+# ⚠ **F36 tightened four routes; F37 tightens NONE, and that is a decision rather
+# than an omission.** A per-route `RoleGate` can express only a PURE role
+# predicate — one that depends on nothing about the target. Every rule in this
+# feature reads the ROW: the raise is first-person and has no target rule at all,
+# and accept, resolve and cancel each read `target_staff_user_id`, `raised_by` or
+# `accepted_by` before they can decide. There is no gate that can say "the person
+# this alert names", so all four refusals are 404s from the service.
+#
+# The four mutating verbs are CSRF-fenced by `CsrfOriginMiddleware` BY METHOD
+# rather than by a path list, so they are fenced by construction; the one new GET
+# is not, and its protection is the session cookie and the role gate alone.
+#
+# ⚠ Every path's second segment is still `floor`, so `vite.config.ts` needs NO
+# edit. Mounting at `/manage/sos` would have cost one, and the failure would have
+# broken only a developer's machine while production, CI and the whole suite
+# stayed green, serving the SPA shell where the API should be.
+
+
+@router.get("/floor/sos")
+async def get_sos(request: Request, service: Service, staff: Staff) -> SosResponse:
+    """The app-level poll — the one read in this console mounted on every
+    section. `staff` is not decoration: the rows are filtered by the audience
+    rule against the SESSION's actor, never against anything the request names.
+    """
+    return SosResponse.from_read(await service.sos(get_current_tenant(request).id, actor=staff))
+
+
+@router.post("/floor/sos")
+async def raise_sos(
+    request: Request, service: Service, staff: Staff, body: RaiseSosRequest
+) -> RaisedAlert:
+    """⚠ The body carries a TARGET and never an actor. `raised_by` is `staff`,
+    full stop — nobody may raise a page AS somebody else, not even an owner,
+    because an SOS is a first-person statement and an owner who needs help raises
+    her own. `RaiseSosRequest` is a `ForbidExtraModel` so a body carrying
+    `raised_by` is a 400 rather than a silently ignored key."""
+    return RaisedAlert.from_read(
+        await service.raise_sos(
+            get_current_tenant(request).id,
+            target_staff_user_id=body.target_staff_user_id,
+            fitting_room_assignment_id=body.fitting_room_assignment_id,
+            note=body.note,
+            actor=staff,
+        )
+    )
+
+
+@router.post("/floor/sos/{alert_id}/accept")
+async def accept_sos(
+    request: Request, alert_id: uuid.UUID, service: Service, staff: Staff
+) -> SosAlertView:
+    """«אני מגיעה». No body: the target is the alert and there is nothing to say
+    about it — `release_assignment`'s reasoning, and the same 404-not-403 rule,
+    for the same reason."""
+    return SosAlertView.from_read(
+        await service.accept_sos(get_current_tenant(request).id, alert_id, actor=staff)
+    )
+
+
+@router.post("/floor/sos/{alert_id}/resolve")
+async def resolve_sos(
+    request: Request, alert_id: uuid.UUID, service: Service, staff: Staff
+) -> SosAlertView:
+    return SosAlertView.from_read(
+        await service.resolve_sos(get_current_tenant(request).id, alert_id, actor=staff)
+    )
+
+
+@router.post("/floor/sos/{alert_id}/cancel")
+async def cancel_sos(
+    request: Request, alert_id: uuid.UUID, service: Service, staff: Staff
+) -> SosAlertView:
+    """Cancelling an ACCEPTED alert is a 409 naming the acceptor rather than a
+    silent close — a colleague is already walking to that curtain."""
+    return SosAlertView.from_read(
+        await service.cancel_sos(get_current_tenant(request).id, alert_id, actor=staff)
+    )

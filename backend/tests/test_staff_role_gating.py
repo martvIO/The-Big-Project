@@ -111,6 +111,16 @@ FLOOR_CLIENT_LIST = ("GET", "/manage/floor/clients")
 FLOOR_TAKE_NEXT = ("POST", "/manage/floor/rooms/{room_id}/take-next")
 FLOOR_ASSIGN = ("POST", "/manage/floor/rooms/{room_id}/assign")
 FLOOR_QUEUE_CALL = ("POST", "/manage/floor/queue/{ticket_id}/call")
+# F37's five, and NOT ONE of them is tightened. Every rule in that feature reads
+# the ROW before it can decide — `target_staff_user_id`, `raised_by`,
+# `accepted_by` — and a `RoleGate` can express only a PURE role predicate. There
+# is no gate that can say "the person this alert names", so all five refusals are
+# 404s from the service and all five paths belong here.
+FLOOR_SOS_READ = ("GET", "/manage/floor/sos")
+FLOOR_SOS_RAISE = ("POST", "/manage/floor/sos")
+FLOOR_SOS_ACCEPT = ("POST", "/manage/floor/sos/{alert_id}/accept")
+FLOOR_SOS_RESOLVE = ("POST", "/manage/floor/sos/{alert_id}/resolve")
+FLOOR_SOS_CANCEL = ("POST", "/manage/floor/sos/{alert_id}/cancel")
 
 # ⚠ The SIX tightened routes are DELIBERATELY ABSENT — the three registry verbs
 # (`POST`/`PATCH`/`DELETE /manage/floor/rooms…`), `handover`, and F58's `skip`
@@ -143,6 +153,11 @@ FLOOR_OPEN = {
     FLOOR_TAKE_NEXT,
     FLOOR_ASSIGN,
     FLOOR_QUEUE_CALL,
+    FLOOR_SOS_READ,
+    FLOOR_SOS_RAISE,
+    FLOOR_SOS_ACCEPT,
+    FLOOR_SOS_RESOLVE,
+    FLOOR_SOS_CANCEL,
 }
 
 # F41's seven, same templates-not-urls rule. test_atelier_api.ATELIER_ROUTES is

@@ -46,6 +46,31 @@ class StaffCardStatus(StrEnum):
     OCCUPIED = "occupied"
 
 
+class SosStatus(StrEnum):
+    # F37. The DB PINS this exact set (0021's sos_alerts_status_check, held
+    # byte-identical in test_migrations.py), unlike StaffCardStatus directly
+    # above — because unlike a card status this one is STORED, and the whole
+    # first-accept-owns guarantee is a conditional UPDATE whose predicate names
+    # one of these values.
+    #
+    # FOUR values and not five. There is deliberately no 'escalated' and no
+    # 'stalled': both are read-time predicates over a row and a clock (D6), so
+    # neither has an instant at which it happens or a writer to hang it on.
+    # Adding either as a status would make escalation a write on a read path,
+    # which is the design this feature explicitly rejects.
+    #
+    # RESOLVED and CANCELLED are separate terminal values rather than one
+    # `closed` with a reason: they mean different things to the person who
+    # pressed them («she got help» vs «false alarm»), the verbs that reach them
+    # have different predicates — resolve from either live state, cancel from
+    # `open` ONLY — and cancelling an ACCEPTED alert is a 409 precisely because
+    # a colleague is already walking to that curtain.
+    OPEN = "open"
+    ACCEPTED = "accepted"
+    RESOLVED = "resolved"
+    CANCELLED = "cancelled"
+
+
 class TicketStage(StrEnum):
     # F41's atelier board. NOT pinned by the DB and deliberately not: there is no
     # stored value for a CHECK to constrain. The state is DERIVED from five
@@ -448,6 +473,40 @@ class AuditAction(StrEnum):
     ATELIER_TICKET_STAGE_ADVANCED = "atelier_ticket_stage_advanced"
     ATELIER_TICKET_STAGE_UNDONE = "atelier_ticket_stage_undone"
     ATELIER_TICKET_DELETED = "atelier_ticket_deleted"
+
+    # F37's SOS paging (D13). The EIGHTH block to rely on the same fact:
+    # audit_log.action is plain TEXT with no CHECK (0003), so these four need no
+    # migration.
+    #
+    # ⚠ SOS_RAISED's `details` carries BOTH `requested_target` AND `target`, and
+    # the pair is the whole point. The reroute writes NULL into
+    # `target_staff_user_id`, destroying the only record of whom she actually
+    # tried to page — `previous_break_started_at`'s argument and the handover
+    # `from` argument, third instance. Without the pair the trail records that a
+    # page went to the shift manager and cannot say Dana was meant to get it,
+    # which is the single most useful thing a pilot review could ask this table.
+    #
+    # ⚠ SOS_RESOLVED carries `from_status`, CAPTURED INTO A LOCAL BEFORE THE
+    # WRITER RUNS. This is the fourth appearance of the identity-map trap in this
+    # repo and the only one where the destroyed value is a STATE rather than a
+    # timestamp: the UPDATE is ORM-enabled DML whose `evaluate` synchronization
+    # stamps 'resolved' onto the very instance the reader is about to read, so a
+    # capture placed afterwards records `resolved -> resolved` and empties the
+    # row of its whole informational content.
+    #
+    # A NO-OP WRITES NO ROW: a re-accept by the current owner, a second resolve,
+    # a resolve of an already-cancelled alert. A row asserting otherwise would be
+    # a lie about a person.
+    #
+    # ⚠ SOS_ESCALATED IS DECLINED and this is where a reader will look for it.
+    # There is no escalation EVENT — escalation is a predicate over a row and a
+    # clock (D6), so there is no instant at which anything happens and no writer
+    # to hang an action on. Recording one from a read path would be a write on a
+    # read path, which is exactly what D6 rejects.
+    SOS_RAISED = "sos_raised"
+    SOS_ACCEPTED = "sos_accepted"
+    SOS_RESOLVED = "sos_resolved"
+    SOS_CANCELLED = "sos_cancelled"
 
 
 class PlatformAuditAction(StrEnum):

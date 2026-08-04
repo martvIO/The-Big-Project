@@ -881,3 +881,120 @@ describe("the atelier client", () => {
     }
   });
 });
+
+// --- the SOS page (Feature 37) ---
+
+const ALERT_ID = "88888888-9999-aaaa-bbbb-cccccccccccc";
+
+describe("sos endpoints", () => {
+  it("reads the alerts from the one app-level path", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { alerts: [], server_now: "2026-08-04T08:20:00Z" }));
+    const result = await api.getSos();
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/floor/sos");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: "include" });
+    expect(result.alerts).toEqual([]);
+    expect(result.server_now).toBe("2026-08-04T08:20:00Z");
+  });
+
+  it("sends the raise body VERBATIM — this app speaks the backend's snake_case", () => {
+    // There is no case-conversion layer in this console (api.ts's own header
+    // says so), so a camelCase key here would arrive at a ForbidExtraModel and
+    // answer 400 on the one request that must never fail for a shape reason.
+    const fetchMock = stubFetch(() => jsonResponse(200, { alert: {}, rerouted: false }));
+    return api
+      .raiseSos({
+        target_staff_user_id: STAFF_ID,
+        fitting_room_assignment_id: ASSIGNMENT_ID,
+        note: "צריך סיכות",
+      })
+      .then(() => {
+        const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(path).toBe("/manage/floor/sos");
+        expect(init.method).toBe("POST");
+        expect(JSON.parse(init.body as string)).toEqual({
+          target_staff_user_id: STAFF_ID,
+          fitting_room_assignment_id: ASSIGNMENT_ID,
+          note: "צריך סיכות",
+        });
+      });
+  });
+
+  it("sends the shift-manager default as an EMPTY body, not an omitted one", async () => {
+    // `target_staff_user_id: null` IS the shift-manager ROLE and is the default
+    // a staffer alone with a bride actually taps. `{}` reaches the same place
+    // through the model's own defaults; both must travel as JSON.
+    const fetchMock = stubFetch(() => jsonResponse(200, { alert: {}, rerouted: true }));
+    await api.raiseSos({});
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({});
+    expect(init.headers).toMatchObject({ "Content-Type": "application/json" });
+  });
+
+  it("posts the three actions with NO body and encodes the alert id", async () => {
+    // The target is the alert and there is nothing to say about it — the
+    // shipped release_assignment's reasoning, one router over.
+    const verbs = [
+      [api.acceptSos, "accept"],
+      [api.resolveSos, "resolve"],
+      [api.cancelSos, "cancel"],
+    ] as const;
+    for (const [method, segment] of verbs) {
+      const fetchMock = stubFetch(() => jsonResponse(200, { id: ALERT_ID }));
+      await method("a b/c");
+      const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(path).toBe(`/manage/floor/sos/a%20b%2Fc/${segment}`);
+      expect(init.method).toBe("POST");
+      expect(init.body).toBeUndefined();
+    }
+  });
+
+  it("carries the accept 409's details so the refusal can NAME the owner", async () => {
+    // The ruling's "a 409 naming the owner", rendered. She has not lost
+    // anything — somebody is going — and the console can only say so because
+    // the winner's name rides on the refusal itself.
+    stubFetch(() =>
+      jsonResponse(409, {
+        error: {
+          code: "SOS_ALREADY_ACCEPTED",
+          message: "Another staff member already accepted this alert.",
+          details: { staff_display_name: "דנה כהן" },
+        },
+      }),
+    );
+    await expect(api.acceptSos(ALERT_ID)).rejects.toMatchObject({
+      status: 409,
+      code: "SOS_ALREADY_ACCEPTED",
+      details: { staff_display_name: "דנה כהן" },
+    });
+  });
+
+  it("leaves the accept 409's details UNDEFINED, never null, when the winner is gone", async () => {
+    // The winner's staff row can be removed between her accept and this read,
+    // so the server omits `details` entirely. `undefined` is what lets the
+    // overlay select «מישהי אחרת כבר מגיעה.» instead of interpolating an empty
+    // name into a Hebrew sentence on a legally binding surface.
+    stubFetch(() =>
+      jsonResponse(409, {
+        error: { code: "SOS_ALREADY_ACCEPTED", message: "Another staff member already accepted." },
+      }),
+    );
+    const failure: unknown = await api.acceptSos(ALERT_ID).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).details).toBeUndefined();
+  });
+
+  it("surfaces both new conflict codes and the 404 as distinguishable ApiErrors", async () => {
+    // Two codes and not one with a discriminating `details`: two causes, two
+    // sentences, TWO REMEDIES — go somewhere else, versus there is nothing to
+    // do. The 404 is not terminal; an alert vanishing is a fact about the
+    // alert, not about her access.
+    for (const [status, code] of [
+      [409, "SOS_ALREADY_ACCEPTED"],
+      [409, "SOS_CLOSED"],
+      [404, "NOT_FOUND"],
+    ] as const) {
+      stubFetch(() => jsonResponse(status, { error: { code, message: "…" } }));
+      await expect(api.acceptSos(ALERT_ID)).rejects.toMatchObject({ status, code });
+    }
+  });
+});

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
 import type { FloorResponse, Room, RoomAssignment, StaffCard } from "../api";
 import { FloorPanel } from "../components/FloorPanel";
+import { SosProvider } from "../lib/sos";
 import { POLL_INTERVAL_MS } from "../lib/usePoll";
 
 // Mounted THROUGH FloorPanel → RoomsPanel. Move 5 is the reason: the poll is
@@ -12,6 +13,11 @@ import { POLL_INTERVAL_MS } from "../lib/usePoll";
 // under the user's hands with focus inside — F57's own shipped MAJOR reproduced
 // one level deeper, and axe sees none of it. A direct render could not produce
 // it at all.
+// ⚠ F37 INFRASTRUCTURE, NOT AN EXPECTATION. FloorPanel now renders SosCentre,
+// which reads useSos() — and that hook THROWS outside the provider, deliberately
+// (loud beats inert for an emergency channel). So the render helper gains the
+// provider and the api mock gains getSos, exactly as F36 added listFloorClients
+// here. Every assertion below is untouched.
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
@@ -22,6 +28,11 @@ vi.mock("../api", async () => {
       startStaffBreak: vi.fn(),
       endStaffBreak: vi.fn(),
       listFloorClients: vi.fn(),
+      getSos: vi.fn(),
+      raiseSos: vi.fn(),
+      acceptSos: vi.fn(),
+      resolveSos: vi.fn(),
+      cancelSos: vi.fn(),
       claimRoom: vi.fn(),
       releaseAssignment: vi.fn(),
       removeAssignmentDress: vi.fn(),
@@ -37,6 +48,7 @@ vi.mock("../api", async () => {
 const { api, ApiError } = await import("../api");
 const getFloor = vi.mocked(api.getFloor);
 const listFloorClients = vi.mocked(api.listFloorClients);
+const getSos = vi.mocked(api.getSos);
 const listFloorDresses = vi.mocked(api.listFloorDresses);
 const addAssignmentDress = vi.mocked(api.addAssignmentDress);
 
@@ -86,7 +98,11 @@ function floor(rooms: Room[]): FloorResponse {
 }
 
 function mount() {
-  return render(<FloorPanel selfId={SELF_ID} role="owner" />);
+  return render(
+    <SosProvider>
+      <FloorPanel selfId={SELF_ID} role="owner" />
+    </SosProvider>,
+  );
 }
 
 function dialogs(): HTMLDialogElement[] {
@@ -115,6 +131,8 @@ beforeEach(() => {
   listFloorDresses.mockReset();
   addAssignmentDress.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
+  getSos.mockReset();
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
   listFloorDresses.mockResolvedValue({
     dresses: [
       { id: "d1", name: "ורוניק", sizes: ["38", "40"] },
