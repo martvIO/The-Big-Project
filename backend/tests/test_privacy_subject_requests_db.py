@@ -51,6 +51,7 @@ from app.booking.manage import ManageBookingService
 from app.booking.tokens import manage_token_hash
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.message_log import MessageLogRepository
+from app.db.repositories.queue_tickets import QueueTicketsRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.models.constants import (
@@ -58,10 +59,12 @@ from app.models.constants import (
     BookingStatus,
     MarketingConsentSource,
     MessageKind,
+    VisitType,
 )
 from app.models.customer import Customer
 from app.models.message_log import MessageLog
 from app.models.otp_code import OtpCode
+from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.privacy.service import (
     PrivacyService,
@@ -83,6 +86,7 @@ PAST_SLOT_B = _slot(11, date=PAST_DATE)
 
 CUSTOMERS = CustomersRepository()
 MESSAGES = MessageLogRepository()
+QUEUE_TICKETS = QueueTicketsRepository()
 
 
 def _privacy(factory: async_sessionmaker[AsyncSession]) -> PrivacyService:
@@ -907,5 +911,122 @@ async def test_the_0009_replay_path_still_stamps_the_consent(app_role_url: str) 
         assert replay.created is False, "this is not the replay branch — the test proves nothing"
         assert replay.booking.id == first.booking.id
         assert (await _customer(factory, tenant_id, customer_id)).marketing_consent_at is not None
+    finally:
+        await engine.dispose()
+
+
+# --- C5: the two withdrawal arms, end to end ---
+
+
+async def test_the_withdraw_customer_arm_is_additive_and_404s_an_unknown_id(
+    app_role_url: str,
+) -> None:
+    """The lesser action short of erasure (D15). The consent stamp survives —
+    it is the evidence that sends made before this instant were lawful.
+
+    An unknown id IS a 404 here, unlike an unknown phone: the console only ever
+    sends an id it got from a lookup, so a miss means the id is wrong rather
+    than that the answer is "nothing to do".
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(
+            factory,
+            tenant_id,
+            type_id,
+            starts_at=PAST_SLOT,
+            now=PAST_NOW,
+            phone=_phone(),
+            marketing_consent=True,
+        )
+        customer_id = claim.booking.customer_id
+        service = _privacy(factory)
+
+        first = await service.withdraw_marketing(tenant_id, customer_id=customer_id, raw_phone=None)
+        assert first.changed is True
+        row = await _customer(factory, tenant_id, customer_id)
+        assert row.marketing_consent_withdrawn_at is not None
+        assert row.marketing_consent_at is not None
+
+        repeat = await service.withdraw_marketing(
+            tenant_id, customer_id=customer_id, raw_phone=None
+        )
+        assert repeat.changed is False
+
+        with pytest.raises(SubjectNotFoundError):
+            await service.withdraw_marketing(tenant_id, customer_id=uuid.uuid4(), raw_phone=None)
+    finally:
+        await engine.dispose()
+
+
+async def test_the_withdraw_phone_arm_normalises_and_never_touches_customers(
+    app_role_url: str,
+) -> None:
+    """⚠ DR-10's amendment, and the normalisation is the half that breaks
+    silently.
+
+    A walk-in has NO `customers` row — F33 never writes one, and F20 declines to
+    promote her counter opt-in into provable consent — so the id arm cannot reach
+    her at all, while the notice she was shown promises she may revoke.
+    `queue_tickets.phone` is stored normalised E.164, and the owner will type
+    `050-…` off a card: without `normalize_israeli_mobile` this arm answers
+    `changed: false` for every walk-in in the country.
+
+    An unknown phone is `changed: false` and NOT a 404 — a woman who never ticked
+    the box and a number the boutique has never seen are the same outcome she
+    asked for, and telling them apart would turn a front-desk revocation into a
+    presence oracle over the queue.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    walk_in_phone = "+972501234567"
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            await QUEUE_TICKETS.insert(
+                session,
+                tenant_id=tenant_id,
+                queue_day=PAST_DATE,
+                name="נועה",
+                phone=walk_in_phone,
+                visit_type=VisitType.BRIDE.value,
+                marketing_opt_in_at=PAST_NOW,
+            )
+        service = _privacy(factory)
+
+        cleared = await service.withdraw_marketing(
+            tenant_id, customer_id=None, raw_phone="050-123-4567"
+        )
+        assert cleared.changed is True
+
+        async with tenant_session(factory, tenant_id) as session:
+            ticket = (
+                (
+                    await session.execute(
+                        select(QueueTicket).where(QueueTicket.tenant_id == tenant_id)
+                    )
+                )
+                .scalars()
+                .one()
+            )
+            assert ticket.marketing_opt_in_at is None
+            # Still in the queue, still herself: this is a consent withdrawal.
+            assert ticket.name == "נועה"
+            assert ticket.phone == walk_in_phone
+            # NO `customers` row was created — nothing was laundered from an
+            # unverified counter submission into provable consent (DR-10).
+            assert (
+                await session.execute(select(Customer).where(Customer.tenant_id == tenant_id))
+            ).scalars().all() == []
+
+        repeat = await service.withdraw_marketing(
+            tenant_id, customer_id=None, raw_phone="050-123-4567"
+        )
+        assert repeat.changed is False
+        unknown = await service.withdraw_marketing(
+            tenant_id, customer_id=None, raw_phone="052-999-8877"
+        )
+        assert unknown.changed is False
     finally:
         await engine.dispose()
