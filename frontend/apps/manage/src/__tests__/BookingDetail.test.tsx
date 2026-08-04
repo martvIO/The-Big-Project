@@ -74,6 +74,9 @@ function detail(overrides: Partial<OwnerBookingDetail> = {}): OwnerBookingDetail
     manage_link_issued: true,
     payment_status: null,
     refund_due_agorot: null,
+    // F50. The default is the ordinary booking; the walk-in case overrides it
+    // together with the two terms fields, which is the pair the server writes.
+    source: "storefront",
     ...overrides,
   };
 }
@@ -92,6 +95,7 @@ function listRow(overrides: Partial<OwnerBookingRow> = {}): OwnerBookingListResp
         dress_name: "שמלת אלמה",
         payment_status: null,
         refund_due_agorot: null,
+        source: "storefront",
         ...overrides,
       },
     ],
@@ -117,6 +121,16 @@ function renderInShell(node: ReactNode) {
       {node}
     </main>,
   );
+}
+
+// The ONE terms Fact — F50 gave it a second body rather than a second Fact, so
+// both cases are read off the same node.
+function termsFact(): HTMLElement {
+  const row = screen.getByText("מדיניות שאושרה").parentElement;
+  if (row === null) {
+    throw new Error("no Fact row around «מדיניות שאושרה»");
+  }
+  return row;
 }
 
 function dialogOf(title: string): HTMLElement {
@@ -227,6 +241,42 @@ describe("BookingDetail facts", () => {
   it("says so when there are no notes", async () => {
     mount({ notes: null });
     expect(await screen.findByText("הלקוחה לא הוסיפה הערות.")).toBeInTheDocument();
+  });
+
+  it("states a storefront booking's accepted terms as a version and a date", async () => {
+    mount();
+    await screen.findByText("הלקוחה");
+
+    // `isolateLtr` splits the version out into its own <bdi>, so the Fact's own
+    // textContent is what carries the whole sentence.
+    expect(termsFact()).toHaveTextContent("גרסה 3 · 1.8.2099");
+    expect(screen.queryByText("נוצר בבוטיק · אין אישור תנאים")).toBeNull();
+  });
+
+  it("names a walk-in's absent terms as a fact, and renders neither a version nor a date", async () => {
+    // ⚠ R-4: the NULLABLE half of F50's type widening is assignable in the safe
+    // direction — `number` fits `number | null` — so every shipped fixture,
+    // factory and assertion compiles unchanged and NOTHING forces anyone to
+    // think about the NULL case. This is the one test that surfaces it. Without
+    // it BookingDetail renders «גרסה null» beside jerusalemDate(null) to a
+    // staffer and the whole suite stays green.
+    //
+    // The absence assertions are what make it bite: asserting only that
+    // «נוצר בבוטיק» is present would pass on a component that ALSO still
+    // rendered the null version beside it.
+    mount({
+      source: "walk_in",
+      terms_version_accepted: null,
+      terms_accepted_at: null,
+    });
+    await screen.findByText("הלקוחה");
+
+    expect(screen.getByText("נוצר בבוטיק · אין אישור תנאים")).toBeInTheDocument();
+    expect(screen.queryByText(/גרסה/)).toBeNull();
+    expect(screen.queryByText("null")).toBeNull();
+    // The Fact itself stays — one Fact, two bodies, so its label is still there
+    // and the row is not silently dropped.
+    expect(screen.getByText("מדיניות שאושרה")).toBeInTheDocument();
   });
 
   it("renders manage_link_issued as words, never a chip", async () => {

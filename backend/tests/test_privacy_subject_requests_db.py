@@ -44,6 +44,10 @@ from test_booking_owner_db import (
     _seed,
     _slot,
     _staff,
+    # AUTOUSE, and imported for its side effect rather than called: this module
+    # commits a walk-in booking too, and a surviving one makes every round-trip
+    # test in the suite fail on 0025's refusing downgrade. See its docstring.
+    _sweep_walk_in_bookings,  # noqa: F401
 )
 
 from app.auth.rate_limit import FixedWindowRateLimiter
@@ -56,6 +60,7 @@ from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.models.constants import (
     AuditAction,
+    BookingSource,
     BookingStatus,
     MarketingConsentSource,
     MessageKind,
@@ -274,6 +279,71 @@ async def test_the_export_normalises_the_phone_the_owner_typed(app_role_url: str
             tenant_id, raw_phone="050-123-4567", actor=_staff(tenant_id), reason=None
         )
         assert payload.subject.phone == phone
+    finally:
+        await engine.dispose()
+
+
+async def test_the_subject_export_survives_a_walk_in_booking(app_role_url: str) -> None:
+    """F50's ripple, asserted here rather than discovered in production.
+
+    0025 made `bookings.terms_version_accepted` and `terms_accepted_at` nullable —
+    bounded to `source = 'walk_in'`, but nullable — and this route held TWO
+    readers that assumed otherwise. Both were 500s on a LEGALLY MANDATED answer:
+    `sorted()` over a set containing None raises TypeError, and `ExportedBooking`
+    is a plain BaseModel constructed explicitly, so a None on a non-optional field
+    is a ValidationError. Two independent single-line reds, which is the correct
+    shape for the highest-risk edit in the feature.
+
+    ⚠ BOTH BOOKINGS ARE REQUIRED. With only a walk-in the `terms` array is empty
+    and the "exactly the one version that exists" assertion passes on nothing —
+    and with only a storefront booking there is no None to trip over at all. The
+    pair is what makes each half of the answer a difference rather than a
+    property of the fixture.
+
+    The §13 answer must SHOW THE ABSENCE honestly: a walk-in genuinely carries no
+    terms evidence, and inventing a version to keep the schema tidy would be
+    fabricating exactly the record F20's D17 refuses to fabricate."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        storefront = await _claim(
+            factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone
+        )
+        customer_id = storefront.booking.customer_id
+        walk_in = await _owner(factory, now=PAST_NOW).create_walk_in(
+            tenant_id,
+            customer_id=customer_id,
+            appointment_type_id=type_id,
+            staff=_staff(tenant_id),
+        )
+
+        payload = await _privacy(factory).export_subject(
+            tenant_id, raw_phone=phone, actor=_staff(tenant_id), reason=None
+        )
+
+        exported = {row.id: row for row in payload.bookings}
+        assert set(exported) == {storefront.booking.id, walk_in.booking.id}
+
+        assert exported[walk_in.booking.id].terms_version_accepted is None
+        assert exported[walk_in.booking.id].terms_accepted_at is None
+        # The discriminator, on BOTH rows. Without it the authority reading this
+        # export sees a null version with no way to tell a lawful walk-in from a
+        # corrupted storefront record — the exact inference `bookings_source_check`
+        # and `bookings_terms_evidence_check` exist to make unnecessary. Deleting
+        # `source=row.source` from the ExportedBooking construction reds it.
+        assert exported[walk_in.booking.id].source == BookingSource.WALK_IN.value
+        assert exported[storefront.booking.id].source == BookingSource.STOREFRONT.value
+        # She attended — that is a fact about her, so §13 reaches it.
+        assert exported[walk_in.booking.id].checked_in_at == PAST_NOW
+
+        assert exported[storefront.booking.id].terms_version_accepted == 1
+        assert exported[storefront.booking.id].terms_accepted_at is not None
+
+        # EXACTLY the one version that exists. A `sorted()` that swallowed the
+        # None by coercing it, or a comprehension that kept it, would show here.
+        assert [terms.version for terms in payload.accepted_terms] == [1]
     finally:
         await engine.dispose()
 

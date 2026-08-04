@@ -22,10 +22,12 @@ import asyncio
 import datetime
 import secrets
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -68,11 +70,13 @@ from app.models.constants import (
     AppointmentAudience,
     AuditAction,
     BookingCancelledBy,
+    BookingSource,
     BookingStatus,
     PaymentStatus,
     ScheduledMessageKind,
     StaffRole,
 )
+from app.models.customer import Customer
 from app.models.payment import Payment
 from app.notifications.fake import FakeSmsSender
 from app.notifications.service import NotificationService, OtpService
@@ -2021,5 +2025,673 @@ async def test_a_hold_that_was_never_honoured_is_not_a_deposit_taken(
         )
 
         assert answered.booking.deposit_taken is False
+    finally:
+        await engine.dispose()
+
+
+# --- F50: the owner-created walk-in ---------------------------------------
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _sweep_walk_in_bookings(migrated_db: str) -> Iterator[None]:
+    """Remove every walk-in row this module committed, once, after it finishes.
+
+    ⚠ NOT tidiness. `migrated_db` is `scope="session"`, so ONE database is shared
+    by every db-marked module — and 0025's downgrade re-imposes two NOT NULLs
+    DELIBERATELY WITHOUT a pre-clean, so a single surviving walk-in row makes
+    `command.downgrade` past 0025 raise `NotNullViolationError`. That reds all
+    EIGHTEEN round-trip tests in this suite, in modules that never heard of F50,
+    with an error naming a column their own feature does not own.
+
+    This is verbatim the trap F57 already documented one table over:
+    "a committed 'reception' row reddens THREE tests … which is why the
+    floor-role half below is rolled back rather than committed"
+    (test_migrations.py). Same shape, same fix — the refusal is a real property of
+    the migration, so the answer is to leave no row for it to refuse over rather
+    than to soften the migration.
+
+    Superuser rather than the app role: RLS is FORCED on `bookings` and these rows
+    belong to a dozen throwaway tenant ids, so a tenant-scoped DELETE would
+    silently remove none of them.
+
+    Module-scoped, so it costs one statement rather than one per test. pytest runs
+    a module's tests contiguously and this suite runs single-process, so nothing
+    downgrades in the gap.
+
+    ⚠ **What this fixture depends on, stated rather than left to be discovered.**
+    Module scope means the sweep runs when THIS module finishes, so it protects
+    only the modules that run AFTER it. That holds today because all five modules
+    calling `command.downgrade` (`test_booking_owner_db`, `test_booking_repositories`,
+    `test_catalog_integration`, `test_migrations`, `test_notifications_repositories`)
+    either are this one or sort after `test_privacy_subject_requests_db.py`, which
+    is the only other module that commits a walk-in and imports this fixture for it.
+    A NEW db module that commits a walk-in must import this fixture the same way.
+    It is NOT promoted to `conftest.py`: an autouse fixture there would request
+    `migrated_db` for EVERY module, which starts Postgres under
+    `pytest -m "not db"` and turns the fast suite into a slow one that cannot run
+    without a database. Session scope is worse still — the sweep would then run
+    after the very downgrade tests it exists to protect.
+    """
+    yield
+
+    async def sweep() -> None:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("DELETE FROM bookings WHERE source = :source"),
+                    {"source": BookingSource.WALK_IN.value},
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(sweep())
+
+
+async def _customer_for(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID, type_id: uuid.UUID
+) -> uuid.UUID:
+    """A `customers` row that exists the ONLY way one ever exists — through
+    `create_booking`, after an OTP proved possession of the number.
+
+    F50 creates none, deliberately: a `customers` row is proof of phone
+    possession, and that proof is precisely what lets a booking with no terms
+    evidence be legal at all. So every walk-in test has to reach one the real way,
+    and the seeded storefront booking is a by-product rather than the point.
+    """
+    claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+    return uuid.UUID(str(claim.booking.customer_id))
+
+
+async def _bookings_of(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID
+) -> list[Booking]:
+    async with tenant_session(factory, tenant_id) as session:
+        stmt = select(Booking).order_by(Booking.created_at)
+        return list((await session.execute(stmt)).scalars().all())
+
+
+async def test_the_walk_in_writer_stamps_one_instant_across_starts_at_and_checked_in_at(
+    app_role_url: str,
+) -> None:
+    """`starts_at` and `checked_in_at` are the SAME instant, to the microsecond,
+    because the writer takes one `at` rather than reading a clock twice — a writer
+    that read it twice could produce a row that was checked in before it started.
+
+    `created_at` is deliberately NOT compared. It is a `now()` SERVER default
+    (`models/base.py`), i.e. transaction-start time, and under the injected test
+    clock the two are years apart — comparing them would red this test for a
+    reason that has nothing to do with the invariant."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    at = NOW + datetime.timedelta(microseconds=7)
+    try:
+        type_id = await _seed(factory, tenant_id)
+        customer_id = await _customer_for(factory, tenant_id, type_id)
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await BookingsRepository().insert_walk_in(
+                session,
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                appointment_type_id=type_id,
+                appointment_type_name="מדידה ראשונה",
+                at=at,
+            )
+            booking_id = row.id
+
+        stored = await _row(factory, tenant_id, booking_id)
+        assert stored is not None
+        assert stored.starts_at == at
+        assert stored.checked_in_at == at
+    finally:
+        await engine.dispose()
+
+
+async def test_the_walk_in_writer_records_no_terms_evidence_and_no_control_link(
+    app_role_url: str,
+) -> None:
+    """Every absence on the row, asserted together because together is what makes
+    the row legal: `source = 'walk_in'` is the only value under which 0025's
+    `bookings_terms_evidence_check` admits NULL terms at all, so dropping the
+    source kwarg fails this TWICE over — the assertion below and the constraint
+    itself.
+
+    `manage_token_hash` NULL is D2's whole point, and `notes` NULL is D3(c)'s: the
+    request body is two UUIDs and carries no free text about a person."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        customer_id = await _customer_for(factory, tenant_id, type_id)
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await BookingsRepository().insert_walk_in(
+                session,
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                appointment_type_id=type_id,
+                appointment_type_name="מדידה ראשונה",
+                at=NOW,
+            )
+            booking_id = row.id
+
+        stored = await _row(factory, tenant_id, booking_id)
+        assert stored is not None
+        assert stored.source == BookingSource.WALK_IN.value
+        assert stored.terms_version_accepted is None
+        assert stored.terms_accepted_at is None
+        assert stored.manage_token_hash is None
+        assert stored.notes is None
+        assert stored.dress_id is None
+        assert stored.seat_index == 1
+        assert stored.status == BookingStatus.CONFIRMED.value
+    finally:
+        await engine.dispose()
+
+
+async def test_two_walk_ins_at_a_forced_identical_instant_collide_on_the_slot_index(
+    app_role_url: str,
+) -> None:
+    """⚠ THE INSTANT IS FORCED, and that is what arms this test.
+
+    `insert_walk_in` stamps a microsecond-precise `starts_at`, so two NATURAL
+    calls never share one and neither partial unique index binds. A test that
+    built its collision "naturally" would be green forever and prove nothing —
+    this project has shipped that failure mode three times.
+
+    Two DIFFERENT customers, so the collision is attributable to
+    `idx_bookings_slot_seat_unique` (tenant, starts_at, seat_index) and not to the
+    0009 customer index the sibling test below covers."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=2)
+        first_customer = await _customer_for(factory, tenant_id, type_id)
+        second_customer = (
+            await _claim(factory, tenant_id, type_id, starts_at=SLOT_B)
+        ).booking.customer_id
+
+        async with tenant_session(factory, tenant_id) as session:
+            await BookingsRepository().insert_walk_in(
+                session,
+                tenant_id=tenant_id,
+                customer_id=first_customer,
+                appointment_type_id=type_id,
+                appointment_type_name="מדידה ראשונה",
+                at=NOW,
+            )
+
+        with pytest.raises(IntegrityError):
+            async with tenant_session(factory, tenant_id) as session:
+                await BookingsRepository().insert_walk_in(
+                    session,
+                    tenant_id=tenant_id,
+                    customer_id=second_customer,
+                    appointment_type_id=type_id,
+                    appointment_type_name="מדידה ראשונה",
+                    at=NOW,
+                )
+    finally:
+        await engine.dispose()
+
+
+async def test_two_walk_ins_for_one_customer_at_a_forced_identical_instant_collide(
+    app_role_url: str,
+) -> None:
+    """The OTHER index — `idx_bookings_tenant_customer_starts_unique` (0009) — and
+    it gets its own test rather than sharing the one above so that a future change
+    to either cannot be covered for by the other.
+
+    Same forced instant, same customer. The instant is forced for the reason the
+    sibling states."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        customer_id = await _customer_for(factory, tenant_id, type_id)
+
+        async with tenant_session(factory, tenant_id) as session:
+            await BookingsRepository().insert_walk_in(
+                session,
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                appointment_type_id=type_id,
+                appointment_type_name="מדידה ראשונה",
+                at=NOW,
+            )
+
+        with pytest.raises(IntegrityError):
+            async with tenant_session(factory, tenant_id) as session:
+                await BookingsRepository().insert_walk_in(
+                    session,
+                    tenant_id=tenant_id,
+                    customer_id=customer_id,
+                    appointment_type_id=type_id,
+                    appointment_type_name="מדידה ראשונה",
+                    at=NOW,
+                )
+    finally:
+        await engine.dispose()
+
+
+async def test_create_walk_in_answers_a_confirmed_row_that_is_already_checked_in(
+    app_role_url: str,
+) -> None:
+    """The happy path, and the two properties the board depends on: she is
+    `confirmed` and she is already in the building, so F34's rules give her the
+    arrival line and the undo control with no edit.
+
+    `manage_token is None` on the mutation is what makes the router's
+    `_send_rotation` return early — the absence of a link travels out on the
+    result, not on a comment."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    staff = _staff(tenant_id)
+    try:
+        type_id = await _seed(factory, tenant_id)
+        customer_id = await _customer_for(factory, tenant_id, type_id)
+
+        result = await _owner(factory).create_walk_in(
+            tenant_id, customer_id=customer_id, appointment_type_id=type_id, staff=staff
+        )
+
+        assert result.changed is True
+        assert result.manage_token is None
+        assert result.booking.status == BookingStatus.CONFIRMED.value
+        assert result.booking.source == BookingSource.WALK_IN.value
+        assert result.booking.checked_in_at == NOW
+        assert result.booking.starts_at == NOW
+        # The SNAPSHOT, taken from the type at create time — a renamed type must
+        # not rewrite history.
+        assert result.booking.appointment_type_name == "מדידה ראשונה"
+    finally:
+        await engine.dispose()
+
+
+async def test_an_unknown_customer_is_a_404(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+
+        with pytest.raises(BookingNotFoundError):
+            await _owner(factory).create_walk_in(
+                tenant_id,
+                customer_id=uuid.uuid4(),
+                appointment_type_id=type_id,
+                staff=_staff(tenant_id),
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_an_erased_customer_is_the_same_404_and_writes_no_booking(
+    app_role_url: str,
+) -> None:
+    """After a §14 erase there is no data subject here, so creating a booking for
+    her would resurrect a processing relationship the erasure record says ended.
+
+    ⚠ THE ROW COUNT IS WHAT ARMS THIS TEST. Without it an implementation that
+    creates the booking and THEN notices `erased_at` would pass on the exception
+    alone — and the seeded storefront booking is what makes the count meaningful,
+    because "one booking, not two" is a claim and "zero bookings" would not be."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        customer_id = await _customer_for(factory, tenant_id, type_id)
+        async with tenant_session(factory, tenant_id) as session:
+            customer = await session.get(Customer, customer_id)
+            assert customer is not None
+            customer.erased_at = NOW
+
+        before = await _bookings_of(factory, tenant_id)
+        with pytest.raises(BookingNotFoundError):
+            await _owner(factory).create_walk_in(
+                tenant_id,
+                customer_id=customer_id,
+                appointment_type_id=type_id,
+                staff=_staff(tenant_id),
+            )
+
+        assert [row.id for row in await _bookings_of(factory, tenant_id)] == [
+            row.id for row in before
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def test_an_unknown_type_and_an_archived_type_are_the_same_404(
+    app_role_url: str,
+) -> None:
+    """Indistinguishable from an unknown customer BY DESIGN, which is
+    `BookingNotFoundError`'s own rule — this route must not tell an authenticated
+    caller which of the two ids was the bad one.
+
+    The archived half guards a DEPENDENCY rather than F50's own code:
+    `AppointmentTypesRepository.by_id` filters `deleted_at IS NULL`, and a
+    soft-deleted type IS an archived one here. Deleting that shipped predicate is
+    what reds the second half."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        customer_id = await _customer_for(factory, tenant_id, type_id)
+        owner = _owner(factory)
+
+        with pytest.raises(BookingNotFoundError):
+            await owner.create_walk_in(
+                tenant_id,
+                customer_id=customer_id,
+                appointment_type_id=uuid.uuid4(),
+                staff=_staff(tenant_id),
+            )
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert await AppointmentTypesRepository().soft_delete(session, tenant_id, type_id)
+
+        with pytest.raises(BookingNotFoundError):
+            await owner.create_walk_in(
+                tenant_id,
+                customer_id=customer_id,
+                appointment_type_id=type_id,
+                staff=_staff(tenant_id),
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_the_walk_in_audit_row_carries_both_ids_and_neither_the_phone_nor_the_name(
+    app_role_url: str,
+) -> None:
+    """This row is the ONLY record of who created a booking that carries no terms
+    evidence, which is what makes it the audit entry that most earns its place.
+
+    The `details` key set is asserted by EQUALITY, not by membership: the mutation
+    that matters is a later well-meaning addition of `customer_name` or a phone,
+    and F20's rule for its own rows is `phone_last4` and never the number. Here
+    even a last4 is unnecessary, because `customer_id` resolves it."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    staff = _staff(tenant_id)
+    try:
+        type_id = await _seed(factory, tenant_id)
+        customer_id = await _customer_for(factory, tenant_id, type_id)
+
+        result = await _owner(factory).create_walk_in(
+            tenant_id, customer_id=customer_id, appointment_type_id=type_id, staff=staff
+        )
+
+        rows = [
+            row
+            for row in await _audit(factory, tenant_id)
+            if row.action == AuditAction.BOOKING_WALK_IN_CREATED.value
+        ]
+        assert len(rows) == 1
+        assert rows[0].actor_id == staff.id
+        assert rows[0].entity == str(result.booking.id)
+        assert rows[0].details == {
+            "customer_id": str(customer_id),
+            "appointment_type_id": str(type_id),
+        }
+    finally:
+        await engine.dispose()
+
+
+async def test_the_walk_in_writes_no_customers_column_and_leaves_an_existing_consent_alone(
+    app_role_url: str,
+) -> None:
+    """§30A. The correct `marketing_consent` value on this path is NO FIELD AT ALL,
+    not `false` — the CHECK on `customers.marketing_consent_source` admits only
+    'booking_form', and `MarketingConsentSource` already refused F33's STRONGER
+    case as laundering. A staffer's recollection is less than a box a bride ticked
+    herself.
+
+    ⚠ THE CONSENT IS SEEDED, and that is what arms this test. Against a customer
+    whose `marketing_consent_at` is NULL, "unchanged" is NULL-to-NULL and the
+    assertion passes just as happily on an implementation that CLEARS it — the
+    exact vacuity this project has shipped before. So the seeded booking opts in,
+    and the assertion is byte-identity on the timestamp plus a still-NULL
+    withdrawal.
+
+    Adding any `record_marketing_consent` or `withdraw_marketing_consent` call to
+    `create_walk_in` reds this."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A, marketing_consent=True)
+        customer_id = claim.booking.customer_id
+
+        async with tenant_session(factory, tenant_id) as session:
+            before = await session.get(Customer, customer_id)
+            assert before is not None
+            consented_at = before.marketing_consent_at
+            source = before.marketing_consent_source
+            updated_at = before.updated_at
+        assert consented_at is not None, "the seed must actually hold a consent"
+
+        await _owner(factory).create_walk_in(
+            tenant_id,
+            customer_id=customer_id,
+            appointment_type_id=type_id,
+            staff=_staff(tenant_id),
+        )
+
+        async with tenant_session(factory, tenant_id) as session:
+            after = await session.get(Customer, customer_id)
+            assert after is not None
+            assert after.marketing_consent_at == consented_at
+            assert after.marketing_consent_source == source
+            assert after.marketing_consent_withdrawn_at is None
+            # The `customers` row was not written AT ALL — the updated_at trigger
+            # is what would say otherwise, and it fires on any UPDATE including one
+            # that changes nothing visible.
+            assert after.updated_at == updated_at
+    finally:
+        await engine.dispose()
+
+
+async def test_the_walk_in_schedules_no_reminder_and_mints_no_manage_token(
+    app_role_url: str,
+) -> None:
+    """No `scheduled_messages` row and no token hash, asserted against a booking
+    that EXISTS rather than against an empty table — which is what stops both
+    halves passing vacuously.
+
+    The seeded storefront booking is the positive control: it DOES get a pending
+    reminder and it DOES carry a hash, so "zero for the walk-in" is a difference
+    rather than a property of the fixture."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        customer_id = claim.booking.customer_id
+
+        result = await _owner(factory).create_walk_in(
+            tenant_id,
+            customer_id=customer_id,
+            appointment_type_id=type_id,
+            staff=_staff(tenant_id),
+        )
+
+        assert await _pending(factory, tenant_id, claim.booking.id) is not None
+        assert claim.booking.manage_token_hash is not None
+
+        assert await _pending(factory, tenant_id, result.booking.id) is None
+        stored = await _row(factory, tenant_id, result.booking.id)
+        assert stored is not None
+        assert stored.manage_token_hash is None
+    finally:
+        await engine.dispose()
+
+
+# --- F50's four disarm assertions: shipped predicates, pinned against a walk-in ---
+#
+# Each pins a predicate that ALREADY EXISTS against a row F50 creates, so a future
+# edit to any of the four collides with a test instead of with a bride. None of
+# them assert anything F50 wrote — that is the point. "This feature does not mint
+# a link" is a statement about THIS feature; `starts_at = now` is a property of the
+# ROW, and it holds against writers this spec never read.
+
+
+async def test_the_manage_link_backfill_feed_never_returns_a_walk_in(
+    app_role_url: str,
+) -> None:
+    """`list_confirmed_without_manage_token` is `confirmed AND source =
+    'storefront' AND starts_at > after AND manage_token_hash IS NULL`, and a
+    walk-in fails TWO of the four — the clock, which is what `starts_at = now`
+    buys, and the source, which is what makes the exclusion hold when the clock
+    does not.
+
+    ⚠ THE PRESENT ROW IS WHAT ARMS THIS TEST. Without a future storefront booking
+    with a NULL hash in the same tenant, widening or deleting either predicate
+    would add no rows to an empty result and this would pass on nothing — the
+    seeded-fixture vacuity this project has shipped three times.
+
+    TWO reads, and the SECOND is the one that earns its place. `after=NOW` reds on
+    deleting `Booking.starts_at > after`. The second — `after` one second BEFORE
+    the walk-in's instant — reproduces the review's once-captured-clock race
+    exactly: `ManageLinkBackfill.run()` takes `now` ONCE and passes it to every
+    tenant, so a walk-in created after that capture DOES satisfy the clock, and
+    only `source` keeps it out. It reds on deleting
+    `Booking.source == BookingSource.STOREFRONT.value` and on nothing else.
+
+    The clock predicate keeps a second, independent guardian in the feature that
+    owns it — F16's `test_the_backfill_skips_a_booking_that_has_already_happened`
+    (`test_booking_comms_db.py`), verified to red on the same deletion — so no past
+    row is seeded here to duplicate it."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A)
+        # A future storefront booking that HAS no hash — the backfill's real feed,
+        # and the positive control.
+        async with tenant_session(factory, tenant_id) as session:
+            await session.execute(
+                update(Booking).where(Booking.id == claim.booking.id).values(manage_token_hash=None)
+            )
+
+        walk_in = await _owner(factory).create_walk_in(
+            tenant_id,
+            customer_id=claim.booking.customer_id,
+            appointment_type_id=type_id,
+            staff=_staff(tenant_id),
+        )
+
+        async with tenant_session(factory, tenant_id) as session:
+            feed = await BookingsRepository().list_confirmed_without_manage_token(
+                session, tenant_id, after=NOW, limit=50
+            )
+
+        found = {row.id for row in feed}
+        assert claim.booking.id in found, "the future storefront row must be in the feed"
+        assert walk_in.booking.id not in found
+
+        # The race the clock alone does not cover: `after` predates the walk-in,
+        # so `starts_at > after` is TRUE for it and only `source` keeps it out.
+        async with tenant_session(factory, tenant_id) as session:
+            raced = await BookingsRepository().list_confirmed_without_manage_token(
+                session, tenant_id, after=NOW - datetime.timedelta(seconds=1), limit=50
+            )
+
+        raced_ids = {row.id for row in raced}
+        assert claim.booking.id in raced_ids, "the positive control must survive the wider window"
+        assert walk_in.booking.id not in raced_ids
+    finally:
+        await engine.dispose()
+
+
+async def test_resend_link_on_a_walk_in_is_refused(app_role_url: str) -> None:
+    """F15's `_guard_live` refuses link rotation on any booking with
+    `starts_at <= now`, so a staffer cannot text an SMS control link for a walk-in
+    — by a guard F15 already wrote, against a row F50 creates.
+
+    Its own test rather than one shared with the phone correction below: the two
+    routes share `_guard_live` TODAY, and a later feature that gives one of them
+    its own guard must not silently take the other's coverage with it."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        customer_id = await _customer_for(factory, tenant_id, type_id)
+        owner = _owner(factory)
+        walk_in = await owner.create_walk_in(
+            tenant_id, customer_id=customer_id, appointment_type_id=type_id, staff=_staff(tenant_id)
+        )
+
+        with pytest.raises(BookingTransitionInvalidError):
+            await owner.resend_link(tenant_id, walk_in.booking.id, staff=_staff(tenant_id))
+    finally:
+        await engine.dispose()
+
+
+async def test_phone_correction_on_a_walk_in_is_refused(app_role_url: str) -> None:
+    """The sibling of the resend above, deliberately asserted independently — the
+    value here is the PAIR, not the line they currently share."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        customer_id = await _customer_for(factory, tenant_id, type_id)
+        owner = _owner(factory)
+        walk_in = await owner.create_walk_in(
+            tenant_id, customer_id=customer_id, appointment_type_id=type_id, staff=_staff(tenant_id)
+        )
+
+        with pytest.raises(BookingTransitionInvalidError):
+            await owner.correct_phone(
+                tenant_id, walk_in.booking.id, phone=_phone(), staff=_staff(tenant_id)
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_a_walk_in_refuses_cancel_and_admits_no_show_and_complete(
+    app_role_url: str,
+) -> None:
+    """F15's clock split, evaluated against a row born at `now`: cancel needs a
+    FUTURE `starts_at` and is refused; `no_show` and `complete` need a past one and
+    are exactly the verbs a person standing in the shop needs.
+
+    The two successes are what prove the row is a USABLE booking rather than an
+    inert one — a test that only asserted the 409 would be satisfied by a row
+    nothing at all can act on.
+
+    ⚠ The second walk-in needs its OWN service on a LATER clock, and the reason is
+    worth stating because it is the collision D4 accepts, reproduced: `_now()` is
+    frozen at NOW under the injected test clock, so two creates through one service
+    write the same `starts_at` and the second is refused by
+    `idx_bookings_slot_seat_unique` as a SLOT_UNAVAILABLE. In production the clock
+    really does move and the instant really is microsecond-unique; here it must be
+    moved by hand."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=2)
+        first = await _customer_for(factory, tenant_id, type_id)
+        second = (await _claim(factory, tenant_id, type_id, starts_at=SLOT_B)).booking.customer_id
+        owner = _owner(factory)
+        walk_in = await owner.create_walk_in(
+            tenant_id, customer_id=first, appointment_type_id=type_id, staff=_staff(tenant_id)
+        )
+
+        with pytest.raises(BookingTransitionInvalidError):
+            await owner.cancel(tenant_id, walk_in.booking.id, staff=_staff(tenant_id))
+
+        no_show = await owner.no_show(tenant_id, walk_in.booking.id, staff=_staff(tenant_id))
+        assert no_show.booking.status == BookingStatus.NO_SHOW.value
+
+        # A second walk-in, because `complete` on the first would now be a
+        # transition off `no_show` and would prove less than a clean one.
+        later = _owner(factory, now=NOW + datetime.timedelta(seconds=1))
+        other = await later.create_walk_in(
+            tenant_id, customer_id=second, appointment_type_id=type_id, staff=_staff(tenant_id)
+        )
+        done = await later.complete(tenant_id, other.booking.id, staff=_staff(tenant_id))
+        assert done.booking.status == BookingStatus.COMPLETED.value
     finally:
         await engine.dispose()

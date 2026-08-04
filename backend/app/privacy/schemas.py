@@ -116,14 +116,27 @@ class ExportedBooking(BaseModel):
     id: uuid.UUID
     starts_at: datetime.datetime
     status: str
+    # F50, and it ships for the SAME reason the nullable terms pair below does.
+    # Making those two nullable put an ambiguity into this payload that the owner
+    # console was given the discriminator for and the Privacy Protection Authority
+    # — the audience F20 names for this route — was not: a null version alone
+    # cannot say whether nobody accepted anything or a storefront booking lost its
+    # evidence. `source` is what tells those apart, in the CHECK and here.
+    source: str
     appointment_type_name: str
     dress_name: str | None
     dress_size: str | None
     notes: str | None
     attendance_confirmed_at: datetime.datetime | None
     checked_in_at: datetime.datetime | None
-    terms_version_accepted: int
-    terms_accepted_at: datetime.datetime
+    # NULLABLE since F50: a walk-in booking genuinely has no terms evidence, and
+    # the §13 answer must SHOW THAT ABSENCE rather than invent a version or refuse
+    # to serialise. `ExportedBooking(...)` is constructed explicitly in the service,
+    # and a plain BaseModel validates on construction — non-optional here is a
+    # ValidationError, i.e. a 500 on the one route the Privacy Protection Authority
+    # is the audience for.
+    terms_version_accepted: int | None
+    terms_accepted_at: datetime.datetime | None
     cancelled_at: datetime.datetime | None
     cancelled_by: str | None
 

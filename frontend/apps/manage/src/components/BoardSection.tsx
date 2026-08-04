@@ -3,11 +3,12 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Skeleton } from "@boutique/ui";
 import { api, ApiError } from "../api";
-import type { OwnerBookingDetail, OwnerBookingRow } from "../api";
+import type { OwnerBookingDetail, OwnerBookingRow, WalkInBookingRequest } from "../api";
 import { bookingErrorText, isolateLtr, statusBadge } from "../lib/booking";
 import { jerusalemTime, plainDate, todayJerusalem } from "../lib/jerusalem";
 import { IDLE_STOP_MINUTES, usePoll } from "../lib/usePoll";
 import type { TickOutcome } from "../lib/usePoll";
+import { WalkInDialog } from "./WalkInDialog";
 
 // The poll's six mechanisms, its three constants and the {401,403} terminal
 // classifier moved to lib/usePoll.ts in F57 — the second caller, which is the
@@ -20,6 +21,34 @@ import type { TickOutcome } from "../lib/usePoll";
 // ceiling would start 422-ing the day the ceiling drops. Ask for fifty, and say
 // so when the day is bigger.
 const PAGE_LIMIT = 50;
+
+// F50. Two codes the walk-in dialog owns, and the pattern is `mutate`'s below —
+// own the string locally, delegate everything else — rather than a widening of
+// `OWNED_ERROR_CODES`, which would change F34's check-in copy and red B-404.
+//
+// NOT_FOUND is not in `OWNED_ERROR_CODES` AT ALL, so it fell through to
+// `main.py`'s English "Resource not found." inside an RTL dialog — the same
+// defect class F51's review caught rendering "Authentication required." into an
+// RTL console. It is not exotic here: it is this route's only domain 404 and it
+// has four reachable producers (unknown customer, erased customer, unknown type
+// and ARCHIVED type — the dialog fetches the type list once per open and a
+// counter tablet holds the board tab for a whole shift).
+//
+// SLOT_UNAVAILABLE's shared string says «אפשר לבחור מועד אחר» — pick another
+// time — and this dialog has no time picker: `starts_at` is the server's `now`
+// and `WalkInBookingRequest` deliberately carries none. The 409 here can only be
+// a microsecond collision on `idx_bookings_slot_seat_unique`, which is exactly
+// what tapping confirm again fixes. F15's string stays as it is for the
+// reschedule path that owns it.
+const WALK_IN_ERROR_KEYS = new Map<string, string>([
+  ["NOT_FOUND", "walkin.error.notFound"],
+  ["SLOT_UNAVAILABLE", "walkin.error.slotUnavailable"],
+]);
+
+function walkInErrorText(error: unknown, t: (key: string) => string): string {
+  const key = error instanceof ApiError ? WALK_IN_ERROR_KEYS.get(error.code) : undefined;
+  return key === undefined ? bookingErrorText(error, t) : t(key);
+}
 
 function holdsFocus(bookingId: string): boolean {
   const active = document.activeElement;
@@ -42,6 +71,7 @@ export function BoardSection() {
   const [busyIds, setBusyIds] = useState<readonly string[]>([]);
   const [stranded, setStranded] = useState<readonly string[]>([]);
   const [rowError, setRowError] = useState<{ id: string; text: string } | null>(null);
+  const [walkInOpen, setWalkInOpen] = useState(false);
 
   const cueRef = useRef<HTMLParagraphElement>(null);
   const movedRef = useRef<HTMLSpanElement>(null);
@@ -284,6 +314,60 @@ export function BoardSection() {
     }
   };
 
+  // F50. `mutate`'s discipline verbatim, with ONE deliberate difference and one
+  // guard that difference forces.
+  //
+  // The difference: the re-arm is `poll.refresh()` and not `poll.reschedule()`.
+  // A new row belongs at (starts_at, seat_index) order rather than at the head,
+  // so patching it in client-side would mean writing a second sorter for a list
+  // the server already orders and the next tick re-sorts anyway. One extra
+  // request per walk-in — call it one an hour — buys the server's own ordering
+  // and no divergence.
+  //
+  // ⚠ The guard: `reschedule()` NO-OPS while the loop is stopped, which is what
+  // let F34 put its re-arm in an unguarded .finally(). `refresh()` has no such
+  // guard — it is three unconditional statements — so an unguarded .finally()
+  // here fires a request in EVERY state `reschedule()` would have declined, and
+  // there are THREE of them, not one:
+  //
+  //   • terminal ({401,403}) — the board is over and the request is doomed. One
+  //     local flag, and no second classifier: `poll.fail` is the hook's.
+  //   • paused    — SHE stopped the list to read it. A create that repaints the
+  //     rows under her and refreshes the «הושהה ב-» stamp is precisely what the
+  //     pause exists to prevent, and it leaves the body line saying the board is
+  //     paused beside a timestamp from one second ago.
+  //   • idle      — same, reached by the idle-stop rather than by a tap.
+  //
+  // The button stays available in all three of the non-terminal ones: pausing is
+  // a read-stability intent, not a lock-out, and the announced cue tells her the
+  // create landed. The row arrives on «חידוש», which is what "paused" means.
+  const create = async (body: WalkInBookingRequest): Promise<string | null> => {
+    mutationsRef.current += 1;
+    poll.clearTick();
+    poll.bump();
+    let terminated = false;
+    try {
+      const created = await api.createWalkInBooking(body);
+      setWalkInOpen(false);
+      setCue(t("walkin.createdCue", { name: created.customer_name }));
+      // NO focus move here, unlike mutate(): the «תור חדש» trigger does not
+      // unmount, so the native <dialog> returns focus to it on close and
+      // stealing that for the cue would be a jump she did not ask for.
+      return null;
+    } catch (error) {
+      if (poll.fail(error)) {
+        terminated = true;
+        return null;
+      }
+      return walkInErrorText(error, t);
+    } finally {
+      mutationsRef.current -= 1;
+      if (mutationsRef.current === 0 && !terminated && mode === "running") {
+        poll.refresh();
+      }
+    }
+  };
+
   const heading = <h2 className="text-lg font-semibold text-ink">{t("board.heading")}</h2>;
 
   if (terminal !== null) {
@@ -411,6 +495,26 @@ export function BoardSection() {
           )}
         </div>
       )}
+
+      {rows !== null && (
+        // F50. OUTSIDE the Card and outside the freshness bar, and both are
+        // decisions. Not `EmptyState`'s `action` slot — that slot exists and
+        // would hold a Button, but it renders ONLY when the day is empty, and
+        // the bride at the counter arrives on a full board at least as often;
+        // one button in one place beats the same button declared twice. Not in
+        // the freshness bar either: «השהיה» beside «תור חדש» is a pause control
+        // touching a create control, and a hurried thumb should not have those
+        // adjacent.
+        //
+        // `terminal` needs no clause — that screen returns above.
+        <div>
+          <Button variant="secondary" size="md" onClick={() => setWalkInOpen(true)}>
+            {t("board.newWalkIn")}
+          </Button>
+        </div>
+      )}
+
+      <WalkInDialog open={walkInOpen} onClose={() => setWalkInOpen(false)} onConfirm={create} />
 
       {/* The ONE announced region, and the poll may never write into it: a
           role="status" update every five seconds passes every automated check
@@ -548,6 +652,14 @@ export function BoardSection() {
                           </div>
                           <p className="text-sm text-ink-muted">
                             <bdi>{booking.appointment_type_name}</bdi>
+                            {booking.source === "walk_in" && (
+                              // F50. One muted word, in the attendance
+                              // treatment: muted words, never a second Badge and
+                              // never a tint. A walk-in row is an ordinary
+                              // booking and every floor verb works on it — this
+                              // says where it came from, nothing more.
+                              <> · {t("booking.sourceWalkIn")}</>
+                            )}
                             {booking.attendance_confirmed_at !== null && (
                               // Muted words, never a second Badge.
                               <> · {t("booking.attendanceConfirmed")}</>

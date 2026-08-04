@@ -8,7 +8,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.booking import Booking
-from app.models.constants import BookingStatus
+from app.models.constants import BookingSource, BookingStatus
+
+# A walk-in claims no capacity and picks no seat from a count (F50 D4), so there
+# is one seat number and it is the first. Named rather than inlined so the day it
+# stops being a constant is a diff on this line.
+WALK_IN_SEAT_INDEX = 1
 
 
 class CheckInOutcome(StrEnum):
@@ -114,9 +119,20 @@ class BookingsRepository:
         hold `pg_advisory_xact_lock(hashtext(tenant_id))`** — see
         BookingService.create_booking. Oversell stays structurally impossible
         without it (the index is the backstop), but a writer that skips the
-        lock races the read and hands honest customers a spurious 409. F15's
-        owner-side reschedule is the next caller; owner-side creation is out of
-        F15 (Interview Q6) and belongs to the owner-created-bookings spec.
+        lock races the read and hands honest customers a spurious 409.
+        `BookingService.create_booking` is this method's ONLY caller. F15's
+        owner-side reschedule holds the same lock for the same reason without
+        coming through here — it UPDATEs `(starts_at, seat_index)` in place
+        (`owner.py`) rather than inserting, so naming it "the next caller" was
+        false about this signature the day F50 built the thing it was waiting for.
+
+        **`insert_walk_in` below is deliberately NOT this method with defaulted
+        arguments** (F50 D5). It picks no seat from a count, so it holds no lock —
+        and folding a lock-free caller into the method whose docstring says every
+        caller holds it is how that sentence stops being true. The cost is that a
+        column added to `bookings` has to be added in two places; the alternative
+        was a fourteen-parameter writer with a precondition half its callers do not
+        meet.
 
         `status` defaults to the model's own server default, so every pre-F19
         caller is byte-identical. F19's deposit flow passes `pending_payment`:
@@ -138,6 +154,62 @@ class BookingsRepository:
             dress_size=dress_size,
             notes=notes,
             manage_token_hash=manage_token_hash,
+        )
+        session.add(row)
+        await session.flush()
+        await session.refresh(row)
+        return row
+
+    async def insert_walk_in(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: UUID,
+        customer_id: UUID,
+        appointment_type_id: UUID,
+        appointment_type_name: str,
+        at: datetime,
+    ) -> Booking:
+        """F50's owner-created walk-in: a bride the boutique already holds, given
+        an appointment that is happening NOW.
+
+        `starts_at` and `checked_in_at` are ONE instant, PASSED IN rather than read
+        here — a writer that reads a clock twice can produce a row that was checked
+        in before it started. (`created_at` is NOT that instant and must never be
+        described as one: `models/base.py` gives it a `now()` server default, i.e.
+        transaction-start time, and under an injected test clock the two are years
+        apart.)
+
+        Every absence is a ruling, not an omission. **Terms columns NULL** —
+        nobody accepted anything, and stamping the current version would
+        manufacture legal evidence; 0025's `bookings_terms_evidence_check` admits
+        that NULL only because `source` is 'walk_in'. **`manage_token_hash` NULL** —
+        no SMS control link is minted for a number whose owner agreed to nothing,
+        and `starts_at = now` keeps the row outside every shipped writer that mints
+        one on a row that has none. **`notes` and `dress_*` NULL** — the body that
+        reaches this writer is two UUIDs and carries no free text about a person
+        (D3c).
+
+        No advisory lock, and no `active_seats_at` read to need one — see `insert`
+        above. An IntegrityError from either partial unique index surfaces exactly
+        as `insert`'s does; the caller maps it to SLOT_UNAVAILABLE.
+
+        # ponytail: seat_index is always 1 — a microsecond-precise `starts_at`
+        # makes the (tenant, starts_at, seat) index collision-free in practice, and
+        # the index is the backstop when it is not. If walk-ins ever need to share
+        # an instant, that is the moment to take the advisory lock and pick from
+        # active_seats_at.
+        """
+        row = Booking(
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            appointment_type_id=appointment_type_id,
+            starts_at=at,
+            checked_in_at=at,
+            seat_index=WALK_IN_SEAT_INDEX,
+            status=BookingStatus.CONFIRMED.value,
+            source=BookingSource.WALK_IN.value,
+            appointment_type_name=appointment_type_name,
         )
         session.add(row)
         await session.flush()
@@ -744,14 +816,29 @@ class BookingsRepository:
     async def list_confirmed_without_manage_token(
         self, session: AsyncSession, tenant_id: UUID, *, after: datetime, limit: int
     ) -> list[Booking]:
-        """The backfill's feed (D10): confirmed, still in the future, and never
-        issued a link. The predicate is also what makes a second run a no-op —
-        the first run filled `manage_token_hash`."""
+        """The backfill's feed (D10): confirmed, still in the future, never issued
+        a link, and created by the STOREFRONT. The predicate is also what makes a
+        second run a no-op — the first run filled `manage_token_hash`.
+
+        ⚠ The `source` clause is F50's, and it closes a race the spec accepted as
+        Risk 8 rather than leaving it accepted. `ManageLinkBackfill.run()` captures
+        `now` ONCE and passes it to every tenant as `after`, so a walk-in created
+        between that capture and its own tenant's chunk query satisfies
+        `starts_at > after` and entered this feed. The damage was bounded — the
+        lead is milliseconds, `reminder_send_after` returns None under the 2h band,
+        the loop `continue`s before the `scheduled_messages` insert and the
+        plaintext token dies as a local, so nobody could ever hold it — but the row
+        came away with a non-NULL `manage_token_hash`, which makes the console
+        report `manage_link_issued: true` for a link that does not exist and
+        excludes the row from every later legitimate pass. A walk-in must never be
+        in this feed at all, so the exclusion is stated here rather than inferred
+        from a clock. One line beats the paragraph that defended its absence."""
         stmt = (
             select(Booking)
             .where(
                 Booking.tenant_id == tenant_id,
                 Booking.status == BookingStatus.CONFIRMED.value,
+                Booking.source == BookingSource.STOREFRONT.value,
                 Booking.starts_at > after,
                 Booking.manage_token_hash.is_(None),
                 Booking.deleted_at.is_(None),

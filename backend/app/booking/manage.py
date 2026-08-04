@@ -222,7 +222,21 @@ class ManageBookingService:
     async def _render(
         self, session: AsyncSession, tenant: ManageTenant, booking: Booking
     ) -> ManageBookingResponse:
-        accepted = await self._terms.by_version(session, tenant.id, booking.terms_version_accepted)
+        # An EXPLICIT `is None` branch and never a cast, even though this page is
+        # unreachable for a walk-in booking: `_resolve` above needs a caller
+        # presenting the plaintext manage token, and F50 mints none — `starts_at =
+        # now` puts a walk-in row outside `list_confirmed_without_manage_token`'s
+        # feed and outside `_guard_live`'s rotation guard alike. Unreachable-by-
+        # construction plus a `# type: ignore` is precisely how a static guarantee
+        # becomes a runtime crash the day some later feature DOES mint a deliverable
+        # token for a row with no terms evidence. The page then renders its cancel
+        # step without the window sentence, which is the same treatment a missing
+        # terms row already gets below.
+        accepted = (
+            None
+            if booking.terms_version_accepted is None
+            else await self._terms.by_version(session, tenant.id, booking.terms_version_accepted)
+        )
         # A3: the LATEST payment on this booking, and only `paid` counts as taken
         # — a pending hold, a swept `expired` one and MD4's `failed` marker all
         # mean no money moved, which is exactly when "cancelling is free" is still

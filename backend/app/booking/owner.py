@@ -27,6 +27,7 @@ from app.booking.slots import Slot
 from app.booking.slots_io import offered_slot
 from app.booking.tokens import manage_token_hash, mint_manage_token
 from app.booking.validation import BOOKING_LIST_MAX_LIMIT
+from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.availability import (
     AvailabilityExceptionsRepository,
@@ -188,6 +189,7 @@ class OwnerBookingService:
         self._clock = clock
         self._bookings = BookingsRepository()
         self._customers = CustomersRepository()
+        self._types = AppointmentTypesRepository()
         self._payments = PaymentsRepository()
         self._terms = TermsVersionsRepository()
         self._scheduled = ScheduledMessagesRepository()
@@ -301,11 +303,20 @@ class OwnerBookingService:
                 if payment is None:
                     continue
                 refund: int | None = None
+                version = booking.terms_version_accepted
                 # Only money actually taken has a refund question. A pending
                 # hold, a swept `expired` one and MD4's `failed` marker all mean
                 # nothing moved, so the honest answer is no number at all.
-                if payment.status == PaymentStatus.PAID.value:
-                    version = booking.terms_version_accepted
+                #
+                # `version is not None` is an EXPLICIT branch and never a cast,
+                # even though a walk-in booking cannot reach it: F50 evaluates no
+                # deposit and opens no `payments` row, so a row with NULL terms
+                # never has a `paid` payment beside it. Unreachable-by-construction
+                # plus a `# type: ignore` is how a static guarantee becomes a
+                # runtime crash the day a walk-in learns to take money. With no
+                # version there is no accepted policy and so no refund number to
+                # justify — the same answer a missing terms ROW already gets below.
+                if payment.status == PaymentStatus.PAID.value and version is not None:
                     if version not in accepted:
                         accepted[version] = await self._terms.by_version(
                             session, tenant_id, version
@@ -341,6 +352,123 @@ class OwnerBookingService:
         `DomainValidationError`, so it is already a 400 VALIDATION_ERROR.
         """
         return await self._storefront.list_slots(tenant_id, from_date=from_date, to_date=to_date)
+
+    async def create_walk_in(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        customer_id: uuid.UUID,
+        appointment_type_id: uuid.UUID,
+        staff: StaffContext,
+    ) -> OwnerMutation:
+        """F50: a real `bookings` row for a customer the boutique ALREADY HOLDS,
+        starting now and already checked in.
+
+        **The two UUIDs are what make this legal.** A `customers` row exists ONLY
+        after an OTP proved possession of that number (`models/customer.py`), so a
+        booking bound to an existing `customer_id` inherits a verified phone by
+        construction — which is the half of Interview Q6's refusal that does not
+        apply here. Nothing is obtained from the subject on this path, so it is not
+        a §11 collection point and there is no notice to give. A customer who does
+        not exist is a 404 and her remedy is F33's `/checkin` form, which stands
+        behind an approved notice.
+
+        **NOT the `_transition` five-step shape.** That shape is load → compare →
+        409 → guarded write → audit, and its middle steps exist to answer *what
+        state was this row in*. There is no row. And it is DELIBERATELY NOT
+        IDEMPOTENT: a double-tapped dialog produces two rows, because "she came in
+        twice today" is a real outcome (F33 made the same call for a second queue
+        ticket on one phone).
+
+        ⚠ **The duplicate CANNOT be cancelled, and the price of the
+        non-idempotency is therefore a PERMANENT row.** This docstring used to say
+        "the remedy is a visible row a staffer can cancel". That was false:
+        `cancel` below refuses `starts_at <= now` (D3's clock split) and a
+        walk-in's `starts_at` is its own creation instant, so it is `<= now` on
+        every subsequent request, for ever —
+        `test_a_walk_in_refuses_cancel_and_admits_no_show_and_complete` pins
+        exactly that. F33's precedent does not transfer either: `QueueTicketStatus`
+        has a real REMOVED terminal and this row has none; its reachable terminals
+        are `no_show` and `complete`. The only control is the dialog's
+        `disabled={busy}` and there is nothing behind it. Making the mis-tap
+        correctable is a DESIGN change, not a fix — it needs either a
+        `source = 'walk_in'` carve-out in `cancel`'s clock guard, which D2's disarm
+        table and its test both forbid today, or an owner-facing soft delete this
+        product does not have — and it belongs with the remote/scheduled half.
+
+        **No advisory lock, no `offered_slot`, no deposit, no rate limiter** — D4.
+        The lock serialises a count→pick read this path does not perform; `now` is
+        not on the published grid so no slot is consumed; a walk-in pays at the
+        counter and F19's hosted checkout has nothing to redirect back to; and the
+        caller holds a live staff session on a CSRF-fenced surface, so a budget
+        here is a self-DoS with no attacker on the other side of it.
+
+        **No `customers` write of any kind** (D3b) — no marketing consent, and the
+        correct value is "no field", not `false`: `customers_marketing_consent_source_check`
+        admits only 'booking_form', and `MarketingConsentSource` already refused
+        F33's STRONGER case as laundering. A staffer's recollection is less than a
+        box a bride ticked herself. The consequence for an existing consent is that
+        it survives untouched with its original timestamp, because no clearing
+        statement is issued.
+        """
+        now = self._now()
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            customer = await self._customers.by_id(session, tenant_id, customer_id)
+            # An ERASED subject is the same 404 as an unknown one (D3d). After a
+            # §14 erase there is no data subject here, and creating a booking for
+            # her would resurrect a processing relationship the erasure record says
+            # ended. The picker still SHOWS her — `_search_where` filters only
+            # `deleted_at` and `CustomerRow` carries no `erased_at` — so the server
+            # is where this is refused (spec Risk 4).
+            if customer is None or customer.erased_at is not None:
+                raise BookingNotFoundError
+            # Indistinguishable from an unknown customer by design, which is
+            # BookingNotFoundError's own rule. `by_id` filters `deleted_at`, and a
+            # soft-deleted appointment type IS an archived one here.
+            type_row = await self._types.by_id(session, tenant_id, appointment_type_id)
+            if type_row is None:
+                raise BookingNotFoundError
+            try:
+                booking = await self._bookings.insert_walk_in(
+                    session,
+                    tenant_id=tenant_id,
+                    customer_id=customer_id,
+                    appointment_type_id=appointment_type_id,
+                    # SNAPSHOT, the same as every other create: a renamed type must
+                    # not rewrite history.
+                    appointment_type_name=type_row.name,
+                    at=now,
+                )
+            except IntegrityError as exc:
+                # Two walk-ins in one microsecond on one tenant — either partial
+                # unique index. The same 409 the storefront gives, and no new code.
+                #
+                # Deliberately NOT narrowed on the constraint name, and the reason
+                # is that today there is nothing else to narrow away: 0025's two
+                # CHECKs are both satisfied by construction here (`source` is the
+                # literal WALK_IN and the terms columns are the NULLs that value
+                # exempts). The day the remote half adds a third `source` value,
+                # a FAILING INSERT is the designed hand-off — and it would land in
+                # this arm reading "slot unavailable". That is the moment to look
+                # at `exc.orig.diag.constraint_name`, not before.
+                raise SlotUnavailableError from exc
+            await self._record(
+                session,
+                tenant_id,
+                staff=staff,
+                action=AuditAction.BOOKING_WALK_IN_CREATED,
+                booking_id=booking.id,
+                # The two ids and nothing else. No phone and no name: `customer_id`
+                # resolves both, and F20's rule for its own rows is `phone_last4`
+                # and never the number.
+                details={
+                    "customer_id": str(customer_id),
+                    "appointment_type_id": str(appointment_type_id),
+                },
+            )
+        # `manage_token=None`, so the router's `_send_rotation` returns early and
+        # nothing is texted — the absence of a link is the whole design (D2).
+        return OwnerMutation(booking=booking, changed=True, manage_token=None)
 
     # --- the D3 transition graph -------------------------------------------
     #

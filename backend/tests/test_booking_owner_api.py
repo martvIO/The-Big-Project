@@ -54,7 +54,7 @@ from app.booking.validation import BOOKING_LIST_DEFAULT_LIMIT
 from app.errors import DomainValidationError
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.booking import Booking
-from app.models.constants import BookingCancelledBy, BookingStatus, StaffRole
+from app.models.constants import BookingCancelledBy, BookingSource, BookingStatus, StaffRole
 from app.models.customer import Customer
 from app.storefront.validation import SlotWindowError
 from app.tenancy.middleware import TenantContext
@@ -87,6 +87,14 @@ COMPLETE_PATH = f"{DETAIL_PATH}/complete"
 RESCHEDULE_PATH = f"{DETAIL_PATH}/reschedule"
 PHONE_PATH = f"{DETAIL_PATH}/phone"
 RESEND_PATH = f"{DETAIL_PATH}/resend-link"
+# F50's create is the ONE route on this router with no booking id — there is no
+# booking yet. Its body is exactly two UUIDs (D3), and `ForbidExtraModel` is what
+# makes a third key a 400 rather than a silent drop.
+WALK_IN_PATH = "/manage/bookings/walk-in"
+WALK_IN_BODY = {
+    "customer_id": str(CUSTOMER_ID),
+    "appointment_type_id": str(APPOINTMENT_TYPE_ID),
+}
 CHECK_IN_PATH = f"{DETAIL_PATH}/check-in"
 UNDO_CHECK_IN_PATH = f"{DETAIL_PATH}/undo-check-in"
 SLOTS_PATH = "/manage/slots"
@@ -108,6 +116,12 @@ ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     # shipped tests that now cover the new routes with nothing new written.
     ("POST", CHECK_IN_PATH, None),
     ("POST", UNDO_CHECK_IN_PATH, None),
+    # F50's one. Adding it here automatically extends the 401 walk, BOTH role
+    # walks, the wiring walk and the no-store parametrization — five shipped
+    # tests that now cover it with nothing new written. The shift-manager row of
+    # `test_both_staff_roles_are_admitted_on_every_route` is what asserts it did
+    # not join OWNER_ONLY.
+    ("POST", WALK_IN_PATH, WALK_IN_BODY),
     ("GET", SLOTS_PATH, None),
 ]
 
@@ -135,6 +149,11 @@ def _booking(**overrides: Any) -> Booking:
         starts_at=STARTS_AT,
         seat_index=1,
         status=BookingStatus.CONFIRMED.value,
+        # F50 made this a REQUIRED field on `OwnerBookingRow`, so an unset
+        # attribute here is a None the response model refuses — which is why this
+        # line is not optional and why omitting it reds forty tests at once rather
+        # than one. The DB default only fires on a flush, and nothing here flushes.
+        source=BookingSource.STOREFRONT.value,
         terms_version_accepted=3,
         terms_accepted_at=TERMS_ACCEPTED_AT,
         appointment_type_name="מדידת שמלה",
@@ -305,6 +324,22 @@ class FakeOwnerBookingService:
             "resend_link", tenant_id=tenant_id, booking_id=booking_id, staff=staff
         )
 
+    async def create_walk_in(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        customer_id: uuid.UUID,
+        appointment_type_id: uuid.UUID,
+        staff: StaffContext,
+    ) -> OwnerMutation:
+        return self._mutation(
+            "create_walk_in",
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            appointment_type_id=appointment_type_id,
+            staff=staff,
+        )
+
 
 class FakeComms:
     """Records the post-commit sends. `is_configured` is never consulted here —
@@ -463,6 +498,10 @@ def test_the_list_applies_the_documented_defaults() -> None:
             # booking a deposits-off boutique takes.
             "payment_status": None,
             "refund_due_agorot": None,
+            # F50 / D8: on the ROW, because the shift board only ever reads the
+            # list. This full-dict literal red-failing on the new key is what makes
+            # every payload widening a reviewed edit rather than a silent one.
+            "source": "storefront",
         }
     ]
 
@@ -574,6 +613,7 @@ def test_the_detail_carries_the_phone_the_notes_and_the_terms_evidence() -> None
         "dress_name": "Aurora",
         "payment_status": None,
         "refund_due_agorot": None,
+        "source": "storefront",
         "customer_phone": "+972501234567",
         "notes": "מגיעה עם אמא",
         "dress_id": str(DRESS_ID),
@@ -656,7 +696,10 @@ def test_every_mutation_answers_the_same_detail_shape() -> None:
     call it made — and the list can patch its row with no refetch."""
     detail_keys: set[str] | None = None
     for _, path, body in ROUTES:
-        if not path.startswith(DETAIL_PATH) or path == DETAIL_PATH:
+        # F50's create has no booking id, so it is not under DETAIL_PATH — and it
+        # owes this contract exactly as much as the eight that are: the console
+        # renders one panel from one response type whichever call it made.
+        if path != WALK_IN_PATH and (not path.startswith(DETAIL_PATH) or path == DETAIL_PATH):
             continue
         fake = FakeOwnerBookingService()
         with _client(fake) as client:
@@ -842,6 +885,109 @@ def test_a_correction_that_minted_no_token_sends_nothing() -> None:
     assert comms.sent == []
 
 
+# --- F50: the walk-in create ---
+
+
+def test_the_walk_in_create_passes_exactly_the_two_ids_through() -> None:
+    """The body is two UUIDs and the service call is two UUIDs — asserted as a
+    KEY-SET equality, so a later `starts_at`, `notes` or `marketing_consent`
+    smuggled onto this path fails here rather than shipping.
+
+    That is not style. D3 argues this route is not a §11 collection point BECAUSE
+    nothing is obtained from the subject, and Gate 1 self-approved on that
+    argument. A third field is what would make it false."""
+    fake = FakeOwnerBookingService()
+    with _client(fake) as client:
+        resp = client.post(WALK_IN_PATH, json=WALK_IN_BODY)
+    assert resp.status_code == 200
+    assert fake.call("create_walk_in") == {
+        "tenant_id": TENANT.id,
+        "customer_id": CUSTOMER_ID,
+        "appointment_type_id": APPOINTMENT_TYPE_ID,
+        "staff": fake.calls[0][1]["staff"],
+    }
+
+
+def test_a_walk_in_detail_carries_a_null_terms_pair_and_names_its_source() -> None:
+    """The wire shape a REAL walk-in produces: `source` says walk_in and BOTH
+    terms fields are null.
+
+    Both halves matter and neither covers for the other. Null terms alone cannot
+    say WHY they are null — missing because nobody accepted anything, or missing
+    because something broke — and `source` alone would not prove the response model
+    tolerates the nulls at all. Before F50 this payload was unserialisable."""
+    fake = FakeOwnerBookingService()
+    fake.booking = _booking(
+        source=BookingSource.WALK_IN.value,
+        terms_version_accepted=None,
+        terms_accepted_at=None,
+        manage_token_hash=None,
+        checked_in_at=STARTS_AT,
+    )
+    with _client(fake) as client:
+        resp = client.post(WALK_IN_PATH, json=WALK_IN_BODY)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source"] == "walk_in"
+    assert body["terms_version_accepted"] is None
+    assert body["terms_accepted_at"] is None
+    # She is in the building from the first millisecond, and no control link was
+    # ever minted for a number whose owner agreed to nothing.
+    assert body["checked_in_at"] == "2026-08-02T07:00:00Z"
+    assert body["manage_link_issued"] is False
+
+
+def test_the_walk_in_create_texts_nobody() -> None:
+    """No SMS on this path at all — not a confirmation and not a control link.
+    The service answers `manage_token=None` and `_send_rotation` returns early;
+    this asserts the seam was never reached, which is the property D2 spends its
+    length on."""
+    fake = FakeOwnerBookingService()
+    fake.manage_token = None
+    comms = FakeComms()
+    with _client(fake, comms=comms) as client:
+        resp = client.post(WALK_IN_PATH, json=WALK_IN_BODY)
+    assert resp.status_code == 200
+    assert comms.sent == []
+
+
+def test_a_shift_manager_can_create_a_walk_in() -> None:
+    """Asserted POSITIVELY and not left to the role walk: a shift manager runs the
+    floor, and a board she cannot act on is not a shift manager's board. Adding
+    `dependencies=[Depends(require_role(StaffRole.OWNER))]` to the route reds
+    this."""
+    fake = FakeOwnerBookingService()
+    with _client(fake, role=StaffRole.SHIFT_MANAGER.value) as client:
+        resp = client.post(WALK_IN_PATH, json=WALK_IN_BODY)
+    assert resp.status_code == 200
+    assert fake.call("create_walk_in")["staff"].role == StaffRole.SHIFT_MANAGER.value
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param({**WALK_IN_BODY, "notes": "מגיעה עם אמא"}, id="notes"),
+        pytest.param({**WALK_IN_BODY, "starts_at": "2026-08-03T07:00:00Z"}, id="starts_at"),
+        pytest.param({**WALK_IN_BODY, "marketing_consent": True}, id="marketing_consent"),
+        pytest.param({"customer_id": str(CUSTOMER_ID)}, id="missing-type"),
+        pytest.param({"appointment_type_id": str(APPOINTMENT_TYPE_ID)}, id="missing-customer"),
+    ],
+)
+def test_the_walk_in_body_admits_the_two_ids_and_nothing_else(body: dict[str, Any]) -> None:
+    """`ForbidExtraModel` plus two required fields.
+
+    The three rejected extras are the exact three D3 declined ON THE RECORD, named
+    one per case rather than probed with a nonsense key: `marketing_consent` in
+    particular must be a 400 and never a silently-ignored key, because a route that
+    accepts and drops it reads to a caller as consent recorded."""
+    fake = FakeOwnerBookingService()
+    with _client(fake) as client:
+        resp = client.post(WALK_IN_PATH, json=body)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert fake.calls == []
+
+
 # --- the complete error-code table ---
 
 
@@ -900,6 +1046,29 @@ ERROR_CASES: list[ErrorCase] = [
         "POST",
         RESCHEDULE_PATH,
         RESCHEDULE_BODY,
+        SlotUnavailableError(),
+        409,
+        "SLOT_UNAVAILABLE",
+    ),
+    # F50 invents NO error code and NO handler, and SPEC_ERROR_CODES below stays
+    # unchanged under set equality — a real result, not an accident of laziness. An
+    # unknown customer, an ERASED customer and an unknown or archived appointment
+    # type are one indistinguishable NOT_FOUND; losing a microsecond race on either
+    # partial unique index is the storefront's own SLOT_UNAVAILABLE.
+    ErrorCase(
+        "create_walk_in",
+        "POST",
+        WALK_IN_PATH,
+        WALK_IN_BODY,
+        BookingNotFoundError(),
+        404,
+        "NOT_FOUND",
+    ),
+    ErrorCase(
+        "create_walk_in",
+        "POST",
+        WALK_IN_PATH,
+        WALK_IN_BODY,
         SlotUnavailableError(),
         409,
         "SLOT_UNAVAILABLE",

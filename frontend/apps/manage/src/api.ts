@@ -329,6 +329,11 @@ export async function uploadToStorage(presign: PresignResponse, file: File): Pro
 
 // --- owner booking wire types (mirror backend/app/booking/schemas.py) ---
 
+// The two values `bookings_source_check` admits (0025). Mirrors `BookingSource`
+// in backend/app/models/constants.py; a third member arrives with F50's
+// remote/scheduled half and must be added here at the same time.
+export type BookingSource = "storefront" | "walk_in";
+
 export interface OwnerBookingRow {
   id: string;
   starts_at: string;
@@ -353,6 +358,19 @@ export interface OwnerBookingRow {
   // port ships no refund(). Integer agorot on the wire (D15); the division by
   // 100 happens once, inside <Price>, at render.
   refund_due_agorot: number | null;
+  // F50 D8. On the ROW rather than only the detail, for the reason
+  // `checked_in_at` above is — the board only ever reads the list — and because
+  // a NULL `terms_version_accepted` on the detail is ambiguous without it:
+  // missing because walk-in, or missing because something broke. REQUIRED, not
+  // optional: the server sends it on every row.
+  //
+  // A UNION rather than `string`, deliberately breaking with `status` one field
+  // up. `status` has a documented fallback in `statusBadge` that renders Hebrew
+  // for an unmapped value; `source` is compared against a bare literal at its two
+  // read sites, so a typo (`"walkin"`, `"walk-in"`) compiles and silently renders
+  // nothing at all. The set is closed by `bookings_source_check`, so writing it
+  // down here costs nothing and makes that typo a build failure.
+  source: BookingSource;
 }
 
 export interface OwnerBookingListResponse {
@@ -372,13 +390,27 @@ export interface OwnerBookingDetail extends OwnerBookingRow {
   dress_size: string | null;
   seat_index: number;
   created_at: string;
-  terms_version_accepted: number;
-  terms_accepted_at: string;
+  // NULLABLE since F50, and always as a PAIR — a walk-in booking has no terms
+  // evidence because nobody accepted anything. `source` on the row is what says
+  // which of the two absences this is.
+  terms_version_accepted: number | null;
+  terms_accepted_at: string | null;
   cancelled_at: string | null;
   cancelled_by: string | null;
   // `manage_token_hash` is the stored half of a live control credential and
   // never reaches the wire — only whether one exists.
   manage_link_issued: boolean;
+}
+
+// TWO UUIDS, AND EVERY ABSENCE IS A RULING (F50 D3). No name and no phone: a
+// staffer picking a customer the boutique already holds obtains NOTHING from the
+// subject, so this is not a §11 collection point and owes no notice. No
+// `marketing_consent` — the correct value is no field rather than `false`, since
+// a field is something a caller can set. No `starts_at`: the instant is the
+// server's `now`, and that is a safety mechanism before it is a timestamp.
+export interface WalkInBookingRequest {
+  customer_id: string;
+  appointment_type_id: string;
 }
 
 export interface OwnerSlotRow {
@@ -1047,14 +1079,23 @@ export interface ExportedBooking {
   id: string;
   starts_at: string;
   status: string;
+  // F50, and it ships for the same reason the nullable terms pair below does:
+  // making those nullable put an ambiguity into the §13 payload that only this
+  // field resolves. Type-only, like the rest of this interface — nothing renders
+  // it.
+  source: BookingSource;
   appointment_type_name: string;
   dress_name: string | null;
   dress_size: string | null;
   notes: string | null;
   attendance_confirmed_at: string | null;
   checked_in_at: string | null;
-  terms_version_accepted: number;
-  terms_accepted_at: string;
+  // NULLABLE since F50, and NOT a duplicate of `OwnerBookingDetail`'s pair: this
+  // is F20's §13 mirror of privacy/schemas.py, which carries `checked_in_at` and
+  // omits `seat_index` and `customer_phone`. The two must not be de-duplicated.
+  // Type-only — nothing in this app renders an ExportedBooking.
+  terms_version_accepted: number | null;
+  terms_accepted_at: string | null;
   cancelled_at: string | null;
   cancelled_by: string | null;
 }
@@ -1461,6 +1502,13 @@ export const api = {
   },
   undoBookingCheckIn(bookingId: string): Promise<OwnerBookingDetail> {
     return apiFetch(`${bookingPath(bookingId)}/undo-check-in`, { method: "POST" });
+  },
+  // F50. NOT under bookingPath — there is no booking yet. Answers the full
+  // detail, same as every verb above, and the board discards it and refreshes:
+  // the new row belongs at (starts_at, seat_index) order, which is the server's
+  // to compute.
+  createWalkInBooking(body: WalkInBookingRequest): Promise<OwnerBookingDetail> {
+    return apiFetch("/manage/bookings/walk-in", { method: "POST", body });
   },
   // F57's floor. Both toggles answer ONE card — the whole panel is not re-sent —
   // so the tapped card patches in place from the response and the loop keeps its

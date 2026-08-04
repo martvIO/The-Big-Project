@@ -15,6 +15,11 @@ vi.mock("../api", async () => {
       listBookings: vi.fn(),
       checkInBooking: vi.fn(),
       undoBookingCheckIn: vi.fn(),
+      // F50's three. The dialog's own two reads are its file's business; they
+      // are stubbed here because the board mounts it.
+      createWalkInBooking: vi.fn(),
+      listCustomers: vi.fn(),
+      listAppointmentTypes: vi.fn(),
     },
   };
 });
@@ -23,6 +28,9 @@ const { api, ApiError } = await import("../api");
 const listBookings = vi.mocked(api.listBookings);
 const checkInBooking = vi.mocked(api.checkInBooking);
 const undoBookingCheckIn = vi.mocked(api.undoBookingCheckIn);
+const createWalkInBooking = vi.mocked(api.createWalkInBooking);
+const listCustomers = vi.mocked(api.listCustomers);
+const listAppointmentTypes = vi.mocked(api.listAppointmentTypes);
 
 // 11:07Z is 14:07 in Jerusalem (IDT, UTC+3) and 07:07 in New York — and the
 // test script pins TZ=America/New_York, so an unzoned read prints 07:07 and
@@ -43,6 +51,9 @@ function row(overrides: Partial<OwnerBookingRow> = {}): OwnerBookingRow {
     dress_name: "שמלת אלמה",
     payment_status: null,
     refund_due_agorot: null,
+    // F50. The default is the ordinary booking; a walk-in overrides it. `detail`
+    // below spreads this factory, so it needs no line of its own.
+    source: "storefront",
     ...overrides,
   };
 }
@@ -140,11 +151,58 @@ function resumeButton() {
   return screen.getByRole("button", { name: "חידוש — עדכון הלוח" });
 }
 
+// --- F50's walk-in control ---------------------------------------------------
+
+const SEARCH_DEBOUNCE = 300;
+
+function walkInTrigger() {
+  return screen.getByRole("button", { name: "תור חדש" });
+}
+
+function walkInDialog(): HTMLElement | null {
+  return screen.queryByRole("heading", { name: "תור חדש בבוטיק" })?.closest("dialog") ?? null;
+}
+
+// Search, pick the one customer, pick the one type. The state the confirm needs.
+async function fillWalkIn() {
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText("לקוחה"), { target: { value: "מיכל" } });
+    await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE);
+  });
+  await click(screen.getByRole("radio", { name: /מיכל לוי/ }));
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText("סוג הפגישה"), { target: { value: "at-1" } });
+    await vi.advanceTimersByTimeAsync(0);
+  });
+}
+
+async function openAndFillWalkIn() {
+  await click(walkInTrigger());
+  await fillWalkIn();
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   vi.setSystemTime(new Date(NOW));
   setHidden(false);
+  listCustomers.mockResolvedValue({
+    items: [{ id: "c-michal", name: "מיכל לוי", phone: "+972501234567", tags: [] }],
+    total: 1,
+    offset: 0,
+    limit: 10,
+  });
+  listAppointmentTypes.mockResolvedValue([
+    {
+      id: "at-1",
+      name: "מדידה ראשונה",
+      duration_minutes: 60,
+      audience: "brides_only",
+      deposit_required: false,
+      deposit_amount_agorot: null,
+      sort_order: 1,
+    },
+  ]);
 });
 
 afterEach(() => {
@@ -700,14 +758,24 @@ describe("the board's states", () => {
     expect(screen.getByTestId("board-day")).toBeInTheDocument();
   });
 
-  it("B-empty — an EmptyState with no CTA, and a freshness row that still reads 0/0", async () => {
+  it("B-empty — an EmptyState with no CTA of its own, and a freshness row that still reads 0/0", async () => {
     await mountBoard(day([]));
-    expect(screen.getByText("אין תורים היום")).toBeInTheDocument();
+    const empty = screen.getByText("אין תורים היום").closest("div") as HTMLElement;
+    expect(empty).toBeInTheDocument();
     // An empty board that has stopped updating must still be able to say so.
     expect(screen.getByTestId("board-summary")).toHaveTextContent("הגיעו 0/0");
-    // The owner cannot create a booking, so an action prompt would point at
-    // nothing. The only button left is the pause control.
-    expect(screen.getAllByRole("button")).toHaveLength(1);
+    // ⚠ EDITED BY F50, and the premise is what changed rather than the shape.
+    // F34 asserted ONE button here on the ground that «the owner cannot create a
+    // booking, so an action prompt would point at nothing» — which was true
+    // until F50 built the create. There are now two: the pause control and
+    // «תור חדש». What has NOT changed is that `EmptyState` carries no `action`
+    // of its own — the walk-in control is outside it, because it must also
+    // render on a full board.
+    expect(screen.getAllByRole("button").map((node) => node.textContent)).toEqual([
+      "השהיה",
+      "תור חדש",
+    ]);
+    expect(within(empty).queryByRole("button")).toBeNull();
   });
 
   it("B-fail — a FIRST fetch failure shows the outage register plus a retry", async () => {
@@ -1043,6 +1111,222 @@ describe("a row that leaves the day while it holds focus", () => {
     await advance(POLL);
     expect(screen.queryByTestId("board-moved")).toBeNull();
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
+  });
+});
+
+// --- F50: the walk-in control -----------------------------------------------
+
+describe("F50 — where the «תור חדש» control lives", () => {
+  it("renders on a POPULATED board", async () => {
+    await mountBoard(day([row()]));
+    expect(walkInTrigger()).toBeInTheDocument();
+  });
+
+  it("renders on an EMPTY day too", async () => {
+    // ⚠ THIS IS WHY IT IS NOT `EmptyState`'s `action` slot. That slot exists and
+    // would hold a Button — but it renders ONLY when the day is empty, and the
+    // bride at the counter arrives on a full board at least as often. One button
+    // in one place beats the same button declared twice.
+    await mountBoard(day([]));
+    expect(screen.getByText("אין תורים היום")).toBeInTheDocument();
+    expect(walkInTrigger()).toBeInTheDocument();
+  });
+
+  it("is ABSENT while the first load is still in flight", async () => {
+    listBookings.mockReturnValue(new Promise(() => {}));
+    render(<BoardSection />);
+    await flush();
+    // Nothing is known about the day yet, including whether she may see it.
+    expect(screen.queryByRole("button", { name: "תור חדש" })).toBeNull();
+  });
+
+  it("is ABSENT on the terminal screen", async () => {
+    await mountBoard();
+    listBookings.mockRejectedValue(new ApiError(403, "NOT_AUTHORIZED", "Not authorized."));
+    await advance(POLL);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("אין הרשאה לצפות בלוח כרגע.");
+    // A create control on a screen whose whole message is «you may not see this»
+    // could only ever produce a second 403.
+    expect(screen.queryByRole("button", { name: "תור חדש" })).toBeNull();
+  });
+
+  it("is not adjacent to the pause control", async () => {
+    // «השהיה» and «תור חדש» on one line is a pause control beside a create
+    // control, and a hurried thumb should not have those touching. The freshness
+    // bar owns the pause; this one sits outside it.
+    await mountBoard();
+    const freshness = screen.getByTestId("board-freshness");
+    expect(within(freshness).queryByRole("button", { name: "תור חדש" })).toBeNull();
+    expect(within(freshness).getByRole("button", { name: /^השהיה/ })).toBeInTheDocument();
+  });
+});
+
+describe("F50 — a successful create", () => {
+  it("closes the dialog, writes the announced cue and refreshes ONCE", async () => {
+    await mountBoard();
+    createWalkInBooking.mockResolvedValue(
+      detail({ id: "b-walk", customer_name: "מיכל לוי", source: "walk_in" }),
+    );
+    await openAndFillWalkIn();
+    expect(walkInDialog()).not.toBeNull();
+
+    const before = listBookings.mock.calls.length;
+    await click(screen.getByRole("button", { name: "יצירת התור" }));
+
+    expect(createWalkInBooking).toHaveBeenCalledWith({
+      customer_id: "c-michal",
+      appointment_type_id: "at-1",
+    });
+    expect(walkInDialog()).toBeNull();
+    expect(screen.getByTestId("board-cue")).toHaveTextContent("נוצר תור חדש עבור מיכל לוי.");
+    // EXACTLY one extra fetch — `poll.refresh()`, not a client-side sorted
+    // insert: the new row belongs at (starts_at, seat_index) order, which is the
+    // server's to compute and the next tick's to re-compute anyway.
+    expect(listBookings).toHaveBeenCalledTimes(before + 1);
+  });
+
+  it("refreshes NOTHING while the board is paused, and still creates the booking", async () => {
+    // ⚠ THE OTHER TWO STATES `reschedule()` DECLINES. F34 could put its re-arm in
+    // an unguarded .finally() because `reschedule()` no-ops whenever the loop is
+    // stopped; `refresh()` is three unconditional statements, so `!terminated`
+    // covered only ONE of the three stopped states. Creating on a paused board
+    // repainted the rows under a staffer who had deliberately frozen them and
+    // refreshed the «מושהה · עודכן» stamp under a body line still saying the
+    // board is paused. Deleting `mode === "running"` from the .finally() reds it.
+    //
+    // The create itself is NOT blocked: pausing is a read-stability intent, the
+    // announced cue says the booking landed, and the row arrives on «חידוש».
+    await mountBoard();
+    await click(pauseButton());
+    createWalkInBooking.mockResolvedValue(
+      detail({ id: "b-walk", customer_name: "מיכל לוי", source: "walk_in" }),
+    );
+    await openAndFillWalkIn();
+    const before = listBookings.mock.calls.length;
+    await click(screen.getByRole("button", { name: "יצירת התור" }));
+
+    expect(createWalkInBooking).toHaveBeenCalledTimes(1);
+    expect(walkInDialog()).toBeNull();
+    expect(screen.getByTestId("board-cue")).toHaveTextContent("נוצר תור חדש עבור מיכל לוי.");
+    expect(listBookings).toHaveBeenCalledTimes(before);
+    await advance(POLL * 4);
+    expect(listBookings).toHaveBeenCalledTimes(before);
+    expect(screen.getByTestId("board-body")).toHaveTextContent(
+      "העדכון מושהה. הלוח לא יתעדכן עד לחידוש.",
+    );
+  });
+
+  it("issues NO tick while the create is in flight, and exactly one after it settles", async () => {
+    await mountBoard();
+    const pending = deferred<OwnerBookingDetail>();
+    createWalkInBooking.mockReturnValueOnce(pending.promise);
+    await openAndFillWalkIn();
+    const before = listBookings.mock.calls.length;
+    await click(screen.getByRole("button", { name: "יצירת התור" }));
+
+    await advance(POLL * 3);
+    expect(listBookings).toHaveBeenCalledTimes(before);
+
+    await act(async () => {
+      pending.resolve(detail({ id: "b-walk", source: "walk_in" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // The refresh, and only it.
+    expect(listBookings).toHaveBeenCalledTimes(before + 1);
+  });
+});
+
+describe("F50 — a rejected create", () => {
+  it("re-arms the loop and shows the error INSIDE the still-open dialog", async () => {
+    // The re-arm lives in the .finally(), never in the success path: a rejected
+    // create must not park the loop either — the same rule the check-in keeps.
+    await mountBoard();
+    createWalkInBooking.mockRejectedValue(
+      new ApiError(409, "SLOT_UNAVAILABLE", "Slot taken."),
+    );
+    await openAndFillWalkIn();
+    const before = listBookings.mock.calls.length;
+    await click(screen.getByRole("button", { name: "יצירת התור" }));
+
+    const dialog = walkInDialog();
+    expect(dialog).not.toBeNull();
+    // NOT F15's «המועד הזה נתפס הרגע. אפשר לבחור מועד אחר.» — this dialog has no
+    // time picker, `starts_at` is the server's `now`, and the only way to reach
+    // this 409 is a microsecond collision that tapping confirm again resolves.
+    // Deleting the SLOT_UNAVAILABLE row from WALK_IN_ERROR_KEYS reds it.
+    expect(within(dialog as HTMLElement).getByRole("alert")).toHaveTextContent(
+      "לא הצלחנו לפתוח את התור. כדאי לנסות שוב.",
+    );
+    expect(within(dialog as HTMLElement).queryByText(/לבחור מועד אחר/)).toBeNull();
+    // The refresh fired on this arm too — the board must keep converging.
+    expect(listBookings).toHaveBeenCalledTimes(before + 1);
+  });
+
+  it("shows HEBREW for the route's own 404, never the server's English", async () => {
+    // ⚠ NOT_FOUND is absent from `OWNED_ERROR_CODES`, so `bookingErrorText` used
+    // to fall through to main.py's "Resource not found." — English, inside an RTL
+    // dialog's role="alert". It is this route's ONLY domain 404 and it has four
+    // reachable producers; the archived-type one is ordinary, because the dialog
+    // fetches the type list once per open and a counter tablet holds this tab for
+    // a whole shift. Deleting the NOT_FOUND row from WALK_IN_ERROR_KEYS reds it.
+    await mountBoard();
+    createWalkInBooking.mockRejectedValue(
+      new ApiError(404, "NOT_FOUND", "Resource not found."),
+    );
+    await openAndFillWalkIn();
+    await click(screen.getByRole("button", { name: "יצירת התור" }));
+
+    const dialog = walkInDialog();
+    expect(dialog).not.toBeNull();
+    expect(within(dialog as HTMLElement).getByRole("alert")).toHaveTextContent(
+      "הלקוחה או סוג הפגישה שנבחרו כבר אינם זמינים. כדאי לחפש שוב.",
+    );
+    expect(within(dialog as HTMLElement).queryByText(/Resource not found/)).toBeNull();
+  });
+
+  it("drives the terminal screen on a 403 and issues NO FURTHER FETCH", async () => {
+    // ⚠ THE ONE EXCEPTION D9 CREATES, and it exists because this handler calls
+    // `poll.refresh()` where the check-in calls `poll.reschedule()`.
+    // `reschedule()` no-ops while the loop is stopped, so F34 could put its
+    // re-arm in an unguarded .finally(); `refresh()` has no such guard — it is
+    // three unconditional statements — so an unguarded .finally() here would
+    // fire one more request against a session already known to be dead. Not a
+    // loop, because run()'s own finally re-arms through reschedule(); one
+    // guaranteed doomed request, which contradicts the terminal state outright.
+    await mountBoard();
+    createWalkInBooking.mockRejectedValue(
+      new ApiError(403, "NOT_AUTHORIZED", "Not authorized."),
+    );
+    await openAndFillWalkIn();
+    const before = listBookings.mock.calls.length;
+    await click(screen.getByRole("button", { name: "יצירת התור" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("אין הרשאה לצפות בלוח כרגע.");
+    expect(walkInDialog()).toBeNull();
+    expect(listBookings).toHaveBeenCalledTimes(before);
+    await advance(POLL * 5);
+    expect(listBookings).toHaveBeenCalledTimes(before);
+  });
+});
+
+describe("F50 — the walk-in row", () => {
+  it("marks the source with ONE muted word beside the type, never a second Badge", async () => {
+    await mountBoard(
+      day([
+        row({ id: "b1", source: "walk_in", checked_in_at: NOW }),
+        row({ id: "b2", customer_name: "נועה כהן" }),
+      ]),
+    );
+
+    const walkIn = screen.getByText("מיכל לוי").closest("li") as HTMLElement;
+    expect(within(walkIn).getByText(/נכנסה/)).toBeInTheDocument();
+    // One Badge per row and it is the status — the muted-words rule the
+    // attendance line already keeps.
+    expect(within(walkIn).getAllByTestId("board-status")).toHaveLength(1);
+
+    const storefront = screen.getByText("נועה כהן").closest("li") as HTMLElement;
+    expect(within(storefront).queryByText(/נכנסה/)).toBeNull();
   });
 });
 

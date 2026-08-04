@@ -115,6 +115,14 @@ const HE_F60 = entries(he.translation, (key) => key.startsWith("guide."));
 // serve — a copy in this bundle would be a second place for a legal string to
 // drift, which is the failure F33's `checkin.notice` comment names.
 const HE_F20 = entries(he.translation, (key) => key === "nav.privacy" || key.startsWith("privacy."));
+// F50's walk-in dialog. NO `nav.` term and no `board.`/`booking.` term in this
+// selector, and both are assertions rather than omissions: the walk-in is a
+// control ON the board, not a sixteenth console section, and its three
+// non-`walkin.` keys are `board.`/`booking.`-namespaced so they ride HE_F34 and
+// HE_F15 by prefix — the namespace names the surface, not the feature that added
+// the key. That is what puts `board.newWalkIn` under F34's 2.5.3 and
+// retry-interval guards, which is where it belongs.
+const HE_F50 = entries(he.translation, (key) => key.startsWith("walkin."));
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -130,6 +138,7 @@ const HE = [
   ...HE_F37,
   ...HE_F60,
   ...HE_F20,
+  ...HE_F50,
 ];
 
 describe("F15 keys resolve", () => {
@@ -1402,6 +1411,59 @@ describe("F20 privacy keys resolve", () => {
     // with a controlled re-identification key, so a word implying the data is
     // gone would misdescribe it in the operator's own vocabulary.
     expect(i18n.t("privacy.erase")).toContain("מחיקת");
+  });
+});
+
+describe("F50 walk-in keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // 14 rows under walkin.*. Its own floor, for the reason every block above
+    // has one: folded into an existing list without it, this feature's rows
+    // could shrink by 14 and the suite would stay green.
+    expect(HE_F50.length).toBeGreaterThanOrEqual(14);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // Declare the constant and forget the spread, and the resolve check, BOTH
+    // register guards and the `ar` presence guard silently skip all fourteen
+    // hand-transcribed strings and stay green. Nothing else in this file
+    // notices — this file's own comment names that failure, so this feature
+    // asserts against it rather than repeating the warning.
+    expect(HE.map(([key]) => key)).toContain("walkin.title");
+  });
+
+  it("adds no nav row, and that is an assertion rather than an omission", () => {
+    // The walk-in is a CONTROL on the board, not a sixteenth console section.
+    expect(HE_F50.filter(([key]) => key.startsWith("nav."))).toEqual([]);
+    expect("nav.walkin" in he.translation).toBe(false);
+  });
+
+  it("points the empty state at the check-in form and never at a create control", () => {
+    // ⚠ THE D3 RULING AS COPY, and the one string in this feature that carries
+    // a legal decision. A walk-in for a customer the boutique does not yet hold
+    // is refused: creating her here would type a name and a number a staffer
+    // read aloud, which is a fourth §11 collection point whose notice could only
+    // be delivered by instructing her to recite it. The empty state must
+    // therefore route to the shipped form at the door — by the name of the
+    // screen that prints its code — and must not offer a way to add her.
+    const empty = i18n.t("walkin.empty");
+    expect(empty).toContain(i18n.t("nav.checkinQr"));
+    for (const word of ["הוספת", "יצירת לקוחה", "לקוחה חדשה כאן"]) {
+      expect(empty).not.toContain(word);
+    }
+  });
+
+  it("names the absent terms as a fact, never as a hole", () => {
+    // The detail rendered «גרסה null» beside an empty date before this key.
+    expect(i18n.t("booking.termsNone")).toBe("נוצר בבוטיק · אין אישור תנאים");
+    // And it is `booking.`-namespaced, so it rides HE_F15 and is covered by the
+    // resolve check without HE_F50 selecting it.
+    expect(HE.map(([key]) => key)).toContain("booking.termsNone");
+    expect(HE.map(([key]) => key)).toContain("board.newWalkIn");
+  });
+
+  it("interpolates the created cue's name and the truncation count", () => {
+    expect(i18n.t("walkin.createdCue", { name: "מיכל לוי" })).toBe("נוצר תור חדש עבור מיכל לוי.");
+    expect(i18n.t("walkin.truncated", { count: 10 })).toContain("10");
   });
 });
 
