@@ -87,6 +87,10 @@ ELEVATED_PATHS = {DELETE_PATH, CAPACITY_PATH}
 
 DUE = "2026-08-20"
 STAMP = datetime.datetime(2026, 8, 1, 8, 10, tzinfo=datetime.UTC)
+# The rolling week the load aggregate filtered on, echoed to the console because
+# it has no date arithmetic of its own (F-1). Any date will do here — what this
+# module proves is that it reaches the wire, not how it is computed.
+BOARD_HORIZON = datetime.date(2026, 8, 10)
 
 CREATE_BODY: dict[str, Any] = {
     "customer_name": "מיכל לוי",
@@ -226,14 +230,26 @@ class FakeAtelierService:
         self.calls.append({"verb": verb, **kwargs})
 
     async def board(
-        self, tenant_id: uuid.UUID, *, bands: dict[EffortBand, int]
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        bands: dict[EffortBand, int],
+        default_capacity_hours: int | None,
     ) -> AtelierBoardResponse:
-        self._record("board", tenant_id=tenant_id, bands=dict(bands))
+        self._record(
+            "board",
+            tenant_id=tenant_id,
+            bands=dict(bands),
+            default_capacity_hours=default_capacity_hours,
+        )
         return AtelierBoardResponse(
             tickets=[_ticket(), _ticket(OTHER_TICKET_ID, due_date="2026-07-01", overdue=True)],
             seamstresses=[],
             effort_bands=[EffortBandRef(band=b, minutes=m) for b, m in bands.items()],
             truncated=False,
+            unassigned_minutes=240,
+            default_weekly_capacity_hours=default_capacity_hours,
+            due_soon_through=BOARD_HORIZON,
         )
 
     async def create(
@@ -564,6 +580,29 @@ def test_a_brand_new_boutique_with_no_atelier_key_gets_the_five_platform_bands()
     assert fake.calls[0]["bands"] == DEFAULT_EFFORT_BANDS
 
 
+def test_the_BOARD_reads_the_capacity_default_off_the_same_bound_settings() -> None:
+    """The second reader of `settings["atelier"]["default_weekly_capacity_hours"]`
+    on the request, and the one that runs every five seconds. It rides the
+    already-bound `TenantContext.settings` exactly as the bands do, which is what
+    holds F42's addition to the poll's budget at ONE statement — the load
+    aggregate — rather than three.
+
+    And it reaches the envelope: the panel needs it to say whose default an
+    inherited number is, and the settings dialog opens on it with no read of its
+    own."""
+    fake = FakeAtelierService()
+    with _client(fake, tenant=CAPACITY_TENANT) as client:
+        body = client.get(BOARD_PATH).json()
+    assert fake.calls[0]["default_capacity_hours"] == 36
+    assert body["default_weekly_capacity_hours"] == 36
+
+    fresh = FakeAtelierService()
+    with _client(fresh) as client:
+        blank = client.get(BOARD_PATH).json()
+    assert fresh.calls[0]["default_capacity_hours"] is None
+    assert blank["default_weekly_capacity_hours"] is None
+
+
 def test_the_capacity_default_comes_off_the_REQUESTS_TENANT_too() -> None:
     """The tenant's house default rides the SAME already-bound
     `TenantContext.settings` the bands do, so the capacity write costs no extra
@@ -606,16 +645,31 @@ def test_the_create_handler_passes_the_bands_too() -> None:
 # --- the wire shape ---
 
 
-def test_the_board_payload_is_an_envelope_with_four_named_parts() -> None:
-    """An ENVELOPE, never a bare array: F42 adds capacity to `seamstresses`, F43
-    adds fitting counts to a ticket, and a bare array would make the first of
-    those a breaking shape change on a screen that polls every five seconds."""
+def test_the_board_payload_is_an_envelope_with_SEVEN_named_parts() -> None:
+    """An ENVELOPE, never a bare array: F42 adds capacity to `seamstresses` and
+    three keys here, F43 adds fitting counts to a ticket, and a bare array would
+    have made the first of those a breaking shape change on a screen that polls
+    every five seconds.
+
+    ⚠ `tickets` IS BYTE-IDENTICAL TO F41's — not one field added, removed or
+    renamed, asserted against the frozen literal below. F41's Risk 9 promised an
+    ADDITION and D3/D7 make that literally true."""
     fake = FakeAtelierService()
     with _client(fake) as client:
         body = client.get(BOARD_PATH).json()
 
-    assert set(body) == {"tickets", "seamstresses", "effort_bands", "truncated"}
+    assert set(body) == {
+        "tickets",
+        "seamstresses",
+        "effort_bands",
+        "truncated",
+        "unassigned_minutes",
+        "default_weekly_capacity_hours",
+        "due_soon_through",
+    }
     assert body["truncated"] is False
+    assert body["unassigned_minutes"] == 240
+    assert body["due_soon_through"] == BOARD_HORIZON.isoformat()
     assert body["tickets"] == [
         {
             "id": str(TICKET_ID),

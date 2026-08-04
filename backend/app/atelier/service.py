@@ -111,6 +111,12 @@ EDITABLE_FIELDS = (
 
 Bands = Mapping[EffortBand, int]
 
+# D3's rolling week. NOT `DELIVERED_WINDOW_DAYS`, which happens to be 7 too and
+# means something else entirely: that one bounds what the board RENDERS after a
+# garment goes out, this one bounds what the BAR counts as due. Sharing a
+# constant between them would tie a display window to a capacity horizon.
+LOAD_HORIZON_DAYS = 7
+
 
 class AtelierService:
     def __init__(
@@ -129,18 +135,37 @@ class AtelierService:
 
     # --- the poll ------------------------------------------------------------
 
-    async def board(self, tenant_id: UUID, *, bands: Bands) -> AtelierBoardResponse:
-        """THREE business statements, and that number is the budget: the tickets,
-        their customers' names in one `IN`, and the assignee union. The bands are
-        not a fourth — they came off the request's already-bound tenant context.
+    async def board(
+        self, tenant_id: UUID, *, bands: Bands, default_capacity_hours: int | None
+    ) -> AtelierBoardResponse:
+        """FOUR business statements, and that number is the budget: the tickets,
+        their customers' names in one `IN`, the assignee union, and F42's load
+        aggregate. F41 fixed the budget at THREE and called it that; the fourth is
+        D3's and §Conflicts 8 sizes it — ≈7 statements, ≈12 round trips and 3
+        pool checkouts per tick per device, against F41's ≈6/≈11/3. F29 is handed
+        that figure by name.
+
+        Neither the bands NOR the capacity default is a statement: both come off
+        the request's already-bound `TenantContext.settings`. That is the whole
+        reason the router resolves them — `TenantsRepository` opens its own
+        session inside every method, so it cannot join this `tenant_session` and
+        either one would cost a fifth pool checkout every five seconds.
+
+        ⚠ ONE CLOCK CALL AND ONE DATE SOURCE. The horizon is derived from the
+        `today` this method already holds for the delivered window and the
+        `overdue` flag. A second `today_jerusalem(self._clock)` could be read on
+        either side of Jerusalem midnight and the envelope would then ship a
+        `due_soon_through` the filter never used.
         """
         today = today_jerusalem(self._clock)
+        horizon = today + datetime.timedelta(days=LOAD_HORIZON_DAYS)
         async with tenant_session(self._sessions, tenant_id) as session:
             tickets, truncated = await self._tickets.board(session, tenant_id, today=today)
             customers = await self._customers.by_ids(
                 session, tenant_id, [row.customer_id for row in tickets]
             )
             assignees = await self._tickets.assignees(session, tenant_id)
+            load = await self._tickets.load_by_assignee(session, tenant_id, horizon=horizon)
         return AtelierBoardResponse.build(
             tickets=tickets,
             customers=customers,
@@ -148,6 +173,9 @@ class AtelierService:
             bands=bands,
             truncated=truncated,
             today=today,
+            load=load,
+            default_capacity_hours=default_capacity_hours,
+            due_soon_through=horizon,
         )
 
     # --- intake --------------------------------------------------------------

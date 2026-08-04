@@ -110,8 +110,16 @@ def _bands(tenant: TenantContext) -> dict[EffortBand, int]:
 
 @router.get("/atelier/tickets")
 async def get_board(request: Request, service: Service) -> AtelierBoardResponse:
+    """The bands AND the tenant capacity default both ride
+    `TenantContext.settings`, already bound on the request by the tenancy
+    middleware, at zero statements — which is what keeps F42's addition to the
+    poll's budget at ONE statement rather than three."""
     tenant = get_current_tenant(request)
-    return await service.board(tenant.id, bands=_bands(tenant))
+    return await service.board(
+        tenant.id,
+        bands=_bands(tenant),
+        default_capacity_hours=default_capacity_hours(tenant.settings),
+    )
 
 
 @router.post("/atelier/tickets")

@@ -195,6 +195,7 @@ class _Repos:
         self.board_truncated: bool = False
         self.assignees: list[StaffUser] = []
         self.inserted: AlterationTicket | None = None
+        self.load: dict[uuid.UUID | None, tuple[int, int]] = {}
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, repos: _Repos) -> _Repos:
@@ -266,6 +267,13 @@ def _install(monkeypatch: pytest.MonkeyPatch, repos: _Repos) -> _Repos:
         repos.order.append("assignees")
         return repos.assignees
 
+    async def _load_by_assignee(
+        _s: object, _session: object, _t: uuid.UUID, *, horizon: datetime.date
+    ) -> dict[uuid.UUID | None, tuple[int, int]]:
+        repos.order.append("load_by_assignee")
+        repos.calls["load_by_assignee"] = {"horizon": horizon}
+        return repos.load
+
     async def _customer_by_id(
         _s: object, _session: object, _t: uuid.UUID, _customer_id: uuid.UUID
     ) -> Customer | None:
@@ -334,6 +342,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, repos: _Repos) -> _Repos:
     monkeypatch.setattr(AlterationTicketsRepository, "insert", _insert)
     monkeypatch.setattr(AlterationTicketsRepository, "board", _board)
     monkeypatch.setattr(AlterationTicketsRepository, "assignees", _assignees)
+    monkeypatch.setattr(AlterationTicketsRepository, "load_by_assignee", _load_by_assignee)
     monkeypatch.setattr(CustomersRepository, "by_id", _customer_by_id)
     monkeypatch.setattr(CustomersRepository, "by_ids", _customer_by_ids)
     monkeypatch.setattr(CustomersRepository, "by_phone", _customer_by_phone)
@@ -1555,7 +1564,7 @@ async def test_the_board_asks_for_the_window_against_the_JERUSALEM_calendar_day(
     repos.customer = _customer(customer_id=row.customer_id)
     repos.assignees = [_staff_row(SEAMSTRESS_ID)]
 
-    body = await _service(repos).board(TENANT_ID, bands=TUNED_BANDS)
+    body = await _service(repos).board(TENANT_ID, bands=TUNED_BANDS, default_capacity_hours=None)
 
     assert repos.calls["board"] == {"today": TODAY}
     assert repos.calls["customer_by_ids"] == [row.customer_id]
@@ -1563,20 +1572,25 @@ async def test_the_board_asks_for_the_window_against_the_JERUSALEM_calendar_day(
     assert [s.id for s in body.seamstresses] == [SEAMSTRESS_ID]
 
 
-async def test_the_board_costs_exactly_three_business_statements(
+async def test_the_board_costs_exactly_FOUR_business_statements(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """⚠ The poll's budget, and the reason the BANDS come off
-    `TenantContext.settings` in the router rather than through
-    `TenantsRepository`: that repository opens its OWN session inside every
-    method, so it cannot join this `tenant_session` and would cost a fourth pool
-    checkout and a fourth BEGIN/COMMIT every five seconds per device."""
+    """⚠ The poll's budget, RAISED FROM THREE TO FOUR BY F42 AND BY NOTHING ELSE
+    (D3, §Conflicts 8). F41 fixed it at three and called that "the budget"; the
+    load aggregate is the fourth and F29 is handed the new figure by name.
+
+    The BANDS and the CAPACITY DEFAULT are still not statements, and that is the
+    reason both come off `TenantContext.settings` in the router rather than
+    through `TenantsRepository`: that repository opens its OWN session inside
+    every method, so it cannot join this `tenant_session` and either one would
+    cost a fifth pool checkout and a fifth BEGIN/COMMIT every five seconds per
+    device."""
     repos = _install(monkeypatch, _Repos())
     repos.board_rows = []
 
-    await _service(repos).board(TENANT_ID, bands=TUNED_BANDS)
+    await _service(repos).board(TENANT_ID, bands=TUNED_BANDS, default_capacity_hours=36)
 
-    assert repos.order == ["board", "customer_by_ids", "assignees"]
+    assert repos.order == ["board", "customer_by_ids", "assignees", "load_by_assignee"]
 
 
 async def test_the_board_carries_the_bands_it_was_handed(
@@ -1584,9 +1598,59 @@ async def test_the_board_carries_the_bands_it_was_handed(
 ) -> None:
     repos = _install(monkeypatch, _Repos())
 
-    body = await _service(repos).board(TENANT_ID, bands=TUNED_BANDS)
+    body = await _service(repos).board(TENANT_ID, bands=TUNED_BANDS, default_capacity_hours=None)
 
     assert {b.band: b.minutes for b in body.effort_bands} == TUNED_BANDS
+
+
+async def test_the_load_horizon_is_a_ROLLING_WEEK_FROM_THE_SAME_JERUSALEM_DAY(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ ONE CLOCK CALL AND ONE DATE SOURCE. `board()` already computes `today`
+    for the delivered window and the `overdue` flag, so the horizon is derived
+    from THAT value — a second `today_jerusalem(self._clock)` would be a second
+    thing that could be read on either side of Jerusalem midnight, and the
+    envelope would then ship a `due_soon_through` the filter never used.
+
+    A ROLLING seven days and not a Sunday-anchored calendar week: a calendar
+    anchor would need the denominator pro-rated by day-of-week (on a Friday, two
+    days of remaining capacity against two days of work), which is a per-horizon
+    projection, which is F40's shape.
+    """
+    repos = _install(monkeypatch, _Repos())
+
+    body = await _service(repos).board(TENANT_ID, bands=TUNED_BANDS, default_capacity_hours=None)
+
+    assert repos.calls["board"]["today"] == TODAY
+    assert repos.calls["load_by_assignee"] == {"horizon": TODAY + datetime.timedelta(days=7)}
+    # And the horizon the filter used is the one the console renders.
+    assert body.due_soon_through == repos.calls["load_by_assignee"]["horizon"]
+
+
+async def test_the_board_carries_the_load_and_the_tenant_default_it_was_handed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The service passes all three down and computes none of them itself: the
+    aggregate's answer, the router's tenant default, and its own horizon."""
+    repos = _install(monkeypatch, _Repos())
+    repos.assignees = [_staff_row(SEAMSTRESS_ID)]
+    repos.load = {SEAMSTRESS_ID: (900, 2760), None: (60, 240)}
+
+    body = await _service(repos).board(TENANT_ID, bands=TUNED_BANDS, default_capacity_hours=36)
+
+    assert (body.seamstresses[0].due_soon_minutes, body.seamstresses[0].assigned_minutes) == (
+        900,
+        2760,
+    )
+    assert (
+        body.seamstresses[0].weekly_capacity_hours,
+        body.seamstresses[0].capacity_is_default,
+    ) == (
+        36,
+        True,
+    )
+    assert body.unassigned_minutes == 240
+    assert body.default_weekly_capacity_hours == 36
 
 
 # --- the shape of the stage columns the service reasons over ------------------
