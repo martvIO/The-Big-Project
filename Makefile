@@ -25,7 +25,7 @@ test-all:
 	cd "$(BACKEND)" && uv run pytest -q
 
 lint:
-	cd "$(BACKEND)" && uv run ruff check . && uv run ruff format --check . && uv run mypy app tests
+	cd "$(BACKEND)" && uv run ruff check . && uv run ruff format --check . && uv run mypy app tests scripts
 	cd "$(FRONTEND)" && pnpm -r lint && pnpm -r typecheck
 	bash "$(FRONTEND)/scripts/qa-greps.sh"
 

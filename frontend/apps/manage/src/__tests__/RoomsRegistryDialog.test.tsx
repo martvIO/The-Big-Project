@@ -524,25 +524,17 @@ describe("AC25 — the dialog lives inside a component that repaints every five 
 // --- focus: the return, and DC-10's fallback --------------------------------
 
 describe("focus — the return is ours, not the platform's", () => {
-  it("returns focus to «ניהול חדרים» on close", async () => {
-    // ⚠ THIS ONE ASSERTS THE OUTCOME, NOT OUR MECHANISM, and it is labelled so
-    // rather than left to look stronger than it is: jsdom implements the
-    // <dialog> close focusing steps, so deleting the [openDialog] restore effect
-    // leaves this GREEN — verified by running that mutation. The effect earns
-    // its keep on the path the platform CANNOT serve, where the trigger has gone
-    // with its assignment; the non-vacuous tests for it are the MOVE 5 pair and
-    // the registry's DC-10 case, and all three red when it is deleted.
-    mount();
-    await screen.findByText("הבמה");
-    const trigger = screen.getByRole("button", { name: "ניהול חדרים" });
-    trigger.focus();
-    await openRegistry();
-
-    fireEvent.click(within(registry()).getByRole("button", { name: "סגירה" }));
-
-    await waitFor(() => expect(trigger).toHaveFocus());
-  });
-
+  // ⚠ WHAT IS DELIBERATELY ABSENT HERE. `test/setup.ts` stubs `showModal()` as
+  // `this.open = true` — no focus move, no trap, no top layer, no `cancel` on
+  // Esc. So in jsdom nothing ever takes focus OFF the trigger, and any
+  // «focus came back to the trigger» assertion is true before the component
+  // runs and stays true with its restore effect deleted. Two such assertions
+  // lived here and were removed rather than left looking stronger than they
+  // were. The four platform rules — focus ENTERS the dialog on open, Tab and
+  // Shift+Tab wrap inside it, Esc closes it, closing restores the opener — are
+  // asserted in real Chromium at `e2e/dialog-focus.spec.ts`, where they can
+  // fail. What stays below is what jsdom CAN answer: the destinations the
+  // platform cannot serve, where the trigger has unmounted.
   it("DC-10 — returns focus to the rooms HEADING when the last room is gone", async () => {
     // ⚠ The FIRST registry session in every boutique's life runs in reverse of
     // this, and the same rescue is what saves it: she opens from the EmptyState
@@ -571,13 +563,13 @@ describe("focus — the return is ours, not the platform's", () => {
     );
   });
 
-  it("Esc dismisses rather than confirming, and hands focus back", async () => {
+  it("a cancel event dismisses rather than confirming", async () => {
     // Modal's onCancel preventDefaults and calls onClose — dismiss only, never
-    // a confirm, which is the shipped component's contract.
+    // a confirm, which is the shipped component's contract. NOT an Esc press:
+    // jsdom fires no `cancel` on Escape, so the event is dispatched directly
+    // and the key itself is Chromium's to answer.
     mount();
     await screen.findByText("הבמה");
-    const trigger = screen.getByRole("button", { name: "ניהול חדרים" });
-    trigger.focus();
     const modal = await openRegistry();
 
     fireEvent(modal, new Event("cancel", { bubbles: false, cancelable: true }));
@@ -585,7 +577,6 @@ describe("focus — the return is ours, not the platform's", () => {
     await waitFor(() => expect(registry().open).toBe(false));
     expect(updateRoom).not.toHaveBeenCalled();
     expect(deleteRoom).not.toHaveBeenCalled();
-    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it("keeps the focus trap the PLATFORM's — a real top-layer dialog, not a div", async () => {

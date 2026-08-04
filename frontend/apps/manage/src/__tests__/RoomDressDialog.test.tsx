@@ -300,26 +300,19 @@ describe("the add", () => {
 
 // --- moves 4 and 5, each with its named mutation -----------------------------
 
-describe("focus — the two contracts, and axe sees neither", () => {
-  it("MOVE 4 — closing returns focus to the tile's «הוספת שמלה» trigger", async () => {
-    // ⚠ THIS ONE ASSERTS THE OUTCOME, NOT OUR MECHANISM, and it is labelled so
-    // rather than left to look stronger than it is: jsdom implements the
-    // <dialog> close focusing steps, so deleting the [openDialog] restore effect
-    // leaves this GREEN — verified by running that mutation. The effect earns
-    // its keep on the path the platform CANNOT serve, where the trigger has gone
-    // with its assignment; the non-vacuous tests for it are the MOVE 5 pair and
-    // the registry's DC-10 case, and all three red when it is deleted.
-    mount();
-    await screen.findByText("חדר 2");
-    const trigger = screen.getByRole("button", { name: "הוספת שמלה — חדר 2" });
-    trigger.focus();
-    const modal = await openDress();
-
-    fireEvent.click(within(modal).getByRole("button", { name: "ביטול" }));
-
-    await waitFor(() => expect(trigger).toHaveFocus());
-  });
-
+// The plain "closing returns focus to the trigger" case USED TO LIVE HERE and was
+// REMOVED — it could not fail. jsdom 29's HTMLDialogElementImpl is an empty subclass
+// (9 lines, no showModal), so `test/setup.ts` installs a stub that sets `open = true`
+// and moves no focus; the test focused the trigger itself before opening, and the
+// stub never took it away. Its own comment claimed "jsdom implements the <dialog>
+// close focusing steps" — that was simply false, and the honest label made it read
+// as a weak-but-real test rather than an unfailable one.
+// The rule IS proven, in a browser that implements <dialog>: `frontend/e2e/
+// dialog-focus.spec.ts`, against mutations M1 and M3b. `Modal` is shared, so the
+// platform restore path proven there is this dialog's too.
+// What stays below is the half the platform CANNOT serve — the trigger has gone with
+// its assignment — and every one of these reds when its effect is deleted.
+describe("focus — the collisions the platform cannot serve, and axe sees neither", () => {
   it("MOVE 4 COLLISION — a 404 add closes the dialog and lands focus IN THE TILE'S ALERT", async () => {
     // ⚠ Move 1 must beat the native <dialog>'s own focus return, which fires
     // second and would otherwise win. The sentence is the ASSIGNMENT's, not the

@@ -36,8 +36,12 @@ jobs:
         run: uv run ruff check .
       - name: Ruff format check
         run: uv run ruff format --check .
+      # `scripts` is in scope because scripts/seed_demo.py drives the real HTTP API
+      # to build a demo boutique (docs/real-world-qa.md) — it is a CONTRACT CANARY,
+      # so a payload-shape change that breaks it must fail here rather than at the
+      # next QA pass. `ruff check .` already covered it; mypy did not.
       - name: Mypy
-        run: uv run mypy app tests
+        run: uv run mypy app tests scripts
       - name: Tests (unit + Testcontainers Postgres)
         run: uv run pytest -q
 
