@@ -35,13 +35,20 @@
 - [ ] Upload validation: content-type + size limits on presigned S3 uploads
 
 ## Data protection (PPL / Data Security Regulations)
+
+> Rows 39-43 were assessed at **F20** (PPL compliance build). Three are green; two
+> are **amber** and stay unchecked, each with a named owner. An amber row is one
+> F20 partly discharged — checking it would hand F21 a lie to audit, which is the
+> failure F21 exists to catch. Evidence for all five: `.planning/ppl-compliance-record.md`.
+> Splitting rows 40 and 42 into their per-owner clauses is F21's edit, not F20's.
+
 - [ ] Audit log on all owner/CLI mutations and data access by operators
-- [ ] Privacy notice per tenant; DPA text in boutique ToS
-- [ ] Consent captured with timestamp + terms-version + source; marketing opt-in separate, unbundled, default OFF; opt-out honored in every marketing send
-- [ ] PII-scrub job (true erasure, not soft-delete) tested
-- [ ] Retention jobs per data class running (OTP: minutes; queue entries: days; bookings: years; message log: months)
-- [ ] Processing-activities record started; incident-response procedure written
-- [ ] Backups automated; restore drilled; RPO/RTO documented
+- [x] Privacy notice per tenant; DPA text in boutique ToS — **F20**: platform-written Hebrew notice + DPA clause, per-boutique overridable, rendered at every collection point and on `/privacy`; platform-owned sub-processor list, structurally un-overridable
+- [ ] Consent captured with timestamp + terms-version + source; marketing opt-in separate, unbundled, default OFF; opt-out honored in every marketing send — **AMBER (F20)**: capture, structural unbundling, structural default-off (a NULL timestamp, not a flippable boolean) and an owner/shift-manager opt-out writer with both arms all ship. **The send-time clause has no subject until a marketing send exists.** *Owner: F46.*
+- [x] PII-scrub job (true erasure, not soft-delete) tested — **F20**: the SCRUB action, its `customers` and `queue_tickets` consumers, and the `subject-erase` transaction, all db-tested against real Postgres
+- [ ] Retention jobs per data class running (OTP: minutes; queue entries: days; bookings: years; message log: months) — **AMBER (F20)**: six per-class policies ship, tested, with boot-validated floors; the queue-entries clause **closed at F20** (F33's tickets have a policy). **`retention_enabled` ships `False`** — the job is shipped but not *running*, because an unattended irreversible mass-delete must not precede a drilled restore (row 44). *Owner: F21.*
+- [x] Processing-activities record started; incident-response procedure written — **F20**: `.planning/ppl-compliance-record.md` §1 and §3
+- [ ] Backups automated; restore drilled; RPO/RTO documented — **gates row 42.**
 
 ## Accessibility (IS 5568 / WCAG 2.0 AA — legal requirement)
 - [ ] axe-core automated pass on storefront + booking flow
