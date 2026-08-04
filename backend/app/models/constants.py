@@ -527,6 +527,38 @@ class AuditAction(StrEnum):
     SOS_RESOLVED = "sos_resolved"
     SOS_CANCELLED = "sos_cancelled"
 
+    # F20's retention job (D8). The NINTH block to rely on the same fact:
+    # audit_log.action is plain TEXT with no CHECK (0003), so these six need no
+    # migration.
+    #
+    # SIX values and not one `retention_applied` with the class in `details`,
+    # because this file's split criterion is "is this a distinct question a
+    # compliance audit actually asks", and here it plainly is: "show me that the
+    # message log was purged on its clock" is the §17B evidence for ONE data
+    # class, and an auditor asking it should not have to write a JSONB predicate
+    # to separate it from the OTP sweep.
+    #
+    # The suffix is the POLICY NAME, and `app.privacy.retention.audit_action`
+    # resolves it through this enum — so a policy added without a member here is
+    # a ValueError in `test_retention_policies.py`, not a silent absence at 03:00
+    # inside a tenant loop.
+    #
+    # A RUN THAT TOUCHED NOTHING WRITES NO ROW. Six rows per tenant per hour of
+    # "deleted 0" is permanent bloat in the one table that has no retention class
+    # of its own — and `audit_log` has none deliberately, because a clock on the
+    # evidence would eventually erase the proof of the erasures it records.
+    #
+    # `details` carries counts and table NAMES only. Never a customer name, never
+    # a phone: audit_log has no retention policy and platform operators read
+    # across tenants, which is CUSTOMER_UPDATED's rule for CUSTOMER_UPDATED's
+    # reason.
+    RETENTION_OTP_CODES = "retention_otp_codes"
+    RETENTION_SESSIONS = "retention_sessions"
+    RETENTION_QUEUE_TICKETS = "retention_queue_tickets"
+    RETENTION_MESSAGE_LOG = "retention_message_log"
+    RETENTION_BOOKINGS = "retention_bookings"
+    RETENTION_CUSTOMERS = "retention_customers"
+
 
 class PlatformAuditAction(StrEnum):
     TENANT_PROVISIONED = "tenant_provisioned"
