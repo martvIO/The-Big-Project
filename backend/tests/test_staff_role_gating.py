@@ -28,6 +28,7 @@ from test_catalog_api import ROUTES as CATALOG_ROUTES
 from test_catalog_api import FakeCatalogService
 from test_floor_api import FLOOR_ROUTES, FakeFloorService
 from test_payments_api import ROUTES as GATEWAY_ROUTES
+from test_privacy_api import PRIVACY_ROUTES, FakePrivacyService
 
 from app.auth.dependencies import (
     NotAuthorizedError,
@@ -63,6 +64,17 @@ GATEWAY_SET = ("PUT", "/manage/gateway/credentials")
 GATEWAY_VALIDATE = ("POST", "/manage/gateway/validate")
 GATEWAY_DISCONNECT = ("DELETE", "/manage/gateway/credentials")
 
+# F20's three. The FOURTH privacy route, POST /manage/privacy/marketing-withdraw,
+# is DELIBERATELY ABSENT — Gate 1 Q4 admits the shift manager there, and
+# test_marketing_withdraw_is_not_owner_only_in_the_route_table below asserts that
+# absence POSITIVELY. Adding it here to make the set look symmetric would silently
+# revoke a permission the user explicitly granted, and would pass BOTH branches of
+# test_route_table_matches_the_permission_matrix while doing it.
+PRIVACY_PUT = ("PUT", "/manage/privacy")
+PRIVACY_EXPORT = ("POST", "/manage/privacy/subject-export")
+PRIVACY_ERASE = ("POST", "/manage/privacy/subject-erase")
+PRIVACY_WITHDRAW = ("POST", "/manage/privacy/marketing-withdraw")
+
 # The routes a shift_manager must NOT reach — the spec's permission matrix,
 # pinned. F51's staff router added its four rows and F17's gateway router adds
 # these four; adding an owner-only tightening anywhere else fails
@@ -78,6 +90,9 @@ OWNER_ONLY = {
     GATEWAY_SET,
     GATEWAY_VALIDATE,
     GATEWAY_DISCONNECT,
+    PRIVACY_PUT,
+    PRIVACY_EXPORT,
+    PRIVACY_ERASE,
 }
 
 # ROUTE-TABLE TEMPLATES, for the same reason STAFF_PATCH is one: the classifier
@@ -479,6 +494,50 @@ def test_the_capacity_route_is_tightened_in_the_route_table() -> None:
     pytest.fail(f"{method} {path} not found in the route table")
 
 
+def test_marketing_withdraw_is_not_owner_only_in_the_route_table() -> None:
+    """⚠ GATE 1 Q4, ASSERTED POSITIVELY — the mirror image of
+    `test_the_capacity_route_is_tightened_in_the_route_table` above, and written
+    in its idiom for the reason that test's own docstring gives.
+
+    `test_route_table_matches_the_permission_matrix` is default-deny FOR THE
+    WRONG DIRECTION here. A route that admits the shift manager and is not in
+    OWNER_ONLY passes its `all(...)` branch silently — and so does a route that a
+    later author adds to OWNER_ONLY *and* gives an owner-only gate: both branches
+    pass cleanly while a permission the user explicitly granted is revoked. Only
+    a named test that asserts the ABSENCE catches that, because a default-deny
+    walker cannot tell a deliberate omission from a forgotten one.
+
+    ⚠ NOT in OWNER_ONLY, and that is not an omission: withdrawing a marketing
+    consent destroys nothing, it is the lesser action short of erasure (D15), and
+    routing it through the owner would mean telling a woman exercising a §30A
+    right on the telephone to ring back tomorrow. Its three siblings stay
+    owner-only — two assemble or destroy a whole person, the third publishes the
+    boutique's legal notice.
+
+    ⚠ THE `pytest.fail` FALLTHROUGH IS NOT DECORATION. Without it, a renamed or
+    removed route makes this test pass by never entering the loop, which is
+    exactly the vacuity the precedent above was written to avoid.
+    """
+    app = create_app(resolver=_null_resolver)
+    method, path = PRIVACY_WITHDRAW
+    for route in _leaf_routes(app):
+        if getattr(route, "path", None) != path:
+            continue
+        if method not in (getattr(route, "methods", None) or ()):
+            continue
+        role_sets = list(_gate_role_sets(route.dependant))
+        assert frozenset({StaffRole.OWNER.value}) not in role_sets, (
+            f"{method} {path} gained an owner-only tightening — Gate 1 Q4 says the "
+            "shift manager keeps this one"
+        )
+        effective = frozenset.intersection(*role_sets)
+        assert effective == frozenset({StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value}), (
+            f"{method} {path} admits {sorted(effective)}"
+        )
+        return
+    pytest.fail(f"{method} {path} not found in the route table")
+
+
 def test_terms_publishing_is_owner_only_in_the_route_table() -> None:
     app = create_app(resolver=_null_resolver)
     for route in _leaf_routes(app):
@@ -601,6 +660,7 @@ def _client(
     catalog: FakeCatalogService | None = None,
     floor: FakeFloorService | None = None,
     atelier: FakeAtelierService | None = None,
+    privacy: FakePrivacyService | None = None,
 ) -> tuple[TestClient, CountingAuthService]:
     async def _resolver(slug: str) -> TenantContext | None:
         return TENANT if slug == "bella" else None
@@ -638,6 +698,17 @@ def _client(
         # `allowed_roles` without raising would fall through to an AttributeError
         # and blow that test up rather than quietly passing.
         app.state.atelier_service = atelier
+    if privacy is not None:
+        # The fourth instance of the same asymmetry, and F20's is the one where it
+        # carries the most weight. POST /manage/privacy/marketing-withdraw is the
+        # ONE /manage route deliberately left at its router's (owner,
+        # shift_manager) gate while its three siblings tighten (Gate 1 Q4), so the
+        # shift-manager walk below has to reach it and get a real 200 — which
+        # needs this fake. test_unknown_role_is_403_on_every_gated_route
+        # deliberately does NOT pass one: with app.state.privacy_service unset, a
+        # gate that carried `allowed_roles` without raising falls through to an
+        # AttributeError and blows that test up rather than quietly passing.
+        app.state.privacy_service = privacy
     client = TestClient(app, base_url="http://bella.localtest.me")
     if authed:
         client.cookies.set("boutique_session", TOKEN, domain="bella.localtest.me")
@@ -662,6 +733,13 @@ def test_shift_manager_is_admitted_everywhere_except_terms_publishing() -> None:
     # roles, so a shift manager must reach every one of them. A floor fake IS
     # wired here (unlike the unknown-role walk below) because these three must
     # answer 2xx to prove admission rather than merely "not 403".
+    #
+    # PRIVACY_ROUTES joins for a FOURTH reason, and it is the sharpest: three of
+    # the five are in OWNER_ONLY and get their end-to-end 403 here, while
+    # marketing-withdraw is the one /manage route in the product that its own
+    # router admits and its siblings refuse. A privacy fake IS wired, because
+    # that route must answer a real 200 rather than merely "not 403" — the
+    # positive half of Gate 1 Q4.
     fake = FakeBoutiqueService()
     client, _ = _client(
         fake,
@@ -669,6 +747,7 @@ def test_shift_manager_is_admitted_everywhere_except_terms_publishing() -> None:
         catalog=FakeCatalogService(),
         floor=FakeFloorService(),
         atelier=FakeAtelierService(),
+        privacy=FakePrivacyService(),
     )
     with client:
         for method, path, body in [
@@ -677,6 +756,7 @@ def test_shift_manager_is_admitted_everywhere_except_terms_publishing() -> None:
             *GATEWAY_ROUTES,
             *FLOOR_ROUTES,
             *ATELIER_ROUTES,
+            *PRIVACY_ROUTES,
         ]:
             resp = client.request(method, path, json=body)
             if (method, path) in OWNER_ONLY:
@@ -712,6 +792,14 @@ def test_unknown_role_is_403_on_every_gated_route() -> None:
     # be true while "the gate raises" is false. With app.state.floor_service
     # never set, a gate that failed to enforce would fall through to an
     # AttributeError and blow this test up rather than quietly passing.
+    #
+    # ⚠ PRIVACY_ROUTES ride along with NO privacy fake, for the same reason, and
+    # F20 is where the shape is easiest to get wrong: four of its five routes
+    # carry a gate that would have to raise, and one of them
+    # (marketing-withdraw) has NO per-route gate at all, so it depends entirely
+    # on the router-level one enforcing. With app.state.privacy_service never
+    # set, a router gate that failed to enforce falls through to an
+    # AttributeError and blows this test up rather than quietly passing.
     fake = FakeBoutiqueService()
     client, _ = _client(fake, UNKNOWN_ROLE)
     with client:
@@ -721,6 +809,7 @@ def test_unknown_role_is_403_on_every_gated_route() -> None:
             *GATEWAY_ROUTES,
             *FLOOR_ROUTES,
             *ATELIER_ROUTES,
+            *PRIVACY_ROUTES,
         ]:
             resp = client.request(method, path, json=body)
             assert resp.status_code == 403, (method, path, resp.text)

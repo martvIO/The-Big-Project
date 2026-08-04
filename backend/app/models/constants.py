@@ -569,6 +569,23 @@ class AuditAction(StrEnum):
     # a phone: audit_log has no retention policy and platform operators read
     # across tenants, which is CUSTOMER_UPDATED's rule for CUSTOMER_UPDATED's
     # reason.
+    # F20's two subject routes. Same fact again: `audit_log.action` is plain
+    # TEXT with no CHECK (0003), so neither needs a migration.
+    #
+    # THE EXPORT HAS ITS OWN ACTION, and that is D19 correcting a first draft
+    # that audited only the mutation. Checklist row 38 is "data ACCESS by
+    # operators", not "data changes by operators" — assembling a named person's
+    # whole record into one downloadable document is the access it means.
+    #
+    # `details` on both carries `customer_id` + `phone_last4` + a capped
+    # `reason`, and NEVER a full number or a name (`privacy/service._last4`).
+    # This table has no retention class at all — deliberately, because a clock
+    # on the evidence would eventually erase the proof of the erasures it
+    # records — so a full phone written here would be a permanent copy of the
+    # exact identifier the erase exists to destroy.
+    PRIVACY_SUBJECT_EXPORTED = "privacy_subject_exported"
+    PRIVACY_SUBJECT_ERASED = "privacy_subject_erased"
+
     RETENTION_OTP_CODES = "retention_otp_codes"
     RETENTION_SESSIONS = "retention_sessions"
     RETENTION_QUEUE_TICKETS = "retention_queue_tickets"

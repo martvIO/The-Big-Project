@@ -73,6 +73,7 @@ class TenantsRepository:
         profile: dict[str, Any] | None = None,
         toggles: dict[str, Any] | None = None,
         atelier: dict[str, Any] | None = None,
+        privacy: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """ONE atomic `settings = settings || :patch::jsonb` — never a Python
         read-modify-write — so a concurrent writer of a sibling top-level key
@@ -104,6 +105,12 @@ class TenantsRepository:
             patch["toggles"] = toggles
         if atelier is not None:
             patch["atelier"] = atelier
+        # F20's fourth key, and it obeys the ⚠ above rather than escaping it:
+        # `PrivacyUpdate` requires BOTH of its fields, exactly as
+        # `AtelierSettingsUpdate` requires all of its, so the one writer always
+        # sends the whole block. That is what makes the shallow `||` safe here.
+        if privacy is not None:
+            patch["privacy"] = privacy
         async with self._session_factory() as session, session.begin():
             stmt = (
                 update(Tenant)

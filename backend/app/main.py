@@ -131,6 +131,17 @@ from app.payments.service import (
 from app.payments.unconfigured import UnconfiguredGateway
 from app.payments.webhook_router import DepositBookingService
 from app.payments.webhook_router import router as webhook_router
+from app.privacy.router import router as privacy_router
+from app.privacy.service import PrivacyService, SubjectHasActiveBookingError
+from app.privacy.validation import (
+    MARKETING_WITHDRAW_MAX_PER_WINDOW,
+    MARKETING_WITHDRAW_WINDOW_SECONDS,
+    SUBJECT_ERASE_MAX_PER_WINDOW,
+    SUBJECT_ERASE_WINDOW_SECONDS,
+    SUBJECT_EXPORT_MAX_PER_WINDOW,
+    SUBJECT_EXPORT_WINDOW_SECONDS,
+    PrivacyThrottledError,
+)
 from app.queue.manage_router import router as queue_manage_router
 from app.queue.qr import CheckinQrService
 from app.queue.router import router as queue_router
@@ -160,6 +171,16 @@ logger = logging.getLogger("app")
 
 INVALID_CREDENTIALS_BODY = {
     "error": {"code": "INVALID_CREDENTIALS", "message": "Incorrect email or password."}
+}
+SUBJECT_HAS_ACTIVE_BOOKING_BODY = {
+    "error": {
+        "code": "SUBJECT_HAS_ACTIVE_BOOKING",
+        # It tells the owner what to DO, because the refusal is not the end of
+        # the request — the erasure duty yields to performing a contract the
+        # subject is still party to, and the owner has to resolve the booking
+        # before the duty can be discharged.
+        "message": "Cancel or complete her upcoming booking before erasing her record.",
+    }
 }
 TOO_MANY_ATTEMPTS_BODY = {
     "error": {"code": "TOO_MANY_ATTEMPTS", "message": "Too many attempts. Try again later."}
@@ -693,6 +714,33 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # No clock: nothing the CRM answers is time-derived — the booking history is
     # ordered by starts_at with no window and the SMS log has no band.
     app.state.customers_service = CustomersService(get_session_factory())
+    # No clock: `erased_at`, the withdrawal stamp and the live-booking guard
+    # are all `func.now()` INSIDE the erase transaction, so they share the
+    # statement's own instant and no injected clock could make them agree more.
+    #
+    # THREE LIMITER INSTANCES, one per subject route, never one with three
+    # keys: `max_attempts` is per instance, so a shared limiter would give all
+    # three routes a single ceiling and let a morning of lookups lock out the
+    # erase they were leading to. Their budgets are module constants rather
+    # than Settings — see `privacy/validation.py` for why.
+    app.state.privacy_service = PrivacyService(
+        get_session_factory(),
+        export_limiter=FixedWindowRateLimiter(
+            max_attempts=SUBJECT_EXPORT_MAX_PER_WINDOW,
+            window_seconds=SUBJECT_EXPORT_WINDOW_SECONDS,
+            clock=time.monotonic,
+        ),
+        erase_limiter=FixedWindowRateLimiter(
+            max_attempts=SUBJECT_ERASE_MAX_PER_WINDOW,
+            window_seconds=SUBJECT_ERASE_WINDOW_SECONDS,
+            clock=time.monotonic,
+        ),
+        withdraw_limiter=FixedWindowRateLimiter(
+            max_attempts=MARKETING_WITHDRAW_MAX_PER_WINDOW,
+            window_seconds=MARKETING_WITHDRAW_WINDOW_SECONDS,
+            clock=time.monotonic,
+        ),
+    )
     # No clock wired, same as the dashboard and the floor: the parameter exists
     # so the db suite can freeze `today_jerusalem` — which the overdue flag, the
     # delivered window and the due-date horizon all read — and production reads a
@@ -1329,6 +1377,16 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _checkin_throttled(request: Request, exc: CheckinThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
 
+    @app.exception_handler(PrivacyThrottledError)
+    async def _privacy_throttled(request: Request, exc: PrivacyThrottledError) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
+    @app.exception_handler(SubjectHasActiveBookingError)
+    async def _subject_has_booking(
+        request: Request, exc: SubjectHasActiveBookingError
+    ) -> JSONResponse:
+        return JSONResponse(SUBJECT_HAS_ACTIVE_BOOKING_BODY, status_code=409)
+
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(boutique_router)
@@ -1369,6 +1427,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # whichever was included first. The ROUTES table in test_customers_api.py is
     # what keeps that honest for these three.
     app.include_router(customers_router)
+    # F20's privacy surface, the ELEVENTH /manage router and still ahead of
+    # every anonymous one. Same shadowing hazard as the ten above — a
+    # duplicated (method, path) would silently win or lose on include order
+    # with no error at all — and PRIVACY_ROUTES in test_privacy_api.py is what
+    # keeps these five honest. It is also the only /manage router with a route
+    # deliberately LEFT at the router gate while its siblings tighten
+    # (marketing-withdraw, Gate 1 Q4), which is why
+    # test_staff_role_gating.py grew a positive absence assertion for it.
+    app.include_router(privacy_router)
     # The NINTH /manage router, after the customers one and deliberately BEFORE
     # storefront_router: every /manage router stays contiguous and ahead of the
     # anonymous surfaces. Same shadowing hazard as the eight above, now with
