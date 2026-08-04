@@ -575,7 +575,7 @@ export const ar = {
     "checkinQr.loadFailed": "לא הצלחנו לטעון את קוד הסריקה כרגע.",
     "checkinQr.retry": "ניסיון נוסף",
 
-    // --- F41, the atelier. Same 95 keys, Hebrew standing in. ------------------
+    // --- F41, the atelier. Same 95 keys, Hebrew standing in. F42 adds 40. -----
     "nav.atelier": "תפירה",
     "atelier.heading": "לוח התפירה",
     "atelier.newTicket": "כרטיס חדש",
@@ -724,5 +724,53 @@ export const ar = {
     "sos.error.selfTarget": "אי אפשר לקרוא לעצמך.",
     "sos.error.raiseFailed": "הקריאה לא נרשמה. נסי שוב — או קראי בקול.",
     "sos.error.actionFailed": "הפעולה לא הושלמה. נסי שוב.",
+    // --- F42, the seamstress panel. Same 40 keys, Hebrew standing in. --------
+    //
+    // ⚠ NEVER an empty string: i18next's returnEmptyString default renders ""
+    // rather than falling back, so a premature switch would blank the page
+    // instead of showing Hebrew. The approved Hebrew stands in until the
+    // languages ruling is lifted, and i18n.test.ts asserts the VALUE and not
+    // merely the key — a presence check passes on an English string, a `TODO`,
+    // or a different Hebrew wording.
+    "atelier.capacity.heading": "תופרות",
+    "atelier.capacity.headingCount": "תופרות · {{total}}",
+    "atelier.capacity.empty": "אין תופרות רשומות.",
+    "atelier.capacity.emptyOwner": "אין תופרות רשומות. אפשר להוסיף במסך הצוות.",
+    "atelier.capacity.unassignedRow": "לא משויך · {{hours}} שעות",
+    "atelier.capacity.load": "{{hours}} שעות עד {{date}} מתוך {{capacity}}",
+    "atelier.capacity.loadNoCapacity": "{{hours}} שעות",
+    "atelier.capacity.notSet": "לא הוגדרה קיבולת",
+    "atelier.capacity.over": "עומס יתר",
+    "atelier.capacity.backlog": "סה״כ {{hours}} שעות בתור",
+    "atelier.capacity.fromDefault": "ברירת מחדל של הבוטיק",
+    "atelier.capacity.edit": "שעות",
+    "atelier.capacity.editAria": "שעות — {{name}}",
+    "atelier.capacity.dialogTitle": "שעות שבועיות",
+    "atelier.capacity.hoursLabel": "שעות בשבוע",
+    "atelier.capacity.hoursHelp": "ריק — חזרה לברירת המחדל של הבוטיק: {{hours}} שעות.",
+    "atelier.capacity.hoursHelpNoDefault": "ריק — לא תוגדר קיבולת.",
+    "atelier.capacity.useDefault": "חזרה לברירת המחדל",
+    "atelier.capacity.submit": "שמירה",
+    "atelier.capacity.error.hours": "צריך מספר שעות שלם ולא שלילי.",
+    "atelier.capacity.error.server": "לא ניתן לשמור את השעות. אפשר לנסות שוב.",
+    "atelier.capacity.cue.saved": "{{name}} — עודכנו השעות.",
+    "atelier.capacity.cue.cleared": "{{name}} — חזרה לברירת המחדל.",
+    "atelier.capacity.optionRow": "{{name}} · {{detail}}",
+    "atelier.capacity.optionRemaining": "נותרו {{hours}} שעות",
+    "atelier.capacity.optionAssigned": "{{hours}} שעות משויכות",
+    "atelier.cue.assignedOverload": "שויך ל{{seamstress}} — עומס יתר.",
+    "atelier.settings.open": "הגדרות",
+    "atelier.settings.openAria": "הגדרות — לוח התפירה",
+    "atelier.settings.title": "הגדרות התפירה",
+    "atelier.settings.bandsLabel": "הערכות זמן",
+    "atelier.settings.bandsHelp": "שינוי ההערכות משפיע רק על כרטיסים חדשים.",
+    "atelier.settings.bandMinutes": "{{band}} — דקות",
+    "atelier.settings.defaultCapacity": "ברירת מחדל: שעות בשבוע",
+    "atelier.settings.defaultCapacityHelp": "חלה על תופרת שלא הוגדרו לה שעות משלה.",
+    "atelier.settings.submit": "שמירה",
+    "atelier.settings.error.minutes": "צריך מספר דקות שלם וחיובי.",
+    "atelier.settings.error.default": "צריך מספר שעות שלם ולא שלילי, או ריק.",
+    "atelier.settings.error.server": "לא ניתן לשמור את ההגדרות. אפשר לנסות שוב.",
+    "atelier.settings.cue.saved": "ההגדרות נשמרו.",
   },
 } as const;

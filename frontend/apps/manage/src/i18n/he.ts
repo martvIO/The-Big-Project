@@ -1193,7 +1193,7 @@ export const he = {
     // because nothing here knows when the read will succeed.
     "checkinQr.retry": "ניסיון נוסף",
 
-    // --- F41, the atelier. 95 keys, 0 reused. ---------------------------------
+    // --- F41, the atelier. 95 keys, 0 reused. F42 adds 40 below, 7 reused. ----
     //
     // The board states, it does not reassure: every string is a fact, and the
     // ones about time have a time on them. A seamstress reads this screen fifty
@@ -1795,5 +1795,259 @@ export const he = {
     // open, still rising on every other targeted device and still escalating —
     // so nothing has been dropped and «נסי שוב» is exactly right.
     "sos.error.actionFailed": "הפעולה לא הושלמה. נסי שוב.",
+    // --- F42, the seamstress panel. 40 keys, 7 reused from F41 above. --------
+    //
+    // The reused seven are `form.cancel` (both dialogs' dismiss), the five
+    // `band.*` words (one vocabulary for the five bands across the intake form,
+    // the card, the picker AND the editor that sets them) and
+    // `assigneeInactive`. They are NOT re-declared here: one act, one word.
+    //
+    // ⚠ THE PANEL STATES, IT DOES NOT REASSURE. A shift manager reads it fifty
+    // times a shift, so there is no «הכל תקין» and no «מעולה» — and on an
+    // overload row warmth would be worse than noise.
+    //
+    // ⚠ NO VALUE BELOW MAY CONTAIN «168» OR «1440». They are
+    // MAX_WEEKLY_CAPACITY_HOURS and MAX_BAND_MINUTES — SERVER bounds — and a
+    // Hebrew sentence quoting one is a mirror exactly as much as a TypeScript
+    // constant is, with none of the protection:
+    // test_frontend_constant_parity.py scrapes only the two validation.ts
+    // files, so raising the DB CHECK to 200 would leave the sentences lying,
+    // silently and greenly. F41 declared `form.error.dueDateHorizon` and cut it
+    // at review for this exact rule. The copy states the SHAPE of the mistake;
+    // the server's 400 states the range. The one numeral rendered anywhere here
+    // is `capacity.hoursHelp`'s `{{hours}}`, and it is a TENANT's value read off
+    // the board envelope.
+    //
+    // ⚠ Nothing in F42 sends, notifies, texts or delivers anything. There is no
+    // SMS template, no scheduled message and no «נודיע לתופרת» — which is
+    // exactly the sentence a well-meaning editor would add to an overload cue,
+    // and it would be a lie before it was a red.
+
+    // The <ul>'s aria-label, and it is the UNCOUNTED one on purpose: an
+    // accessible name must not churn on a five-second tick, and this count CAN
+    // change with no staff edit — `seamstresses` is a union, so a retired
+    // assignee leaves it the moment her last undelivered ticket is delivered.
+    // Never rendered as visible text.
+    "atelier.capacity.heading": "תופרות",
+    // The visible <h3>, and the COUNTED twin. The count is what tells a
+    // screen-reader user the list is long BEFORE she enters it — F41's column
+    // headings do the same job.
+    //
+    // ⚠ `{{total}}` is `seamstresses.length` — PEOPLE, not rows — which is why
+    // the unassigned total below is a <p> OUTSIDE the list. ⚠ `{{total}}`, never
+    // `{{count}}`: `count` is i18next's plural-resolution trigger. ⚠ And no noun
+    // follows the number — «{{total}} תופרות» is wrong at 1 and wrong at 2
+    // (Hebrew takes a dual), and doing it properly needs four plural suffixes
+    // per string in two bundles. The noun leads, so no agreement question
+    // arises. The « · » has shipped precedent in `atelier.stageCount`.
+    "atelier.capacity.headingCount": "תופרות · {{total}}",
+    // The whole list replaced, when the boutique has no seamstresses at all.
+    // Read by a shift manager or a seamstress: a plain fact and no instruction,
+    // because the only remedy is on a screen the gate refuses her.
+    "atelier.capacity.empty": "אין תופרות רשומות.",
+    // ⚠ TWO KEYS AND NOT ONE. The staff screen is owner-only, and a line telling
+    // a shift manager to go somewhere the gate refuses is this console lying
+    // about its own permissions. «במסך הצוות» names the destination in the word
+    // the nav row uses.
+    "atelier.capacity.emptyOwner": "אין תופרות רשומות. אפשר להוסיף במסך הצוות.",
+    // The work nobody holds — a <p> AFTER </ul>, never an <li>, and carrying no
+    // bar: nobody has capacity for it, so there is no denominator and a bar
+    // would be a ratio to nothing. ⚠ `{{hours}}` is the WHOLE unassigned
+    // backlog, not the seven-day slice — the row has no rate to compare
+    // against, and «בתור» on the seamstress rows already means that quantity.
+    // Rendered only above zero: a zero line is noise on every board that is
+    // fully assigned.
+    "atelier.capacity.unassignedRow": "לא משויך · {{hours}} שעות",
+
+    // ⚠ THE BAR IS aria-hidden AND CARRIES NO ROLE, NO NAME AND NO VALUE.
+    // Everything it shows is in the six strings below, more precisely. A
+    // screen-reader user hears the row and loses nothing; a user in forced
+    // colours or greyscale reads the row and loses nothing. That is what
+    // "overload is never colour-only" means concretely.
+    //
+    // The clauses assemble in this order and no other, joined by « · »:
+    //   {load | loadNoCapacity + notSet}  [· over]  [· backlog]  [· fromDefault]
+    // The alarm as early as the grammar allows, the qualifier last.
+
+    // The bar's own numbers, in words: X hours' worth due by {{date}}, out of Y.
+    // ⚠ `{{date}}` comes from the WIRE and never from the device — the server
+    // filtered on its own today_jerusalem + 7, lib/jerusalem.ts ships no date
+    // arithmetic, and a device that has crossed Jerusalem midnight would print
+    // a horizon the SQL did not use.
+    "atelier.capacity.load": "{{hours}} שעות עד {{date}} מתוך {{capacity}}",
+    // The load half for a seamstress with NO resolved capacity — no bar is
+    // drawn, so there is no denominator to name and no horizon to divide into.
+    // ⚠ `{{hours}}` is her whole backlog here, which is what makes an
+    // unconfigured row comparable with a configured one's «בתור» clause.
+    "atelier.capacity.loadNoCapacity": "{{hours}} שעות",
+    // ⚠ THE SINGLE MOST LIKELY STATE IN WEEK ONE, AND IT MUST NOT READ AS AN
+    // ERROR. No «חסר», no danger colour: it is a fact about configuration, in
+    // the muted register, with the fix one tap away. «לא הוגדרה» agrees with
+    // «קיבולת», feminine.
+    "atelier.capacity.notSet": "לא הוגדרה קיבולת",
+    // ⚠ THE SINGLE MOST IMPORTANT STRING IN THIS BLOCK. For a sighted user the
+    // bar turning red is the signal; FOR A SCREEN-READER USER, AND FOR ANYONE IN
+    // GREYSCALE OR FORCED COLOURS, THESE TWO WORDS ARE THE OVERLOAD. Rendered as
+    // a <strong> inside the row's one <p> — never a second Badge, which would
+    // split the sentence into two announced chunks and put a second badge
+    // vocabulary above sixty of F41's cards.
+    //
+    // Not «עמוסה» (an adjective about her, and this is a fact about her queue)
+    // and not «חריגה» (a violation, and nothing here is refused). The same two
+    // words in all three renderings — the row, the option and the cue — because
+    // a manager who reads it on a row and hears it on a cue must not have to
+    // work out that they are the same fact.
+    "atelier.capacity.over": "עומס יתר",
+    // The queue clause: the sum of ALL her undelivered effort with no date
+    // predicate, so the total is never hidden behind the bar's seven-day slice.
+    // «סה״כ» marks it as the larger figure and «בתור» as waiting rather than due.
+    "atelier.capacity.backlog": "סה״כ {{hours}} שעות בתור",
+    // The last clause, when the resolved number came from the BOUTIQUE's default
+    // rather than from her own row. The number is honest about whose it is — a
+    // manager reallocating work must know whether 30 is a fact about this
+    // seamstress or a fact about the shop. Never rendered when she has her own.
+    "atelier.capacity.fromDefault": "ברירת מחדל של הבוטיק",
+
+    // The row's trigger, ghost, ELEVATED ONLY and absent on an assignable:false
+    // row — the server refuses her and a control that always 400s is a trap.
+    // One word, because it lives under a thumb in a 295px row beside a name
+    // that may wrap.
+    "atelier.capacity.edit": "שעות",
+    // Its per-row accessible name. A six-row panel otherwise exposes six buttons
+    // all named «שעות» and a screen-reader user pulling up the control list
+    // cannot address one. STARTS with the visible label so 2.5.3 holds and a
+    // speech-input user saying «שעות» still matches. An aria-label takes no
+    // markup, so {{name}} interpolates plainly.
+    "atelier.capacity.editAria": "שעות — {{name}}",
+    // Names the quantity, not the person: the row she came from is still on
+    // screen behind the dialog, and the name here would change the title on
+    // every open for no gain.
+    "atelier.capacity.dialogTitle": "שעות שבועיות",
+    "atelier.capacity.hoursLabel": "שעות בשבוע",
+    // The help line when the boutique HAS a default. It states the one rule that
+    // makes the dialog legible: an empty field means "use the boutique's
+    // number", in both directions. `{{hours}}` is the TENANT's value off the
+    // envelope, not a server bound.
+    "atelier.capacity.hoursHelp": "ריק — חזרה לברירת המחדל של הבוטיק: {{hours}} שעות.",
+    // ⚠ The same line on a boutique with NO default, which is every boutique on
+    // day one. The string above would promise a fallback that does not exist —
+    // two keys, because one of them would be a lie exactly when it is read most.
+    "atelier.capacity.hoursHelpNoDefault": "ריק — לא תוגדר קיבולת.",
+    // ⚠ A ghost Button in the dialog BODY, under the field, and it CLEARS the
+    // field — it does not submit. Modal's footer is `flex justify-end gap-3`
+    // with no wrap and no className seam, so a third footer button of five
+    // Hebrew words overflows 295px at 375. Clearing rather than submitting keeps
+    // one submit path, one confirm and one error path.
+    "atelier.capacity.useDefault": "חזרה לברירת המחדל",
+    // Byte-identical to `settings.submit` and to the shipped `form.submitEdit`,
+    // and DECLARED SEPARATELY under the namespace that names its subject:
+    // saving a person's hours, saving the boutique's ruler and saving a ticket
+    // are three facts. F41's F-9 records this duplication pattern as deliberate.
+    "atelier.capacity.submit": "שמירה",
+    // Rides the field's own `error` prop, which wires aria-describedby +
+    // role="alert". Names the SHAPE of the number, never its range — no numeral,
+    // ever. «ולא שלילי» rather than «חיובי», because 0 is legal and is not a
+    // typo: a shift manager setting 0 is saying she is not available this week,
+    // which is a thing this product should be able to say.
+    "atelier.capacity.error.hours": "צריך מספר שעות שלם ולא שלילי.",
+    // ⚠ The Hebrew default: branch, and it is structural rather than cosmetic.
+    // main.py's error bodies are ENGLISH and this console is Hebrew-only; the
+    // concrete message this route produces is `_require_seamstress`'s literal
+    // "staff_user_id must be a live seamstress". One alert inside the dialog,
+    // above the footer — never a toast behind a modal, never error.message.
+    "atelier.capacity.error.server": "לא ניתן לשמור את השעות. אפשר לנסות שוב.",
+    // Announced in F41's shipped role="status" region after a successful set.
+    // Names her, because the dialog has closed and focus has gone back to a
+    // trigger that says only «שעות».
+    "atelier.capacity.cue.saved": "{{name}} — עודכנו השעות.",
+    // ⚠ A DIFFERENT SENTENCE AND NOT A PARAMETER: the outcome differs in a way
+    // she must hear — her own number is gone and the boutique's applies.
+    // «עודכנו השעות» on a clear would be true and useless.
+    "atelier.capacity.cue.cleared": "{{name}} — חזרה לברירת המחדל.",
+
+    // ⚠ EVERY PART OF AN ASSIGN OPTION IS A KEY, INCLUDING THE SEPARATOR. F41
+    // renders {row.display_name} alone in that <option> and declares no key of
+    // this shape, so all three strings would otherwise ship as bare Hebrew
+    // literals in TSX — outside the `ar` parity guard, outside the prefix fold,
+    // untranslated. ⚠ An <option> takes no markup, so no bidi helper is
+    // available anyway: every option string ENDS in a Hebrew word, which is what
+    // makes the numeral resolve in place.
+    "atelier.capacity.optionRow": "{{name}} · {{detail}}",
+    // Group 1 — capacity set, real headroom. The number is WHY the list is in
+    // this order: a reordered control with no explanation is a control that
+    // shuffles for no reason a user can see.
+    "atelier.capacity.optionRemaining": "נותרו {{hours}} שעות",
+    // Group 2 — no capacity set, so there is no headroom to state and the only
+    // honest number is what she is already holding. ⚠ «משויכות» names
+    // `assigned_minutes`, and that is what fixes the sort key for this group: a
+    // group ordered by a number none of its options displays is the invisible
+    // rule this section exists to avoid.
+    "atelier.capacity.optionAssigned": "{{hours}} שעות משויכות",
+
+    // ⚠ THE ONLY THING A SCREEN-READER USER EVER HEARS ABOUT AN OVERLOAD SHE
+    // JUST CAUSED. F41's D17 forbids the poll from writing into the announced
+    // region, so without this clause a sighted user watches the bar turn red on
+    // the next tick and a screen-reader user gets NOTHING AT ALL — on the one
+    // action that causes it, on a screen where a11y is a legal bar.
+    //
+    // Chosen at the moment of the write by wouldOverload(target, effort_minutes)
+    // and GATED ON AN ACTUAL MOVE, so re-committing the ticket's current
+    // assignee announces the ordinary `atelier.cue.assigned` and never this.
+    // Sits beside that key and names ONE user value, which is what keeps the
+    // shipped isolateBidi(text, value) and { text, name } cue state working
+    // unmodified.
+    "atelier.cue.assignedOverload": "שויך ל{{seamstress}} — עומס יתר.",
+
+    // The panel-level trigger, ghost, ELEVATED ONLY, at the panel's FOOT — a
+    // boutique-wide configuration used once a quarter must not sit above the
+    // rows a manager opens the panel to read.
+    "atelier.settings.open": "הגדרות",
+    // It must say WHICH settings: «הגדרות» is a word this console uses in more
+    // than one place. The `—` shape is the shipped one (`atelier.pauseAria`) and
+    // it starts with the visible label so 2.5.3 holds.
+    "atelier.settings.openAria": "הגדרות — לוח התפירה",
+    // «התפירה» rather than «הלוח», so the dialog names the craft it configures
+    // rather than the screen it was opened from — the bands and the default
+    // outlive any one board.
+    "atelier.settings.title": "הגדרות התפירה",
+    // «הערכה» is the honest word: the epic's central accepted risk is that these
+    // estimates are wrong, and «זמן עבודה» would state as fact what the whole
+    // epic treats as a guess. Same word F41 already uses on the intake form.
+    "atelier.settings.bandsLabel": "הערכות זמן",
+    // ⚠ A re-tune re-values nothing AND an old card can therefore SILENTLY
+    // RELABEL — flattening «יום מלא» onto 240 makes every «חצי יום» garment read
+    // «יום מלא», with no fallback and no visible act. This dialog is the only
+    // place a human causes that, and without this line an owner correcting one
+    // band gets an unexplained change across her board and no way to connect the
+    // two. The sentence is true: the minutes on existing tickets do not move.
+    "atelier.settings.bandsHelp": "שינוי ההערכות משפיע רק על כרטיסים חדשים.",
+    // The <label> of each of the five number fields. `{{band}}` is one of the
+    // SHIPPED `atelier.band.*` words — one vocabulary for the five bands. The
+    // unit is in the label, so each field holds a bare number.
+    "atelier.settings.bandMinutes": "{{band}} — דקות",
+    // Named as a DEFAULT rather than as a capacity, because it is not anybody's
+    // hours.
+    "atelier.settings.defaultCapacity": "ברירת מחדל: שעות בשבוע",
+    // States exactly who it applies to, because the alternative reading — "this
+    // is everyone's capacity" — would make a manager think editing one row here
+    // changes the shop. «שלא הוגדרו לה שעות משלה» is the resolution rule in
+    // words.
+    "atelier.settings.defaultCapacityHelp": "חלה על תופרת שלא הוגדרו לה שעות משלה.",
+    "atelier.settings.submit": "שמירה",
+    // ⚠ «חיובי» here and «ולא שלילי» on the capacity field, and the difference
+    // is real: a band of 0 minutes is meaningless, a capacity of 0 hours is not.
+    "atelier.settings.error.minutes": "צריך מספר דקות שלם וחיובי.",
+    // «או ריק» is the third state and it is a VALUE, not an omission — clearing
+    // the boutique default is a thing an owner may deliberately do.
+    "atelier.settings.error.default": "צריך מספר שעות שלם ולא שלילי, או ריק.",
+    // Names the settings, so a manager with both dialogs open in one minute can
+    // tell which save failed.
+    "atelier.settings.error.server": "לא ניתן לשמור את ההגדרות. אפשר לנסות שוב.",
+    // No interpolation at all — the subject is the boutique, not a person, and
+    // there is no new value worth naming that the dialog she just closed did not
+    // show her. ⚠ This is the sentence BOTH of two shift managers see when one
+    // of them has just silently reverted the other's work; the recovery path is
+    // the audit trail, and there is deliberately no UI for it.
+    "atelier.settings.cue.saved": "ההגדרות נשמרו.",
   },
 } as const;
