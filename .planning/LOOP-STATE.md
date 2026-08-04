@@ -2228,13 +2228,182 @@ known_product_bugs:             # real defects found but deliberately not fixed 
       (FakePayService.facts raises DomainNotFoundError) — so the two configurations differ
       in the one direction that matters and the WRONG one is silent.
     why_it_matters: >-
-      A deposit deployment whose payment provider is misconfigured redirects the bride to
-      a URL that answers 200 with a blank page. Nothing logs, nothing 404s, nothing is
-      diagnosable — she just sees nothing and the booking never completes. The clean
-      discriminator a human can use today is the bare path: `GET /fake-pay` is 400
-      VALIDATION_ERROR when registered and 200 text/html when not.
-    fix: "add the fake-pay path to `_SpaFallbackRoute`'s decline set, so it 404s"
-    owner: unassigned — one-line change, pick it up with any E4/E5 payments feature
+      ⚠ CORRECTED 2026-08-04 — THIS ENTRY OVERSTATED THE HARM AND THE OVERSTATEMENT WAS
+      ITSELF THE DEFECT. It claimed a misconfigured deposit deployment "redirects the
+      bride to a URL that answers 200 with a blank page… she just sees nothing and the
+      booking never completes." THE WALKTHROUGH'S VERIFIER PROVED THAT STATE UNREACHABLE:
+        payments/service.py  is_connected() -> False on GatewayNotConfigured/SecretBoxNotConfigured
+        booking/service.py   deposit_due() REQUIRES gateway_connected
+        booking/router.py    deposit_due false -> payment_session_id null -> routes to /book/confirm
+        payments/fake_pay.py register_fake_pay() returns early unless provider == "fake"
+      THE SAME MISSING CONFIG THAT UNREGISTERS /fake-pay ALSO MAKES deposit_due FALSE,
+      and deposit_due is the only thing that ever produces the redirect. No bride can be
+      sent to an unregistered /fake-pay. Under `lemonsqueezy` the redirect is the
+      provider's absolute URL, so that path does not reach it either.
+      WHAT IS ACTUALLY TRUE is smaller and more general: `_SpaFallbackRoute` declines only
+      EXEMPT_PATHS and the two reserved first segments, so ANY unregistered path answers
+      200 with the storefront shell. `/favicon.ico` is the live example — main.py's own
+      comment predicts it ("an unlisted file falls to the catch-all and returns the HTML
+      shell with a 200, which nosniff then makes the browser refuse. Silently dead.").
+      THE LESSON WORTH MORE THAN THE BUG: an overstated known-bug entry misdirects
+      whoever picks it up. Severity claims in this file are load-bearing — a future
+      reader budgets by them. Write what you proved, not what you feared.
+    fix: >-
+      add the fake-pay path to `_SpaFallbackRoute`'s decline set (tidiness, LOW — not a
+      bride-facing outage), and ship a real `favicon.ico` in `apps/storefront/public/`.
+    owner: unassigned — LOW; pick up with any E4/E5 payments feature
+
+  # ==== FOUND 2026-08-04 BY THE FIRST REAL-WORLD WALKTHROUGH (8 agents, 5 journeys, ====
+  # ==== real Chromium against real FastAPI + real Postgres). Every one below was     ====
+  # ==== REPRODUCED by an adversarial verifier whose default verdict was REFUTED.     ====
+  # ==== It confirmed 6 of 9 claims, INVERTED one (the /fake-pay entry above) and     ====
+  # ==== DOWNGRADED a journey agent's FAIL to a documented decision.                  ====
+  # ==== THE PATTERN: BOTH TOP DEFECTS ARE THINGS NEITHER SUITE CAN SEE — a           ====
+  # ==== role="status" that never fires and an aria-invalid that lies. Invisible to   ====
+  # ==== vitest (jsdom) and to the intercepted Playwright suite alike.                ====
+  - what: "/checkin pins its validation errors after the user corrects them"
+    severity: MEDIUM · a11y · NEVER-WORKED
+    where: "frontend/apps/storefront/src/routes/CheckinPage.tsx (name/phone/visitType onChange)"
+    evidence: >-
+      Submit empty -> 3 role="alert" + aria-invalid="true". Fill every field with VALID
+      data and all three persist unchanged until the next submit. onChange only calls
+      setName(...); fieldErrors is rewritten ONLY inside forward(), i.e. on submit.
+      A screen reader announces the field as invalid while it holds correct input.
+    why_it_matters: >-
+      THE CORRECT PATTERN ALREADY EXISTS FOUR FILES OVER. BookPage.tsx defines
+      clearError() and wires it on the SAME Input component with the SAME
+      error={fieldErrors.name} prop. The booking flow clears; check-in does not. This is
+      drift between two surfaces that should share one behaviour, not a missing idea.
+    fix: "call clearError('name'|'phone'|'visitType') in the three onChange handlers"
+  - what: "editing an atelier ticket is the only mutation that announces nothing"
+    severity: MEDIUM · a11y · NEVER-WORKED
+    where: "frontend/apps/manage/src/components/AtelierSection.tsx — setCue is inside `if (form.mode === 'create')`"
+    evidence: >-
+      A MutationObserver installed BEFORE the action (defeating the auto-dismiss race)
+      logged ZERO entries on a successful 200 update. Structural confirmation: he.ts has
+      atelier.cue.created/advanced/undone/assigned/released/deleted/capacity.saved/
+      capacity.cleared/settings.saved and NO atelier.cue.updated — the string was never
+      written. A sighted user sees the dialog close; a screen-reader user gets silence
+      indistinguishable from a failed save.
+    fix: "add atelier.cue.updated to he.ts + ar.ts and lift setCue out of the create branch"
+  - what: "the erase confirmation rejects the phone format its own lookup just accepted"
+    severity: MEDIUM · destructive-action UX
+    where: "frontend/apps/manage/src/components/PrivacySection.tsx — exact compare against stored E.164"
+    evidence: >-
+      Look a customer up with 0501234599 (the field's own help says to). The
+      type-to-confirm then demands +972501234599 and refuses with «המספר שהוקלד אינו
+      תואם» — "the number you typed doesn't match".
+    why_it_matters: >-
+      On an IRREVERSIBLE privacy action, an error reading "doesn't match" invites the
+      operator to conclude SHE HAS THE WRONG WOMAN, when the record is right and only the
+      normalisation differs. The next move after that conclusion is to go looking for a
+      different customer to erase.
+    fix: "compare normalised digits, or say +972… in the label"
+  - what: "every staff-row button is nameless"
+    severity: MEDIUM · a11y
+    where: "frontend/apps/manage/src/components/StaffSection.tsx row buttons"
+    evidence: >-
+      aria-label, aria-labelledby and aria-describedby are ALL null on both row buttons.
+      With 7 rows on screen that is seven identical «עריכה» and six identical «השבתה» in
+      one list — AND ONE OF THEM DEACTIVATES A COLLEAGUE'S ACCESS.
+    why_it_matters: >-
+      It breaks the console's OWN convention: the floor, waitlist and atelier panels all
+      render «{action} — {name}», and the runbook cites that as the rule.
+    fix: "aria-label={`${action} — ${name}`}, matching the floor panels"
+  - what: "the booking flow is not a <form>; Enter in a text field does nothing"
+    severity: MEDIUM · UX
+    where: "frontend/apps/storefront/src/routes/BookPage.tsx — document.querySelector('form') is null"
+    evidence: >-
+      Typed a valid name on /book/details and pressed Enter: no navigation, no error, no
+      role=alert, no console output. `{hasForm:false, continueBtn:{type:'button',
+      insideForm:false}}`.
+    why_it_matters: >-
+      On a phone the virtual keyboard's Go/↵ key is dead on the last field, and the user
+      must Tab past the notes textarea AND the marketing checkbox to reach «המשך».
+    fix: "one <form onSubmit> wrapper plus type=submit"
+  - what: "unrouted paths escape the platform error envelope"
+    severity: LOW-MEDIUM
+    where: "backend/app/main.py — no 404 exception handler"
+    evidence: "/manage/nope and /storefront/nope answer {\"detail\":\"Not Found\"}; every HANDLED error is {\"error\":{code,message}}"
+    why_it_matters: >-
+      FRONTEND.md mandates reading response.data.error.message, which is undefined here,
+      so every stale-URL 404 reaches the user as the generic fallback string.
+    fix: "one @app.exception_handler(404) emitting the envelope"
+  - what: "the logout button is 29x21 px"
+    severity: LOW · a11y
+    where: "frontend/apps/manage — «יציאה»"
+    evidence: "measured 29 x 21; fails even WCAG 2.5.8 AA (24 x 24). Every other console control is 44 px high."
+    fix: "size it like its siblings"
+  - what: "neither SPA has a React error boundary"
+    severity: MEDIUM-LOW
+    where: "grep -rn 'ErrorBoundary|componentDidCatch|getDerivedStateFromError' apps packages -> 0 source hits"
+    evidence: >-
+      NOT reproduced in a browser — the verifier read the code and REFUSED to dress that
+      up as a repro, because forcing a render throw meant modifying a stack four other
+      agents had just used. Recorded with the caveat intact.
+    why_it_matters: >-
+      React 19 unmounts the whole tree on an uncaught render error: a blank page with no
+      recovery affordance. On the manage console THAT PAGE IS ALSO THE SOS EMERGENCY
+      CHANNEL.
+    fix: "one boundary per app root rendering the existing outage copy + a reload control"
+  - what: "the privacy documents render 17 bulleted lines with no list semantics"
+    severity: LOW-MEDIUM · a11y · WCAG 1.3.1 (A)
+    where: "/privacy and the §11 details notice — `•` inside <p class='whitespace-pre-line'>, zero <ul>/<ol>/<li>"
+    why_it_matters: >-
+      axe passes it and cannot do otherwise — axe cannot know text beginning with «•» was
+      MEANT to be a list. A screen-reader user gets one undifferentiated paragraph where a
+      sighted user gets an enumerated set of rights and recipients, on the page whose
+      entire purpose is communicating exactly those. This is a legal surface here.
+    fix: >-
+      render the bullet runs as real <ul>/<li> at the component, NOT by putting markup in
+      the settings text — PLATFORM_NOTICE_HE is byte-capped, no-HTML by invariant, and
+      boutique-overridable, so the parsing belongs in the renderer.
+
+walkthrough_coverage_gaps:      # what the 2026-08-04 run did NOT prove. Silence here reads as coverage.
+  - id: G1
+    what: "RLS WAS NEVER EXERCISED. By anyone. THE MOST CONSEQUENTIAL ITEM IN THE RUN."
+    evidence: >-
+      backend/.env set DATABASE_URL=…postgres:postgres@…  · pg_stat_activity: the app
+      connected as `postgres` · pg_roles: rolsuper = t · pg_class: 23 tables carry
+      relrowsecurity. POSTGRES RLS, EVEN FORCEd, DOES NOT APPLY TO SUPERUSERS.
+      Journey E reported "Tenant isolation — PASS" and what it ACTUALLY proved was cookie
+      host-scoping, CORS and the 404 no-oracle — all app-layer, all real, NONE of them the
+      database. Everything the runbook lists as binding under the app role
+      (terms_versions INSERT+SELECT only, platform_audit_log INSERT-only, no DELETE on
+      payment tables, unreadable alembic_version) was SILENTLY VOID for the whole run.
+    the_sharpest_part: >-
+      `boutique_app` ALREADY EXISTED in the cluster with rolsuper = f. Somebody had set it
+      up. `.env` was simply never pointed at it. A safeguard you have to remember to
+      switch on is a safeguard that does not run.
+    fixed_how: >-
+      docs/real-world-qa.md §2.2 NOW WRITES THE APP-ROLE URL BY DEFAULT and §2.1 shows the
+      inline owner-URL override for alembic and app.cli. §5 is no longer an optional
+      appendix. A run that deliberately uses `postgres` must write "RLS NOT EXERCISED" at
+      the top of its report.
+  - id: G2
+    what: "the ENTIRE deposit/payment leg — zero coverage, and it is the only leg with money semantics"
+    detail: >-
+      All five /book/pay states, the HMAC webhook round-trip, the decline path (whose
+      transaction id differs per outcome on purpose), the DEPOSIT_HOLD_SECONDS sweeper
+      expiry, the bounded-poll timeout. Blocked because seed_demo.py sets every
+      appointment type deposit_required:false DELIBERATELY (a deposit type strands the
+      demo booking in pending_payment). Turning it on needs console setup + fake gateway
+      credentials. THE PAYMENT CONTRACT IS EXACTLY AS UNTESTED AFTER THIS RUN AS BEFORE IT.
+  - id: G3
+    what: "/b/{token} awaiting-payment and past-appointment states — never rendered"
+    detail: >-
+      BOOKING_AWAITING_PAYMENT exists SPECIFICALLY so a mid-checkout bride is never told
+      she was cancelled. That string has still never been seen on screen. Blocked by G2.
+  - id: G4
+    what: "document.hidden poll suspension is PERMANENTLY untestable in this harness"
+    detail: >-
+      Chromium under CDP never reports a Playwright-driven background tab as hidden — a
+      probe showed visibilitychange never fires and document.hidden stays false. Journey B
+      hit this as a FALSE NEGATIVE first, caught itself, and proved the handler with a
+      synthetic property override instead. RECORD IT AS OUT-OF-REACH, NEVER AS "PASSED".
+  - id: G6
+    what: "dashboard honest-degradation strings unreached"
+    detail: "«פחות מ־0.1%» and the outage line need contrived data or a forced fetch failure."
 
 known_flaky:                    # nondeterministic tests — they gate every merge, so treat as debt
   - test: "backend/tests/test_booking_owner_db.py::test_two_concurrent_reschedules_of_one_booking_never_self_collide"

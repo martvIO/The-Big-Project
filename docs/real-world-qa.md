@@ -98,11 +98,13 @@ says.
 ```bash
 createdb "$DB" 2>/dev/null || true
 cd "$REPO/backend" && uv run alembic upgrade head
-uv run alembic heads            # 0023 (head)
+uv run alembic heads            # 0024 (head) — exactly one line
 uv run alembic current          # must print the same revision
 ```
 
-Verified head is **`0023`**, and a fresh `createdb` + `upgrade head` lands there.
+Verified head is **`0024`** (F20, `0024_privacy_consent`), and a fresh `createdb`
++ `upgrade head` lands there. Re-check this number after every merge that ships a
+migration — a stale head in this document reads as a broken database.
 A pre-existing local `boutique` database is very likely *stale* — mine was
 sitting at `0011`. `alembic current` disagreeing with `alembic heads` is the
 single most common cause of "the app is broken": you get 500s on whichever
@@ -112,7 +114,22 @@ Alembic reads `DATABASE_URL` (via `Settings.effective_database_url`); with no
 `.env` it falls back to
 `postgresql+asyncpg://postgres:postgres@localhost:5432/boutique`. **Run
 migrations as the owner role (`postgres`)** — the app role deliberately has no
-DDL and `REVOKE ALL ON alembic_version FROM app_user`. Homebrew's initdb creates
+DDL and `REVOKE ALL ON alembic_version FROM app_user`.
+
+Since §2.2 writes the **app-role** URL into `.env` (so RLS actually binds — §5),
+alembic and `app.cli` need the owner URL **exported inline for that one command**.
+The env var wins over `.env`, so nothing is edited back and forth:
+
+```bash
+OWNER_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/$DB"
+DATABASE_URL="$OWNER_URL" uv run alembic upgrade head
+DATABASE_URL="$OWNER_URL" uv run alembic heads      # expect ONE head
+DATABASE_URL="$OWNER_URL" uv run python -m app.cli provision --slug demo …
+```
+
+Only the **long-running app** (uvicorn, and the worker if you start it) reads the
+app-role URL from `.env`. If you skip §5 and leave `postgres:postgres` in `.env`,
+these three lines are redundant but harmless. Homebrew's initdb creates
 a superuser named after *you*, not `postgres`; if the role is missing every
 command in this runbook dies with `FATAL: role "postgres" does not exist`. See
 the prerequisites table.
@@ -125,13 +142,40 @@ output below.
 
 ### 2.2 `.env`
 
-Write `"$REPO/backend/.env"` (this is the exact heredoc that was run — `$DB`
+⚠ **`cat >` truncates. If `$REPO/backend/.env` already exists it is a developer's
+file, not yours — back it up first or you destroy it silently.** There is no
+undo: `.env` is gitignored, so git cannot restore it, and a QA run that clobbers
+a checkout's real credentials is a worse outcome than any bug it finds. Teardown
+restores from this backup (§4).
+
+```bash
+[ -f "$REPO/backend/.env" ] && cp -p "$REPO/backend/.env" "$REPO/backend/.env.qa-backup"
+```
+
+> ⚠ **BACK IT UP INTO THE REPO, NEVER `/tmp`.** The line above puts it at
+> `.env.qa-backup` for exactly this reason. The 2026-08-04 run backed up to
+> `/tmp/modryn-env-backup-*.env` instead and **teardown never restored it** — a
+> checkout's real AWS, Twilio and Lemon Squeezy credentials sat in a directory
+> that is cleared on reboot. `.env.qa-backup` is covered by the `.env` gitignore
+> rule, so it cannot be committed either.
+
+> ⚠ **`DATABASE_URL` BELOW CONNECTS AS THE APP ROLE, NOT `postgres`.** That is
+> deliberate and it is what makes RLS real — see §5. Create `boutique_app`
+> first (§5 has the two `psql` lines). If you knowingly substitute
+> `postgres:postgres` for a faster setup, your report MUST say
+> "RLS NOT EXERCISED"; otherwise it claims isolation it did not test.
+> Migrations and `app.cli provision` still run as the owner role — only the
+> **app** uses this URL.
+
+Then write `"$REPO/backend/.env"` (this is the exact heredoc that was run — `$DB`
 interpolates, nothing else does because every other value is a literal):
 
 ```bash
 cat > "$REPO/backend/.env" <<EOF
 APP_ENV=dev
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/$DB
+# The APP connects as boutique_app so RLS actually binds (§5). Alembic and
+# app.cli are run with the owner URL exported inline — see §2.1 and §2.4.
+DATABASE_URL=postgresql+asyncpg://boutique_app:local-only-pw@localhost:5432/$DB
 BASE_DOMAIN=localtest.me
 SMS_PROVIDER=fake
 OTP_DEV_CODE=424242
@@ -191,8 +235,23 @@ the console bounces straight back to the login form.
 
 ### 2.3 Build the SPAs and copy them into the backend upload
 
+⚠ **Run `pnpm install` first if anything has merged since your last build** — §1's
+"install deps once" is wrong the moment a feature adds a dependency. Each app's
+`build` is `tsc --noEmit && vite build`, and `tsc --noEmit` type-checks the
+`__tests__` tree too, so a **test-only** dependency gap fails the **production**
+build. F20 added `axe-core` to both apps and a stale `node_modules` gives:
+
+```
+apps/storefront build: src/__tests__/PrivacyPage.test.tsx(2,21): error TS2307:
+  Cannot find module 'axe-core' or its corresponding type declarations.
+```
+
+That reads as a broken checkout; it is a missing install. Note `pnpm install` may
+print `Already up to date` while still creating the missing workspace symlinks —
+re-run the build rather than believing the message.
+
 ```bash
-cd "$REPO/frontend" && pnpm -r build
+cd "$REPO/frontend" && pnpm install && pnpm -r build
 
 cd "$REPO"
 rm -rf backend/app/static
@@ -432,6 +491,17 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://demo.localtest.me:8000/manage/n
 #       reserved first segment so the SPA catch-all declines it too.
 ```
 
+⚠ **curl cannot verify any storefront ROUTE, only that the shell is served.**
+`/`, `/privacy`, `/checkin` and `/dress/{garbage}` all answer the same
+`200 text/html` shell — the router runs in the browser. To prove F20's `/privacy`
+is really the privacy page and not the catalog fallthrough, open it and read the
+title: `הודעת פרטיות`, `h1` `הודעת פרטיות`, the boutique name beneath it, and
+three `h2` sections — `המידע שאנחנו אוספות ומה אנחנו עושות בו` /
+`מי מעבד את המידע ואיך הוא נשמר` / `ספקי התשתית`. The fourth platform document
+(`PLATFORM_DISCLAIMER_HE`) is **owner-facing only** and is deliberately not on
+this page; `GET /storefront/boutique` accordingly carries three privacy fields,
+not four.
+
 ⚠ **Do not use `/manage/settings` for that last check.** It answers **401**, not
 404 — it is a real API route (`app/boutique/router.py`), and unauthenticated is
 401. Same for `/manage/bookings`. `/manage/` with a trailing slash answers a
@@ -576,25 +646,37 @@ the raiser's own device, by design.**
 |---|---|---|---|
 | 1 | `/manage` → LoginForm, `h1` `MODRYN — כניסה לניהול הבוטיק`. Fill `אימייל` + `סיסמה`, press `כניסה`. | `boutique_session` is HttpOnly, SameSite=Lax and **host-only** (no Domain attribute) — one tenant's cookie can never travel to another slug. Failures are rate-limited (5 / 900 s) and every attempt, including failures, is committed to the per-tenant audit log. | A `Domain=` attribute is a cross-tenant session leak. A `Secure` flag over http means `APP_ENV` is not `dev` (§2.2). |
 | 2 | Owner lands on **סקירה**. Click **לוח היום** → `BoardSection` above `FloorPanel`, board **first**. | Row 0 (`dashboard`) is what makes the initial `useState` and the `reachable[0]` fallback agree. | Landing anywhere else = the nav filter and the initial state disagree. |
-| 3 | Assert `data-testid="board-day"` (`היום · {date}`), `"board-summary"` (`הגיעו {ratio}`), `"board-now"` (the `«עכשיו {time}»` divider, scrolled into view **once**), `"board-freshness"`/`"board-updated"` (`עודכן {time}` vs `אין עדכון מאז {time}` + `ייתכן שהמידע אינו עדכני.`). | Jerusalem-day computation against a real clock and real rows. | The `עכשיו` divider off-screen ⇒ the growing floor panel below pushed the one-shot `scrollIntoView` target out of view. |
+| 3 | Assert `data-testid="board-day"` (`היום · {date}`), `"board-summary"` (`הגיעו {ratio}`), `"board-now"` (the `«עכשיו {time}»` divider, scrolled into view **once**), `"board-freshness"`/`"board-updated"` (`עודכן {time}` vs `אין עדכון מאז {time}` + `ייתכן שהמידע אינו עדכני.`). ⚠ **`board-now` is ABSENT unless at least one of today's bookings is in the PAST** — `showDivider = dividerAt > 0`, so a divider that would sit at the top (nothing behind it) or the end (nothing ahead) is deliberately not rendered. Straight off `seed_demo.py` **every** bookable slot today is in the future, so the fresh-environment reading is legitimately "no divider" and asserting it there fails against correct code. To exercise it, give yourself a past row — the storefront refuses to book one, so insert it (note `seat_index` is `CHECK (>= 1)`, not 0): `insert into bookings (tenant_id, customer_id, appointment_type_id, starts_at, seat_index, status, terms_version_accepted, terms_accepted_at, appointment_type_name) select tenant_id, customer_id, appointment_type_id, now() - interval '3 hours', 1, 'confirmed', terms_version_accepted, terms_accepted_at, appointment_type_name from bookings limit 1;`  Then assert the divider is `aria-hidden="true"` and its time is LTR-isolated: `עכשיו <bdi dir="ltr">16:37</bdi>`. | Jerusalem-day computation against a real clock and real rows. Also the cheapest **proof the 5 s poll is live**: create a booking out-of-band and watch `board-summary` go `הגיעו 0/0` → `0/2` with no reload. | The `עכשיו` divider off-screen ⇒ the growing floor panel below pushed the one-shot `scrollIntoView` target out of view. |
 | 4 | `הגיעה` on an arrival row (aria `הגיעה — {name}, {time}`) → row flips to `נרשמה הגעה · {time}`, cue `נרשמה הגעה עבור {name}.` Then `ביטול הרישום` (aria `ביטול הרישום — {name}, {time}`) → cue `הרישום בוטל עבור {name}.` | `POST /manage/bookings/{id}/check-in` and `…/undo-check-in`; the aria label disambiguates identical buttons in a list. | Bare `הגיעה` labels make the row unusable by screen reader. |
 | 5 | `השהיה` (aria `השהיה — עדכון הלוח`) → `העדכון מושהה. הלוח לא יתעדכן עד לחידוש.`, freshness becomes `מושהה · עודכן {time}`. `חידוש` → `העדכון חודש.` Also assert the idle stop `העדכון הופסק אחרי {minutes} דקות ללא פעילות.` | The board screen carries **two independent** pause controls (board's and the floor panel's) with distinguishable accessible names — `board.pauseAria` vs `floor.pauseAria`. | Two identically-named pause buttons on one screen is an ambiguity defect. |
 | 6 | Staff cards: assert the three status **words** `פנויה` / `בהפסקה` / `תפוסה`. `להפסקה` (aria `להפסקה — {name}`) → `בהפסקה` with `מאז {time}`, cue `נרשמה הפסקה עבור {name}.` Then `חזרה` → `ההפסקה הסתיימה עבור {name}.` | `POST /manage/floor/staff/{id}/break/start` and stop; status is never colour alone. | Colour-only status fails on a shop-floor tablet in sunlight. |
 | 7 | Fitting rooms (**חדרי מדידה**): on a `פנוי` tile press `תפיסת החדר` (aria `תפיסת החדר — {room}`) → tile flips to `תפוס` with `לקוחה`, `כבר {n} דק'` (or `זה עתה`) and the holder. `הוספת שמלה` → pick `שמלה` + `מידה` → cue `השמלה נוספה לחדר: {dress}.`; `הסרה` removes it. | `POST /manage/floor/rooms/{id}/claim`; the elapsed-minutes formatter has a real clock under it. | A `NaN דק'` = the timestamp never round-tripped as UTC. |
 | 8 | `העברה לעמיתה` (**elevated only** — owner/shift_manager): pick under `העברה אל`, press `העברה` → cue `החדר הועבר אל {name}.` With nobody free: `אין עכשיו עמיתה פנויה לקבל את החדר.` Then `שחרור` → `POST /manage/floor/assignments/{id}/release`, cue `החדר שוחרר: {room}.` | Role gating on a *sub-control*, not just a nav row. | A visible transfer control for a reception role = the server is the only guard left. |
 | 9 | Waitlist **take-next**: on a free, active tile with `waiting > 0` press `קחי את הבאה` (aria `קחי את הבאה בתור — {room}`) → cue `הלקוחה שובצה: {room}.` Empty queue → `אין ממתינות בתור.` | `POST …/take-next`; the pull direction of dispatch. | A 409 on a genuinely free room = the occupancy read raced the claim. |
-| 10 | Waitlist **push-assign**: from **ממתינות בתור** press `שבצי לחדר` on a row (aria `שבצי לחדר — {name}`) → dialog `שיבוץ לחדר — {name}` → `שיבוץ`. No room free → the row shows `אין חדר פנוי כרגע.` | `POST …/assign`; the push direction. **This is a real `<dialog>` in a real browser** — tab-trap, Esc-to-close and focus return are only measurable here. | jsdom stubs `showModal()` as `this.open = true`, so every vitest focus/trap/Esc assertion measures the stub and **cannot fail**. |
+| 10 | Waitlist **push-assign**: from **ממתינות בתור** press `שבצי לחדר` on a row (aria `שבצי לחדר — {name}`) → an **inline reveal inside that row's own `<li>`** (a `<label>` `שיבוץ לחדר — {name}` over a room `<select>` listing only the free, active rooms, plus `שיבוץ` / `ביטול`) → `שיבוץ`. No room free → the trigger is **absent** and the panel line reads `אין חדר פנוי כרגע.` ⚠ **NOT a `<dialog>` — do not assert Esc-to-close here.** `WaitlistPanel.tsx` says so in the JSX: *"The reveal, INSIDE the row's own `<li>` and never a `<dialog>`"* — a `<dialog>` needs three focus mechanisms RoomsPanel already had to ship, in a row a poll tick can unmount underneath it. Assert instead: opening moves focus to the **`<select>`** (the question), `ביטול` closes and **returns focus to `שבצי לחדר`**, and **Esc does nothing** (verified 2026-08-04 — there is no Esc handler, by design, since the reveal is non-modal and has an explicit `ביטול`). | `POST …/assign`; the push direction. The reveal's focus-in / focus-return contract is real DOM behaviour and still only measurable in a browser. | Row shows no error on a refusal — but read the **row**, not `floor-cue`: the per-row error lands in the `<li>` (e.g. `את כבר בחדר אחר: {room}` for a 409 `STAFF_OCCUPIED`, which is what you get if you already hold another room), while `floor-cue` keeps whatever the *previous* action put there. |
 | 11 | Waitlist **call**: `קראי` (aria `קראי — {name}`) → row shows `נקראה`, cue `הקריאה נרשמה.` Go back to `/queue` (journey B step 11) and confirm `גשי לדלפק` appeared. | Cross-surface: a console write changes an anonymous public board. | The clearest single proof that the two halves are actually one system. |
-| 12 | Waitlist **skip** (elevated): `דלגי` (aria `דלגי — {name}`) → `הועברה לסוף התור.`, row badged `דילגו עליה פעם אחת`. A **second** skip opens the confirm `דילוג נוסף יסיר את {name} מהתור. להמשיך?` — confirm with `אישור ההסרה` or back out with `השארה בתור`. | A second tap must never silently escalate to removal. | Silent removal on the second tap is a P0. |
+| 12 | Waitlist **skip** (elevated): `דלגי` (aria `דלגי — {name}`) → `הועברה לסוף התור.`, row badged `דילגו עליה פעם אחת`. A **second** skip opens the confirm `דילוג נוסף יסיר את {name} מהתור. להמשיך?` — confirm with `אישור ההסרה` or back out with `השארה בתור`. **Same inline reveal as step 10, not a `<dialog>`** — focus moves to the question `<p>`, and backing out returns it to `דלגי`. Verify the server too: after the second tap the ticket must still read `status=waiting, skip_count=1`. | A second tap must never silently escalate to removal. | Silent removal on the second tap is a P0. |
 | 13 | Waitlist **finish**: release the room she sits in (`שחרור`) — that is what closes her visit; her `/q/{id}` then reads `הביקור הזה הסתיים.` Removing her outright is `הסרה` (elevated, confirm `להסיר את {name} מהתור?`) → cue `הוסרה מהתור.` | The two exits are distinct and the customer-facing wording follows. | A finished visit still showing a position number is a stale-read bug. |
 | 14 | **SOS raise — walk both trigger sites.** (a) `SosCentre`'s `קריאה לעזרה`: encodes **no** permission, all five roles, always present. (b) The room-tile raise: rendered **only** on the tile the signed-in staffer occupies (`assignment.staff_user_id === selfId`), prefills that room, aria `קריאה לעזרה — {room}`. | Neither opens with a page — both open `SosRaiseDialog`, so a mis-tap costs one Esc. | A trigger that pages immediately makes staff afraid to touch it. |
 | 15 | In the dialog (`קריאה לעזרה`): pick `למי לקרוא` (default `מנהלת המשמרת`), optionally `מה צריך` (marked `לא חובה`), `שליחת הקריאה` → cue `הקריאה נרשמה.` Calling yourself → `אי אפשר לקרוא לעצמך.` Target not connected → `לא מחוברת עכשיו. הקריאה עברה למנהלת המשמרת.` with an `הבנתי` acknowledgement. | Fallback routing is surfaced, not silent. | A silent fallback means nobody knows who is coming. |
 | 16 | In the **second** context (the target's, or the shift manager's): the alert appears in `SosCentre`, status `פתוחה`, line `{name} קוראת לעזרה`, location `מיקום …` or `לא בחדר מדידה`, `מאז {time}`. **The raiser's own device must not get the overlay.** | Two real sessions, two real cookies, one shared server state. | The raiser seeing her own overlay is the design being inverted. |
-| 17 | **Ack**: `אני מגיעה` (aria `אני מגיעה — הקריאה מ{name}`) → cue `הקריאה התקבלה.`; the raiser's screen reads `{name} מגיעה.` A second acker gets `כבר מגיעה.` / `מישהי אחרת כבר מגיעה.` | `SOS_ALREADY_ACCEPTED` carries `details` naming the acceptor — a 409 that says "somebody" is unanswerable. | An anonymous 409 forces a second GET that races the resolve it is describing. |
+| 17 | **Ack**: `אני מגיעה` (aria `אני מגיעה — הקריאה מ{name}`) → the row flips to `מטופלת` and reads `{name} מגיעה.` A second acker gets `כבר מגיעה.` / `מישהי אחרת כבר מגיעה.` ⚠ **Getting to that 409 needs the right third party.** `accept_sos` refuses with a byte-identical **404** — never a 403, or the id becomes an existence oracle — for anyone who is neither the target nor elevated, *and for the raiser herself even when she is the owner*. So with this seed's one owner + one shift manager, an **owner-raised** alert has exactly one eligible acker and `SOS_ALREADY_ACCEPTED` is unreachable. Raise it as `yael` (sales_assistant) instead; then owner and shift manager are both eligible, and the loser gets the 409. Same 409 refuses the raiser's `ביטול הקריאה` after an ack. | `SOS_ALREADY_ACCEPTED` carries `details` naming the acceptor — a 409 that says "somebody" is unanswerable. Verified 2026-08-04: `{"code":"SOS_ALREADY_ACCEPTED","details":{"staff_display_name":"נועה ברזילי"}}`. Self-page is refused server-side too (`400 VALIDATION_ERROR: cannot page yourself`), though the dialog's target list already omits you. | An anonymous 409 forces a second GET that races the resolve it is describing. |
 | 18 | **30 s escalation**: raise a fresh alert and **do not ack**. Press `הסתרה` first (cue `ההתראה הוסתרה.`, collapsed counter `קריאות עזרה · {count}`), then wait ~35 s (the board polls every 5 s). Assert: the badge **word** `ללא מענה` appears, and `SosOverlay` **rises full-screen** on the fallback shift manager's device. | `_escalated()` is computed per response against **one shared `server_now`** — no worker, no column. The overlay's remount key is `${alert.id}:${alert.escalated}:${alert.stalled}`, so dismissing at t<30 s must **not** suppress the t=30 s rise. | A dismissal that permanently silences an escalation is a safety defect. This is a wall-clock assertion — it is only real here. |
 | 19 | **Stall**: ack an alert and leave it. After `STALLED_AFTER` the badge `אין תזוזה מאז שאושרה` appears and the overlay re-rises. Close with `נפתר` (aria `נפתר — הקריאה מ{name}`) → cue `הקריאה נסגרה.` The raiser can withdraw with `ביטול הקריאה`, but only before an ack (`{name} כבר מגיעה. אפשר לסמן «נפתר» במקום.`). | The second silence uses the same mechanism as the first. | A stall that never re-rises means an accepted-and-forgotten alert. |
 | 20 | **Session end**: expire or delete the session server-side (`delete from sessions where …`), then let any poll tick. The 401 is classified at **one** site inside `SosProvider` → `onSessionEnded` → `setStaff(null)` → the whole console drops to `LoginForm`. Board and floor also carry `תוקף החיבור פג. צריך להתחבר מחדש.` with `רענון הדף`. | There is **no fetch interceptor** — without this one site, the console would keep rendering a working-looking shell over a dead emergency channel. | A console that still paints after the session dies is the worst possible failure on this surface. |
-| 21 | **Role gating** — the server is the control, the nav is cosmetics. Sign in as **reception**: exactly **one** row, `הצוות בקומה`, and she lands on it. As **seamstress**: exactly **two**, `הצוות בקומה` then `תפירה`, in that order. As **shift_manager**: **eight** rows, no `צוות` and no `סליקה ותשלומים`. Then confirm the server **403s** a shift manager on `/manage/staff/*` independently of the hidden row. | `NAV` is filtered by `item.roles.includes(staff.role)` and `activeKey = reachable.some(…) ? section : reachable[0]`. The counts are also asserted by `Nav.test.tsx` — here you additionally prove the *server* agrees. | A hidden row that the API still serves is the whole reason this step exists. |
+| 21 | **Role gating** — the server is the control, the nav is cosmetics. Sign in as **reception**: exactly **one** row, `הצוות בקומה`, and she lands on it. As **seamstress**: exactly **two**, `הצוות בקומה` then `תפירה`, in that order. As **shift_manager**: **eleven** rows — `NAV_LABELS.slice(0, 11)`, i.e. everything except the three owner-only tails `צוות` / `סליקה ותשלומים` / `פרטיות`. **Owner sees all fourteen.** Then confirm the server **403s** independently of the hidden row. | `NAV` is filtered by `item.roles.includes(staff.role)` and `activeKey = reachable.some(…) ? section : reachable[0]`. The counts are also asserted by `Nav.test.tsx` (`expect(NAV_LABELS).toHaveLength(14)` + the shift manager's `.slice(0, 11)`) — here you additionally prove the *server* agrees. ⚠ **Re-derive these counts after any merge that adds a NAV row**; a stale number here reads as a role leak. | A hidden row that the API still serves is the whole reason this step exists. |
+
+**The server-side half of step 21, verified 2026-08-04 — every one of these is a
+`403 NOT_AUTHORIZED`, and `/manage/floor` is `200` for both:**
+
+```bash
+# shift_manager  → 403: GET+POST /manage/staff, GET /manage/gateway
+# reception      → 403: /manage/staff, /manage/gateway, /manage/dashboard,
+#                       /manage/bookings, /manage/customers, /manage/atelier/tickets
+# reception      → 403 on the ELEVATED floor sub-verbs the UI hides from her,
+#                       POST /manage/floor/queue/{id}/skip and …/remove,
+#                       while …/call answers 200
+```
 
 ---
 
@@ -612,10 +694,10 @@ seamstress, else `אין תופרות רשומות.` (owner variant adds `… א
 | 1 | Nav row **תפירה**. `h1` `לוח התפירה`. Empty state: `אין עדיין כרטיסי תפירה` + `כל כרטיס עובר חמישה שלבים: התקבל, בעבודה, בקרה, מוכן, נמסר…` | The section mounts **alone**, never beneath the board — so a workroom phone runs one poll loop, not two. | Two poll loops on a phone in a back room is a battery and rate-budget bug. |
 | 2 | `כרטיס חדש` → fill `שם הלקוחה` (required — `צריך שם לקוחה.`), `טלפון` (`מספר הטלפון אינו תקין.`), `תאריך יעד` (required; a past date is allowed with `התאריך שנבחר כבר עבר. אפשר להמשיך.`), `הערכת זמן` — the five bands `חצי שעה`/`שעה`/`שעתיים`/`חצי יום`/`יום מלא` rendered `{band} · {minutes} דק׳`. Optionally `שם השמלה`, `מידה`, `הערות`. `פתיחת כרטיס` → cue `{name} — נפתח כרטיס.` | `POST /manage/atelier/tickets`; a past due date warns but does not block. | A hard block on a past date makes back-dated intake impossible. |
 | 3 | Assert the five columns and counts: `התקבל`, `בעבודה`, `בקרה`, `מוכן`, `נמסר`, header shape `{stage} · {total}`, empty column `אין כרטיסים בשלב זה`. On narrow screens use the stage rail (aria-label `מעבר לשלב`). | Kanban is navigable without horizontal drag. | No rail on narrow = unusable on the phone this screen targets. |
-| 4 | `לשלב הבא` (aria `לשלב הבא — {name}`) → `POST …/stage/advance` → cue `{name} — שלב חדש: {stage}.` Walk intake → in-progress → `בקרה` → `מוכן` → `נמסר`. Jump with `העברה לשלב` → target → `העברה` (`POST …/stage/skip`). Step back with `ביטול שלב` → cue `{name} — חזרה לשלב: {stage}.` | All three stage transitions, and `TICKET_STAGE_CONFLICT` if two staffers race. | A generic `CONFLICT` here forces the console to branch on a message string. |
+| 4 | `לשלב הבא` (aria `לשלב הבא — {name}`) → `POST …/stage/advance` → cue `{name} — שלב חדש: {stage}.` Walk intake → in-progress → `בקרה` → `מוכן` → `נמסר`. Jump with `העברה לשלב` → target → `העברה`. Step back with `ביטול שלב` → cue `{name} — חזרה לשלב: {stage}.` ⚠ **There is no `…/stage/skip` route** (verified 2026-08-04 — `app/atelier/router.py` registers exactly `stage/advance` and `stage/undo`). The plain advance AND the jump are both `POST …/stage/advance` with the TARGET in the body (`{"stage":"in_progress"}` / `{"stage":"ready"}`); the step-back is `POST …/stage/undo` whose `stage` is **the stage being undone**, not the destination — so undo from `ready` after a jump from `in_progress` returns the card to `in_progress`, and `{"stage":"intake"}` is refused 400 `intake cannot be undone` by design. Re-advancing to the stage a ticket is already in answers **200** (stage is derived from five timestamps; the write is a no-op), so a plain double-tap does NOT reach `TICKET_STAGE_CONFLICT`. | All three stage transitions, and `TICKET_STAGE_CONFLICT` if two staffers race. | A generic `CONFLICT` here forces the console to branch on a message string. |
 | 5 | `תופרת` → `שיוך` (aria `שיוך — {name}`) → cue `שויך ל{seamstress}.` Option rows carry live capacity: `{name} · נותרו {hours} שעות` or `{name} · {hours} שעות משויכות`. Seamstress self-serve: `לקחת` (aria `לקחת — {name}`); release → `השיוך בוטל.` Unassigned cards badged `לא משויך`; a card on a deactivated staffer reads `תופרת שאינה פעילה`. | Capacity is computed live at the point of decision, not on a separate screen. | `TICKET_ALREADY_ASSIGNED` must name the taker — the next tick should show her. |
 | 6 | `עריכה` (form `עריכת כרטיס`, submit `שמירה`); `מחיקה` → cue `{name} — הכרטיס נמחק.` Overdue cards badged `באיחור` beside `יעד {date}`. | Overdue is a word beside the date. | Colour-only overdue is invisible at a glance across a workroom. |
-| 7 | Roster `תופרות · {total}`: each row `{hours} שעות עד {date} מתוך {capacity}` — or `{hours} שעות` with no capacity — plus total `סה״כ {hours} שעות בתור`. Over the ceiling shows the **word** `עומס יתר`. A row on the boutique default is marked `ברירת מחדל של הבוטיק`. Unassigned work gets its own **bar-less** row `לא משויך · {hours} שעות`. | One `overloaded()` predicate drives the word, the bar **and** the assign cue — they cannot disagree. | A bar without the word = colour-alone overload. A bar on `לא משויך` = a denominator that does not exist. |
+| 7 | Roster `תופרות · {total}`: each row `{hours} שעות עד {date} מתוך {capacity}` — or `{hours} שעות` with no capacity. `סה״כ {hours} שעות בתור` is **not** a panel total: it is a per-row BACKLOG clause appended only when `assigned_minutes > due_soon_minutes`, i.e. when the seven-day bar is hiding forward work (`SeamstressPanel.tsx` `Row`). The numerator of the bar is `due_soon_minutes` — the work due inside the server's own horizon — over `weekly_capacity_hours`; it is NOT the whole backlog over one week's rate. Over the ceiling shows the **word** `עומס יתר`. A row on the boutique default is marked `ברירת מחדל של הבוטיק`. Unassigned work gets its own **bar-less** row `לא משויך · {hours} שעות`. | One `overloaded()` predicate drives the word, the bar **and** the assign cue — they cannot disagree. | A bar without the word = colour-alone overload. A bar on `לא משויך` = a denominator that does not exist. |
 | 8 | `שעות` (aria `שעות — {name}`) → dialog `שעות שבועיות` → `שעות בשבוע` (help line names the boutique default) → `שמירה` → cue `{name} — עודכנו השעות.` Clear with `חזרה לברירת המחדל` → cue `{name} — חזרה לברירת המחדל.` Invalid: `צריך מספר שעות שלם ולא שלילי.` | Another real `<dialog>` — see journey C step 10. | Same jsdom blind spot. |
 | 9 | Poll chrome mirrors the board's: `רענון` / `השהיה` (aria `השהיה — לוח התפירה`) / `חידוש`; freshness `עודכן {time}` vs `אין עדכון מאז {time}`; pause line `העדכון מושהה. לוח התפירה לא יתעדכן עד לחידוש.`; idle stop `עדכון לוח התפירה הופסק אחרי {minutes} דקות ללא פעילות.` Assert `data-testid="atelier-cue"` carries every mutation announcement, and truncation reads `מוצגים הכרטיסים הדחופים ביותר…` | One poll idiom across three surfaces, each with its own distinguishable aria label. | Divergent poll chrome means staff learn three interfaces. |
 
@@ -633,7 +715,7 @@ customer must have **verified her phone and booked** — the empty state says so
 | # | Do | Proves | A failure means |
 |---|---|---|---|
 | 1 | On **any** section press `מדריך`. Title `מדריך — {section}`, progress `שלב {step} מתוך {total} במדריך`, navigate `הבא`/`הקודם`, finish `סיום`, abandon `סגירה` or Esc. | `ConsoleShell` gets `<GuideOverlay section={activeKey}/>`, and `activeKey` is already role-filtered — a receptionist can only ever be offered floor's three steps. | A guide for a section she cannot reach teaches a screen that does not exist for her. |
-| 2 | Assert step counts per section (`GUIDE_STEPS` in `lib/guide.ts`, in NAV order): dashboard 2, profile 3, hours 3, types 3, terms 2, catalog 3, bookings 3, customers 2, board 3, floor 3, atelier 3, checkinQr 2, staff 2, gateway 2. | Every section has ≥1 step — a zero-step section is unrepresentable (`satisfies Record<SectionKey, readonly [string, ...string[]]>` is the whole mechanism). | A "מדריך" button that opens nothing is the button lying. |
+| 2 | Assert step counts per section (`GUIDE_STEPS` in `lib/guide.ts`, in NAV order): dashboard 2, profile 3, hours 3, types 3, terms 2, catalog 3, bookings 3, customers 2, board 3, floor 3, atelier 3, checkinQr 2, staff 2, gateway 2, **privacy 2** (F20's fifteenth `SectionKey` — re-derive after every merge that adds one). | Every section has ≥1 step — a zero-step section is unrepresentable (`satisfies Record<SectionKey, readonly [string, ...string[]]>` is the whole mechanism). | A "מדריך" button that opens nothing is the button lying. |
 | 3 | **Dashboard**: `נכון לתאריך:`, `סך התורים שלא בוטלו בתקופה: {count}`, and the tiles — `תפוסה בשבעת הימים הקרובים` (`אחוז התפוסה`, `סך המקומות בטווח`, `מקומות שנתפסו`; with no open hours: `אין שעות פעילות פתוחות בטווח הזה, ולכן אין כאן מה לחשב.`), `תורים לפי שבוע` (caption `תורים שלא בוטלו, לפי שבוע`; columns `תחילת שבוע` / `תורים שלא בוטלו`), `ביטולים ואי־הגעה` (`שיעור הביטולים`, split `ביטולים ביוזמת הלקוחה` / `ביטולים ביוזמת הבוטיק`, `שיעור אי־ההגעה`, `תורים שעברו ולא סומנו`), `לקוחות בתקופה` (`סך הלקוחות` / `לקוחות חדשות` / `לקוחות חוזרות` / `שיעור החזרה`), `סוגי התורים המבוקשים`. | Every KPI is computed from real rows over a real Jerusalem week boundary. | An off-by-one week boundary only shows up against real data. |
 | 4 | Assert the two honest-degradation strings rather than fabricated numbers: `אין עדיין מספיק נתונים לחישוב.` and `פחות מ־0.1%`. Assert the first-run note and the outage line `לא הצלחנו לטעון את הנתונים כרגע.` | This section's one fetch is what an out-of-enum role hits, so its outage copy must cover any `ApiError`. | `NaN%` or `0%` where the honest string belongs is a trust defect on a business metric. |
 | 5 | **Customers**: search `חיפוש לפי שם או טלפון` (placeholder `שם או מספר טלפון`). Assert `data-testid="customers-count"` (`לקוחות ברשימה: {count}`), truncation `מוצגות {count} מתוך {total} לקוחות.`, no-results `אין תוצאות לחיפוש הזה` + `אפשר לנסות שם חלקי או ספרות מתוך מספר הטלפון.` | Search runs server-side against real rows. | A count that disagrees with the rows = a truncation the UI does not know about. |
@@ -643,10 +725,42 @@ customer must have **verified her phone and booked** — the empty state says so
 | 9 | **Staff CRUD** (owner only): create — `שם לתצוגה`, `אימייל`, `תפקיד` (owner / shift_manager / reception / sales_assistant / seamstress → `בעלת הבוטיק` / `אחראית משמרת` / `קבלה` / `יועצת מכירות` / `תופרת`), `סיסמה`, notice `יש למסור את הסיסמה לעובדת בעצמך. המערכת אינה מעבירה אותה לאיש.` → `הוספה לצוות`. Edit with `עריכה` → `שמירה`; changing **your own** password also requires `הסיסמה הנוכחית שלך` (`אפשר להשאיר ריק כדי לא לשנות את הסיסמה.`); your own row is marked `זו את`. Deactivate → `להשבית את הגישה?` → `השבתה`. | The full owner-only lifecycle against real password hashing. | — |
 | 10 | Assert the four server refusals surface as **copy, not a generic error**: `כתובת האימייל הזו כבר משויכת לאשת צוות פעילה.` (DUPLICATE_EMAIL), `לבוטיק חייבת להיות בעלת בוטיק אחת לפחות.` (LAST_OWNER_REQUIRED), `אי אפשר לשנות את התפקיד של עצמך או להשבית את עצמך.` (STAFF_SELF_MANAGE), `הפעולה הזו זמינה לבעלת הבוטיק בלבד.` (NOT_AUTHORIZED — reach it by driving the API directly as a shift_manager). | Error **codes** are the contract; the console maps each to its own sentence. | A generic "something went wrong" on LAST_OWNER_REQUIRED leaves the owner unable to guess what to do. |
 | 11 | **Logout handoff**: press `יציאה`. `handleLogout` clears `staff` but **not** `section`. Sign in as a shift manager and assert she does **not** land on `צוות`. | `activeKey` is derived at render from the filtered list, never stored. | Landing on a panel her role cannot reach is a role-leak through stale state. |
+| 12 | **פרטיות** (F20, owner-only, nav row fifteen). `GET /manage/privacy` carries FOUR documents — `notice_text`, `dpa_text`, `subprocessors_text`, `disclaimer_text` — plus `notice_is_default` / `dpa_is_default` and `erase_reason_hint`. Assert the two editable ones render as textareas badged `נוסח ברירת מחדל` with a byte counter (`{n} מתוך 8192 בתים`), and that **ספקי התשתית renders as read-only prose with no control at all**. | The platform default is what an owner who never touches this screen ships. | A missing default = a boutique publishing an empty privacy notice. |
+| 13 | Edit `הודעת הפרטיות`, `שמירת הנוסח` → toast `הנוסח נשמר`; the badge flips to `נוסח משלך` beside a `חזרה לנוסח ברירת המחדל` control, `notice_is_default` goes `false`, and the new text is live on the PUBLIC `/privacy` **with `{{boutique}}` interpolated and bidi-isolated**. Revert with the same control and assert `notice_is_default` returns `true`. | `PUT /manage/privacy` round-trips, and one owner edit reaches an anonymous page. | An override the public page ignores is the whole feature failing silently. |
+| 14 | **The sub-processor list is structurally un-overridable** (Q3). Not merely absent from the UI: `PUT /manage/privacy` with a `subprocessors_text` key answers **400 `VALIDATION_ERROR: subprocessors_text: Extra inputs are not permitted`** — verified 2026-08-04. | The schema is the guard, not the layout. | A UI-only omission means the next client can override it. |
+| 15 | **The not-lawyer-reviewed disclaimer is owner-facing ONLY**: `הוא לא נבדק על ידי עורך דין ואינו ייעוץ משפטי.` is on this panel and **absent from `/privacy`**; `GET /storefront/boutique` carries exactly `privacy_notice_text` / `privacy_dpa_text` / `privacy_subprocessors_text` — three fields, never four. | The caveat is for the boutique, not for the bride. | A disclaimer on the public notice undermines the document it introduces. |
+| 16 | **Subject request**: type ten digits into `מספר הטלפון של הלקוחה` → `חיפוש והפקת עותק` → `הלקוחה שנמצאה: {name} {phone}` + `הורדת העותק כקובץ`; the export payload is `{subject, bookings, messages, queue_tickets, accepted_terms}`. Unknown number → `לא נמצאה לקוחה עם המספר הזה.` Then `מחיקת המידע של הלקוחה` → an **inline** type-to-confirm reveal (never a `<dialog>`; `PrivacySection.tsx` says so) → `מחיקה סופית` → `המידע נמחק`. ⚠ **The confirm compares `typedPhone !== subject.subject.phone` — the stored E.164 (`+9725…`). The ten-digit form the lookup above accepts is REFUSED with `המספר שהוקלד אינו תואם.`** Verify the erasure in the database: `name` `[erased]`, `phone` `erased:{id}`, notes/tags cleared, `erased_at` stamped, row retained; and `audit_log` gains `privacy_subject_erased` carrying the reason, the scrub counts and `phone_last4` only. | Israeli §13 access and erasure, end to end, with a permanent operator trail. | An erase that drops the row takes the bookings with it; an erase with no audit row is unprovable. |
+
+**The marketing-withdraw control lives on the CUSTOMER CARD, not here** — and it is
+`(OWNER, SHIFT_MANAGER)` by Gate 1 Q4, which is why `CustomerDetail.tsx` carries no
+`role` prop and no client-side filter. Consent is THREE states, not a boolean:
+`הסכמה לדיוור` reads `לא ניתנה` / `ניתנה` (+ the `הסרת ההסכמה לדיוור` button) /
+`הוסרה`, because withdrawal is additive — clearing the grant timestamp would destroy
+the Spam-Law evidence. Verified 2026-08-04 against three real sessions:
+`POST /manage/privacy/marketing-withdraw` answers **200 `{"changed":true}`** for a
+shift manager and **403 `NOT_AUTHORIZED`** for a sales assistant. Nothing in the seed
+grants consent — journey B's check-in opt-in is the only path to it, so to exercise
+this you need a customer who ticked it (or one `update customers set
+marketing_consent_at = now()`).
 
 ---
 
 ## 4. Teardown / reset
+
+> ⚠ **STEP ZERO, AND IT IS THE ONE THAT WAS MISSED: PUT `.env` BACK.**
+>
+> ```bash
+> [ -f "$REPO/backend/.env.qa-backup" ] && \
+>   mv "$REPO/backend/.env.qa-backup" "$REPO/backend/.env"
+> grep -c 'AWS_SECRET_ACCESS_KEY\|TWILIO\|LEMONSQUEEZY' "$REPO/backend/.env"
+> ```
+>
+> The second line is the check, not decoration. On 2026-08-04 teardown stopped
+> the server and dropped the database correctly and **left a 314-byte QA `.env`
+> where a 3853-byte one with real AWS, Twilio and Lemon Squeezy credentials had
+> been**. Nobody noticed until someone went looking. `.env` is gitignored, so git
+> cannot restore it — the backup is the only copy. Verify the count is non-zero
+> before you call teardown done.
 
 Between epics, reset to a known-empty database rather than debugging accumulated
 state:
@@ -686,7 +800,20 @@ cd "$REPO" && rm -rf backend/app/static && mkdir -p backend/app/static \
   && cp -R frontend/apps/storefront/dist backend/app/static/storefront
 ```
 
-Leave `.env` in place — it is gitignored and is the expensive part of the setup.
+Leave `.env` in place between epics — it is gitignored and is the expensive part
+of the setup.
+
+At the **end of the run**, restore whatever was there before you (§2.2):
+
+```bash
+# only if §2.2 found a pre-existing .env and backed it up
+[ -f "$REPO/backend/.env.qa-backup" ] \
+  && mv "$REPO/backend/.env.qa-backup" "$REPO/backend/.env"
+```
+
+If no backup exists the `.env` was yours to create, and deleting it is correct.
+If a backup exists and you delete the `.env` instead of restoring it, you have
+taken a working checkout away from a developer.
 
 ---
 
@@ -702,9 +829,31 @@ places the two vocabularies are ever compared.
 
 **Real `<dialog>` focus behaviour.** `setup.ts` stubs `showModal()` as
 `this.open = true`. Every vitest assertion about focus trapping, Esc-to-close or
-focus return therefore measures the stub and **cannot fail**. Journey C step 10
-(`שיבוץ לחדר`), C step 12 (the second-skip confirm) and D step 8 (`שעות שבועיות`)
-are real `<dialog>` elements in a real browser.
+focus return therefore measures the stub and **cannot fail**.
+
+⚠ **Corrected 2026-08-04 — this paragraph used to name the two controls that are
+NOT dialogs.** Journey C steps 10 and 12 (`שיבוץ לחדר` and the second-skip
+confirm) are **inline reveals inside the waitlist row's `<li>`**, deliberately so
+(`WaitlistPanel.tsx`: *"…and never a `<dialog>`"*). They have focus-on-open and
+focus-return but **no Esc and no trap**, because they are not modal. Asserting
+Esc there fails against correct code.
+
+The real `<dialog>`s, all verified `:modal === true` in Chromium:
+
+| Where | Control | Verified |
+|---|---|---|
+| C step 7 | `הוספת שמלה — {room}` | focus → first field; background inert (`elementFromPoint` behind it returns the `DIALOG`); submit closes and **returns focus to the opener** |
+| C step 8 | `העברת החדר` | focus → the `העברה אל` select; **Esc closes**; focus returns to `העברה לעמיתה — {room}` |
+| C step 14 | `SosRaiseDialog` (`קריאה לעזרה`) | focus → `למי לקרוא`; the fallback notice replaces the body in place with `הבנתי` focused |
+| C steps 7/8 | rooms registry (`חדרי המדידה של הבוטיק`) + its delete confirm | mounted-but-closed alongside the above — expect **five** `<dialog>` nodes on the board screen, only one `open` |
+| D step 8 | `שעות שבועיות` | — |
+
+`SosOverlay` is **not** a `<dialog>` either: it is a `fixed inset-0 z-40` layer of
+`<article tabindex="-1">` cards each wrapping a `role="alert"`. It genuinely
+covers the console — Playwright refuses to click the panel underneath it, which
+is the assertion. It takes focus **only when `document.activeElement === body`**
+(deliberate: `role="alert"` announces without stealing focus, and landing on
+`אני מגיעה` would turn the next Space into an irreversible accept).
 
 **Wall-clock behaviour.** The SOS 30 s escalation (`_escalated()` computed per
 response against one shared `server_now`, no worker, no column), the 5 s poll
@@ -712,6 +861,23 @@ cadence, the idle-stop timer, and the deposit sweeper's expiry are all real-time
 properties. A frozen clock in a unit test proves the predicate; only journey C
 step 18 proves the *loop* around it — including that a dismissal at t<30 s does
 not suppress the t=30 s rise, which is the remount-key behaviour.
+
+**Measured 2026-08-04, one real clock, two real sessions** (raiser יעל via the
+API, shift manager נועה in Chromium). This is what a PASS looks like:
+
+| t | Wall clock (UTC) | Observed on the shift manager's screen |
+|---|---|---|
+| 0 s | `13:52:52.5` | alert created, `escalated: false` |
+| ~5 s | `13:52:57` | `SosOverlay` rises on the poll tick — **no** `ללא מענה` |
+| 9 s | `13:53:01` | `הסתרה` pressed. Overlay gone; toast `ההתראה הוסתרה.` in a `role="status"`; floating counter `קריאות עזרה · 1` appears |
+| 14 s | `13:53:06` | still hidden, still no `ללא מענה` anywhere |
+| **57 s** | `13:53:49` | **overlay has RISEN AGAIN**, badged `ללא מענה` — in the card *and* in the `SosCentre` row |
+| ~2 min after an ack | `13:54:45` | a *separate*, accepted alert re-rises badged `אין תזוזה מאז שאושרה` (`STALLED_AFTER = 2 min`) |
+
+Two traps in measuring this. The `sos.dismissedCue` toast **auto-dismisses**, so
+a cue read three tool-calls after the click reads as "no cue" — click and read in
+one `page.evaluate`. And the floating counter only renders for **live** (open,
+un-acked) dismissed alerts, so dismissing an already-accepted card shows none.
 
 **Real same-origin static serving.** `_register_spas` runs **last**, after every
 `include_router`. `_SpaFallbackRoute.matches` *declines* (`Match.NONE`) rather
@@ -736,11 +902,30 @@ environment variables**: credentials are per tenant, typed into `סליקה
 Create the placeholder LS variant by hand in the LS dashboard; its price is never
 used — every checkout overrides with `custom_price`.
 
-**Real RLS under a real tenant — but only if you opt in.** ⚠ **Be honest about
-this one.** `ensure_safe_database_role()` is a no-op when `app_env == "dev"`, and
-the default dev URL connects as `postgres`. **Postgres RLS, even FORCEd, does not
-apply to superusers — so the default local walkthrough does not exercise RLS at
-all.** To make it real, mirror what `tests/conftest.py` does:
+**Real RLS under a real tenant — DO THIS, it is not optional.**
+
+> ⚠ **THIS SECTION WAS OPTIONAL ONCE AND THAT IS EXACTLY HOW IT GOT SKIPPED.**
+> The 2026-08-04 walkthrough ran all five journeys as `postgres`, reported
+> "Tenant isolation — PASS", and exercised **no RLS whatsoever**. The verifier
+> caught it: `pg_stat_activity` showed the app connected as `postgres`,
+> `pg_roles` showed `rolsuper = t`, and `pg_class` showed **23 tables carrying
+> `relrowsecurity` that were silently void for the entire run**. What that
+> journey actually proved was cookie host-scoping, CORS and the 404 no-oracle —
+> all app-layer, all real, and none of them the database.
+>
+> The sharpest part: **`boutique_app` already existed in the cluster** with
+> `rolsuper = f`. Somebody had set it up. `.env` was simply never pointed at it.
+> A safeguard you have to remember to switch on is a safeguard that does not run.
+>
+> **So §2.2 now writes the app-role URL by default and this section is where you
+> create the role — do it before the first boot, not as an afterthought.** If you
+> deliberately run as `postgres` (faster setup, no isolation claims), you MUST
+> write "RLS NOT EXERCISED" at the top of your report. A run that omits that
+> sentence is claiming database isolation it did not test.
+
+`ensure_safe_database_role()` is a no-op when `app_env == "dev"`, and the old
+default dev URL connected as `postgres`. **Postgres RLS, even FORCEd, does not
+apply to superusers.** To make it real, mirror what `tests/conftest.py` does:
 
 ```bash
 psql -d "$DB" -c "DO \$\$ BEGIN
