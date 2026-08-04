@@ -483,6 +483,15 @@ class AuditAction(StrEnum):
     # no-op writes no row at all: setting the hours she already has changed
     # nothing and a row claiming otherwise names an act nobody performed.
     ATELIER_CAPACITY_SET = "atelier_capacity_set"
+    # F42's second, and the NINTH member. It carries the whole NEW `atelier`
+    # block and NO `from`, with `entity` = the tenant's id: the trail IS the
+    # history, so the previous mapping is the previous row's value, and computing
+    # a diff would need exactly the read-modify-write `merge_settings`' single
+    # atomic statement exists to avoid. These are boutique configuration and
+    # carry no personal data, so F41's names-only rule does not bind — and the
+    # numbers are the whole point, because the question this row answers is
+    # "what was «חצי יום» worth when that ticket was estimated".
+    ATELIER_SETTINGS_UPDATED = "atelier_settings_updated"
 
     # F37's SOS paging (D13). The EIGHTH block to rely on the same fact:
     # audit_log.action is plain TEXT with no CHECK (0003), so these four need no

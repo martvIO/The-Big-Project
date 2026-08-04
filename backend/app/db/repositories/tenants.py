@@ -72,17 +72,38 @@ class TenantsRepository:
         *,
         profile: dict[str, Any] | None = None,
         toggles: dict[str, Any] | None = None,
+        atelier: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """ONE atomic `settings = settings || :patch::jsonb` — never a Python
         read-modify-write — so a concurrent writer of a sibling top-level key
-        (E4 #17/#20 will add them) can never be clobbered. Only the provided
+        (F42's `atelier` is the first) can never be clobbered. Only the provided
         keys enter the patch. Returns the merged settings, or None when the
-        tenant is missing or soft-deleted."""
+        tenant is missing or soft-deleted.
+
+        ⚠ `||` IS A SHALLOW MERGE AND THAT IS WHY `atelier` ARRIVES WHOLE. The
+        top level is safe by this statement — `profile` and `atelier` are
+        different keys and `||` merges them — but a patch carrying a PARTIAL
+        `atelier` object replaces the entire key and deletes what it did not
+        name. The fix is not a deeper SQL expression: it is ONE WRITER THAT
+        ALWAYS SENDS THE WHOLE BLOCK, which `AtelierSettingsUpdate` makes
+        structural by requiring every field.
+
+        ⚠ AND `jsonb_set` IS THE WRONG REACH, named so nobody takes it.
+        `jsonb_set(settings, '{atelier,effort_bands}', :v, true)` looks like the
+        deep-merge answer and silently returns `settings` UNCHANGED when the
+        `atelier` key is absent — `create_missing` creates the leaf, not the
+        intermediate object. That is every tenant on day one, and it fails with
+        no error. If a third key under `atelier` ever forces a genuine deep
+        merge, the correct expression is `settings || jsonb_build_object(
+        'atelier', coalesce(settings->'atelier','{}'::jsonb) || :patch)`.
+        """
         patch: dict[str, Any] = {}
         if profile is not None:
             patch["profile"] = profile
         if toggles is not None:
             patch["toggles"] = toggles
+        if atelier is not None:
+            patch["atelier"] = atelier
         async with self._session_factory() as session, session.begin():
             stmt = (
                 update(Tenant)

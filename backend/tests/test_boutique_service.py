@@ -10,7 +10,7 @@ import time
 import uuid
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.auth.rate_limit import FixedWindowRateLimiter
+from app.auth.service import StaffContext
 from app.boutique.service import (
     BoutiqueSettingsService,
     DuplicateDateError,
@@ -34,8 +35,24 @@ from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
-from app.models.constants import AppointmentAudience
+from app.models.audit_log import AuditLog
+from app.models.constants import AppointmentAudience, AuditAction, StaffRole
 from app.models.terms_version import TermsVersion
+
+
+def _actor(tenant_id: uuid.UUID) -> StaffContext:
+    """F42 (D5 edit #7): `update_settings` names the staffer who saved. It is a
+    REQUIRED keyword because `audit_log.actor_id` is nullable — an actor-less row
+    would insert silently and green. No row is written for these calls at all:
+    they carry no `atelier` block, and F42 audits only the key it owns."""
+    return StaffContext(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        email="owner@bella.example",
+        display_name="Owner",
+        role=StaffRole.OWNER.value,
+    )
+
 
 pytestmark = pytest.mark.db
 
@@ -99,6 +116,7 @@ async def test_settings_roundtrip_and_partial_merge(app_role_url: str) -> None:
 
         updated = await service.update_settings(
             tenant.id,
+            actor=_actor(tenant.id),
             profile={"phone": "+972-3-555-0100", "description": "Bridal boutique"},
             toggles={"deposits_enabled": True, "brides_only": False},
         )
@@ -107,7 +125,9 @@ async def test_settings_roundtrip_and_partial_merge(app_role_url: str) -> None:
 
         # Toggles-only update: the profile key must be left untouched (only the
         # provided keys enter the patch).
-        await service.update_settings(tenant.id, toggles={"deposits_enabled": False})
+        await service.update_settings(
+            tenant.id, actor=_actor(tenant.id), toggles={"deposits_enabled": False}
+        )
         again = await service.get_settings(tenant.id)
         assert again.profile["phone"] == "+972-3-555-0100"
         assert again.toggles == {"deposits_enabled": False}
@@ -123,7 +143,9 @@ async def test_update_settings_rejects_javascript_maps_url(app_role_url: str) ->
     try:
         tenant = await tenants.insert(slug=f"xss-{uuid.uuid4().hex[:8]}", name="XSS")
         with pytest.raises(BoutiqueValidationError):
-            await service.update_settings(tenant.id, profile={"maps_url": "javascript:alert(1)"})
+            await service.update_settings(
+                tenant.id, actor=_actor(tenant.id), profile={"maps_url": "javascript:alert(1)"}
+            )
         unchanged = await service.get_settings(tenant.id)
         assert unchanged.profile == {}
     finally:
@@ -138,7 +160,182 @@ async def test_settings_unknown_tenant_raises_not_found(app_role_url: str) -> No
         with pytest.raises(NotFoundError):
             await service.get_settings(uuid.uuid4())
         with pytest.raises(NotFoundError):
-            await service.update_settings(uuid.uuid4(), toggles={"brides_only": True})
+            missing = uuid.uuid4()
+            await service.update_settings(
+                missing, actor=_actor(missing), toggles={"brides_only": True}
+            )
+    finally:
+        await engine.dispose()
+
+
+ATELIER_BANDS = {
+    "thirty_min": 30,
+    "one_hour": 60,
+    "two_hours": 120,
+    "half_day": 300,
+    "full_day": 540,
+}
+
+
+async def test_an_atelier_save_lands_whole_leaves_its_siblings_and_writes_its_audit_row(
+    app_role_url: str,
+) -> None:
+    """F42 (D5, D12) against the REAL service and a real Postgres — which is the
+    only place the validator call, the JSONB round trip and the audit row are all
+    exercised together. The fast API tests run a FAKE service that calls
+    `validate_atelier_settings` itself, so `update_settings` dropping that call
+    is invisible to every one of them.
+
+    Three things in one pass: the whole block round-trips through `||`, the
+    sibling top-level keys written by an earlier save are untouched, and the
+    audit row carries its actor and the whole NEW value with no `from`.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"atelier-{uuid.uuid4().hex[:8]}", name="Atelier")
+        actor = _actor(tenant.id)
+
+        await service.update_settings(
+            tenant.id,
+            actor=actor,
+            profile={"phone": "+972-3-555-0100"},
+            toggles={"deposits_enabled": True},
+        )
+        saved = await service.update_settings(
+            tenant.id,
+            actor=actor,
+            atelier={
+                "effort_bands": ATELIER_BANDS,
+                "default_weekly_capacity_hours": 36,
+            },
+        )
+
+        assert saved.atelier == {
+            "effort_bands": ATELIER_BANDS,
+            "default_weekly_capacity_hours": 36,
+        }
+        # The top level is safe by the atomic `||` and NOT by anything F42 added.
+        assert saved.profile == {"phone": "+972-3-555-0100"}
+        assert saved.toggles == {"deposits_enabled": True}
+
+        # And it is really in the column, not merely in the answer.
+        again = await service.get_settings(tenant.id)
+        assert again.atelier["default_weekly_capacity_hours"] == 36
+        assert again.atelier["effort_bands"]["half_day"] == 300
+
+        async with tenant_session(factory, tenant.id) as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(AuditLog).where(
+                            AuditLog.action == AuditAction.ATELIER_SETTINGS_UPDATED.value
+                        )
+                    )
+                ).all()
+            )
+        # ⚠ ONE ROW, not two: the profile/toggles save carried no `atelier` block
+        # and F42 audits only the key it owns (the shipped settings path stays
+        # unaudited — a pre-existing gap this feature does not widen).
+        assert len(rows) == 1
+        assert rows[0].actor_id == actor.id
+        assert rows[0].entity == str(tenant.id)
+        # The whole NEW value and NO `from`: the trail IS the history, and a diff
+        # would need the read-modify-write the atomic statement exists to avoid.
+        assert rows[0].details == {
+            "effort_bands": ATELIER_BANDS,
+            "default_weekly_capacity_hours": 36,
+        }
+        assert "from" not in rows[0].details
+    finally:
+        await engine.dispose()
+
+
+async def test_a_partial_band_mapping_is_refused_and_writes_nothing(
+    app_role_url: str,
+) -> None:
+    """`test_update_settings_rejects_javascript_maps_url`'s shape, on F42's
+    block: the validator runs BEFORE storage is touched, so a refused save leaves
+    the column exactly as it was and writes no audit row.
+
+    ⚠ The MISSING key is the half no request model can see, which is why this
+    reaches the service at all — `dict[EffortBand, StrictInt]` would have
+    refused an unknown one at the wire.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"partial-{uuid.uuid4().hex[:8]}", name="Partial")
+        partial = {key: value for key, value in ATELIER_BANDS.items() if key != "full_day"}
+        with pytest.raises(BoutiqueValidationError):
+            await service.update_settings(
+                tenant.id,
+                actor=_actor(tenant.id),
+                atelier={
+                    "effort_bands": partial,
+                    "default_weekly_capacity_hours": 36,
+                },
+            )
+        unchanged = await service.get_settings(tenant.id)
+        assert unchanged.atelier == {}
+
+        async with tenant_session(factory, tenant.id) as session:
+            written = list(
+                (
+                    await session.scalars(
+                        select(AuditLog).where(
+                            AuditLog.action == AuditAction.ATELIER_SETTINGS_UPDATED.value
+                        )
+                    )
+                ).all()
+            )
+        assert written == []
+    finally:
+        await engine.dispose()
+
+
+async def test_the_settings_audit_row_is_written_only_after_a_successful_merge(
+    app_role_url: str,
+) -> None:
+    """⚠ D12's ORDERING, AND IT IS THE ASSERTION THAT MAKES THE COMPROMISE
+    BOUNDED. The row cannot ride `merge_settings`' transaction —
+    `TenantsRepository` opens its own session inside every method — so it is
+    written afterwards, in its own. That is one-directional by construction: a
+    crash between the two LOSES a row and can never INVENT one.
+
+    Move the `record` call above the merge and this reds: a save against a
+    missing or soft-deleted tenant would leave an audit row claiming the
+    boutique's band mapping changed when nothing did.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    missing = uuid.uuid4()
+    try:
+        with pytest.raises(NotFoundError):
+            await service.update_settings(
+                missing,
+                actor=_actor(missing),
+                atelier={
+                    "effort_bands": ATELIER_BANDS,
+                    "default_weekly_capacity_hours": 36,
+                },
+            )
+        async with tenant_session(factory, missing) as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(AuditLog).where(
+                            AuditLog.action == AuditAction.ATELIER_SETTINGS_UPDATED.value
+                        )
+                    )
+                ).all()
+            )
+        assert rows == [], "an audit row was written for a merge that never happened"
     finally:
         await engine.dispose()
 

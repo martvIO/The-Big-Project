@@ -7,6 +7,7 @@ import time
 import uuid
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.auth.dependencies import get_auth_service
@@ -22,10 +23,16 @@ from app.boutique.service import (
     TermsThrottledError,
     TermsVersionConflictError,
 )
-from app.boutique.validation import BoutiqueValidationError, WeeklyRuleInput, validate_profile
+from app.boutique.validation import (
+    BoutiqueValidationError,
+    WeeklyRuleInput,
+    validate_atelier_settings,
+    validate_profile,
+)
 from app.main import create_app
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
+from app.models.constants import EffortBand
 from app.models.terms_version import TermsVersion
 from app.tenancy.middleware import TenantContext
 
@@ -101,6 +108,7 @@ class FakeBoutiqueService:
         self.settings_result = SettingsResult(
             profile={"phone": "+972-3-555-0100"},
             toggles={"deposits_enabled": True},
+            atelier={},
         )
         self.type_row = AppointmentType(
             id=TYPE_ID,
@@ -158,16 +166,31 @@ class FakeBoutiqueService:
         self,
         tenant_id: uuid.UUID,
         *,
+        actor: StaffContext,
         profile: dict[str, Any] | None = None,
         toggles: dict[str, Any] | None = None,
+        atelier: dict[str, Any] | None = None,
     ) -> SettingsResult:
         # The real service gates on validate_profile before it touches storage,
         # and the profile field rules (instagram handle shape, essence length)
         # live only there — not in the schema. Running the real validator here
         # is what makes a "@bella is a 400" test able to fail.
+        #
+        # F42's block is the same shape for the same reason: the MISSING band key
+        # and the two ranges are the validator's and no request model can see
+        # them, so a "three bands is a 400" test needs the real one here.
         if profile is not None:
             validate_profile(profile)
-        self._record("update_settings", tenant_id=tenant_id, profile=profile, toggles=toggles)
+        if atelier is not None:
+            validate_atelier_settings(atelier)
+        self._record(
+            "update_settings",
+            tenant_id=tenant_id,
+            actor=actor,
+            profile=profile,
+            toggles=toggles,
+            atelier=atelier,
+        )
         return self.settings_result
 
     async def list_appointment_types(self, tenant_id: uuid.UUID) -> list[Any]:
@@ -256,6 +279,9 @@ def test_every_route_requires_authentication() -> None:
 
 
 def test_get_settings_returns_profile_and_toggles() -> None:
+    """F42 adds a THIRD top-level key. It is on the read so the console's
+    settings dialog opens with the tenant's own bands and default already in
+    hand, with no read of its own."""
     fake = FakeBoutiqueService()
     with _client(fake) as client:
         resp = client.get("/manage/settings")
@@ -263,6 +289,7 @@ def test_get_settings_returns_profile_and_toggles() -> None:
     assert resp.json() == {
         "profile": {"phone": "+972-3-555-0100"},
         "toggles": {"deposits_enabled": True},
+        "atelier": {},
     }
     assert fake.call("get_settings") == {"tenant_id": TENANT.id}
 
@@ -295,7 +322,7 @@ def test_put_settings_toggles_only_leaves_profile_none() -> None:
 def test_put_settings_round_trips_essence_and_instagram() -> None:
     fake = FakeBoutiqueService()
     profile = {"essence": "שמלות כלה בעבודת יד", "instagram": "bella.bridal"}
-    fake.settings_result = SettingsResult(profile=profile, toggles={})
+    fake.settings_result = SettingsResult(profile=profile, toggles={}, atelier={})
     with _client(fake) as client:
         resp = client.put("/manage/settings", json={"profile": profile})
     assert resp.status_code == 200
@@ -335,6 +362,181 @@ def test_put_settings_rejects_unknown_top_level_key() -> None:
         resp = client.put("/manage/settings", json={"secrets": {"a": 1}})
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+# --- F42's atelier block (D5) ---
+#
+# ⚠ EVERY ROW STATES ITS STATUS, AND THE THREE `StrictInt` ROWS ARE THE POINT:
+# `true`, `"300"` and `240.0` are each a 200 against a plain `int`, because
+# `ForbidExtraModel` is `extra="forbid"` and NOTHING ELSE — pydantic coerces
+# before any validator runs. `{"half_day": true}` accepted would write a
+# ONE-MINUTE «חצי יום» and silently understate every load bar downstream.
+
+ATELIER_BANDS = {
+    EffortBand.THIRTY_MIN.value: 30,
+    EffortBand.ONE_HOUR.value: 60,
+    EffortBand.TWO_HOURS.value: 120,
+    EffortBand.HALF_DAY.value: 300,
+    EffortBand.FULL_DAY.value: 540,
+}
+ATELIER_BLOCK: dict[str, Any] = {
+    "effort_bands": ATELIER_BANDS,
+    "default_weekly_capacity_hours": 36,
+}
+
+
+def _atelier(**overrides: Any) -> dict[str, Any]:
+    return {"atelier": {**ATELIER_BLOCK, **overrides}}
+
+
+def test_put_settings_passes_the_whole_atelier_block_through() -> None:
+    """⚠ THE WHOLE BLOCK, ALWAYS. `merge_settings` is `settings || :patch::jsonb`
+    and that merges at the TOP LEVEL ONLY, so a patch carrying a PARTIAL
+    `atelier` object REPLACES the whole key and deletes what it did not name.
+    One writer, one dialog, one save, both keys — made structural by the request
+    model rather than left as a convention."""
+    fake = FakeBoutiqueService()
+    fake.settings_result = SettingsResult(profile={}, toggles={}, atelier=ATELIER_BLOCK)
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json=_atelier())
+    assert resp.status_code == 200
+    call = fake.call("update_settings")
+    assert call["atelier"] == ATELIER_BLOCK
+    assert call["profile"] is None and call["toggles"] is None
+    assert resp.json()["atelier"] == ATELIER_BLOCK
+
+
+def test_put_settings_without_an_atelier_block_leaves_it_none() -> None:
+    """A profile-only save must not enter the patch with an `atelier` key at
+    all — an empty one would replace the tenant's whole block with `{}`."""
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"profile": {"phone": "03-5550100"}})
+    assert resp.status_code == 200
+    assert fake.call("update_settings")["atelier"] is None
+
+
+def test_the_settings_write_names_its_actor() -> None:
+    """⚠ D5's SEVENTH EDIT, and it is the one a builder skips. The shipped
+    signature is `update_settings(tenant_id, *, profile, toggles)` and takes no
+    actor at all, while `audit_log.actor_id` is NULLABLE — so an actor-less row
+    inserts silently and green, and D12's whole justification is that «the
+    denominator of every capacity number in the boutique changed and nobody can
+    say who or when»."""
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        assert client.put("/manage/settings", json=_atelier()).status_code == 200
+    assert fake.call("update_settings")["actor"].id == STAFF_ID
+
+
+def test_a_null_default_is_a_legal_value_that_clears() -> None:
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json=_atelier(default_weekly_capacity_hours=None))
+    assert resp.status_code == 200
+    assert fake.call("update_settings")["atelier"]["default_weekly_capacity_hours"] is None
+
+
+def test_saving_only_the_bands_cannot_clear_the_default() -> None:
+    """⚠ THE NAMED MUTATION. Give `AtelierSettingsUpdate.default_weekly_capacity_hours`
+    a `= None` and drop it from the patch when unset, and a bands-only save
+    replaces the whole `atelier` object WITHOUT the default — silently clearing
+    the boutique's house capacity and taking every «ברירת מחדל» bar with it.
+
+    It is REQUIRED, so a payload that omits it never reaches the service."""
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"atelier": {"effort_bands": ATELIER_BANDS}})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert fake.calls == []
+
+
+def test_an_atelier_block_with_no_bands_is_a_400() -> None:
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put(
+            "/manage/settings", json={"atelier": {"default_weekly_capacity_hours": 36}}
+        )
+    assert resp.status_code == 400
+    assert fake.calls == []
+
+
+def test_a_missing_band_key_is_a_400_from_the_VALIDATOR() -> None:
+    """⚠ THE STATUS SOURCE MATTERS HERE. Pydantic cannot see an absent key, so
+    this refusal is `validate_atelier_settings`' `DomainValidationError` and its
+    message is the exception's own (`main.py:949-953`) — not the request-model
+    summary. Asserting the message names the missing-key rule is what stops the
+    "key on `str` instead of `EffortBand`" mutation from being invisible."""
+    partial = {key: value for key, value in ATELIER_BANDS.items() if key != "half_day"}
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json=_atelier(effort_bands=partial))
+    assert resp.status_code == 400
+    body = resp.json()["error"]
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "effort_bands must name exactly" in body["message"]
+
+
+def test_an_unknown_band_key_is_a_400_from_the_REQUEST_MODEL() -> None:
+    """The mirror of the test above, and the pair is the assertion. `dict[EffortBand,
+    StrictInt]` refuses a sixth key before any handler runs — key it on `str`
+    and this refusal moves to the validator, which still catches it by set
+    equality, so only the SOURCE distinguishes the two spellings."""
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put(
+            "/manage/settings", json=_atelier(effort_bands={**ATELIER_BANDS, "three_hours": 180})
+        )
+    assert resp.status_code == 400
+    body = resp.json()["error"]
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "effort_bands must name exactly" not in body["message"]
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("value", [True, False, "300", 240.0], ids=str)
+def test_a_band_that_is_not_a_strict_int_is_a_400(value: Any) -> None:
+    """⚠ EVERY ONE OF THESE IS A 200 AGAINST PLAIN `int`. `true` coerces to `1`
+    and writes a one-minute «חצי יום»; `"300"` and `240.0` coerce too, and
+    `validate_atelier_settings`' own type check would then be unreachable code.
+    """
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put(
+            "/manage/settings", json=_atelier(effort_bands={**ATELIER_BANDS, "half_day": value})
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("value", [0, -1, 1441])
+def test_a_band_outside_the_stored_bound_is_a_400(value: int) -> None:
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put(
+            "/manage/settings", json=_atelier(effort_bands={**ATELIER_BANDS, "half_day": value})
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.parametrize("value", [True, "30", 30.0, -1, 169], ids=str)
+def test_a_default_that_is_not_a_strict_int_in_range_is_a_400(value: Any) -> None:
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json=_atelier(default_weekly_capacity_hours=value))
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_an_unknown_key_inside_the_atelier_block_is_a_400() -> None:
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json=_atelier(bands_are_default=True))
+    assert resp.status_code == 400
+    assert fake.calls == []
 
 
 def test_domain_validation_error_maps_to_house_shape_400() -> None:

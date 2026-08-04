@@ -3,9 +3,11 @@ the write-time gate for stored-XSS (maps_url), money bounds (agorot), and the
 weekly-grid invariants the slot engine (E3) will rely on."""
 
 import datetime
+from typing import Any
 
 import pytest
 
+from app.atelier.stages import MAX_BAND_MINUTES, MAX_WEEKLY_CAPACITY_HOURS
 from app.boutique.validation import (
     MAX_DEPOSIT_AMOUNT_AGOROT,
     MAX_PROFILE_DESCRIPTION_LENGTH,
@@ -14,6 +16,7 @@ from app.boutique.validation import (
     BoutiqueValidationError,
     WeeklyRuleInput,
     validate_appointment_type,
+    validate_atelier_settings,
     validate_exception_times,
     validate_maps_url,
     validate_phone,
@@ -22,7 +25,7 @@ from app.boutique.validation import (
     validate_toggles,
     validate_weekly_rules,
 )
-from app.models.constants import AppointmentAudience
+from app.models.constants import AppointmentAudience, EffortBand
 
 
 def _rule(
@@ -327,3 +330,109 @@ def test_forfeit_percent_bounds() -> None:
     for forfeit in (-1, 101, 150):
         with pytest.raises(BoutiqueValidationError):
             validate_terms(terms_text="T", refundable_until_hours_before=1, forfeit_percent=forfeit)
+
+
+# --- F42's atelier block: the two rules pydantic cannot express ---
+#
+# The TYPE refusals are `AtelierSettingsUpdate`'s (`StrictInt`, and an unknown
+# band key against `dict[EffortBand, StrictInt]`) and run BEFORE this function.
+# What lives here is what a request model cannot see: the MISSING key, and the
+# two numeric ranges.
+
+
+def _bands(**overrides: int) -> dict[str, int]:
+    bands = {
+        EffortBand.THIRTY_MIN.value: 30,
+        EffortBand.ONE_HOUR.value: 60,
+        EffortBand.TWO_HOURS.value: 120,
+        EffortBand.HALF_DAY.value: 300,
+        EffortBand.FULL_DAY.value: 540,
+    }
+    bands.update(overrides)
+    return bands
+
+
+def _atelier(bands: dict[str, int] | None = None, default: int | None = 36) -> dict[str, Any]:
+    return {
+        "effort_bands": _bands() if bands is None else bands,
+        "default_weekly_capacity_hours": default,
+    }
+
+
+def test_the_five_bands_are_accepted() -> None:
+    validate_atelier_settings(_atelier())
+
+
+def test_a_missing_band_key_is_refused() -> None:
+    """⚠ THE HALF PYDANTIC CANNOT SEE. `dict[EffortBand, StrictInt]` refuses an
+    UNKNOWN key; nothing but a set equality refuses a MISSING one.
+
+    The read side tolerates a partial mapping — `effort_bands` falls back per
+    band (`stages.py`) — and that tolerance is a backstop against a hand-edited
+    JSONB blob, not a contract for the API. A writer that could post three bands
+    would let the other two silently revert to the platform's numbers with no
+    visible act and nothing in the payload to show it.
+    """
+    partial = _bands()
+    del partial[EffortBand.HALF_DAY.value]
+    with pytest.raises(BoutiqueValidationError):
+        validate_atelier_settings(_atelier(partial))
+
+
+def test_an_unknown_band_key_is_refused_here_too() -> None:
+    """The request model refuses this first; the validator refuses it as well so
+    a non-router caller gets the same 400 rather than writing a sixth band."""
+    with pytest.raises(BoutiqueValidationError):
+        validate_atelier_settings(_atelier({**_bands(), "three_hours": 180}))
+
+
+@pytest.mark.parametrize("minutes", [0, -1, MAX_BAND_MINUTES + 1])
+def test_a_band_outside_the_stored_bound_is_refused(minutes: int) -> None:
+    """`1..1440`, the DDL CHECK on `alteration_tickets.effort_minutes`. A stored
+    5000 would reach the INSERT and answer a 500 on intake instead of a ticket.
+    """
+    with pytest.raises(BoutiqueValidationError):
+        validate_atelier_settings(_atelier(_bands(half_day=minutes)))
+
+
+@pytest.mark.parametrize("minutes", [1, MAX_BAND_MINUTES])
+def test_both_ends_of_the_band_bound_are_admitted(minutes: int) -> None:
+    validate_atelier_settings(_atelier(_bands(half_day=minutes)))
+
+
+def test_the_bands_need_not_be_distinct_or_increasing() -> None:
+    """An owner may flatten her two longest bands onto one number.
+    `bandLabel`'s first-match-wins already handles it, and refusing it would be
+    the platform having an opinion about her workroom. ⚠ D4 records the
+    consequence — a flattened band silently RELABELS old cards — and accepts it.
+    """
+    validate_atelier_settings(_atelier(_bands(half_day=240, full_day=240)))
+    validate_atelier_settings(_atelier(_bands(thirty_min=480, full_day=30)))
+
+
+def test_no_default_at_all_is_a_legal_block() -> None:
+    """`null` is a VALUE and it CLEARS the boutique's default. It is required on
+    the wire, never optional."""
+    validate_atelier_settings(_atelier(default=None))
+
+
+@pytest.mark.parametrize("hours", [0, 1, MAX_WEEKLY_CAPACITY_HOURS])
+def test_a_default_inside_the_columns_own_bound_is_accepted(hours: int) -> None:
+    """⚠ INCLUDING `0`, which is «the boutique is stood down this week» and not
+    an unset value."""
+    validate_atelier_settings(_atelier(default=hours))
+
+
+@pytest.mark.parametrize("hours", [-1, MAX_WEEKLY_CAPACITY_HOURS + 1, 1000])
+def test_a_default_outside_the_columns_own_bound_is_refused(hours: int) -> None:
+    """The bound is imported from `app/atelier/stages.py` — the same magnitude
+    the 0022 CHECK pins on `staff_users.weekly_capacity_hours`, so the settings
+    bound and the column bound cannot drift."""
+    with pytest.raises(BoutiqueValidationError):
+        validate_atelier_settings(_atelier(default=hours))
+
+
+@pytest.mark.parametrize("bands", ["nope", None, [30, 60], 30])
+def test_a_bands_value_that_is_not_a_mapping_is_refused(bands: Any) -> None:
+    with pytest.raises(BoutiqueValidationError):
+        validate_atelier_settings({"effort_bands": bands, "default_weekly_capacity_hours": None})

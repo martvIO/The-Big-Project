@@ -50,7 +50,7 @@ Service = Annotated[BoutiqueSettingsService, Depends(get_boutique_service)]
 async def get_settings(request: Request, staff: Staff, service: Service) -> SettingsResponse:
     tenant = get_current_tenant(request)
     result = await service.get_settings(tenant.id)
-    return SettingsResponse(profile=result.profile, toggles=result.toggles)
+    return SettingsResponse(profile=result.profile, toggles=result.toggles, atelier=result.atelier)
 
 
 @router.put("/settings")
@@ -62,8 +62,16 @@ async def update_settings(
     # fields the client actually sent may enter the patch.
     profile = body.profile.model_dump(exclude_unset=True) if body.profile is not None else None
     toggles = body.toggles.model_dump(exclude_unset=True) if body.toggles is not None else None
-    result = await service.update_settings(tenant.id, profile=profile, toggles=toggles)
-    return SettingsResponse(profile=result.profile, toggles=result.toggles)
+    # ⚠ NO `exclude_unset` ON THIS ONE, AND `mode="json"`. Every field of
+    # `AtelierSettingsUpdate` is required — a partial `atelier` object would
+    # replace the whole key and delete what it did not name — so there is nothing
+    # for `exclude_unset` to exclude, and `mode="json"` keeps the `EffortBand`
+    # keys plain strings on their way into a JSONB column and an audit row.
+    atelier = body.atelier.model_dump(mode="json") if body.atelier is not None else None
+    result = await service.update_settings(
+        tenant.id, actor=staff, profile=profile, toggles=toggles, atelier=atelier
+    )
+    return SettingsResponse(profile=result.profile, toggles=result.toggles, atelier=result.atelier)
 
 
 # --- appointment types ---

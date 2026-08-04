@@ -1649,4 +1649,8 @@ def test_every_atelier_audit_value_is_pinned_by_literal() -> None:
         "atelier_ticket_deleted",
         # F42: her weekly hours changed, and by whom.
         "atelier_capacity_set",
+        # F42: the boutique's band mapping and house default changed. `entity`
+        # is the TENANT's id, not a ticket's, and the details are the whole new
+        # value — the trail is the recovery path for a designed last-write-wins.
+        "atelier_settings_updated",
     }

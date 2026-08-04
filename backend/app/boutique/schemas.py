@@ -7,8 +7,9 @@ import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
+from app.atelier.stages import MAX_WEEKLY_CAPACITY_HOURS
 from app.boutique.validation import (
     MAX_APPOINTMENT_TYPE_NAME_LENGTH,
     MAX_DEPOSIT_AMOUNT_AGOROT,
@@ -26,7 +27,7 @@ from app.boutique.validation import (
     MAX_TERMS_TEXT_BYTES,
     MAX_WEEKLY_RULES,
 )
-from app.models.constants import AppointmentAudience
+from app.models.constants import AppointmentAudience, EffortBand
 
 # Both now live in app/schemas.py so app/catalog/ does not import a boutique
 # schema. Re-exported here — the `as` form is the re-export idiom ruff accepts —
@@ -51,14 +52,47 @@ class TogglesUpdate(ForbidExtraModel):
     brides_only: bool | None = None
 
 
+class AtelierSettingsUpdate(ForbidExtraModel):
+    """⚠ A FULL REPLACE OF THE WHOLE `atelier` BLOCK — every field REQUIRED, no
+    default anywhere. `UpdateAppointmentTypeRequest`'s shipped rule, and here it
+    is load-bearing for a second reason: `merge_settings` merges at the TOP LEVEL
+    ONLY, so a patch carrying a PARTIAL `atelier` object replaces the whole thing
+    and deletes the key it did not name. One writer, one dialog, one save, both
+    keys, always — structural rather than a convention.
+
+    ⚠ `StrictInt`, NOT `int`, AND THE ANTI-`bool` RULE IS VACUOUS WITHOUT IT.
+    `ForbidExtraModel` sets `extra="forbid"` and NOTHING ELSE (`app/schemas.py:13-18`
+    — there is no `strict=True` on it), so a plain `dict[EffortBand, int]`
+    COERCES before any validator runs: `{"half_day": true}` becomes `1`, `"300"`
+    becomes `300`, `30.0` becomes `30`. `validate_atelier_settings` would then
+    never see a bool, its type check would be unreachable code, and a ONE-MINUTE
+    «חצי יום» would be a 200 — silently understating every load bar downstream.
+
+    Keying on `EffortBand` rather than `str` also makes an UNKNOWN band key
+    pydantic's refusal; the validator still owns the MISSING one, which no
+    request model can see.
+    """
+
+    effort_bands: dict[EffortBand, StrictInt]
+    # `null` CLEARS the boutique's default. Required with no schema default:
+    # `AssignTicketRequest.staff_user_id`'s rule — an optional field would make a
+    # bands-only save silently clear it, which is the shallow-merge trap above
+    # wearing a different hat.
+    default_weekly_capacity_hours: StrictInt | None = Field(ge=0, le=MAX_WEEKLY_CAPACITY_HOURS)
+
+
 class UpdateSettingsRequest(ForbidExtraModel):
     profile: ProfileUpdate | None = None
     toggles: TogglesUpdate | None = None
+    atelier: AtelierSettingsUpdate | None = None
 
 
 class SettingsResponse(BaseModel):
     profile: dict[str, Any]
     toggles: dict[str, Any]
+    # F42. On the READ so the console's settings dialog opens with the tenant's
+    # own bands and default already in hand and costs no second request.
+    atelier: dict[str, Any]
 
 
 # --- appointment types ---
