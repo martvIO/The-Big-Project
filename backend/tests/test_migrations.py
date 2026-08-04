@@ -2544,3 +2544,333 @@ def test_the_seamstress_capacity_migration_round_trips(migrated_db: str) -> None
         assert index_present() is True
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F20: the four privacy consent columns and their two named CHECKs ---
+
+_PRIVACY_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable, column_default "
+    "FROM information_schema.columns WHERE table_name = 'customers' "
+    "AND column_name IN ('marketing_consent_at', 'marketing_consent_source', "
+    "'marketing_consent_withdrawn_at', 'erased_at') ORDER BY column_name"
+)
+_CUSTOMERS_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'customers'::regclass AND conname = :name"
+)
+_SOURCE_CHECK = "customers_marketing_consent_source_check"
+_WITHDRAW_CHECK = "customers_marketing_withdraw_check"
+# 0024's upgrade statements VERBATIM, for the reason _ADD_ROLE_CHECK is 0011's:
+# the populated-table test below proves the migration's own ADD-validates-existing
+# -rows claim, so it must run the real ALTER and not a paraphrase. The DROPs
+# deliberately omit the IF EXISTS that 0024's downgrade carries — a probe that
+# silently no-ops when the constraint is already gone would make every half below
+# pass vacuously.
+_ADD_SOURCE_CHECK = (
+    f"ALTER TABLE customers ADD CONSTRAINT {_SOURCE_CHECK} "
+    "CHECK (marketing_consent_source IN ('booking_form'))"
+)
+_ADD_WITHDRAW_CHECK = (
+    f"ALTER TABLE customers ADD CONSTRAINT {_WITHDRAW_CHECK} "
+    "CHECK (marketing_consent_withdrawn_at IS NULL OR marketing_consent_at IS NOT NULL)"
+)
+_DROP_SOURCE_CHECK = f"ALTER TABLE customers DROP CONSTRAINT {_SOURCE_CHECK}"
+_DROP_WITHDRAW_CHECK = f"ALTER TABLE customers DROP CONSTRAINT {_WITHDRAW_CHECK}"
+# Spelled as POSTGRES deparses them, not as 0024 wrote them, and CAPTURED from a
+# real 16.x server rather than transcribed — a literal that merely looks right
+# would pin nothing, which is the whole failure mode these two rows exist to
+# prevent for whoever widens the source list next.
+#
+# The source row is the load-bearing one. A one-element IN deparses to a plain
+# `=`, NOT to the `= ANY (ARRAY[...])` every other CHECK in this file shows, so
+# this literal is itself the assertion that the allowed set has exactly ONE
+# member — which is plan DR-10: F20 ships the column F33's walk-in opt-in would
+# extend and deliberately does NOT ship the promotion, because laundering an
+# unverified queue submission into `marketing_consent_at` would degrade the
+# Spam-Law evidence value of every row in the column.
+_SOURCE_CHECK_DEF = "CHECK ((marketing_consent_source = 'booking_form'::text))"
+_WITHDRAW_CHECK_DEF = (
+    "CHECK (((marketing_consent_withdrawn_at IS NULL) OR (marketing_consent_at IS NOT NULL)))"
+)
+_PRIVACY_PROBE_PHONE = "+972500000000"
+
+
+def _customer_insert(
+    *, source: str = "NULL", consent_at: str = "NULL", withdrawn_at: str = "NULL"
+) -> str:
+    """One `customers` row, with the three consent columns spelled as SQL
+    FRAGMENTS rather than bound parameters.
+
+    asyncpg refuses an untyped NULL parameter, so binding these would need three
+    `::timestamptz`/`::text` casts written into the statement anyway — at which
+    point the cast is doing the work and the parameter is decoration. The
+    fragments are test-owned literals ("NULL", "now()", "'booking_form'") and
+    never anything a fixture produced.
+
+    Every row mints its own tenant, so the (tenant_id, phone) uniqueness that
+    0008 put on this table cannot collide between probes even though they all
+    share one phone number.
+    """
+    return (
+        "INSERT INTO customers (tenant_id, phone, name, marketing_consent_at, "
+        "marketing_consent_source, marketing_consent_withdrawn_at) VALUES "
+        f"(uuid_generate_v4(), '{_PRIVACY_PROBE_PHONE}', 'Probe', "
+        f"{consent_at}, {source}, {withdrawn_at})"
+    )
+
+
+def _privacy_columns(url: str) -> dict[str, tuple[str, str, str | None]]:
+    async def read() -> dict[str, tuple[str, str, str | None]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_PRIVACY_COLUMNS))).all()
+                return {
+                    str(row[0]): (str(row[1]), str(row[2]), None if row[3] is None else str(row[3]))
+                    for row in rows
+                }
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _privacy_constraint_def(url: str, name: str) -> str | None:
+    async def read() -> str | None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                row = (await conn.execute(text(_CUSTOMERS_CONSTRAINT_DEF), {"name": name})).first()
+                return None if row is None else str(row[0])
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _privacy_probe(url: str, statements: list[str], constraint: str) -> bool:
+    """Run `statements` in ONE transaction and answer whether the LAST one was
+    admitted; roll the whole thing back either way.
+
+    One helper for two shapes because they are the same experiment: an INSERT the
+    CHECK must accept or refuse, and — with a DROP and a seed in front of it —
+    0011's ADD-CONSTRAINT-over-populated-rows claim. Postgres runs DDL
+    transactionally, so even the DROP unwinds and the session-scoped container
+    ends as it started, which is what keeps a seeded consent row out of the way of
+    every other module sharing it.
+
+    The refusal half asserts the CONSTRAINT NAME appears in the error. Without it
+    a probe that failed for an unrelated reason — a NOT NULL, a typo in the
+    fragment, a missing column — would read as "the CHECK did its job", which is
+    how a constraint test passes while testing nothing.
+    """
+
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    for statement in statements[:-1]:
+                        await conn.execute(text(statement))
+                    await conn.execute(text(statements[-1]))
+                    return True
+                except DBAPIError as exc:
+                    assert constraint in str(exc), str(exc)
+                    return False
+                finally:
+                    await trans.rollback()
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+@pytest.mark.db
+def test_the_privacy_migration_adds_four_nullable_columns_with_no_default(
+    migrated_db: str,
+) -> None:
+    """NULLABLE WITH NO DEFAULT on all four, and the absence of a default is the
+    decision rather than an omission (D6).
+
+    Default-off is STRUCTURAL here: consent is the presence of a timestamp, so
+    there is no boolean whose `server_default` a later migration could flip to
+    opt-out, and no second spelling of "no consent on record" for a predicate to
+    disagree about. A `DEFAULT now()` on `marketing_consent_at` would silently
+    consent every bride already in the table, in one word, invisibly.
+
+    `marketing_consent_source` is the one TEXT: which surface took the consent.
+    `erased_at` is §14 evidence and the guard that keeps the `customers` SCRUB
+    from re-scrubbing rows it already erased.
+
+    ⚠ `test_every_tenant_id_table_has_forced_rls` needs no edit alongside this and
+    its silence is NOT evidence: F20 creates no table, so that walker has nothing
+    new to find. Adding a column to a table already under a policy does not change
+    the policy."""
+    assert _privacy_columns(migrated_db) == {
+        "erased_at": ("timestamp with time zone", "YES", None),
+        "marketing_consent_at": ("timestamp with time zone", "YES", None),
+        "marketing_consent_source": ("text", "YES", None),
+        "marketing_consent_withdrawn_at": ("timestamp with time zone", "YES", None),
+    }
+
+
+@pytest.mark.db
+def test_the_privacy_check_definitions_are_pinned(migrated_db: str) -> None:
+    """The highest-value test in F20's migration, and what it guards is a FUTURE
+    edit.
+
+    Keyed to `head` — i.e. AFTER this feature's migration, whatever number it
+    ended up with — and never to a hardcoded revision id, so a literal here would
+    not rot the first time another feature lands a migration first.
+
+    Both constraints are NAMED and each is its own statement (0011's shape), which
+    is what makes a later widening a one-line edit rather than a guess at a
+    Postgres-generated name. The source row is where whoever adds `'walk_in'`
+    collides, and it is deliberately the place they collide: plan DR-10 declines
+    the walk-in promotion on the record, and the reason is in that section."""
+    assert _privacy_constraint_def(migrated_db, _SOURCE_CHECK) == _SOURCE_CHECK_DEF
+    assert _privacy_constraint_def(migrated_db, _WITHDRAW_CHECK) == _WITHDRAW_CHECK_DEF
+
+
+@pytest.mark.db
+def test_the_marketing_source_check_admits_only_booking_form(migrated_db: str) -> None:
+    """One allowed value at F20, and NULL, and nothing else.
+
+    NULL is admitted and is not an oversight: the overwhelming majority of rows
+    have no consent at all, and a source without a consent behind it is meaningless
+    rather than illegal. The third CHECK that would pin `consent implies source`
+    is declined on the record (plan §2) — the single writer sets both in one
+    statement, and pinning it would make any future widening a two-constraint
+    migration.
+
+    `'walk_in'` is refused BY NAME because that is the value a later reader will
+    reach for first, and DR-10 is the argument they need to read before adding
+    it."""
+    assert _privacy_probe(migrated_db, [_customer_insert(source="'booking_form'")], _SOURCE_CHECK)
+    assert _privacy_probe(migrated_db, [_customer_insert(source="NULL")], _SOURCE_CHECK)
+
+    assert not _privacy_probe(migrated_db, [_customer_insert(source="'walk_in'")], _SOURCE_CHECK)
+    assert not _privacy_probe(migrated_db, [_customer_insert(source="'nonsense'")], _SOURCE_CHECK)
+
+
+@pytest.mark.db
+def test_the_withdraw_check_refuses_a_withdrawal_with_no_consent_behind_it(
+    migrated_db: str,
+) -> None:
+    """Withdrawal is ADDITIVE — clearing `marketing_consent_at` would destroy the
+    Spam-Law evidence that consent existed when a message was sent, so effective
+    consent is `at IS NOT NULL AND withdrawn IS NULL` and the two columns must
+    never disagree about which one happened.
+
+    All four corners, because a CHECK that admits everything is not a constraint.
+    The refused corner is the incoherent one: a withdrawal timestamp standing over
+    a consent that never existed, which would make the pair unreadable as
+    evidence in exactly the direction the column exists to serve.
+
+    The repository's `withdraw_marketing_consent` (A8) carries
+    `AND marketing_consent_at IS NOT NULL` in its WHERE, so this CHECK is
+    UNREACHABLE through the application — which is the point. It is the fence
+    against a hand-written UPDATE, not against the code path."""
+    assert _privacy_probe(migrated_db, [_customer_insert()], _WITHDRAW_CHECK)
+    assert _privacy_probe(migrated_db, [_customer_insert(consent_at="now()")], _WITHDRAW_CHECK)
+    assert _privacy_probe(
+        migrated_db,
+        [_customer_insert(consent_at="now()", withdrawn_at="now()")],
+        _WITHDRAW_CHECK,
+    )
+
+    assert not _privacy_probe(
+        migrated_db, [_customer_insert(withdrawn_at="now()")], _WITHDRAW_CHECK
+    )
+
+
+@pytest.mark.db
+def test_adding_the_privacy_checks_validates_existing_rows(migrated_db: str) -> None:
+    """0024's comment claims ADD CONSTRAINT validates existing rows, so neither
+    ALTER can fail on live data where every pre-0024 customer carries four NULLs.
+    Proven with the migration's exact ALTERs on a POPULATED table, both halves
+    each: a legal row present -> the constraint is added; an illegal row present
+    -> it is REFUSED.
+
+    Without the second half a NOT VALID constraint would pass the first and the
+    migration's comment would be a lie — which is the 0011 precedent this borrows
+    (`test_adding_the_role_check_validates_existing_rows`) and the reason it is
+    borrowed rather than restated."""
+    assert _privacy_probe(
+        migrated_db,
+        [_DROP_SOURCE_CHECK, _customer_insert(source="'booking_form'"), _ADD_SOURCE_CHECK],
+        _SOURCE_CHECK,
+    )
+    assert not _privacy_probe(
+        migrated_db,
+        [_DROP_SOURCE_CHECK, _customer_insert(source="'walk_in'"), _ADD_SOURCE_CHECK],
+        _SOURCE_CHECK,
+    )
+
+    assert _privacy_probe(
+        migrated_db,
+        [
+            _DROP_WITHDRAW_CHECK,
+            _customer_insert(consent_at="now()", withdrawn_at="now()"),
+            _ADD_WITHDRAW_CHECK,
+        ],
+        _WITHDRAW_CHECK,
+    )
+    assert not _privacy_probe(
+        migrated_db,
+        [_DROP_WITHDRAW_CHECK, _customer_insert(withdrawn_at="now()"), _ADD_WITHDRAW_CHECK],
+        _WITHDRAW_CHECK,
+    )
+
+
+@pytest.mark.db
+def test_the_privacy_migration_round_trips(migrated_db: str) -> None:
+    """upgrade() adds four columns and two CHECKs; downgrade() removes ALL SIX.
+    Probes both directions rather than only the end state, which is 0013's rule: a
+    downgrade that silently no-ops stays green while shipping a migration that
+    cannot be rolled back.
+
+    The target is resolved by IDENTITY (`_parent_of`), never as a literal and
+    never as `-1`: this migration's number comes from `alembic heads` at build
+    time and is renumbered at the rebase that precedes the push. 0017's docstring
+    records `-1` breaking twice for exactly that reason.
+
+    Appended at the END of the file and owns no fixtures. The F42 block above
+    calls its own round-trip LAST; both claims are about leaving the shared schema
+    at head, both `finally` blocks guarantee it, so the two are order-independent
+    and neither is weakened.
+
+    The finally is not decoration. Left downgraded, the ORM maps four columns
+    `customers` no longer has, and every later db test in this shared session
+    fails with UndefinedColumn somewhere unrelated to itself."""
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("privacy consent")
+    expected = {
+        "erased_at": ("timestamp with time zone", "YES", None),
+        "marketing_consent_at": ("timestamp with time zone", "YES", None),
+        "marketing_consent_source": ("text", "YES", None),
+        "marketing_consent_withdrawn_at": ("timestamp with time zone", "YES", None),
+    }
+
+    def checks() -> tuple[str | None, str | None]:
+        return (
+            _privacy_constraint_def(migrated_db, _SOURCE_CHECK),
+            _privacy_constraint_def(migrated_db, _WITHDRAW_CHECK),
+        )
+
+    try:
+        assert _privacy_columns(migrated_db) == expected
+        assert checks() == (_SOURCE_CHECK_DEF, _WITHDRAW_CHECK_DEF)
+
+        command.downgrade(cfg, down_to)
+        assert _privacy_columns(migrated_db) == {}
+        assert checks() == (None, None)
+
+        command.upgrade(cfg, "head")
+        assert _privacy_columns(migrated_db) == expected
+        assert checks() == (_SOURCE_CHECK_DEF, _WITHDRAW_CHECK_DEF)
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
