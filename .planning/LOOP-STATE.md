@@ -25,12 +25,22 @@ config:
 current: null                   # ==================================================================
                                 # ==== HANDOFF, 2026-08-04 (THIRD) — NOTHING IN FLIGHT ============
                                 # ==================================================================
-                                # 24 MERGED · 21 BUILDABLE · 1 PARKED FOREVER (F32, subsumed).
+                                # 25 MERGED · 20 BUILDABLE · 1 PARKED FOREVER (F32, subsumed).
                                 # (PR #44 is not in that count — it was debt + infrastructure,
-                                # not a queue entry. Two PRs shipped, one queue entry closed.)
-                                # TWELVE ARE ELIGIBLE RIGHT NOW, verified by resolving deps against
+                                # not a queue entry. FOUR PRs shipped this session: #44 harness,
+                                # #45 F20, #46 F50, plus dd75ea1's walkthrough findings on main.)
+                                # ELEVEN ARE ELIGIBLE RIGHT NOW, verified by resolving deps against
                                 # the merged set rather than by reading file order:
-                                #   F50 F21 F22 F24 F25 F27 F28 F35 F38 F44 F47 F49
+                                #   F21 F22 F24 F25 F27 F28 F35 F38 F44 F47 F49
+                                #
+                                # ⚠ NINE PRODUCT DEFECTS ARE LOGGED IN `known_product_bugs` and NONE
+                                # is fixed. Six are a11y, which is a LEGAL requirement here
+                                # (IS 5568 / WCAG 2.0 AA), and the two worst are invisible to BOTH
+                                # test suites by construction — a role="status" that never fires and
+                                # an aria-invalid that lies about corrected input. They will not be
+                                # caught by any gate; they need a deliberate feature.
+                                # SUGGESTED: one small a11y/UX batch before more features. Every fix
+                                # is 1-3 lines and each has its file named in the entry.
                                 # NOTHING IS USER-BLOCKED. Two user items remain and BOTH are
                                 # DEPLOY-time, not build-time: the 3 DNS records and the 2 Twilio
                                 # values. The queue can run to exhaustion without another answer.
@@ -1198,8 +1208,74 @@ queue:
     slug: walk-in-bookings
     epic: E3-carveout
     title: Owner-created bookings (walk-in half first)
-    status: queued
+    status: merged          # WALK-IN HALF ONLY — the remote half is still open, see `still_open`
+    pr: 46
+    attempts: 1
     deps: [F15, F34]
+    spec: .planning/specs/walk-in-bookings.md
+    plan: .planning/plans/walk-in-bookings.md
+    still_open: >-
+      THE REMOTE/SCHEDULED OWNER-CREATE HALF. It needs the manage link, consent capture
+      and a terms answer — none of which the walk-in half required, because a walk-in
+      mints no token. Re-queue it as its own entry when E3 is revisited. F15's Risk 1
+      (a mis-tapped terminal cancel) is RE-POINTED at that half, not closed by this one:
+      a walk-in stamped at `now` cannot restore next Tuesday's appointment. What this
+      half does remedy is the mis-tap discovered AT THE DOOR.
+    shipped: >-
+      SHIPPED as PR #46, merged 2026-08-04. Migration 0025. 6 commits.
+      GATES AT MERGE: lint exit 0 · 2346 fast · 845 db against real PG16 · 2496 frontend
+      (manage 1304, storefront 1088, ui 104) · 150 e2e · alembic heads = 0025, one head.
+
+      THE BRIEF WAS WRONG ABOUT THE CODE IN FIVE PLACES and two were load-bearing:
+      (1) `bookings.source` DID NOT EXIST — no migration added it. F50 builds it, and it
+      earns its place as the terms CHECK's discriminator rather than as a label.
+      (2) "a DB CHECK keeps storefront rows non-null" IS INVERTED. 0008_bookings.py has
+      plain NOT NULLs and NO such CHECK. So this feature had to BUILD the constraint that
+      makes dropping those NOT NULLs safe — building on the brief's assumption would have
+      made terms evidence optional FOR EVERYONE, not just walk-ins.
+      Also: the "no link is minted" discharge was under-argued (two shipped writers mint
+      tokens on rows that have none; the real discharges are that a `customers` row
+      REQUIRES an OTP, and that starts_at = now puts the row outside both predicates).
+
+      TWO RULINGS THE SPEC HAD TO MAKE, both recorded rather than defaulted:
+      MARKETING CONSENT IS **NO FIELD AT ALL**, not `false`. The 0024 CHECK admits only
+      'booking_form', and MarketingConsentSource's docstring already refuses F33's
+      STRONGER case as laundering. Shipping `false` days after F20 would have been a §30A
+      violation committed by the feature built to prevent exactly that.
+      NO §11 COLLECTION POINT: the body is two UUIDs, so nothing is obtained from the
+      subject. That dissolved the notice question, meant no new public Hebrew, and is why
+      Gate 1 self-approved with no in_run_gate opened.
+
+      THE HAZARD THAT WAS NOT IN F50's OWN CODE: dropping the two terms NOT NULLs broke
+      six readers, TWO of them a LIVE 500 on F20's §13 subject-export route merged the
+      same morning. Migration + both reader fixes shipped in ONE commit.
+
+      PROOFS RUN, NOT ASSERTED. R-1 is the one that mattered: the terms-evidence CHECK and
+      its inverse are behaviourally identical on every value that exists today, so ONE
+      test had to discriminate. Inverting the constraint reds it ALONE while the
+      four-corner, source-check, positive-version and droppable tests stay green. The
+      refusing downgrade() was proved by adding a DELETE to it and watching red. The §30A
+      test seeds a REAL consent and asserts byte-identity PLUS an unchanged updated_at, so
+      the trigger itself testifies no customers UPDATE was issued — against a NULL-consent
+      customer the same assertion would have been NULL-to-NULL and vacuous.
+
+      A DEFECT THE PLAN DID NOT ANTICIPATE, worth remembering: a refusing downgrade() plus
+      a session-scoped shared `migrated_db` is a collision — ONE surviving walk-in row
+      made ALL EIGHTEEN round-trip tests fail, in modules that never heard of F50, with a
+      NotNullViolationError naming a column their feature does not own. Fixed with a
+      module-scoped sweep, verbatim the trap F57 documented one table over. The migration
+      was NOT softened.
+
+      REVIEW: 11 applied, 8 rejected with recorded reasons. The best applied finding CLOSED
+      A RISK THE SPEC HAD ACCEPTED — the backfill feed could mint a manage_token_hash on a
+      walk-in, which is the exact danger this carve-out exists to avoid. One line on the
+      feed closed it. §13 export also gained `source`, so the Privacy Protection Authority
+      is not handed the ambiguity F50 created.
+      R-8 IS A CLAIM THIS BUILD MADE AND WITHDREW: it wrote in a test comment that an F16
+      test was vacuous, then found its probe had mutated the FIRST OF TWO
+      `starts_at > after` occurrences, in a different method. The seeded row added on that
+      false premise was removed with it. R-7 records that the vacuity hunt found NOTHING,
+      so a zero-finding result is never read as a skipped review.
     note: >-
       Carved out of F15 by Interview Q6 and queued here because F15's spec found
       it load-bearing and the roadmap has no entry for it: a booking the owner
