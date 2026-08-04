@@ -53,7 +53,12 @@ from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.message_log import MessageLogRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
-from app.models.constants import AuditAction, BookingStatus, MessageKind
+from app.models.constants import (
+    AuditAction,
+    BookingStatus,
+    MarketingConsentSource,
+    MessageKind,
+)
 from app.models.customer import Customer
 from app.models.message_log import MessageLog
 from app.models.otp_code import OtpCode
@@ -775,5 +780,132 @@ async def test_the_budget_is_per_route_and_a_spent_export_does_not_block_the_era
             tenant_id, customer_id=claim.booking.customer_id, actor=_staff(tenant_id), reason=None
         )
         assert summary.already_erased is False
+    finally:
+        await engine.dispose()
+
+
+# --- C8: the booking form's marketing consent ---
+
+
+async def test_the_booking_form_stamps_the_consent_only_when_the_box_is_ticked(
+    app_role_url: str,
+) -> None:
+    """Three legs, and the middle one is the compliance property.
+
+    Unticked issues NO statement at all — not a clearing one. An empty checkbox
+    on a later booking is not a withdrawal, and treating an omission as one
+    would silently revoke a consent the boutique can prove it holds.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    quiet_phone = _phone()
+    consenting_phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        quiet = await _claim(
+            factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=quiet_phone
+        )
+        assert (
+            await _customer(factory, tenant_id, quiet.booking.customer_id)
+        ).marketing_consent_at is None
+
+        consenting = await _claim(
+            factory,
+            tenant_id,
+            type_id,
+            starts_at=PAST_SLOT_B,
+            now=PAST_NOW,
+            phone=consenting_phone,
+            marketing_consent=True,
+        )
+        customer_id = consenting.booking.customer_id
+        row = await _customer(factory, tenant_id, customer_id)
+        assert row.marketing_consent_at is not None
+        assert row.marketing_consent_source == MarketingConsentSource.BOOKING_FORM.value
+        stamped_at = row.marketing_consent_at
+
+        # A second booking by the same consenting customer must NOT re-stamp:
+        # the original timestamp is the evidence of when she agreed, and moving
+        # it forward would misdate the proof.
+        await _claim(
+            factory,
+            tenant_id,
+            type_id,
+            starts_at=_slot(12, date=PAST_DATE),
+            now=PAST_NOW,
+            phone=consenting_phone,
+            marketing_consent=True,
+        )
+        assert (await _customer(factory, tenant_id, customer_id)).marketing_consent_at == stamped_at
+    finally:
+        await engine.dispose()
+
+
+async def test_an_unticked_second_booking_does_not_revoke_an_existing_consent(
+    app_role_url: str,
+) -> None:
+    """The half a clearing statement would break, asserted on its own because it
+    is the one a "just set the column to the checkbox value" refactor destroys —
+    and destroys silently, since nothing in the product reads the column yet."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        first = await _claim(
+            factory,
+            tenant_id,
+            type_id,
+            starts_at=PAST_SLOT,
+            now=PAST_NOW,
+            phone=phone,
+            marketing_consent=True,
+        )
+        await _claim(factory, tenant_id, type_id, starts_at=PAST_SLOT_B, now=PAST_NOW, phone=phone)
+        assert (
+            await _customer(factory, tenant_id, first.booking.customer_id)
+        ).marketing_consent_at is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_the_0009_replay_path_still_stamps_the_consent(app_role_url: str) -> None:
+    """⚠ D20, AND THE REASON A SINGLE CALL SITE WOULD BE WRONG.
+
+    When a claim commits but its 201 dies on a flaky mobile network, the retry
+    takes the idempotency branch at `booking/service.py:412-427` and returns
+    BEFORE step 6's `upsert` — so a consent write placed only beside the upsert
+    is unreachable on exactly the resubmission a customer is most likely to
+    make. She ticked the box, she saw a failure, she pressed the button again,
+    and the second render tells her it worked.
+
+    Setup: book WITHOUT the box, then replay the same slot and phone WITH it.
+    The replay is a real one — `_claim` mints a fresh verification token, and
+    the branch is entered because a live booking already exists at that instant
+    for that customer.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        first = await _claim(
+            factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone
+        )
+        customer_id = first.booking.customer_id
+        assert (await _customer(factory, tenant_id, customer_id)).marketing_consent_at is None
+
+        replay = await _claim(
+            factory,
+            tenant_id,
+            type_id,
+            starts_at=PAST_SLOT,
+            now=PAST_NOW,
+            phone=phone,
+            marketing_consent=True,
+        )
+        assert replay.created is False, "this is not the replay branch — the test proves nothing"
+        assert replay.booking.id == first.booking.id
+        assert (await _customer(factory, tenant_id, customer_id)).marketing_consent_at is not None
     finally:
         await engine.dispose()

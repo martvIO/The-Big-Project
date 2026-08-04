@@ -16,6 +16,17 @@ class SmsNotConfiguredError(Exception):
     registration existing."""
 
 
+class SmsRecipientErasedError(Exception):
+    """The recipient's phone is an erasure placeholder — a §14 erase or a
+    retention SCRUB has already destroyed her real number (F20 C7).
+
+    Its own class rather than a reuse of `SmsNotConfiguredError`: "no provider"
+    and "this person asked to be forgotten" are not the same operational fact,
+    and one day somebody will read the log line. Raised BEFORE any message_log
+    insert, so it leaves no evidence row — there is nothing to evidence.
+    """
+
+
 class SmsSendError(Exception):
     """The provider could not be reached or refused the send. Carries no
     provider-supplied text: the original is logged server-side and recorded on
