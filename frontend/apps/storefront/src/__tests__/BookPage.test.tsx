@@ -1017,6 +1017,165 @@ describe("BookPage details step", () => {
   });
 });
 
+// --- F20: the collection notice and the marketing consent -------------------
+
+describe("BookPage details step — the collection notice", () => {
+  it("renders the notice on the details step and on no other", async () => {
+    // PPL §11(b) wants the notice at the moment of collection, and `details` is
+    // that moment — it is where she types her name. The negative half is the
+    // point: a notice on every step is a notice she stops reading.
+    await walkToDetails();
+    expect(screen.getByRole("heading", { name: i18n.t("booking.collectionNoticeHeading") }))
+      .toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+    fireEvent.click(forward());
+    expect(
+      screen.queryByRole("heading", { name: i18n.t("booking.collectionNoticeHeading") }),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") }));
+    fireEvent.click(forward());
+    expect(
+      screen.queryByRole("heading", { name: i18n.t("booking.collectionNoticeHeading") }),
+    ).toBeNull();
+    // And the verify step gained no control of its own.
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("renders the BOUTIQUE'S OWN notice text, not a copy of the platform default", async () => {
+    // ⚠ THE ASSERTION LIVES ON THE RENDERED BLOCK, not on a backend constant.
+    // `/privacy` and this block serve the SAME `privacy_notice_text` off the
+    // SAME fetch (D13), so a builder who hardcoded the platform Hebrew into
+    // `he.ts` "to save a prop" would publish a notice that ignores every
+    // boutique's override — and every backend test would stay green.
+    loadBoutique.mockResolvedValue(
+      boutique({ privacy_notice_text: "הנוסח של הבוטיק עצמה על {{boutique}}." }),
+    );
+    await walkToDetails();
+
+    expect(screen.getByText(/הנוסח של הבוטיק עצמה/)).toBeInTheDocument();
+    expect(screen.queryByText(/הודעת ברירת מחדל/)).toBeNull();
+    // Substituted, never printed raw.
+    expect(screen.queryByText(/{{boutique}}/)).toBeNull();
+  });
+
+  it("renders the notice WHOLE — no clamp, no summary, no truncation", async () => {
+    // ⚠ THE PROPERTY THIS SURFACE CAN ACTUALLY VOUCH FOR, and the one worth
+    // holding. Whether the text discharges §11(b)(1)–(4), §13, §14 and §30A is
+    // asserted against the constant in `test_privacy_text.py`, where the words
+    // live; duplicating those phrases here would put a second copy of a legal
+    // string in the repo — the exact failure D13 and F33's `checkin.notice`
+    // comment both name — and would then be asserting that a fixture agrees
+    // with itself.
+    //
+    // What the frontend owns is that the whole document reaches her eyes. A
+    // clamped block, a "read more" disclosure or a friendly two-line summary
+    // would each leave a §11 notice that is silently incomplete at the one
+    // moment the statute cares about, with every backend test green.
+    const notice = ["פסקה ראשונה.", "פסקה שנייה.", "פסקה שלישית."].join("\n\n");
+    loadBoutique.mockResolvedValue(boutique({ privacy_notice_text: notice }));
+    await walkToDetails();
+
+    const block = screen.getByTestId("collection-notice");
+    for (const paragraph of notice.split("\n\n")) {
+      expect(block, `the notice is missing: ${paragraph}`).toHaveTextContent(paragraph);
+    }
+    // And every paragraph break survived: a single run-on block is how these
+    // three would render if the pre-line handling were dropped (copy.md R1).
+    expect(within(block).getAllByText(/פסקה/)).toHaveLength(3);
+  });
+
+  it("links out to the full document and carries no other chrome", async () => {
+    await walkToDetails();
+
+    const block = screen.getByTestId("collection-notice");
+    const links = within(block).getAllByRole("link");
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", "/privacy");
+    // Not behind a disclosure: notice at the moment of collection means visible
+    // at the moment of collection.
+    expect(block.querySelector("details")).toBeNull();
+  });
+});
+
+// The label interpolates the boutique's own name, so every lookup for it has to
+// resolve the same way the component does — a bare `t()` here would search for a
+// literal `{{boutique}}` and never match.
+function marketingBox() {
+  return screen.getByRole("checkbox", {
+    name: i18n.t("booking.marketingOptIn", { boutique: "בוטיק אלמה" }),
+  });
+}
+
+describe("BookPage details step — the marketing consent", () => {
+  it("ships unticked", async () => {
+    await walkToDetails();
+
+    expect(marketingBox()).not.toBeChecked();
+  });
+
+  it("is the ONLY checkbox on this step, and the terms box is two steps away", async () => {
+    // §30A wants the consent UNBUNDLED, and this is what unbundled means here:
+    // the two boxes are not merely separate controls, they are on separate
+    // screens, so neither can be ticked by a gesture aimed at the other.
+    await walkToDetails();
+
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+    expect(screen.queryByRole("checkbox", { name: i18n.t("booking.acceptTerms") })).toBeNull();
+  });
+
+  it("does not gate the forward control", async () => {
+    // Anti-detriment: booking must not depend on it. Left alone, the flow
+    // advances — which is also what makes `marketing_consent: false` on the
+    // create body the common path rather than an edge case.
+    await walkToDetails();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+
+    fireEvent.click(forward());
+
+    expect(window.location.pathname).toBe("/book/terms");
+  });
+
+  it("carries a ticked consent into the create body, and ticks nothing else", async () => {
+    await walkToDetails();
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.name")), { target: { value: "נועה" } });
+    fireEvent.change(screen.getByLabelText(i18n.t("booking.notes")), {
+      target: { value: "מגיעה עם אמא" },
+    });
+    fireEvent.click(marketingBox());
+    fireEvent.click(forward());
+
+    // The terms box is UNTOUCHED by the tick above — its own step still gates
+    // the flow, so a wired-together pair would strand her here.
+    expect(screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") })).not.toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: i18n.t("booking.acceptTerms") }));
+    fireEvent.click(forward());
+    await sendCode();
+    enterCode();
+    fireEvent.click(submitButton());
+
+    await waitFor(() => {
+      expect(createBooking).toHaveBeenCalledWith(
+        expect.objectContaining({ marketing_consent: true }),
+      );
+    });
+  });
+
+  it("keeps the tick across a walk back to the slot step and forward again", async () => {
+    // The flow's other answers survive a back-and-forward, and a consent that
+    // silently cleared itself would be recorded as refused for a woman who gave
+    // it — the one direction of that bug nobody notices.
+    await walkToDetails();
+    fireEvent.click(marketingBox());
+
+    fireEvent.click(screen.getByRole("link", { name: new RegExp(i18n.t("booking.backStep")) }));
+    fireEvent.click(forward());
+
+    expect(marketingBox()).toBeChecked();
+  });
+});
+
 describe("BookPage details step — the bound dress", () => {
   it("names the binding and offers every size as a radio", async () => {
     await walkToDetails("d1");
@@ -1720,6 +1879,11 @@ describe("BookPage verify step — submit", () => {
       dress_id: null,
       dress_size: null,
       notes: "מגיעה עם אמא",
+      // F20 / §30A. DEFAULT OFF, and this exhaustive body is where that is
+      // actually pinned: `walkToTerms` never touches the marketing box, so a
+      // checkbox that shipped pre-ticked — or one whose value was wired to
+      // `accepted` — reddens here rather than in a test about consent.
+      marketing_consent: false,
     });
   });
 

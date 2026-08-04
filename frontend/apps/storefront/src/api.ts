@@ -312,6 +312,11 @@ export interface BookingCreateRequest {
   dress_id: string | null;
   dress_size: string | null;
   notes: string | null;
+  // F20 / Communications Law §30A. REQUIRED on the wire even though the server
+  // defaults it to `false`: an optional field is one a later refactor can drop
+  // silently, and the value being sent on every booking is what makes «the box
+  // is not pre-ticked» a property of the request rather than of a comment.
+  marketing_consent: boolean;
 }
 
 export interface BookingCreateResponse {
