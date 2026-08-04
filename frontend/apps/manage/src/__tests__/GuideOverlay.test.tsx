@@ -75,6 +75,8 @@ const getSos = vi.mocked(api.getSos);
 
 const NOW = "2026-08-04T11:07:00Z";
 const RAISED_AT = "2026-08-04T11:04:00Z";
+// A distinct id, so a second page is NAMED by the failure rather than counted.
+const SECOND_ID = "bbbbbbbb-0000-0000-0000-00000000000b";
 
 function alert(overrides: Partial<SosAlert> = {}): SosAlert {
   return {
@@ -286,6 +288,102 @@ describe("the live region", () => {
     view.rerender(tree("board"));
     fireEvent.click(trigger());
     expect(region().textContent).toBe("");
+  });
+});
+
+describe("an SOS page closes the guide", () => {
+  // ⚠ THE ONLY WAY THIS FEATURE CAN HURT ANYBODY, which is why it is four
+  // separate legs rather than one. `showModal()` promotes the dialog to the
+  // browser's TOP LAYER, which paints above every z-index in the document —
+  // including SosOverlay's `z-40` (:451) — and makes every node outside the
+  // dialog INERT. With the guide open, an arriving emergency page is not merely
+  // covered, it is UNANSWERABLE, and there is no z-index, no portal and no
+  // stacking context that changes that. Closing the guide is the only mechanism
+  // that exists.
+
+  it("closes when a for_me page arrives", async () => {
+    mount("floor");
+    await advance(SOS_INTERVAL_MS);
+    fireEvent.click(trigger());
+    expect(isOpen()).toBe(true);
+
+    getSos.mockResolvedValue(sosPayload([alert()]));
+    await advance(SOS_INTERVAL_MS);
+    expect(isOpen()).toBe(false);
+  });
+
+  it("stays out of the way of a page that is NOT for_me", async () => {
+    // Deck §5.4. The channel-down strip and the «N hidden» affordance are not
+    // full-screen, are not urgent, and closing a walkthrough for them would be
+    // noise. This is the only test that dies if the `for_me` filter is dropped.
+    mount("floor");
+    await advance(SOS_INTERVAL_MS);
+    fireEvent.click(trigger());
+
+    getSos.mockResolvedValue(sosPayload([alert({ for_me: false })]));
+    await advance(SOS_INTERVAL_MS);
+    expect(isOpen()).toBe(true);
+  });
+
+  it("reopens over a page that is still live — the close is EDGE-triggered, never level", async () => {
+    // ⚠ AC10 / DL12. Dismissal is deliberate and per-device
+    // (`SosOverlay:322-330`), so a level-triggered guard would close the guide
+    // for as long as a live-but-dismissed alert existed — a staffer who
+    // dismissed a page could never open it again.
+    //
+    // ⚠ THE MUTATION THAT REDDENS THIS IS A LEVEL CHECK THAT ACTUALLY RUNS —
+    // `keys.length > 0` with the dependency array DROPPED. Swapping the set
+    // difference for `keys.length > 0` while `[risingKey]` stays comes back
+    // GREEN, and that is the point rather than a gap: the dependency array is
+    // itself an edge on the alert list, so the two guards compose. Verified by
+    // running both.
+    getSos.mockResolvedValue(sosPayload([alert()]));
+    mount("floor");
+    await advance(SOS_INTERVAL_MS);
+
+    fireEvent.click(trigger());
+    expect(isOpen()).toBe(true);
+    await advance(SOS_INTERVAL_MS * 3);
+    expect(isOpen()).toBe(true);
+  });
+
+  it("closes when a SECOND page arrives beside a live one — appended at the END", async () => {
+    // ⚠ FAILS AGAINST ANY HEAD-OF-LIST DETECTOR. `alerts` is oldest-first on
+    // every path — `sos-context.ts:18` declares it, `sos_alerts.py:245` is
+    // `ORDER BY created_at` ascending, and `sos.tsx:128-131` appends — so a new
+    // page lands at the END. That is precisely the case where a top-layer dialog
+    // is most dangerous: the second emergency arrives under a dialog the first
+    // one already failed to close.
+    const first = alert();
+    getSos.mockResolvedValue(sosPayload([first]));
+    mount("floor");
+    await advance(SOS_INTERVAL_MS);
+
+    fireEvent.click(trigger());
+    expect(isOpen()).toBe(true);
+
+    getSos.mockResolvedValue(sosPayload([first, alert({ id: SECOND_ID })]));
+    await advance(SOS_INTERVAL_MS);
+    expect(isOpen()).toBe(false);
+  });
+
+  it("closes when an already-seen page RE-RISES because `escalated` flipped", async () => {
+    // ⚠ FAILS AGAINST ANY ID-ONLY DETECTOR, and it is not §6c with different
+    // words. `SosOverlay.dismissKey` (:59-61) is composite PRECISELY because
+    // escalation at t=30s and the stall at t=2min each re-rise a dismissed card
+    // exactly once — F37's safety net for «the first responder did not come».
+    // An id-keyed detector is structurally blind to exactly the alert this guard
+    // exists for.
+    getSos.mockResolvedValue(sosPayload([alert()]));
+    mount("floor");
+    await advance(SOS_INTERVAL_MS);
+
+    fireEvent.click(trigger());
+    expect(isOpen()).toBe(true);
+
+    getSos.mockResolvedValue(sosPayload([alert({ escalated: true })]));
+    await advance(SOS_INTERVAL_MS);
+    expect(isOpen()).toBe(false);
   });
 });
 

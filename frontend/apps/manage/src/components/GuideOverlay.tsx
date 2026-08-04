@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Modal, cn, focusRing } from "@boutique/ui";
 import { GUIDE_STEPS, type SectionKey } from "../lib/guide";
+import { useSos } from "../lib/sos-context";
 
 /**
  * The «מדריך» header control and the walkthrough it opens.
@@ -56,6 +57,57 @@ export function GuideOverlay({ section }: { section: SectionKey }) {
     // commit, and nothing else may make the region speak.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, open]);
+
+  const { alerts } = useSos();
+
+  // ⚠ THE KEY IS THE COMPOSITE `SosOverlay` ALREADY USES (`dismissKey`,
+  // SosOverlay.tsx:59-61), NOT THE BARE ID. Escalation and the stall each
+  // RE-RISE a dismissed card under the SAME id — that is F37's safety net for
+  // «the first responder did not come» — so an id-keyed detector is
+  // structurally blind to exactly the alert this guard exists for. A CHANGE TO
+  // ONE KEY IS A CHANGE TO BOTH.
+  //
+  // ⚠ And it reads EVERY for_me alert, dismissed ones included. `dismissed` is
+  // SosOverlay's own state and is not on `SosContextValue` — which is correct as
+  // well as unavoidable: a dismissed page whose `escalated` flips re-rises the
+  // card, and the guide has to get out of its way.
+  const forMe = alerts
+    .filter((one) => one.for_me)
+    .map((one) => `${one.id}:${one.escalated}:${one.stalled}`);
+
+  // SosOverlay:129-136's shape: a joined string is the dependency, a ref carries
+  // the live list, because the array is rebuilt on every render.
+  const risingKey = forMe.join("|");
+  const forMeRef = useRef<readonly string[]>(forMe);
+  forMeRef.current = forMe;
+  // Seeded with what is ALREADY live at mount (DL12), so an alert this device
+  // has been looking at since before the guide existed never closes it.
+  const seenRef = useRef<readonly string[]>(forMe);
+
+  useEffect(() => {
+    const keys = forMeRef.current;
+    // ⚠ A SET DIFFERENCE, NEVER THE HEAD OF THE LIST. `alerts` is oldest-first
+    // (`sos-context.ts:18` declares it, `sos_alerts.py:245` is `ORDER BY
+    // created_at` ascending, `sos.tsx:128-131` appends), so a NEW page ARRIVES
+    // AT THE END: any test on `keys[0]` never fires while an older page is still
+    // live — the case where a top-layer dialog is most dangerous.
+    //
+    // ⚠ And EDGE, never level. `if (forMe.length > 0) setOpen(false)` would
+    // close the guide on every 5s tick for as long as a live-but-dismissed alert
+    // existed, so a staffer who dismissed a page could never open it again.
+    const grew = keys.some((key) => !seenRef.current.includes(key));
+    seenRef.current = keys;
+    if (grew) {
+      // ⚠ `showModal()` INERTS THE DOCUMENT. The red field is `fixed inset-0
+      // z-40` (SosOverlay.tsx:451) and the top layer paints above it, so an
+      // emergency arriving over an open guide is not merely covered — its
+      // «אני מגיעה» is unclickable and unreachable by Tab. There is no z-index,
+      // no portal and no stacking context that changes that. Closing IS the
+      // mechanism. Measured in Chromium by `e2e/guide.spec.ts` T7, which fails
+      // on the CLICK and not merely on a focus assertion.
+      setOpen(false);
+    }
+  }, [risingKey]);
 
   const close = () => setOpen(false);
 
