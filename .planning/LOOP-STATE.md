@@ -919,8 +919,43 @@ queue:
     slug: seamstress-capacity
     epic: E9
     title: "Seamstress capacity hours + load bars + balanced assignment"
-    status: queued
+    status: building
+    attempts: 1
     deps: [F41, F57]
+    spec: .planning/specs/seamstress-capacity.md
+    plan: .planning/plans/seamstress-capacity.md
+    started: >-
+      2026-08-04 03:15, worktree .worktrees/seamstress-capacity. Eligible once F41 merged.
+      SPEC REVIEW: 38 findings from 3 lenses, 36 applied, 2 rejected in writing. Six
+      unique blockers, and the first is CONCEPTUAL rather than mechanical — the kind that
+      ships looking finished and is worse than useless:
+      (1) THE BAR DIVIDED A STOCK BY A RATE. Load was SUM(effort) over EVERY undelivered
+      ticket — an unbounded backlog — against ONE WEEK of capacity. It would read
+      permanently red in a perfectly healthy shop and green on exactly the Thursday the
+      feature exists to warn about. It is now TWO SUMS in one statement: one filtered to a
+      due-date horizon (what the bar renders) plus the unfiltered total (the backlog
+      reading).
+      (2) ForbidExtraModel sets extra="forbid" and NOT strict, so pydantic coerces
+      `true` -> 1 and `"30"` -> 30 BEFORE any validator runs — the one-minute-band trap
+      the spec claimed to defend was wide open. StrictInt on the band mapping and on
+      weekly_capacity_hours.
+      (3) The capacity route answered SeamstressRef, whose required assigned_minutes it
+      has no source for — and the only obtainable value would have ZEROED the very bar the
+      save just updated. It answers its own response shape now.
+      (4) The panel's two write controls were never role-gated, so a seamstress tapping
+      one lost her whole board.
+      (5) Four validation cases demanded 404s that _require_seamstress — the helper the
+      design adopts verbatim — can never produce. One indistinguishable 400 with
+      byte-identical bodies; the only 404 is the check-to-UPDATE race.
+      (6) The bar's markup named a colour token that does not exist and filled from the
+      wrong edge in RTL. The console already ships this widget — copy it.
+      THE BAR HAS NO ARIA ROLE, deliberately: it is aria-hidden and the TEXT beside it is
+      the payload, so a screen reader gets a sentence rather than a percentage and
+      overload is never colour-only.
+      Recorded conflict worth keeping: "the capacity MATRIX" (Q2's novel pattern) cannot
+      exist under the simplified model — a matrix's second dimension is time, which is the
+      roster projection the same ruling drops. It ships as a LIST, which also discharges
+      the keyboard requirement structurally.
     note: >-
       DESIGN GATE SELF-APPROVED by user ruling 2026-07-31 (Q2 had marked it novel)
       — build through it, do not park.
