@@ -975,8 +975,36 @@ queue:
     slug: guide-walkthrough
     epic: cross
     title: "Per-page guided walkthrough (Guide button)"
-    status: queued
+    status: building
+    attempts: 1
     deps: [F34]
+    spec: .planning/specs/guide-walkthrough.md
+    plan: .planning/plans/guide-walkthrough.md
+    started: >-
+      2026-08-04 05:10, worktree .worktrees/guide-walkthrough. Last entry of the floor
+      program. SPEC REVIEW: 27 findings from 2 lenses, 26 applied, 1 rejected in writing.
+      ⚠ THE FINDING THAT REACHES BEYOND THIS FEATURE is recorded in `known_vacuous` above:
+      jsdom ships NO <dialog> implementation, so every vitest assertion about dialog focus,
+      the trap or Esc measures a stub. F60 routes all nine of its focus criteria to
+      Playwright instead; six other shipped test files are unaudited.
+      TWO CORRECTIONS TO THIS VERY ENTRY. (a) `deps: [F34]` is WRONG in the way that
+      matters — F34 is one of fourteen sections and F60 touches none of its code; the
+      binding deps are F37 (the SOS overlay it must yield to) and F33 (the /checkin page).
+      (b) "Focus trap and Esc-to-close are the real work here" is FALSE: packages/ui's
+      Modal is already a native <dialog> with showModal() and onCancel, used by fifteen
+      callers. The real work is the announcement contract and the SOS collision.
+      THE SOS COLLISION HAS EXACTLY ONE RESOLUTION and it is worth knowing why: showModal()
+      promotes to the TOP LAYER and INERTS the document, so an emergency arriving over an
+      open guide would be invisible AND unanswerable — no z-index or portal beats the top
+      layer. The guide must CLOSE, edge-triggered on the for_me set GROWING (level-triggered
+      would lock it shut forever behind a dismissed live alert).
+      TWO BLOCKERS LIVED IN THAT DETECTOR: keying on the FIRST id never fires when an alert
+      already exists (the list appends oldest-first, so a new one lands at the END), and
+      keying on the BARE id is blind to F37's escalation/stall re-rises, which use the
+      composite ${id}:${escalated}:${stalled}. It is a SET DIFFERENCE over that composite.
+      NO NEW DEPENDENCY, and the spec argues it positively: a tour library sells a focus
+      trap (already shipped), a positioning engine (nothing is anchored) and a step state
+      machine (eleven lines of useState).
     note: >-
       NEW 2026-07-31, deliberately LAST in the floor block — it is the brief's
       lowest-priority item and the only one that ships no capability. A «מדריך»
