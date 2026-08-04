@@ -744,6 +744,12 @@ const AXE_ROUTES: [name: string, path: string, list: ListVariant, boutique?: unk
   ["dress detail (3 photos)", `/dress/${GALLERY.id}`, "populated"],
   ["about", "/about", "populated"],
   ["accessibility statement", "/accessibility", "populated"],
+  // F20. A statutory document is the one page on the storefront whose READER is
+  // most likely to be using a screen reader, and it is three stacked h2 sections
+  // of tenant-authored prose — the shape that grows heading-order and
+  // contrast defects. This test's own title claims EVERY public route; without
+  // this row that claim quietly stopped being true the day /privacy shipped.
+  ["privacy notice", "/privacy", "populated"],
   ["catalog (empty state)", "/", "empty"],
   // A boutique with every profile field cleared — the nameless-link case.
   ["catalog (cleared profile)", "/", "populated", CLEARED_BOUTIQUE],
@@ -782,6 +788,11 @@ const ROUTES = [
   "/checkin",
   `/q/${TICKET_FIRST}`,
   "/queue",
+  // F20 joins for the reason this list exists: its body is TENANT-AUTHORED text
+  // rendered with [overflow-wrap:anywhere], and the one input the boutique fully
+  // controls is exactly the one that produces an unbreakable 60-character token.
+  // jsdom has no layout engine, so no vitest assertion can see this.
+  "/privacy",
 ];
 
 test("storefront: no horizontal scroll at 375 / 768 / 1440 on every route", async ({ page }) => {
@@ -1677,6 +1688,23 @@ async function gotoBooking(page: Page, path: string): Promise<void> {
 async function expectStep(page: Page, step: string, suffix = ""): Promise<void> {
   await expect(page).toHaveURL(`${STOREFRONT}/book/${step}${suffix}`);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(STEP_TITLES[step]);
+}
+
+// The `details` step, WALKED rather than deep-linked.
+//
+// ⚠ `page.goto("/book/details")` does NOT land on the details step: BookPage
+// guards every step but slot/confirm/pay behind a chosen instant and redirects
+// to `/book/slot`. The redirect is `replace: true`, so the URL settles silently
+// and a test that deep-links is quietly asserting about the SLOT step — where
+// there is no notice and no marketing box, which reads as "the element is
+// missing" rather than "you are on the wrong screen". `expectStep` at the end is
+// what makes that failure honest.
+async function gotoDetails(page: Page): Promise<void> {
+  await gotoBooking(page, "/book/slot");
+  await page.getByRole("radio", { name: new RegExp(BOOK_TYPE) }).check();
+  await chip(page, SLOT_LABEL).click();
+  await forwardButton(page).click();
+  await expectStep(page, "details");
 }
 
 // The forward pass, with a hook fired on each stop AFTER the step has rendered
@@ -2746,4 +2774,194 @@ test("storefront wall board: the wall board fits a 1080p screen", async ({ page 
     doc.scrollHeight,
     `the board is ${String(doc.scrollHeight - doc.innerHeight)}px taller than a 1080p panel`,
   ).toBeLessThanOrEqual(doc.innerHeight);
+});
+
+// --- F20: the statutory privacy notice ---------------------------------------
+//
+// The plan's E2E row, which is the half of F20 that neither vitest nor pytest
+// can reach. Three properties, and each is only observable in a real browser:
+// that the footer link REACHES the document from every surface a bride actually
+// lands on, that the §11(b) notice on the booking form is the SAME string
+// /privacy renders, and that the §30A box is what decides the flag on the wire.
+
+const PRIVACY_LINK = "הודעת פרטיות";
+const PRIVACY_NOTICE_HEAD = "המידע שאנחנו אוספות ומה אנחנו עושות בו";
+const PRIVACY_DPA_HEAD = "מי מעבד את המידע ואיך הוא נשמר";
+const PRIVACY_SUBPROCESSORS_HEAD = "ספקי התשתית";
+const COLLECTION_NOTICE_HEAD = "המידע שאת מוסרת לנו";
+const MARKETING_LABEL = /אני מאשרת קבלת הודעות SMS/;
+
+// The fixture's two blocks, as SUBSTRINGS that exclude the {{boutique}} token
+// and the FSI/PDI isolates wrapped around the name — this asserts the document
+// arrived and was split into paragraphs, not how the isolate is spelled.
+const NOTICE_BLOCK_1 = "הודעת פרטיות של";
+const NOTICE_BLOCK_2 = "פסקה שנייה של ההודעה.";
+
+// The four surfaces the plan enumerates. Each is a DIFFERENT shell state — the
+// catalogue and a dress page render the CTA bar, /b/{token} and /checkin do not
+// — and the footer is a sibling of <main>, so "the layout renders it" is exactly
+// the claim that a single-route test cannot make.
+const PRIVACY_ENTRIES: [name: string, open: (page: Page) => Promise<void>][] = [
+  ["catalog", (page) => gotoSettled(page, "/")],
+  ["dress page", (page) => gotoSettled(page, `/dress/${GALLERY.id}`)],
+  ["manage link", (page) => gotoManage(page)],
+  ["check-in", (page) => gotoCheckin(page)],
+];
+
+for (const [name, open] of PRIVACY_ENTRIES) {
+  test(`storefront privacy: the footer link reaches the notice from ${name}`, async ({ page }) => {
+    await installApi(page);
+    await open(page);
+
+    // CLICKED, not navigated to. `page.goto("/privacy")` would prove the route
+    // resolves — which router.test.tsx already proves in jsdom — and would say
+    // nothing about whether a bride on this screen can GET there. §11 wants the
+    // document reachable, and reachable is a link she can press.
+    await page.getByRole("link", { name: PRIVACY_LINK }).click();
+
+    await expect(page).toHaveURL(`${STOREFRONT}/privacy`);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(PRIVACY_LINK);
+    // All three documents, because a footer link that lands on a page rendering
+    // only its own heading is the failure mode this page deliberately courts:
+    // PrivacyPage has NO loading and NO error state, so an unfetched boutique
+    // renders an h1 over nothing at all.
+    for (const heading of [PRIVACY_NOTICE_HEAD, PRIVACY_DPA_HEAD, PRIVACY_SUBPROCESSORS_HEAD]) {
+      await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    }
+  });
+}
+
+test("storefront privacy: the three documents render in their statutory order, each under its own heading", async ({
+  page,
+}) => {
+  await installApi(page);
+  await gotoSettled(page, "/privacy");
+
+  // WHICH text sits under WHICH heading, via the testids the page carries for
+  // exactly this. The sub-processor list is the one document a boutique may not
+  // override, so rendering her notice in its slot would defeat the whole rule
+  // while every heading-count assertion stayed green.
+  await expect(page.getByTestId("privacy-notice")).toContainText(NOTICE_BLOCK_1);
+  await expect(page.getByTestId("privacy-dpa")).toContainText("תנאי עיבוד מידע של");
+  await expect(page.getByTestId("privacy-subprocessors")).toContainText("ספקי תשתית.");
+
+  // Order is load-bearing: the DPA clause points FORWARD at the sub-processor
+  // list, so a list rendered above its own reference leaves that sentence
+  // pointing at nothing. Asserted as document order, which is what a screen
+  // reader walks.
+  const headings = await page.getByRole("heading", { level: 2 }).allInnerTexts();
+  expect(headings).toEqual([
+    PRIVACY_NOTICE_HEAD,
+    PRIVACY_DPA_HEAD,
+    PRIVACY_SUBPROCESSORS_HEAD,
+  ]);
+
+  // The blank line in the fixture became a second <p>, rather than one block of
+  // text with a newline in it.
+  await expect(page.getByTestId("privacy-notice").locator("p")).toHaveCount(2);
+
+  // {{boutique}} was filled in, and the literal token never reaches the page.
+  await expect(page.getByTestId("privacy-notice")).toContainText(BOUTIQUE.name);
+  await expect(page.locator("body")).not.toContainText("{{boutique}}");
+});
+
+test("storefront privacy: the details step carries the §11 notice, and it is the same text /privacy renders", async ({
+  page,
+}) => {
+  await installApi(page);
+
+  // Walked to, not deep-linked — see gotoDetails. The three steps behind it are
+  // already walked five times over, so this one only needs to arrive.
+  await gotoDetails(page);
+
+  const notice = page.getByTestId("collection-notice");
+  await expect(notice).toBeVisible();
+  await expect(page.getByRole("heading", { name: COLLECTION_NOTICE_HEAD })).toBeVisible();
+
+  // BOTH blocks. §11(b) is a notice given at the moment of collection, and a
+  // notice silently truncated to its first paragraph is the failure the page's
+  // «no clamp, no read-more» rule exists to prevent — a clamp would leave this
+  // element visible, non-empty and passing every count assertion.
+  await expect(notice).toContainText(NOTICE_BLOCK_1);
+  await expect(notice).toContainText(NOTICE_BLOCK_2);
+  await expect(notice).toContainText(BOUTIQUE.name);
+
+  // ABOVE the Card she types into — the notice has to precede the collection,
+  // not follow it.
+  const noticeBox = await rect(notice, "collection notice");
+  const nameBox = await rect(page.getByLabel(NAME_LABEL), "name field");
+  expect(
+    noticeBox.y,
+    "the collection notice sits below the field it is a notice about",
+  ).toBeLessThan(nameBox.y);
+
+  // D13, the property the whole «not in he.ts» rule exists for: the booking form
+  // and /privacy render ONE string from ONE fetch. Compared as actual rendered
+  // text, so a second copy pasted into the bundle would have to match byte for
+  // byte to survive — which is the point.
+  const onForm = (await notice.innerText()).replace(COLLECTION_NOTICE_HEAD, "");
+  await gotoSettled(page, "/privacy");
+  const onPage = await page.getByTestId("privacy-notice").innerText();
+  for (const block of [NOTICE_BLOCK_1, NOTICE_BLOCK_2]) {
+    expect(onForm, `the booking form dropped: ${block}`).toContain(block);
+    expect(onPage, `/privacy dropped: ${block}`).toContain(block);
+  }
+});
+
+test("storefront booking: the ticked marketing box is what puts consent on the wire", async ({
+  page,
+}) => {
+  await installApi(page);
+  const posted = captureBookings(page);
+
+  await walkBooking(page, {
+    atStep: async (label) => {
+      if (label !== "details") return;
+      const box = page.getByRole("checkbox", { name: MARKETING_LABEL });
+      // DEFAULT-OFF, asserted before the click rather than assumed. §30A's
+      // affirmative-consent requirement is this assertion; the click after it
+      // only proves the control is wired.
+      await expect(box).not.toBeChecked();
+      await box.check();
+    },
+  });
+
+  // The flag, and only it, moved. Everything else on this body is identical to
+  // the generic path's — so if a future change made the checkbox alter the
+  // phone, the type or the terms version, this is where it surfaces.
+  expect(posted).toEqual([
+    {
+      phone: WIRE_PHONE,
+      verification_token: VERIFICATION_TOKEN,
+      name: CUSTOMER_NAME,
+      appointment_type_id: TYPE_PLAIN.id,
+      starts_at: SLOT_1000,
+      terms_version: TERMS_V3.version,
+      dress_id: null,
+      dress_size: null,
+      notes: null,
+      marketing_consent: true,
+    },
+  ]);
+});
+
+test("storefront booking: the marketing box is separate from the terms box and gates nothing", async ({
+  page,
+}) => {
+  await installApi(page);
+
+  await gotoDetails(page);
+  // UNBUNDLED: the required terms consent is two navigations away, so no single
+  // gesture can collect both. If the terms checkbox were ever moved onto this
+  // step, this count becomes 2 and the §30A separation is gone.
+  await expect(page.getByRole("checkbox")).toHaveCount(1);
+
+  // NOT A CONDITION: the step advances with the box untouched. That is the
+  // anti-detriment rule — a consent a bride fears will cost her the appointment
+  // is not free consent — and it is a claim about the FORWARD BUTTON, which is
+  // why it cannot be read off the payload.
+  await page.getByLabel(NAME_LABEL).fill(CUSTOMER_NAME);
+  await expect(page.getByRole("checkbox", { name: MARKETING_LABEL })).not.toBeChecked();
+  await forwardButton(page).click();
+  await expect(page).toHaveURL(`${STOREFRONT}/book/terms`);
 });
