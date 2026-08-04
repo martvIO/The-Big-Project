@@ -23,7 +23,7 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.dependencies import NotAuthorizedError
 from app.auth.service import StaffContext
@@ -39,6 +39,7 @@ from app.db.repositories.fitting_room_assignments import (
     FittingRoomAssignmentsRepository,
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
+from app.db.repositories.queue_tickets import WAITLIST_LIMIT, QueueTicketsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.errors import DomainNotFoundError
 from app.floor.service import (
@@ -47,14 +48,28 @@ from app.floor.service import (
     FloorService,
     card_status,
 )
-from app.floor.validation import FloorValidationError, RoomOccupiedError, StaffOccupiedError
+from app.floor.validation import (
+    FloorValidationError,
+    QueueEmptyError,
+    QueueTicketChangedError,
+    QueueTicketNotWaitingError,
+    RoomOccupiedError,
+    StaffOccupiedError,
+)
 from app.models.booking import Booking
-from app.models.constants import AuditAction, BookingStatus, StaffCardStatus, StaffRole
+from app.models.constants import (
+    AuditAction,
+    BookingStatus,
+    QueueTicketStatus,
+    StaffCardStatus,
+    StaffRole,
+)
 from app.models.customer import Customer
 from app.models.dress import Dress
 from app.models.fitting_room import FittingRoom
 from app.models.fitting_room_assignment import FittingRoomAssignment
 from app.models.staff_user import StaffUser
+from app.queue.validation import QueueTicketNotFoundError
 
 TENANT_ID = uuid.uuid4()
 NOW = datetime.datetime(2026, 8, 2, 11, 20, tzinfo=datetime.UTC)
@@ -576,6 +591,20 @@ class _Rig:
         self.handover_error: IntegrityError | None = None
         self.has_active = False
         self.occupancy: RoomRow | None = None
+        # F58. `None` is an empty queue, which is a 409 and not an empty 200.
+        self.next_ticket: Any = _Ticket()
+        self.named_ticket: Any = _Ticket()
+        self.call_result: Any = _Called()
+        self.skip_result: Any = _Skipped()
+        self.removed = True
+        self.closed = True
+        self.ticket_status: tuple[str, int] | None = None
+        # The panel read. Recorded in `waitlist_days` rather than in `order` or
+        # `calls`, because every verb ends with it and the shipped sequence
+        # assertions are about the WRITES.
+        self.waiting: list[Any] = []
+        self.in_service_phones: set[str] = set()
+        self.waitlist_days: list[Any] = []
         self.dress_added = True
         self.dress_removed = True
 
@@ -714,7 +743,18 @@ def _install_rooms(monkeypatch: pytest.MonkeyPatch, rig: _Rig) -> _Rig:
     monkeypatch.setattr(BookingsRepository, "by_id", _booking_by_id)
     monkeypatch.setattr(DressesRepository, "by_id", _dress_by_id)
     monkeypatch.setattr(StaffUsersRepository, "by_id", _staff_by_id)
+
+    async def _waiting_for_panel(_s: Any, _sess: Any, _t: Any, day: Any, *, limit: int) -> Any:
+        rig.waitlist_days.append(day)
+        assert limit == WAITLIST_LIMIT
+        return rig.waiting
+
+    async def _in_service_phones(_s: Any, _sess: Any, _t: Any, _day: Any) -> set[str]:
+        return rig.in_service_phones
+
     monkeypatch.setattr(AuditLogRepository, "record", _audit_record)
+    monkeypatch.setattr(QueueTicketsRepository, "waiting_for_panel", _waiting_for_panel)
+    monkeypatch.setattr(QueueTicketsRepository, "in_service_phones", _in_service_phones)
     return rig
 
 
@@ -1582,3 +1622,1140 @@ async def test_the_client_picker_window_is_the_one_the_claim_admits(
         service._is_claimable(_booking(starts_at=asked["until_instant"], checked_in_at=NOW))
         is False
     )
+
+
+# =============================================================================
+# F58 — TAKE-NEXT. The branches; the mechanisms are test_queue_dispatch_db.py's.
+#
+# ⚠ WHAT THIS MODULE CAN AND CANNOT SEE — mutations RUN, not reasoned about,
+# and the plan's predictions corrected where they were wrong.
+#
+#   * `_authorize` moved below the room read → RED here (3 cases). `_Rig.order`
+#     records the SEQUENCE rather than the outcome, which is the only way to
+#     state that the 403 precedes the read.
+#   * the unrecognised-constraint re-raise dropped → RED here (2 cases).
+#   * step 2b deleted → **RED here (1 case)**, and the plan predicted GREEN. It
+#     was wrong: `_Rig.occupant` stages a committed occupant, so the fast suite
+#     does see the branch. What it CANNOT see is the branch's whole point — a
+#     real customer's ticket claimed and thrown away, and a third take-next
+#     SKIP-LOCKing past her. That needs a real server.
+#   * F36's idempotence RETURN added around the INSERT → **RED here (1 case)**,
+#     and the plan predicted GREEN across every fast test. Also wrong, and for a
+#     reason worth keeping: the assertion is STRUCTURAL — `active_for` is never
+#     called on any take-next path — rather than behavioural. What it cannot see
+#     is the DEFECT: the commit that strands a woman `in_service` with no room.
+#     `test_queue_dispatch_db.py` owns that one and it is the feature's headline.
+#   * reusing the aborted session in `_occupied_error` instead of opening a
+#     second one stays GREEN here — the fake session never aborts, so there is
+#     no `PendingRollbackError` to raise. Pinned in the db module.
+# =============================================================================
+
+TICKET_ID = uuid.uuid4()
+
+
+@dataclasses.dataclass(frozen=True)
+class _Ticket:
+    """`claim_next`'s four RETURNING columns. A projection, never the entity —
+    `phone` and `marketing_opt_in_at` do not enter the process on this path."""
+
+    id: uuid.UUID = TICKET_ID
+    name: str = "נועה בר"
+    visit_type: str = "bride"
+    called_at: datetime.datetime | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _Called:
+    """`call`'s two RETURNING columns."""
+
+    id: uuid.UUID = TICKET_ID
+    called_at: datetime.datetime = NOW
+
+
+@dataclasses.dataclass(frozen=True)
+class _Skipped:
+    """`skip`'s three. `status` is the CASE's answer, so the fake can stage both
+    the requeue and the removal."""
+
+    id: uuid.UUID = TICKET_ID
+    skip_count: int = 1
+    status: str = QueueTicketStatus.WAITING.value
+
+
+@dataclasses.dataclass(frozen=True)
+class _Waiting:
+    """One row of `waiting_for_panel`'s seven-column projection. `phone` is on it
+    because D9's grouping needs one, and the assertion that matters most in this
+    module is that it never comes out the other side."""
+
+    id: uuid.UUID = TICKET_ID
+    name: str = "נועה בר"
+    visit_type: str = "bride"
+    created_at: datetime.datetime = CLAIMED_AT
+    called_at: datetime.datetime | None = None
+    skip_count: int = 0
+    phone: str = "+972501234567"
+
+
+def _install_tickets(monkeypatch: pytest.MonkeyPatch, rig: _Rig) -> _Rig:
+    async def _claim_next(_s: Any, _sess: Any, _t: Any, *, day: Any) -> Any:
+        rig.order.append("claim_next")
+        rig.calls.append({"call": "claim_next", "day": day})
+        return rig.next_ticket
+
+    async def _claim_by_id(_s: Any, _sess: Any, _t: Any, ticket_id: uuid.UUID) -> Any:
+        rig.order.append("claim_by_id")
+        rig.calls.append({"call": "claim_by_id", "ticket_id": ticket_id})
+        return rig.named_ticket
+
+    async def _call(_s: Any, _sess: Any, _t: Any, ticket_id: uuid.UUID, *, now: Any) -> Any:
+        rig.order.append("call")
+        rig.calls.append({"call": "call", "ticket_id": ticket_id, "now": now})
+        return rig.call_result
+
+    async def _skip(
+        _s: Any,
+        _sess: Any,
+        _t: Any,
+        ticket_id: uuid.UUID,
+        *,
+        now: Any,
+        seen_skip_count: int,
+    ) -> Any:
+        rig.order.append("skip")
+        rig.calls.append(
+            {
+                "call": "skip",
+                "ticket_id": ticket_id,
+                "now": now,
+                "seen_skip_count": seen_skip_count,
+            }
+        )
+        return rig.skip_result
+
+    async def _remove(_s: Any, _sess: Any, _t: Any, ticket_id: uuid.UUID) -> bool:
+        rig.order.append("remove")
+        rig.calls.append({"call": "remove", "ticket_id": ticket_id})
+        return rig.removed
+
+    async def _close(_s: Any, _sess: Any, _t: Any, ticket_id: uuid.UUID) -> bool:
+        rig.order.append("close")
+        rig.calls.append({"call": "close", "ticket_id": ticket_id})
+        return rig.closed
+
+    async def _status_of(_s: Any, _sess: Any, _t: Any, _ticket_id: uuid.UUID) -> Any:
+        rig.order.append("status_of")
+        return rig.ticket_status
+
+    monkeypatch.setattr(QueueTicketsRepository, "claim_next", _claim_next)
+    monkeypatch.setattr(QueueTicketsRepository, "claim_by_id", _claim_by_id)
+    monkeypatch.setattr(QueueTicketsRepository, "call", _call)
+    monkeypatch.setattr(QueueTicketsRepository, "skip", _skip)
+    monkeypatch.setattr(QueueTicketsRepository, "remove", _remove)
+    monkeypatch.setattr(QueueTicketsRepository, "close", _close)
+    monkeypatch.setattr(QueueTicketsRepository, "status_of", _status_of)
+    return _install_rooms(monkeypatch, rig)
+
+
+# --- take-next's authorization matrix (D3 step 1) -----------------------------
+
+
+@pytest.mark.parametrize("role", ELEVATED)
+async def test_an_elevated_role_may_take_next_for_anybody(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    rig = _install_tickets(monkeypatch, _Rig())
+    target = uuid.uuid4()
+
+    read = await _service().take_next(TENANT_ID, ROOM_ID, staff_user_id=target, actor=_actor(role))
+
+    assert read.room.row.room_id == ROOM_ID
+    assert rig.calls[-1] == {
+        "call": "claim",
+        "room_id": ROOM_ID,
+        "staff_id": target,
+        "booking_id": None,
+        "queue_ticket_id": TICKET_ID,
+    }
+
+
+@pytest.mark.parametrize("role", FLOOR)
+async def test_a_floor_role_may_take_next_for_herself(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    rig = _install_tickets(monkeypatch, _Rig())
+    actor = _actor(role)
+
+    await _service().take_next(TENANT_ID, ROOM_ID, staff_user_id=None, actor=actor)
+
+    assert rig.calls[-1]["staff_id"] == actor.id
+
+
+@pytest.mark.parametrize("role", FLOOR)
+async def test_a_floor_role_taking_next_for_a_colleague_is_refused_without_reading_anything(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    """The empty `order` is the assertion, not the exception: a 403 raised after
+    a read is an existence oracle for room ids, and `_authorize` is take-next's
+    first statement for exactly that reason (`service.py:19-24`).
+
+    ⚠ MUTATION PERFORMED: move `self._authorize(...)` below the room read →
+    `rig.order` is `["room_for_update"]` and this reds. It is the only one of
+    take-next's five mechanisms this module can see.
+    """
+    rig = _install_tickets(monkeypatch, _Rig())
+
+    with pytest.raises(NotAuthorizedError):
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=uuid.uuid4(), actor=_actor(role)
+        )
+
+    assert rig.order == []
+    assert rig.audit == []
+
+
+# --- take-next's reads, in order ----------------------------------------------
+
+
+@pytest.mark.parametrize("room", [None, _room(is_active=False)])
+async def test_take_next_on_a_missing_or_INACTIVE_room_is_one_indistinguishable_404(
+    monkeypatch: pytest.MonkeyPatch, room: FittingRoom | None
+) -> None:
+    """The room lock comes first, so the common refusal — a room that vanished
+    or was deactivated — costs no ticket write at all."""
+    rig = _Rig()
+    rig.room = room
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(DomainNotFoundError):
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert "claim_next" not in rig.order
+    assert rig.audit == []
+
+
+async def test_take_next_into_an_occupied_room_refuses_before_touching_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ STEP 2b, and what it buys is a CUSTOMER rather than a round-trip.
+
+    Two managers tapping «קחי את הבאה» on the same free tile inside one 5s tick
+    is the most likely collision in the feature. Without this read the loser
+    claims a real customer's ticket and then throws it away on the INSERT — and
+    for the window in which she held it, a third take-next SKIP-LOCKs past her
+    and serves the woman behind her. With it, the serialised same-room case
+    touches no ticket at all.
+
+    ⚠ MUTATION PERFORMED: delete step 2b → this test RED and nothing else, so it
+    is the only fast witness. The plan predicted GREEN here; it was wrong,
+    because `_Rig.occupant` stages the committed occupant a fake normally would
+    not. What stays invisible here is the CONSEQUENCE — the ticket claimed and
+    discarded — which `test_queue_dispatch_db.py` pins.
+    """
+    rig = _Rig()
+    rig.occupant = _assignment(uuid.uuid4())
+    rig.occupant_staff = _staff_user(display_name="דנה")
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(RoomOccupiedError) as refused:
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert refused.value.details == {"staff_display_name": "דנה"}
+    assert "claim_next" not in rig.order
+    assert "claim" not in rig.order
+    assert rig.audit == []
+
+
+async def test_an_empty_queue_is_a_409_that_claims_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its own code rather than a 404 or an unchanged 200: a 404 would mean the
+    ROOM is missing, which the panel renders as «החדר כבר לא זמין» about a room
+    that is fine, and a 200 leaves the manager wondering whether the tap
+    registered. The queue emptying between the render and the tap is an ordinary
+    five-second race, so it is not an outage register either."""
+    rig = _Rig()
+    rig.next_ticket = None
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(QueueEmptyError):
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert "claim" not in rig.order
+    assert rig.audit == []
+
+
+async def test_take_next_claims_the_queue_for_TODAY(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_today()` is `today_jerusalem(self._clock)` and is the SAME derivation
+    `_today_window()` uses, so the waitlist day, the take-next day and the client
+    picker's window cannot drift apart. NOW is 11:20 UTC on 2026-08-02, i.e.
+    14:20 in Jerusalem — the same calendar day, which is what makes this
+    assertion about the timezone rather than about UTC."""
+    rig = _install_tickets(monkeypatch, _Rig())
+
+    await _service().take_next(
+        TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+    )
+
+    assert rig.calls[1] == {"call": "claim_next", "day": datetime.date(2026, 8, 2)}
+
+
+async def test_take_next_records_one_dispatch_row_naming_no_person(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ONE value for both dispatch verbs with the mode in `details`, and NO
+    second FITTING_ROOM_CLAIMED — the claim row's whole content is a subset of
+    this one's. No name and no phone in `details`: audit_log has no retention
+    policy and platform operators read across tenants."""
+    rig = _install_tickets(monkeypatch, _Rig())
+    actor = _actor(StaffRole.SHIFT_MANAGER)
+
+    await _service().take_next(TENANT_ID, ROOM_ID, staff_user_id=None, actor=actor)
+
+    assert rig.audit == [
+        {
+            "action": AuditAction.QUEUE_TICKET_DISPATCHED.value,
+            "actor_id": actor.id,
+            "entity": str(TICKET_ID),
+            "details": {
+                "ticket": str(TICKET_ID),
+                "room": str(ROOM_ID),
+                "assignment": str(ASSIGNMENT_ID),
+                "staff": str(actor.id),
+                "mode": "take_next",
+            },
+        }
+    ]
+    assert "נועה בר" not in str(rig.audit)
+
+
+# --- _occupied_error: every branch, and the two it must NOT have --------------
+
+
+async def test_a_take_next_room_conflict_names_the_occupant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ THE ROOM IS RESOLVED FIRST AND WITHOUT THE CONSTRAINT NAME, which is
+    F36's rule applied to a case its own branch order cannot cover: a claim
+    violating BOTH indexes reports whichever has the lower OID — migration
+    creation order, which flips after any REINDEX CONCURRENTLY or pg_repack.
+    Both parametrisations answer the same thing."""
+    for reported in (ROOM_ACTIVE_INDEX, STAFF_ACTIVE_INDEX):
+        rig = _Rig()
+        rig.claim_error = _integrity_error(reported)
+        rig.occupant = _assignment(uuid.uuid4())
+        rig.occupant_staff = _staff_user(display_name="דנה")
+        _install_tickets(monkeypatch, rig)
+
+        with pytest.raises(RoomOccupiedError) as refused:
+            await _service().take_next(
+                TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+            )
+
+        assert refused.value.details == {"staff_display_name": "דנה"}
+        assert rig.audit == []
+
+
+async def test_a_take_next_staff_conflict_names_the_room_she_is_already_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = _Rig()
+    rig.claim_error = _integrity_error(STAFF_ACTIVE_INDEX)
+    rig.staff_room = _assignment(uuid.uuid4())
+    rig.occupied_room = _room(label="חדר 2")
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(StaffOccupiedError) as refused:
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert refused.value.details == {"room_label": "חדר 2"}
+    assert rig.audit == []
+
+
+async def test_a_take_next_whose_winner_released_in_the_gap_does_not_name_nobody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nobody to name and a recognised constraint: «החדר נתפס זה עתה. נסי שוב.»
+    A 409 that admits it does not know beats one interpolating an empty name."""
+    rig = _Rig()
+    rig.claim_error = _integrity_error(ROOM_ACTIVE_INDEX)
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(RoomOccupiedError) as refused:
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert refused.value.details is None
+
+
+@pytest.mark.parametrize("reported", [None, "idx_something_nobody_predicted"])
+async def test_an_unrecognised_violation_on_take_next_is_re_raised(
+    monkeypatch: pytest.MonkeyPatch, reported: str | None
+) -> None:
+    """A8c. Unchanged from F36: a 500 on a violation nobody predicted is correct,
+    and silently mapping it to ROOM_OCCUPIED would tell a staffer a lie about
+    furniture. This is why `_occupied_error` RETURNS an exception rather than
+    raising one — `return error` is how this branch is expressible at all.
+
+    ⚠ MUTATION PERFORMED: `return RoomOccupiedError(None)` unconditionally at the
+    end of the helper → both parametrisations red.
+    """
+    rig = _Rig()
+    rig.claim_error = _integrity_error(reported)
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(IntegrityError):
+        await _service().take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert rig.audit == []
+
+
+async def test_take_next_never_consults_the_idempotence_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ A8b's FAST HALF, and it is STRUCTURAL: `active_for` is never called on
+    any take-next path.
+
+    F36's `_resolve_claim_conflict` resolves idempotence with
+    `active_for` → `return await self._room_read(...)`, which is correct there
+    and catastrophic here. `db/tenant.py:25` is
+    `async with session_factory() as session, session.begin():`, so a RETURN from
+    inside that block COMMITS — a transaction in which the ticket has already
+    gone to `in_service` and no assignment was created. The woman is then
+    `in_service` with no room: gone from the waitlist, gone from the public
+    board, on no tile, her own phone reading «התור שלך התחיל» for the rest of the
+    day, recoverable only with psql.
+
+    Asserting the absence STRUCTURALLY is what stops it being added back here,
+    since the DEFECT it causes — the commit — needs a real Postgres to observe
+    (`test_queue_dispatch_db.py`).
+
+    ⚠ MUTATION PERFORMED: wrap the INSERT in `except IntegrityError:` →
+    `active_for` → `return await self._room_read(...)` inside the `async with`
+    → this test RED. The plan predicted GREEN across every fast test and was
+    wrong; the structural assertion is what makes the difference.
+    """
+    expected: list[tuple[str | None, type[Exception]]] = [
+        (ROOM_ACTIVE_INDEX, RoomOccupiedError),
+        (STAFF_ACTIVE_INDEX, RoomOccupiedError),
+        (None, IntegrityError),
+    ]
+    for reported, error in expected:
+        rig = _Rig()
+        rig.claim_error = _integrity_error(reported)
+        # The idempotence read is armed with a HIT, so a branch that consulted it
+        # would take it. It is never consulted.
+        rig.idempotent = _assignment(uuid.uuid4())
+        _install_tickets(monkeypatch, rig)
+
+        with pytest.raises(error):
+            await _service().take_next(
+                TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+            )
+
+        assert "active_for" not in rig.order
+
+
+# --- F58: the waitlist read and D9's duplicate flag ---------------------------
+
+
+async def test_the_waitlist_asks_for_todays_jerusalem_day_and_renders_the_rows_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The day is `_today()` — the SAME derivation take-next and the client
+    picker use, so a walk-in dispatched from the panel cannot be one the panel
+    could not see. NOW is 11:20 UTC on 2026-08-02, i.e. 14:20 in Jerusalem."""
+    rig = _Rig()
+    rig.waiting = [_Waiting(name="נועה בר"), _Waiting(id=uuid.uuid4(), name="מיכל")]
+    _install_tickets(monkeypatch, rig)
+
+    async def _list_live(_s: Any, _sess: Any, _t: Any) -> list[StaffUser]:
+        return []
+
+    async def _list_with_occupancy(_s: Any, _sess: Any, _t: Any) -> list[RoomRow]:
+        return []
+
+    monkeypatch.setattr(StaffUsersRepository, "list_live", _list_live)
+    monkeypatch.setattr(FittingRoomsRepository, "list_with_occupancy", _list_with_occupancy)
+
+    read = await _service().floor(TENANT_ID)
+
+    assert rig.waitlist_days == [datetime.date(2026, 8, 2)]
+    assert [entry.name for entry in read.waitlist.entries] == ["נועה בר", "מיכל"]
+    assert read.waitlist.truncated is False
+
+
+async def test_the_duplicate_flag_is_keyed_on_the_phone_and_sees_an_in_service_twin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D9's rule, and the SECOND statement is what makes it worth having.
+
+    Three rows: two waiting with one phone between them, one waiting whose twin
+    is already IN a room, and one alone. `name` collides legitimately in a bridal
+    boutique — two women called נועה is an ordinary Tuesday — so the grouping is
+    the normalised phone and nothing else.
+
+    ⚠ MUTATION PERFORMED: drop `or row.phone in in_service` → the third row
+    renders un-flagged, which is the case D9 calls the most valuable thing on
+    this panel to remove. MUTATION PERFORMED: group on `name` → rows 1 and 4
+    (both «נועה בר», different numbers) flag each other and row 2 stops flagging.
+    """
+    shared, served, lonely = "+972500000001", "+972500000002", "+972500000003"
+    rig = _Rig()
+    rig.waiting = [
+        _Waiting(id=uuid.uuid4(), name="נועה בר", phone=shared),
+        _Waiting(id=uuid.uuid4(), name="מיכל", phone=shared),
+        _Waiting(id=uuid.uuid4(), name="דנה", phone=served),
+        _Waiting(id=uuid.uuid4(), name="נועה בר", phone=lonely),
+    ]
+    rig.in_service_phones = {served}
+    _install_tickets(monkeypatch, rig)
+
+    entries = (await _service()._waitlist(cast(AsyncSession, _FakeSession()), TENANT_ID)).entries
+
+    assert [entry.duplicate for entry in entries] == [True, True, True, False]
+    # The number is the KEY and never the payload: `WaitlistEntryRead` has no
+    # field to carry one, so the grouping cannot leak by accident downstream.
+    assert not any(hasattr(entry, "phone") for entry in entries)
+
+
+async def test_a_full_waitlist_page_is_reported_as_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`len(rows) == WAITLIST_LIMIT` — F36's `DressPickerRead` derivation
+    verbatim, and the bound the repository was ASKED for is the one it is
+    compared against."""
+    rig = _Rig()
+    rig.waiting = [
+        _Waiting(id=uuid.uuid4(), phone=f"+97250{index:07d}") for index in range(WAITLIST_LIMIT)
+    ]
+    _install_tickets(monkeypatch, rig)
+
+    assert (
+        await _service()._waitlist(cast(AsyncSession, _FakeSession()), TENANT_ID)
+    ).truncated is True
+
+
+# =============================================================================
+# F58 — PUSH-ASSIGN, CALL, SKIP and REMOVE (D4, D6, D7, D8).
+#
+# ⚠ WHAT THIS MODULE CAN AND CANNOT SEE, mutations RUN:
+#
+#   * `call`'s THIRD branch removed (D4's two-answer table implemented
+#     literally) → RED here, by name. It is a pure branch and needs no server.
+#   * `skip`'s QUEUE_TICKET_CHANGED branch folded into QUEUE_TICKET_NOT_WAITING
+#     → RED here. What stays invisible is the DAMAGE the conjunct prevents — a
+#     woman removed by two ordinary single taps — which needs two transactions.
+#   * the no-audit-on-a-no-op rule → RED here, on the call path.
+#   * `assign` copying `claim`'s savepoint → GREEN here, exactly as it is for
+#     take-next: a monkeypatched repository raises with no real flush to abort.
+#     Pinned in test_queue_dispatch_db.py.
+# =============================================================================
+
+SECOND_TICKET_ID = uuid.uuid4()
+
+
+# --- push-assign (D4) ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("role", ELEVATED)
+async def test_an_elevated_role_may_push_assign_for_anybody(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    rig = _install_tickets(monkeypatch, _Rig())
+    target = uuid.uuid4()
+
+    read = await _service().assign(
+        TENANT_ID,
+        ROOM_ID,
+        queue_ticket_id=TICKET_ID,
+        staff_user_id=target,
+        actor=_actor(role),
+    )
+
+    assert read.room.row.room_id == ROOM_ID
+    assert rig.calls[-1] == {
+        "call": "claim",
+        "room_id": ROOM_ID,
+        "staff_id": target,
+        "booking_id": None,
+        "queue_ticket_id": TICKET_ID,
+    }
+
+
+@pytest.mark.parametrize("role", FLOOR)
+async def test_a_floor_role_push_assigning_for_a_colleague_is_refused_without_reading_anything(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    """The empty `order` is the assertion. `_authorize` now has FIVE call sites
+    and every one of them is its method's first statement — a 403 raised after a
+    read is an existence oracle for room ids AND, on this verb, for ticket ids.
+
+    ⚠ MUTATION PERFORMED: move `self._authorize(...)` below the room read → this
+    reds on `rig.order == ["room_for_update"]`.
+    """
+    rig = _install_tickets(monkeypatch, _Rig())
+
+    with pytest.raises(NotAuthorizedError):
+        await _service().assign(
+            TENANT_ID,
+            ROOM_ID,
+            queue_ticket_id=TICKET_ID,
+            staff_user_id=uuid.uuid4(),
+            actor=_actor(role),
+        )
+
+    assert rig.order == []
+    assert rig.audit == []
+
+
+async def test_push_assign_into_an_occupied_room_refuses_before_touching_the_ticket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 2b, on the second verb that has it. Without it the loser of the most
+    likely collision — two managers on one free tile inside one 5s tick — moves a
+    NAMED customer to `in_service` and then throws the write away."""
+    rig = _Rig()
+    rig.occupant = _assignment(uuid.uuid4())
+    rig.occupant_staff = _staff_user(display_name="דנה")
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(RoomOccupiedError) as refused:
+        await _service().assign(
+            TENANT_ID,
+            ROOM_ID,
+            queue_ticket_id=TICKET_ID,
+            staff_user_id=None,
+            actor=_actor(StaffRole.OWNER),
+        )
+
+    assert refused.value.details == {"staff_display_name": "דנה"}
+    assert "claim_by_id" not in rig.order
+    assert rig.audit == []
+
+
+async def test_push_assign_names_the_ticket_and_never_drains_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ONE difference from take-next: step 3 names a ticket instead of taking
+    the head. `claim_next` must not be reachable from this verb at all — a
+    push-assign that quietly served the head would put the wrong woman in the
+    room the manager was looking at."""
+    rig = _Rig()
+    rig.named_ticket = _Ticket(id=SECOND_TICKET_ID, name="מיכל")
+    _install_tickets(monkeypatch, rig)
+
+    await _service().assign(
+        TENANT_ID,
+        ROOM_ID,
+        queue_ticket_id=SECOND_TICKET_ID,
+        staff_user_id=None,
+        actor=_actor(StaffRole.OWNER),
+    )
+
+    assert "claim_next" not in rig.order
+    assert {"call": "claim_by_id", "ticket_id": SECOND_TICKET_ID} in rig.calls
+    assert rig.calls[-1]["queue_ticket_id"] == SECOND_TICKET_ID
+
+
+async def test_push_assign_records_one_dispatch_row_carrying_the_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ONE action value for both dispatch verbs, with the mode in `details` — the
+    question this table gets asked is "who put whom in which room", and nobody
+    will ever ask it "who used the take-next button but not the assign one". And
+    NO second FITTING_ROOM_CLAIMED: the claim row's whole content is a subset of
+    this one's."""
+    rig = _install_tickets(monkeypatch, _Rig())
+    actor = _actor(StaffRole.SHIFT_MANAGER)
+
+    await _service().assign(
+        TENANT_ID, ROOM_ID, queue_ticket_id=TICKET_ID, staff_user_id=None, actor=actor
+    )
+
+    assert rig.audit == [
+        {
+            "action": AuditAction.QUEUE_TICKET_DISPATCHED.value,
+            "actor_id": actor.id,
+            "entity": str(TICKET_ID),
+            "details": {
+                "ticket": str(TICKET_ID),
+                "room": str(ROOM_ID),
+                "assignment": str(ASSIGNMENT_ID),
+                "staff": str(actor.id),
+                "mode": "assign",
+            },
+        }
+    ]
+    assert "נועה בר" not in str(rig.audit)
+
+
+async def test_push_assigning_a_ticket_that_is_gone_is_a_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`QueueTicketNotFoundError`, F33's shipped subclass, so the platform's own
+    404 handler answers it and no new code or error code exists for this. A
+    foreign-tenant id is deliberately the SAME answer as an absent one."""
+    rig = _Rig()
+    rig.named_ticket = None
+    rig.ticket_status = None
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(QueueTicketNotFoundError):
+        await _service().assign(
+            TENANT_ID,
+            ROOM_ID,
+            queue_ticket_id=TICKET_ID,
+            staff_user_id=None,
+            actor=_actor(StaffRole.OWNER),
+        )
+
+    assert "claim" not in rig.order
+    assert rig.audit == []
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        QueueTicketStatus.IN_SERVICE.value,
+        QueueTicketStatus.DONE.value,
+        QueueTicketStatus.REMOVED.value,
+    ],
+)
+async def test_push_assigning_a_ticket_that_is_no_longer_waiting_is_a_409_naming_the_state(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """The two-answer table's second row. `details` carries the state because
+    that is what lets the console choose between «היא כבר בטיפול.» and «הכניסה
+    הזו נסגרה.» — one code, two sentences, and the branch lives in the copy deck
+    rather than in a second error code."""
+    rig = _Rig()
+    rig.named_ticket = None
+    rig.ticket_status = (status, 0)
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(QueueTicketNotWaitingError) as refused:
+        await _service().assign(
+            TENANT_ID,
+            ROOM_ID,
+            queue_ticket_id=TICKET_ID,
+            staff_user_id=None,
+            actor=_actor(StaffRole.OWNER),
+        )
+
+    assert refused.value.details == {"status": status}
+    assert "claim" not in rig.order
+    assert rig.audit == []
+
+
+# --- call (D7) ----------------------------------------------------------------
+
+
+async def test_a_call_stamps_the_service_clock_and_records_one_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = _install_tickets(monkeypatch, _Rig())
+    actor = _actor(StaffRole.SEAMSTRESS)
+
+    waitlist = await _service().call(TENANT_ID, TICKET_ID, actor=actor)
+
+    assert waitlist.entries == []
+    assert {"call": "call", "ticket_id": TICKET_ID, "now": NOW} in rig.calls
+    assert rig.audit == [
+        {
+            "action": AuditAction.QUEUE_TICKET_CALLED.value,
+            "actor_id": actor.id,
+            "entity": str(TICKET_ID),
+            "details": {"ticket": str(TICKET_ID), "called_at": NOW.isoformat()},
+        }
+    ]
+
+
+async def test_a_second_call_on_a_still_waiting_ticket_is_a_200_that_records_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ A17, AND THE BRANCH A BUILDER IMPLEMENTING D4'S TABLE LITERALLY DOES NOT
+    WRITE. `call`'s rowcount 0 has THREE causes, not two: the extra `called_at IS
+    NULL` conjunct adds one, and on this verb it is the NORMAL, EXPECTED,
+    NON-ERROR case. She wanted her called and she is called.
+
+    A `{called → called}` row would be noise in a trail this area has four rows
+    in, so the no-op writes nothing.
+
+    ⚠ MUTATION PERFORMED: implement D4's two-answer table literally here — i.e.
+    fall through with no branch for `status == 'waiting'` — and this test reds
+    with a 409 the manager cannot act on, or a 500.
+    """
+    rig = _Rig()
+    rig.call_result = None
+    rig.ticket_status = (QueueTicketStatus.WAITING.value, 0)
+    _install_tickets(monkeypatch, rig)
+
+    waitlist = await _service().call(TENANT_ID, TICKET_ID, actor=_actor(StaffRole.RECEPTION))
+
+    assert waitlist.entries == []
+    assert rig.audit == []
+
+
+async def test_calling_a_ticket_that_left_the_queue_is_a_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = _Rig()
+    rig.call_result = None
+    rig.ticket_status = (QueueTicketStatus.REMOVED.value, 0)
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(QueueTicketNotWaitingError) as refused:
+        await _service().call(TENANT_ID, TICKET_ID, actor=_actor(StaffRole.RECEPTION))
+
+    assert refused.value.details == {"status": QueueTicketStatus.REMOVED.value}
+    assert rig.audit == []
+
+
+async def test_calling_a_ticket_that_is_gone_is_a_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = _Rig()
+    rig.call_result = None
+    rig.ticket_status = None
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(QueueTicketNotFoundError):
+        await _service().call(TENANT_ID, TICKET_ID, actor=_actor(StaffRole.RECEPTION))
+
+    assert rig.audit == []
+
+
+async def test_the_call_verb_takes_no_target_staffer_and_therefore_no_authorize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A summons is not destructive and has no target STAFFER, so there is
+    nothing for a self-or-elevated rule to compare and the router's five-role
+    gate is the whole check. Reception, a sales assistant and a seamstress all
+    legitimately call the next woman forward."""
+    for role in (*ELEVATED, *FLOOR):
+        rig = _install_tickets(monkeypatch, _Rig())
+        await _service().call(TENANT_ID, TICKET_ID, actor=_actor(role))
+        assert len(rig.audit) == 1
+
+
+# --- skip (D6) ----------------------------------------------------------------
+
+
+async def test_a_first_skip_requeues_her_and_records_the_resulting_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`skip_count` and the RESULTING status ride in `details`, so a
+    removal-by-second-skip is legible in the trail without a fifth action
+    value."""
+    rig = _install_tickets(monkeypatch, _Rig())
+    actor = _actor(StaffRole.OWNER)
+
+    await _service().skip(TENANT_ID, TICKET_ID, seen_skip_count=0, actor=actor)
+
+    assert {
+        "call": "skip",
+        "ticket_id": TICKET_ID,
+        "now": NOW,
+        "seen_skip_count": 0,
+    } in rig.calls
+    assert rig.audit == [
+        {
+            "action": AuditAction.QUEUE_TICKET_SKIPPED.value,
+            "actor_id": actor.id,
+            "entity": str(TICKET_ID),
+            "details": {
+                "ticket": str(TICKET_ID),
+                "skip_count": 1,
+                "status": QueueTicketStatus.WAITING.value,
+            },
+        }
+    ]
+
+
+async def test_a_second_skip_records_the_removal_it_actually_performed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The status in `details` is the one the SERVER wrote, read off the
+    statement's own RETURNING rather than re-derived in Python — the `CASE` is
+    the authority on whether that press removed her."""
+    rig = _Rig()
+    rig.skip_result = _Skipped(skip_count=2, status=QueueTicketStatus.REMOVED.value)
+    _install_tickets(monkeypatch, rig)
+
+    await _service().skip(TENANT_ID, TICKET_ID, seen_skip_count=1, actor=_actor(StaffRole.OWNER))
+
+    assert rig.audit[0]["details"] == {
+        "ticket": str(TICKET_ID),
+        "skip_count": 2,
+        "status": QueueTicketStatus.REMOVED.value,
+    }
+
+
+async def test_a_skip_whose_count_moved_under_the_caller_is_its_own_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ THE THIRD ANSWER, AND SHE IS NOT REMOVED.
+
+    A colleague skipped her between this render and this tap. Folding this into
+    `QUEUE_TICKET_NOT_WAITING` would tell the manager the entry is closed when it
+    is live and still skippable, and the remedy is «רענני ונסי שוב» rather than
+    «הכניסה הזו נסגרה». `details` carries the count the server actually holds, so
+    the next tick raises her rendered count to 1 and the next press correctly
+    opens the confirm instead of silently removing her.
+
+    ⚠ MUTATION PERFORMED: fold the branch into `QueueTicketNotWaitingError` →
+    this reds on the class.
+    """
+    rig = _Rig()
+    rig.skip_result = None
+    rig.ticket_status = (QueueTicketStatus.WAITING.value, 1)
+    _install_tickets(monkeypatch, rig)
+
+    with pytest.raises(QueueTicketChangedError) as refused:
+        await _service().skip(
+            TENANT_ID, TICKET_ID, seen_skip_count=0, actor=_actor(StaffRole.OWNER)
+        )
+
+    assert refused.value.details == {"skip_count": "1"}
+    assert rig.audit == []
+
+
+async def test_skipping_a_ticket_that_left_the_queue_is_a_409_and_a_missing_one_is_a_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for status, error in (
+        (QueueTicketStatus.IN_SERVICE.value, QueueTicketNotWaitingError),
+        (None, QueueTicketNotFoundError),
+    ):
+        rig = _Rig()
+        rig.skip_result = None
+        rig.ticket_status = (status, 0) if status is not None else None
+        _install_tickets(monkeypatch, rig)
+
+        with pytest.raises(error):
+            await _service().skip(
+                TENANT_ID, TICKET_ID, seen_skip_count=0, actor=_actor(StaffRole.OWNER)
+            )
+
+        assert rig.audit == []
+
+
+# --- remove (D8) --------------------------------------------------------------
+
+
+async def test_a_removal_records_one_row_naming_only_the_ticket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`details = {"ticket"}` and nothing else. audit_log has no retention policy
+    and platform operators read across tenants, so a queue ticket's name is a
+    third party's exactly as customer notes are — ids only."""
+    rig = _install_tickets(monkeypatch, _Rig())
+    actor = _actor(StaffRole.SHIFT_MANAGER)
+
+    await _service().remove(TENANT_ID, TICKET_ID, actor=actor)
+
+    assert rig.audit == [
+        {
+            "action": AuditAction.QUEUE_TICKET_REMOVED.value,
+            "actor_id": actor.id,
+            "entity": str(TICKET_ID),
+            "details": {"ticket": str(TICKET_ID)},
+        }
+    ]
+
+
+async def test_removing_a_ticket_that_already_left_is_a_409_and_a_missing_one_is_a_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remove's rowcount 0 really does have only D4's TWO causes — it carries no
+    `skip_count` conjunct and no `called_at` one."""
+    for status, error in (
+        (QueueTicketStatus.REMOVED.value, QueueTicketNotWaitingError),
+        (None, QueueTicketNotFoundError),
+    ):
+        rig = _Rig()
+        rig.removed = False
+        rig.ticket_status = (status, 0) if status is not None else None
+        _install_tickets(monkeypatch, rig)
+
+        with pytest.raises(error):
+            await _service().remove(TENANT_ID, TICKET_ID, actor=_actor(StaffRole.OWNER))
+
+        assert rig.audit == []
+
+
+# --- what all four answer -----------------------------------------------------
+
+
+async def test_every_queue_verb_answers_the_current_waitlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One round trip, not two. A client that acted and then waited up to five
+    seconds for the row to leave the list would render the same woman as both
+    served and waiting."""
+    for act in (
+        lambda service: service.call(TENANT_ID, TICKET_ID, actor=_actor(StaffRole.OWNER)),
+        lambda service: service.skip(
+            TENANT_ID, TICKET_ID, seen_skip_count=0, actor=_actor(StaffRole.OWNER)
+        ),
+        lambda service: service.remove(TENANT_ID, TICKET_ID, actor=_actor(StaffRole.OWNER)),
+    ):
+        rig = _Rig()
+        rig.waiting = [_Waiting(name="מיכל")]
+        _install_tickets(monkeypatch, rig)
+
+        waitlist = await act(_service())
+
+        assert [entry.name for entry in waitlist.entries] == ["מיכל"]
+        assert rig.waitlist_days == [datetime.date(2026, 8, 2)]
+
+
+async def test_both_dispatch_verbs_answer_the_tile_and_the_queue_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for act in (
+        lambda service: service.take_next(
+            TENANT_ID, ROOM_ID, staff_user_id=None, actor=_actor(StaffRole.OWNER)
+        ),
+        lambda service: service.assign(
+            TENANT_ID,
+            ROOM_ID,
+            queue_ticket_id=TICKET_ID,
+            staff_user_id=None,
+            actor=_actor(StaffRole.OWNER),
+        ),
+    ):
+        rig = _Rig()
+        rig.waiting = [_Waiting(name="מיכל")]
+        _install_tickets(monkeypatch, rig)
+
+        read = await act(_service())
+
+        assert read.room.row.room_id == ROOM_ID
+        assert [entry.name for entry in read.waitlist.entries] == ["מיכל"]
+
+
+# --- F58: FINISH is the shipped release, EXTENDED (D5) ------------------------
+#
+# ⚠ THE ACCEPTANCE GATE FOR THIS TASK IS THE FOUR TESTS ABOVE STAYING GREEN WITH
+# NO EDIT. Every assignment F36 ever created carries `queue_ticket_id IS NULL`
+# and must take the byte-identical shipped path — including its audit row, whose
+# `details` the shipped test asserts as an EXACT dict.
+#
+# ⚠ AND THAT IS WHY THE NEW KEY IS OMITTED RATHER THAN NULL. D5 property 5 says
+# the row gains `{"queue_ticket": str(id) | None}`, which would have added a
+# `None` key to every release in the product and reddened
+# `test_a_release_that_wrote_records_one_audit_row_and_stamps_the_service_clock`
+# — contradicting D5 property 2, which calls those suites the acceptance gate.
+# The key is therefore present exactly when there is a ticket to name, which is
+# `_occupied_body`'s shipped rule for the same situation one layer up.
+
+
+async def test_a_release_of_a_dispatched_walk_in_closes_her_ticket_in_the_same_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FINISH. There is no sixth route, and that is a SAFETY property rather than
+    an economy: a separate finish verb would leave releasing from the room tile —
+    the control that is already there, already tested — freeing the room and
+    leaving the ticket `in_service` forever, which is precisely the defect this
+    feature exists to eliminate.
+
+    One transaction: the worker frees and the entry closes together, or neither
+    does.
+    """
+    rig = _Rig()
+    actor = _actor(StaffRole.SEAMSTRESS)
+    rig.assignment = _assignment(actor.id)
+    rig.release_result = (True, _assignment(actor.id, released_at=NOW, queue_ticket_id=TICKET_ID))
+    _install_tickets(monkeypatch, rig)
+
+    await _service().release(TENANT_ID, ASSIGNMENT_ID, actor=actor)
+
+    assert {"call": "close", "ticket_id": TICKET_ID} in rig.calls
+    assert rig.order.index("close") < rig.order.index("audit")
+    assert rig.audit == [
+        {
+            "action": AuditAction.FITTING_ROOM_RELEASED.value,
+            "actor_id": actor.id,
+            "entity": str(ASSIGNMENT_ID),
+            "details": {
+                "room": str(ROOM_ID),
+                "assignment": str(ASSIGNMENT_ID),
+                "staff": str(actor.id),
+                "queue_ticket": str(TICKET_ID),
+            },
+        }
+    ]
+
+
+async def test_a_release_of_an_ordinary_assignment_closes_nothing_and_names_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`queue_ticket_id IS NULL` is the DEFAULT, not an edge case: a staffer
+    prepping a room, a booked bride, an anonymous visit. Every one of those takes
+    the path F36 shipped, unchanged and unmentioned."""
+    rig = _Rig()
+    actor = _actor(StaffRole.SEAMSTRESS)
+    rig.assignment = _assignment(actor.id)
+    rig.release_result = (True, _assignment(actor.id, released_at=NOW))
+    _install_tickets(monkeypatch, rig)
+
+    await _service().release(TENANT_ID, ASSIGNMENT_ID, actor=actor)
+
+    assert "close" not in rig.order
+    assert "queue_ticket" not in rig.audit[0]["details"]
+
+
+async def test_a_second_release_of_a_dispatched_walk_in_re_closes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ `wrote is False` → NO CLOSE, and the two no-ops are ONE condition.
+
+    Somebody already released it: she wanted the room free and the room is free,
+    which is a 200 with no audit row. Closing the ticket anyway would be a write
+    on a path whose whole point is that it writes nothing — and on a ticket a
+    manager may have REMOVED mid-fitting, `close`'s own `status = 'in_service'`
+    conjunct is the second guard behind this one.
+
+    ⚠ MUTATION PERFORMED: close unconditionally (drop the `wrote` guard) → this
+    test reds on `close` appearing in the order.
+    """
+    rig = _Rig()
+    actor = _actor(StaffRole.SEAMSTRESS)
+    rig.assignment = _assignment(actor.id)
+    rig.release_result = (False, _assignment(actor.id, released_at=NOW, queue_ticket_id=TICKET_ID))
+    _install_tickets(monkeypatch, rig)
+
+    await _service().release(TENANT_ID, ASSIGNMENT_ID, actor=actor)
+
+    assert "close" not in rig.order
+    assert rig.audit == []
+
+
+async def test_a_release_whose_ticket_a_manager_already_removed_still_frees_the_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`close` answering False raises NOTHING. The room is free, which is what
+    she asked for; the ticket stays `removed` because a release must not
+    resurrect a manager's removal as `done`."""
+    rig = _Rig()
+    actor = _actor(StaffRole.SEAMSTRESS)
+    rig.assignment = _assignment(actor.id)
+    rig.release_result = (True, _assignment(actor.id, released_at=NOW, queue_ticket_id=TICKET_ID))
+    rig.closed = False
+    _install_tickets(monkeypatch, rig)
+
+    read = await _service().release(TENANT_ID, ASSIGNMENT_ID, actor=actor)
+
+    assert read.row.room_id == ROOM_ID
+    assert len(rig.audit) == 1

@@ -1,6 +1,6 @@
 """The floor: the read, the two break toggles, the room registry, the claim and
-its dress bindings, the two one-shot pickers and F37's SOS page — eighteen routes
-on /manage.
+its dress bindings, the two one-shot pickers, F58's five dispatch verbs and F37's
+SOS page — twenty-three routes on /manage.
 
 **A SEVENTH router on /manage.** Registered after dashboard_router in
 create_app(), carrying the same shadowing warning the other six includes carry —
@@ -15,16 +15,28 @@ that admits more than two.** Router-level so a route added here later cannot
 forget the gate, and because test_staff_role_gating's default-deny walker reads
 `allowed_roles` off the router: a /manage router without one is a red build.
 
-⚠ **The justification for that widening changed in F36 and the sentence that
-used to stand here is now false.** It said the floor payload carries ZERO
-customer data. It carries a client label — on each occupied room, and on the
-holder's staff card. What is true, and what the widening actually rests on:
-**the floor payload carries the minimum customer datum required by the person
-standing on the floor — at most one name per occupied room, for the duration of
-the fitting, never the day's customer book.** On a surface this feature's own
-spec calls legally sensitive, leaving the widest role gate in the product
-justified by a claim that is no longer true would be worse than never having
-written one.
+⚠ **The justification for that widening has now been falsified TWICE, and this
+is its second rewrite.** F57's sentence said the floor payload carries ZERO
+customer data; F36's replacement said "at most one name per occupied room"; F58
+puts up to a hundred more on it. What is true, and what the widening actually
+rests on:
+
+**The floor payload carries the minimum customer datum required by the person
+standing on the floor — the people who are physically in the boutique right now:
+one name per occupied fitting room, plus the name of every walk-in currently
+waiting to be served — and never the day's booking book.** Every name leaves the
+payload the moment she does: a released fitting, a served ticket, a skipped-out
+ticket, a removed ticket, or midnight Jerusalem. Nothing on it carries a phone,
+an email, an address or a consent flag.
+
+⚠ **It DOES carry each waiting ticket's id, and that id is F33's position-page
+capability.** This payload is the only server path other than the check-in
+response that emits one, so it is disclosed to a signed-in staffer of this tenant
+and to nobody else, and **the console must never render it as a link to
+`/q/{id}`.** On a surface this feature's own spec calls legally sensitive,
+leaving the widest role gate in the product justified by a claim that is no
+longer true — or by a new one that understates the disclosure — would be worse
+than never having written one.
 
 The distinction that keeps D11's conclusion right — two loops stay two loops:
 
@@ -32,11 +44,12 @@ The distinction that keeps D11's conclusion right — two loops stay two loops:
                                  her appointment type, dress, size, notes,
                                  status, arrival and manage-token surface, for
                                  the whole day, to anyone who opens the section.
-                                 Owner and shift_manager. F36 puts none of this
-                                 anywhere.
-    GET /manage/floor            the ≤3 PEOPLE PHYSICALLY IN FITTING ROOMS RIGHT
-                                 NOW. One name each, and nothing else about her,
-                                 for the duration of the fitting.
+                                 Owner and shift_manager. Neither F36 nor F58
+                                 puts any of this anywhere.
+    GET /manage/floor            the PEOPLE PHYSICALLY IN THE BOUTIQUE RIGHT
+                                 NOW — in a fitting room or standing in the
+                                 queue. One name each, and nothing else about
+                                 her, until she leaves.
     GET /manage/floor/clients    today's arrivals — checked in and still in the
                                  building. A name and an appointment time,
                                  fetched when the panel mounts and after a
@@ -46,10 +59,12 @@ The distinction that keeps D11's conclusion right — two loops stay two loops:
 alert row, and a `RoleGate` can express only a pure role predicate. See the
 section comment above those five.
 
-**Four routes NARROW that gate to owner + shift_manager**, per-route, composing
-by intersection (`auth/dependencies.py:44-45`): the three registry verbs, and
-`handover`. The registry is configuration — a seamstress renaming the boutique's
-rooms is not a capability anything asks for. `handover` is there rather than in
+**SIX routes NARROW that gate to owner + shift_manager**, per-route, composing
+by intersection (`auth/dependencies.py:44-45`): the three registry verbs,
+`handover`, and F58's `skip` and `remove`. The registry is configuration — a
+seamstress renaming the boutique's rooms is not a capability anything asks for.
+Skip re-orders a stranger's place in a queue and its second press removes her;
+remove takes a real customer out of it, irreversibly. `handover` is there rather than in
 the service because its predicate depends on nothing about the target, which is
 precisely what `RoleGate` is; the claim's and the release's are target-dependent
 (self OR elevated) and genuinely cannot live in a gate.
@@ -74,19 +89,21 @@ paths (`dashboard/router.py:17-26` argues this at length).
 points the dependency arrow backwards to save three lines;
 `auth/staff_router.py:22-27` records the decision.
 
-**No rate limiter**: no /manage router carries one and neither F36 nor F37
-introduces the first. The FOURTEEN mutating routes ARE fenced by
+**No rate limiter**: no /manage router carries one and none of F36, F58 or F37
+introduces the first. The NINETEEN mutating routes ARE fenced by
 CsrfOriginMiddleware (`csrf.py:48` gates on `request.method in MUTATING_METHODS`,
-a method test rather than a path list, so the eight F36 adds and the four F37
-adds are fenced by construction); the FOUR GETs are not, and their protection is
+a method test rather than a path list, so the eight F36 adds, the five F58 adds
+and the four F37 adds are fenced by construction); the FOUR GETs are not, and
+their protection is
 the session cookie and the role gate, alone.
 
 **Every path's second segment is `floor`, so `vite.config.ts` needs no edit** —
 `test_spa_serving.py` asserts SET EQUALITY between the live route table's second
 segments and the manage dev proxy's alternation, and a mismatch breaks only a
 developer's machine while production, CI and the whole suite stay green. Mounting
-the registry at `/manage/rooms` would have cost that edit; `/manage/floor/rooms`
-costs nothing and reads better anyway.
+the registry at `/manage/rooms` would have cost that edit, and so would F58's
+`/manage/queue/{id}/call`; `/manage/floor/…` costs nothing and reads better
+anyway.
 
 **Real HTTP verbs and a path parameter for the target.** The `.claude/rules` RPC
 / `@QueryValue` guidance is Kotlin boilerplate for another codebase; the shipped
@@ -102,8 +119,10 @@ from app.auth.dependencies import get_current_staff, require_role
 from app.auth.service import StaffContext
 from app.floor.schemas import (
     AddDressRequest,
+    AssignRequest,
     ClaimRoomRequest,
     CreateRoomRequest,
+    DispatchResult,
     FloorClientList,
     FloorDressList,
     FloorResponse,
@@ -111,10 +130,13 @@ from app.floor.schemas import (
     RaisedAlert,
     RaiseSosRequest,
     Room,
+    SkipRequest,
     SosAlertView,
     SosResponse,
     StaffCard,
+    TakeNextRequest,
     UpdateRoomRequest,
+    Waitlist,
 )
 from app.floor.service import FloorService, RoomRead
 from app.models.constants import StaffRole
@@ -335,6 +357,110 @@ async def remove_dress(
 
 
 # --- F36: the two one-shot pickers (D16) --------------------------------------
+
+
+# --- F58: the five dispatch verbs (D11) ---------------------------------------
+#
+# ⚠ **EVERY PATH'S SECOND SEGMENT IS `floor`**, so `apps/manage/vite.config.ts`
+# needs no edit. `test_spa_serving.py` asserts SET EQUALITY between the live
+# route table's second segments and the manage dev proxy's alternation, and a
+# mismatch breaks ONLY a developer's machine while production, CI and the whole
+# suite stay green, serving the SPA shell where the API should be.
+# `/manage/queue/{id}/call` reads better and costs exactly that edit.
+
+
+@router.post("/floor/rooms/{room_id}/take-next")
+async def take_next(
+    request: Request,
+    room_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+    body: TakeNextRequest,
+) -> DispatchResult:
+    """⚠ `body.staff_user_id` is the TARGET, never the actor — `claim_room`'s
+    rule on the verb that puts a named customer in a room. The service's
+    `_authorize` is its first statement, before any read, because a 403 raised
+    after one is an existence oracle."""
+    return DispatchResult.from_read(
+        await service.take_next(
+            get_current_tenant(request).id,
+            room_id,
+            staff_user_id=body.staff_user_id,
+            actor=staff,
+        )
+    )
+
+
+@router.post("/floor/rooms/{room_id}/assign")
+async def assign_from_queue(
+    request: Request,
+    room_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+    body: AssignRequest,
+) -> DispatchResult:
+    return DispatchResult.from_read(
+        await service.assign(
+            get_current_tenant(request).id,
+            room_id,
+            queue_ticket_id=body.queue_ticket_id,
+            staff_user_id=body.staff_user_id,
+            actor=staff,
+        )
+    )
+
+
+@router.post("/floor/queue/{ticket_id}/call")
+async def call_queue_ticket(
+    request: Request, ticket_id: uuid.UUID, service: Service, staff: Staff
+) -> Waitlist:
+    """ALL FIVE ROLES, and no service-side check either: a summons is not
+    destructive and has no target STAFFER, so there is nothing for a
+    self-or-elevated rule to compare. Reception, a sales assistant and a
+    seamstress all legitimately call the next woman forward."""
+    return Waitlist.from_read(
+        await service.call(get_current_tenant(request).id, ticket_id, actor=staff)
+    )
+
+
+@router.post("/floor/queue/{ticket_id}/skip", dependencies=[ELEVATED])
+async def skip_queue_ticket(
+    request: Request, ticket_id: uuid.UUID, service: Service, staff: Staff, body: SkipRequest
+) -> Waitlist:
+    """⚠ `ELEVATED`, and the ABSENCE of this route from `FLOOR_OPEN` is the
+    assertion that the tightening is real.
+
+    There is no middle gate available and that is structural rather than a
+    preference: `test_the_floor_roles_reach_exactly_the_floor_routes` classifies
+    on the INTERSECTION and then asserts that a floor route admits ALL THREE
+    floor roles or none, so `require_role(OWNER, SHIFT_MANAGER, RECEPTION)` would
+    red a test its own docstring declares untouchable. Every route in this
+    product is all-five or exactly-two. The product cost is real and recorded: a
+    reception staffer cannot skip a no-show — she calls a shift manager.
+
+    `body.seen_skip_count` is the value her tile RENDERED, and it is what stops
+    two ordinary single taps removing a customer with the confirm bypassed.
+    """
+    return Waitlist.from_read(
+        await service.skip(
+            get_current_tenant(request).id,
+            ticket_id,
+            seen_skip_count=body.seen_skip_count,
+            actor=staff,
+        )
+    )
+
+
+@router.post("/floor/queue/{ticket_id}/remove", dependencies=[ELEVATED])
+async def remove_queue_ticket(
+    request: Request, ticket_id: uuid.UUID, service: Service, staff: Staff
+) -> Waitlist:
+    """`ELEVATED` for skip's reason: this takes a real customer out of the queue,
+    irreversibly and with no restore verb. No body — the target is the ticket and
+    there is nothing to say about it."""
+    return Waitlist.from_read(
+        await service.remove(get_current_tenant(request).id, ticket_id, actor=staff)
+    )
 
 
 @router.get("/floor/dresses")

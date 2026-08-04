@@ -1,15 +1,22 @@
 """sos alerts: one table, one partial index, and deliberately no unique index
 
-Revision ID: 0021
-Revises: 0020
+Revision ID: 0022
+Revises: 0021
+
+Built as "0021" against `alembic heads` at build time; F58's
+`0021_floor_dispatch.py` merged first and claimed that string. Alembic keys
+revisions by the STRING, so a duplicate does not error — it warns and DROPS one
+of the two scripts, meaning one feature's DDL never runs on a fresh database.
+Renumbered here at the merge that brought F58 in: filename, `revision`,
+`down_revision`. `test_exactly_one_migration_head` is what proves it.
 """
 
 from alembic import op
 
 from app.db.rls import enable_tenant_rls
 
-revision = "0021"
-down_revision = "0020"
+revision = "0022"
+down_revision = "0021"
 branch_labels = None
 depends_on = None
 

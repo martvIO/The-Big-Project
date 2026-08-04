@@ -405,6 +405,15 @@ function assignmentPath(assignmentId: string): string {
   return `/manage/floor/assignments/${encodeURIComponent(assignmentId)}`;
 }
 
+// F58's three row verbs. ⚠ `/manage/FLOOR/queue/...` and not `/manage/queue/...`
+// — every path's second segment has to stay `floor` or the manage dev proxy's
+// alternation needs an edit, and a mismatch there breaks ONLY a developer's
+// machine while production, CI and the whole suite stay green, serving the SPA
+// shell where the API should be.
+function queuePath(ticketId: string): string {
+  return `/manage/floor/queue/${encodeURIComponent(ticketId)}`;
+}
+
 // F37's five paths keep the same second segment for the same reason: the manage
 // dev proxy's alternation names `floor` and mounting at /manage/sos would have
 // cost an edit to vite.config.ts.
@@ -462,6 +471,11 @@ export interface FloorResponse {
   // against THIS and not against the device clock, so only the delta of a
   // boutique tablet's clock is trusted and never its absolute value.
   server_now: string;
+  // F58's ONE new envelope key, and the reason the read was an envelope from
+  // the start. There is no second poll and no second endpoint: the waitlist is
+  // two more statements on the tick's existing session, so «עודכן 14:07» stays
+  // true of the staff, the rooms AND the queue simultaneously.
+  waitlist: Waitlist;
 }
 
 // --- F36: the rooms -----------------------------------------------------------
@@ -535,6 +549,57 @@ export interface FloorClient {
 export interface FloorClientList {
   clients: FloorClient[];
   truncated: boolean;
+}
+
+// --- F58: the waitlist -------------------------------------------------------
+
+export interface WaitlistEntry {
+  // ⚠ The ticket id, and it IS F33's capability: whoever holds it can read that
+  // ticket's position page. On THIS surface that is not a disclosure — the
+  // caller is a signed-in staffer behind the session cookie and the role gate —
+  // and every verb in this feature takes it as the target, so there is no lesser
+  // id to send. **The console must never render it as a link to `/q/{id}`.**
+  id: string;
+  name: string;
+  // "bride" | "evening", rendered through waitlist.visitBride /
+  // waitlist.visitEvening. Nothing SORTS on it: bride-priority ordering is
+  // explicitly not built.
+  visit_type: string;
+  // 1-based, and the server's own `index + 1` over this list. Never re-derived
+  // client-side: two derivations of one number are two chances for the wall
+  // board, her phone and this panel to disagree.
+  position: number;
+  // `created_at`, NOT the sort key. `COALESCE(requeued_at, created_at)` is what
+  // a skip rewrites, so anchoring the rendered clock to that would reset a
+  // skipped woman's wait to zero and the panel would read «הגיעה זה עתה» about
+  // someone who has been standing there forty minutes.
+  arrived_at: string;
+  // A boolean and not the timestamp: the panel needs to know WHETHER, and the
+  // instant would let anyone with the screen time how long a named woman has
+  // been standing at a counter.
+  called: boolean;
+  // What makes the second press's meaning legible BEFORE it is pressed, and
+  // what the client sends back as `seen_skip_count`.
+  skip_count: number;
+  // "Another live ticket today carries the same phone." The phone itself never
+  // reaches the wire — the flag is all that survives the grouping.
+  duplicate: boolean;
+}
+
+export interface Waitlist {
+  entries: WaitlistEntry[];
+  // FloorDressList's rule verbatim: the panel renders one line saying the list
+  // is partial and names NO count and NO limit.
+  truncated: boolean;
+}
+
+// What the two dispatch verbs answer — the tile AND the queue, because they are
+// two halves of one act. A client that patched the tile from the response and
+// waited up to five seconds for the row to leave the list would render the same
+// woman as both in-service and waiting.
+export interface DispatchResult {
+  room: Room;
+  waitlist: Waitlist;
 }
 
 // --- F37: the SOS page (mirror backend/app/floor/schemas.py) ------------------
@@ -649,6 +714,35 @@ export interface AddDressRequest {
   dress_id: string;
   // Omitted for a sample gown carried in before a size is chosen.
   size_label?: string;
+}
+
+// --- F58: the dispatch request bodies ----------------------------------------
+
+// ⚠ `staff_user_id` is the TARGET and only ever the target, exactly as it is on
+// ClaimRoomRequest. The acting identity is the session cookie, and there is no
+// `booking_id`: take-next's client is the head of the queue and nothing else can
+// be bound to it.
+export interface TakeNextRequest {
+  staff_user_id?: string;
+}
+
+export interface AssignRequest {
+  // REQUIRED — an assign with no ticket is a claim, and the claim already
+  // exists.
+  queue_ticket_id: string;
+  staff_user_id?: string;
+}
+
+export interface SkipRequest {
+  // ⚠ The value the CLIENT RENDERED, and the whole of what stops two ordinary
+  // single taps removing a customer. Both managers' rows said 0, so neither
+  // showed the confirm — it is gated on >= 1 — and without this field the second
+  // tap escalates to `removed` on a count nobody saw. The server refuses on a
+  // mismatch (409 QUEUE_TICKET_CHANGED) rather than escalating.
+  //
+  // NOT optional, and the server has no default either: a caller that omits it
+  // is a caller that did not read a count.
+  seen_skip_count: number;
 }
 
 export interface StaffMember {
@@ -1179,6 +1273,29 @@ export const api = {
       `${assignmentPath(assignmentId)}/dresses/${encodeURIComponent(bindingId)}`,
       { method: "DELETE" },
     );
+  },
+  // F58's five. The two DISPATCH verbs answer a `DispatchResult` — the tile and
+  // the queue together, because they are two halves of one act — and the three
+  // ROW verbs answer the whole `Waitlist`: a skip reorders it and a remove
+  // shortens it, and a per-entry patch can express neither.
+  //
+  // The two dispatch bodies always travel even when empty, for `claimRoom`'s
+  // reason: the route's model is required, and `{}` IS the one-tap take-next on
+  // herself. The two verbs with nothing to say send no body at all.
+  takeNext(roomId: string, body: TakeNextRequest): Promise<DispatchResult> {
+    return apiFetch(`${roomPath(roomId)}/take-next`, { method: "POST", body });
+  },
+  assignFromQueue(roomId: string, body: AssignRequest): Promise<DispatchResult> {
+    return apiFetch(`${roomPath(roomId)}/assign`, { method: "POST", body });
+  },
+  callQueueTicket(ticketId: string): Promise<Waitlist> {
+    return apiFetch(`${queuePath(ticketId)}/call`, { method: "POST" });
+  },
+  skipQueueTicket(ticketId: string, body: SkipRequest): Promise<Waitlist> {
+    return apiFetch(`${queuePath(ticketId)}/skip`, { method: "POST", body });
+  },
+  removeQueueTicket(ticketId: string): Promise<Waitlist> {
+    return apiFetch(`${queuePath(ticketId)}/remove`, { method: "POST" });
   },
   listFloorDresses(): Promise<FloorDressList> {
     return apiFetch("/manage/floor/dresses");

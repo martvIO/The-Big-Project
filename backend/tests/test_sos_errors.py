@@ -27,6 +27,8 @@ from app.floor.validation import (
     _DetailedConflictError,
 )
 from app.main import (
+    QUEUE_TICKET_CHANGED_BODY,
+    QUEUE_TICKET_NOT_WAITING_BODY,
     ROOM_OCCUPIED_BODY,
     SOS_ALREADY_ACCEPTED_BODY,
     SOS_CLOSED_BODY,
@@ -153,15 +155,22 @@ def test_the_two_sos_conflicts_are_not_validation_errors() -> None:
         assert not issubclass(error, DomainValidationError)
 
 
-def test_exactly_four_bodies_in_the_product_can_carry_details() -> None:
+def test_exactly_six_bodies_in_the_product_can_carry_details() -> None:
     """The enumerable set, as an assertion. F36's Risk 8 named this PR as its
     trigger: `details` is an extension of an error envelope every other body
     treats as a two-field constant, which is fine while it stays deliberate and
-    bad once it is the default. All four are frozen TWO-key dicts at rest —
-    `details` only ever exists on a copy made at raise time."""
+    bad once it is the default. All six are frozen TWO-key dicts at rest —
+    `details` only ever exists on a copy made at raise time.
+
+    ⚠ **Grown from four to six at the F58 merge, not relaxed.** F58 landed two
+    ticket-state conflicts on the same base while this branch was building; the
+    equality below is what caught them, and the fix is to NAME them rather than
+    to loosen the check to a subset."""
     for body in (
         ROOM_OCCUPIED_BODY,
         STAFF_OCCUPIED_BODY,
+        QUEUE_TICKET_NOT_WAITING_BODY,
+        QUEUE_TICKET_CHANGED_BODY,
         SOS_ALREADY_ACCEPTED_BODY,
         SOS_CLOSED_BODY,
     ):
@@ -169,6 +178,8 @@ def test_exactly_four_bodies_in_the_product_can_carry_details() -> None:
     assert {c.__name__ for c in _DetailedConflictError.__subclasses__()} == {
         "RoomOccupiedError",
         "StaffOccupiedError",
+        "QueueTicketNotWaitingError",
+        "QueueTicketChangedError",
         "SosAlreadyAcceptedError",
         "SosClosedError",
     }

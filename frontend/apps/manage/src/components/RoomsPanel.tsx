@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Select } from "@boutique/ui";
 import type { BadgeVariant } from "@boutique/ui";
 import { api, ApiError } from "../api";
-import type { FloorClient, Room, RoomAssignment, StaffCard } from "../api";
+import type { DispatchResult, FloorClient, Room, RoomAssignment, StaffCard } from "../api";
 import { isolateBidi } from "../lib/booking";
 import { elapsedLine } from "../lib/elapsed";
 import { jerusalemTime } from "../lib/jerusalem";
@@ -116,6 +116,23 @@ interface RoomsPanelProps {
   onRooms: (update: (current: Room[]) => Room[]) => void;
   onCue: (cue: { text: string; name: string | null }) => void;
   /**
+   * F58. How many walk-ins are waiting. A COUNT and not the list: this panel
+   * neither renders an entry nor picks one — the server takes the head of the
+   * queue — so the only thing the tile needs to know is whether there is
+   * anybody to take. It decides two things: whether «קחי את הבאה» is rendered
+   * at all (§3.1 — an empty queue REMOVES the control rather than refusing the
+   * tap), and which of the tile's two controls owns the `controlRefs` slot
+   * (DC-2).
+   */
+  waitlistCount: number;
+  /**
+   * A dispatch answers the tile AND the queue, so it cannot go through
+   * `onRooms`: the parent applies both halves in ONE paint, because a client
+   * that patched the tile and waited up to five seconds for the row to leave
+   * would render the same woman as in-service and waiting.
+   */
+  onDispatch: (result: DispatchResult) => void;
+  /**
    * ⚠ OPTIONAL, and the optionality is what keeps this file's shipped test
    * helper edit-free. ⚠ THE TRIGGER ELEMENT TRAVELS UP: this panel's own MOVE-4
    * effect is keyed on ITS `openDialog` state, which never changes for a dialog
@@ -136,6 +153,8 @@ export function RoomsPanel({
   mutate,
   onRooms,
   onCue,
+  waitlistCount,
+  onDispatch,
   onRaise,
 }: RoomsPanelProps) {
   const { t } = useTranslation();
@@ -149,6 +168,14 @@ export function RoomsPanel({
   const [clients, setClients] = useState<FloorClient[] | null>(null);
   const [clientsTruncated, setClientsTruncated] = useState(false);
   const [busyIds, setBusyIds] = useState<readonly string[]>([]);
+  // DC-2(b). `disabled` is SHARED and `loading` is not: one tile serves one act
+  // at a time, so both controls go dead together — but two spinners on one tile
+  // would say two requests are in flight. Written by the two tile handlers and
+  // read only by the two `loading` props; never cleared, because it is only ever
+  // read while `busy`.
+  const [pendingControl, setPendingControl] = useState<
+    Record<string, "takeNext" | "claim">
+  >({});
   const [tileError, setTileError] = useState<TileError | null>(null);
   const [openDialog, setOpenDialog] = useState<DialogTarget | null>(null);
   // The handover's residual 409 lives INSIDE its dialog rather than on the tile:
@@ -360,7 +387,7 @@ export function RoomsPanel({
   // The wire cannot tell them apart, so the CALLER decides from what it sent.
   const describe = (
     error: unknown,
-    target: "room" | "assignment" | "client",
+    target: "room" | "assignment" | "client" | "queue",
   ): Omit<TileError, "id"> => {
     if (error instanceof ApiError && error.status === 409 && error.code === "ROOM_OCCUPIED") {
       const name = error.details?.staff_display_name;
@@ -370,9 +397,33 @@ export function RoomsPanel({
     }
     if (error instanceof ApiError && error.status === 409 && error.code === "STAFF_OCCUPIED") {
       const room = error.details?.room_label;
+      // ⚠ DC-3. THE SUBJECT DEPENDS ON THE VERB. The take-next route sends no
+      // staff_user_id — the acting identity is the session cookie — so on a
+      // dispatch the "occupied staffer" IS the manager reading the sentence,
+      // and F36's third-person «היא כבר בחדר אחר» tells her about herself. A
+      // SECOND sentence rather than an edited value: the shipped third person is
+      // correct for the handover, where the target genuinely is a colleague, and
+      // its literal is asserted in three shipped test files.
+      const named =
+        target === "queue" ? "rooms.error.staffOccupiedSelf" : "rooms.error.STAFF_OCCUPIED";
+      const unknown =
+        target === "queue"
+          ? "rooms.error.staffOccupiedSelfUnknown"
+          : "rooms.error.staffOccupiedUnknown";
       return room === undefined
-        ? { text: t("rooms.error.staffOccupiedUnknown"), value: null, outage: false }
-        : { text: t("rooms.error.STAFF_OCCUPIED", { room }), value: room, outage: false };
+        ? { text: t(unknown), value: null, outage: false }
+        : { text: t(named, { room }), value: room, outage: false };
+    }
+    if (error instanceof ApiError && error.status === 409 && error.code === "QUEUE_EMPTY") {
+      // ⚠ WITHOUT THIS BRANCH IT TAKES THE FALL-THROUGH and tells a manager
+      // whose queue is simply empty that the STAFF LIST failed to load, in the
+      // muted OUTAGE register — the exact failure the error code is bought to
+      // avoid, delivered in the wrong colour on top. A lost race is a normal
+      // outcome of this screen (the last woman left between the render and the
+      // tap) and it must never read as a fault. `waitlist.empty` plus a full
+      // stop, deliberately: the alert answers her tap, the EmptyState one panel
+      // below answers the screen.
+      return { text: t("rooms.error.QUEUE_EMPTY"), value: null, outage: false };
     }
     if (error instanceof ApiError && error.status === 404) {
       // The client sentence has NO paused twin, and that is not an omission:
@@ -385,9 +436,15 @@ export function RoomsPanel({
       // stamp, so a claim is fully available while paused — and «הרשימה תתוקן
       // בעדכון הבא» is then a promise the screen will not keep. Same failure as
       // naming a retry interval, in the EVENT form.
-      const running = target === "room" ? "rooms.error.notFound" : "rooms.error.assignmentGone";
-      const stopped =
-        target === "room" ? "rooms.error.notFoundPaused" : "rooms.error.assignmentGonePaused";
+      //
+      // `queue` rides the ROOM's sentence: take-next raises
+      // DomainNotFoundError("fitting_room") and nothing else, so «הלקוחה כבר לא
+      // בחדר» would be a sentence about a fitting that never started.
+      const missingRoom = target === "room" || target === "queue";
+      const running = missingRoom ? "rooms.error.notFound" : "rooms.error.assignmentGone";
+      const stopped = missingRoom
+        ? "rooms.error.notFoundPaused"
+        : "rooms.error.assignmentGonePaused";
       return { text: t(paused ? stopped : running), value: null, outage: false };
     }
     // A 5xx or a dropped request: the OUTAGE register, and a SHIPPED key rather
@@ -398,7 +455,7 @@ export function RoomsPanel({
 
   const act = async (
     roomId: string,
-    target: "room" | "assignment" | "client",
+    target: "room" | "assignment" | "client" | "queue",
     fn: () => Promise<void>,
   ): Promise<unknown> => {
     setBusyIds((current) => [...current, roomId]);
@@ -455,7 +512,33 @@ export function RoomsPanel({
     });
   };
 
+  // F58's headline act, and it lives on a TILE rather than on a row: take-next
+  // needs a room, and a server-chosen "first free room" would derive a value
+  // from a count of existing rows — the read-then-write shape that needs a lock
+  // this feature does not want. A tile-mounted control inserts three values the
+  // caller already holds.
+  const takeNext = (room: Room) => {
+    setPendingControl((current) => ({ ...current, [room.id]: "takeNext" }));
+    void act(room.id, "queue", async () => {
+      // `{}` IS the one-tap take-next on herself, exactly as it is for `claim`:
+      // `staff_user_id` is never sent, and the QUEUE chooses the customer —
+      // she does not, which is the whole of «הבאה».
+      const result = await api.takeNext(room.id, {});
+      // Both panels patch from the SERVER's own rows in one paint.
+      onDispatch(result);
+      // ⚠ The cue names the ROOM and never the walk-in, and the rule bites
+      // HARDER here than on a claim: her row LEAVES the payload, so a cue
+      // carrying her name would sit in a persistent region on a five-role
+      // screen after she has left the shop — the only place it survives.
+      onCue({
+        text: t("waitlist.dispatchedCue", { room: result.room.label }),
+        name: result.room.label,
+      });
+    });
+  };
+
   const claim = (room: Room) => {
+    setPendingControl((current) => ({ ...current, [room.id]: "claim" }));
     // ⚠ THE SENT VALUE FOLLOWS THE LIST, not the map. `clientPick` is written
     // only by the Select and the Select is rendered only while `clients` is
     // non-empty, so a pick can outlive both the control and the booking: one
@@ -841,9 +924,22 @@ export function RoomsPanel({
                   </div>
 
                   {/* Controls wrap to a second line rather than shrinking: three
-                      full-width buttons per tile would be a wall. ONE `secondary`
-                      per tile and it is the act that ENDS the tile's current
-                      state — the time-critical one, because a bride is waiting. */}
+                      full-width buttons per tile would be a wall.
+
+                      ⚠ DC-4, and this comment is REWRITTEN rather than left
+                      standing, because F58 falsifies what it used to say. The
+                      old rule was «ONE `secondary` per tile and it is the act
+                      that ENDS the tile's current state». A free tile with a
+                      non-empty queue now offers TWO acts that end it, serving
+                      two different populations: «תפיסת החדר» seats a booked
+                      bride picked from the arrivals list, «קחי את הבאה» seats
+                      the first walk-in in the queue. Neither is the lesser one
+                      and demoting either to `ghost` would say it is. The rule
+                      that survives: AT MOST ONE `secondary` PER ACT-TYPE, NEVER
+                      `primary` ANYWHERE ON THIS SCREEN, and never more than two
+                      `secondary`s on one region — ORDER carries the hierarchy,
+                      which is why take-next is FIRST here and first on the
+                      wrapped line at 375. */}
                   <div className="flex flex-wrap justify-end gap-3">
                     {/* ⚠ FIRST IN THE ROW's DOM: dom order is tab order is wrap
                         order, and the emergency control must be first in all
@@ -873,7 +969,7 @@ export function RoomsPanel({
                         {t("sos.raise")}
                       </Button>
                     )}
-                    {assignment === null && room.is_active && (
+                    {assignment === null && room.is_active && waitlistCount > 0 && (
                       <Button
                         ref={(node) => {
                           controlRefs.current.set(room.id, node);
@@ -881,7 +977,35 @@ export function RoomsPanel({
                         variant="secondary"
                         size="md"
                         fullWidthMobile={false}
-                        loading={busy}
+                        // DC-2(b): dead together, spinning apart.
+                        disabled={busy}
+                        loading={busy && pendingControl[room.id] === "takeNext"}
+                        aria-label={t("rooms.takeNextAria", { room: room.label })}
+                        onClick={() => takeNext(room)}
+                      >
+                        {t("rooms.takeNext")}
+                      </Button>
+                    )}
+                    {assignment === null && room.is_active && (
+                      <Button
+                        ref={(node) => {
+                          // ⚠ DC-2(a). `controlRefs` is ONE slot per room and
+                          // React runs ref callbacks in TREE order, so an
+                          // unguarded callback here runs LAST and silently wins
+                          // the slot from the control above — and on a refused
+                          // take-next the tile stays free, so ~5s later MOVE 6
+                          // hands focus to «תפיסת החדר», a control she never
+                          // touched. THE SLOT BELONGS TO THE TILE'S FIRST
+                          // CONTROL, which is take-next whenever it is rendered.
+                          if (waitlistCount === 0) {
+                            controlRefs.current.set(room.id, node);
+                          }
+                        }}
+                        variant="secondary"
+                        size="md"
+                        fullWidthMobile={false}
+                        disabled={busy}
+                        loading={busy && pendingControl[room.id] === "claim"}
                         aria-label={t("rooms.claimAria", { room: room.label })}
                         onClick={() => claim(room)}
                       >

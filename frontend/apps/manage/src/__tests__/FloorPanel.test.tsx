@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { run } from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
-import type { FloorResponse, Occupancy, Room, StaffCard } from "../api";
+import type { FloorResponse, Occupancy, Room, StaffCard, WaitlistEntry } from "../api";
 import { FloorPanel } from "../components/FloorPanel";
 import { SosProvider } from "../lib/sos";
 import { IDLE_STOP_MS, POLL_INTERVAL_MS } from "../lib/usePoll";
@@ -62,11 +62,30 @@ function card(overrides: Partial<StaffCard> = {}): StaffCard {
   };
 }
 
-// F36 widened the envelope with `rooms` and `server_now`. Both are DEFAULTED
-// here so every shipped call site stays exactly as it was — D15's acceptance
-// rule is about expectations, and a fixture that would not compile is not one.
-function floor(staff: StaffCard[], rooms: Room[] = []): FloorResponse {
-  return { staff, rooms, server_now: NOW };
+// F36 widened the envelope with `rooms` and `server_now`, F58 with `waitlist`.
+// All three are DEFAULTED here so every shipped call site stays exactly as it
+// was — D15's acceptance rule is about expectations, and a fixture that would
+// not compile is not one.
+function floor(
+  staff: StaffCard[],
+  rooms: Room[] = [],
+  entries: WaitlistEntry[] = [],
+): FloorResponse {
+  return { staff, rooms, server_now: NOW, waitlist: { entries, truncated: false } };
+}
+
+function waiting(overrides: Partial<WaitlistEntry> = {}): WaitlistEntry {
+  return {
+    id: "55555555-5555-5555-5555-555555555555",
+    name: "נועה בר",
+    visit_type: "bride",
+    position: 1,
+    arrived_at: ASSIGNED_AT,
+    called: false,
+    skip_count: 0,
+    duplicate: false,
+    ...overrides,
+  };
 }
 
 // 10:25Z is 42 minutes before NOW, and 42 is the deck's own worked example.
@@ -876,27 +895,44 @@ describe("accessibility", () => {
     expect(control).toHaveTextContent("להפסקה");
   });
 
-  it("renders exactly one h2 and TWO h3s — the SOS centre and the rooms subsection", async () => {
-    // ⚠ THE ONE SHIPPED EXPECTATION F36 EDITED AND F37 EDITS AGAIN, and both
-    // times for the same reason: its PREMISE was falsified, not the extraction
-    // drifted. F57 justified having no h3 with «the panel has no groups»; F36
-    // gave it one; F37 gives it a second, because SosCentre brings «קריאות עזרה»
-    // as a sibling of F36's «חדרי מדידה» and the deck's own a11y contract says
-    // so in as many words. The ORDER is the assertion that carries weight: an
-    // active emergency outranks a room list, so the SOS heading comes FIRST.
+  it("renders exactly one h2 and THREE h3s — the SOS centre, the rooms and the queue", async () => {
+    // ⚠ THE ONE SHIPPED EXPECTATION F36 EDITED, EDITED AGAIN BY F58, AND AGAIN
+    // BY F37 AT THEIR MERGE — every time for the SAME reason: its PREMISE is
+    // falsified, not its rule. F57's deck justified having no h3 with «the panel
+    // has no groups»; F36 gave it one; F58 gave it a second, a peer of «חדרי
+    // מדידה» rather than a child of it; F37 gives it a third, «קריאות עזרה».
+    // All three render in EVERY state including the empty one — which is exactly
+    // what this fixture, with its defaulted `rooms: []` and its empty waitlist,
+    // exercises — because each is its own panel's focus-rescue target for MOVES
+    // 3, 4 and 6.
     //
-    // Nothing else in this file moves. (Deck F-4 records that FloorPanel's h2
-    // «צוות בקומה» now names one third of its own content and that F58 is the PR
-    // that earns the rename — F37 does not rename it, because a copy change on a
-    // shipped panel is exactly the edit the zero-diff rule exists to catch.)
+    // ⚠ The plan's acceptance rule for this task («an edit to an existing
+    // expectation means the change is wrong») does not reach this row, and the
+    // comment F36 left here is the reason: the count is a LEDGER of the screen's
+    // subsections, so a third and a fourth panel move it by construction. What
+    // must not move is the h2 count and the requirement that every h3 be NAMED —
+    // both asserted below.
+    //
+    // The ORDER is the assertion that carries weight: an active emergency
+    // outranks a room list, so «קריאות עזרה» comes FIRST, and the queue is what
+    // she acts FROM so it sits below the rooms she acts ON (F58's D15).
+    //
+    // (Deck F-4 records that FloorPanel's h2 «צוות בקומה» now names one quarter
+    // of its own content and that a later PR earns the rename — F37 does not
+    // rename it, because a copy change on a shipped panel is exactly the edit
+    // the zero-diff rule exists to catch.)
     getFloor.mockResolvedValue(floor([card()]));
     mount();
     await screen.findByText("נועה לוי");
 
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
     const subsections = screen.getAllByRole("heading", { level: 3 });
-    expect(subsections).toHaveLength(2);
-    expect(subsections.map((node) => node.textContent)).toEqual(["קריאות עזרה", "חדרי מדידה"]);
+    expect(subsections).toHaveLength(3);
+    expect(subsections.map((node) => node.textContent)).toEqual([
+      "קריאות עזרה",
+      "חדרי מדידה",
+      "ממתינות בתור",
+    ]);
   });
 
   it("places the SOS centre ABOVE the rooms panel and the rooms above the staff list", async () => {
@@ -951,5 +987,72 @@ describe("accessibility", () => {
 
     const results = await run(container);
     expect(results.violations).toEqual([]);
+  });
+});
+
+// --- F58: the third child, on the same one poll -------------------------------
+
+describe("the waitlist rides this panel's poll and nothing else", () => {
+  it("mounts the queue BELOW the rooms and ABOVE the staff cards", async () => {
+    // Spec D15. The stated reason — «the rooms are what she acts on, the queue
+    // is what she acts from» — is true and is not the load-bearing one: take-
+    // next lives on a ROOM TILE, so a queue of forty above the tiles puts the
+    // feature's headline control two screens below the fold at 375. The panel
+    // order and the control's placement are one decision taken twice.
+    getFloor.mockResolvedValue(
+      floor(
+        [card()],
+        [{ id: ROOM_ID, label: "חדר 2", sort_order: 0, is_active: true, assignment: null }],
+        [waiting()],
+      ),
+    );
+    mount();
+    await screen.findByText("נועה בר");
+
+    const rooms = screen.getByRole("heading", { level: 3, name: "חדרי מדידה" });
+    const queue = screen.getByRole("heading", { level: 3, name: "ממתינות בתור" });
+    const staffName = screen.getByText("נועה לוי");
+
+    expect(rooms.compareDocumentPosition(queue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      queue.compareDocumentPosition(staffName) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("repaints all three regions from ONE response — no second poll, no second endpoint", async () => {
+    // The whole argument for putting the waitlist on this envelope rather than
+    // behind a loop of its own: «עודכן 14:07» stays true of the staff, the rooms
+    // AND the queue simultaneously, because they arrived together. A second poll
+    // would be a second freshness claim that can disagree by an interval with no
+    // way to tell which to believe — and a second SC 2.2.2 mechanism.
+    //
+    // MUTATION: give WaitlistPanel a usePoll of its own and this reddens on the
+    // call count.
+    getFloor.mockResolvedValue(floor([card()]));
+    mount();
+    await screen.findByText("אין ממתינות בתור");
+    expect(getFloor).toHaveBeenCalledTimes(1);
+
+    getFloor.mockResolvedValue(floor([card({ status: "break", break_started_at: BREAK_BEGAN })], [], [waiting()]));
+    await advance(POLL_INTERVAL_MS);
+
+    await screen.findByText("נועה בר");
+    expect(screen.getByText("בהפסקה")).toBeInTheDocument();
+    expect(getFloor).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps ONE pause control and ONE announced region over all three regions", async () => {
+    // §11.4: the pause control now governs THREE repainting regions and is still
+    // the first stop inside the panel — a 2.2.2 mechanism placed after the
+    // content it governs is reachable only by walking the list that is
+    // repainting under the walk.
+    getFloor.mockResolvedValue(floor([card()], [], [waiting()]));
+    const { container } = mount();
+    await screen.findByText("נועה בר");
+
+    const focusable = Array.from(container.querySelectorAll("button"));
+    expect(focusable[0]).toHaveAccessibleName("השהיה — עדכון הצוות");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="floor-cue"]')).toHaveLength(1);
   });
 });

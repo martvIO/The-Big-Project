@@ -103,6 +103,14 @@ FLOOR_DRESS_REMOVE = (
 )
 FLOOR_DRESS_LIST = ("GET", "/manage/floor/dresses")
 FLOOR_CLIENT_LIST = ("GET", "/manage/floor/clients")
+# F58's three. The two dispatch verbs carry the CLAIM's target-dependent rule
+# verbatim — herself, or elevated on anyone — which no RoleGate can express, so
+# they are open here and refused in the service. `call` has no target staffer at
+# all: a summons is not destructive, and reception, a sales assistant and a
+# seamstress all legitimately call the next woman forward.
+FLOOR_TAKE_NEXT = ("POST", "/manage/floor/rooms/{room_id}/take-next")
+FLOOR_ASSIGN = ("POST", "/manage/floor/rooms/{room_id}/assign")
+FLOOR_QUEUE_CALL = ("POST", "/manage/floor/queue/{ticket_id}/call")
 # F37's five, and NOT ONE of them is tightened. Every rule in that feature reads
 # the ROW before it can decide — `target_staff_user_id`, `raised_by`,
 # `accepted_by` — and a `RoleGate` can express only a PURE role predicate. There
@@ -114,12 +122,24 @@ FLOOR_SOS_ACCEPT = ("POST", "/manage/floor/sos/{alert_id}/accept")
 FLOOR_SOS_RESOLVE = ("POST", "/manage/floor/sos/{alert_id}/resolve")
 FLOOR_SOS_CANCEL = ("POST", "/manage/floor/sos/{alert_id}/cancel")
 
-# ⚠ The FOUR tightened routes are DELIBERATELY ABSENT — the three registry verbs
-# (`POST`/`PATCH`/`DELETE /manage/floor/rooms…`) and `handover`. Their absence is
-# the assertion that the tightening is real, and it is what keeps the comment
-# above ("the exhaustive list of what they may reach") true. Adding `handover`
-# here to make a red go away would make this table assert that a seamstress may
-# reach a route she always gets a 403 on.
+# ⚠ The SIX tightened routes are DELIBERATELY ABSENT — the three registry verbs
+# (`POST`/`PATCH`/`DELETE /manage/floor/rooms…`), `handover`, and F58's `skip`
+# and `remove`. Their absence is the assertion that the tightening is real, and
+# it is what keeps the comment above ("the exhaustive list of what they may
+# reach") true. Adding `handover` here to make a red go away would make this
+# table assert that a seamstress may reach a route she always gets a 403 on.
+#
+# ⚠ **AND THE MIDDLE OPTION FOR SKIP AND REMOVE IS STRUCTURALLY FORBIDDEN, not
+# merely declined.** `require_role(OWNER, SHIFT_MANAGER, RECEPTION)` lands in
+# `admits_floor` (the intersection is non-empty) AND in `partial` (it is not a
+# superset of FLOOR_ROLES), so assertion 2 below red-fails on a route that is
+# arguably correct — and the fix a reviewer reaches for is relaxing the very
+# assertion this table exists for. So every route in this product is all-five or
+# exactly-two, skip and remove are ELEVATED, and the product cost is RECORDED
+# rather than engineered around: a reception staffer cannot skip a no-show or
+# remove a duplicate, and calls a shift manager. The upgrade path if a pilot asks
+# is the service-side target-dependent form; it does not apply today because skip
+# has no "target" that can be the caller.
 FLOOR_OPEN = {
     FLOOR_READ,
     FLOOR_BREAK_START,
@@ -130,6 +150,9 @@ FLOOR_OPEN = {
     FLOOR_DRESS_REMOVE,
     FLOOR_DRESS_LIST,
     FLOOR_CLIENT_LIST,
+    FLOOR_TAKE_NEXT,
+    FLOOR_ASSIGN,
+    FLOOR_QUEUE_CALL,
     FLOOR_SOS_READ,
     FLOOR_SOS_RAISE,
     FLOOR_SOS_ACCEPT,

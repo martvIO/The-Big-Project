@@ -12,11 +12,19 @@ screen that polls every five seconds.
 
 ⚠ **A card was "a name, a role and a status, and deliberately nothing else"
 until F36, and that sentence is now false about this very module**: `StaffCard`
-carries `occupancy`, and `Occupancy.client_label` is a customer's name. What
-holds instead — one rule for the whole payload — is that it carries **the
-minimum customer datum required by the person standing on the floor: at most one
-name per occupied room, for the duration of the fitting, never the day's
-customer book.**
+carries `occupancy`, and `Occupancy.client_label` is a customer's name. F58 then
+falsified F36's replacement too, by putting up to a hundred waiting names on the
+same envelope. What holds instead — one rule for the whole payload — is that it
+carries **the minimum customer datum required by the person standing on the
+floor: the people who are physically in the boutique right now — one name per
+occupied fitting room, plus the name of every walk-in currently waiting to be
+served — and never the day's booking book.** Every name leaves the payload the
+moment she does.
+
+⚠ **`WaitlistEntry.id` is F33's position-page capability**, and this payload is
+the only server path other than the check-in response that emits one. Disclosed
+to a signed-in staffer of this tenant and to nobody else, and **the console must
+never render it as a link to `/q/{id}`.**
 
 What is still deliberately absent from a card is every stable identifier and
 every contact route — no avatar, no phone, no email. `email` in particular is
@@ -35,11 +43,13 @@ from app.catalog.validation import MAX_SIZE_LABEL_LENGTH, MAX_SORT_ORDER
 from app.db.repositories.fitting_rooms import RoomRow
 from app.floor.service import (
     ClientPickerRead,
+    DispatchRead,
     DressPickerRead,
     FloorRead,
     RaisedSos,
     SosListRead,
     SosRead,
+    WaitlistRead,
     card_status,
 )
 from app.models.constants import StaffCardStatus
@@ -87,6 +97,11 @@ class FloorResponse(BaseModel):
     # דק'» against it plus the elapsed device clock, so only the DELTA of a
     # boutique tablet's clock is trusted and never its absolute value.
     server_now: datetime.datetime
+    # F58's ONE new envelope key, and the reason the read was an envelope from
+    # the start: a bare array would have made this a breaking shape change on a
+    # screen that polls every five seconds. There is no second poll and no second
+    # endpoint — the waitlist rides the tick the panel already pays for.
+    waitlist: "Waitlist"
 
     @classmethod
     def from_rows(cls, read: "FloorRead") -> "FloorResponse":
@@ -107,6 +122,7 @@ class FloorResponse(BaseModel):
                 for row in read.room_rows
             ],
             server_now=read.server_now,
+            waitlist=Waitlist.from_read(read.waitlist),
         )
 
 
@@ -234,6 +250,101 @@ class Occupancy(BaseModel):
         )
 
 
+# --- F58: the waitlist (D2) ---------------------------------------------------
+
+
+class WaitlistEntry(BaseModel):
+    """One waiting walk-in. EIGHT fields, and the set equality over them is what
+    catches a ninth arriving unreviewed on a five-role payload."""
+
+    # ⚠ The ticket id, and it IS F33's capability — whoever holds it can POST
+    # /storefront/checkin/position and read that ticket's status. On THIS surface
+    # that is not a disclosure: the caller is a signed-in staffer of this tenant,
+    # behind the session cookie and the role gate, and what the capability buys
+    # is `{id, status, position, called_at}` with no name and no phone in it. It
+    # is here because every verb in this feature takes it as the target and there
+    # is no lesser id. `TicketView`'s own docstring says the id is issued "by NO
+    # OTHER SERVER PATH EVER"; this payload is the second path, deliberately, and
+    # the module docstring names it rather than leaving that promise quietly
+    # broken. **The console must never render it as a link to `/q/{id}`.**
+    id: uuid.UUID
+    name: str
+    visit_type: str
+    # 1-based, and DERIVED FROM THIS LIST'S OWN ORDER (index + 1) — never a
+    # second count query. Two derivations of one number are two chances for the
+    # wall, her phone and this panel to disagree, which is F59's D3 argument one
+    # surface over.
+    position: int
+    # `created_at`, NOT the sort key. Two facts, two columns: this is when she
+    # walked in and it never moves, while `COALESCE(requeued_at, created_at)` is
+    # what a skip moves — sending that one would reset the rendered clock to zero
+    # on every skip and the panel would say «הגיעה זה עתה» about a woman who has
+    # been standing there forty minutes. Sent as an INSTANT so the CLIENT
+    # computes the minutes against the envelope's `server_now`, which is
+    # `assigned_at`'s rule unchanged.
+    arrived_at: datetime.datetime
+    # A BOOLEAN, not the timestamp: the panel needs to know WHETHER, and the
+    # instant would let anyone with the screen time how long a named woman has
+    # been standing at a counter.
+    called: bool
+    # So the second-skip rule is LEGIBLE rather than surprising. The next skip on
+    # an entry with `skip_count >= 1` removes her, and that is destructive with
+    # no undo — a control that silently changes meaning on its second press is
+    # the shape this number exists to prevent. It is also what the client sends
+    # back as `seen_skip_count`, which is what stops the confirm being bypassed.
+    skip_count: int
+    # D9. "Another live ticket today carries the same phone." The phone itself
+    # never reaches the wire — the flag is all that survives the grouping.
+    duplicate: bool
+
+
+class Waitlist(BaseModel):
+    entries: list[WaitlistEntry]
+    # F36's FloorDressList rule verbatim: the UI renders one line saying the list
+    # is partial and names NO count and NO limit, because both are the server's
+    # to change without a copy edit.
+    truncated: bool
+
+    @classmethod
+    def from_read(cls, read: "WaitlistRead") -> "Waitlist":
+        """A PURE RENDERER, like `from_rows`. `position` is `index + 1` over the
+        server's own order and is computed HERE rather than carried on the read,
+        so there is exactly one place it can come from."""
+        return cls(
+            entries=[
+                WaitlistEntry(
+                    id=entry.id,
+                    name=entry.name,
+                    visit_type=entry.visit_type,
+                    position=index + 1,
+                    arrived_at=entry.arrived_at,
+                    called=entry.called,
+                    skip_count=entry.skip_count,
+                    duplicate=entry.duplicate,
+                )
+                for index, entry in enumerate(read.entries)
+            ],
+            truncated=read.truncated,
+        )
+
+
+class DispatchResult(BaseModel):
+    """What the two dispatch verbs answer. The tile AND the queue, because they
+    are two halves of one act: a client that patched the tile from the response
+    and waited up to five seconds for the row to leave the list would render the
+    same woman as both in-service and waiting."""
+
+    room: Room
+    waitlist: Waitlist
+
+    @classmethod
+    def from_read(cls, read: "DispatchRead") -> "DispatchResult":
+        return cls(
+            room=Room.from_row(read.room.row, read.room.bindings),
+            waitlist=Waitlist.from_read(read.waitlist),
+        )
+
+
 # --- F36: the two one-shot pickers (D16) --------------------------------------
 
 
@@ -341,6 +452,40 @@ class HandoverRequest(ForbidExtraModel):
     """Required — a handover with no recipient is not a release."""
 
     staff_user_id: uuid.UUID
+
+
+class TakeNextRequest(ForbidExtraModel):
+    """⚠ `staff_user_id` is the TARGET and only ever the target — `ClaimRoomRequest`'s
+    rule, verbatim, on the verb that puts a named customer in a room. There is no
+    `booking_id`: take-next's client is the head of the queue and nothing else
+    can be bound to it."""
+
+    staff_user_id: uuid.UUID | None = None
+
+
+class AssignRequest(ForbidExtraModel):
+    """Push-assign. `queue_ticket_id` is REQUIRED — an assign with no ticket is a
+    claim, and the claim already exists."""
+
+    queue_ticket_id: uuid.UUID
+    staff_user_id: uuid.UUID | None = None
+
+
+class SkipRequest(ForbidExtraModel):
+    """⚠ `seen_skip_count` is the value the CLIENT RENDERED, and it is the whole
+    of what stops two ordinary single taps removing a customer.
+
+    Both managers' tiles said 0, so neither showed the confirm — it is gated on
+    `>= 1` — and without this field the second tap escalates to `removed` on a
+    count nobody saw. The server refuses on a mismatch (409
+    `QUEUE_TICKET_CHANGED`) rather than escalating, so the confirm cannot be
+    bypassed by a stale tile.
+
+    No default: a caller that omits it is a caller that did not read a count, and
+    guessing 0 for her is the failure this field exists to prevent.
+    """
+
+    seen_skip_count: int = Field(ge=0)
 
 
 class AddDressRequest(ForbidExtraModel):

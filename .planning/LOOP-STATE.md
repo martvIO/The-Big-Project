@@ -517,7 +517,8 @@ queue:
     slug: floor-dispatch
     epic: E6
     title: "Waitlist panel + dispatch (take-next, push-assign, finish, skip)"
-    status: building
+    status: merged
+    pr: 40
     attempts: 1
     deps: [F33, F36, F57]
     spec: .planning/specs/floor-dispatch.md
@@ -550,6 +551,38 @@ queue:
       a ticket in_service; and a three-role gate is structurally forbidden by a shipped
       walker test that names F58 — so reception cannot skip or remove, recorded as a
       product limitation with an upgrade path rather than worked around.
+    shipped: >-
+      MERGED 2026-08-04 as PR #40, ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN.
+      Migration 0021_floor_dispatch (one nullable ALTER TABLE ADD COLUMN). Build ran
+      23 agents with zero failures. Gates local on the pushed tree: 1956 backend fast,
+      645 backend db ON REAL POSTGRES 16.14, 104 ui / 1017 storefront / 950 manage,
+      88 e2e (77 before), axe zero, one alembic head.
+      ⚠⚠ THIS FEATURE DISCHARGES BOTH DEPLOYMENT GATES — see `deployment_gates`, now
+      cleared. F33's queue tickets have a surface that renders them, a duplicate has a
+      remedy, `close` writes `done` so the customer's position page reaches its success
+      terminal, and `call` writes `called_at` so F59's wall board highlights.
+      THE THING WORTH CARRYING: THE PROOF WAS WRONG TWICE BEFORE THE CODE WAS.
+      (1) The spec's original stranding mutation was VACUOUS — a raised 409 already
+      rolls back with or without a savepoint, so A8, the single test on which F33's
+      deployment gate is discharged, asserted nothing. Review caught it.
+      (2) The REBUILT A8 still could not reach the IntegrityError. The shipped
+      snapshot-then-nested-commit idiom commits the winner BEFORE the service call, and
+      take-next's step 2b refuses that before the INSERT — so the headline mutation came
+      back green on the first build too. A8 is now a genuinely-uncommitted-winner
+      interleave, the only window 2b cannot see, and the mutation finally bites:
+      unmutated -> RoomOccupiedError, ticket stays `waiting`; mutated -> 200,
+      ticket `in_service`, assignment.queue_ticket_id NULL. That is a woman dispatched
+      to nobody, and it took TWO ROUNDS to build a test that could see it.
+      (3) A third vacuity found in passing: an RLS test was measuring the explicit
+      tenant_id predicate rather than RLS — swapping the role left all 8 green. The
+      docstring now says what it actually pins.
+      ALSO SHIPPED: the REUSABLE /manage/** Playwright interception harness. The console
+      had NEVER had e2e coverage (the gap F34's spec recorded as Risk 8); every later
+      console feature inherits it, and it is built so a later feature adds a stub rather
+      than a fork.
+      Every focus move was run FIRST-IN-WORKER IN ISOLATION as well as in the full
+      suite, per the F41 post-mortem — a full-suite pass can be luck decided by one
+      event-loop turn.
     note: >-
       NEW 2026-07-31 (floor program) — the atomic heart of the brief, and the one
       entry where getting the concurrency wrong is visible to a customer. No new
@@ -660,10 +693,13 @@ queue:
     slug: sos-paging
     epic: E7
     title: "SOS: targeted page, full-screen alert, ack/resolve, 30s escalation"
-    status: queued
+    status: building
     deps: [F31, F36, F57]
     spec: .planning/specs/sos-paging.md
     plan: .planning/plans/sos-paging.md
+    started: >-
+      2026-08-03 22:30, worktree .worktrees/sos-paging, in PARALLEL with F58.
+      Migration resolves from `alembic heads` at rebase; F58 is building with one too.
     gates_done: >-
       Gates 1 and 2 cleared 2026-08-03; deps became merged history when F36 landed.
       SPEC REVIEW: 33 findings from 3 lenses, 33 applied, 0 rejected. Five blockers,
@@ -1708,39 +1744,33 @@ queue:
       #48: calendar layered over the existing bookings list API.
 
 deployment_gates:               # MERGED code that must NOT be switched on yet, and what clears it.
-                                # Added 2026-08-03 because this was recorded only inside a spec, and
-                                # "merged" was reading as "launchable" in this file. It is not the
-                                # same thing, and the run report has to say so.
+  # ==== ALL CLEAR as of 2026-08-04 — F58 merged (PR #40). ====
+  # Both entries below are DISCHARGED and kept as the record of what the gate meant and
+  # what discharged it. Nothing on main is currently gated.
   - feature: F33
-    gate: "merges and is fully tested, but is NOT enabled for a live pilot tenant"
+    gate: "merged but NOT enabled for a live pilot tenant"
     cleared_by: F58
+    status: CLEARED 2026-08-04 by PR #40
     why: >-
-      Ruling 4, qr-walkin-queue.md:13 and its «Deployment ordering» section. Three
-      findings collapse into one ordering constraint: F33 writes queue tickets that
-      NO SHIPPED SURFACE RENDERS; a duplicate ticket is a normal outcome under
-      Ruling 3 and NOTHING in F33 can merge or remove one; and the position page's
-      success terminal is unreachable because nothing in F33 writes `done` or
-      `removed`. F58's waitlist panel is the first surface that can see the queue,
-      and therefore the first that can fix it.
+      Ruling 4, qr-walkin-queue.md. F33 wrote queue tickets that NO SHIPPED SURFACE
+      RENDERED; a duplicate ticket is a normal outcome under Ruling 3 and nothing could
+      merge or remove one; and the position page's success terminal was unreachable
+      because nothing wrote `done` or `removed`. F58's waitlist panel renders the queue,
+      `remove` remedies a duplicate, and `close` writes `done`.
   - feature: F59
-    gate: "merges, but the TV does not go on a wall"
+    gate: "merged, but the TV does not go on a wall"
     cleared_by: F58
+    status: CLEARED 2026-08-04 by PR #40
     why: >-
-      Inherits F33's gate rather than adding a second one (public-queue-board.md
-      D10(4)). Sharper here, and it is a PRIVACY point as much as a usefulness one:
-      with no writer for `called_at` or the status column, nothing is ever
-      highlighted, the board only grows, and because the order is arrival order and
-      the cap is five rows, THE FIVE NAMES ON THE SCREEN ARE THE DAY'S FIVE EARLIEST
-      CHECK-INS AND NEVER CHANGE FROM ABOUT 09:15 TO MIDNIGHT. A woman who arrived at
-      09:00 and left at 10:00 is still on a public screen at 17:00. Publishing that
-      all day on an unauthenticated URL is not «לצורך ניהול התור בלבד», which is the
-      purpose limitation the shipped check-in notice promises her.
-      Also: the kiosk runs ONE full-screen tab with screen-blanking disabled — the
-      poll stops on `document.hidden` by design, which is right for a phone and wrong
-      for a wall.
-  # WHAT THIS MEANS FOR THE RUN: F58 is not just the next floor feature, it is the
-  # CRITICAL PATH — two already-merged features are inert until it lands. It is
-  # blocked only on F36, which is building now.
+      With no writer for `called_at` or the status column, nothing was ever highlighted,
+      the board only grew, and because the order is arrival order and the cap is five
+      rows THE FIVE NAMES FROZE mid-morning — a woman who arrived at 09:00 and left at
+      10:00 was still on a public screen at 17:00, which is not «לצורך ניהול התור בלבד».
+      F58's `call` writes `called_at` and `close`/`remove` retire rows, so the board
+      moves and the privacy argument is answered.
+      STILL TRUE and NOT a gate: the kiosk must run ONE full-screen tab with
+      screen-blanking disabled — the poll stops on `document.hidden` by design, which is
+      right for a phone and wrong for a wall.
 
 user_actions:                   # only the human can clear these; every report re-nags
   # Rewritten 2026-07-31: the user supplied Lemon Squeezy + Twilio credentials,

@@ -635,3 +635,75 @@ describe("axe", () => {
     expect(results.violations.map((violation) => violation.id)).toEqual([]);
   });
 });
+
+// --- F58 / D14: the four arms, and the precedence F58 makes reachable --------
+
+describe("A28 — the render arms, now that in_service and called CO-OCCUR", () => {
+  // ⚠ EVERY FIXTURE HERE IS SEEDED THROUGH THE STUBBED API CLIENT, and that is
+  // the only way any of them can be produced: nothing the customer can do
+  // writes `in_service`, `done` or `removed`. F58's five verbs are the first
+  // writers in the product, which is why three of these four arms have been
+  // unreachable since F33 shipped and why the ordering defect below could not
+  // be seen. No backend or e2e assertion may try to drive them.
+
+  it("«התור שלך התחיל» wins over «אפשר לגשת לדלפק» once she is IN a room", async () => {
+    // THE CASE F58 CREATES. Take-next and push-assign both set status to
+    // in_service and DELIBERATELY leave `called_at` standing — it is the record
+    // that she was summoned and the one column the wall board reads — so the two
+    // facts co-occur for the first time in the product. Under the shipped order
+    // the `called` arm wins and the page tells a woman standing in a fitting
+    // room to approach the counter, while «התור שלך התחיל» is unreachable on the
+    // only path that produces it.
+    //
+    // MUTATION: restore the shipped guards and this reddens — and nothing else
+    // in this file does.
+    getQueuePosition.mockResolvedValue(
+      ticket({ status: "in_service", position: null, called_at: "2026-08-04T11:08:00Z" }),
+    );
+    await mountPage();
+
+    expect(section()).toHaveTextContent(t("checkin.statusInService"));
+    expect(screen.queryByTestId("queue-called")).toBeNull();
+    expect(screen.queryByTestId("queue-number")).toBeNull();
+  });
+
+  it("…and reads the same when she was taken WITHOUT being called first", async () => {
+    // The arm is keyed on the STATUS, not on the absence of a position: a walk-in
+    // dispatched straight off the queue was never summoned.
+    getQueuePosition.mockResolvedValue(
+      ticket({ status: "in_service", position: null, called_at: null }),
+    );
+    await mountPage();
+
+    expect(section()).toHaveTextContent(t("checkin.statusInService"));
+  });
+
+  it("keeps «אפשר לגשת לדלפק» for a woman who was called and is STILL waiting", async () => {
+    // The other half of the mutation. A call writes `called_at` and leaves the
+    // status alone, so this is the state F33's own cue was written for and it
+    // must not move.
+    getQueuePosition.mockResolvedValue(
+      ticket({ status: "waiting", position: 1, called_at: "2026-08-04T11:08:00Z" }),
+    );
+    await mountPage();
+
+    expect(screen.getByTestId("queue-called")).toHaveTextContent(t("checkin.called"));
+    expect(section()).not.toHaveTextContent(t("checkin.statusInService"));
+    expect(screen.queryByTestId("queue-number")).toBeNull();
+  });
+
+  it("lets a CLOSED visit beat both, even carrying a call and a room", async () => {
+    // F33's third deployment-gate consequence: until F58 nothing wrote `done`,
+    // so the terminal arm has been unreachable in the product since the page
+    // shipped. A finish closes the ticket in the same transaction that frees the
+    // room, and `called_at` survives that too.
+    getQueuePosition.mockResolvedValue(
+      ticket({ status: "done", position: null, called_at: "2026-08-04T11:08:00Z" }),
+    );
+    await mountPage();
+
+    expect(screen.getByText(t("checkin.closed"))).toBeInTheDocument();
+    expect(screen.queryByTestId("queue-called")).toBeNull();
+    expect(section()).not.toHaveTextContent(t("checkin.statusInService"));
+  });
+});

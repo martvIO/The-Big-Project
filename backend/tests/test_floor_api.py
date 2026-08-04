@@ -24,6 +24,7 @@ four tightened — and the counts come from D9's table for D10's reason.
 
 import datetime
 import inspect
+import re
 import time
 import uuid
 from collections.abc import Iterator
@@ -44,14 +45,20 @@ from app.floor import schemas as app_schemas
 from app.floor import service as app_service
 from app.floor.service import (
     ClientPickerRead,
+    DispatchRead,
     DressPickerRead,
     FloorRead,
     RaisedSos,
     RoomRead,
     SosListRead,
     SosRead,
+    WaitlistEntryRead,
+    WaitlistRead,
 )
 from app.floor.validation import (
+    QueueEmptyError,
+    QueueTicketChangedError,
+    QueueTicketNotWaitingError,
     RoomOccupiedError,
     SosAlreadyAcceptedError,
     SosClosedError,
@@ -76,6 +83,8 @@ ASSIGNMENT_ID = uuid.uuid4()
 BINDING_ID = uuid.uuid4()
 DRESS_ID = uuid.uuid4()
 ALERT_ID = uuid.uuid4()
+TICKET_ID = uuid.uuid4()
+SECOND_TICKET_ID = uuid.uuid4()
 
 FLOOR_PATH = "/manage/floor"
 START_PATH = f"/manage/floor/staff/{TARGET_ID}/break/start"
@@ -95,6 +104,18 @@ SOS_ALERT_PATH = f"{SOS_PATH}/{ALERT_ID}"
 SOS_ACCEPT_PATH = f"{SOS_ALERT_PATH}/accept"
 SOS_RESOLVE_PATH = f"{SOS_ALERT_PATH}/resolve"
 SOS_CANCEL_PATH = f"{SOS_ALERT_PATH}/cancel"
+# F58. Every path's SECOND SEGMENT is `floor`, which is what keeps
+# `apps/manage/vite.config.ts` unedited — `test_spa_serving.py` asserts SET
+# EQUALITY between the live route table's second segments and the manage dev
+# proxy's alternation, and a mismatch breaks ONLY a developer's machine while
+# production, CI and the whole suite stay green, serving the SPA shell where the
+# API should be. `/manage/queue/{id}/call` reads better and costs exactly that.
+TAKE_NEXT_PATH = f"{ROOM_PATH}/take-next"
+ASSIGN_PATH = f"{ROOM_PATH}/assign"
+QUEUE_PATH = f"/manage/floor/queue/{TICKET_ID}"
+CALL_PATH = f"{QUEUE_PATH}/call"
+SKIP_PATH = f"{QUEUE_PATH}/skip"
+REMOVE_PATH = f"{QUEUE_PATH}/remove"
 
 BREAK_BEGAN = datetime.datetime(2026, 8, 2, 9, 5, tzinfo=datetime.UTC)
 # F36's one new envelope field: the server's instant at serialisation, which is
@@ -128,6 +149,14 @@ FLOOR_OPEN_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("DELETE", UNBIND_PATH, None),
     ("GET", DRESS_LIST_PATH, None),
     ("GET", CLIENT_LIST_PATH, None),
+    # F58's three. Take-next and assign carry a TARGET-dependent rule (herself,
+    # or elevated on anyone) which no RoleGate can express, so they are open here
+    # and refused in the service — the claim's rule verbatim. `call` has no
+    # target staffer at all: a summons is not destructive, and reception, a sales
+    # assistant and a seamstress all legitimately call the next woman forward.
+    ("POST", TAKE_NEXT_PATH, {}),
+    ("POST", ASSIGN_PATH, {"queue_ticket_id": str(TICKET_ID)}),
+    ("POST", CALL_PATH, None),
     # F37's five, and NONE of them is tightened — every rule in that feature
     # reads the ROW (`target_staff_user_id`, `raised_by`, `accepted_by`) before
     # it can decide, and no `RoleGate` can say "the person this alert names".
@@ -143,6 +172,14 @@ FLOOR_TIGHTENED_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("PATCH", ROOM_PATH, {"label": "חדר 4"}),
     ("DELETE", ROOM_PATH, None),
     ("POST", HANDOVER_PATH, {"staff_user_id": str(TARGET_ID)}),
+    # F58's two, and their ABSENCE from FLOOR_OPEN_ROUTES is the assertion. Skip
+    # re-orders a stranger's place in a queue and its second press removes her;
+    # remove takes a real customer out of it, irreversibly. There is no middle
+    # gate available — `test_the_floor_roles_reach_exactly_the_floor_routes`
+    # admits all five or exactly two — so the product cost is recorded rather
+    # than engineered around: a reception staffer calls a shift manager.
+    ("POST", SKIP_PATH, {"seen_skip_count": 0}),
+    ("POST", REMOVE_PATH, None),
 ]
 
 FLOOR_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
@@ -167,6 +204,15 @@ SPEC_ERROR_CODES = {
     "ROOM_OCCUPIED",
     "STAFF_OCCUPIED",
     "CSRF_ORIGIN_MISMATCH",
+    # ⚠ TWELVE after F58 and F37, and the five they add each needed a writer
+    # before they could be here: `QUEUE_EMPTY` has one the moment take-next
+    # lands, the two ticket-state ones the moment any verb can refuse a ticket
+    # whose state moved, and the two SOS ones the moment accept can lose. The set
+    # equality below is re-derived from LIVE responses, so a thirteenth code
+    # arriving without a test fails immediately.
+    "QUEUE_EMPTY",
+    "QUEUE_TICKET_NOT_WAITING",
+    "QUEUE_TICKET_CHANGED",
     "SOS_ALREADY_ACCEPTED",
     "SOS_CLOSED",
 }
@@ -318,6 +364,11 @@ class FakeFloorService:
         self.room_read = RoomRead(row=_room_row(), bindings=[])
         self.dress_picker = DressPickerRead(dresses=[], sizes_by_dress_id={}, truncated=False)
         self.client_picker = ClientPickerRead(bookings=[], names_by_customer_id={}, truncated=False)
+        # F58: empty by default, which is the COMMON case — a bridal boutique's
+        # queue is empty most of the day and the shipped payload assertions
+        # describe exactly that floor.
+        self.waitlist = WaitlistRead(entries=[], truncated=False)
+        self.dispatch = DispatchRead(room=self.room_read, waitlist=self.waitlist)
         # F37: what the four mutating sos verbs answer — ONE shape, the same one
         # the poll's `alerts[]` elements carry, so a route that invented its own
         # would show up as a key-set difference in test_sos_api.py.
@@ -342,6 +393,7 @@ class FakeFloorService:
             room_rows=self.room_rows,
             bindings_by_assignment_id=self.bindings,
             server_now=SERVER_NOW,
+            waitlist=self.waitlist,
         )
 
     async def start_break(
@@ -488,6 +540,84 @@ class FakeFloorService:
             binding_id=binding_id,
             actor_id=actor.id,
         )
+
+    # --- F58: the five dispatch methods, in D11's order ---------------------
+
+    async def take_next(
+        self,
+        tenant_id: uuid.UUID,
+        room_id: uuid.UUID,
+        *,
+        staff_user_id: uuid.UUID | None,
+        actor: StaffContext,
+    ) -> DispatchRead:
+        return self._dispatch(
+            "take_next",
+            tenant_id=tenant_id,
+            room_id=room_id,
+            staff_user_id=staff_user_id,
+            actor_id=actor.id,
+        )
+
+    async def assign(
+        self,
+        tenant_id: uuid.UUID,
+        room_id: uuid.UUID,
+        *,
+        queue_ticket_id: uuid.UUID,
+        staff_user_id: uuid.UUID | None,
+        actor: StaffContext,
+    ) -> DispatchRead:
+        return self._dispatch(
+            "assign",
+            tenant_id=tenant_id,
+            room_id=room_id,
+            queue_ticket_id=queue_ticket_id,
+            staff_user_id=staff_user_id,
+            actor_id=actor.id,
+        )
+
+    async def call(
+        self, tenant_id: uuid.UUID, ticket_id: uuid.UUID, *, actor: StaffContext
+    ) -> WaitlistRead:
+        return self._queue("call", tenant_id=tenant_id, ticket_id=ticket_id, actor_id=actor.id)
+
+    async def skip(
+        self,
+        tenant_id: uuid.UUID,
+        ticket_id: uuid.UUID,
+        *,
+        seen_skip_count: int,
+        actor: StaffContext,
+    ) -> WaitlistRead:
+        return self._queue(
+            "skip",
+            tenant_id=tenant_id,
+            ticket_id=ticket_id,
+            seen_skip_count=seen_skip_count,
+            actor_id=actor.id,
+        )
+
+    async def remove(
+        self, tenant_id: uuid.UUID, ticket_id: uuid.UUID, *, actor: StaffContext
+    ) -> WaitlistRead:
+        return self._queue("remove", tenant_id=tenant_id, ticket_id=ticket_id, actor_id=actor.id)
+
+    def _dispatch(self, method: str, **kwargs: Any) -> DispatchRead:
+        self._record(method, **kwargs)
+        if self.raises is not None:
+            raise self.raises
+        if self.missing:
+            raise DomainNotFoundError("fitting_room")
+        return self.dispatch
+
+    def _queue(self, method: str, **kwargs: Any) -> WaitlistRead:
+        self._record(method, **kwargs)
+        if self.raises is not None:
+            raise self.raises
+        if self.missing:
+            raise DomainNotFoundError("queue_ticket")
+        return self.waitlist
 
     # --- F37: the five sos methods, in D9's order ---------------------------
 
@@ -642,7 +772,7 @@ def test_the_route_table_names_every_live_floor_route() -> None:
         for method in (getattr(route, "methods", None) or ())
         if getattr(route, "path", "").startswith("/manage/floor")
     }
-    assert len(live) == 18, sorted(live)
+    assert len(live) == 23, sorted(live)
     assert len({(method, path) for method, path, _ in FLOOR_ROUTES}) == len(FLOOR_ROUTES)
     assert len(FLOOR_ROUTES) == len(live), (
         f"the route table has {len(FLOOR_ROUTES)} rows for {len(live)} live routes: {sorted(live)}"
@@ -653,8 +783,8 @@ def test_every_route_is_wired_and_reaches_the_service() -> None:
     """SEVEN routers now mount prefix="/manage": a path collision would silently
     shadow, and a 404 here is what catches it.
 
-    EIGHTEEN rows after F37, and the count comes from D9's table rather than
-    from prose — a table sized by counting sentences reds this walk on a 404 the
+    TWENTY-THREE rows after F58 and F37, and the count comes from D11's and D9's
+    tables rather than from prose — a table sized by counting sentences reds this walk on a 404 the
     first time it runs."""
     for method, path, body in FLOOR_ROUTES:
         fake = FakeFloorService()
@@ -777,12 +907,29 @@ def test_no_floor_module_still_claims_the_payload_carries_zero_customer_data() -
     comment on a security rationale is worse than never having written one.
 
     Pinned as a text assertion because nothing else can see it: every runtime
-    test passes either way."""
+    test passes either way.
+
+    ⚠ **F36's REPLACEMENT is now false too, and the positive assertion alone
+    could not see that.** "at most one name per occupied room" was true of F36's
+    payload and is not true of F58's: WAITLIST_LIMIT is 100, and every waiting
+    row additionally carries F33's position-page capability. The guard was
+    satisfied by the stale sentence because that sentence CONTAINS the phrase
+    "minimum customer datum" — so a module could keep the falsified clause as its
+    stated rationale and stay green, which is exactly what `service.py`'s module
+    docstring did.
+
+    The rule is not that the phrase is banned: `router.py` and `service.py.floor`
+    both QUOTE it, correctly, as a claim that was once made and is no longer
+    true. The rule is that it may only ever appear QUOTED. Counting the quoted
+    occurrences against all of them says that in one line and bites on the next
+    module that asserts it bare."""
+    falsified = "at most one name per occupied room"
     for module in (app_router, app_service, app_schemas):
         source = inspect.getsource(module)
         assert "ZERO customer data" not in source, module.__name__
         assert "no customer data" not in source, module.__name__
         assert "minimum customer datum" in source, module.__name__
+        assert source.count(falsified) == source.count(f'"{falsified}"'), module.__name__
 
 
 def test_the_target_comes_from_the_path_and_the_actor_from_the_session() -> None:
@@ -846,6 +993,11 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
         ],
         "rooms": [],
         "server_now": SERVER_NOW.isoformat().replace("+00:00", "Z"),
+        # F58's one new envelope key, and the EMPTY case is the one asserted
+        # here on purpose: a bridal boutique's queue is empty most of the day,
+        # and «אין ממתינות בתור» has to be a quiet answer rather than a broken
+        # one. The populated shape has its own test below.
+        "waitlist": {"entries": [], "truncated": False},
     }
 
 
@@ -930,6 +1082,7 @@ def test_every_mutation_answers_the_same_room_shape() -> None:
     answer would show up here as a key-set difference."""
     fake = FakeFloorService()
     fake.room_read = RoomRead(row=_room_row(occupied=True), bindings=[])
+    fake.dispatch = DispatchRead(room=fake.room_read, waitlist=fake.waitlist)
     keys = {"id", "label", "sort_order", "is_active", "assignment"}
     with _client(fake) as client:
         for method, path, body in FLOOR_ROUTES:
@@ -938,6 +1091,12 @@ def test_every_mutation_answers_the_same_room_shape() -> None:
                 CLIENT_LIST_PATH,
                 START_PATH,
                 END_PATH,
+                # F58's three queue verbs answer a `Waitlist` and no tile: they
+                # act on a ROW, and the row is gone from the list they answer
+                # with. They have their own shape assertion below.
+                CALL_PATH,
+                SKIP_PATH,
+                REMOVE_PATH,
                 # F37's five answer an ALERT, not a room. Their own one-shape
                 # assertion is test_sos_api.py's, by set equality.
                 SOS_PATH,
@@ -947,6 +1106,11 @@ def test_every_mutation_answers_the_same_room_shape() -> None:
             }:
                 continue
             answered = client.request(method, path, json=body).json()
+            # The two dispatch verbs answer the tile AND the queue, so the tile
+            # is one level down — and it is the SAME shape, which is the point.
+            if path in {TAKE_NEXT_PATH, ASSIGN_PATH}:
+                assert set(answered) == {"room", "waitlist"}, f"{method} {path}"
+                answered = answered["room"]
             assert set(answered) == keys, f"{method} {path} answered {sorted(answered)}"
             assert answered["assignment"] is not None
 
@@ -1246,6 +1410,8 @@ def test_no_other_error_body_in_main_carries_a_details_key() -> None:
     assert {
         "ROOM_OCCUPIED_BODY",
         "STAFF_OCCUPIED_BODY",
+        "QUEUE_TICKET_NOT_WAITING_BODY",
+        "QUEUE_TICKET_CHANGED_BODY",
         "SOS_ALREADY_ACCEPTED_BODY",
         "SOS_CLOSED_BODY",
     } <= set(bodies)
@@ -1254,15 +1420,15 @@ def test_no_other_error_body_in_main_carries_a_details_key() -> None:
 
 
 def test_every_mutating_verb_with_a_mismatched_origin_is_refused() -> None:
-    """All FOURTEEN mutating routes ARE fenced — CsrfOriginMiddleware gates on
+    """All NINETEEN mutating routes ARE fenced — CsrfOriginMiddleware gates on
     `request.method in MUTATING_METHODS` (csrf.py:15,48), which is a METHOD test
-    and not a path list, so the eight F36 adds and the four F37
-    adds are fenced by construction. That is asserted rather than assumed because
+    and not a path list, so the eight F36 adds, the five F58 adds and the four
+    F37 adds are fenced by construction. That is asserted rather than assumed because
     "by construction" is the sentence that stops being true the day somebody adds
     a GET that writes."""
     fake = FakeFloorService()
     mutating = [(m, p, b) for m, p, b in FLOOR_ROUTES if m != "GET"]
-    assert len(mutating) == 14
+    assert len(mutating) == 19
     with _client(fake) as client:
         for method, path, body in mutating:
             resp = client.request(
@@ -1284,6 +1450,197 @@ def test_the_four_floor_reads_with_a_mismatched_origin_are_allowed() -> None:
         for path in (FLOOR_PATH, DRESS_LIST_PATH, CLIENT_LIST_PATH, SOS_PATH):
             resp = client.get(path, headers={"origin": "http://evil.localtest.me"})
             assert resp.status_code == 200, f"{path} → {resp.status_code}"
+
+
+# --- F58: the waitlist on the envelope, and the three new 409s ---
+
+
+def test_the_waitlist_rides_the_same_envelope_and_carries_exactly_eight_keys_per_entry() -> None:
+    """⚠ THE SET EQUALITY IS THE POINT. A ninth key arriving on a five-role
+    payload that now carries up to a hundred customer names is exactly the change
+    that must not happen quietly, and this is the same guard F36 put on
+    `StaffCard`.
+
+    `position` is `index + 1` over the SERVER's order and never a second count
+    query — two derivations of one number are two chances for the wall, her phone
+    and this panel to disagree.
+    """
+    fake = FakeFloorService()
+    fake.waitlist = WaitlistRead(
+        entries=[
+            WaitlistEntryRead(
+                id=TICKET_ID,
+                name="נועה בר",
+                visit_type="bride",
+                arrived_at=STARTS_AT,
+                called=True,
+                skip_count=1,
+                duplicate=True,
+            ),
+            WaitlistEntryRead(
+                id=SECOND_TICKET_ID,
+                name="מיכל",
+                visit_type="evening",
+                arrived_at=BREAK_BEGAN,
+                called=False,
+                skip_count=0,
+                duplicate=False,
+            ),
+        ],
+        truncated=True,
+    )
+    with _client(fake) as client:
+        body = client.get(FLOOR_PATH).json()
+
+    assert body["waitlist"] == {
+        "entries": [
+            {
+                "id": str(TICKET_ID),
+                "name": "נועה בר",
+                "visit_type": "bride",
+                "position": 1,
+                "arrived_at": STARTS_AT.isoformat().replace("+00:00", "Z"),
+                "called": True,
+                "skip_count": 1,
+                "duplicate": True,
+            },
+            {
+                "id": str(SECOND_TICKET_ID),
+                "name": "מיכל",
+                "visit_type": "evening",
+                "position": 2,
+                "arrived_at": BREAK_BEGAN.isoformat().replace("+00:00", "Z"),
+                "called": False,
+                "skip_count": 0,
+                "duplicate": False,
+            },
+        ],
+        "truncated": True,
+    }
+    assert set(body["waitlist"]["entries"][0]) == {
+        "id",
+        "name",
+        "visit_type",
+        "position",
+        "arrived_at",
+        "called",
+        "skip_count",
+        "duplicate",
+    }
+
+
+def test_no_phone_no_consent_and_no_queue_day_reaches_the_payload() -> None:
+    """A4, and it is a RECURSIVE scan over the whole serialised envelope rather
+    than a look at the keys this module happens to know about.
+
+    The repository's projection DOES select `phone` — D9's duplicate flag groups
+    on it — and the service turns it into a boolean and drops it. This is the
+    assertion that the drop actually happened, and it is written to survive a
+    later feature nesting a new object anywhere in the tree.
+    """
+    fake = FakeFloorService()
+    fake.room_rows = [_room_row(occupied=True)]
+    fake.waitlist = WaitlistRead(
+        entries=[
+            WaitlistEntryRead(
+                id=TICKET_ID,
+                name="נועה בר",
+                visit_type="bride",
+                arrived_at=STARTS_AT,
+                called=False,
+                skip_count=0,
+                duplicate=False,
+            )
+        ],
+        truncated=False,
+    )
+    with _client(fake) as client:
+        body = client.get(FLOOR_PATH).json()
+
+    banned_keys = {"phone", "marketing_opt_in_at", "queue_day"}
+    israeli_mobile = re.compile(r"^\+972\d{9}$")
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            assert not (banned_keys & set(node)), sorted(banned_keys & set(node))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+        elif isinstance(node, str):
+            assert not israeli_mobile.match(node), node
+
+    walk(body)
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "details", "message"),
+    [
+        (QueueEmptyError(), "QUEUE_EMPTY", None, "Nobody is waiting in the queue."),
+        (
+            QueueTicketNotWaitingError({"status": "in_service"}),
+            "QUEUE_TICKET_NOT_WAITING",
+            {"status": "in_service"},
+            "That queue entry is no longer waiting.",
+        ),
+        (
+            QueueTicketChangedError({"skip_count": "1"}),
+            "QUEUE_TICKET_CHANGED",
+            {"skip_count": "1"},
+            "That queue entry changed. Reload.",
+        ),
+    ],
+)
+def test_each_new_conflict_is_a_409_carrying_its_own_code(
+    error: Exception, code: str, details: dict[str, str] | None, message: str
+) -> None:
+    """Three codes and not one with a discriminating `details`: three causes,
+    three Hebrew sentences and three remedies — take another room / she is
+    already being seen / reload and try again — and a `details`-key sniff in the
+    console is a worse place for that branch than an error code.
+
+    ⚠ MUTATION PERFORMED: register the two `_OccupiedError` subclasses on the
+    shared BASE instead of on themselves → Starlette resolves on the MRO, both
+    answer one code, and two of these three parametrisations red.
+    """
+    with _client(FakeFloorService(raises=error)) as client:
+        resp = client.post(START_PATH)
+
+    assert resp.status_code == 409
+    expected: dict[str, Any] = {"code": code, "message": message}
+    if details is not None:
+        expected["details"] = details
+    assert resp.json() == {"error": expected}
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (QueueTicketNotWaitingError, "QUEUE_TICKET_NOT_WAITING"),
+        (QueueTicketChangedError, "QUEUE_TICKET_CHANGED"),
+    ],
+)
+def test_the_two_new_detailed_conflicts_omit_details_entirely_when_they_have_none(
+    error: type[Exception], code: str
+) -> None:
+    """The key is ABSENT, never null — `_occupied_body`'s rule, inherited rather
+    than re-implemented. A null would break the console's `Record<string, string>`
+    type on a legally binding surface."""
+    with _client(FakeFloorService(raises=error())) as client:
+        resp = client.post(START_PATH)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == code
+    assert "details" not in resp.json()["error"]
+
+
+def test_the_queue_empty_body_can_never_grow_a_details_key() -> None:
+    """⚠ It is a plain frozen body rather than an `_occupied_body` caller, and
+    that is the assertion: there is nobody to name on an empty queue, so the
+    handler has no third key to build and `QueueEmptyError` carries no `details`
+    attribute at all."""
+    assert not hasattr(QueueEmptyError(), "details")
+    assert set(app_main.QUEUE_EMPTY_BODY["error"]) == {"code", "message"}
 
 
 def test_every_spec_error_code_is_asserted() -> None:
@@ -1318,6 +1675,13 @@ def test_every_spec_error_code_is_asserted() -> None:
                 "code"
             ]
         )
+    for error in (
+        QueueEmptyError(),
+        QueueTicketNotWaitingError({"status": "removed"}),
+        QueueTicketChangedError({"skip_count": "2"}),
+    ):
+        with _client(FakeFloorService(raises=error)) as client:
+            observed.add(client.post(START_PATH).json()["error"]["code"])
     with _client(FakeFloorService(raises=SosAlreadyAcceptedError())) as client:
         observed.add(client.post(SOS_ACCEPT_PATH).json()["error"]["code"])
     with _client(FakeFloorService(raises=SosClosedError())) as client:

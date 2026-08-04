@@ -114,7 +114,13 @@ function room(overrides: Partial<Room> = {}): Room {
 }
 
 function floor(rooms: Room[] = [], cards: StaffCard[] = [ME, DANA_CARD, card()]): FloorResponse {
-  return { staff: cards, rooms, server_now: NOW };
+  return {
+    staff: cards,
+    rooms,
+    server_now: NOW,
+    // F58's envelope field. Empty is what these journeys were written against.
+    waitlist: { entries: [], truncated: false },
+  };
 }
 
 function raised(overrides: Partial<SosAlert> = {}): SosAlert {

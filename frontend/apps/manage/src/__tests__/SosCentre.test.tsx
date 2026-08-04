@@ -75,8 +75,10 @@ function card(overrides: Partial<StaffCard> = {}): StaffCard {
 
 const ME = card({ id: SELF_ID, display_name: "רותם", role: "owner" });
 
+// The empty waitlist is F58's envelope field, and empty is the state every
+// journey in this file was written against: SosCentre renders no queue.
 function floor(staff: StaffCard[] = [ME, card()]): FloorResponse {
-  return { staff, rooms: [], server_now: NOW };
+  return { staff, rooms: [], server_now: NOW, waitlist: { entries: [], truncated: false } };
 }
 
 function alertRow(overrides: Partial<SosAlert> = {}): SosAlert {

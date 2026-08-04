@@ -95,7 +95,7 @@ function assignment(overrides: Partial<RoomAssignment> = {}): RoomAssignment {
 }
 
 function floor(rooms: Room[]): FloorResponse {
-  return { staff: [staff()], rooms, server_now: NOW };
+  return { staff: [staff()], rooms, server_now: NOW, waitlist: { entries: [], truncated: false } };
 }
 
 function mount(role = "owner") {

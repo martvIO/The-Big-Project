@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Skeleton } from "@boutique/ui";
 import type { BadgeVariant } from "@boutique/ui";
 import { api, ApiError } from "../api";
-import type { Room, StaffCard, StaffCardStatus } from "../api";
+import type { DispatchResult, Room, StaffCard, StaffCardStatus, Waitlist } from "../api";
 import { isolateBidi, isolateLtr } from "../lib/booking";
 import { elapsedLine } from "../lib/elapsed";
 import { jerusalemTime } from "../lib/jerusalem";
@@ -13,6 +13,7 @@ import type { TickOutcome } from "../lib/usePoll";
 import { RoomsPanel } from "./RoomsPanel";
 import { SosCentre } from "./SosCentre";
 import { SosRaiseDialog } from "./SosRaiseDialog";
+import { WaitlistPanel } from "./WaitlistPanel";
 
 // F57. The floor's staff cards: a name, a role and a live status, plus the break
 // toggle the status is derived from.
@@ -77,6 +78,13 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   // arrive in one response, so two owners would be two freshness claims that can
   // disagree by an interval with no way to tell which to believe.
   const [rooms, setRooms] = useState<Room[] | null>(null);
+  // F58's third of the same payload, here for the same reason: one response,
+  // one owner, one freshness claim. Two owners would be two claims that can
+  // disagree by an interval with no way to tell which to believe — and the
+  // whole argument for putting the waitlist on this envelope rather than behind
+  // a second poll is that «עודכן 14:07» stays true of the staff, the rooms AND
+  // the queue simultaneously.
+  const [waitlist, setWaitlist] = useState<Waitlist | null>(null);
   // How many ticks have SUCCEEDED. RoomsPanel's tile alert promises «הרשימה
   // תתוקן בעדכון הבא» and a child cannot clear it imperatively from inside
   // `load` the way the card alert below is cleared — so the fact that an update
@@ -137,6 +145,12 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   // list and two more controls — directly above the tile a finger is already
   // travelling toward.
   //
+  // ⚠ F58 makes it worse in a NEW WAY, and the mechanism is unchanged. A remote
+  // skip does not grow a row: it MOVES one, from position 1 to position 12, so
+  // every row between them shifts up by a whole row — directly under a finger
+  // travelling toward «הסרה», the one irreversible control in this feature, on
+  // the row below.
+  //
   // ⚠ F37 adds one more case and NO code: an SOS-centre row appearing ABOVE the
   // rooms panel moves every tile below it, directly under a travelling finger —
   // and that row arrives from a loop this hold does not govern, so the hold
@@ -164,6 +178,7 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
       cardsRef.current = result.staff;
       setCards(result.staff);
       setRooms(result.rooms);
+      setWaitlist(result.waitlist);
       setFetchCount((count) => count + 1);
       setServerNow(result.server_now);
       // The freshness claim changes ONLY on a success, which is what makes it a
@@ -341,6 +356,28 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   // claim control, under a freshness stamp reset to now, until the next tick.
   const applyRooms = (update: (current: Room[]) => Room[]) => {
     setRooms((current) => update(current ?? []));
+    setUpdatedAt(new Date().toISOString());
+  };
+
+  // Same contract, same reason — with one thing `applyRooms`'s does not buy:
+  // every waitlist verb answers the WHOLE list, because a skip REORDERS it and
+  // a remove SHORTENS it and a per-entry patch can express neither. So the
+  // updater exists for the signature and the freshness stamp, and every call
+  // site installs the server's list wholesale.
+  const applyWaitlist = (update: (current: Waitlist) => Waitlist) => {
+    setWaitlist((current) => update(current ?? { entries: [], truncated: false }));
+    setUpdatedAt(new Date().toISOString());
+  };
+
+  // A dispatch is TWO halves of ONE act and they land in ONE paint: patching the
+  // tile and waiting up to five seconds for the row to leave would render the
+  // same woman as in-service and waiting. One freshness stamp, because it was
+  // one response.
+  const applyDispatch = (result: DispatchResult) => {
+    setRooms((current) =>
+      (current ?? []).map((item) => (item.id === result.room.id ? result.room : item)),
+    );
+    setWaitlist(result.waitlist);
     setUpdatedAt(new Date().toISOString());
   };
 
@@ -684,6 +721,32 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
         onRooms={applyRooms}
         onCue={setCue}
         onRaise={openRaise}
+        waitlistCount={waitlist?.entries.length ?? 0}
+        onDispatch={applyDispatch}
+      />
+
+      {/* BELOW the rooms and ABOVE the staff list (spec D15). The stated reason
+          — «the rooms are what she acts on, the queue is what she acts from» —
+          is true and is not the load-bearing one: TAKE-NEXT LIVES ON A ROOM
+          TILE, so a queue of forty above the tiles puts this feature's headline
+          control two screens below the fold at 375, on the phone the brief calls
+          the console. The panel order and the control's placement are ONE
+          decision taken twice.
+
+          A CHILD and not a sibling, for the third time on this screen: no poll,
+          no pause control, no announced region and no freshness stamp of its
+          own. */}
+      <WaitlistPanel
+        waitlist={waitlist}
+        rooms={rooms}
+        serverNow={serverNow}
+        fetchCount={fetchCount}
+        role={role}
+        paused={stopped}
+        mutate={mutate}
+        onWaitlist={applyWaitlist}
+        onRooms={applyRooms}
+        onCue={setCue}
       />
 
       {cards !== null && (

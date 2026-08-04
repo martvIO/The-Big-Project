@@ -1,7 +1,7 @@
 """Pure domain validation for the floor's room registry, the two occupancy
-conflicts and F37's SOS page — no I/O, unit-tested locally.
+conflicts, F58's dispatch verbs and F37's SOS page — no I/O, unit-tested locally.
 
-Two bounds, two normalisers and five errors. `sort_order`'s bound is deliberately
+Two bounds, two normalisers and eight errors. `sort_order`'s bound is deliberately
 NOT restated here: it is `MAX_SORT_ORDER` from `app/catalog/validation.py`,
 applied on the request models the way `catalog/schemas.py` and
 `boutique/schemas.py` already apply it, so there is one number and one place to
@@ -41,19 +41,20 @@ def normalize_room_label(label: str) -> str:
 
 
 class _DetailedConflictError(Exception):
-    """Base for the FOUR 409s that can carry a `details` key — F36's two
-    occupancy conflicts and F37's two SOS conflicts.
+    """Base for the SIX 409s that can carry a `details` key — F36's two occupancy
+    conflicts, F58's two ticket-state ones and F37's two SOS conflicts.
 
-    ⚠ **Renamed from `_OccupiedError` in F37 and the rename is the point**: two
-    of its four subclasses have nothing to do with occupancy, and a base named
-    for one half of its children is how the next reader concludes the SOS
-    conflicts must be modelled some other way.
+    ⚠ **Renamed from `_OccupiedError` in F37 and the rename is the point**: four
+    of its six subclasses have nothing to do with occupancy, and a base named
+    for one third of its children is how the next reader concludes the ticket
+    and SOS conflicts must be modelled some other way.
 
     ⚠ **`main.py` registers a handler PER CONCRETE CLASS and there is no handler
     on this base.** Verified rather than assumed, and it is why every subclass
     added here must arrive with its own `@app.exception_handler` block in the
     same PR — without one the 409 answers a bare **500**. Both F37 blocks were
-    deleted, one at a time, and each reddened only its own code's tests.
+    deleted, one at a time, and each reddened only its own code's tests, and the
+    same holds for F58's.
 
     **Not** a `DomainValidationError` subclass. ⚠ **F37 ran that mutation and the
     inherited sentence here was WRONG**, so it is corrected rather than copied:
@@ -86,10 +87,56 @@ class _DetailedConflictError(Exception):
         self.details = details
 
 
+class QueueEmptyError(Exception):
+    """Take-next found nobody waiting. A 409, and it follows
+    `_DetailedConflictError`'s PATTERN rather than its class: it is deliberately NOT a
+    `DomainValidationError` subclass, because Starlette resolves a handler by
+    walking `type(exc).__mro__` and parenting it onto the domain-400 base would
+    make the shipped 400 handler answer first and leave this 409's handler
+    unreachable. It carries no `details` and never will — there is nobody to
+    name — so it needs none of `_DetailedConflictError`'s machinery either.
+
+    Not a 404: that would mean the ROOM is missing, which the panel renders as
+    «החדר כבר לא זמין» about a room that is fine. Not an unchanged 200 either,
+    which leaves the manager wondering whether the tap registered. And not an
+    outage register on the client: the queue emptying between the render and the
+    tap is an ordinary five-second race.
+    """
+
+
 class RoomOccupiedError(_DetailedConflictError):
     """Somebody else holds this room — a claim that violated
     `idx_fitting_room_assignments_room_active`, or a delete refused because the
     room is occupied. `details` names her: `{"staff_display_name": …}`."""
+
+
+class QueueTicketNotWaitingError(_DetailedConflictError):
+    """The ticket a verb named is live but is no longer `waiting` — she was
+    dispatched, skipped out or removed between the render and the tap. `details`
+    names the state: `{"status": …}`, which is what lets the console choose
+    between «היא כבר בטיפול.» and «הכניסה הזו נסגרה.»
+
+    ⚠ `details` is REQUIRED in practice on this one and optional in the type,
+    which is `_DetailedConflictError`'s shape and deliberately not narrowed: the two
+    handlers share `_occupied_body`, and a body that omits an absent key beats
+    one that writes a null on a legally binding surface.
+    """
+
+
+class QueueTicketChangedError(_DetailedConflictError):
+    """A skip whose `skip_count` moved under the caller.
+
+    ⚠ **This 409 is what stops two ordinary single taps removing a customer.**
+    Both managers rendered `skip_count == 0`, so neither client showed the
+    confirm — which is gated on `>= 1` — and without the refusal the second tap
+    would escalate to `removed` on a count nobody saw. `details` carries the
+    count the server actually holds; the next tick renders it and the next press
+    correctly opens the confirm.
+
+    Its own code rather than a flavour of `QUEUE_TICKET_NOT_WAITING`: the ticket
+    IS still waiting and still skippable, and the remedy is «רענני ונסי שוב»
+    rather than «הכניסה הזו נסגרה».
+    """
 
 
 class StaffOccupiedError(_DetailedConflictError):
@@ -163,8 +210,8 @@ class SosClosedError(_DetailedConflictError):
     """The alert is already resolved or cancelled — there is nothing to accept.
 
     ⚠ **This one NEVER carries `details`, and that is deliberate rather than an
-    oversight.** Three of four `details`-bearing codes would be the drift toward
-    treating an error envelope as a response; four would make it the default.
-    There is also nobody to name: a resolved alert's remedy is not "go talk to
-    her", it is "there is nothing to do".
+    oversight.** Five of `_DetailedConflictError`'s six subclasses already carry
+    a `details` key; making it six would turn "an error envelope is a response"
+    from a drift into the default. There is also nobody to name: a resolved
+    alert's remedy is not "go talk to her", it is "there is nothing to do".
     """
