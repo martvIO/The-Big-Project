@@ -51,6 +51,8 @@ Every test mints its own tenant ids; nothing here truncates.
 
 import datetime
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import text
@@ -62,16 +64,22 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from app.atelier.schemas import AssignTicketRequest, StageRequest, UpdateTicketRequest
+from app.atelier.schemas import (
+    AssignTicketRequest,
+    SetCapacityRequest,
+    StageRequest,
+    UpdateTicketRequest,
+)
 from app.atelier.service import AtelierService
 from app.atelier.stages import DEFAULT_EFFORT_BANDS
+from app.atelier.validation import AtelierValidationError
 from app.auth.service import StaffContext
 from app.db.repositories.alteration_tickets import AlterationTicketsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
 from app.models.alteration_ticket import AlterationTicket
-from app.models.constants import EffortBand, StaffRole, TicketStage
+from app.models.constants import AuditAction, EffortBand, StaffRole, TicketStage
 
 pytestmark = pytest.mark.db
 
@@ -394,5 +402,202 @@ async def test_the_app_role_can_insert_select_update_and_delete_alteration_ticke
                 )
             ) == 0
             assert await session.get(AlterationTicket, ticket_id) is None
+    finally:
+        await engine.dispose()
+
+
+# --- F42: the capacity column and the load aggregate (Task 9) -----------------
+#
+# A new column on a tenant table under forced RLS still gets its isolation line —
+# the E9 brief's crown-jewels rule. `weekly_capacity_hours` is a staffing fact
+# about a named person and the load sums are a competitor's WORKLOAD as a number:
+# how many hours of work the boutique down the road is holding, answered for free
+# with no row ever crossing the boundary.
+#
+# Both assertion shapes are here, and the split is the same one the module
+# docstring draws. `set_capacity`, `by_id` and `load_by_assignee` all carry an
+# explicit `tenant_id` predicate, so a miss through them proves only that PYTHON
+# filtered. The raw statements below carry NO tenant predicate anywhere, so
+# nothing but the policy can answer them.
+
+
+@asynccontextmanager
+async def _a_seamstress(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID
+) -> AsyncIterator[uuid.UUID]:
+    """A COMMITTED `seamstress` for the length of the block, DEMOTED to `owner`
+    on the way out — this module commits, and the module docstring's rule is that
+    no committed row may hold a floor role. `_seed_staff` above needs no such
+    dance because the union does not care about the role; the capacity write is
+    the one path that does (`_require_seamstress` refuses anything else), and its
+    POSITIVE control is what stops this whole section being vacuous."""
+    async with tenant_session(factory, tenant_id) as session:
+        staff = await StaffUsersRepository().insert(
+            session,
+            tenant_id=tenant_id,
+            email=f"capacity-{uuid.uuid4().hex[:10]}@bella.example",
+            password_hash="not-a-real-hash",
+            display_name="נועה",
+            role=StaffRole.SEAMSTRESS.value,
+        )
+        staff_id = staff.id
+    try:
+        yield staff_id
+    finally:
+        async with tenant_session(factory, tenant_id) as session:
+            await session.execute(
+                text("UPDATE staff_users SET role = :role WHERE id = :id"),
+                {"role": StaffRole.OWNER.value, "id": staff_id},
+            )
+
+
+async def test_a_second_tenant_cannot_set_the_firsts_seamstresss_capacity(
+    app_role_url: str,
+) -> None:
+    """⚠ AND THE REFUSAL IS INDISTINGUISHABLE FROM A MISSING ROW, WHICH IS THE
+    POINT. Under B's policy `StaffUsersRepository.by_id` answers `None` for A's
+    staffer exactly as it does for an id nobody ever minted, so
+    `_require_seamstress` raises the SAME 400 with the SAME message for both — a
+    probe learns only that it is not permitted, which it already knew. A 403 here
+    would confirm the guessed id exists.
+
+    The POSITIVE control is the vacuity check the plan asks for: the identical
+    call under A's own context SUCCEEDS. Without it every assertion below would
+    hold on a route that simply never worked.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_a, tenant_b = uuid.uuid4(), uuid.uuid4()
+    try:
+        async with _a_seamstress(factory, tenant_a) as staff_id:
+            service = _service(factory)
+            invented = uuid.uuid4()
+
+            for target in (staff_id, invented):
+                with pytest.raises(AtelierValidationError) as refused:
+                    await service.set_capacity(
+                        tenant_b,
+                        target,
+                        SetCapacityRequest(weekly_capacity_hours=40),
+                        actor=_owner(tenant_b),
+                        tenant_default=None,
+                    )
+                assert str(refused.value) == "staff_user_id must be a live seamstress"
+
+            # Nothing of A's moved, and no audit row was written under either
+            # tenant.
+            async with tenant_session(factory, tenant_a) as session:
+                stored = await StaffUsersRepository().by_id(session, tenant_a, staff_id)
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT count(*) FROM audit_log WHERE action = :action",
+                        ),
+                        {"action": AuditAction.ATELIER_CAPACITY_SET.value},
+                    )
+                ).scalar_one()
+            assert stored is not None
+            assert stored.weekly_capacity_hours is None
+            assert rows == 0
+
+            # THE VACUITY CHECK: the same call, A's context, works.
+            answer = await service.set_capacity(
+                tenant_a,
+                staff_id,
+                SetCapacityRequest(weekly_capacity_hours=40),
+                actor=_owner(tenant_a),
+                tenant_default=None,
+            )
+            assert answer.weekly_capacity_hours == 40
+
+            # …and B still cannot READ what A just wrote, with no predicate at
+            # all in the statement.
+            async with tenant_session(factory, tenant_b) as session:
+                assert (
+                    await session.execute(
+                        text("SELECT count(*) FROM staff_users WHERE weekly_capacity_hours = 40")
+                    )
+                ).scalar_one() == 0
+            async with tenant_session(factory, tenant_a) as session:
+                assert (
+                    await session.execute(
+                        text("SELECT count(*) FROM staff_users WHERE weekly_capacity_hours = 40")
+                    )
+                ).scalar_one() == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_the_second_tenants_load_aggregate_never_counts_the_firsts_work(
+    app_role_url: str,
+) -> None:
+    """The number the poll computes every five seconds, and the one that would
+    leak a competitor's workload as an integer. B's aggregate must answer nothing
+    of A's — through the repository, whose tenant predicate is the belt, AND
+    through a raw `GROUP BY` carrying no predicate at all, which is the fence."""
+    engine, factory = _factory(app_role_url)
+    tenant_a, tenant_b = uuid.uuid4(), uuid.uuid4()
+    repo = AlterationTicketsRepository()
+    horizon = TODAY + datetime.timedelta(days=7)
+    # Inside the rolling week, so BOTH sums are non-zero and a leak in either one
+    # would show. The module's DUE is a month out and would leave `due_soon` at 0
+    # on every row, which is an equality that holds for the wrong reason.
+    soon = TODAY + datetime.timedelta(days=1)
+    raw = text(
+        "SELECT assigned_staff_user_id, sum(effort_minutes) FROM alteration_tickets "
+        "WHERE deleted_at IS NULL AND delivered_at IS NULL GROUP BY assigned_staff_user_id"
+    )
+    try:
+        a_staff = await _seed_staff(factory, tenant_a)
+        await _seed(factory, tenant_a, notes=NOTES_A, due_date=soon, assigned_staff_user_id=a_staff)
+        await _seed(factory, tenant_a, notes=NOTES_A, due_date=soon)  # A's unassigned pile
+
+        async with tenant_session(factory, tenant_b) as session:
+            assert await repo.load_by_assignee(session, tenant_b, horizon=horizon) == {}
+            assert (await session.execute(raw)).all() == []
+
+        b_staff = await _seed_staff(factory, tenant_b)
+        await _seed(factory, tenant_b, notes=NOTES_B, due_date=soon, assigned_staff_user_id=b_staff)
+
+        async with tenant_session(factory, tenant_b) as session:
+            # HER work only — not A's assignee and not A's unassigned pile.
+            assert await repo.load_by_assignee(session, tenant_b, horizon=horizon) == {
+                b_staff: (60, 60)
+            }
+        async with tenant_session(factory, tenant_a) as session:
+            assert await repo.load_by_assignee(session, tenant_a, horizon=horizon) == {
+                a_staff: (60, 60),
+                None: (60, 60),
+            }
+    finally:
+        await engine.dispose()
+
+
+async def test_a_connection_with_no_tenant_context_sees_no_capacity_at_all(
+    app_role_url: str,
+) -> None:
+    """RLS must fail CLOSED on `staff_users` too.
+    `current_setting('app.tenant_id', true)::uuid` is NULL on a connection nobody
+    bound, `tenant_id = NULL` is never true, and the answer is zero rows — not an
+    error, and never every boutique's staffing plan."""
+    engine, factory = _factory(app_role_url)
+    tenant_a = uuid.uuid4()
+    try:
+        async with _a_seamstress(factory, tenant_a) as staff_id:
+            await _service(factory).set_capacity(
+                tenant_a,
+                staff_id,
+                SetCapacityRequest(weekly_capacity_hours=12),
+                actor=_owner(tenant_a),
+                tenant_default=None,
+            )
+            async with engine.connect() as conn:
+                assert (
+                    await conn.execute(
+                        text(
+                            "SELECT count(*) FROM staff_users "
+                            "WHERE weekly_capacity_hours IS NOT NULL"
+                        )
+                    )
+                ).scalar_one() == 0
     finally:
         await engine.dispose()
