@@ -48,6 +48,7 @@ from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.dress import Dress
 from app.models.terms_version import TermsVersion
 from app.payments.service import GatewayCredentialService
+from app.privacy.text import ResolvedPrivacy, resolve_privacy
 from app.storage.base import MediaStorage
 from app.storefront.validation import (
     BOUTIQUE_TIMEZONE,
@@ -104,6 +105,11 @@ class StorefrontBoutiqueView:
     profile: dict[str, object]
     hours: list[AvailabilityRule]
     exceptions: list[AvailabilityException]
+    # F20 D13. Resolved HERE and not in `public_boutique`, because this is the
+    # one place the whole `settings` blob is in hand — the projection receives
+    # this view and nothing else, which is what keeps the "only the keys the
+    # design renders are read" rule enforceable rather than aspirational.
+    privacy: ResolvedPrivacy
 
 
 class StorefrontService:
@@ -297,6 +303,9 @@ class StorefrontService:
             profile=profile,
             hours=rules,
             exceptions=exceptions[:UPCOMING_EXCEPTIONS_LIMIT],
+            # No round trip: `settings` arrived on the already-resolved
+            # TenantContext, and `resolve_privacy` is pure.
+            privacy=resolve_privacy(dict(settings)),
         )
 
 

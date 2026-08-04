@@ -11,6 +11,7 @@ import { CatalogPage } from "./routes/CatalogPage";
 import { CheckinPage } from "./routes/CheckinPage";
 import { DressPage } from "./routes/DressPage";
 import { ManageBookingPage } from "./routes/ManageBookingPage";
+import { PrivacyPage } from "./routes/PrivacyPage";
 import { QueueBoardPage } from "./routes/QueueBoardPage";
 import { QueuePositionPage } from "./routes/QueuePositionPage";
 
@@ -32,7 +33,9 @@ export type RouteName =
   | "manage"
   | "checkin"
   | "queuePosition"
-  | "queueBoard";
+  | "queueBoard"
+  // F20's statutory privacy notice.
+  | "privacy";
 
 // A closed set, which is what lets /book/{step} and /book/{step}/{dressId}
 // share a shape: no dress id can ever be read as a step. `pay` joins it in flow
@@ -58,7 +61,9 @@ export type RouteMatch =
   | { name: "queuePosition"; ticketId: string }
   // The public wall board. It takes NO input of any kind — no id, no token, no
   // query — which is why it is the only route here with nothing beside its name.
-  | { name: "queueBoard" };
+  | { name: "queueBoard" }
+  // The privacy notice. Same shape and same reason: one document, no input.
+  | { name: "privacy" };
 
 // The id of StorefrontLayout's <main tabindex="-1">. Focus lands here after
 // every client navigation, and the SkipLink targets it.
@@ -89,6 +94,9 @@ const DOC_TITLE_KEYS: Record<RouteName, string> = {
   // The same rule as above and a stronger case for it: a board title is read
   // over more shoulders than any other in the product.
   queueBoard: "document.queueBoard",
+  // F20. A statutory document sharing the catalogue's title is one a
+  // screen-reader user cannot tell she reached (WCAG 2.4.2).
+  privacy: "document.privacy",
 };
 
 const DRESS_PATH = /^\/dress\/([^/]+)$/;
@@ -127,6 +135,11 @@ export function matchRoute(pathname: string): RouteMatch {
   // fallthrough automatically. No path parameter and no regex: the board takes
   // no input, so there is nothing to parse and nothing to decode.
   if (path === "/queue") return { name: "queueBoard" };
+  // F20, beside the other exact literals and therefore ahead of /dress/…,
+  // /b/{token}, /q/{id} and the catalogue fallthrough automatically. An exact
+  // match and not a prefix: /privacy-anything is not this page, and a prefix
+  // would swallow a link whose id merely started the same way.
+  if (path === "/privacy") return { name: "privacy" };
 
   const dress = DRESS_PATH.exec(path);
   if (dress) return { name: "dress", dressId: decodeId(dress[1]) };
@@ -359,6 +372,8 @@ export function Router() {
       return <QueuePositionPage ticketId={match.ticketId} />;
     case "queueBoard":
       return <QueueBoardPage />;
+    case "privacy":
+      return <PrivacyPage />;
     // ⚠ A missing `case` compiles clean, typechecks clean and renders the dress
     // grid under the route's own title, because of the fallthrough below —
     // DOC_TITLE_KEYS is compiler-forced but this switch is not. `checkin`

@@ -32,6 +32,10 @@ export const he = {
       // a liveness claim the poll cannot keep, and a tab title has no freshness
       // line beside it to qualify it.
       queueBoard: "לוח התור",
+      // F20's privacy page. WCAG 2.4.2 — the router writes the title on every
+      // client navigation, and a statutory document that shares the catalogue's
+      // title is one a screen-reader user cannot tell she reached.
+      privacy: "הודעת פרטיות",
     },
 
     catalog: {
@@ -201,6 +205,33 @@ export const he = {
       phoneInvalid: "המספר לא נראה כמו מספר נייד ישראלי. אפשר להזין עשר ספרות שמתחילות ב-05.",
       notes: "משהו שנשמח לדעת מראש",
       notesHint: "לא חובה. למשל: מגיעה עם אמא, צריך שולחן נגיש, או דגם שראית ואהבת.",
+
+      // F20's collection notice, rendered ABOVE the card on the `details`
+      // step — the moment she types her name, which is what §11(b) means by
+      // «בעת הפנייה». The BODY is not here and may never be: it is
+      // `boutique.privacy_notice_text` off the storefront fetch, the SAME
+      // string `/privacy` renders, so a boutique that edited her notice
+      // cannot end up with two versions of it. These two keys are the block's
+      // only chrome.
+      collectionNoticeHeading: "המידע שאת מוסרת לנו",
+      collectionNoticeLink: "לעמוד הפרטיות המלא",
+
+      // copy.md String 8a. BYTE-IDENTICAL to `checkin.optIn` BY DESIGN — same
+      // consent, same channel, same person, and two differently-worded consent
+      // labels in one product is how a §30A defence gets argued over.
+      //
+      // ⚠ Communications Law §30A wants the consent SEPARATE, AFFIRMATIVE,
+      // DEFAULT-OFF and UNBUNDLED, and all four are structural here rather
+      // than promised: the box lives on `details` and the required terms
+      // checkbox lives two steps later on `terms`, nothing in `create_booking`
+      // conditions on it, and a NULL `marketing_consent_at` is the absence of
+      // consent — there is no boolean whose default a later migration could
+      // flip.
+      marketingOptIn:
+        "אני מאשרת קבלת הודעות SMS מ{{boutique}} על מבצעים, קולקציות חדשות ואירועים. אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת.",
+      // The anti-detriment statement, placed where the decision is made and
+      // not only in the long notice.
+      marketingOptInHint: "לא חובה. קביעת התור אינה תלויה בסימון התיבה.",
       notesTooLong: "ההערה ארוכה מדי. עד 500 תווים.",
       // Serves the name AND the notes field. The cause is almost always a paste
       // out of a word processor, which carries invisible C0 characters the
@@ -449,9 +480,46 @@ export const he = {
       visitEvening: "שמלת ערב",
       visitTypeRequired: "צריך לבחור סוג ביקור כדי להמשיך",
 
-      // INTERIM, counsel-gated. Names the boutique, the purpose, the retention
-      // window, the exception for the contact detail an opt-in keeps — and, from
-      // F59, the queue board.
+      // F20's APPROVED REPLACEMENT (copy.md String 6). No longer interim: this
+      // is the counsel deck's text, and the swap the comment below promised has
+      // happened. It names the boutique, the purpose, the queue board, the
+      // voluntariness and its consequence, the §30A revocation method and the
+      // §13/§14 rights.
+      //
+      // ⚠ TWO PROMISES WERE STRUCK, and neither may come back without the code
+      // that would make it true:
+      //
+      // «ונמחקים כמה ימים לאחר הביקור» — *deleted a few days after the visit*.
+      // Nothing in this system is hard-deleted, and F20's retention job ships
+      // with `retention_enabled=False` (Gate 1 Q2), so the sentence was an
+      // express representation to the public that no code kept. Replaced by
+      // «את הפרטים אנחנו שומרות רק כל עוד הם דרושים לניהול התור», which is a
+      // purpose limitation: true today, and still true after F21 turns the
+      // seven-day scrub on.
+      //
+      // «אם סימנת אותה, השם ומספר הטלפון יישמרו לצורך זה עד שתבקשי להסיר את
+      // ההסכמה» — *if you ticked it, the name and phone are kept until you ask
+      // to remove the consent*. F20's `queue_tickets` SCRUB blanks both at seven
+      // days REGARDLESS of the box, so the sentence promised the opposite of
+      // what the feature does. What replaces it is not a weaker promise but a
+      // control that did not exist: `POST /manage/privacy/marketing-withdraw`
+      // grew a `phone` arm for exactly the women who have no `customers` row,
+      // which is the only reason «אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת» is
+      // true here at all.
+      //
+      // ⚠ THREE §11 ELEMENTS WERE ADDED because the interim value simply had
+      // none of them: voluntariness with the consequence of refusing (§11(b)(3)),
+      // the §30A revocation method, and the §13/§14 access-correction-deletion
+      // rights. The value is 42% longer than the interim one and that is not a
+      // regression — a notice cannot be shortened by omitting the law.
+      //
+      // ⚠ THREE BLANK-LINE-SEPARATED PARAGRAPHS. `CheckinPage` renders this in a
+      // `whitespace-pre-line` block; without that class the three collapse into
+      // one wall of text (copy.md R1).
+      //
+      // The board clause and «מספר הטלפון שלך לא מוצג שם» are KEPT VERBATIM —
+      // F59 argued both correctly, `PUBLIC_PAGE_CLAUSE` survives, and
+      // `i18n-keys.test.ts:132-143` therefore passes unedited.
       //
       // ⚠ THE BOARD CLAUSE IS THE ONE PRIVACY-LAW CHANGE F59 FORCES, and the
       // wording is load-bearing three times over.
@@ -474,18 +542,32 @@ export const he = {
       // שלך» between the subject and its pronoun, so «הם» would read as *the
       // phone number will not be used*.
       //
-      // Still INTERIM: the open counsel gate gains a fifth item beside the
-      // boutique, the purpose, the retention window and the opted-in exception —
-      // what must the notice say about a first name published on a public,
-      // unauthenticated web page? Asserted in i18n-keys.test.ts against the
-      // bundle, because the CheckinPage render test compares t() output against
-      // this same value and passes byte-identically either way.
+      // The fifth counsel item F59 left open — what the notice must say about
+      // a first name published on a public, unauthenticated web page — is
+      // ANSWERED by the second paragraph, which names the page and states that
+      // the phone number is not published there. That is drafting, not legal
+      // clearance; the question stays open for counsel.
       notice:
-        "הפרטים שאת ממלאת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך — ונמחקים כמה ימים לאחר הביקור. מקומך בתור והמילה הראשונה בשם שהזנת מוצגים בלוח התור של הבוטיק — עמוד אינטרנט ציבורי שכל מי שיודע את כתובת האתר של הבוטיק יכול לפתוח, ולא רק מסך שנמצא בתוך החנות. מספר הטלפון שלך לא מוצג שם. הפרטים לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה; אם סימנת אותה, השם ומספר הטלפון יישמרו לצורך זה עד שתבקשי להסיר את ההסכמה.",
-      // INTERIM, counsel-gated. This is the operative consent text, so it names
-      // who sends, by what channel, about what, and how to stop.
+        "הפרטים שאת מוסרת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך. מסירתם היא מרצון; בלי שם ובלי מספר נייד לא נוכל לרשום אותך לתור, ותמיד אפשר לפנות לאחת מאיתנו כאן.\n\nמקומך בתור והמילה הראשונה בשם שהזנת מוצגים בלוח התור של הבוטיק — עמוד אינטרנט ציבורי שכל מי שיודע את כתובת האתר של הבוטיק יכול לפתוח, ולא רק מסך שנמצא בתוך החנות. מספר הטלפון שלך לא מוצג שם.\n\nהפרטים לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה, ואפשר לבקש מאיתנו להסיר את ההסכמה בכל עת. את הפרטים אנחנו שומרות רק כל עוד הם דרושים לניהול התור, ואפשר לבקש מאיתנו לעיין במידע שנשמר עלייך, לתקן אותו או למחוק אותו. פירוט מלא בעמוד הפרטיות של האתר.",
+      // F20's APPROVED REPLACEMENT (copy.md String 7). BYTE-IDENTICAL to
+      // `booking.marketingOptIn` BY DESIGN: it is the same consent, to the
+      // same channel, from the same person, and two differently-worded consent
+      // labels in one product is how a §30A defence gets argued over.
+      //
+      // ⚠ «אפשר להסיר את ההסכמה בכל הודעה» IS GONE. The in-message unsubscribe
+      // is F46's and does not exist, so the interim label promised a path that
+      // is not built. «אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת» is true only
+      // because of the `phone` arm on `marketing-withdraw`; when F46 ships, the
+      // in-message clause can come back and it will be true.
+      //
+      // ⚠ «אני מאשרת ש{{boutique}} תשלח לי…» → «אני מאשרת קבלת הודעות SMS
+      // מ{{boutique}}…». `תשלח` is feminine singular and forced that agreement
+      // on an ARBITRARY boutique name — «סטודיו כלות», «מרכז השמלות» and any
+      // Latin-script name all break it. The nominalised form takes no verb
+      // agreement on the name at all, and drops the «ש»+name juncture that was
+      // the hardest place in the deck to thread a bidi isolate.
       optIn:
-        "אני מאשרת ש{{boutique}} תשלח לי הודעות SMS על מבצעים, קולקציות חדשות ואירועים. אפשר להסיר את ההסכמה בכל הודעה.",
+        "אני מאשרת קבלת הודעות SMS מ{{boutique}} על מבצעים, קולקציות חדשות ואירועים. אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת.",
 
       submit: "הצטרפות לתור",
       submitting: "רושמות אותך לתור",
@@ -609,6 +691,11 @@ export const he = {
     footer: {
       contactHeading: "יצירת קשר",
       about: "על הבוטיק",
+      // F20. The footer is a sibling of <main> in StorefrontLayout, so this one
+      // link puts the notice one tap from the catalogue, a dress page,
+      // /b/{token}, /checkin and /q/{id} alike — every route renders inside this
+      // shell. §11 wants the document reachable, not merely published.
+      privacy: "הודעת פרטיות",
     },
 
     a11y: {
@@ -689,6 +776,29 @@ export const he = {
         "אם משהו כאן לא עבד עבורכם, נשמח שתספרו לנו — עם תיאור הבעיה, כתובת העמוד וסוג המכשיר או הדפדפן שבו גלשתם. אנחנו מתחייבות לחזור אליכם ולטפל בפנייה.",
 
       updated: "עודכן לאחרונה: 28.7.2026",
+    },
+
+    // F20's /privacy page. ⚠ THE DOCUMENTS ARE NOT HERE AND MAY NEVER BE. All
+    // three bodies ride `GET /storefront/boutique` — `privacy_notice_text` is
+    // the boutique's own, overridable through the console, and
+    // `privacy_subprocessors_text` is platform-owned and structurally
+    // un-overridable (D14). A copy of any of them in this bundle would be a
+    // second place for a legal string to drift, which is the failure F33's
+    // `checkin.notice` comment already names.
+    //
+    // What lives here is the page's CHROME, and copy.md R7 is why it has to:
+    // the strings deliberately contain no headings, so each document gets an
+    // <h2> from a key. Baked into the strings they would render as <p> — visual
+    // headings with no semantics, a WCAG 1.3.1 failure on the twin of the
+    // accessibility statement.
+    privacy: {
+      title: "הודעת פרטיות",
+      noticeHeading: "המידע שאנחנו אוספות ומה אנחנו עושות בו",
+      dpaHeading: "מי מעבד את המידע ואיך הוא נשמר",
+      // The list beneath the DPA clause, which points at it («ספקי התשתית
+      // שרשומים בהמשך») — so this section must render AFTER that one.
+      subprocessorsHeading: "ספקי התשתית",
+      updated: "עודכן לאחרונה: 4.8.2026",
     },
   },
 } as const;

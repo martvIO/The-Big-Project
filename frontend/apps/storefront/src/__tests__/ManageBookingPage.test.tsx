@@ -6,6 +6,7 @@ import { StorefrontLayout } from "../components/StorefrontLayout";
 import { ManageBookingPage } from "../routes/ManageBookingPage";
 import { expectFocus } from "../test/focus";
 import { inPaintGap } from "../test/interleave";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // Spread the real module so ApiError keeps its real implementation — the page
 // branches on error CODE and STATUS, and a stubbed error class would make every
@@ -47,6 +48,7 @@ function boutique(overrides: Partial<BoutiqueResponse> = {}): BoutiqueResponse {
     instagram: "alma.bridal",
     hours: [],
     exceptions: [],
+    ...PRIVACY_FIXTURE,
     ...overrides,
   };
 }

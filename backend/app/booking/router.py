@@ -95,6 +95,7 @@ async def create_booking(
         dress_id=body.dress_id,
         dress_size=body.dress_size,
         notes=body.notes,
+        marketing_consent=body.marketing_consent,
         # D19's master toggle rides in from the resolved tenant. Omit it and
         # `deposit_due` reads an absent `deposits_enabled` as OFF — every
         # booking through this route would silently skip the deposit.

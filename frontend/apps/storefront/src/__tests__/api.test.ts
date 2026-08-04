@@ -291,6 +291,7 @@ describe("storefront endpoints", () => {
       dress_id: null,
       dress_size: null,
       notes: null,
+      marketing_consent: false,
     });
     const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(path).toBe("/storefront/bookings");
@@ -305,6 +306,7 @@ describe("storefront endpoints", () => {
       dress_id: null,
       dress_size: null,
       notes: null,
+      marketing_consent: false,
     });
     expect(created.appointment_type_name).toBe("מדידה");
   });
@@ -489,6 +491,7 @@ describe("booking-path VALIDATION_ERROR stays out of isNotFound", () => {
         dress_id: null,
         dress_size: null,
         notes: null,
+        marketing_consent: false,
       })
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiError);

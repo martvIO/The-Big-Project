@@ -44,7 +44,11 @@ from app.models.constants import (
     ScheduledMessageKind,
     ScheduledMessageStatus,
 )
-from app.notifications.base import SmsNotConfiguredError, SmsSendError
+from app.notifications.base import (
+    SmsNotConfiguredError,
+    SmsRecipientErasedError,
+    SmsSendError,
+)
 from app.notifications.service import NotificationService, WallClock
 from app.storefront.validation import profile_text
 
@@ -507,6 +511,14 @@ class BookingCommsService:
             # Raced the is_configured check, or the sender changed underneath.
             # No message_log row exists by F11's design.
             logger.warning("%s skipped for booking %s — no provider", kind.value, booking.id)
+            return False
+        except SmsRecipientErasedError:
+            # She was erased or scrubbed between this booking's read and the
+            # send. Same shape as the two above and for the same reason — a
+            # committed booking must not become a 5xx — but it is NOT the same
+            # fact, so it is not the same log line. No message_log row exists,
+            # by F20's design: there is nothing to evidence.
+            logger.warning("%s skipped for booking %s — recipient erased", kind.value, booking.id)
             return False
         return True
 

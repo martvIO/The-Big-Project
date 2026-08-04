@@ -49,7 +49,8 @@ from app.db.repositories.message_log import (
 )
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
-from app.models.constants import BookingStatus, MessageKind
+from app.models.constants import BookingStatus, MarketingConsentSource, MessageKind
+from app.models.customer import Customer
 from app.models.message_log import MessageLog
 
 pytestmark = pytest.mark.db
@@ -928,5 +929,164 @@ async def test_the_history_breaks_a_starts_at_tie_on_id(app_role_url: str) -> No
             )
         assert [row.id for row in rows] == [newest, ids[2], ids[1], ids[0]]
         assert [row.id for row in capped] == [newest, ids[2], ids[1]]
+    finally:
+        await engine.dispose()
+
+
+# --- F20: the four privacy consent columns (A2) ---
+
+
+async def test_the_four_consent_columns_round_trip_as_aware_utc_and_default_to_absent(
+    app_role_url: str,
+) -> None:
+    """The ORM mapping against the real column types, which is the one thing
+    neither the migration test nor a metadata assertion can see: a `TIMESTAMPTZ`
+    mapped as a naive `datetime` reads back with no tzinfo, and every retention
+    clock and every "was this consent live when we sent?" comparison in F20 is
+    arithmetic on these three values.
+
+    The untouched half is the other assertion. NULL is the ONLY spelling of "no
+    consent on record" (D6) — consent is the presence of a timestamp, so a
+    default on any of these would make the absent state unreachable and, on
+    `marketing_consent_at`, would consent every existing bride in one word.
+
+    `updated_at` is not written here on purpose: it is the DB trigger's, and this
+    file's other tests would notice if it were not.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    consented = datetime(2026, 3, 1, 9, 30, tzinfo=UTC)
+    withdrawn = datetime(2026, 4, 2, 11, 15, tzinfo=UTC)
+    erased = datetime(2026, 5, 3, 13, 45, tzinfo=UTC)
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer_id = await _seed_customer(session, tenant_id, phone=PHONE_X, name="מיכל לוי")
+
+        async with tenant_session(factory, tenant_id) as session:
+            untouched = await CUSTOMERS.by_id(session, tenant_id, customer_id)
+        assert untouched is not None
+        assert untouched.marketing_consent_at is None
+        assert untouched.marketing_consent_source is None
+        assert untouched.marketing_consent_withdrawn_at is None
+        assert untouched.erased_at is None
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await session.get(Customer, customer_id)
+            assert row is not None
+            row.marketing_consent_at = consented
+            # The literal, not an enum: `customers_marketing_consent_source_check`
+            # is the source of truth and test_migrations pins it. The enum lands
+            # with A7's `record_marketing_consent`, which is the only writer.
+            row.marketing_consent_source = "booking_form"
+            row.marketing_consent_withdrawn_at = withdrawn
+            row.erased_at = erased
+
+        async with tenant_session(factory, tenant_id) as session:
+            fresh = await CUSTOMERS.by_id(session, tenant_id, customer_id)
+        assert fresh is not None
+        assert fresh.marketing_consent_at == consented
+        assert fresh.marketing_consent_withdrawn_at == withdrawn
+        assert fresh.erased_at == erased
+        assert fresh.marketing_consent_source == "booking_form"
+        # Equality above holds for a naive datetime too, once asyncpg has applied
+        # the session TZ. tzinfo is what actually distinguishes the mapping.
+        assert fresh.marketing_consent_at.tzinfo is not None
+        assert fresh.marketing_consent_withdrawn_at.tzinfo is not None
+        assert fresh.erased_at.tzinfo is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_record_marketing_consent_stamps_only_when_no_consent_is_on_record(
+    app_role_url: str,
+) -> None:
+    """A7's guard is `AND marketing_consent_at IS NULL` in the WHERE, not an
+    `if` in Python — so two concurrent bookings cannot both decide the column
+    was empty and race to stamp it.
+
+    The second half is the one that matters legally: the ORIGINAL timestamp is
+    the Spam-Law evidence of WHEN she agreed, and a re-stamp on her next booking
+    would move the proof forward by a year.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer_id = await _seed_customer(session, tenant_id, phone=PHONE_X, name="מיכל לוי")
+            assert await CUSTOMERS.record_marketing_consent(session, tenant_id, customer_id) is True
+
+        async with tenant_session(factory, tenant_id) as session:
+            first = await CUSTOMERS.by_id(session, tenant_id, customer_id)
+        assert first is not None
+        assert first.marketing_consent_at is not None
+        assert first.marketing_consent_source == MarketingConsentSource.BOOKING_FORM.value
+        stamped_at = first.marketing_consent_at
+
+        async with tenant_session(factory, tenant_id) as session:
+            second = await CUSTOMERS.record_marketing_consent(session, tenant_id, customer_id)
+            assert second is False
+
+        async with tenant_session(factory, tenant_id) as session:
+            again = await CUSTOMERS.by_id(session, tenant_id, customer_id)
+        assert again is not None
+        assert again.marketing_consent_at == stamped_at
+    finally:
+        await engine.dispose()
+
+
+async def test_withdraw_marketing_consent_is_additive_idempotent_and_cannot_break_the_check(
+    app_role_url: str,
+) -> None:
+    """A8, all three legs, and the third is the one the CHECK makes load-bearing.
+
+    `customers_marketing_withdraw_check` REJECTS a withdrawal stamp on a row
+    with no consent — it does not silently ignore it — so a withdraw statement
+    without `AND marketing_consent_at IS NOT NULL` raises IntegrityError for
+    every customer who never ticked the box, which is the majority of them. The
+    guard in the WHERE is what keeps the constraint unreachable (D15).
+
+    Leg 2 is `changed: false` on a repeat: the withdrawal instant is evidence
+    too, and moving it on a double-tap would misdate the boutique's record of
+    when it stopped being allowed to send.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            consenting = await _seed_customer(session, tenant_id, phone=PHONE_X, name="מיכל לוי")
+            never = await _seed_customer(session, tenant_id, phone=PHONE_Y, name="נועה כהן")
+            await CUSTOMERS.record_marketing_consent(session, tenant_id, consenting)
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await CUSTOMERS.withdraw_marketing_consent(session, tenant_id, consenting) is True
+            )
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await CUSTOMERS.by_id(session, tenant_id, consenting)
+        assert row is not None
+        assert row.marketing_consent_withdrawn_at is not None
+        # ADDITIVE: the consent stamp survives, because it is the evidence that
+        # the sends made before this instant were lawful.
+        assert row.marketing_consent_at is not None
+        withdrawn_at = row.marketing_consent_withdrawn_at
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await CUSTOMERS.withdraw_marketing_consent(session, tenant_id, consenting) is False
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            repeat = await CUSTOMERS.by_id(session, tenant_id, consenting)
+        assert repeat is not None
+        assert repeat.marketing_consent_withdrawn_at == withdrawn_at
+
+        # The never-consenting subject: no row matches, no IntegrityError, and
+        # the column is still NULL afterwards.
+        async with tenant_session(factory, tenant_id) as session:
+            assert await CUSTOMERS.withdraw_marketing_consent(session, tenant_id, never) is False
+        async with tenant_session(factory, tenant_id) as session:
+            untouched = await CUSTOMERS.by_id(session, tenant_id, never)
+        assert untouched is not None
+        assert untouched.marketing_consent_withdrawn_at is None
     finally:
         await engine.dispose()

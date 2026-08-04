@@ -104,6 +104,21 @@ class CustomerDetail(BaseModel):
     bookings: list[CustomerBookingRow]
     messages: list[SmsLogRow]
     messages_total: int
+    # F20 DR-13. Three fields, and DELIBERATELY not on `CustomerRow`: no consent
+    # column on the list, no filter, no sort. Nothing reads them but the badge on
+    # this card.
+    #
+    # They are here because Gate 1 Q4 admits a shift manager to
+    # `marketing-withdraw` and NOT to the privacy panel, so this card is the only
+    # surface where a front-desk staffer can see what she is being asked to
+    # revoke. Effective consent is
+    # `marketing_consent_at IS NOT NULL AND marketing_consent_withdrawn_at IS NULL`
+    # — the console needs both timestamps to render the three states apart, which
+    # is why a single boolean would not do.
+    marketing_consent_at: datetime.datetime | None
+    marketing_consent_withdrawn_at: datetime.datetime | None
+    # Renders the «נמחקה» state, so nobody edits notes on a scrubbed record.
+    erased_at: datetime.datetime | None
 
 
 class UpdateCustomerRequest(ForbidExtraModel):

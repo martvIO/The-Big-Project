@@ -261,6 +261,7 @@ class BookingService:
         dress_id: uuid.UUID | None = None,
         dress_size: str | None = None,
         notes: str | None = None,
+        marketing_consent: bool = False,
         settings: Mapping[str, object] | None = None,
     ) -> BookingClaim:
         """The spec's seven ordered steps. `starts_at` must be timezone-aware
@@ -415,6 +416,21 @@ class BookingService:
                     session, tenant_id, customer_id=existing_customer.id, starts_at=starts_at
                 )
                 if replayed is not None:
+                    # ⚠ THE CONSENT IS STAMPED ON THIS PATH TOO, and a single
+                    # call site further down would be UNREACHABLE here (D20).
+                    # This branch returns before step 6's `upsert`, so a retry of
+                    # a submission whose 201 died on a flaky mobile network would
+                    # otherwise silently drop the box she ticked — and she has no
+                    # way to notice, because the replay renders the same
+                    # confirmation screen as the original.
+                    #
+                    # Safe to issue twice: `record_marketing_consent`'s WHERE
+                    # carries `AND marketing_consent_at IS NULL`, so the original
+                    # timestamp — the evidence of WHEN she agreed — never moves.
+                    if marketing_consent:
+                        await self._customers.record_marketing_consent(
+                            session, tenant_id, existing_customer.id
+                        )
                     # No token: the first submission's raw value is already gone
                     # (only its sha256 survives), and a replay must not resend
                     # the confirmation SMS anyway. Both facts are the same fact.
@@ -444,6 +460,14 @@ class BookingService:
             customer = await self._customers.upsert(
                 session, tenant_id, phone=phone, name=name.strip()
             )
+            # ⚠ NOT folded into `upsert` (D20), and the ABSENCE of the call is
+            # the whole semantics of an unticked box: an empty checkbox on a
+            # later booking is not a withdrawal, so no clearing statement is
+            # issued. Withdrawal must be an affirmative act — treating an
+            # omission as one would silently revoke a consent the boutique can
+            # prove it holds.
+            if marketing_consent:
+                await self._customers.record_marketing_consent(session, tenant_id, customer.id)
 
             # 7. Claim the lowest free seat. A cancelled booking's seat number
             #    is reusable — counting alone would overflow past a freed seat

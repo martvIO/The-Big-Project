@@ -8,6 +8,24 @@ export const MAX_DURATION_MINUTES = 24 * 60;
 // 1,000,000 ILS in agorot — same sanity cap as the backend.
 export const MAX_DEPOSIT_AMOUNT_AGOROT = 100_000_000;
 export const MAX_TERMS_TEXT_BYTES = 50 * 1024;
+// F20. ⚠ BYTES, and written as a plain literal rather than `8 * 1024` so
+// `test_frontend_constant_parity.py` can read it — its scraper matches
+// `export const NAME = <digits>;` and would silently skip an arithmetic
+// expression, which is how a mirror stops being a mirror. `MAX_TERMS_TEXT_BYTES`
+// above is exactly that case and is not in the parity table.
+//
+// The drift this guards is not hypothetical: the console renders a byte counter
+// straight off this number, so a cap raised on the server alone tells an owner
+// her legal notice is too long when it is not, and lowered on the server alone
+// lets her press save on a document the API then refuses.
+export const MAX_PRIVACY_TEXT_BYTES = 8192;
+
+// UTF-8 length, which is what every byte cap in this repo means. Hebrew is two
+// bytes per character, so a `.length` check would be wrong by half on the one
+// alphabet these documents are written in.
+export function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
 
 const ILS_INPUT_PATTERN = /^\d+(\.\d{1,2})?$/;
 

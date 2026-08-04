@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.passwords import hash_password
 from app.booking.backfill import ManageLinkBackfill
+from app.core.config import get_settings
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
@@ -16,6 +17,7 @@ from app.models.constants import PlatformAuditAction, StaffRole, TenantStatus
 from app.models.staff_user import StaffUser
 from app.models.tenant import Tenant
 from app.platform.repository import PlatformAuditLogRepository
+from app.privacy.retention import RetentionRunner
 from app.tenancy.slugs import is_valid_slug
 
 
@@ -138,6 +140,62 @@ class ProvisioningService:
             message=(
                 f"backfilled {result.tokens_minted} manage link(s) and scheduled "
                 f"{result.reminders_scheduled} reminder(s) across {result.tenants} tenant(s)"
+            ),
+        )
+
+    async def run_retention(self, *, operator: str, dry_run: bool) -> CommandResult:
+        """F20's operator-invoked retention run, on the audited command layer for
+        `backfill_booking_links`' reasons: it touches every tenant's data and a
+        one-shot operator action of that size leaves a row.
+
+        `--dry-run` is how the first real run is inspected before the scheduled
+        one is trusted — `retention_enabled` ships off (Gate 1 Q2), so the very
+        first armed run in production is a deliberate act and this is its
+        rehearsal.
+
+        DELIBERATELY NOT GATED ON `retention_enabled`. That flag is the kill
+        switch on the UNATTENDED scheduler; an operator typing this command with
+        an explicit `--operator` has already made the decision the flag exists to
+        defer, and a CLI that silently did nothing because of an env var is how a
+        rehearsal gets mistaken for a clean run.
+
+        The platform row is written for BOTH modes. It records that a human
+        pointed an irreversible multi-tenant job at production, which is worth
+        recording whether or not anything moved — unlike the per-tenant
+        `audit_log` rows, which are the tenant's evidence about its own data and
+        are therefore written only for work that actually happened.
+        """
+        result = await RetentionRunner(self._session_factory, settings=get_settings()).run(
+            dry_run=dry_run
+        )
+        touched = sum(result.rows.values())
+        async with self._session_factory() as session, session.begin():
+            await self._audit.record(
+                session,
+                operator=operator,
+                action=PlatformAuditAction.RETENTION_RUN,
+                details={
+                    "dry_run": dry_run,
+                    "tenants": result.tenants,
+                    "failed_tenants": result.failed_tenants,
+                    "rows": result.rows,
+                },
+            )
+        verb = "would touch" if dry_run else "touched"
+        failures = f", {result.failed_tenants} tenant(s) FAILED" if result.failed_tenants else ""
+        return CommandResult(
+            # ⚠ NOT an unconditional True. `RetentionRunner` contains a failing
+            # tenant so one boutique cannot stop another's clocks — which means
+            # the ONLY signal that a tenant failed is this exit code, and an
+            # `ok=True` that mentioned failures in prose alone reported a clean
+            # run to cron, to `$?` and to every wrapper. `retention.py`'s own
+            # docstring names that exact failure ("a silently degraded retention
+            # job still reports 'ran fine' to the only operator who would ever
+            # look") and the CLI layer was doing it.
+            ok=result.failed_tenants == 0,
+            message=(
+                f"{verb} {touched} row(s) across {result.tenants} tenant(s){failures}: "
+                f"{result.rows or 'nothing due'}"
             ),
         )
 

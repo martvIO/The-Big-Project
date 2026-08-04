@@ -28,6 +28,7 @@ import type {
 } from "../api";
 import { ContactCard } from "../components/ContactCard";
 import { SizeChips } from "../components/booking/SizeChips";
+import { paragraphs, substituteBoutique } from "../lib/privacyText";
 import { TypePicker } from "../components/booking/TypePicker";
 import { useBoutique } from "../components/StorefrontLayout";
 import { Link, handOff, navigate, shouldIntercept } from "../router";
@@ -351,6 +352,17 @@ export function BookPage({ step, dressId }: BookPageProps) {
   });
   const [name, setName] = useState("");
   const [notes, setNotes] = useState("");
+  // ⚠ DEFAULT FALSE, and a plain boolean rather than a version like
+  // `acceptedVersion` below. The two are not the same kind of consent: the terms
+  // consent is to a VERSION of a document the boutique can republish, and a
+  // marketing consent under §30A is to being contacted at all. What makes this
+  // one evidential is the server's `marketing_consent_at` timestamp, not a
+  // number the client holds.
+  //
+  // It lives HERE, in the flow's own state, so it survives a back-and-forward
+  // exactly as her name and notes do. A consent that silently cleared itself on
+  // a step change would be recorded as refused for a woman who gave it.
+  const [marketingConsent, setMarketingConsent] = useState(false);
   const [size, setSize] = useState<string | null>(null);
   // The version she accepted, not a boolean. TERMS_STALE replaces the version,
   // and consent to superseded text is exactly what terms_version exists to
@@ -1014,6 +1026,13 @@ export function BookPage({ step, dressId }: BookPageProps) {
         terms_version: termsVersion,
         ...bound,
         notes: notes === "" ? null : notes,
+        // Sent on EVERY booking, true or false. The server's
+        // `record_marketing_consent` is a guarded UPDATE that only stamps a NULL
+        // `marketing_consent_at`, so `false` never clears a consent she gave
+        // earlier — withdrawal is its own route and its own column, because
+        // clearing the timestamp would destroy the Spam-Law evidence that the
+        // consent existed when a message was sent.
+        marketing_consent: marketingConsent,
       });
     try {
       const created = await book(binding);
@@ -1229,6 +1248,45 @@ export function BookPage({ step, dressId }: BookPageProps) {
               {t("errors.validation")}
             </p>
           )}
+
+          {/* PPL §11(b) — the notice at the MOMENT OF COLLECTION, which on this
+              flow is this step: it is where she types her name and her notes.
+              Above the Card and never behind a disclosure, for the reason the
+              check-in form states in the same words — a notice she has to open
+              is a notice she has not been given.
+
+              ⚠ THE TEXT IS `boutique.privacy_notice_text`, THE SAME STRING
+              `/privacy` RENDERS (D13). It may not be copied into `he.ts`: the
+              document is overridable per boutique, so a bundled copy would
+              publish platform Hebrew to a boutique whose own lawyer had rewritten
+              hers — and no backend test could see it. The two i18n keys here are
+              the block's ONLY chrome.
+
+              Rendered WHOLE. No clamp, no «read more», no summary: a §11 notice
+              that is silently incomplete at the one moment the statute cares
+              about is worse than a long one. `DescriptionClamp` exists in this
+              app and is deliberately not used here. */}
+          {boutique !== null && (
+            <div data-testid="collection-notice" className="flex max-w-[60ch] flex-col gap-2">
+              <h2 className="font-display text-lg text-ink">
+                {t("booking.collectionNoticeHeading")}
+              </h2>
+              {paragraphs(substituteBoutique(boutique.privacy_notice_text, boutique.name)).map(
+                (block, index) => (
+                  <p
+                    key={index}
+                    className="whitespace-pre-line text-sm text-ink-muted [overflow-wrap:anywhere]"
+                  >
+                    {block}
+                  </p>
+                ),
+              )}
+              <Link to="/privacy" className={cn("rounded-sm text-gold-text underline", focusRing)}>
+                {t("booking.collectionNoticeLink")}
+              </Link>
+            </div>
+          )}
+
           <Card className="flex flex-col gap-6">
             {dressId !== undefined && (
               <div className="flex flex-col gap-4">
@@ -1335,6 +1393,31 @@ export function BookPage({ step, dressId }: BookPageProps) {
               // past the column and produce horizontal scroll at 375.
               className="[resize:block]"
               ref={notesRef}
+            />
+
+            {/* Communications Law §30A, and all four of its properties are
+                STRUCTURAL here rather than promised:
+
+                SEPARATE and UNBUNDLED — the required terms checkbox is two
+                navigations away on the `terms` step, so neither box can be
+                ticked by a gesture aimed at the other, and no single control
+                collects both consents.
+
+                AFFIRMATIVE and DEFAULT-OFF — `useState(false)`, and nothing
+                writes it but this control.
+
+                NOT A CONDITION — `forwardDetails` does not read it, so the flow
+                advances whether or not it is ticked. That is the anti-detriment
+                rule: a consent a bride fears will cost her the appointment is not
+                free consent.
+
+                A native <Checkbox> and never a Toggle: a legal consent announces
+                checked/unchecked, and role="switch" announces on/off. */}
+            <Checkbox
+              label={t("booking.marketingOptIn", { boutique: boutique?.name ?? "" })}
+              description={t("booking.marketingOptInHint")}
+              checked={marketingConsent}
+              onCheckedChange={setMarketingConsent}
             />
           </Card>
 

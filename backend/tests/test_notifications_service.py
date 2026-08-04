@@ -6,6 +6,7 @@ import time
 import uuid
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -18,8 +19,15 @@ from app.auth.rate_limit import FixedWindowRateLimiter
 from app.db.repositories.message_log import MessageLogRepository
 from app.db.repositories.otp_codes import OtpCodesRepository
 from app.db.tenant import tenant_session
-from app.models.constants import MessageStatus
-from app.notifications.base import SendResult, SmsNotConfiguredError, SmsSender, SmsSendError
+from app.models.constants import MessageKind, MessageStatus
+from app.models.message_log import MessageLog
+from app.notifications.base import (
+    SendResult,
+    SmsNotConfiguredError,
+    SmsRecipientErasedError,
+    SmsSender,
+    SmsSendError,
+)
 from app.notifications.fake import FakeSmsSender
 from app.notifications.service import (
     MAX_PROVIDER_ERROR_LENGTH,
@@ -31,6 +39,7 @@ from app.notifications.service import (
 )
 from app.notifications.unconfigured import UnconfiguredSmsSender
 from app.notifications.validation import OTP_MAX_VERIFY_ATTEMPTS, OTP_TTL_SECONDS
+from app.privacy.validation import ERASED_PHONE_PREFIX
 
 pytestmark = pytest.mark.db
 
@@ -460,5 +469,72 @@ async def test_provider_error_never_persists_the_live_code(app_role_url: str) ->
         assert code not in error, f"a live code reached message_log.error: {error!r}"
         assert "●" in error, "the echoed body should survive in masked form"
         assert len(error) <= MAX_PROVIDER_ERROR_LENGTH
+    finally:
+        await engine.dispose()
+
+
+async def test_send_sms_refuses_an_erased_phone_before_any_row_or_any_send(
+    app_role_url: str,
+) -> None:
+    """⚠ F20 C7 — ONE guard in the single writer, not one in every caller.
+
+    The spec's first draft claimed an erased customer's placeholder phone was
+    "structurally un-sendable". That was FALSE against this code:
+    `BookingCommsService._customer_phone` returns `customers.phone` verbatim and
+    says so in its own docstring, and `send_sms` validated only `is_configured`
+    before handing the string to the adapter. What actually blocked a send was
+    F15's confirmed-AND-future `_guard_live` — which is exactly what F50 is
+    chartered to widen. So F20 makes the claim true instead of restating it.
+
+    Written against `send_sms` DIRECTLY, never through a booking path, because
+    the guard's whole value is that it holds for callers that do not exist yet.
+    A booking-path test would prove only that today's callers happen not to
+    reach it.
+
+    Both halves of "before" are asserted, and they are different failures:
+    * no `message_log` row — otherwise the erasure leaks her placeholder into
+      the log the retention job is supposed to be draining, on every retry;
+    * no adapter call — otherwise a carrier receives a request derived from a
+      record that was supposed to be gone.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    sender = FakeSmsSender()
+    notifications = NotificationService(factory, sender=sender)
+    try:
+        with pytest.raises(SmsRecipientErasedError):
+            await notifications.send_sms(
+                tenant_id,
+                phone=f"{ERASED_PHONE_PREFIX}{customer_id}",
+                body="תזכורת",
+                kind=MessageKind.REMINDER.value,
+            )
+
+        async with tenant_session(factory, tenant_id) as session:
+            rows = (
+                (await session.execute(select(MessageLog).where(MessageLog.tenant_id == tenant_id)))
+                .scalars()
+                .all()
+            )
+        assert rows == [], "an erased phone reached message_log"
+        assert sender.outbox == [], "an erased phone reached the carrier"
+    finally:
+        await engine.dispose()
+
+
+async def test_send_sms_still_sends_to_a_real_number(app_role_url: str) -> None:
+    """The anti-vacuity half. Without it the guard above could be a `raise` at
+    the top of `send_sms` and both assertions would still hold."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    sender = FakeSmsSender()
+    notifications = NotificationService(factory, sender=sender)
+    try:
+        row = await notifications.send_sms(
+            tenant_id, phone=NORMALIZED, body="תזכורת", kind=MessageKind.REMINDER.value
+        )
+        assert row.status == MessageStatus.SENT.value
+        assert len(sender.outbox) == 1
     finally:
         await engine.dispose()

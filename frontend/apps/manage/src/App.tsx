@@ -14,6 +14,7 @@ import { GatewaySection } from "./components/GatewaySection";
 import { GuideOverlay } from "./components/GuideOverlay";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
+import { PrivacySection } from "./components/PrivacySection";
 import { ProfileSection } from "./components/ProfileSection";
 import { SosOverlay } from "./components/SosOverlay";
 import { StaffSection } from "./components/StaffSection";
@@ -132,6 +133,22 @@ const NAV: readonly NavItem[] = [
   // that is owner-only in full, and whether the boutique can take money is
   // itself disclosure.
   { key: "gateway", labelKey: "nav.gateway", roles: ["owner"] },
+  // F20, and `roles: ["owner"]` is DERIVED rather than chosen. The panel's first
+  // step is the §13 subject export, which carries `require_role(OWNER)` on the
+  // server, so a shift manager who could open this section would reach no action
+  // inside it — every control here is downstream of that one lookup.
+  //
+  // ⚠ That is NOT the same as saying she has no privacy permission. POST
+  // /manage/privacy/marketing-withdraw deliberately carries NO route-level gate
+  // and inherits the router's (OWNER, SHIFT_MANAGER) one — Gate 1 Q4 — and her
+  // path to it is the CUSTOMER CARD, which is where a front-desk staffer looks a
+  // caller up anyway. Hiding this row is therefore mirroring the server, which is
+  // this array's entire job; it is not a permission quietly revoked.
+  //
+  // Placed last, so the shift manager's eleven-row prefix is untouched and
+  // Nav.test.tsx's `.slice(0, 11)` still means what it meant. "The two owner-only
+  // rows stay structurally last" becomes three.
+  { key: "privacy", labelKey: "nav.privacy", roles: ["owner"] },
 ];
 
 export function App() {
@@ -257,6 +274,7 @@ export function App() {
           {activeKey === "checkinQr" && <CheckinQrSection />}
           {activeKey === "staff" && <StaffSection staffId={staff.id} />}
           {activeKey === "gateway" && <GatewaySection />}
+          {activeKey === "privacy" && <PrivacySection />}
         </ConsoleShell>
       </SosProvider>
     </ToastProvider>

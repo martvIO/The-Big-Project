@@ -51,6 +51,12 @@ from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.dress import Dress
 from app.models.dress_media import DressMedia
 from app.models.terms_version import TermsVersion
+from app.privacy.text import (
+    PLATFORM_DPA_HE,
+    PLATFORM_NOTICE_HE,
+    PLATFORM_SUBPROCESSORS_HE,
+    resolve_privacy,
+)
 from app.security_headers import SECURITY_HEADERS
 from app.storage.unconfigured import UnconfiguredMediaStorage
 from app.storefront.router import (
@@ -379,6 +385,7 @@ def _boutique_view(
     profile: dict[str, Any] | None = None,
     hours: list[AvailabilityRule] | None = None,
     exceptions: list[AvailabilityException] | None = None,
+    settings: dict[str, Any] | None = None,
 ) -> StorefrontBoutiqueView:
     return StorefrontBoutiqueView(
         name=TENANT.name,
@@ -389,6 +396,9 @@ def _boutique_view(
             if exceptions is None
             else exceptions
         ),
+        # Resolved the way the real service resolves it, so a fake cannot
+        # accidentally assert a shape the product never produces (F20 D13).
+        privacy=resolve_privacy(settings or {}),
     )
 
 
@@ -973,6 +983,13 @@ def test_boutique_is_flat_and_reads_name_and_settings_from_the_tenant_context() 
         "instagram": PROFILE["instagram"],
         "hours": [{"day_of_week": 0, "open_time": "10:00:00", "close_time": "19:00:00"}],
         "exceptions": [],
+        # F20 D13: the two documents plus the platform sub-processor list ride
+        # on THIS response rather than on a `/storefront/privacy` of their own,
+        # so a legally-required page has no failure mode the rest of the site
+        # does not already have.
+        "privacy_notice_text": PLATFORM_NOTICE_HE,
+        "privacy_dpa_text": PLATFORM_DPA_HE,
+        "privacy_subprocessors_text": PLATFORM_SUBPROCESSORS_HE,
     }
     assert service.call("get_boutique") == {
         "tenant_id": TENANT.id,
@@ -1033,6 +1050,12 @@ def test_boutique_survives_an_empty_profile() -> None:
         "instagram": None,
         "hours": [],
         "exceptions": [],
+        # The platform defaults, not null: a boutique that has configured nothing
+        # still owes a §11 notice, and an empty privacy field on the wire would
+        # render a legally-required page blank.
+        "privacy_notice_text": PLATFORM_NOTICE_HE,
+        "privacy_dpa_text": PLATFORM_DPA_HE,
+        "privacy_subprocessors_text": PLATFORM_SUBPROCESSORS_HE,
     }
 
 
@@ -1068,6 +1091,12 @@ def test_a_cleared_profile_field_is_null_on_the_wire_not_an_empty_string() -> No
         "instagram": None,
         "hours": [],
         "exceptions": [],
+        # The platform defaults, not null: a boutique that has configured nothing
+        # still owes a §11 notice, and an empty privacy field on the wire would
+        # render a legally-required page blank.
+        "privacy_notice_text": PLATFORM_NOTICE_HE,
+        "privacy_dpa_text": PLATFORM_DPA_HE,
+        "privacy_subprocessors_text": PLATFORM_SUBPROCESSORS_HE,
     }
 
 
@@ -1151,6 +1180,9 @@ def test_boutique_response_has_exactly_these_flat_fields() -> None:
         "instagram",
         "hours",
         "exceptions",
+        "privacy_notice_text",
+        "privacy_dpa_text",
+        "privacy_subprocessors_text",
     }
 
 
@@ -1647,3 +1679,52 @@ async def test_get_terms_reads_the_current_version_and_404s_when_none_exists() -
     service._terms = _StubTerms(None)  # type: ignore[assignment]
     with pytest.raises(CatalogNotFoundError):
         await service.get_terms(TENANT.id)
+
+
+def test_the_privacy_documents_are_anonymous_cookie_blind_and_no_store() -> None:
+    """⚠ F20 D13. The §11 notice is served to a woman who has typed nothing yet,
+    so it must be reachable with no session at all — and byte-identical with one,
+    which is F11's cookie-blindness invariant applied to the one payload whose
+    contents are a legal representation.
+
+    `no-store` matters here for a reason the rest of this response does not have:
+    an owner editing her notice must not be arguing with a browser cache about
+    which version of a statutory document a customer saw.
+    """
+    service = FakeStorefrontService()
+    service.boutique_view = _boutique_view()
+    with _client(service) as client:
+        anonymous = client.get(BOUTIQUE_PATH)
+        client.cookies.set("boutique_session", TOKEN, domain="bella.localtest.me")
+        authenticated = client.get(BOUTIQUE_PATH)
+    assert anonymous.status_code == authenticated.status_code == 200
+    assert anonymous.content == authenticated.content
+    assert anonymous.headers["cache-control"] == "no-store"
+    assert anonymous.json()["privacy_notice_text"] == PLATFORM_NOTICE_HE
+
+
+def test_a_boutiques_override_reaches_the_wire_and_the_subprocessor_list_never_does() -> None:
+    """The override half and D14's un-overridable half, in one walk.
+
+    A settings blob that TRIES to set `subprocessors_text` changes nothing — that
+    is what makes adding a processor to the platform list reach every tenant by
+    construction, instead of only the boutiques that never edited their DPA
+    prose. `""` is the revert sentinel, because `||` can add or replace a JSONB
+    key but never remove one.
+    """
+    service = FakeStorefrontService()
+    service.boutique_view = _boutique_view(
+        settings={
+            "privacy": {
+                "notice_text": "הנוסח של הבוטיק",
+                "dpa_text": "   ",
+                "subprocessors_text": "רשימה מזויפת",
+            }
+        }
+    )
+    with _client(service) as client:
+        body = client.get(BOUTIQUE_PATH).json()
+    assert body["privacy_notice_text"] == "הנוסח של הבוטיק"
+    # Whitespace-only is a cleared textarea, not a document.
+    assert body["privacy_dpa_text"] == PLATFORM_DPA_HE
+    assert body["privacy_subprocessors_text"] == PLATFORM_SUBPROCESSORS_HE

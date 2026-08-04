@@ -74,6 +74,15 @@ function fallbackBoutique(block: ManageBookingResponse["boutique"]): BoutiqueRes
     instagram: null,
     hours: [],
     exceptions: [],
+    // F20's three documents are NOT in the manage lookup payload, and empty
+    // strings are the honest shape rather than a gap: this value only ever
+    // reaches `ContactCard`, which reads the four contact fields above and
+    // nothing else. `/privacy` and the booking form take their text from
+    // `useBoutique()`, whose source is the real storefront fetch — a blank
+    // legal document can never reach a reader from here.
+    privacy_notice_text: "",
+    privacy_dpa_text: "",
+    privacy_subprocessors_text: "",
   };
 }
 

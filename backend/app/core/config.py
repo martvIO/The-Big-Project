@@ -215,6 +215,31 @@ class Settings(BaseSettings):
     queue_board_max_per_window: int = 600
     queue_board_window_seconds: int = 60
 
+    # F20's per-data-class retention clocks. These ARE product policy and the
+    # house rule normally keeps product policy out of Settings — the reason that
+    # rule exists is drift between an env var and a DB CHECK or a frontend
+    # constant, producing an IntegrityError on a user action. These have neither
+    # twin, and what they do have is a counsel confirmation at F21 that should
+    # change one value for every tenant at once. Per-tenant overrides are
+    # deliberately absent: a boutique may not choose its own retention for a duty
+    # the platform enforces on its behalf.
+    #
+    # It ships DISARMED (Gate 1 Q2). What `retention_enabled=True` deploys is an
+    # unattended, irreversible, chunked mass-DELETE across five tables on clocks
+    # read from the environment, against a database with no backup and no tested
+    # restore. A default that must be un-set by a deploy note to be safe is a
+    # loaded gun with a sticker on it; F21's backup row is the gate that flips it.
+    retention_enabled: bool = False
+    retention_poll_interval_seconds: int = 3600
+    # Exactly OTP_TTL_SECONDS + VERIFICATION_TOKEN_TTL_SECONDS. The margin is
+    # ZERO — safe only because verify refuses at `expires_at <= now`, so no
+    # verification token can be alive at created_at + 900.
+    retention_otp_seconds: int = 15 * 60
+    retention_queue_ticket_seconds: int = 7 * 24 * 3600
+    retention_message_log_seconds: int = 730 * 24 * 3600
+    retention_bookings_seconds: int = 365 * 7 * 24 * 3600
+    retention_orphan_customer_seconds: int = 30 * 24 * 3600
+
     @property
     def secure_cookies(self) -> bool:
         return self.app_env != "dev"
@@ -295,6 +320,42 @@ class Settings(BaseSettings):
         # "MEDIA_REGION is required when MEDIA_BUCKET is set" case verbatim.
         if self.payment_provider and not self.gateway_secret_box:
             raise ValueError("GATEWAY_SECRET_BOX is required when PAYMENT_PROVIDER is set")
+        return self
+
+    @model_validator(mode="after")
+    def _require_retention_periods_above_their_floors(self) -> Self:
+        """Fail at boot rather than degrade — `_forbid_sms_test_paths_in_production`
+        is the precedent, and this is the only config in the repo where the thing
+        a typo costs is UNRECOVERABLE DATA LOSS.
+
+        Every floor sits within an order of magnitude of the default it guards,
+        which is the whole design: floors 15x-730x below their defaults catch the
+        literal `=0` they were written for and let the REALISTIC fat-finger — one
+        digit short — sail through. `RETENTION_BOOKINGS_SECONDS=220752000`
+        mistyped as `22075200` is 255 days, and the next tick hard-DELETEs every
+        booking older than that INCLUDING its `terms_version_accepted` — the very
+        evidence the erase design goes out of its way to preserve.
+
+        The OTP floor is IMPORTED, never written as a number, so a future TTL
+        change moves it. It equals the default because 15 minutes is exactly
+        sufficient and there is nothing below it to allow: a naive `>= 60` would
+        let `RETENTION_OTP_SECONDS=60` boot clean and then purge every code a
+        minute after send, making every booking in the platform uncompletable
+        with no error anywhere to explain it.
+        """
+        from app.notifications.validation import OTP_TTL_SECONDS, VERIFICATION_TOKEN_TTL_SECONDS
+
+        floors = {
+            "retention_otp_seconds": OTP_TTL_SECONDS + VERIFICATION_TOKEN_TTL_SECONDS,
+            "retention_queue_ticket_seconds": 2 * 24 * 3600,
+            "retention_message_log_seconds": 180 * 24 * 3600,
+            "retention_bookings_seconds": 3 * 365 * 24 * 3600,
+            "retention_orphan_customer_seconds": 7 * 24 * 3600,
+            "retention_poll_interval_seconds": 60,
+        }
+        for field, floor in floors.items():
+            if getattr(self, field) < floor:
+                raise ValueError(f"{field.upper()} must be at least {floor} seconds")
         return self
 
     @property

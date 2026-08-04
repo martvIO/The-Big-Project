@@ -33,6 +33,7 @@ class ProvisioningLike(Protocol):
     ) -> CommandResult: ...
     async def suspend(self, *, slug: str, operator: str) -> CommandResult: ...
     async def backfill_booking_links(self, *, operator: str) -> CommandResult: ...
+    async def run_retention(self, *, operator: str, dry_run: bool) -> CommandResult: ...
     async def reset_owner_password(
         self, *, slug: str, owner_email: str, new_password: str, operator: str
     ) -> CommandResult: ...
@@ -75,6 +76,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="one-time: mint manage links + schedule reminders for existing future bookings",
     )
     _with_operator(backfill)
+
+    # F20's retention run. `--operator` is `required=True` HERE ONLY, deliberately
+    # diverging from `_with_operator`'s `$USER` default (D23). The five
+    # subcommands above are recoverable or read-only; this one issues an
+    # irreversible multi-tenant hard-DELETE, and `$USER` on a shared box is not
+    # an audit identity.
+    #
+    # No `--slug`: the clocks are a duty the platform enforces on every
+    # controller's behalf, and a per-tenant flag would make a legal obligation a
+    # checklist.
+    retention = sub.add_parser(
+        "retention", help="run the per-data-class retention job across every tenant"
+    )
+    retention.add_argument(
+        "--operator", required=True, help="operator identity for the audit trail"
+    )
+    # ⚠ THE REHEARSAL IS THE DEFAULT AND ARMING IS THE DELIBERATE ACT.
+    #
+    # `run_retention` is deliberately NOT gated on `retention_enabled`, so this
+    # subcommand is the one place where Gate 1 Q2's disarm — the whole reason the
+    # scheduled job ships off, pending F21's tested restore — can be defeated by
+    # one command. With `--dry-run` opt-in, the command an operator types from
+    # memory was the irreversible multi-tenant hard DELETE and the safe one was
+    # the one they had to remember. Inverted: `--armed` is a sentence you cannot
+    # type by accident, and a mistyped rehearsal now counts rows instead of
+    # destroying them.
+    retention.add_argument(
+        "--armed",
+        action="store_true",
+        help="actually delete. Without it the run only counts what each policy would touch",
+    )
 
     return parser
 
@@ -122,6 +154,8 @@ async def _dispatch(
         )
     if args.command == "backfill-booking-links":
         return _report(await service.backfill_booking_links(operator=args.operator))
+    if args.command == "retention":
+        return _report(await service.run_retention(operator=args.operator, dry_run=not args.armed))
     if args.command == "list":
         _print_tenants(await service.list_tenants())
         return 0

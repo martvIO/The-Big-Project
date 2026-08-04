@@ -268,6 +268,7 @@ async def _claim(
     starts_at: datetime.datetime = SLOT_A,
     now: datetime.datetime = NOW,
     phone: str | None = None,
+    marketing_consent: bool = False,
 ) -> Any:
     resolved = phone if phone is not None else _phone()
     return await _booking_service(factory, now=now).create_booking(
@@ -278,6 +279,7 @@ async def _claim(
         appointment_type_id=type_id,
         starts_at=starts_at,
         terms_version=1,
+        marketing_consent=marketing_consent,
     )
 
 

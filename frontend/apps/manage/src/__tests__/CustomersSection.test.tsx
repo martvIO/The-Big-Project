@@ -6,6 +6,7 @@ import "../i18n";
 import type { CustomerDetailResponse, CustomerListResponse, CustomerRow } from "../api";
 import { CustomersSection } from "../components/CustomersSection";
 import { MAX_SEARCH_TERM_LENGTH, MAX_TAG_LENGTH, MAX_TAGS } from "../validation";
+import i18n from "../i18n";
 
 // importActual re-exports the REAL ApiError and errorMessage so `instanceof`
 // still works inside the components under test.
@@ -18,6 +19,7 @@ vi.mock("../api", async () => {
       listCustomers: vi.fn(),
       getCustomer: vi.fn(),
       updateCustomer: vi.fn(),
+      withdrawMarketingConsent: vi.fn(),
     },
   };
 });
@@ -26,6 +28,7 @@ const { api, ApiError } = await import("../api");
 const listCustomers = vi.mocked(api.listCustomers);
 const getCustomer = vi.mocked(api.getCustomer);
 const updateCustomer = vi.mocked(api.updateCustomer);
+const withdrawMarketingConsent = vi.mocked(api.withdrawMarketingConsent);
 
 const CUSTOMER_ID = "33333333-4444-5555-6666-777777777777";
 
@@ -70,6 +73,11 @@ function detail(overrides: Partial<CustomerDetailResponse> = {}): CustomerDetail
       },
     ],
     messages_total: 1,
+    // F20: no consent, never withdrawn, never erased — the state a brand-new
+    // customer row is in, and the one the badge renders as «לא ניתנה».
+    marketing_consent_at: null,
+    marketing_consent_withdrawn_at: null,
+    erased_at: null,
     ...overrides,
   };
 }
@@ -387,6 +395,85 @@ describe("CustomerDetail panels", () => {
     await openDetail();
     expect(screen.getByText("אין עדיין תורים בכרטיס הזה.")).toBeInTheDocument();
     expect(screen.getByText("אין עדיין רשומות ביומן ההודעות.")).toBeInTheDocument();
+  });
+});
+
+// --- F20: the §30A consent, on the card the front desk actually opens ---------
+//
+// ⚠ THIS IS WHERE GATE 1 Q4 BECOMES REACHABLE. The privacy section is owner-only
+// because its first step is the §13 export; `POST /manage/privacy/marketing-
+// withdraw` deliberately carries NO route-level gate and inherits the router's
+// (OWNER, SHIFT_MANAGER) one. A shift manager taking the call has to be able to
+// honour «אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת» from the screen she is
+// already on, and this card is that screen.
+
+describe("CustomerDetail marketing consent", () => {
+  // Effective consent is `at IS NOT NULL AND withdrawn IS NULL`, which is THREE
+  // states and not a boolean. Withdrawal is ADDITIVE: wiping the grant timestamp
+  // would destroy the Spam-Law evidence that consent existed when a message was
+  // sent, so «הוסרה» is a real third state and not the absence of the first.
+  //
+  // `it.each` and not a loop with a manual unmount: three renders in one `it`
+  // share a DOM, and the queries would start matching the previous case's badge.
+  it.each([
+    [{}, "privacy.consentNone"],
+    [{ marketing_consent_at: "2026-02-01T09:00:00Z" }, "privacy.consentActive"],
+    [
+      {
+        marketing_consent_at: "2026-02-01T09:00:00Z",
+        marketing_consent_withdrawn_at: "2026-03-01T09:00:00Z",
+      },
+      "privacy.consentWithdrawn",
+    ],
+  ] as [Partial<CustomerDetailResponse>, string][])(
+    "renders the consent state as its own word, never as a colour (%#)",
+    async (patch, expected) => {
+      getCustomer.mockResolvedValue(detail(patch));
+      await openDetail();
+
+      expect(screen.getByTestId("customer-consent")).toHaveTextContent(i18n.t(expected));
+    },
+  );
+
+  it("offers the withdrawal only where there is a live consent to withdraw", async () => {
+    getCustomer.mockResolvedValue(detail());
+    await openDetail();
+
+    expect(screen.queryByRole("button", { name: i18n.t("privacy.withdraw") })).toBeNull();
+  });
+
+  it("withdraws through the id the card already holds, with no confirmation step", async () => {
+    // §30A says revocation may not be conditioned, and a modal at the counter is
+    // a condition however small. Keyed on `customer_id` — the card has it, so
+    // the front desk needs no lookup and no privacy section.
+    withdrawMarketingConsent.mockResolvedValue({ changed: true });
+    getCustomer.mockResolvedValue(detail({ marketing_consent_at: "2026-02-01T09:00:00Z" }));
+    updateCustomer.mockClear();
+    await openDetail();
+
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("privacy.withdraw") }));
+
+    await waitFor(() => {
+      expect(withdrawMarketingConsent).toHaveBeenCalledWith({ customer_id: CUSTOMER_ID });
+    });
+    // The badge moves to «הוסרה» without a refetch: the response is one boolean,
+    // and re-reading the whole card to learn what we just did would blank the
+    // booking history and the message log for the length of a round trip.
+    expect(await screen.findByText(i18n.t("privacy.consentWithdrawn"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: i18n.t("privacy.withdraw") })).toBeNull();
+  });
+
+  it("keeps the card readable when the withdrawal fails", async () => {
+    withdrawMarketingConsent.mockRejectedValue(new ApiError(503, "UNKNOWN", "down"));
+    getCustomer.mockResolvedValue(detail({ marketing_consent_at: "2026-02-01T09:00:00Z" }));
+    await openDetail();
+
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("privacy.withdraw") }));
+
+    expect(await screen.findByText(i18n.t("privacy.withdrawFailed"))).toBeInTheDocument();
+    // The state did NOT move: a badge that flipped optimistically would tell a
+    // staffer she had honoured a §30A revocation that never landed.
+    expect(screen.getByTestId("customer-consent")).toHaveTextContent(i18n.t("privacy.consentActive"));
   });
 });
 

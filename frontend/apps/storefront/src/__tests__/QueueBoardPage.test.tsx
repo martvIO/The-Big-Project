@@ -6,6 +6,7 @@ import type { BoutiqueResponse, QueueBoardEntry, QueueBoardView } from "../api";
 import { StorefrontLayout } from "../components/StorefrontLayout";
 import i18n from "../i18n";
 import { QueueBoardPage } from "../routes/QueueBoardPage";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // Spread the real module so ApiError keeps its real implementation. This page
 // makes no terminal decision from an error — that is the point of half these
@@ -61,6 +62,7 @@ function boutique(): BoutiqueResponse {
     instagram: "alma.bridal",
     hours: [],
     exceptions: [],
+    ...PRIVACY_FIXTURE,
   };
 }
 

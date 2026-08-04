@@ -31,6 +31,10 @@ class FakeService:
         self.calls.append(("backfill_booking_links", kwargs))
         return self._result
 
+    async def run_retention(self, **kwargs: object) -> CommandResult:
+        self.calls.append(("run_retention", kwargs))
+        return self._result
+
 
 def _dispatch(argv: list[str], service: FakeService, password: str = "pw") -> int:
     args = build_parser().parse_args(argv)
@@ -171,3 +175,74 @@ def test_backfill_takes_no_slug() -> None:
     and a per-tenant flag would make the one-time run a checklist."""
     with pytest.raises(SystemExit):
         build_parser().parse_args(["backfill-booking-links", "--slug", "bella"])
+
+
+# --- F20's retention run -----------------------------------------------------
+
+
+def test_retention_reads_no_password() -> None:
+    """Like `list` and the backfill it must never prompt: a command run from a
+    deploy hook that blocks on getpass hangs the deploy."""
+    service = FakeService(CommandResult(ok=True, message="would touch 12 row(s)"))
+
+    def _no_password() -> str:
+        raise AssertionError("retention must not read a password")
+
+    args = build_parser().parse_args(["retention", "--operator", "ops", "--armed"])
+    assert run(args, service, _no_password) == 0
+    assert service.calls == [("run_retention", {"operator": "ops", "dry_run": False})]
+
+
+def test_retention_defaults_to_a_rehearsal_and_arming_is_explicit() -> None:
+    """⚠ INVERTED, deliberately. `run_retention` is not gated on
+    `retention_enabled`, so this subcommand is the one place Gate 1 Q2's disarm
+    can be defeated — and with `--dry-run` opt-in, the command typed from memory
+    was the irreversible multi-tenant hard DELETE while the safe one was the one
+    you had to remember. A mistyped rehearsal now counts rows."""
+    service = FakeService()
+    assert _dispatch(["retention", "--operator", "ops"], service) == 0
+    assert service.calls[-1][1]["dry_run"] is True
+
+    assert _dispatch(["retention", "--operator", "ops", "--armed"], service) == 0
+    assert service.calls[-1][1]["dry_run"] is False
+
+
+def test_retention_requires_an_explicit_operator() -> None:
+    """D23's deliberate divergence from `_with_operator`, which defaults to
+    `$USER`. `$USER` on a shared box is not an audit identity, and this is the one
+    subcommand that issues an irreversible multi-tenant hard-DELETE."""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["retention"])
+
+
+def test_the_five_older_subcommands_still_default_their_operator() -> None:
+    """Asserted BESIDE the requirement above so the divergence reads as intent
+    rather than as an inconsistency someone will "fix". `provision`, `suspend`,
+    `reset-password`, `list` and `backfill-booking-links` are recoverable or
+    read-only; this one is not."""
+    parser = build_parser()
+    for argv in (
+        ["provision", "--slug", "b", "--name", "n", "--owner-email", "o@e.co"],
+        ["suspend", "--slug", "b"],
+        ["reset-password", "--slug", "b", "--owner-email", "o@e.co"],
+        ["list"],
+        ["backfill-booking-links"],
+    ):
+        assert parser.parse_args(argv).operator
+
+
+def test_retention_takes_no_slug() -> None:
+    """Platform-wide by design: the clocks are a duty the platform enforces on
+    every controller's behalf, and a per-tenant flag would make a legal obligation
+    a checklist."""
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["retention", "--operator", "ops", "--slug", "bella"])
+
+
+def test_retention_failure_is_a_nonzero_exit() -> None:
+    """The CLI half only. That `run_retention` can actually PRODUCE `ok=False` —
+    it could not, before: `ok=True` was unconditional and `failed_tenants`
+    reached the message and nothing else — is
+    `test_retention_db.test_a_run_with_a_failing_tenant_is_not_ok`."""
+    service = FakeService(CommandResult(ok=False, message="boom"))
+    assert _dispatch(["retention", "--operator", "ops"], service) == 1

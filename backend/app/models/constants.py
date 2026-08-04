@@ -200,6 +200,23 @@ class BookingCancelledBy(StrEnum):
     EXPIRED = "expired"
 
 
+class MarketingConsentSource(StrEnum):
+    """Which surface took the consent. The DB pins this exact set —
+    `customers_marketing_consent_source_check` (0024) — and it has ONE member
+    on purpose.
+
+    F33's walk-in check-in is deliberately NOT here (plan DR-10). Its opt-in
+    lives on `queue_tickets.marketing_opt_in_at` and stays there: that form has
+    no possession proof of any kind, so promoting it into this column would
+    launder an unverified submission into evidence that a specific woman
+    consented — degrading every other row in a column whose only job is to be
+    provable under the Spam Law. Adding `'walk_in'` here means widening the
+    CHECK in a migration, in the feature that builds the verified promotion.
+    """
+
+    BOOKING_FORM = "booking_form"
+
+
 class ScheduledMessageKind(StrEnum):
     # The DB pins this exact set (0010). E4's hold-expiry sweep and E5's offer
     # cascade widen the CHECK when they arrive — pre-adding speculative kinds is
@@ -527,6 +544,74 @@ class AuditAction(StrEnum):
     SOS_RESOLVED = "sos_resolved"
     SOS_CANCELLED = "sos_cancelled"
 
+    # F20's retention job (D8). The NINTH block to rely on the same fact:
+    # audit_log.action is plain TEXT with no CHECK (0003), so these six need no
+    # migration.
+    #
+    # SIX values and not one `retention_applied` with the class in `details`,
+    # because this file's split criterion is "is this a distinct question a
+    # compliance audit actually asks", and here it plainly is: "show me that the
+    # message log was purged on its clock" is the §17B evidence for ONE data
+    # class, and an auditor asking it should not have to write a JSONB predicate
+    # to separate it from the OTP sweep.
+    #
+    # The suffix is the POLICY NAME, and `app.privacy.retention.audit_action`
+    # resolves it through this enum — so a policy added without a member here is
+    # a ValueError in `test_retention_policies.py`, not a silent absence at 03:00
+    # inside a tenant loop.
+    #
+    # A RUN THAT TOUCHED NOTHING WRITES NO ROW. Six rows per tenant per hour of
+    # "deleted 0" is permanent bloat in the one table that has no retention class
+    # of its own — and `audit_log` has none deliberately, because a clock on the
+    # evidence would eventually erase the proof of the erasures it records.
+    #
+    # `details` carries counts and table NAMES only. Never a customer name, never
+    # a phone: audit_log has no retention policy and platform operators read
+    # across tenants, which is CUSTOMER_UPDATED's rule for CUSTOMER_UPDATED's
+    # reason.
+    # F20's two subject routes. Same fact again: `audit_log.action` is plain
+    # TEXT with no CHECK (0003), so neither needs a migration.
+    #
+    # THE EXPORT HAS ITS OWN ACTION, and that is D19 correcting a first draft
+    # that audited only the mutation. Checklist row 38 is "data ACCESS by
+    # operators", not "data changes by operators" — assembling a named person's
+    # whole record into one downloadable document is the access it means.
+    #
+    # `details` on both carries `customer_id` + `phone_last4` + a capped
+    # `reason`, and NEVER a full number or a name (`privacy/service._last4`).
+    # This table has no retention class at all — deliberately, because a clock
+    # on the evidence would eventually erase the proof of the erasures it
+    # records — so a full phone written here would be a permanent copy of the
+    # exact identifier the erase exists to destroy.
+    PRIVACY_SUBJECT_EXPORTED = "privacy_subject_exported"
+    PRIVACY_SUBJECT_ERASED = "privacy_subject_erased"
+    # The §30A revocation, and it is written on BOTH arms.
+    #
+    # `PLATFORM_DPA_HE` publishes, to every bride on every boutique's /privacy
+    # page, that «פעולות שינוי ומחיקה שהצוות מבצע במידע של לקוחה נרשמות ביומן
+    # פעילות» — staff changes and deletions to a customer's data are recorded in
+    # an activity log. This is a staff-performed change to a customer's data, and
+    # per Gate 1 Q4 it is the ONE privacy route a non-owner can reach, so it is
+    # the route with the widest role exposure and was the one with no trail.
+    #
+    # Written ONLY when `changed` is true, which is what answers the bloat
+    # objection the route's first draft raised: the statement is self-falsifying
+    # (`IS NOT NULL` / `IS NULL` guards), so a repeat writes nothing.
+    #
+    # The phone arm needs it more than the id arm, not less: that arm NULLs
+    # `queue_tickets.marketing_opt_in_at`, so after it runs the row is
+    # indistinguishable from a walk-in who never ticked the box. Without this row
+    # the boutique can evidence neither that she asked nor that it complied.
+    # `details` carries `phone_last4` and never the number.
+    PRIVACY_MARKETING_WITHDRAWN = "privacy_marketing_withdrawn"
+
+    RETENTION_OTP_CODES = "retention_otp_codes"
+    RETENTION_SESSIONS = "retention_sessions"
+    RETENTION_QUEUE_TICKETS = "retention_queue_tickets"
+    RETENTION_MESSAGE_LOG = "retention_message_log"
+    RETENTION_BOOKINGS = "retention_bookings"
+    RETENTION_CUSTOMERS = "retention_customers"
+
 
 class PlatformAuditAction(StrEnum):
     TENANT_PROVISIONED = "tenant_provisioned"
@@ -536,3 +621,14 @@ class PlatformAuditAction(StrEnum):
     # F16's one-time deploy step (D10). platform_audit_log.action is plain TEXT
     # with no CHECK (0004), so this needs no migration.
     BOOKING_LINKS_BACKFILLED = "booking_links_backfilled"
+    # F20's operator-invoked retention run. platform_audit_log.action is plain
+    # TEXT with no CHECK (0004), so this needs no migration.
+    #
+    # ONE value covering the armed run AND the `--dry-run` rehearsal, with the
+    # mode in `details`. Unlike the per-tenant `audit_log` rows — which are the
+    # TENANT's evidence about its own data, and are therefore suppressed for a
+    # dry run and for a policy that touched nothing — this row is the record that
+    # a HUMAN pointed an irreversible multi-tenant job at production, and that is
+    # worth recording whether or not it wrote anything. A rehearsal that leaves
+    # no trace is the one an incident review most wants to find.
+    RETENTION_RUN = "retention_run"

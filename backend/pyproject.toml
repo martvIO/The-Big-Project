@@ -51,6 +51,20 @@ target-version = "py313"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
+# The ONLY files in this repo that hold a legal document as a source literal.
+# Every E501 in them is a Hebrew paragraph, one paragraph per line, and the
+# alternative — splitting each across implicit string concatenations — buys
+# nothing and costs two real things: a place where a space is silently gained or
+# lost inside text whose approval (.planning/design/screens/privacy/copy.md) is
+# character-exact, and a review diff that turns a one-sentence amendment into
+# five changed fragments. `test_privacy_text.py` carries exactly one such literal
+# (the §30A withdrawal sentence, held so an edit to the notice that drops it
+# reddens a named test); everything else in it is ordinary code and still bound
+# by the 100-column rule under every other selected rule.
+[tool.ruff.lint.per-file-ignores]
+"app/privacy/text.py" = ["E501"]
+"tests/test_privacy_text.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.13"
 disallow_untyped_defs = true

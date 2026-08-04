@@ -35,6 +35,12 @@ class BookingCreateRequest(BaseModel):
     dress_id: uuid.UUID | None = None
     dress_size: str | None = Field(default=None, max_length=MAX_SIZE_INPUT_LENGTH)
     notes: str | None = Field(default=None, max_length=MAX_NOTES_INPUT_LENGTH)
+    # F20 D6. DEFAULT FALSE, and the default is the compliance property rather
+    # than a convenience: an omitted key must never be able to mean "she agreed".
+    # There is no boolean column behind it — consent is the PRESENCE of a
+    # timestamp on `customers`, so there is no `server_default` a later migration
+    # could flip to opt-out, and the unticked case issues no statement at all.
+    marketing_consent: bool = False
 
 
 class BookingCreateResponse(BaseModel):

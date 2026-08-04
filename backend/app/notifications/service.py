@@ -20,7 +20,12 @@ from app.db.repositories.otp_codes import OtpCodesRepository
 from app.db.tenant import tenant_session
 from app.models.constants import MessageKind, MessageStatus
 from app.models.message_log import MessageLog
-from app.notifications.base import SmsNotConfiguredError, SmsSender, SmsSendError
+from app.notifications.base import (
+    SmsNotConfiguredError,
+    SmsRecipientErasedError,
+    SmsSender,
+    SmsSendError,
+)
 from app.notifications.validation import (
     OTP_MAX_VERIFY_ATTEMPTS,
     OTP_TTL_SECONDS,
@@ -30,6 +35,7 @@ from app.notifications.validation import (
     normalize_israeli_mobile,
     otp_sms_body,
 )
+from app.privacy.validation import ERASED_PHONE_PREFIX
 
 logger = logging.getLogger("app")
 
@@ -103,6 +109,25 @@ class NotificationService:
         # the same 503 (F11 review, finding 10).
         if not self._sender.is_configured:
             raise SmsNotConfiguredError
+        # ⚠ ONE GUARD IN THE SINGLE WRITER, and it is what makes F20's
+        # "un-sendable" claim TRUE rather than merely restated.
+        #
+        # An erased customer's `customers.phone` is `erased:{id}`, and nothing on
+        # the send path re-validates a phone: `BookingCommsService._customer_phone`
+        # returns the column verbatim ("a read and never a re-normalization") and
+        # this method used to hand whatever it got straight to the adapter. What
+        # actually blocked such a send was F15's confirmed-AND-future
+        # `_guard_live` — which is exactly what F50 is chartered to widen, so an
+        # invariant resting on it would have expired silently.
+        #
+        # Before the insert AND before the adapter, deliberately: a row here
+        # would put the placeholder back into the log the retention job is
+        # draining, on every retry, and a send would hand a carrier a request
+        # derived from a record that was supposed to be gone. One guard here is a
+        # smaller diff than a guard in every caller, and it holds for callers
+        # that do not exist yet.
+        if phone.startswith(ERASED_PHONE_PREFIX):
+            raise SmsRecipientErasedError
         async with tenant_session(self._session_factory, tenant_id) as session:
             row = await self._message_log.insert(
                 session,

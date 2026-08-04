@@ -24,6 +24,7 @@ vi.mock("../routes/QueuePositionPage", () => ({
   QueuePositionPage: ({ ticketId }: { ticketId: string }) => `מקום בתור ${ticketId}`,
 }));
 vi.mock("../routes/QueueBoardPage", () => ({ QueueBoardPage: () => "לוח" }));
+vi.mock("../routes/PrivacyPage", () => ({ PrivacyPage: () => "פרטיות" }));
 
 function go(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -189,6 +190,24 @@ describe("matchRoute", () => {
     expect(matchRoute("/queue/")).toEqual({ name: "queueBoard" });
   });
 
+  // F20's statutory privacy notice. An EXACT match beside the other four, and
+  // therefore ahead of every regex and the catalogue fallthrough automatically.
+  it("maps /privacy to the privacy route", () => {
+    expect(matchRoute("/privacy")).toEqual({ name: "privacy" });
+    expect(matchRoute("/privacy/")).toEqual({ name: "privacy" });
+  });
+
+  it("shadows neither /b/{token} nor the catalogue fallthrough", () => {
+    // ⚠ The ordering claim in the plan, made checkable. A `/privacy` literal is
+    // harmless; a `/privacy` PREFIX would not be — it would swallow a manage
+    // token or a dress id that happened to start with the same characters, and
+    // a bride whose link vanished into a legal document has no way to tell what
+    // went wrong. The three below are the neighbours it could plausibly eat.
+    expect(matchRoute("/b/privacy-token")).toEqual({ name: "manage", token: "privacy-token" });
+    expect(matchRoute("/privacy/anything")).toEqual({ name: "catalog" });
+    expect(matchRoute("/dress/privacy")).toEqual({ name: "dress", dressId: "privacy" });
+  });
+
   it("keeps /q/… disjoint from /queue, in both directions", () => {
     // The shipped comment on QUEUE_PATH claimed this before /queue existed; it
     // is now simply true. The regex cannot match /queue, and an exact /queue
@@ -276,6 +295,22 @@ describe("the walk-in queue's routes", () => {
     renderRoute("/queue");
     expect(document.title).toBe(i18n.t("document.queueBoard"));
     expect(document.title).not.toBe("document.queueBoard");
+  });
+
+  it("renders the privacy notice at /privacy, never the catalogue", () => {
+    // The negative half is the whole test, for the reason the board's twin
+    // states: `DOC_TITLE_KEYS` is compiler-forced and the render switch is not,
+    // so a missing `case` compiles clean, titles the page correctly and serves
+    // the dress grid. `checkin` shipped exactly that way for one commit.
+    renderRoute("/privacy");
+    expect(screen.getByText("פרטיות")).toBeInTheDocument();
+    expect(screen.queryByText("קטלוג")).toBeNull();
+  });
+
+  it("titles the privacy page from its own key", () => {
+    renderRoute("/privacy");
+    expect(document.title).toBe(i18n.t("document.privacy"));
+    expect(document.title).not.toBe("document.privacy");
   });
 });
 

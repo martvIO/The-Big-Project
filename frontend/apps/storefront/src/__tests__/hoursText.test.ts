@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { BoutiqueResponse, ExceptionRow, HoursRow } from "../api";
 import i18n from "../i18n";
 import { hhmm, shortDate, toExceptions, todayLine, toWeeklyRules } from "../lib/hoursText";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // For an appointment-only boutique the hours line is the highest-stakes string
 // on the page: "סגור היום" when it is open, or a reopen day one off, sends a
@@ -31,6 +32,7 @@ function boutique(hours: HoursRow[] = SUN_TO_THU, exceptions: ExceptionRow[] = [
     instagram: null,
     hours,
     exceptions,
+    ...PRIVACY_FIXTURE,
   };
 }
 

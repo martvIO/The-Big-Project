@@ -102,6 +102,19 @@ const HE_F42 = HE_F41.filter(
 // needs no edit — and `guide.trigger` is a header control beside «יציאה», not
 // `nav.guide`.
 const HE_F60 = entries(he.translation, (key) => key.startsWith("guide."));
+// F20's privacy section. Its own constant and its own floor, for the reason
+// every block above has one. ⚠ Its `guide.privacy.*` STEP keys are deliberately
+// NOT selected here — they are `guide.`-namespaced and ride in HE_F60, which is
+// where they belong: the namespace names the payload, not the feature that added
+// the key, and that block's floor rises to cover them.
+//
+// ⚠ AND NEITHER IS THE HEBREW OF THE THREE PRIVACY DOCUMENTS, the not-lawyer-
+// reviewed disclaimer or the `reason`-field hint. All five ride
+// `GET /manage/privacy` as `disclaimer_text` and `erase_reason_hint`, because
+// they are the same approved legal Hebrew the storefront and the API already
+// serve — a copy in this bundle would be a second place for a legal string to
+// drift, which is the failure F33's `checkin.notice` comment names.
+const HE_F20 = entries(he.translation, (key) => key === "nav.privacy" || key.startsWith("privacy."));
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -116,6 +129,7 @@ const HE = [
   ...HE_F41,
   ...HE_F37,
   ...HE_F60,
+  ...HE_F20,
 ];
 
 describe("F15 keys resolve", () => {
@@ -1256,10 +1270,11 @@ describe("F42 capacity keys resolve", () => {
 
 describe("F60 guide keys resolve", () => {
   it("carries the whole copy deck", () => {
-    // 7 chrome + 36 steps. Its own floor, for the reason every block above has
-    // one: folded into an existing list without it, this feature's rows could
-    // shrink by 43 and the suite would stay green.
-    expect(HE_F60.length).toBeGreaterThanOrEqual(43);
+    // 7 chrome + 36 steps, and from F20 on 2 more steps for the fifteenth
+    // section. Its own floor, for the reason every block above has one: folded
+    // into an existing list without it, this feature's rows could shrink by 45
+    // and the suite would stay green.
+    expect(HE_F60.length).toBeGreaterThanOrEqual(45);
   });
 
   it("is FOLDED into HE, not merely declared", () => {
@@ -1271,8 +1286,10 @@ describe("F60 guide keys resolve", () => {
   });
 
   it("adds no nav row, and that is an assertion rather than an omission", () => {
-    // `SectionKey` stays fourteen and `NAV` stays fourteen: the guide is a
-    // header control beside «יציאה», not a fifteenth section.
+    // The GUIDE adds none: it is a header control beside «יציאה», not a section
+    // of its own. (`SectionKey` and `NAV` are FIFTEEN from F20 on, which is that
+    // feature's row and not this one's — the assertion here has always been
+    // about `nav.guide`, never about the count.)
     expect(HE_F60.filter(([key]) => key.startsWith("nav."))).toEqual([]);
     expect("nav.guide" in he.translation).toBe(false);
   });
@@ -1291,7 +1308,7 @@ describe("F60 guide keys resolve", () => {
     }
   });
 
-  it("resolves the nav label the dialog title is built from, for all fourteen", () => {
+  it("resolves the nav label the dialog title is built from, for all fifteen", () => {
     // P-1. `GuideOverlay` derives the title's section name as `t(`nav.${section}`)`
     // rather than taking it as a prop, and this is the one test that proves the
     // lookup is TOTAL: five of the fourteen resolve through the nested `nav:`
@@ -1328,6 +1345,63 @@ describe("F60 guide keys resolve", () => {
     // here by construction and an aria-label over visible text — the one shape
     // 2.5.3 can fail — never enters the bundle.
     expect(HE_F60.filter(([key]) => key.endsWith("Aria"))).toEqual([]);
+  });
+});
+
+describe("F20 privacy keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    expect(HE_F20.length).toBeGreaterThan(30);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // Declare the constant and forget the spread, and the resolve check, both
+    // register guards and the `ar` value guard silently skip every one of these
+    // hand-transcribed strings and stay green. Nothing else in this file notices.
+    expect(HE.map(([key]) => key)).toContain("nav.privacy");
+  });
+
+  it("resolves the fifteenth nav item beside the nested nav object", () => {
+    expect(i18n.t("nav.privacy")).toBe("פרטיות");
+  });
+
+  it("holds NO copy of the legal Hebrew the API already serves", () => {
+    // ⚠ THE ASSERTION THAT KEEPS ONE COPY OF EACH LEGAL STRING. The privacy
+    // notice, the processor clause, the sub-processor list, the not-lawyer-
+    // reviewed disclaimer and the `reason`-field hint all ride
+    // `GET /manage/privacy`. A bundled copy would publish platform Hebrew to a
+    // boutique whose own lawyer had rewritten hers, and would put the D14
+    // sub-processor list — the one document a tenant may NOT edit — in a file a
+    // frontend change can edit freely.
+    //
+    // Pinned by the phrases those five strings are built out of, so a paste of
+    // any of them into this bundle reddens rather than merely being noticed.
+    const values = HE_F20.map(([, value]) => value);
+    for (const phrase of [
+      // PLATFORM_NOTICE_HE / PLATFORM_DPA_HE
+      "בעל המאגר",
+      // PLATFORM_SUBPROCESSORS_HE
+      "ספקי תשתית",
+      "Railway",
+      "Twilio",
+      // the manage disclaimer (copy.md 5a)
+      "עורך דין",
+      "ייעוץ משפטי",
+      // the reason-field hint (copy.md 5b)
+      "יומן הפעילות",
+    ]) {
+      expect(
+        values.filter((value) => value.includes(phrase)),
+        `${phrase} is served by the API and must not be copied into he.ts`,
+      ).toEqual([]);
+    }
+  });
+
+  it("names the boutique's action, never the platform's, on the erase control", () => {
+    // «מחיקה» is what §14 grants and what the endpoint does. The console must
+    // not call it «אנונימיזציה» or «טשטוש»: the survivor set is de-identified
+    // with a controlled re-identification key, so a word implying the data is
+    // gone would misdescribe it in the operator's own vocabulary.
+    expect(i18n.t("privacy.erase")).toContain("מחיקת");
   });
 });
 
@@ -1393,6 +1467,20 @@ describe("the ar bundle", () => {
     // is not cosmetic: «בדרך» could re-enter the product through ar.ts alone.
     const arTranslation = ar.translation as Record<string, string>;
     const drifted = HE_F37.filter(([key, value]) => arTranslation[key] !== value).map(
+      ([key]) => key,
+    );
+    expect(drifted).toEqual([]);
+  });
+
+  it("carries the approved Hebrew VALUE for every privacy key, not merely the key", () => {
+    // The fifth twin, and each block declares its own because the guards here
+    // are scoped BY NAME. The rule is `ar[key] === he[key]`, NOT "non-empty":
+    // presence alone passes on an English string, on a `TODO`, and on a
+    // DIFFERENT Hebrew wording. On this namespace a different wording is not
+    // cosmetic — these are the labels on the controls that erase a named
+    // person's record and revoke a §30A consent.
+    const arTranslation = ar.translation as Record<string, string>;
+    const drifted = HE_F20.filter(([key, value]) => arTranslation[key] !== value).map(
       ([key]) => key,
     );
     expect(drifted).toEqual([]);

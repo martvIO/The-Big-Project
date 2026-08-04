@@ -562,3 +562,25 @@ async def test_a_replay_of_an_already_paid_booking_opens_no_second_hold() -> Non
     )
     assert outcome == DepositOutcome(status=BookingStatus.CONFIRMED.value, deposit_due=False)
     assert payments.calls == []
+
+
+async def test_the_marketing_consent_flag_defaults_off_and_rides_through_unchanged() -> None:
+    """⚠ F20 D6. The DEFAULT is the compliance property, not a convenience: an
+    omitted key must never be able to mean "she agreed", and a client that has
+    not been updated yet must not consent anybody by silence.
+
+    The unbundling is structural elsewhere (the checkbox sits on the `details`
+    step, two navigations from the required terms checkbox on `terms`). What
+    this asserts is the wire half — the flag is its own field, it is not derived
+    from `terms_version`, and the router passes it through untouched.
+    """
+    client, stub = _client()
+    with client:
+        assert client.post(PATH, json=_body()).status_code == 201
+        assert stub.calls[-1]["marketing_consent"] is False
+
+        assert client.post(PATH, json=_body(marketing_consent=True)).status_code == 201
+        assert stub.calls[-1]["marketing_consent"] is True
+        # Accepting the terms is a DIFFERENT act on a different screen; nothing
+        # about it may imply a marketing consent.
+        assert stub.calls[-1]["terms_version"] == 1

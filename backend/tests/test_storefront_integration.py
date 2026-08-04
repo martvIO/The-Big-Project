@@ -42,6 +42,7 @@ from app.catalog.validation import VariantInput
 from app.db.repositories.bookings import BookingsRepository
 from app.db.tenant import tenant_session
 from app.models.constants import BookingStatus
+from app.privacy.text import PLATFORM_SUBPROCESSORS_HE
 from app.storage.memory import InMemoryMediaStorage
 from app.storefront.service import StorefrontService
 from app.storefront.validation import (
@@ -379,6 +380,45 @@ async def test_only_ready_media_is_returned(app_role_url: str) -> None:
             ready_id
         ]
         assert (await storefront.get_dress(tenant, pending_only)).media == []
+    finally:
+        await engine.dispose()
+
+
+async def test_the_boutiques_own_privacy_override_reaches_the_view_through_the_service(
+    app_role_url: str,
+) -> None:
+    """⚠ THE ONLY TEST THAT REACHES `get_boutique`'s privacy resolution.
+
+    `privacy=resolve_privacy(dict(settings))` is the single place a boutique's
+    own counsel-reviewed §11 notice becomes public. The three fast tests that
+    appear to cover it build their `StorefrontBoutiqueView` through the test
+    module's own `_boutique_view()` helper, which calls `resolve_privacy` itself
+    — so the resolution under test was the TEST's. Replace this line with
+    `resolve_privacy({})`, silently serving platform Hebrew to every tenant who
+    had paid a lawyer to rewrite hers, and the whole suite stayed green.
+
+    D14's other half rides along: the sub-processor list is platform-owned and
+    a settings blob that tries to override it changes nothing.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    storage = InMemoryMediaStorage()
+    storefront = _storefront(factory, storage)
+    try:
+        view = await storefront.get_boutique(
+            uuid.uuid4(),
+            name="Bella",
+            settings={
+                "privacy": {
+                    "notice_text": "\u05d4\u05d5\u05d3\u05e2\u05d4 \u05e9\u05dc\u05d4",
+                    "subprocessors_text": "\u05e0\u05d9\u05e1\u05d9\u05d5\u05df",
+                }
+            },
+        )
+
+        assert view.privacy.notice_text == "\u05d4\u05d5\u05d3\u05e2\u05d4 \u05e9\u05dc\u05d4"
+        assert view.privacy.notice_is_default is False
+        assert view.privacy.subprocessors_text == PLATFORM_SUBPROCESSORS_HE
     finally:
         await engine.dispose()
 

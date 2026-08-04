@@ -115,6 +115,49 @@ class QueueTicketsRepository:
         await session.refresh(row)
         return row
 
+    async def withdraw_marketing_opt_in(
+        self, session: AsyncSession, tenant_id: UUID, *, phone: str
+    ) -> int:
+        """Clear the walk-in marketing opt-in for one normalised number, on
+        every ticket that carries it. Returns how many rows moved (F20 A9).
+
+        The route this serves exists because F20 declines to promote a walk-in
+        opt-in into `customers` (plan DR-10) — so for a woman who has only ever
+        walked in, `customers.marketing_consent_withdrawn_at` reaches nothing at
+        all, while the notice she was shown at the counter promises she can
+        revoke. This statement is the revocation.
+
+        **Exact equality on `phone`, and no normalisation here.** `queue/service`
+        stores E.164 through `normalize_israeli_mobile` before the INSERT, and
+        the column's own comment records that it therefore matches
+        `customers.phone` exactly. The CALLER normalises what a human typed; a
+        second normalisation inside a repository would be a second place for the
+        rule to drift.
+
+        **NOT scoped to `queue_day`.** A consent she gave three visits ago is
+        still a consent she is revoking, and a day-scoped clear would silently
+        leave the older ones standing.
+
+        This writes `queue_tickets` and NOTHING else: no `customers` row is
+        created or touched, so the unverified submission is never laundered into
+        a provable consent, which is the whole point of the split.
+        """
+        stmt = (
+            update(QueueTicket)
+            .where(
+                QueueTicket.tenant_id == tenant_id,
+                QueueTicket.phone == phone,
+                QueueTicket.deleted_at.is_(None),
+                # Self-falsifying, so a repeat is 0 rather than a second "yes,
+                # withdrawn" for a consent that was already gone.
+                QueueTicket.marketing_opt_in_at.is_not(None),
+            )
+            .values(marketing_opt_in_at=None)
+            .returning(QueueTicket.id)
+            .execution_options(synchronize_session=False)
+        )
+        return len((await session.execute(stmt)).scalars().all())
+
     async def claim_next(
         self, session: AsyncSession, tenant_id: UUID, *, day: datetime.date
     ) -> Row[tuple[UUID, str, str, datetime.datetime | None]] | None:

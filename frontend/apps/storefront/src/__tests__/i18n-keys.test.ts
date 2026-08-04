@@ -141,6 +141,60 @@ describe("the collection notice names the public web page", () => {
   });
 });
 
+// F20 / copy.md findings F4 and F5. The interim value made TWO retention
+// representations the system could not keep — that the details are deleted a
+// few days after the visit (nothing is hard-deleted anywhere, and F20's
+// retention job ships switched OFF by Q2), and that an opted-in bride's name
+// and phone are kept until she asks to remove the consent (F20's queue_tickets
+// SCRUB blanks both at seven days regardless of the box).
+//
+// Both are struck. This is the assertion that keeps them struck: a revert of
+// either he.ts value reddens it, and so does a "restore the old wording"
+// resolution of a future merge conflict on this string.
+const STRUCK_RETENTION_PROMISES = [
+  // «…ונמחקים כמה ימים לאחר הביקור» — deleted a few days after the visit.
+  "ונמחקים כמה ימים לאחר הביקור",
+  // «…יישמרו לצורך זה עד שתבקשי להסיר את ההסכמה» — kept until you withdraw.
+  "עד שתבקשי להסיר את ההסכמה",
+];
+
+// §11(b)(3) and §30A. The interim value stated NO voluntariness, NO consequence
+// of refusing and NO revocation method — three elements simply missing from a
+// live collection point. The replacement states all three.
+const REQUIRED_NOTICE_CLAUSES = [
+  // Voluntariness + the consequence of refusing.
+  "מסירתם היא מרצון",
+  // §30A revocation, servable only because of the marketing-withdraw phone arm.
+  "אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת",
+];
+
+describe("the collection notice makes no retention promise F20 cannot keep", () => {
+  it.each(["he", "ar"])("%s carries the approved F20 replacement", (locale) => {
+    const bundle = locale === "he" ? he.translation : ar.translation;
+    const notice = resolve("checkin.notice", bundle);
+
+    expect(typeof notice).toBe("string");
+    for (const struck of STRUCK_RETENTION_PROMISES) {
+      expect(notice as string, `${locale} still promises: ${struck}`).not.toContain(struck);
+    }
+    for (const required of REQUIRED_NOTICE_CLAUSES) {
+      expect(notice as string, `${locale} is missing: ${required}`).toContain(required);
+    }
+  });
+
+  it.each(["he", "ar"])("%s drops the in-message unsubscribe from the opt-in label", (locale) => {
+    // «אפשר להסיר את ההסכמה בכל הודעה» — *you can remove the consent in every
+    // message*. F46 owns the in-message opt-out and it does not exist, so the
+    // interim label promised an unsubscribe path that is not built.
+    const bundle = locale === "he" ? he.translation : ar.translation;
+    const optIn = resolve("checkin.optIn", bundle);
+
+    expect(typeof optIn).toBe("string");
+    expect(optIn as string).not.toContain("בכל הודעה");
+    expect(optIn as string).toContain("אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת");
+  });
+});
+
 describe("the ar bundle", () => {
   it("carries every key F19 added to he.ts", () => {
     // A scanner that matched nothing would make the assertion below vacuous.
@@ -149,23 +203,37 @@ describe("the ar bundle", () => {
     expect(missing).toEqual([]);
   });
 
-  it("carries the approved Hebrew VALUE for both F60 hint keys, not merely the key", () => {
+  it("carries the approved Hebrew VALUE for the four gated checkin keys, not merely the key", () => {
     // ⚠ A VALUE-PARITY CHECK, AND THE STOREFRONT'S FIRST. The F19 block above is
     // a PRESENCE check (`typeof resolve(key, ar.translation) === "string"`) and
     // the empty-string walk below is a non-empty check — both pass on an English
-    // string, on a `TODO`, and on a DIFFERENT Hebrew wording. Two keys are
+    // string, on a `TODO`, and on a DIFFERENT Hebrew wording. Four keys are
     // transcribed by hand into two files here, and this is the guard that sees
     // the third case.
     //
-    // Deliberately scoped to these two keys (DL21). Widening it across the whole
-    // bundle is a different feature's decision to take: F20's counsel swap makes
-    // `checkin.notice` a two-file edit ON PURPOSE, and a blanket parity guard
-    // would have to be relaxed the day Arabic is actually translated.
+    // ⚠ F20 ADDED `checkin.notice` AND `checkin.optIn`, and that is the whole
+    // gate on the counsel swap. DL21 left them out on the reading that F20's
+    // swap is a two-file edit ON PURPOSE — which is true and is exactly why they
+    // belong here: NOTHING else in the suite compares their two values. The F19
+    // presence walk and the empty-string walk both pass on the OLD Hebrew, and
+    // `CheckinPage.test.tsx` renders `t()` and compares it against the same
+    // bundle, so it passes byte-identically either way. Without this line a
+    // builder swaps `he.ts`, forgets `ar.ts`, and the suite stays green while
+    // Arabic serves un-approved interim consent text.
+    //
+    // Still scoped to four named keys rather than widened across the bundle:
+    // that is a different feature's decision, and a blanket parity guard would
+    // have to be relaxed the day Arabic is actually translated.
     // ⚠ The `typeof === "string"` leg is not decoration: `resolve` returns
     // `undefined` for a missing key, so an equality check alone passes
     // VACUOUSLY when NEITHER bundle carries the key — which is exactly the state
     // this guard was written in.
-    for (const key of ["checkin.guideTrigger", "checkin.guideHint"]) {
+    for (const key of [
+      "checkin.guideTrigger",
+      "checkin.guideHint",
+      "checkin.notice",
+      "checkin.optIn",
+    ]) {
       const hebrew = resolve(key, he.translation);
       expect(typeof hebrew).toBe("string");
       expect(resolve(key, ar.translation)).toBe(hebrew);

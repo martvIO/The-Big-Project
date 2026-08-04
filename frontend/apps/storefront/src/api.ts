@@ -242,6 +242,26 @@ export interface BoutiqueResponse {
   // client groups by day_of_week; see lib/hoursText.ts.
   hours: HoursRow[];
   exceptions: ExceptionRow[];
+  // F20's three statutory documents, already resolved server-side: a boutique's
+  // override where she wrote one, the platform Hebrew where she did not.
+  //
+  // ⚠ NO NEW ENDPOINT, and that is a decision rather than an omission. They ride
+  // this response because `/privacy` and the booking form's `details` step render
+  // the SAME `privacy_notice_text` — one fetch, one string, so a boutique that
+  // edited her notice cannot end up with two versions of it on two surfaces. The
+  // cost is ~6.8 KB of Hebrew on every storefront first paint, against a catalogue
+  // page that ships dress imagery.
+  //
+  // ⚠ EACH MAY CONTAIN `{{boutique}}`, unsubstituted. The server ships the raw
+  // text; `lib/privacyText.ts` is the only place that fills it in.
+  privacy_notice_text: string;
+  // The processor clause. Overridable, like the notice.
+  privacy_dpa_text: string;
+  // The sub-processor list. Platform-owned and structurally un-overridable
+  // (Gate 1 Q3): `resolve_privacy` never reads it out of the tenant blob, so a
+  // boutique may rewrite what she PROMISES about processing and may not misstate
+  // WHO the processors are.
+  privacy_subprocessors_text: string;
 }
 
 // --- booking wire types (mirror backend/app/storefront/schemas.py,
@@ -292,6 +312,11 @@ export interface BookingCreateRequest {
   dress_id: string | null;
   dress_size: string | null;
   notes: string | null;
+  // F20 / Communications Law §30A. REQUIRED on the wire even though the server
+  // defaults it to `false`: an optional field is one a later refactor can drop
+  // silently, and the value being sent on every booking is what makes «the box
+  // is not pre-ticked» a property of the request rather than of a comment.
+  marketing_consent: boolean;
 }
 
 export interface BookingCreateResponse {

@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Text, text
+from sqlalchemy import TIMESTAMP, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -24,3 +25,18 @@ class Customer(StandardColumns, Base):
     tags: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")
     )
+    # Privacy consent and erasure (0024). All four nullable with NO default, and
+    # that is the design: consent is the PRESENCE of a timestamp, so NULL is the
+    # only spelling of "no consent on record" and a default would make the absent
+    # state unreachable. Effective marketing consent is
+    # `marketing_consent_at IS NOT NULL AND marketing_consent_withdrawn_at IS NULL`
+    # — withdrawal is additive, because clearing the consent stamp would destroy
+    # the Spam-Law evidence that consent existed when a message was sent.
+    marketing_consent_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    marketing_consent_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    marketing_consent_withdrawn_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    erased_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)

@@ -5,6 +5,7 @@ import type { BoutiqueResponse, DressListResponse, StorefrontDress } from "../ap
 import i18n from "../i18n";
 import { StorefrontLayout } from "../components/StorefrontLayout";
 import { CatalogPage } from "../routes/CatalogPage";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // Spread the real module so ApiError, errorMessage* and isNotFound keep their
 // real implementations — the error copy under test is chosen by CODE mapping,
@@ -54,6 +55,7 @@ function boutique(overrides: Partial<BoutiqueResponse> = {}): BoutiqueResponse {
     instagram: "alma.bridal",
     hours: OPEN_ALL_WEEK,
     exceptions: [],
+    ...PRIVACY_FIXTURE,
     ...overrides,
   };
 }

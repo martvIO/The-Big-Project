@@ -21,6 +21,7 @@ anything a caller controls.
 """
 
 import asyncio
+import datetime
 import logging
 
 from app.booking.comms import BookingCommsService, CommsTenant, DrainResult
@@ -33,6 +34,7 @@ from app.notifications.service import NotificationService
 from app.notifications.twilio import TwilioSmsSender
 from app.notifications.unconfigured import UnconfiguredSmsSender
 from app.payments.sweeper import DepositSweeper, SweepResult
+from app.privacy.retention import RetentionRunner
 
 logger = logging.getLogger("worker")
 
@@ -127,6 +129,50 @@ async def poll_once(
     return totals
 
 
+async def retention_tick(
+    runner: RetentionRunner,
+    *,
+    now: datetime.datetime,
+    next_at: datetime.datetime,
+    enabled: bool,
+    interval_seconds: int,
+) -> datetime.datetime:
+    """The THIRD job, and the one comparison that separates its hourly cadence
+    from the poller's 60-second one. Returns the next deadline — unchanged when
+    it did not fire, so `main()`'s loop is one reassignment.
+
+    It is its own function rather than a branch inside `poll_once` because
+    `poll_once` is per-TICK and this is per-HOUR, and because `main()` is a bare
+    `while True:` that no test can drive: a cadence assertion written against it
+    would have to mock `asyncio.sleep` around an infinite loop, which is a hang
+    rather than a test.
+
+    Its own try block, exactly as the drain and the sweep have theirs (D7). An
+    exception escaping here kills the process loop and takes every boutique's
+    reminders AND the deposit-hold sweeper with it — retention is the least
+    urgent of the three and must never be the one that stops them.
+
+    The deadline advances even on failure. A permanently failing run that kept
+    its deadline in the past would re-enter on every 60-second poll instead of
+    hourly, turning one broken tenant into a hot loop against the database.
+    """
+    if not enabled or now < next_at:
+        return next_at
+    try:
+        result = await runner.run()
+    except Exception:
+        logger.exception("retention run failed")
+    else:
+        if result.rows or result.failed_tenants:
+            logger.info(
+                "retention: tenants=%d failed=%d rows=%s",
+                result.tenants,
+                result.failed_tenants,
+                result.rows,
+            )
+    return now + datetime.timedelta(seconds=interval_seconds)
+
+
 async def main() -> None:
     settings = get_settings()
     # The same fail-fast as the web app and the CLI. The worker keeps the
@@ -148,12 +194,27 @@ async def main() -> None:
         hold_seconds=settings.deposit_hold_seconds,
         poll_interval_seconds=settings.worker_poll_interval_seconds,
     )
+    retention = RetentionRunner(factory, settings=settings)
+    # Due immediately, so an operator who flips RETENTION_ENABLED does not wait
+    # an hour to see the first run. With the flag off (the shipped default) this
+    # deadline is never read.
+    next_retention_at = datetime.datetime.now(datetime.UTC)
     logger.info(
-        "worker started — scheduled-message poller and deposit-hold sweeper every %ds",
+        "worker started — scheduled-message poller and deposit-hold sweeper every %ds; "
+        "retention %s, every %ds",
         settings.worker_poll_interval_seconds,
+        "ENABLED" if settings.retention_enabled else "disabled",
+        settings.retention_poll_interval_seconds,
     )
     while True:
         await poll_once(comms, tenants, sweeper)
+        next_retention_at = await retention_tick(
+            retention,
+            now=datetime.datetime.now(datetime.UTC),
+            next_at=next_retention_at,
+            enabled=settings.retention_enabled,
+            interval_seconds=settings.retention_poll_interval_seconds,
+        )
         await asyncio.sleep(settings.worker_poll_interval_seconds)
 
 

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.customers.validation import phone_search_term
+from app.models.constants import MarketingConsentSource
 from app.models.customer import Customer
 
 
@@ -180,6 +181,78 @@ class CustomersRepository:
         if (await session.execute(stmt)).scalar_one_or_none() is None:
             return None
         return await self.by_id(session, tenant_id, customer_id)
+
+    async def record_marketing_consent(
+        self, session: AsyncSession, tenant_id: UUID, customer_id: UUID
+    ) -> bool:
+        """Stamp the Spam-Law consent, ONCE. Returns whether this call stamped it.
+
+        `AND marketing_consent_at IS NULL` lives in the WHERE rather than in a
+        Python `if`: two bookings for the same customer racing through
+        `create_booking` would both read NULL and both write, and the later
+        write would move the timestamp. Here the second statement simply matches
+        nothing.
+
+        Not folded into `upsert` (D20). `upsert` runs on every booking and its
+        job is attach-or-create; a consent write hidden inside it would fire on
+        a request whose checkbox was never ticked the moment somebody reorders
+        the arguments. And the ABSENCE of this call is the whole semantics of an
+        unticked box: an empty checkbox on a later booking is not a withdrawal,
+        so the caller does not issue the statement at all rather than issuing a
+        clearing one.
+        """
+        stmt = (
+            update(Customer)
+            .where(
+                Customer.tenant_id == tenant_id,
+                Customer.id == customer_id,
+                Customer.deleted_at.is_(None),
+                Customer.marketing_consent_at.is_(None),
+            )
+            .values(
+                marketing_consent_at=func.now(),
+                marketing_consent_source=MarketingConsentSource.BOOKING_FORM.value,
+            )
+            .returning(Customer.id)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+    async def withdraw_marketing_consent(
+        self, session: AsyncSession, tenant_id: UUID, customer_id: UUID
+    ) -> bool:
+        """§30A withdrawal, ADDITIVE. Returns whether this call withdrew it.
+
+        `marketing_consent_at` is deliberately NOT cleared: it is the evidence
+        that the sends made before this instant were lawful, and destroying it
+        would leave the boutique unable to answer for messages it was entitled
+        to send. Effective consent is
+        `marketing_consent_at IS NOT NULL AND marketing_consent_withdrawn_at IS NULL`.
+
+        BOTH guards are load-bearing and neither is defensive style:
+
+        * `marketing_consent_at IS NOT NULL` is what keeps
+          `customers_marketing_withdraw_check` UNREACHABLE. That constraint
+          REJECTS a withdrawal stamp on a row that never consented — it does not
+          quietly ignore it — and a NULL consent is the majority case, so
+          dropping this leg makes the route raise IntegrityError for most
+          subjects while a test seeded with a consenting one stays green (D15).
+        * `marketing_consent_withdrawn_at IS NULL` makes the repeat a no-op: the
+          withdrawal instant is evidence too, and a double-tap must not misdate
+          when the boutique stopped being allowed to send.
+        """
+        stmt = (
+            update(Customer)
+            .where(
+                Customer.tenant_id == tenant_id,
+                Customer.id == customer_id,
+                Customer.deleted_at.is_(None),
+                Customer.marketing_consent_at.is_not(None),
+                Customer.marketing_consent_withdrawn_at.is_(None),
+            )
+            .values(marketing_consent_withdrawn_at=func.now())
+            .returning(Customer.id)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none() is not None
 
     async def upsert(
         self, session: AsyncSession, tenant_id: UUID, *, phone: str, name: str

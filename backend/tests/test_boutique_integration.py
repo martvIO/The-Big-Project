@@ -135,3 +135,35 @@ async def test_owner_configures_boutique_end_to_end(app_role_url: str) -> None:
         assert history.versions[0].created_by == staff.id
     finally:
         await engine.dispose()
+
+
+async def test_list_all_reaches_the_tenants_list_active_hides(app_role_url: str) -> None:
+    """D21. `list_active()` filters `deleted_at IS NULL AND status = 'active'`,
+    and BOTH excluded states are operator-invoked (`suspend`, `soft_delete` are
+    shipped CLI commands). Pinning the retention runner to that enumeration would
+    mean a boutique suspended for non-payment, or churned and off-boarded, keeps
+    every bride's name, phone, notes and SMS body FOREVER with no clock ever
+    applied — which makes "nothing is ever deleted" permanently true for exactly
+    the boutiques most likely to hold abandoned data.
+
+    The poller keeps `list_active()`, where skipping a suspended tenant is right:
+    a suspended boutique should not be texting.
+    """
+    engine = create_async_engine(app_role_url, poolclass=NullPool)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        tenants = TenantsRepository(factory)
+        live = await tenants.insert(slug=f"live-{uuid.uuid4().hex[:8]}", name="Live")
+        suspended = await tenants.insert(slug=f"susp-{uuid.uuid4().hex[:8]}", name="Suspended")
+        deleted = await tenants.insert(slug=f"gone-{uuid.uuid4().hex[:8]}", name="Off-boarded")
+        assert await tenants.suspend(suspended.id) is True
+        assert await tenants.soft_delete(deleted.id) is True
+
+        active_ids = {t.id for t in await tenants.list_active()}
+        all_ids = {t.id for t in await tenants.list_all()}
+
+        assert suspended.id not in active_ids
+        assert deleted.id not in active_ids
+        assert {live.id, suspended.id, deleted.id} <= all_ids
+    finally:
+        await engine.dispose()
