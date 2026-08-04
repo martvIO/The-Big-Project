@@ -601,8 +601,10 @@ export interface RaisedAlert {
 }
 
 // Every field optional and all three defaults are the ORDINARY case.
-// `target_staff_user_id: null` is the shift-manager ROLE — the route whose
-// audience can never be empty, and what a staffer alone with a bride taps.
+// `target_staff_user_id: null` is the shift-manager ROLE — the FALLBACK route,
+// and what a staffer alone with a bride taps. It is not probed for reachability
+// and its audience CAN be empty (spec Risk 3(a)): the last-owner invariant
+// guarantees an owner ROW exists, not that anyone is signed in.
 //
 // ⚠ There is deliberately no `raised_by`. The acting identity is the session
 // cookie and nothing on this body may stand in for it: nobody raises a page as

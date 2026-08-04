@@ -69,7 +69,11 @@ export function SosCentre({
     name: string | null;
   } | null>(null);
   const rowAlertRef = useRef<HTMLParagraphElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const actedRef = useRef<string | null>(null);
+  // MOVE I's intent. Set only on the SUCCESS path, consumed by exactly one
+  // effect run, and gated there on «nothing else holds focus» — see the effect.
+  const [restoreId, setRestoreId] = useState<string | null>(null);
   // ⚠ THE CUE IS FIRED FROM AN EFFECT AND NOT FROM THE HANDLER, and the reason
   // is a real hole rather than style. The provider's `mutate` returns `null` on
   // a SUCCESS **and** on a terminal 401/403 — «both mean the caller has nothing
@@ -211,8 +215,47 @@ export function SosCentre({
       refuse(alert, failure, cancelling);
       return;
     }
+    setRestoreId(alert.id);
     setPendingCue(cueKey);
   };
+
+  useEffect(() => {
+    // MOVE I — the SUCCESS path, which DC-7 left with no owner at all. `Button`
+    // is disabled={disabled||loading}, so a real browser blurred the tapped
+    // control to <body> the instant the request started; then the success
+    // removes it — `mayAccept` flips false, or resolve/cancel take the whole row
+    // — and nothing brings focus back. Her next Tab restarts at the top of the
+    // document, with the only feedback written into `FloorPanel`'s role="status"
+    // region she is not in.
+    //
+    // ⚠ THE GUARD IS THE STEAL DIRECTION and is the same two-engine condition
+    // MOVE H carries: a real browser has dropped to <body>, jsdom leaves focus
+    // on the disabled control inside the row. Anything else means she moved on
+    // while the request was in the air, and a landing response must not pull her
+    // out of wherever she went.
+    if (restoreId === null) {
+      return;
+    }
+    setRestoreId(null);
+    const active = document.activeElement;
+    const inside =
+      active instanceof Element &&
+      active.closest("[data-alert-id]")?.getAttribute("data-alert-id") ===
+        restoreId;
+    if (active !== document.body && !inside) {
+      return;
+    }
+    // The row's remaining control when the row survived (accept → resolve and
+    // cancel are still there), the panel's own heading when it did not.
+    const remaining = document.querySelector(
+      `[data-alert-id="${restoreId}"] button`,
+    );
+    if (remaining instanceof HTMLElement) {
+      remaining.focus();
+      return;
+    }
+    headingRef.current?.focus();
+  }, [restoreId]);
 
   useEffect(() => {
     if (pendingCue === null) {
@@ -227,7 +270,14 @@ export function SosCentre({
 
   const heading = (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <h3 className="text-base font-semibold text-ink">
+      {/* ⚠ `tabIndex={-1}` and a ref because MOVE I's fallback lands here when
+          the row she acted on has gone. Deck §8 specified this row and the build
+          dropped it. */}
+      <h3
+        ref={headingRef}
+        tabIndex={-1}
+        className="text-base font-semibold text-ink"
+      >
         {t("sos.centreHeading")}
       </h3>
       {/* ⚠ ALL FIVE ROLES, ALWAYS. Unlike every other control in this program it
@@ -274,8 +324,18 @@ export function SosCentre({
             // whole floor screen, and for the three floor roles that is the
             // entire product going dark. No disabled buttons, no lock glyphs —
             // absence.
+            // ⚠ THE `raised_by` TERM MIRRORS THE SERVER AND IS NOT COSMETIC
+            // HERE. The elevated branch had no exclusion on either side, so an
+            // owner's own page rendered «אני מגיעה» first — and one tap flipped
+            // `status` to accepted, which short-circuits `_escalated` and makes
+            // `_for_me` return `stalled and elevated`: False for the raiser at
+            // every t. The overlay dropped on every device in the boutique for
+            // the two minutes `_stalled` takes, and never came back at all if
+            // she was the only elevated staffer signed in.
             const mayAccept =
-              open && (alert.target_staff_user_id === selfId || elevated);
+              open &&
+              alert.raised_by !== selfId &&
+              (alert.target_staff_user_id === selfId || elevated);
             const mayResolve =
               alert.raised_by === selfId ||
               alert.accepted_by === selfId ||

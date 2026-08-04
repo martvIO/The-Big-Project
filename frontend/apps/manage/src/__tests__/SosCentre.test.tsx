@@ -135,6 +135,24 @@ async function advance(ms: number) {
   });
 }
 
+/**
+ * ⚠ THE ONLY WAY TO REACH `<body>` IN jsdom ONCE A CONTROL IS `disabled`.
+ *
+ * `Button` is `disabled={disabled || loading}`, so Chromium blurs the tapped
+ * control the instant the request starts. jsdom does not — and
+ * `HTMLElement.blur()` BAILS OUT on an element that is not a focusable area, so
+ * the `control.blur()` MOVE H's tests use is a NO-OP on a disabled control. A
+ * scratch node outside React's tree is focusable, so blurring THAT really does
+ * land on `<body>` and reproduces the browser's precondition.
+ */
+function dropFocusToBody() {
+  const scratch = document.createElement("button");
+  document.body.appendChild(scratch);
+  scratch.focus();
+  scratch.blur();
+  scratch.remove();
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(NOW));
@@ -316,6 +334,33 @@ describe("AC21 — absence, never a disabled control", () => {
     expect(
       within(item).getByRole("button", { name: /אני מגיעה/ }),
     ).toBeInTheDocument();
+    expect(
+      within(item).getByRole("button", { name: /נפתר/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(item).getByRole("button", { name: /ביטול הקריאה/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("gives an OWNER NO accept on the page SHE raised — resolve and cancel only", async () => {
+    // ⚠ THE ELEVATED BRANCH HAD NO `raised_by` TERM, server or client. An owner
+    // alone in fitting room 2 raises to the shift-manager ROLE — the dialog's
+    // first and DEFAULT option — and her own row renders «אני מגיעה» first. One
+    // tap: `_escalated` short-circuits on `status != OPEN` so the alert stops
+    // escalating forever, and `_for_me`'s accepted branch returns
+    // `stalled and elevated`, which is False for the raiser at every t. The
+    // overlay drops on every device for the two minutes `_stalled` takes, and if
+    // she is the only elevated staffer signed in it never rises again at all.
+    getSos.mockResolvedValue(
+      sosPage([alertRow({ raised_by: SELF_ID, raised_by_name: "רותם המנהלת" })]),
+    );
+    mount();
+    await screen.findByText("רותם המנהלת");
+
+    const item = row(ALERT_A);
+    expect(
+      within(item).queryByRole("button", { name: /אני מגיעה/ }),
+    ).toBeNull();
     expect(
       within(item).getByRole("button", { name: /נפתר/ }),
     ).toBeInTheDocument();
@@ -610,6 +655,124 @@ describe("MOVE H — SosCentre owns its own error state, ref and focus rule", ()
     await waitFor(() =>
       expect(row(ALERT_A)).toHaveTextContent("הקריאה כבר לא פתוחה."),
     );
+
+    expect(document.activeElement).toBe(elsewhere);
+  });
+});
+
+// --- MOVE I: the SUCCESS path had no focus owner at all ------------------------
+
+describe("MOVE I — a SUCCESSFUL action restores focus instead of dropping it on <body>", () => {
+  it("a resolve that removes the row lands on the SOS-centre heading, never <body>", async () => {
+    // ⚠ DC-7 gave `SosCentre` its own FAILURE-path pair (MOVE H) and left the
+    // SUCCESS path with no owner: `grep '\.focus()'` returned exactly one hit,
+    // inside `rowError !== null`. `FloorPanel`'s three restores cannot cover an
+    // SOS row — `restoreFocusRef` is only ever set inside `toggle`, the
+    // `cardError` reclaim keys on a state that never transitions here, and
+    // `focusHeadingRef` reads `[data-staff-id]`. So a keyboard user tapping
+    // «נפתר» got: control goes `disabled` → browser blurs to <body> → the row
+    // unmounts → nothing restores → her next Tab restarts at the top of the
+    // document, with the only feedback written into a region she is not in.
+    getSos.mockResolvedValue(sosPage([alertRow()]));
+    mount();
+    await screen.findByText("דנה כהן");
+    const control = within(row(ALERT_A)).getByRole("button", { name: /נפתר/ });
+    control.focus();
+    let land: (alert: SosAlert) => void = () => {};
+    resolveSos.mockReturnValue(
+      new Promise<SosAlert>((resolve) => {
+        land = resolve;
+      }),
+    );
+
+    fireEvent.click(control);
+    dropFocusToBody();
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => {
+      land(alertRow({ status: "resolved" }));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(rows()).toHaveLength(0));
+
+    // ⚠ `waitFor`: the row leaving and MOVE I running are two different moments,
+    // and a bare assertion here is the shape that flaked three focus tests in
+    // this suite. NOT vacuous — delete the intent and focus stays on `<body>`.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { level: 3, name: "קריאות עזרה" }),
+      ),
+    );
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("an accept that removes only the tapped control lands on the row's remaining control", async () => {
+    getSos.mockResolvedValue(sosPage([alertRow()]));
+    mount();
+    await screen.findByText("דנה כהן");
+    const control = within(row(ALERT_A)).getByRole("button", {
+      name: /אני מגיעה/,
+    });
+    control.focus();
+    let land: (alert: SosAlert) => void = () => {};
+    acceptSos.mockReturnValue(
+      new Promise<SosAlert>((resolve) => {
+        land = resolve;
+      }),
+    );
+
+    fireEvent.click(control);
+    dropFocusToBody();
+
+    await act(async () => {
+      land(alertRow({ status: "accepted", accepted_by_name: "רותם" }));
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(
+        within(row(ALERT_A)).queryByRole("button", { name: /אני מגיעה/ }),
+      ).toBeNull(),
+    );
+
+    await waitFor(() =>
+      expect(
+        (document.activeElement as HTMLElement).closest("[data-alert-id]"),
+      ).toBe(row(ALERT_A)),
+    );
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("the STEAL direction — it does NOT pull her out of a control she moved to", async () => {
+    // The other half of F41's lesson: the first fix for a dropped focus shipped
+    // a focus STEAL. Delete the `active === document.body || inside` guard and
+    // this reds.
+    getSos.mockResolvedValue(sosPage([alertRow()]));
+    mount();
+    await screen.findByText("דנה כהן");
+    const control = within(row(ALERT_A)).getByRole("button", { name: /נפתר/ });
+    control.focus();
+    let land: (alert: SosAlert) => void = () => {};
+    resolveSos.mockReturnValue(
+      new Promise<SosAlert>((resolve) => {
+        land = resolve;
+      }),
+    );
+
+    fireEvent.click(control);
+    const elsewhere = screen.getAllByRole("button", {
+      name: /להפסקה/,
+    })[0] as HTMLElement;
+    elsewhere.focus();
+
+    await act(async () => {
+      land(alertRow({ status: "resolved" }));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(rows()).toHaveLength(0));
+    // …and settle, so a steal firing one flush LATE is caught rather than raced.
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     expect(document.activeElement).toBe(elsewhere);
   });

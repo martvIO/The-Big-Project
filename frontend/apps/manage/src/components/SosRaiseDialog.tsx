@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Input, Modal, Select } from "@boutique/ui";
 import type { StaffCard } from "../api";
@@ -47,6 +47,7 @@ export function SosRaiseDialog({
   const [rerouted, setRerouted] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
+  const reroutedId = useId();
   const ackRef = useRef<HTMLButtonElement>(null);
   const sendRef = useRef<HTMLButtonElement>(null);
   const alertRef = useRef<HTMLParagraphElement>(null);
@@ -129,8 +130,11 @@ export function SosRaiseDialog({
           value={target}
           onChange={(event) => setTarget(event.target.value)}
         >
-          {/* FIRST and DEFAULT: `value=""` is the shift-manager ROLE, the one
-              route whose audience can never be empty. */}
+          {/* FIRST and DEFAULT: `value=""` is the shift-manager ROLE — the
+              FALLBACK route, which is why it needs no thought under pressure.
+              ⚠ It is NOT probed for reachability the way a named target is, and
+              its audience CAN be empty: the last-owner invariant proves an owner
+              ROW exists, not that she is signed in (spec Risk 3(a)). */}
           <option value="">{t("sos.targetManager")}</option>
           {staff
             // ⚠ HERSELF EXCLUDED. The server refuses a self-target with a 400,
@@ -167,7 +171,19 @@ export function SosRaiseDialog({
         )}
       </div>
     ) : (
-      <p>{isolateBidi(t("sos.rerouted", { name: rerouted }), rerouted)}</p>
+      // ⚠ role="status" AND an aria-describedby on «הבנתי», because the one
+      // message the ruling mandates was previously announced to NOBODY: a bare
+      // <p>, no live region, and `Modal` sets only aria-labelledby (no
+      // aria-describedby), so the swapped body was not the dialog's accessible
+      // description either — while MOVE E moved focus to a button whose entire
+      // label is «הבנתי». A blind raiser heard «הבנתי, לחצן» and nothing about
+      // Dana, and `rerouted` is a fact about the REQUEST (D10) so no SosCentre
+      // row can ever tell her afterwards. Two mechanisms because either alone is
+      // engine-dependent: the live region covers the swap, the description
+      // survives the focus move that could preempt it.
+      <p id={reroutedId} role="status">
+        {isolateBidi(t("sos.rerouted", { name: rerouted }), rerouted)}
+      </p>
     );
 
   return (
@@ -200,6 +216,7 @@ export function SosRaiseDialog({
             variant="secondary"
             size="md"
             fullWidthMobile={false}
+            aria-describedby={reroutedId}
             onClick={onClose}
           >
             {t("sos.reroutedAck")}

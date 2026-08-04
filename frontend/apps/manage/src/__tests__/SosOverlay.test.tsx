@@ -121,6 +121,43 @@ async function settle() {
   });
 }
 
+/**
+ * ⚠ THE ONLY WAY TO REACH `<body>` IN jsdom AFTER A CONTROL GOES `disabled`.
+ *
+ * `Button` is `disabled={disabled || loading}`, so Chromium blurs the tapped
+ * control the instant the request starts and `document.activeElement` becomes
+ * `<body>` BEFORE the response lands. jsdom does neither half of that: it does
+ * not blur on disable, and `HTMLElement.blur()` BAILS OUT on an element that is
+ * not a focusable area — a disabled button is not one — so the `control.blur()`
+ * this file uses elsewhere is a NO-OP on a disabled control and any test that
+ * relies on it to produce `<body>` is vacuous. Measured, not assumed: an earlier
+ * draft asserted `activeElement === document.body` straight after
+ * `accept.blur()` and FAILED with activeElement still the disabled button.
+ *
+ * A scratch node outside React's tree is focusable, so blurring THAT really does
+ * land on `<body>`.
+ */
+function dropFocusToBody() {
+  const scratch = document.createElement("button");
+  document.body.appendChild(scratch);
+  scratch.focus();
+  scratch.blur();
+  scratch.remove();
+}
+
+function deferAccept(): (alert: SosAlert) => void {
+  let settleAccept: (alert: SosAlert) => void = () => {};
+  acceptSos.mockReturnValue(
+    new Promise<SosAlert>((resolve) => {
+      settleAccept = resolve;
+    }),
+  );
+  return (alert) => settleAccept(alert);
+}
+
+const ACCEPTED = () =>
+  alertRow({ status: "accepted", accepted_by_name: "רותם", for_me: false });
+
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(NOW));
@@ -415,6 +452,13 @@ describe("AC14 — the overlay does not steal focus, in all three branches", () 
     getSos.mockResolvedValue(page([alertRow()]));
     mount();
     await screen.findByText("דנה כהן");
+    // ⚠ WAIT FOR MOVE A TO HAVE LANDED BEFORE BLURRING. `findByText` waits for
+    // DOM TEXT; MOVE A happens in a passive effect that may not have flushed
+    // yet, and blurring `<body>` is a no-op — so under load the precondition
+    // silently failed to hold, MOVE A then fired on the FIRST card, and this
+    // test reddened with «expected <article> to be <body>». Measured: 2 failures
+    // in 10 `make fe-test` runs on the unmodified tree.
+    await waitFor(() => expect(document.activeElement).toBe(card(ALERT_A)));
     (document.activeElement as HTMLElement | null)?.blur();
     expect(document.activeElement).toBe(document.body);
 
@@ -541,7 +585,13 @@ describe("AC15 — MOVE B, MOVE C and MOVE D", () => {
     );
 
     const alerts = within(card(ALERT_A)).getAllByRole("alert");
-    expect(document.activeElement).toBe(alerts[alerts.length - 1]);
+    // ⚠ `waitFor`, for the reason above: the text landing and MOVE D running are
+    // two different moments. NOT vacuous — delete the effect and focus stays on
+    // the (still-focused, because jsdom does not blur it) accept control, so this
+    // times out and reds.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(alerts[alerts.length - 1]),
+    );
   });
 
   it("MOVE D's guard — a 409 landing while she types BEHIND the overlay does not pull her out", async () => {
@@ -573,6 +623,106 @@ describe("AC15 — MOVE B, MOVE C and MOVE D", () => {
     await waitFor(() =>
       expect(card(ALERT_A)).toHaveTextContent("נועה לוי כבר מגיעה."),
     );
+
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("0509999999");
+  });
+});
+
+// --- MOVE B and MOVE C on the path that actually happens: a SUCCESSFUL accept -
+
+describe("MOVE B and MOVE C after a SUCCESSFUL accept — the path a real browser takes", () => {
+  it("MOVE B — an accept that empties the overlay lands on #console-main, never <body>", async () => {
+    // ⚠ THE ONLY MOVE B/C TESTS THIS FILE HAD DROVE «הסתרה», which is a
+    // synchronous ghost Button that is NEVER `disabled` — so focus genuinely
+    // stays on it in BOTH engines, the intent is captured, and the tests pass
+    // over a path Chromium never takes. On the real path the tapped control goes
+    // `disabled` mid-flight, the browser blurs it to <body>, and the render that
+    // drops the card reads <body>: `focusedCardId()` is null, so the departing
+    // intent was never set and MOVE B never ran. Spec AC15 says «Never <body>».
+    getSos.mockResolvedValue(page([alertRow()]));
+    mount();
+    await screen.findByText("דנה כהן");
+    const accept = acceptControl(ALERT_A);
+    accept.focus();
+    const land = deferAccept();
+
+    fireEvent.click(accept);
+    expect(accept).toBeDisabled();
+    dropFocusToBody();
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => {
+      land(ACCEPTED());
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(cards()).toHaveLength(0));
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        document.getElementById("console-main"),
+      ),
+    );
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("MOVE C — an accept with a sibling emergency still up lands on the NEXT CARD'S CONTAINER", async () => {
+    getSos.mockResolvedValue(
+      page([
+        alertRow(),
+        alertRow({
+          id: ALERT_B,
+          created_at: LATER_AT,
+          raised_by_name: "נועה לוי",
+        }),
+      ]),
+    );
+    mount();
+    await screen.findByText("נועה לוי");
+    const accept = acceptControl(ALERT_A);
+    accept.focus();
+    const land = deferAccept();
+
+    fireEvent.click(accept);
+    dropFocusToBody();
+
+    await act(async () => {
+      land(ACCEPTED());
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(cards()).toHaveLength(1));
+
+    await waitFor(() => expect(document.activeElement).toBe(card(ALERT_B)));
+    expect(document.activeElement?.tagName).toBe("ARTICLE");
+  });
+
+  it("the STEAL direction — an accept settling while she has moved on does NOT yank her back", async () => {
+    // ⚠ F41's post-mortem, applied. Its first fix stopped focus being dropped
+    // and introduced a focus STEAL instead. The fallback that makes MOVE B fire
+    // is «she acted on this card AND nothing holds focus»; drop the second
+    // conjunct — `focusedCardId() ?? actedRef.current` — and this reds, because
+    // `actedRef` is still her card and the guard above it cannot tell the
+    // difference.
+    getSos.mockResolvedValue(page([alertRow()]));
+    mount();
+    await screen.findByText("דנה כהן");
+    const accept = acceptControl(ALERT_A);
+    accept.focus();
+    const land = deferAccept();
+
+    fireEvent.click(accept);
+    // She went back to work while the request was in the air.
+    const field = screen.getByLabelText("טלפון") as HTMLInputElement;
+    field.focus();
+    fireEvent.change(field, { target: { value: "0509999999" } });
+
+    await act(async () => {
+      land(ACCEPTED());
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(cards()).toHaveLength(0));
+    // …and settle, so a steal firing one flush LATE is caught rather than raced.
+    await settle();
 
     expect(document.activeElement).toBe(field);
     expect(field.value).toBe("0509999999");
@@ -651,6 +801,35 @@ describe("AC29 — an action from the overlay confirms through the SHIPPED app-l
 
     const status = await screen.findByRole("status");
     expect(status).toHaveTextContent("הקריאה התקבלה.");
+  });
+
+  it("announces NOTHING when the accept was TERMINAL — she does not own what she was refused", async () => {
+    // ⚠ `mutate` returns `null` on a SUCCESS **and** on a terminal 401/403 —
+    // «both mean the caller has nothing left to render» — and `poll.fail`
+    // classifies every 403 as terminal. A cue fired on `failure === null` tells
+    // a responder she owns an emergency the server just refused her, with the
+    // channel-down strip rendering beside it and the card still open and
+    // unowned. `SosCentre` guards exactly this (`pendingCue` + the terminal
+    // check); the overlay — the surface that exists so an emergency is not
+    // silently lost — did not. Reachable through CsrfOriginMiddleware's
+    // CSRF_ORIGIN_MISMATCH on the mutating verb.
+    getSos.mockResolvedValue(page([alertRow()]));
+    mount();
+    await screen.findByText("דנה כהן");
+    acceptSos.mockRejectedValue(new ApiError(403, "FORBIDDEN", "nope"));
+
+    fireEvent.click(acceptControl(ALERT_A));
+    await screen.findByText("ערוץ הקריאות אינו פעיל.");
+    await settle();
+
+    const announced = screen
+      .queryAllByRole("status")
+      .map((node) => node.textContent ?? "")
+      .join(" | ");
+    expect(announced).not.toContain("הקריאה התקבלה.");
+    // The alert really is still open and unowned — the screen must not
+    // contradict itself.
+    expect(cards()).toHaveLength(1);
   });
 
   it("says «הוסתרה» and not «נסגרה» after a dismiss, because the alert is untouched on the server", async () => {
@@ -830,6 +1009,46 @@ describe("AC28 — a dismissal is never permanent", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: /קריאות עזרה/ })).toBeNull(),
     );
+  });
+});
+
+// --- the bottom container is not a tap-swallowing band -----------------------
+
+describe("the bottom container swallows nothing", () => {
+  it("is pointer-events-none, with the two controls inside it opted back in", async () => {
+    // ⚠ MEASURED IN CHROMIUM, NOT REASONED ABOUT: with the affordance alone
+    // rendered, `fixed inset-x-0 bottom-0 … p-4` is an INVISIBLE full-viewport
+    // band 76px tall (p-4 + the Button's min-h-11) at z-40, on all thirteen
+    // sections, for as long as any dismissed alert stays live. A real click at
+    // the centre of a console button in the bottom 76px reached the band and
+    // never the button. `packages/ui/src/components/Toast.tsx:40` is the shipped
+    // shape for exactly this and it is `pointer-events-none fixed …`.
+    //
+    // jsdom does no hit testing, so this pins the class contract Chromium's hit
+    // testing follows; `e2e/sos.spec.ts` measures the real click.
+    getSos.mockResolvedValue(page([alertRow()]));
+    mount();
+    await screen.findByText("דנה כהן");
+    fireEvent.click(
+      within(card(ALERT_A)).getByRole("button", { name: /הסתרה/ }),
+    );
+
+    const reopen = await screen.findByRole("button", {
+      name: /קריאות עזרה/,
+    });
+    const band = reopen.parentElement as HTMLElement;
+    expect(band.className).toContain("fixed");
+    expect(band).toHaveClass("pointer-events-none");
+    expect(reopen).toHaveClass("pointer-events-auto");
+  });
+
+  it("opts the channel-down strip back in too", async () => {
+    getSos.mockRejectedValue(new ApiError(403, "FORBIDDEN", "nope"));
+    mount();
+    const strip = await screen.findByText("ערוץ הקריאות אינו פעיל.");
+    const box = strip.parentElement as HTMLElement;
+    expect(box).toHaveClass("pointer-events-auto");
+    expect(box.parentElement).toHaveClass("pointer-events-none");
   });
 });
 

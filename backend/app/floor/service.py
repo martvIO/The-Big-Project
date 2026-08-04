@@ -968,12 +968,31 @@ class FloorService:
             # rerouted to the shift manager IN THE DATA and not merely in the UI
             # — and the raiser is TOLD SO. The raise does not fail.
             #
-            # Why the role audience can never be empty: a NULL target routes to
-            # ELEVATED_ROLES = {owner, shift_manager}, and `auth/staff.py` holds
-            # the last-owner invariant ("at least one live owner") under an
-            # advisory lock. So the epic's "with no on-shift staffer in the
-            # requested role" is unreachable for the ROLE target and real only
-            # for a NAMED one — which is exactly why it is discharged here.
+            # ⚠ **THE ROLE ROUTE GETS NO PROBE, AND ITS AUDIENCE CAN BE EMPTY.**
+            # An earlier version of this comment discharged the epic's "no
+            # on-shift staffer in the requested role" by citing `auth/staff.py`'s
+            # last-owner invariant. That invariant reads
+            # `StaffUsersRepository.count_live_owners` — a `staff_users` ROW with
+            # `deleted_at IS NULL` — while reachability three lines below reads
+            # `SessionsRepository.has_live_session`, a `sessions` row that has not
+            # expired. Two meanings of "live" in one paragraph: the invariant
+            # proves an owner EXISTS, never that anyone is signed in. At 21:40
+            # with the owner's twelve-hour session expired and no shift manager
+            # logged in, a role-targeted page is created, `rerouted` is False,
+            # and `_for_me` is True on zero devices.
+            #
+            # Nor does escalation stand in for it here: for a NULL target
+            # `_for_me` already returns True for every elevated caller from t=0,
+            # so the thirty-second net adds no audience the role route did not
+            # already have.
+            #
+            # This is the spec's Risk 3(a), a KNOWN and ACCEPTED ceiling rather
+            # than an oversight — extending the probe to the role audience (a
+            # `SELECT EXISTS` over `sessions` joined to
+            # `staff_users.role IN ('owner','shift_manager')`, plus a distinct
+            # sentence on screen) is named there as the upgrade path and is
+            # deliberately not built in F37. The word "never" does not belong in
+            # this comment and must not come back.
             target_id = target_staff_user_id
             if target_id is not None:
                 target_row = await self._staff.by_id(session, tenant_id, target_id)
@@ -1058,14 +1077,25 @@ class FloorService:
         single-accept test stays green either way, which is why the ordering is
         spelled out rather than left to the reader.
 
-        The raiser may not accept her own page: she has resolve and cancel.
+        ⚠ **The raiser may not accept her own page — INCLUDING AN ELEVATED
+        RAISER, and the `raised_by` term is what makes that true.** The target
+        check alone refused a seamstress and let an owner straight through on the
+        elevated branch, and the damage is not cosmetic: `_escalated`
+        short-circuits on `status != OPEN`, so her own tap stops the alert rising
+        on EVERY device in the boutique for the two minutes `_stalled` takes,
+        while `_for_me`'s accepted branch returns `stalled and elevated` — False
+        for the raiser at every t. An owner alone on the floor silences her own
+        emergency permanently, one tap, with the raise dialog's DEFAULT target.
+        She has resolve and cancel.
         """
         at = self._clock()
         async with tenant_session(self._sessions, tenant_id) as session:
             row = await self._sos.by_id(session, tenant_id, alert_id)
             if row is None or not _visible_to(row, actor=actor):
                 raise DomainNotFoundError("sos_alert")
-            if not (row.target_staff_user_id == actor.id or actor.role in ELEVATED_ROLES):
+            if row.raised_by == actor.id or not (
+                row.target_staff_user_id == actor.id or actor.role in ELEVATED_ROLES
+            ):
                 raise DomainNotFoundError("sos_alert")
             if row.status == SosStatus.ACCEPTED and row.accepted_by == actor.id:
                 return await self._sos_view(session, tenant_id, alert_id, actor=actor, at=at)

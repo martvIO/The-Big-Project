@@ -1516,9 +1516,11 @@ export const he = {
     // she is answering under pressure. «למי לקרוא» and not «נמענת» or «יעד» —
     // system words on the one screen that must read like a person.
     "sos.targetPick": "למי לקרוא",
-    // ⚠ The first option and the DEFAULT. The route whose audience can never be
-    // empty, so it is the one choice a staffer under pressure never has to think
-    // about. The role, not a name, because that is what the column means.
+    // ⚠ The first option and the DEFAULT: the FALLBACK route, so it is the one
+    // choice a staffer under pressure never has to think about. The role, not a
+    // name, because that is what the column means. Its audience is not probed
+    // and can be empty — spec Risk 3(a) — so "never has to think about" is about
+    // the CHOICE and is not a delivery guarantee.
     "sos.targetManager": "מנהלת המשמרת",
     // The Input's LABEL. Four words is what a staffer holding a corset will
     // type, so it asks for a thing and not a sentence: «מה צריך» and not

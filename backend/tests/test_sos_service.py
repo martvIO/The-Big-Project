@@ -595,14 +595,43 @@ async def test_a_refused_accept_is_a_404_and_never_reaches_the_writer(
     assert recorder.audit == []
 
 
+@pytest.mark.parametrize("role", [StaffRole.SEAMSTRESS, *ELEVATED])
 async def test_the_raiser_may_not_accept_her_own_page(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
 ) -> None:
     """She has resolve and cancel. Accepting her own page would put her name on
     the card the boutique reads as «somebody is going», which is the one claim
-    this feature must never make falsely."""
-    actor = _actor(StaffRole.SEAMSTRESS)
+    this feature must never make falsely.
+
+    ⚠ **PARAMETRIZED OVER THE ELEVATED ROLES, AND THAT IS THE WHOLE POINT.** The
+    seamstress row passed on the target check alone; the elevated branch let an
+    owner accept her own page, and the consequence is measured rather than
+    argued: `_escalated` short-circuits on `status != OPEN`, so one tap stopped
+    the alert rising on EVERY device in the boutique for the two minutes
+    `_stalled` takes to fire — and `_for_me`'s accepted branch returns
+    `stalled and elevated`, which is False for the raiser at every t, so if she
+    is the only elevated staffer signed in it never rises again at all.
+
+    ⚠ **404 and not 403**, and the guard sits ABOVE the idempotence branch, so a
+    raiser gets the same byte-identical refusal as any other caller."""
+    actor = _actor(role)
     row = _alert(raised_by=actor.id, target_staff_user_id=None)
+    recorder = _install_accept(monkeypatch, row=row)
+    with pytest.raises(DomainNotFoundError):
+        await _service().accept_sos(TENANT_ID, row.id, actor=actor)
+    assert "accept" not in recorder.order
+    assert recorder.audit == []
+
+
+@pytest.mark.parametrize("role", ELEVATED)
+async def test_an_elevated_raiser_who_named_a_colleague_still_may_not_accept(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    """The same silencing, one route over: she named Dana instead of the role.
+    An ACCEPTED row returns `stalled and elevated` from `_for_me`, so Dana — a
+    seamstress — never gets it back either."""
+    actor = _actor(role)
+    row = _alert(raised_by=actor.id, target_staff_user_id=uuid.uuid4())
     recorder = _install_accept(monkeypatch, row=row)
     with pytest.raises(DomainNotFoundError):
         await _service().accept_sos(TENANT_ID, row.id, actor=actor)

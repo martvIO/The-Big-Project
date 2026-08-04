@@ -577,7 +577,130 @@ test("sos: a rerouted raise keeps the dialog open, tells her so, and focuses the
   await expect(page.getByRole("heading", { level: 2, name: FLOOR_HEADING })).toBeVisible();
 });
 
-// --- 8. the harness's own default, and why it is not optional ---------------
+// --- 8. MOVE B on the path a real browser actually takes --------------------
+
+test("sos: a SUCCESSFUL accept parks focus on #console-main and never on <body>", async ({
+  page,
+}) => {
+  // ⚠ THE UNIT SUITE'S ONLY MOVE B/C TESTS DROVE «הסתרה», which is synchronous
+  // and NEVER `disabled` — so focus genuinely stayed on it in both engines, the
+  // departing intent was captured, and they passed over a path Chromium never
+  // takes. On the real path `loading` → `disabled` blurs the tapped control to
+  // <body> BEFORE the response lands, the render that drops the card reads
+  // <body>, and the intent was never recorded: focus sat on <body> and her next
+  // Tab restarted at the skip link. Spec AC15 says «Never <body>». jsdom cannot
+  // produce the blur on its own — `HTMLElement.blur()` bails on a disabled
+  // element — so this is the only place the fix is measured rather than
+  // simulated.
+  const alerts: Reply[] = [ok(sosPayload([]))];
+  await installManageApi(page, {
+    staff: MANAGER,
+    replies: {
+      "/manage/settings": [SETTINGS],
+      "/manage/floor/sos": alerts,
+      [`${sosPath("sos-1")}/accept`]: [
+        ok(
+          sosAlert({
+            raised_by_name: RONIT,
+            status: "accepted",
+            accepted_by_name: DANA,
+            for_me: false,
+          }),
+        ),
+      ],
+    },
+  });
+
+  // The profile section mounts nothing that polls, so the overlay is the only
+  // F37 surface here and #console-main is the only place MOVE B can land.
+  await gotoProfile(page);
+  retarget(alerts, ok(sosPayload([sosAlert({ raised_by_name: RONIT })])));
+  await expect(page.getByText(calling(RONIT))).toBeVisible({ timeout: 15_000 });
+
+  const accept = page.getByRole("button", { name: acceptAria(RONIT) });
+  await accept.click();
+  await expect(page.getByText(calling(RONIT))).toHaveCount(0);
+
+  // Also keep the server answering «accepted», so the poll does not re-raise it.
+  retarget(
+    alerts,
+    ok(
+      sosPayload([
+        sosAlert({
+          raised_by_name: RONIT,
+          status: "accepted",
+          accepted_by_name: DANA,
+          for_me: false,
+        }),
+      ]),
+    ),
+  );
+
+  await expect(page.locator("#console-main")).toBeFocused();
+  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("MAIN");
+});
+
+// --- 9. the bottom container is a band, and a band that swallows taps -------
+
+test("sos: the re-open affordance's container does not swallow taps across the bottom of the console", async ({
+  page,
+}) => {
+  // ⚠ ONLY A REAL ENGINE ANSWERS THIS: jsdom does no hit testing at all. With
+  // the affordance alone rendered, `fixed inset-x-0 bottom-0 … p-4` is an
+  // INVISIBLE full-viewport band ≈76px tall at z-40, on all thirteen sections,
+  // for as long as any dismissed alert stays live — and the role-targeted page
+  // is the raise dialog's DEFAULT, so that is the common path. A tap on a
+  // console control in the bottom 76px landed on the empty half of the band and
+  // did nothing, with nothing on screen to explain why.
+  const alerts: Reply[] = [ok(sosPayload([]))];
+  await installManageApi(page, {
+    staff: MANAGER,
+    replies: { "/manage/settings": [SETTINGS], "/manage/floor/sos": alerts },
+  });
+
+  await gotoProfile(page);
+  retarget(alerts, ok(sosPayload([sosAlert({ raised_by_name: RONIT })])));
+  await expect(page.getByText(calling(RONIT))).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: dismissAria(RONIT) }).click();
+
+  const affordance = page.getByRole("button", { name: dismissedCount(1) });
+  await expect(affordance).toBeVisible();
+
+  // The band's own geometry, measured rather than assumed: full width, pinned to
+  // the bottom, and taller than a fingertip.
+  const band = affordance.locator("xpath=..");
+  const box = await band.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(Math.round(box?.width ?? 0)).toBe(viewport?.width);
+  expect(box?.height ?? 0).toBeGreaterThan(40);
+
+  // ⚠ THE ASSERTION. `elementFromPoint` at the band's own vertical centre, in
+  // the half of it the affordance does NOT occupy, must reach whatever the
+  // console painted there — never the band. index.html is dir="rtl" so
+  // `items-end` puts the affordance at the LEFT; the dead zone is the right.
+  const y = Math.round((box?.y ?? 0) + (box?.height ?? 0) / 2);
+  const x = Math.round((viewport?.width ?? 0) * 0.85);
+  const hit = await page.evaluate(
+    ([px, py]) => {
+      const node = document.elementFromPoint(px as number, py as number);
+      return node === null
+        ? "none"
+        : `${node.tagName}:${(node as HTMLElement).className}`;
+    },
+    [x, y],
+  );
+  expect(hit).not.toContain("inset-x-0");
+  expect(hit).not.toContain("bottom-0");
+
+  // …and the affordance itself still takes its own clicks, which is the other
+  // direction of the same fix.
+  await affordance.click();
+  await expect(page.getByText(calling(RONIT))).toBeVisible();
+});
+
+// --- 10. the harness's own default, and why it is not optional ---------------
 
 test("sos: an unstubbed section still renders no channel-down strip, because the poll is stubbed by default", async ({
   page,

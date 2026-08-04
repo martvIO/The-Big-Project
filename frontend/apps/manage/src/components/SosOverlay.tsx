@@ -90,6 +90,15 @@ export function SosOverlay() {
     text: string;
     name: string | null;
   } | null>(null);
+  // ⚠ THE CUE IS FIRED FROM AN EFFECT AND NOT FROM THE HANDLER, and `SosCentre`
+  // ships the identical guard for the identical reason. The provider's `mutate`
+  // returns `null` on a SUCCESS **and** on a TERMINAL 401/403 — «both mean the
+  // caller has nothing left to render» — and `poll.fail` classifies every 403 as
+  // terminal. Announced on `failure === null`, a refused accept tells a responder
+  // «הקריאה התקבלה.» while the channel-down strip renders beside it and the alert
+  // is still open and unowned on the server. The provider's `setTerminal` and
+  // this setState batch into ONE render, so `terminal` is the post-action truth.
+  const [pendingCue, setPendingCue] = useState<string | null>(null);
 
   const baseId = useId();
   const cardRefs = useRef(new Map<string, HTMLElement | null>());
@@ -133,7 +142,25 @@ export function SosOverlay() {
   // RoomsPanel.tsx and FloorPanel.load do exactly this, for exactly this reason.
   if (renderedIdsRef.current.join() !== risingIds.join()) {
     const previous = renderedIdsRef.current;
-    const held = focusedCardId();
+    // ⚠ THE SAME TWO-ENGINE CONDITION MOVE D ALREADY CARRIES, and without it the
+    // move was dead on the path Chromium actually takes. A SUCCESSFUL accept
+    // removes the card, and `Button` is disabled={disabled||loading} — so a real
+    // browser blurred the tapped control to <body> long before the response
+    // landed, `focusedCardId()` reads <body>, and the intent was never recorded:
+    // focus sat on <body> and her next Tab restarted at the skip link. `actedRef`
+    // is the fact «she tapped THIS card's control», which is exactly what the DOM
+    // can no longer answer.
+    //
+    // ⚠ THE `document.activeElement === document.body` CONJUNCT IS THE STEAL
+    // GUARD and is not defensive padding. `actedRef` outlives the request, so
+    // `focusedCardId() ?? actedRef.current` would yank a staffer who went back to
+    // work mid-flight out of the field she is typing in — F41's first fix cured
+    // the drop and shipped the steal. The `previous.includes(held)` guard below
+    // is the second half: a stale `actedRef` naming a card that has already gone
+    // can never fire on a later commit.
+    const held =
+      focusedCardId() ??
+      (document.activeElement === document.body ? actedRef.current : null);
     if (held !== null && previous.includes(held) && !risingIds.includes(held)) {
       // MOVE C's destination is the card now occupying the departing card's
       // place — «the next remaining» — falling through to MOVE B when the
@@ -383,8 +410,19 @@ export function SosOverlay() {
     // SosCentre there is no role="status" region at all. Without this she gets:
     // the red vanishes, focus jumps to the top of an unnamed main, and nothing
     // is announced or shown.
-    toast({ message: t("sos.acceptedCue") });
+    setPendingCue("sos.acceptedCue");
   };
+
+  useEffect(() => {
+    if (pendingCue === null) {
+      return;
+    }
+    setPendingCue(null);
+    if (terminal !== null) {
+      return;
+    }
+    toast({ message: t(pendingCue) });
+  }, [pendingCue, terminal, toast, t]);
 
   // A 401 renders NEITHER surface, deliberately: the loop has stopped,
   // onSessionEnded has fired once and App is dropping the console to LoginForm.
@@ -566,7 +604,18 @@ export function SosOverlay() {
       {bottom && (
         // ONE fixed container, so the strip and the affordance can never collide
         // and no offset arithmetic exists.
-        <div className="fixed inset-x-0 bottom-0 z-40 flex flex-col items-end gap-2 p-4">
+        //
+        // ⚠ `pointer-events-none` ON THE CONTAINER AND `pointer-events-auto` ON
+        // EACH CHILD — `packages/ui/src/components/Toast.tsx:40`'s shipped shape,
+        // and here it is load-bearing rather than tidy. Without it this is an
+        // INVISIBLE full-viewport band ≈76px tall (p-4 + the affordance's
+        // min-h-11) at z-40, on all thirteen sections, for as long as any
+        // dismissed alert stays live — measured in Chromium: a real click at the
+        // centre of a console control in the bottom 76px reached the band and
+        // never the control, with nothing on screen to explain why. The
+        // role-targeted page is the raise dialog's DEFAULT, so a dismissed live
+        // alert is the common path and not an edge.
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex flex-col items-end gap-2 p-4">
           {hiddenLive.length > 0 && (
             // ⚠ WITHOUT THIS, A DISMISSAL ON ANY OF THE ELEVEN SECTIONS WITH NO
             // SosCentre IS TOTAL AND PERMANENT for a live emergency — and the
@@ -576,6 +625,7 @@ export function SosOverlay() {
               variant="danger"
               size="md"
               fullWidthMobile={false}
+              className="pointer-events-auto"
               onClick={() => setDismissed([])}
             >
               {isolateLtr(
@@ -585,7 +635,7 @@ export function SosOverlay() {
             </Button>
           )}
           {channelDown && (
-            <div className="w-full rounded-md border border-danger bg-surface-raised p-3">
+            <div className="pointer-events-auto w-full rounded-md border border-danger bg-surface-raised p-3">
               {/* ⚠ THE ONLY APP-LEVEL SURFACE THIS FEATURE HAS, so it is the
                   only thing that can say the channel is dead on the eleven
                   sections with no panel of their own. «Nothing renders» is not

@@ -282,11 +282,57 @@ describe("the send", () => {
     expect(dialog).toHaveTextContent("הקריאה עברה למנהלת המשמרת.");
     const ack = within(dialog).getByRole("button", { name: "הבנתי" });
     // MOVE E: the control that had focus has just unmounted.
-    expect(document.activeElement).toBe(ack);
+    //
+    // ⚠ `waitFor`, NOT a bare assertion, and it is a fix for a REAL 1-in-8 flake
+    // on the unmodified tree (measured, `<body>` instead of the ack). jsdom's
+    // focus fixup when the focused `send` control is REMOVED does not always land
+    // before React flushes the passive effect that runs MOVE E, so under load the
+    // fixup can undo the move. A real browser runs that fixup synchronously
+    // inside the removal steps, long before any passive effect, so this is a
+    // jsdom scheduling artefact and not a product defect — `e2e/sos.spec.ts`
+    // measures the same move in Chromium.
+    //
+    // It is NOT vacuous: delete MOVE E and focus stays on `<body>` forever, so
+    // this times out and reds. Mutation-checked.
+    await waitFor(() => expect(document.activeElement).toBe(ack));
     expect(within(dialog).queryByRole("button", { name: "שליחת הקריאה" })).toBeNull();
 
     fireEvent.click(ack);
     await waitFor(() => expect(dialogs().some((node) => node.open)).toBe(false));
+  });
+
+  it("AC2 — and the rerouted sentence is ANNOUNCED, not merely rendered", async () => {
+    // ⚠ THE ONE MESSAGE THE RULING MANDATES WAS ANNOUNCED TO NOBODY. The body is
+    // swapped for a bare <p>; `Modal` sets only aria-labelledby and no
+    // aria-describedby, so the swapped body is not part of the dialog's
+    // accessible description either; and MOVE E then moves focus to a button
+    // whose entire label is «הבנתי». A blind seamstress heard exactly «הבנתי,
+    // לחצן» and nothing about Dana — then acknowledged and put the phone down
+    // believing Dana was paged. `rerouted` is a fact about the REQUEST (D10), so
+    // no SosCentre row can ever tell her afterwards.
+    //
+    // Two mechanisms, because either alone is engine-dependent here: a live
+    // region for the swap, and a description on the control MOVE E focuses so it
+    // is read WITH the button name. The sibling failure branch one line over
+    // already carries role="alert"; this branch carried nothing.
+    raiseSos.mockResolvedValue({ alert: raised({ target_name: null }), rerouted: true });
+    mount();
+    await screen.findByText("אין עכשיו קריאות פתוחות.");
+    const dialog = await openFromCentre();
+    fireEvent.change(within(dialog).getByLabelText("למי לקרוא"), { target: { value: DANA } });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "שליחת הקריאה" }));
+    await waitFor(() => expect(dialog).toHaveTextContent("דנה כהן לא מחוברת עכשיו."));
+
+    const live = within(dialog).getByRole("status");
+    expect(live).toHaveTextContent("דנה כהן לא מחוברת עכשיו.");
+    expect(live).toHaveTextContent("הקריאה עברה למנהלת המשמרת.");
+
+    // …and the control MOVE E lands on carries it as its description, so it is
+    // read even if the live region is preempted by the focus move.
+    const ack = within(dialog).getByRole("button", { name: "הבנתי" });
+    expect(ack.getAttribute("aria-describedby")).toBe(live.id);
+    expect(live.id).not.toBe("");
   });
 
   it("AC30 — a REJECTED send keeps it open with the note preserved, and MOVE F lands on the alert", async () => {

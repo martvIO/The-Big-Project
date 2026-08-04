@@ -740,7 +740,8 @@ describe("F41 atelier keys resolve", () => {
 
 describe("F37 sos keys resolve", () => {
   it("carries the whole copy deck", () => {
-    // copy.md's 48 rows plus DC-4's `sos.roomA11yPrefix`. Its own floor, for
+    // copy.md's 49 rows (48 plus DC-4's `sos.roomA11yPrefix`, now recorded
+    // there). Its own floor, for
     // the reason the comment above HE_F17 gives: folded into an existing list,
     // this feature's rows could shrink by this many and still pass.
     expect(HE_F37.length).toBeGreaterThan(44);
