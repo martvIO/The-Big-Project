@@ -1,7 +1,7 @@
 """seamstress capacity: one nullable column, its CHECK, and the assignee index
 
-Revision ID: 0022
-Revises: 0021
+Revision ID: 0023
+Revises: 0022
 
 The number was resolved from `alembic heads` at build time and is not reserved.
 0020's header and 0021's record what reserving one costs — it has now happened
@@ -11,18 +11,20 @@ keys revisions by the STRING, so it does not error; it warns `Revision N is
 present more than once`, dedupes to ONE script and drops the other, which on a
 fresh database means one of the two features' DDL simply never runs.
 
-⚠ F37 is in flight in `.worktrees/sos-paging` carrying `0021_sos_alerts.py`,
-which is ALREADY collided with `0021_floor_dispatch` on main and must renumber
-to 0022 — this file's number. This commit is deliberately the LAST on the
-branch so the renumber at the rebase that precedes the push is one amend to one
-file: the filename, `revision`, `down_revision`. `test_exactly_one_migration_head`
-is what proves it, but only AFTER the rebase.
+⚠ AND IT HAPPENED AGAIN, WHICH IS WHY THE RULE IS A RULE. This file was built
+at 0022 against a `main` whose head was 0021. F37 landed first (PR #41) as
+`0022_sos_alerts.py`, so `alembic heads` on the rebased branch printed
+`0022 (head)` TWICE with `UserWarning: Revision 0022 is present more than once`
+— the exact failure this header describes, observed rather than predicted. The
+renumber to 0023 is three edits to one file: the filename, `revision`,
+`down_revision`. `test_exactly_one_migration_head` is what proves it, and only
+AFTER the rebase.
 """
 
 from alembic import op
 
-revision = "0022"
-down_revision = "0021"
+revision = "0023"
+down_revision = "0022"
 branch_labels = None
 depends_on = None
 
