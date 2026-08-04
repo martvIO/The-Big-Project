@@ -49,6 +49,21 @@ const BOUTIQUE = {
     { day_of_week: 5, open_time: "09:00:00", close_time: "13:00:00" },
   ],
   exceptions: [{ date: "2026-12-25", open_time: null, close_time: null, note: "חופשה" }],
+  // F20's three privacy documents. REQUIRED on BoutiqueResponse — `resolve_privacy`
+  // is total, so the wire always carries them — and the `details` step renders
+  // `privacy_notice_text` through `substituteBoutique`, which calls `.split` on
+  // it. An absent key here is `undefined.split`, which throws out of render: a
+  // BLANK PAGE, exactly like the `hours` note above, and not a degraded one.
+  // That is not hypothetical — omitting these three keys is what reds the nine
+  // booking-flow tests below.
+  //
+  // Short, and deliberately NOT the approved Hebrew: `app/privacy/text.py` is the
+  // single home for that, and a copy here would be a second place for a legal
+  // string to drift. What they do carry are the two shapes the renderer handles —
+  // the `{{boutique}}` token, and a blank-line paragraph break.
+  privacy_notice_text: "הודעת פרטיות של {{boutique}}.\n\nפסקה שנייה של ההודעה.",
+  privacy_dpa_text: "תנאי עיבוד מידע של {{boutique}}.",
+  privacy_subprocessors_text: "ספקי תשתית.",
 };
 
 // A tenant who filled in nothing but the name — the state a boutique is in on
@@ -1787,6 +1802,17 @@ test("storefront booking: the generic path walks all five steps to a confirmatio
       dress_id: null,
       dress_size: null,
       notes: null,
+      // §30A default-off, proven ON THE WIRE rather than in the DOM. This walk
+      // never touches the marketing checkbox, so `false` here is the whole
+      // anti-detriment guarantee: the booking completed, and a consent she was
+      // never asked for was not manufactured for her.
+      //
+      // This is an EXACT object assertion, not `objectContaining` like its four
+      // siblings, and that is deliberate — a `useState(true)` slip reds this
+      // line and only this line. It is also why the key must be present rather
+      // than omitted: a missing key would pass under `objectContaining` and
+      // prove nothing.
+      marketing_consent: false,
     },
   ]);
 });
