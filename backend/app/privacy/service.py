@@ -292,6 +292,7 @@ class PrivacyService:
                         id=row.id,
                         starts_at=row.starts_at,
                         status=row.status,
+                        source=row.source,
                         appointment_type_name=row.appointment_type_name,
                         dress_name=row.dress_name,
                         dress_size=row.dress_size,

@@ -329,6 +329,11 @@ export async function uploadToStorage(presign: PresignResponse, file: File): Pro
 
 // --- owner booking wire types (mirror backend/app/booking/schemas.py) ---
 
+// The two values `bookings_source_check` admits (0025). Mirrors `BookingSource`
+// in backend/app/models/constants.py; a third member arrives with F50's
+// remote/scheduled half and must be added here at the same time.
+export type BookingSource = "storefront" | "walk_in";
+
 export interface OwnerBookingRow {
   id: string;
   starts_at: string;
@@ -353,12 +358,19 @@ export interface OwnerBookingRow {
   // port ships no refund(). Integer agorot on the wire (D15); the division by
   // 100 happens once, inside <Price>, at render.
   refund_due_agorot: number | null;
-  // F50 D8: 'storefront' | 'walk_in'. On the ROW rather than only the detail,
-  // for the reason `checked_in_at` above is — the board only ever reads the
-  // list — and because a NULL `terms_version_accepted` on the detail is
-  // ambiguous without it: missing because walk-in, or missing because something
-  // broke. REQUIRED, not optional: the server sends it on every row.
-  source: string;
+  // F50 D8. On the ROW rather than only the detail, for the reason
+  // `checked_in_at` above is — the board only ever reads the list — and because
+  // a NULL `terms_version_accepted` on the detail is ambiguous without it:
+  // missing because walk-in, or missing because something broke. REQUIRED, not
+  // optional: the server sends it on every row.
+  //
+  // A UNION rather than `string`, deliberately breaking with `status` one field
+  // up. `status` has a documented fallback in `statusBadge` that renders Hebrew
+  // for an unmapped value; `source` is compared against a bare literal at its two
+  // read sites, so a typo (`"walkin"`, `"walk-in"`) compiles and silently renders
+  // nothing at all. The set is closed by `bookings_source_check`, so writing it
+  // down here costs nothing and makes that typo a build failure.
+  source: BookingSource;
 }
 
 export interface OwnerBookingListResponse {
@@ -1067,6 +1079,11 @@ export interface ExportedBooking {
   id: string;
   starts_at: string;
   status: string;
+  // F50, and it ships for the same reason the nullable terms pair below does:
+  // making those nullable put an ambiguity into the §13 payload that only this
+  // field resolves. Type-only, like the rest of this interface — nothing renders
+  // it.
+  source: BookingSource;
   appointment_type_name: string;
   dress_name: string | null;
   dress_size: string | null;

@@ -2057,6 +2057,20 @@ def _sweep_walk_in_bookings(migrated_db: str) -> Iterator[None]:
     Module-scoped, so it costs one statement rather than one per test. pytest runs
     a module's tests contiguously and this suite runs single-process, so nothing
     downgrades in the gap.
+
+    ⚠ **What this fixture depends on, stated rather than left to be discovered.**
+    Module scope means the sweep runs when THIS module finishes, so it protects
+    only the modules that run AFTER it. That holds today because all five modules
+    calling `command.downgrade` (`test_booking_owner_db`, `test_booking_repositories`,
+    `test_catalog_integration`, `test_migrations`, `test_notifications_repositories`)
+    either are this one or sort after `test_privacy_subject_requests_db.py`, which
+    is the only other module that commits a walk-in and imports this fixture for it.
+    A NEW db module that commits a walk-in must import this fixture the same way.
+    It is NOT promoted to `conftest.py`: an autouse fixture there would request
+    `migrated_db` for EVERY module, which starts Postgres under
+    `pytest -m "not db"` and turns the fast suite into a slow one that cannot run
+    without a database. Session scope is worse still — the sweep would then run
+    after the very downgrade tests it exists to protect.
     """
     yield
 
@@ -2526,15 +2540,29 @@ async def test_the_walk_in_schedules_no_reminder_and_mints_no_manage_token(
 async def test_the_manage_link_backfill_feed_never_returns_a_walk_in(
     app_role_url: str,
 ) -> None:
-    """`list_confirmed_without_manage_token` is `confirmed AND starts_at > after
-    AND manage_token_hash IS NULL` — and a walk-in satisfies two of the three. The
-    one it fails is the clock, which is exactly what `starts_at = now` buys.
+    """`list_confirmed_without_manage_token` is `confirmed AND source =
+    'storefront' AND starts_at > after AND manage_token_hash IS NULL`, and a
+    walk-in fails TWO of the four — the clock, which is what `starts_at = now`
+    buys, and the source, which is what makes the exclusion hold when the clock
+    does not.
 
     ⚠ THE PRESENT ROW IS WHAT ARMS THIS TEST. Without a future storefront booking
-    with a NULL hash in the same tenant, widening or deleting the `starts_at >
-    after` predicate would add no rows to an empty result and this would pass on
-    nothing — the seeded-fixture vacuity this project has shipped three times.
-    Deleting `Booking.starts_at > after` from the repository reds it."""
+    with a NULL hash in the same tenant, widening or deleting either predicate
+    would add no rows to an empty result and this would pass on nothing — the
+    seeded-fixture vacuity this project has shipped three times.
+
+    TWO reads, and the SECOND is the one that earns its place. `after=NOW` reds on
+    deleting `Booking.starts_at > after`. The second — `after` one second BEFORE
+    the walk-in's instant — reproduces the review's once-captured-clock race
+    exactly: `ManageLinkBackfill.run()` takes `now` ONCE and passes it to every
+    tenant, so a walk-in created after that capture DOES satisfy the clock, and
+    only `source` keeps it out. It reds on deleting
+    `Booking.source == BookingSource.STOREFRONT.value` and on nothing else.
+
+    The clock predicate keeps a second, independent guardian in the feature that
+    owns it — F16's `test_the_backfill_skips_a_booking_that_has_already_happened`
+    (`test_booking_comms_db.py`), verified to red on the same deletion — so no past
+    row is seeded here to duplicate it."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
@@ -2562,6 +2590,17 @@ async def test_the_manage_link_backfill_feed_never_returns_a_walk_in(
         found = {row.id for row in feed}
         assert claim.booking.id in found, "the future storefront row must be in the feed"
         assert walk_in.booking.id not in found
+
+        # The race the clock alone does not cover: `after` predates the walk-in,
+        # so `starts_at > after` is TRUE for it and only `source` keeps it out.
+        async with tenant_session(factory, tenant_id) as session:
+            raced = await BookingsRepository().list_confirmed_without_manage_token(
+                session, tenant_id, after=NOW - datetime.timedelta(seconds=1), limit=50
+            )
+
+        raced_ids = {row.id for row in raced}
+        assert claim.booking.id in raced_ids, "the positive control must survive the wider window"
+        assert walk_in.booking.id not in raced_ids
     finally:
         await engine.dispose()
 

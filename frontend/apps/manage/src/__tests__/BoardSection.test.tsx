@@ -1186,6 +1186,37 @@ describe("F50 — a successful create", () => {
     expect(listBookings).toHaveBeenCalledTimes(before + 1);
   });
 
+  it("refreshes NOTHING while the board is paused, and still creates the booking", async () => {
+    // ⚠ THE OTHER TWO STATES `reschedule()` DECLINES. F34 could put its re-arm in
+    // an unguarded .finally() because `reschedule()` no-ops whenever the loop is
+    // stopped; `refresh()` is three unconditional statements, so `!terminated`
+    // covered only ONE of the three stopped states. Creating on a paused board
+    // repainted the rows under a staffer who had deliberately frozen them and
+    // refreshed the «מושהה · עודכן» stamp under a body line still saying the
+    // board is paused. Deleting `mode === "running"` from the .finally() reds it.
+    //
+    // The create itself is NOT blocked: pausing is a read-stability intent, the
+    // announced cue says the booking landed, and the row arrives on «חידוש».
+    await mountBoard();
+    await click(pauseButton());
+    createWalkInBooking.mockResolvedValue(
+      detail({ id: "b-walk", customer_name: "מיכל לוי", source: "walk_in" }),
+    );
+    await openAndFillWalkIn();
+    const before = listBookings.mock.calls.length;
+    await click(screen.getByRole("button", { name: "יצירת התור" }));
+
+    expect(createWalkInBooking).toHaveBeenCalledTimes(1);
+    expect(walkInDialog()).toBeNull();
+    expect(screen.getByTestId("board-cue")).toHaveTextContent("נוצר תור חדש עבור מיכל לוי.");
+    expect(listBookings).toHaveBeenCalledTimes(before);
+    await advance(POLL * 4);
+    expect(listBookings).toHaveBeenCalledTimes(before);
+    expect(screen.getByTestId("board-body")).toHaveTextContent(
+      "העדכון מושהה. הלוח לא יתעדכן עד לחידוש.",
+    );
+  });
+
   it("issues NO tick while the create is in flight, and exactly one after it settles", async () => {
     await mountBoard();
     const pending = deferred<OwnerBookingDetail>();
@@ -1220,11 +1251,38 @@ describe("F50 — a rejected create", () => {
 
     const dialog = walkInDialog();
     expect(dialog).not.toBeNull();
+    // NOT F15's «המועד הזה נתפס הרגע. אפשר לבחור מועד אחר.» — this dialog has no
+    // time picker, `starts_at` is the server's `now`, and the only way to reach
+    // this 409 is a microsecond collision that tapping confirm again resolves.
+    // Deleting the SLOT_UNAVAILABLE row from WALK_IN_ERROR_KEYS reds it.
     expect(within(dialog as HTMLElement).getByRole("alert")).toHaveTextContent(
-      "המועד הזה נתפס הרגע. אפשר לבחור מועד אחר.",
+      "לא הצלחנו לפתוח את התור. כדאי לנסות שוב.",
     );
+    expect(within(dialog as HTMLElement).queryByText(/לבחור מועד אחר/)).toBeNull();
     // The refresh fired on this arm too — the board must keep converging.
     expect(listBookings).toHaveBeenCalledTimes(before + 1);
+  });
+
+  it("shows HEBREW for the route's own 404, never the server's English", async () => {
+    // ⚠ NOT_FOUND is absent from `OWNED_ERROR_CODES`, so `bookingErrorText` used
+    // to fall through to main.py's "Resource not found." — English, inside an RTL
+    // dialog's role="alert". It is this route's ONLY domain 404 and it has four
+    // reachable producers; the archived-type one is ordinary, because the dialog
+    // fetches the type list once per open and a counter tablet holds this tab for
+    // a whole shift. Deleting the NOT_FOUND row from WALK_IN_ERROR_KEYS reds it.
+    await mountBoard();
+    createWalkInBooking.mockRejectedValue(
+      new ApiError(404, "NOT_FOUND", "Resource not found."),
+    );
+    await openAndFillWalkIn();
+    await click(screen.getByRole("button", { name: "יצירת התור" }));
+
+    const dialog = walkInDialog();
+    expect(dialog).not.toBeNull();
+    expect(within(dialog as HTMLElement).getByRole("alert")).toHaveTextContent(
+      "הלקוחה או סוג הפגישה שנבחרו כבר אינם זמינים. כדאי לחפש שוב.",
+    );
+    expect(within(dialog as HTMLElement).queryByText(/Resource not found/)).toBeNull();
   });
 
   it("drives the terminal screen on a 403 and issues NO FURTHER FETCH", async () => {

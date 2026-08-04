@@ -119,8 +119,12 @@ class BookingsRepository:
         hold `pg_advisory_xact_lock(hashtext(tenant_id))`** — see
         BookingService.create_booking. Oversell stays structurally impossible
         without it (the index is the backstop), but a writer that skips the
-        lock races the read and hands honest customers a spurious 409. F15's
-        owner-side reschedule is the next caller.
+        lock races the read and hands honest customers a spurious 409.
+        `BookingService.create_booking` is this method's ONLY caller. F15's
+        owner-side reschedule holds the same lock for the same reason without
+        coming through here — it UPDATEs `(starts_at, seat_index)` in place
+        (`owner.py`) rather than inserting, so naming it "the next caller" was
+        false about this signature the day F50 built the thing it was waiting for.
 
         **`insert_walk_in` below is deliberately NOT this method with defaulted
         arguments** (F50 D5). It picks no seat from a count, so it holds no lock —
@@ -812,14 +816,29 @@ class BookingsRepository:
     async def list_confirmed_without_manage_token(
         self, session: AsyncSession, tenant_id: UUID, *, after: datetime, limit: int
     ) -> list[Booking]:
-        """The backfill's feed (D10): confirmed, still in the future, and never
-        issued a link. The predicate is also what makes a second run a no-op —
-        the first run filled `manage_token_hash`."""
+        """The backfill's feed (D10): confirmed, still in the future, never issued
+        a link, and created by the STOREFRONT. The predicate is also what makes a
+        second run a no-op — the first run filled `manage_token_hash`.
+
+        ⚠ The `source` clause is F50's, and it closes a race the spec accepted as
+        Risk 8 rather than leaving it accepted. `ManageLinkBackfill.run()` captures
+        `now` ONCE and passes it to every tenant as `after`, so a walk-in created
+        between that capture and its own tenant's chunk query satisfies
+        `starts_at > after` and entered this feed. The damage was bounded — the
+        lead is milliseconds, `reminder_send_after` returns None under the 2h band,
+        the loop `continue`s before the `scheduled_messages` insert and the
+        plaintext token dies as a local, so nobody could ever hold it — but the row
+        came away with a non-NULL `manage_token_hash`, which makes the console
+        report `manage_link_issued: true` for a link that does not exist and
+        excludes the row from every later legitimate pass. A walk-in must never be
+        in this feed at all, so the exclusion is stated here rather than inferred
+        from a clock. One line beats the paragraph that defended its absence."""
         stmt = (
             select(Booking)
             .where(
                 Booking.tenant_id == tenant_id,
                 Booking.status == BookingStatus.CONFIRMED.value,
+                Booking.source == BookingSource.STOREFRONT.value,
                 Booking.starts_at > after,
                 Booking.manage_token_hash.is_(None),
                 Booking.deleted_at.is_(None),

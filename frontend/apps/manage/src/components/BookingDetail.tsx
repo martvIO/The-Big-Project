@@ -367,7 +367,20 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
                   answer is a sentence naming the absence, not a Fact rendering
                   «גרסה null» beside jerusalemDate(null). The row is not dropped:
                   a missing label would read as "the screen forgot", which is the
-                  ambiguity `source` exists to remove. */}
+                  ambiguity `source` exists to remove.
+
+                  ⚠ Keyed on the NULLS and not on `source`, and that is a
+                  decision, not an oversight. `bookings_terms_evidence_check`
+                  makes «either terms column is NULL» and «source = 'walk_in'» a
+                  DATABASE-ENFORCED BICONDITIONAL, on INSERT and on UPDATE — so
+                  the two spellings are not merely equal today, they are equal by
+                  constraint, and this one is the spelling TypeScript's narrowing
+                  needs anyway to reach the version branch. Keying on `source`
+                  instead would require a THIRD branch with a second Hebrew
+                  string, its ar.ts mirror and a vitest fixture for a row the
+                  database refuses to accept — a test that asserts a fake. If a
+                  third `source` value ever lands, it is the CHECK that has to
+                  decide about terms first, and this condition follows it. */}
               <Fact label={t("booking.terms")}>
                 {detail.terms_version_accepted === null || detail.terms_accepted_at === null ? (
                   t("booking.termsNone")

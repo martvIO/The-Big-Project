@@ -239,10 +239,17 @@ describe("WalkInDialog appointment type", () => {
   });
 
   it("says so when the boutique has configured none, and names where to", async () => {
+    // ONE word for the collection, and it is the catalog screen's own: this
+    // sentence used to read «לא הוגדרו סוגי פגישות … במסך «סוגי תורים»» — two
+    // words for one thing inside one sentence, telling a staffer to configure
+    // "meeting types" on the "appointment types" screen.
     listAppointmentTypes.mockResolvedValue([]);
     await mount();
 
-    expect(screen.getByText(/לא הוגדרו סוגי פגישות/)).toHaveTextContent("סוגי תורים");
+    expect(
+      screen.getByText("לא הוגדרו סוגי תורים. אפשר להגדיר אותם במסך «סוגי תורים»."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/סוגי פגישות/)).toBeNull();
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(confirmButton()).toBeDisabled();
   });
@@ -251,7 +258,7 @@ describe("WalkInDialog appointment type", () => {
     listAppointmentTypes.mockRejectedValue(new Error("network"));
     await mount();
 
-    expect(screen.getByRole("alert")).toHaveTextContent("לא הצלחנו לטעון את סוגי הפגישות כרגע.");
+    expect(screen.getByRole("alert")).toHaveTextContent("לא הצלחנו לטעון את סוגי התורים כרגע.");
   });
 });
 

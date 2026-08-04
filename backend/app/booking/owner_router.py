@@ -1,4 +1,4 @@
-"""The owner console's booking surface: ten routes on /manage.
+"""The owner console's booking surface: thirteen routes on /manage.
 
 **A fourth router on /manage, not new routes in an existing one.** The catalog
 and boutique routers are the catalog's and the boutique's; bookings are neither.

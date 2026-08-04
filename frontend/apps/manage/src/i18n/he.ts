@@ -2400,10 +2400,26 @@ export const he = {
     // same way here: two brides with one name and only one of them on screen.
     "walkin.truncated": "מוצגות {{count}} הלקוחות הראשונות. אפשר לדייק את החיפוש.",
     "walkin.searchFailed": "לא הצלחנו לחפש לקוחות כרגע.",
+    // The SINGULAR field label is `booking.type`'s shipped wording verbatim
+    // («סוג הפגישה», also the storefront's `typeHeading`) — one word for one
+    // thing across the product. The PLURAL collection is the catalog screen's,
+    // «סוגי תורים» (`nav.types`, `dashboard.typesTableCaption`), which is what
+    // the two sentences below name and point at: they used to say «סוגי
+    // הפגישות», and `typesEmpty` managed both words in ONE sentence — telling a
+    // staffer to configure "meeting types" on the "appointment types" screen.
     "walkin.typeLabel": "סוג הפגישה",
     "walkin.typePlaceholder": "בחירת סוג פגישה",
-    "walkin.typesFailed": "לא הצלחנו לטעון את סוגי הפגישות כרגע.",
-    "walkin.typesEmpty": "לא הוגדרו סוגי פגישות. אפשר להגדיר אותם במסך «סוגי תורים».",
+    "walkin.typesFailed": "לא הצלחנו לטעון את סוגי התורים כרגע.",
+    "walkin.typesEmpty": "לא הוגדרו סוגי תורים. אפשר להגדיר אותם במסך «סוגי תורים».",
+    // The two codes this dialog owns rather than delegating to F15's map
+    // (BoardSection's WALK_IN_ERROR_KEYS says why). NOT_FOUND has four reachable
+    // producers and they are indistinguishable by design, so the sentence names
+    // both halves of the selection and the remedy is to search again.
+    "walkin.error.notFound": "הלקוחה או סוג הפגישה שנבחרו כבר אינם זמינים. כדאי לחפש שוב.",
+    // NOT «אפשר לבחור מועד אחר»: there is no time to choose here — the
+    // appointment starts now — and the only way to lose this race is to lose it
+    // to another tap in the same microsecond.
+    "walkin.error.slotUnavailable": "לא הצלחנו לפתוח את התור. כדאי לנסות שוב.",
     "walkin.confirm": "יצירת התור",
     // This dialog IS the confirm: the consequence sits above the one submit
     // rather than stacking a second focus trap for a decision she is reading.

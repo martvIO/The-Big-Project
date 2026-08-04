@@ -170,6 +170,7 @@ def _export() -> SubjectExportResponse:
                 id=uuid.uuid4(),
                 starts_at=STARTS_AT,
                 status="confirmed",
+                source="storefront",
                 appointment_type_name="מדידה ראשונה",
                 dress_name="Aurora",
                 dress_size="38",

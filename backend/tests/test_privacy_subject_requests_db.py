@@ -60,6 +60,7 @@ from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.models.constants import (
     AuditAction,
+    BookingSource,
     BookingStatus,
     MarketingConsentSource,
     MessageKind,
@@ -327,6 +328,13 @@ async def test_the_subject_export_survives_a_walk_in_booking(app_role_url: str) 
 
         assert exported[walk_in.booking.id].terms_version_accepted is None
         assert exported[walk_in.booking.id].terms_accepted_at is None
+        # The discriminator, on BOTH rows. Without it the authority reading this
+        # export sees a null version with no way to tell a lawful walk-in from a
+        # corrupted storefront record — the exact inference `bookings_source_check`
+        # and `bookings_terms_evidence_check` exist to make unnecessary. Deleting
+        # `source=row.source` from the ExportedBooking construction reds it.
+        assert exported[walk_in.booking.id].source == BookingSource.WALK_IN.value
+        assert exported[storefront.booking.id].source == BookingSource.STOREFRONT.value
         # She attended — that is a fact about her, so §13 reaches it.
         assert exported[walk_in.booking.id].checked_in_at == PAST_NOW
 

@@ -377,8 +377,24 @@ class OwnerBookingService:
         409 → guarded write → audit, and its middle steps exist to answer *what
         state was this row in*. There is no row. And it is DELIBERATELY NOT
         IDEMPOTENT: a double-tapped dialog produces two rows, because "she came in
-        twice today" is a real outcome and the remedy is a visible row a staffer
-        can cancel (F33 made the same call for a second queue ticket on one phone).
+        twice today" is a real outcome (F33 made the same call for a second queue
+        ticket on one phone).
+
+        ⚠ **The duplicate CANNOT be cancelled, and the price of the
+        non-idempotency is therefore a PERMANENT row.** This docstring used to say
+        "the remedy is a visible row a staffer can cancel". That was false:
+        `cancel` below refuses `starts_at <= now` (D3's clock split) and a
+        walk-in's `starts_at` is its own creation instant, so it is `<= now` on
+        every subsequent request, for ever —
+        `test_a_walk_in_refuses_cancel_and_admits_no_show_and_complete` pins
+        exactly that. F33's precedent does not transfer either: `QueueTicketStatus`
+        has a real REMOVED terminal and this row has none; its reachable terminals
+        are `no_show` and `complete`. The only control is the dialog's
+        `disabled={busy}` and there is nothing behind it. Making the mis-tap
+        correctable is a DESIGN change, not a fix — it needs either a
+        `source = 'walk_in'` carve-out in `cancel`'s clock guard, which D2's disarm
+        table and its test both forbid today, or an owner-facing soft delete this
+        product does not have — and it belongs with the remote/scheduled half.
 
         **No advisory lock, no `offered_slot`, no deposit, no rate limiter** — D4.
         The lock serialises a count→pick read this path does not perform; `now` is
@@ -426,6 +442,15 @@ class OwnerBookingService:
             except IntegrityError as exc:
                 # Two walk-ins in one microsecond on one tenant — either partial
                 # unique index. The same 409 the storefront gives, and no new code.
+                #
+                # Deliberately NOT narrowed on the constraint name, and the reason
+                # is that today there is nothing else to narrow away: 0025's two
+                # CHECKs are both satisfied by construction here (`source` is the
+                # literal WALK_IN and the terms columns are the NULLs that value
+                # exempts). The day the remote half adds a third `source` value,
+                # a FAILING INSERT is the designed hand-off — and it would land in
+                # this arm reading "slot unavailable". That is the moment to look
+                # at `exc.orig.diag.constraint_name`, not before.
                 raise SlotUnavailableError from exc
             await self._record(
                 session,

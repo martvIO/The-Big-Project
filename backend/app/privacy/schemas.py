@@ -116,6 +116,13 @@ class ExportedBooking(BaseModel):
     id: uuid.UUID
     starts_at: datetime.datetime
     status: str
+    # F50, and it ships for the SAME reason the nullable terms pair below does.
+    # Making those two nullable put an ambiguity into this payload that the owner
+    # console was given the discriminator for and the Privacy Protection Authority
+    # — the audience F20 names for this route — was not: a null version alone
+    # cannot say whether nobody accepted anything or a storefront booking lost its
+    # evidence. `source` is what tells those apart, in the CHECK and here.
+    source: str
     appointment_type_name: str
     dress_name: str | None
     dress_size: str | None
