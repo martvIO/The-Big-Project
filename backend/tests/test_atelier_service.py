@@ -1625,15 +1625,20 @@ def test_an_unknown_key_on_any_request_model_is_refused() -> None:
         _create_request(effort_minutes=37)
 
 
-def test_the_seven_atelier_audit_values_are_pinned_by_literal() -> None:
-    """SET EQUALITY over a literal, so an eighth member or a renamed value is a
+def test_every_atelier_audit_value_is_pinned_by_literal() -> None:
+    """SET EQUALITY over a literal, so a new member or a renamed value is a
     deliberate act. `audit_log.action` is plain TEXT with no CHECK, so nothing in
     the database would refuse a typo.
 
-    `atelier_customer_renamed` is the seventh, added at review: it is the only
+    `atelier_customer_renamed` is F41's seventh, added at review: it is the only
     row in this namespace whose `entity` is a CUSTOMER rather than a ticket,
     because intake writes `customers.name` and D6's promised notice is not
-    buildable without an endpoint the plan forbids."""
+    buildable without an endpoint the plan forbids.
+
+    ⚠ The name no longer counts the members. F42 makes the block eight and the
+    settings row makes it nine; a test whose NAME carries the count is a second
+    literal to keep in step, and the set equality below is the whole
+    assertion."""
     assert {action.value for action in AuditAction if action.value.startswith("atelier_")} == {
         "atelier_customer_renamed",
         "atelier_ticket_created",
@@ -1642,4 +1647,6 @@ def test_the_seven_atelier_audit_values_are_pinned_by_literal() -> None:
         "atelier_ticket_stage_advanced",
         "atelier_ticket_stage_undone",
         "atelier_ticket_deleted",
+        # F42: her weekly hours changed, and by whom.
+        "atelier_capacity_set",
     }

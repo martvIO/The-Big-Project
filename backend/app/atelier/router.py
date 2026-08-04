@@ -1,4 +1,4 @@
-"""The atelier: one poll and six writes on /manage.
+"""The atelier: one poll and seven writes on /manage.
 
 **A TENTH router on /manage**, registered after `queue_manage_router` in
 `create_app()` and deliberately before `storefront_router`, so every /manage
@@ -16,20 +16,22 @@ spelling the three is what makes that the safe direction to fail. (If the pilot
 asks, it is one literal here and one NAV row, and `test_staff_role_gating.py`'s
 per-role table is what makes adding it a visible act.)
 
-**The per-route tightening on `delete`, and why F41 needs its own module.**
-`RoleGate` composes by INTERSECTION (`auth/dependencies.py:44-45`), so a
-per-route gate can only ever NARROW — there is no per-route widening anywhere in
-this codebase. That is why `delete` can carry `require_role(OWNER,
-SHIFT_MANAGER)` on top of the router's three, and equally why these seven routes
-could not have been hung off an existing two-role router.
+**The per-route tightenings on `delete` and on `capacity`, and why F41 needs its
+own module.** `RoleGate` composes by INTERSECTION (`auth/dependencies.py:44-45`),
+so a per-route gate can only ever NARROW — there is no per-route widening
+anywhere in this codebase. That is why `delete` and F42's capacity write can
+carry `require_role(OWNER, SHIFT_MANAGER)` on top of the router's three, and
+equally why these eight routes could not have been hung off an existing two-role
+router.
 
 **The finer rules are the SERVICE's, not a gate's.** A seamstress on her own
 ticket, a seamstress on an unassigned one, the self-claim — every one of them
 depends on the TICKET's `assigned_staff_user_id`, which no `RoleGate` can see.
-`delete` is the single exception and that is exactly why it is the single
-per-route gate.
+`delete` and `capacity` are the two exceptions — each depends on NOTHING BUT THE
+ROLE — and that is exactly why they are the two per-route gates.
 
-**⚠ THE BANDS ARE RESOLVED HERE, from `get_current_tenant(request).settings`,**
+**⚠ THE BANDS AND THE CAPACITY DEFAULT ARE BOTH RESOLVED HERE, from
+`get_current_tenant(request).settings`,**
 and passed into the service as a plain dict. The tenancy middleware has already
 bound that mapping on the request from the same `tenants` row. Reading it back
 through `TenantsRepository` would open a FOURTH session, pool checkout and
@@ -45,10 +47,10 @@ paths (`dashboard/router.py:17-26` argues this at length).
 points the dependency arrow backwards to save three lines;
 `auth/staff_router.py:22-27` records the decision.
 
-**No rate limiter**: no /manage router carries one and F41 does not introduce the
-first. The six POSTs ARE fenced by `CsrfOriginMiddleware` (`csrf.py:48` gates on
-`request.method in MUTATING_METHODS`); the GET is not, and its protection is the
-session cookie and the role gate, alone.
+**No rate limiter**: no /manage router carries one and neither F41 nor F42
+introduces the first. The seven POSTs ARE fenced by `CsrfOriginMiddleware`
+(`csrf.py:48` gates on `request.method in MUTATING_METHODS`); the GET is not, and
+its protection is the session cookie and the role gate, alone.
 
 **Real HTTP verbs and a path parameter for the target.** The `.claude/rules` RPC
 / `@QueryValue` guidance is Kotlin boilerplate for another codebase; the shipped
@@ -65,11 +67,13 @@ from app.atelier.schemas import (
     AtelierBoardResponse,
     AtelierTicket,
     CreateTicketRequest,
+    SeamstressCapacityResponse,
+    SetCapacityRequest,
     StageRequest,
     UpdateTicketRequest,
 )
 from app.atelier.service import AtelierService
-from app.atelier.stages import effort_bands
+from app.atelier.stages import default_capacity_hours, effort_bands
 from app.auth.dependencies import get_current_staff, require_role
 from app.auth.service import StaffContext
 from app.models.constants import EffortBand, StaffRole
@@ -170,3 +174,37 @@ async def delete_ticket(
 ) -> OkResponse:
     await service.delete(get_current_tenant(request).id, ticket_id, actor=staff)
     return OkResponse()
+
+
+@router.post(
+    "/atelier/seamstresses/{staff_user_id}/capacity",
+    # The SECOND per-route tightening, `delete`'s shape exactly. A seamstress may
+    # not set her own weekly hours or anybody else's: it is the DENOMINATOR every
+    # other bar in the workroom is read against, which makes it a staffing
+    # decision about the whole board's arithmetic rather than a record of work
+    # she has done.
+    dependencies=[Depends(require_role(StaffRole.OWNER, StaffRole.SHIFT_MANAGER))],
+)
+async def set_seamstress_capacity(
+    request: Request,
+    staff_user_id: uuid.UUID,
+    body: SetCapacityRequest,
+    service: Service,
+    staff: Staff,
+) -> SeamstressCapacityResponse:
+    """`staff` is the ACTING identity and comes from the session cookie;
+    `staff_user_id` is the TARGET and comes from the path — `assign`'s split, for
+    `assign`'s reason.
+
+    The tenant default rides `TenantContext.settings`, already bound on the
+    request by the tenancy middleware, at zero statements: it is what the answer
+    resolves a CLEARED capacity against.
+    """
+    tenant = get_current_tenant(request)
+    return await service.set_capacity(
+        tenant.id,
+        staff_user_id,
+        body,
+        actor=staff,
+        tenant_default=default_capacity_hours(tenant.settings),
+    )

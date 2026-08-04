@@ -21,9 +21,9 @@ import datetime
 import uuid
 from collections.abc import Mapping, Sequence
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictInt
 
-from app.atelier.stages import stage_of
+from app.atelier.stages import MAX_WEEKLY_CAPACITY_HOURS, resolve_capacity, stage_of
 from app.models.alteration_ticket import AlterationTicket
 from app.models.constants import EffortBand, StaffRole, TicketStage
 from app.models.customer import Customer
@@ -182,6 +182,63 @@ class SeamstressRef(BaseModel):
             id=row.id,
             display_name=row.display_name,
             assignable=row.deleted_at is None and row.role == StaffRole.SEAMSTRESS.value,
+        )
+
+
+class SetCapacityRequest(ForbidExtraModel):
+    """Her weekly hours, or `null` to CLEAR them back to the boutique's default.
+
+    REQUIRED with no schema default, `AssignTicketRequest.staff_user_id`'s rule:
+    `null` is a VALUE and an optional field would make a malformed request that
+    dropped the key indistinguishable from a deliberate clear.
+
+    ⚠ `StrictInt`, NOT `int`, AND THE BOUND IS VACUOUS WITHOUT IT.
+    `ForbidExtraModel` sets `extra="forbid"` and NOTHING else (`app/schemas.py:13-18`
+    — there is no `strict=True` on it), so a plain `int` COERCES before any bound
+    is checked: `true` becomes `1`, lands inside `0..168`, and is accepted as a
+    ONE-HOUR WEEK for a seamstress who works forty. `"24"` and `24.0` go the same
+    way. The refusal surfaces as VALIDATION_ERROR through `main.py:936`.
+    """
+
+    weekly_capacity_hours: StrictInt | None = Field(ge=0, le=MAX_WEEKLY_CAPACITY_HOURS)
+
+
+class SeamstressCapacityResponse(BaseModel):
+    """Capacity facts only — the answer to D6's write.
+
+    ⚠ IT IS NOT A `SeamstressRef`, and that is the whole point. `SeamstressRef`
+    requires `assigned_minutes` and `due_soon_minutes`; this path has no
+    aggregate (D3's is a board read inside the poll's session) and buying one
+    would be a second business statement on a write. The only value reachable
+    without it is `(0, 0)` — which would collapse her bar and drop her «עומס יתר»
+    word for up to five seconds on this feature's own primary surface, at the
+    moment a manager is looking at it. The console is already holding both
+    numbers from the last tick and patches only the keys below.
+    """
+
+    id: uuid.UUID
+    display_name: str
+    assignable: bool
+    # RESOLVED (D2) — her column, else the tenant default, else null — and read
+    # back through `_refreshed`, so it is the DATABASE's answer and not this
+    # caller's intent.
+    weekly_capacity_hours: int | None
+    capacity_is_default: bool
+
+    @classmethod
+    def from_row(
+        cls, row: StaffUser, *, tenant_default: int | None
+    ) -> "SeamstressCapacityResponse":
+        hours, is_default = resolve_capacity(row, tenant_default)
+        return cls(
+            id=row.id,
+            display_name=row.display_name,
+            # `SeamstressRef.from_row`'s predicate, spelled again rather than
+            # shared: that model's constructor takes the two load numbers this
+            # path deliberately has no source for.
+            assignable=row.deleted_at is None and row.role == StaffRole.SEAMSTRESS.value,
+            weekly_capacity_hours=hours,
+            capacity_is_default=is_default,
         )
 
 

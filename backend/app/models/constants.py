@@ -473,6 +473,16 @@ class AuditAction(StrEnum):
     ATELIER_TICKET_STAGE_ADVANCED = "atelier_ticket_stage_advanced"
     ATELIER_TICKET_STAGE_UNDONE = "atelier_ticket_stage_undone"
     ATELIER_TICKET_DELETED = "atelier_ticket_deleted"
+    # ⚠ F42's, and it is the EIGHTH member of a seven-member block. No migration:
+    # audit_log.action is plain TEXT with no CHECK (0003_auth.py:71-79), and this
+    # is the eighth block to rely on that.
+    #
+    # It carries {"from": int|null, "to": int|null} captured BEFORE the write —
+    # the UPDATE's `evaluate` synchronization stamps the new hours onto the very
+    # instance the `from` is read off — with `entity` = the seamstress's id. A
+    # no-op writes no row at all: setting the hours she already has changed
+    # nothing and a row claiming otherwise names an act nobody performed.
+    ATELIER_CAPACITY_SET = "atelier_capacity_set"
 
     # F37's SOS paging (D13). The EIGHTH block to rely on the same fact:
     # audit_log.action is plain TEXT with no CHECK (0003), so these four need no
