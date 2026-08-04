@@ -14,6 +14,7 @@ Every test mints its own tenant id — the cluster is session-scoped and nothing
 here truncates.
 """
 
+import asyncio
 import datetime
 import uuid
 from collections.abc import Sequence
@@ -38,6 +39,7 @@ from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.models.session import Session as SessionRow
 from app.models.terms_version import TermsVersion
+from app.platform.service import ProvisioningService
 from app.privacy.retention import CHUNK_SIZE, POLICIES, RetentionRunner, _purge
 from app.privacy.validation import ERASED_NAME, ERASED_PHONE_PREFIX
 
@@ -783,3 +785,59 @@ async def test_a_suspended_and_an_offboarded_boutiques_clocks_still_run(
             assert (await _rows(factory, tenant.id, QueueTicket))[0].name == ERASED_NAME
     finally:
         await engine.dispose()
+
+
+# --- the operator-invoked run ------------------------------------------------
+
+
+def _platform_rows(reader_url: str, operator: str) -> list[tuple[str, Any]]:
+    engine = create_async_engine(reader_url, poolclass=NullPool)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def read() -> list[tuple[str, Any]]:
+        try:
+            async with factory() as session:
+                result = await session.execute(
+                    text(
+                        "SELECT action, details FROM platform_audit_log "
+                        "WHERE operator = :op ORDER BY created_at"
+                    ),
+                    {"op": operator},
+                )
+                return [(row[0], row[1]) for row in result.all()]
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def test_the_operator_run_writes_exactly_one_platform_row_per_invocation(
+    app_role_url: str, migrated_db: str
+) -> None:
+    """Checklist row 12's discipline. `app_user` holds INSERT-only on
+    `platform_audit_log`, so the assertion reads through the superuser connection
+    — reading operator history is a privileged action.
+
+    The row is written for the REHEARSAL too, unlike the per-tenant `audit_log`
+    rows. Those are the tenant's evidence about its own data; this one records
+    that a human pointed an irreversible multi-tenant job at production, and a
+    dry run that left no trace is the one an incident review most wants to find.
+    """
+    engine = create_async_engine(app_role_url, poolclass=NullPool)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    service = ProvisioningService(factory)
+    operator = f"ops-{uuid.uuid4().hex[:8]}"
+    try:
+        rehearsal = asyncio.run(service.run_retention(operator=operator, dry_run=True))
+        assert rehearsal.ok
+        assert "would touch" in rehearsal.message
+
+        armed = asyncio.run(service.run_retention(operator=operator, dry_run=False))
+        assert armed.ok
+        assert "touched" in armed.message
+
+        rows = _platform_rows(migrated_db, operator)
+        assert [action for action, _ in rows] == ["retention_run", "retention_run"]
+        assert [details["dry_run"] for _, details in rows] == [True, False]
+    finally:
+        asyncio.run(engine.dispose())

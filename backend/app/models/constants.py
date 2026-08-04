@@ -568,3 +568,14 @@ class PlatformAuditAction(StrEnum):
     # F16's one-time deploy step (D10). platform_audit_log.action is plain TEXT
     # with no CHECK (0004), so this needs no migration.
     BOOKING_LINKS_BACKFILLED = "booking_links_backfilled"
+    # F20's operator-invoked retention run. platform_audit_log.action is plain
+    # TEXT with no CHECK (0004), so this needs no migration.
+    #
+    # ONE value covering the armed run AND the `--dry-run` rehearsal, with the
+    # mode in `details`. Unlike the per-tenant `audit_log` rows — which are the
+    # TENANT's evidence about its own data, and are therefore suppressed for a
+    # dry run and for a policy that touched nothing — this row is the record that
+    # a HUMAN pointed an irreversible multi-tenant job at production, and that is
+    # worth recording whether or not it wrote anything. A rehearsal that leaves
+    # no trace is the one an incident review most wants to find.
+    RETENTION_RUN = "retention_run"

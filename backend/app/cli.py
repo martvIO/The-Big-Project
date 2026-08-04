@@ -33,6 +33,7 @@ class ProvisioningLike(Protocol):
     ) -> CommandResult: ...
     async def suspend(self, *, slug: str, operator: str) -> CommandResult: ...
     async def backfill_booking_links(self, *, operator: str) -> CommandResult: ...
+    async def run_retention(self, *, operator: str, dry_run: bool) -> CommandResult: ...
     async def reset_owner_password(
         self, *, slug: str, owner_email: str, new_password: str, operator: str
     ) -> CommandResult: ...
@@ -75,6 +76,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="one-time: mint manage links + schedule reminders for existing future bookings",
     )
     _with_operator(backfill)
+
+    # F20's retention run. `--operator` is `required=True` HERE ONLY, deliberately
+    # diverging from `_with_operator`'s `$USER` default (D23). The five
+    # subcommands above are recoverable or read-only; this one issues an
+    # irreversible multi-tenant hard-DELETE, and `$USER` on a shared box is not
+    # an audit identity.
+    #
+    # No `--slug`: the clocks are a duty the platform enforces on every
+    # controller's behalf, and a per-tenant flag would make a legal obligation a
+    # checklist.
+    retention = sub.add_parser(
+        "retention", help="run the per-data-class retention job across every tenant"
+    )
+    retention.add_argument(
+        "--operator", required=True, help="operator identity for the audit trail"
+    )
+    retention.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="count what each policy would touch and write nothing",
+    )
 
     return parser
 
@@ -122,6 +145,8 @@ async def _dispatch(
         )
     if args.command == "backfill-booking-links":
         return _report(await service.backfill_booking_links(operator=args.operator))
+    if args.command == "retention":
+        return _report(await service.run_retention(operator=args.operator, dry_run=args.dry_run))
     if args.command == "list":
         _print_tenants(await service.list_tenants())
         return 0
