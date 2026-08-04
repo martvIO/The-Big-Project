@@ -192,6 +192,46 @@ class StaffUsersRepository:
         refreshed = await self._refreshed(session, tenant_id, staff_id)
         return wrote.scalar_one_or_none() is not None, refreshed
 
+    async def set_weekly_capacity_hours(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID, *, hours: int | None
+    ) -> StaffUser | None:
+        """F42: her weekly capacity, or `None` to clear it back to the tenant
+        default. Deliberately LAST-WRITE-WINS with an unconditional predicate —
+        no version, no if-match, no 409 (D6): a manager setting a colleague's
+        hours is making a staffing call that is hers, and a conflict dialog
+        because another manager touched the same row four seconds ago is the
+        platform second-guessing it.
+
+        `None` back means ZERO ROWS — the live row vanished between the caller's
+        `_require_seamstress` and this UPDATE. The caller maps that to the one
+        404 this route has, and it is a race.
+
+        ⚠ NO `updated_at = now()`. `update`'s docstring above is the house rule
+        verbatim: the DB trigger owns it and the re-read is what picks the
+        trigger's value back up. Neither shipped writer on this table assigns it.
+
+        The answer comes through `_refreshed` and NOT off the returning row: the
+        caller has already loaded this row (it must, for `_require_seamstress`
+        and for the audit row's `from`), so this is ORM-enabled DML whose
+        `evaluate` synchronization has stamped `hours` onto the identity-mapped
+        instance whatever the database matched. `_refreshed`'s
+        `populate_existing=True` is what makes the loser of two writes render the
+        DATABASE's hours instead of its own.
+        """
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.deleted_at.is_(None),
+            )
+            .values(weekly_capacity_hours=hours)
+            .returning(StaffUser.id)
+        )
+        if wrote.scalar_one_or_none() is None:
+            return None
+        return await self._refreshed(session, tenant_id, staff_id)
+
     async def _refreshed(
         self, session: AsyncSession, tenant_id: UUID, staff_id: UUID
     ) -> StaffUser | None:

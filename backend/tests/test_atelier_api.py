@@ -1,5 +1,5 @@
-"""F41 fast API tests: route wiring, the 401, all three roles, the per-route
-delete tightening, the host-derived tenant, the CSRF fence, the two new 409s and
+"""F41 + F42 fast API tests: route wiring, the 401, all three roles, the TWO
+per-route tightenings, the host-derived tenant, the CSRF fence, the two 409s and
 the wire shape — a duck-typed FakeAtelierService on `app.state.atelier_service`
 plus a hardcoded TenantContext resolver, no database (`test_floor_api.py` style).
 
@@ -9,7 +9,7 @@ exercised end to end with no Postgres. `test_atelier_service.py` runs below the
 router and swaps nothing, so the two prove disjoint halves.
 
 `ATELIER_ROUTES` is exported for `test_staff_role_gating.py` — the
-`test_floor_api.FLOOR_ROUTES` precedent — so these seven rows get a real
+`test_floor_api.FLOOR_ROUTES` precedent — so these eight rows get a real
 end-to-end 403 assertion rather than only the structural one.
 """
 
@@ -27,6 +27,8 @@ from app.atelier.schemas import (
     AtelierTicket,
     CreateTicketRequest,
     EffortBandRef,
+    SeamstressCapacityResponse,
+    SetCapacityRequest,
     StageRequest,
     UpdateTicketRequest,
 )
@@ -53,6 +55,14 @@ TUNED_TENANT = TenantContext(
     name="Bella Bridal",
     settings={"atelier": {"effort_bands": {"half_day": 300}}},
 )
+# F42: a tenant that has set a house capacity default. It rides the SAME
+# `TenantContext.settings` the bands do and costs the same zero statements.
+CAPACITY_TENANT = TenantContext(
+    id=TENANT.id,
+    slug="bella",
+    name="Bella Bridal",
+    settings={"atelier": {"default_weekly_capacity_hours": 36}},
+)
 
 STAFF_ID = uuid.uuid4()
 TICKET_ID = uuid.uuid4()
@@ -68,9 +78,19 @@ ASSIGN_PATH = f"/manage/atelier/tickets/{TICKET_ID}/assign"
 ADVANCE_PATH = f"/manage/atelier/tickets/{TICKET_ID}/stage/advance"
 UNDO_PATH = f"/manage/atelier/tickets/{TICKET_ID}/stage/undo"
 DELETE_PATH = f"/manage/atelier/tickets/{TICKET_ID}/delete"
+CAPACITY_PATH = f"/manage/atelier/seamstresses/{SEAMSTRESS_ID}/capacity"
+
+# The TWO routes carrying a per-route tightening on top of the router's three
+# roles. `RoleGate` composes by INTERSECTION, so a per-route gate can only ever
+# NARROW — there is no per-route widening anywhere in this codebase.
+ELEVATED_PATHS = {DELETE_PATH, CAPACITY_PATH}
 
 DUE = "2026-08-20"
 STAMP = datetime.datetime(2026, 8, 1, 8, 10, tzinfo=datetime.UTC)
+# The rolling week the load aggregate filtered on, echoed to the console because
+# it has no date arithmetic of its own (F-1). Any date will do here — what this
+# module proves is that it reaches the wire, not how it is computed.
+BOARD_HORIZON = datetime.date(2026, 8, 10)
 
 CREATE_BODY: dict[str, Any] = {
     "customer_name": "מיכל לוי",
@@ -78,6 +98,7 @@ CREATE_BODY: dict[str, Any] = {
     "due_date": DUE,
     "effort_band": "two_hours",
 }
+CAPACITY_BODY: dict[str, Any] = {"weekly_capacity_hours": 24}
 UPDATE_BODY: dict[str, Any] = {
     "due_date": "2026-08-22",
     "effort_band": "half_day",
@@ -104,11 +125,13 @@ ATELIER_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", ADVANCE_PATH, {"stage": "qc"}),
     ("POST", UNDO_PATH, {"stage": "qc"}),
     ("POST", DELETE_PATH, None),
+    ("POST", CAPACITY_PATH, CAPACITY_BODY),
 ]
 
-# The spec's D13 error table, verbatim. F41 adds EXACTLY TWO codes; asserting the
-# observed set is SET-EQUAL to this literal is what stops a third arriving
-# unnoticed.
+# The spec's D13 error table, verbatim. F41 adds EXACTLY TWO codes and F42 adds
+# NONE; asserting the observed set is SET-EQUAL to this literal is what stops a
+# third arriving unnoticed — and F42's "flags, never blocks" is precisely the
+# claim that no overload error, no capacity conflict and no 409 exists.
 SPEC_ERROR_CODES = {
     "NOT_AUTHENTICATED",
     "NOT_AUTHORIZED",
@@ -207,14 +230,26 @@ class FakeAtelierService:
         self.calls.append({"verb": verb, **kwargs})
 
     async def board(
-        self, tenant_id: uuid.UUID, *, bands: dict[EffortBand, int]
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        bands: dict[EffortBand, int],
+        default_capacity_hours: int | None,
     ) -> AtelierBoardResponse:
-        self._record("board", tenant_id=tenant_id, bands=dict(bands))
+        self._record(
+            "board",
+            tenant_id=tenant_id,
+            bands=dict(bands),
+            default_capacity_hours=default_capacity_hours,
+        )
         return AtelierBoardResponse(
             tickets=[_ticket(), _ticket(OTHER_TICKET_ID, due_date="2026-07-01", overdue=True)],
             seamstresses=[],
             effort_bands=[EffortBandRef(band=b, minutes=m) for b, m in bands.items()],
             truncated=False,
+            unassigned_minutes=240,
+            default_weekly_capacity_hours=default_capacity_hours,
+            due_soon_through=BOARD_HORIZON,
         )
 
     async def create(
@@ -301,6 +336,31 @@ class FakeAtelierService:
     ) -> None:
         self._record("delete", tenant_id=tenant_id, ticket_id=ticket_id, actor_id=actor.id)
 
+    async def set_capacity(
+        self,
+        tenant_id: uuid.UUID,
+        staff_user_id: uuid.UUID,
+        request: SetCapacityRequest,
+        *,
+        actor: StaffContext,
+        tenant_default: int | None,
+    ) -> SeamstressCapacityResponse:
+        self._record(
+            "set_capacity",
+            tenant_id=tenant_id,
+            staff_user_id=staff_user_id,
+            actor_id=actor.id,
+            hours=request.weekly_capacity_hours,
+            tenant_default=tenant_default,
+        )
+        return SeamstressCapacityResponse(
+            id=staff_user_id,
+            display_name="נועה",
+            assignable=True,
+            weekly_capacity_hours=request.weekly_capacity_hours,
+            capacity_is_default=False,
+        )
+
 
 def _client(
     fake: FakeAtelierService,
@@ -356,16 +416,28 @@ def test_every_route_is_wired_and_reaches_its_own_service_method() -> None:
         assert resp.status_code == 200, f"{method} {path} → {resp.status_code} {resp.text}"
         assert len(fake.calls) == 1, f"{method} {path} reached {len(fake.calls)} service methods"
         seen.append(fake.calls[0]["verb"])
-    assert seen == ["board", "create", "update", "assign", "advance", "undo", "delete"]
+    assert seen == [
+        "board",
+        "create",
+        "update",
+        "assign",
+        "advance",
+        "undo",
+        "delete",
+        "set_capacity",
+    ]
 
 
 @pytest.mark.parametrize("role", ATELIER_ROLES)
-def test_all_three_atelier_roles_reach_every_route_except_delete(role: str) -> None:
+def test_all_three_atelier_roles_reach_every_route_except_the_elevated_two(role: str) -> None:
     """The router gate names THREE ROLE LITERALS, not `*StaffRole`: the atelier's
     admitted set is not "every role the product has", and a sixth role added
-    later must be refused here by default."""
+    later must be refused here by default.
+
+    The two exceptions are the two per-route tightenings — `delete` and F42's
+    `capacity`."""
     for method, path, body in ATELIER_ROUTES:
-        if path == DELETE_PATH:
+        if path in ELEVATED_PATHS:
             continue
         fake = FakeAtelierService()
         with _client(fake, role=role) as client:
@@ -384,6 +456,25 @@ def test_a_seamstress_may_NOT_delete_a_ticket() -> None:
     fake = FakeAtelierService()
     with _client(fake, role=StaffRole.SEAMSTRESS.value) as client:
         resp = client.post(DELETE_PATH)
+    assert resp.status_code == 403
+    assert resp.json() == NOT_AUTHORIZED_BODY
+    assert fake.calls == []
+
+
+def test_a_seamstress_may_NOT_set_her_own_hours_or_anybody_elses() -> None:
+    """⚠ F42's per-route tightening, end to end and not merely structural.
+
+    F41 already made this rule twice: a seamstress records work (advance, undo)
+    and is refused a SCHEDULING DECISION (a `due_date` on a ticket she does not
+    hold, because that is a decision about somebody else's queue). Her weekly
+    hours are the DENOMINATOR every other bar in the workroom is read against —
+    a staffing decision about the whole board's arithmetic.
+
+    The body is the generic one, so the refusal is byte-identical to the 403 an
+    unadmitted role gets and a probe learns nothing."""
+    fake = FakeAtelierService()
+    with _client(fake, role=StaffRole.SEAMSTRESS.value) as client:
+        resp = client.post(CAPACITY_PATH, json=CAPACITY_BODY)
     assert resp.status_code == 403
     assert resp.json() == NOT_AUTHORIZED_BODY
     assert fake.calls == []
@@ -489,6 +580,58 @@ def test_a_brand_new_boutique_with_no_atelier_key_gets_the_five_platform_bands()
     assert fake.calls[0]["bands"] == DEFAULT_EFFORT_BANDS
 
 
+def test_the_BOARD_reads_the_capacity_default_off_the_same_bound_settings() -> None:
+    """The second reader of `settings["atelier"]["default_weekly_capacity_hours"]`
+    on the request, and the one that runs every five seconds. It rides the
+    already-bound `TenantContext.settings` exactly as the bands do, which is what
+    holds F42's addition to the poll's budget at ONE statement — the load
+    aggregate — rather than three.
+
+    And it reaches the envelope: the panel needs it to say whose default an
+    inherited number is, and the settings dialog opens on it with no read of its
+    own."""
+    fake = FakeAtelierService()
+    with _client(fake, tenant=CAPACITY_TENANT) as client:
+        body = client.get(BOARD_PATH).json()
+    assert fake.calls[0]["default_capacity_hours"] == 36
+    assert body["default_weekly_capacity_hours"] == 36
+
+    fresh = FakeAtelierService()
+    with _client(fresh) as client:
+        blank = client.get(BOARD_PATH).json()
+    assert fresh.calls[0]["default_capacity_hours"] is None
+    assert blank["default_weekly_capacity_hours"] is None
+
+
+def test_the_capacity_default_comes_off_the_REQUESTS_TENANT_too() -> None:
+    """The tenant's house default rides the SAME already-bound
+    `TenantContext.settings` the bands do, so the capacity write costs no extra
+    statement to learn what to resolve her cleared hours against. A brand-new
+    boutique has no `atelier` key at all and that resolves to `None` — the
+    platform ships NO default number (D2)."""
+    fake = FakeAtelierService()
+    with _client(fake, tenant=CAPACITY_TENANT) as client:
+        assert client.post(CAPACITY_PATH, json=CAPACITY_BODY).status_code == 200
+    assert fake.calls[0]["tenant_default"] == 36
+
+    fresh = FakeAtelierService()
+    with _client(fresh) as client:
+        assert client.post(CAPACITY_PATH, json=CAPACITY_BODY).status_code == 200
+    assert fresh.calls[0]["tenant_default"] is None
+
+
+def test_the_capacity_TARGET_comes_from_the_PATH_and_the_actor_from_the_SESSION() -> None:
+    """The same trust split `assign` makes. If the handler ever passed the
+    session's staffer as the target, an owner would be editing her own hours
+    every time she edited anybody's."""
+    fake = FakeAtelierService()
+    with _client(fake) as client:
+        assert client.post(CAPACITY_PATH, json=CAPACITY_BODY).status_code == 200
+    assert fake.calls[0]["staff_user_id"] == SEAMSTRESS_ID
+    assert fake.calls[0]["actor_id"] == STAFF_ID
+    assert SEAMSTRESS_ID != STAFF_ID
+
+
 def test_the_create_handler_passes_the_bands_too() -> None:
     """The band -> minutes resolution happens in the SERVICE, from this dict.
     A create that did not receive it could only fall back to the platform
@@ -502,16 +645,31 @@ def test_the_create_handler_passes_the_bands_too() -> None:
 # --- the wire shape ---
 
 
-def test_the_board_payload_is_an_envelope_with_four_named_parts() -> None:
-    """An ENVELOPE, never a bare array: F42 adds capacity to `seamstresses`, F43
-    adds fitting counts to a ticket, and a bare array would make the first of
-    those a breaking shape change on a screen that polls every five seconds."""
+def test_the_board_payload_is_an_envelope_with_SEVEN_named_parts() -> None:
+    """An ENVELOPE, never a bare array: F42 adds capacity to `seamstresses` and
+    three keys here, F43 adds fitting counts to a ticket, and a bare array would
+    have made the first of those a breaking shape change on a screen that polls
+    every five seconds.
+
+    ⚠ `tickets` IS BYTE-IDENTICAL TO F41's — not one field added, removed or
+    renamed, asserted against the frozen literal below. F41's Risk 9 promised an
+    ADDITION and D3/D7 make that literally true."""
     fake = FakeAtelierService()
     with _client(fake) as client:
         body = client.get(BOARD_PATH).json()
 
-    assert set(body) == {"tickets", "seamstresses", "effort_bands", "truncated"}
+    assert set(body) == {
+        "tickets",
+        "seamstresses",
+        "effort_bands",
+        "truncated",
+        "unassigned_minutes",
+        "default_weekly_capacity_hours",
+        "due_soon_through",
+    }
     assert body["truncated"] is False
+    assert body["unassigned_minutes"] == 240
+    assert body["due_soon_through"] == BOARD_HORIZON.isoformat()
     assert body["tickets"] == [
         {
             "id": str(TICKET_ID),
@@ -598,6 +756,25 @@ def test_every_mutation_answers_the_FULL_ticket(path: str, body: dict[str, Any])
     }
 
 
+def test_the_capacity_answer_is_capacity_facts_only() -> None:
+    """⚠ NOT a `SeamstressRef` (D6). That model requires both load numbers, this
+    path has no aggregate, and the only reachable value is `(0, 0)` — which the
+    console would patch onto the row, collapsing the very bar this save just
+    changed and dropping «עומס יתר» for up to five seconds."""
+    fake = FakeAtelierService()
+    with _client(fake) as client:
+        payload = client.post(CAPACITY_PATH, json=CAPACITY_BODY).json()
+    assert set(payload) == {
+        "id",
+        "display_name",
+        "assignable",
+        "weekly_capacity_hours",
+        "capacity_is_default",
+    }
+    assert payload["id"] == str(SEAMSTRESS_ID)
+    assert payload["weekly_capacity_hours"] == 24
+
+
 def test_delete_answers_an_ok_body_and_not_a_ticket() -> None:
     fake = FakeAtelierService()
     with _client(fake) as client:
@@ -674,6 +851,49 @@ def test_a_due_date_beyond_the_horizon_answers_the_house_shape_400() -> None:
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+@pytest.mark.parametrize("value", [True, False, "24", 24.0, "", [24], -1, 169, 1000], ids=str)
+def test_a_capacity_that_is_not_a_strict_int_in_range_is_a_400(value: Any) -> None:
+    """⚠ THE `true` ROW IS THE ONE THAT MATTERS AND IT IS A 200 AGAINST A PLAIN
+    `int`. `ForbidExtraModel` is `extra="forbid"` and nothing else, so pydantic
+    would coerce `true` to `1`, the `ge=0, le=168` bound would pass it, and a
+    seamstress who works forty hours would be recorded as working one — silently
+    reddening her bar and quietly emptying everybody else's."""
+    fake = FakeAtelierService()
+    with _client(fake) as client:
+        resp = client.post(CAPACITY_PATH, json={"weekly_capacity_hours": value})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert fake.calls == []
+
+
+def test_a_capacity_request_that_omits_the_field_is_a_400() -> None:
+    """`null` CLEARS and is a value; an omission is malformed. An optional field
+    would make the two indistinguishable."""
+    fake = FakeAtelierService()
+    with _client(fake) as client:
+        assert client.post(CAPACITY_PATH, json={}).status_code == 400
+    assert fake.calls == []
+
+
+def test_a_null_capacity_clears_and_reaches_the_service() -> None:
+    fake = FakeAtelierService()
+    with _client(fake) as client:
+        resp = client.post(CAPACITY_PATH, json={"weekly_capacity_hours": None})
+    assert resp.status_code == 200
+    assert fake.calls[0]["hours"] is None
+    assert resp.json()["weekly_capacity_hours"] is None
+
+
+@pytest.mark.parametrize("value", [0, 168])
+def test_both_ends_of_the_capacity_bound_are_admitted(value: int) -> None:
+    """`0` is «away this week» and it is a real answer; `168` is the DDL CHECK's
+    own ceiling."""
+    fake = FakeAtelierService()
+    with _client(fake) as client:
+        assert client.post(CAPACITY_PATH, json={"weekly_capacity_hours": value}).status_code == 200
+    assert fake.calls[0]["hours"] == value
+
+
 def test_an_update_that_omits_a_field_is_a_400() -> None:
     """The full-replace rule, at the wire. An optional field would make a
     malformed request that dropped `notes` indistinguishable from a deliberate
@@ -734,7 +954,7 @@ def test_the_two_conflict_bodies_are_different_sentences() -> None:
 
 
 def test_a_mutation_from_a_foreign_origin_is_refused() -> None:
-    """All six POSTs ARE fenced — CsrfOriginMiddleware gates on
+    """All SEVEN POSTs ARE fenced — CsrfOriginMiddleware gates on
     `request.method in MUTATING_METHODS`."""
     for method, path, body in ATELIER_ROUTES:
         if method != "POST":

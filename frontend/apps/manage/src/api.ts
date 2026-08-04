@@ -113,14 +113,34 @@ export interface ToggleSettings {
   brides_only?: boolean;
 }
 
+// ⚠ The server's `SettingsResponse` also carries an `atelier` block since F42
+// and it is DELIBERATELY not mirrored here: nothing in this console reads it.
+// The settings dialog prefills from the ATELIER BOARD envelope, which the poll
+// already holds, and patching a poll-owned field from a different endpoint's
+// response would put a second writer on data the board is authoritative for.
 export interface Settings {
   profile: ProfileSettings;
   toggles: ToggleSettings;
 }
 
+// F42. ⚠ A FULL REPLACE OF THE WHOLE `atelier` BLOCK — both keys REQUIRED, no
+// optional anywhere, and that is structural rather than a convention.
+// `merge_settings` is one atomic `settings = settings || :patch::jsonb` and `||`
+// merges at the TOP LEVEL ONLY, so a patch carrying a PARTIAL `atelier` object
+// replaces the whole key and DELETES what it did not name. A "save bands"
+// button and a "save default hours" button would silently erase each other's
+// work; one dialog, one save, one request is what makes that unreachable.
+export interface AtelierSettingsUpdate {
+  effort_bands: Record<EffortBand, number>;
+  // `null` CLEARS the boutique's default. Required, so a bands-only save cannot
+  // silently drop it — the shallow-merge trap above wearing a different hat.
+  default_weekly_capacity_hours: number | null;
+}
+
 export interface UpdateSettingsRequest {
   profile?: ProfileSettings;
   toggles?: ToggleSettings;
+  atelier?: AtelierSettingsUpdate;
 }
 
 export type AppointmentAudience = "all" | "brides_only";
@@ -1011,15 +1031,57 @@ export interface AtelierTicket {
 // «תופרת שאינה פעילה» branch is data-driven instead of inferred from absence:
 // F51's staff CRUD can re-role or retire a seamstress and knows nothing about
 // this table.
+// F42's four fields, and it is four rather than the two F41 predicted.
+//
+// `weekly_capacity_hours` is RESOLVED on the server — her own column, else the
+// tenant default, else null, which is a REAL ANSWER meaning "no bar" and never
+// a missing one. ⚠ `null` and `0` are opposite states and every fold in
+// lib/capacity.ts branches on `=== null` for that reason: 0 is a seamstress who
+// is not available this week and 360 minutes against it is an overload, while
+// null is a boutique that has not told this product anything.
+//
+// `capacity_is_default` is the third because the resolved number and her own
+// column are DIFFERENT FACTS: the panel must not present an inherited number as
+// hers, and the editor must tell "clear back to the default" from "set to the
+// same number".
+//
+// `due_soon_minutes` is the bar's numerator — a FLOW, the work due inside the
+// server's rolling week — and `assigned_minutes` is her whole undelivered
+// queue, a STOCK. Dividing the stock by a week's capacity is not a utilisation
+// of anything; it renders every healthy boutique red on day one. The bar takes
+// the first and the row states both, in words.
 export interface SeamstressRef {
   id: string;
   display_name: string;
   assignable: boolean;
+  weekly_capacity_hours: number | null;
+  capacity_is_default: boolean;
+  assigned_minutes: number;
+  due_soon_minutes: number;
 }
 
 export interface EffortBandRef {
   band: EffortBand;
   minutes: number;
+}
+
+// F42's capacity write answers CAPACITY FACTS ONLY — it is deliberately NOT a
+// `SeamstressRef`.
+//
+// ⚠ THE MISSING TWO FIELDS ARE THE POINT. `SeamstressRef` requires
+// `assigned_minutes` and `due_soon_minutes`; this path has no aggregate (the
+// load sums are a board read inside the poll's own session) and buying one
+// would be a second business statement on a write. The only value reachable
+// without it is `(0, 0)` — which would collapse her bar and drop her «עומס יתר»
+// word for up to five seconds on this feature's primary surface, at the moment
+// a manager is looking at it. The console is already holding both numbers from
+// the last tick and patches ONLY the three keys below onto the held row.
+export interface SeamstressCapacityResponse {
+  id: string;
+  display_name: string;
+  assignable: boolean;
+  weekly_capacity_hours: number | null;
+  capacity_is_default: boolean;
 }
 
 // An ENVELOPE, not a bare array: F42 adds capacity to `seamstresses` and F43
@@ -1034,6 +1096,21 @@ export interface AtelierBoardResponse {
   seamstresses: SeamstressRef[];
   effort_bands: EffortBandRef[];
   truncated: boolean;
+  // The load aggregate's NULL group: work nobody holds. ⚠ The UNFILTERED sum,
+  // not the seven-day slice — the panel draws no bar for it, so there is no
+  // rate to narrow a week to, and «בתור» on the seamstress rows already means
+  // this quantity.
+  unassigned_minutes: number;
+  // Off the tenant's settings at zero extra statements, so the settings dialog
+  // opens with no read of its own and the panel can say WHOSE default an
+  // inherited number is.
+  default_weekly_capacity_hours: number | null;
+  // ⚠ A PLAIN CALENDAR DATE ("2026-08-11"), AND THE CLIENT CANNOT COMPUTE IT.
+  // lib/jerusalem.ts ships six formatters and zero date arithmetic, and a
+  // browser that has crossed Jerusalem midnight while this payload was held
+  // would print a horizon the SQL never filtered on. It is rendered by
+  // `plainDate`, which takes no Date and no zone.
+  due_soon_through: string;
 }
 
 // ⚠ `dress_id` is ALWAYS null from this console. The catalog picker is cut from
@@ -1468,5 +1545,23 @@ export const api = {
   // un-delete.
   deleteTicket(ticketId: string): Promise<OkResponse> {
     return apiFetch(`${ticketPath(ticketId)}/delete`, { method: "POST" });
+  },
+  // F42. The SECOND per-route tightening on this router, `delete`'s shape
+  // exactly: owner and shift manager only. A seamstress may not set her own
+  // weekly hours or anybody else's — it is the DENOMINATOR every other bar in
+  // the workroom is read against, so it is a staffing decision about the whole
+  // board's arithmetic rather than a record of work she has done.
+  //
+  // ⚠ The acting identity is the session cookie and the TARGET is the PATH —
+  // `assign`'s split, for `assign`'s reason. `null` is a VALUE meaning "use the
+  // boutique's default" and never an omitted key.
+  setSeamstressCapacity(
+    staffUserId: string,
+    hours: number | null,
+  ): Promise<SeamstressCapacityResponse> {
+    return apiFetch(
+      `/manage/atelier/seamstresses/${encodeURIComponent(staffUserId)}/capacity`,
+      { method: "POST", body: { weekly_capacity_hours: hours } },
+    );
   },
 };

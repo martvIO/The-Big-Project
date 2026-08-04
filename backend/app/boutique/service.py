@@ -8,9 +8,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
+from app.auth.service import StaffContext
 from app.boutique.validation import (
     WeeklyRuleInput,
     validate_appointment_type,
+    validate_atelier_settings,
     validate_exception_note,
     validate_exception_times,
     validate_profile,
@@ -19,6 +21,7 @@ from app.boutique.validation import (
     validate_weekly_rules,
 )
 from app.db.repositories.appointment_types import AppointmentTypesRepository
+from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.availability import (
     AvailabilityExceptionsRepository,
     AvailabilityRulesRepository,
@@ -29,7 +32,7 @@ from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
-from app.models.constants import AppointmentAudience
+from app.models.constants import AppointmentAudience, AuditAction
 from app.models.terms_version import TermsVersion
 
 TERMS_HISTORY_DEFAULT_LIMIT = 50
@@ -65,6 +68,7 @@ class TermsThrottledError(Exception):
 class SettingsResult:
     profile: dict[str, Any]
     toggles: dict[str, Any]
+    atelier: dict[str, Any]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -86,6 +90,10 @@ def _settings_result(settings: dict[str, Any]) -> SettingsResult:
     return SettingsResult(
         profile=dict(settings.get("profile") or {}),
         toggles=dict(settings.get("toggles") or {}),
+        # The shipped `or {}` idiom, and here it is the brand-new-boutique case
+        # rather than a defensive habit: no writer could reach `settings["atelier"]`
+        # before this feature, so an absent key is NORMAL.
+        atelier=dict(settings.get("atelier") or {}),
     )
 
 
@@ -106,6 +114,7 @@ class BoutiqueSettingsService:
         self._rules = AvailabilityRulesRepository()
         self._exceptions = AvailabilityExceptionsRepository()
         self._terms = TermsVersionsRepository()
+        self._audit = AuditLogRepository()
         self._terms_limiter = terms_rate_limiter
 
     # --- profile + toggles (tenants.settings JSONB) ---
@@ -120,17 +129,70 @@ class BoutiqueSettingsService:
         self,
         tenant_id: UUID,
         *,
+        actor: StaffContext,
         profile: dict[str, Any] | None = None,
         toggles: dict[str, Any] | None = None,
+        atelier: dict[str, Any] | None = None,
     ) -> SettingsResult:
+        """`actor` is F42's (D5 edit #7) and it is REQUIRED rather than optional:
+        `audit_log.actor_id` is nullable, so an actor-less row would insert
+        silently and green while D12's entire justification is «the denominator
+        of every capacity number in the boutique changed and nobody can say who
+        or when».
+
+        `profile` and `toggles` stay UNAUDITED. F42 audits the key it owns and
+        does not widen a pre-existing gap it did not create.
+        """
         if profile is not None:
             validate_profile(profile)
         if toggles is not None:
             validate_toggles(toggles)
-        merged = await self._tenants.merge_settings(tenant_id, profile=profile, toggles=toggles)
+        if atelier is not None:
+            validate_atelier_settings(atelier)
+        merged = await self._tenants.merge_settings(
+            tenant_id, profile=profile, toggles=toggles, atelier=atelier
+        )
         if merged is None:
             raise NotFoundError
+        if atelier is not None:
+            await self._record_atelier_settings(tenant_id, actor=actor, atelier=atelier)
         return _settings_result(merged)
+
+    async def _record_atelier_settings(
+        self, tenant_id: UUID, *, actor: StaffContext, atelier: dict[str, Any]
+    ) -> None:
+        """⚠ ITS OWN TRANSACTION, AFTER THE MERGE SUCCEEDS, AND THAT IS A KNOWN
+        AND BOUNDED COMPROMISE. F15's rule is that an audit row rides the same
+        session as the write it describes, before commit. That is structurally
+        impossible here: `TenantsRepository` is constructed with a
+        `session_factory` and opens its own session inside every method, so
+        nothing can join `merge_settings`' transaction.
+
+        The options were (a) no audit row or (b) a row written after the merge
+        returns non-None, in its own session. (b), because the failure mode is
+        ONE-DIRECTIONAL: a crash between the two loses a row and can never invent
+        one, and «nobody can say who or when» is the worse state. Ordering is the
+        assertion — a merge that answers None writes nothing.
+
+        The row carries the whole NEW value and no `from`: the trail IS the
+        history, so the previous mapping is the previous row's value, and
+        computing a diff would need exactly the read-modify-write the atomic
+        `||` exists to avoid. That is what makes the designed last-write-wins on
+        this block recoverable.
+
+        *Upgrade path: give `merge_settings` an optional `session` parameter the
+        day a second caller needs atomicity. Not bought here — it is a shipped
+        class with other callers.*
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.ATELIER_SETTINGS_UPDATED,
+                actor_id=actor.id,
+                entity=str(tenant_id),
+                details=atelier,
+            )
 
     # --- appointment types ---
 

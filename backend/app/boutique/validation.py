@@ -13,8 +13,9 @@ from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
+from app.atelier.stages import MAX_BAND_MINUTES, MAX_WEEKLY_CAPACITY_HOURS
 from app.errors import DomainValidationError
-from app.models.constants import AppointmentAudience
+from app.models.constants import AppointmentAudience, EffortBand
 
 
 class BoutiqueValidationError(DomainValidationError):
@@ -56,6 +57,8 @@ _PROFILE_FIELDS = frozenset({"phone", "address", "description", "maps_url", "ess
 # link — ContactPanel builds https://instagram.com/{handle} from this verbatim.
 _INSTAGRAM_HANDLE = re.compile(r"^[A-Za-z0-9._]{1,30}\Z")
 _TOGGLE_FIELDS = frozenset({"deposits_enabled", "brides_only"})
+_ATELIER_FIELDS = frozenset({"effort_bands", "default_weekly_capacity_hours"})
+_BAND_KEYS = frozenset(band.value for band in EffortBand)
 _AUDIENCE_VALUES = frozenset(member.value for member in AppointmentAudience)
 
 
@@ -136,6 +139,54 @@ def validate_toggles(toggles: dict[str, Any]) -> None:
         # isinstance check, not truthiness: 1/"true" must not masquerade as bools.
         if not isinstance(value, bool):
             raise BoutiqueValidationError(f"{field} must be a boolean")
+
+
+def validate_atelier_settings(atelier: dict[str, Any]) -> None:
+    """F42's `atelier` block (D5). It owns EXACTLY what a request model cannot
+    express, and nothing else.
+
+    ⚠ THE INT-NESS AND THE ANTI-`bool` RULE ARE `AtelierSettingsUpdate`'s, NOT
+    THIS FUNCTION'S. `ForbidExtraModel` is `extra="forbid"` and nothing else, so
+    without `StrictInt` up there pydantic would coerce `{"half_day": true}` to
+    `1` before this function ever ran and an `isinstance(v, bool)` check here
+    would be unreachable code. The refusal has to happen at the type, which is
+    why this validator does not attempt it.
+
+    What it does own:
+
+    - the MISSING band key. `dict[EffortBand, StrictInt]` refuses an UNKNOWN key;
+      only a set equality refuses an absent one. The read side tolerates a
+      partial mapping as a backstop against a hand-edited blob (`stages.py`
+      falls back per band) — that is not a contract for the API, because a
+      three-band save would silently revert the other two to platform numbers.
+    - the two ranges, both imported from `app/atelier/stages.py` so the settings
+      bound and the DDL CHECK cannot drift. That import edge is acyclic:
+      `atelier.stages` imports only `app.models`.
+
+    Bands are deliberately NOT required to be distinct or increasing — an owner
+    may flatten her two longest onto one number, and refusing it would be the
+    platform having an opinion about her workroom (D4 owns the consequence).
+    """
+    unknown = set(atelier) - _ATELIER_FIELDS
+    if unknown:
+        raise BoutiqueValidationError(f"unknown atelier keys: {', '.join(sorted(unknown))}")
+
+    bands = atelier.get("effort_bands")
+    if not isinstance(bands, dict) or set(bands) != _BAND_KEYS:
+        raise BoutiqueValidationError(
+            f"effort_bands must name exactly: {', '.join(sorted(_BAND_KEYS))}"
+        )
+    for band, minutes in bands.items():
+        if not isinstance(minutes, int) or not 1 <= minutes <= MAX_BAND_MINUTES:
+            raise BoutiqueValidationError(f"{band} must be between 1 and {MAX_BAND_MINUTES}")
+
+    default = atelier.get("default_weekly_capacity_hours")
+    if default is not None and (
+        not isinstance(default, int) or not 0 <= default <= MAX_WEEKLY_CAPACITY_HOURS
+    ):
+        raise BoutiqueValidationError(
+            f"default_weekly_capacity_hours must be between 0 and {MAX_WEEKLY_CAPACITY_HOURS}"
+        )
 
 
 def validate_appointment_type(

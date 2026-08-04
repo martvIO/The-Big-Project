@@ -76,6 +76,26 @@ const HE_F41 = entries(
 // sharpest assertion in the file: an alert is an INTERRUPTION, not a
 // destination, so F37 adds no console section and no nav row (spec D11).
 const HE_F37 = entries(he.translation, (key) => key.startsWith("sos."));
+// F42's capacity block. ⚠ IT IS DERIVED FROM HE_F41 AND IS DELIBERATELY NOT IN
+// THE UNION BELOW. Every one of these forty rows is already inside HE by
+// prefix — `atelier.` — so a second `entries(...)` spread into `HE` would
+// DOUBLE-COUNT them and make the resolve check, both register guards and the
+// `ar` presence guard run twice over F41's 95 keys, silently and greenly. The
+// duplicate assertion in F42's own block is what keeps that true.
+//
+// ⚠ The third term is by EXACT KEY and not `startsWith("atelier.cue.")`, which
+// would swallow F41's six shipped cue keys and turn this block's floor into a
+// partial re-count of F41's. `atelier.cue.assignedOverload` sits beside them
+// because it is one clause on THEIR cue — and it is the only thing a
+// screen-reader user ever hears about an overload she just caused, so it may
+// not be the one key this block drops.
+const HE_F42 = HE_F41.filter(
+  ([key]) =>
+    key.startsWith("atelier.capacity.") ||
+    key.startsWith("atelier.settings.") ||
+    key === "atelier.cue.assignedOverload",
+);
+
 // F60's guided walkthrough. NO `nav.` term in this selector either, and that is
 // an assertion rather than an omission: the guide adds no console section and no
 // nav row — `SectionKey` stays fourteen, `NAV` stays fourteen, `Nav.test.tsx`
@@ -1028,6 +1048,209 @@ describe("F37 sos keys resolve", () => {
     // surface. The cancel twin is the key spec D17 does not list at all.
     expect(i18n.t("sos.error.alreadyAcceptedUnknown")).not.toContain("{{");
     expect(i18n.t("sos.error.cancelAfterAcceptUnknown")).toContain("«נפתר»");
+  });
+});
+
+describe("F42 capacity keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // 40 invented, 7 reused. The reused seven are F41's — `form.cancel`, the
+    // five `band.*` words and `assigneeInactive` — and they are deliberately
+    // NOT re-declared under this namespace: one act, one word.
+    expect(HE_F42.length).toBeGreaterThanOrEqual(40);
+  });
+
+  it("carries the one key that is neither capacity. nor settings.", () => {
+    // The assertion that catches the deck's own two-prefix filter. It selects
+    // 39 of 40 and the one it drops is the ONLY thing a screen-reader user
+    // hears about an overload she just caused.
+    expect(HE_F42.map(([key]) => key)).toContain("atelier.cue.assignedOverload");
+    // ⚠ AND THE OTHER HALF, which is what makes the term EXACT rather than a
+    // prefix: `startsWith("atelier.cue.")` would swallow F41's six shipped cue
+    // keys and turn this block's floor into a partial re-count of F41's — 46
+    // rows clearing a floor of 40 while F42's own deck shipped six keys short.
+    for (const shipped of [
+      "atelier.cue.created",
+      "atelier.cue.advanced",
+      "atelier.cue.undone",
+      "atelier.cue.assigned",
+      "atelier.cue.released",
+      "atelier.cue.deleted",
+    ]) {
+      expect(HE_F42.map(([key]) => key)).not.toContain(shipped);
+    }
+  });
+
+  it("is DERIVED from HE_F41 and not spread into HE a second time", () => {
+    // The inverse of F41's "is FOLDED into HE" assertion, and it is the one
+    // that costs an afternoon when it is missing: these rows are already in HE
+    // by prefix, so spreading a second block would double-count them.
+    expect(HE.map(([key]) => key)).toContain("atelier.capacity.heading");
+    const keys = HE.map(([key]) => key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("resolves every capacity and settings key to its own Hebrew", () => {
+    // HE's own resolve check covers these by prefix; this one names the block
+    // so a future edit that narrowed HE_F41's filter would red HERE, where the
+    // reason is written, rather than 300 rows up.
+    for (const [key, value] of HE_F42) {
+      expect(i18n.t(key)).toBe(value);
+    }
+  });
+
+  it("starts both new accessible names with their visible label (WCAG 2.5.3)", () => {
+    // Asserted, not trusted. A six-row panel exposes six buttons all named
+    // «שעות», so each needs a per-row name — but the name must still BEGIN with
+    // the visible string or a speech-input user saying «שעות» matches nothing.
+    const pairs: [string, string][] = [
+      ["atelier.capacity.edit", "atelier.capacity.editAria"],
+      ["atelier.settings.open", "atelier.settings.openAria"],
+    ];
+    for (const [visible, aria] of pairs) {
+      expect(i18n.t(aria, { name: "נועה לוי" })).toMatch(new RegExp(`^${i18n.t(visible)}`));
+    }
+  });
+
+  it("gives the panel's two names to two different keys", () => {
+    // The <h3> is COUNTED and the <ul>'s aria-label is not, because an
+    // accessible name must not churn on a five-second tick — `seamstresses` is
+    // a union, so a retired assignee leaves it when her last undelivered ticket
+    // is delivered, with no staff edit at all.
+    expect(i18n.t("atelier.capacity.heading")).toBe("תופרות");
+    expect(i18n.t("atelier.capacity.headingCount", { total: 3 })).toBe("תופרות · 3");
+    expect(i18n.t("atelier.capacity.heading")).not.toBe(
+      i18n.t("atelier.capacity.headingCount", { total: 3 }),
+    );
+  });
+
+  it("interpolates the row's three numerals, the horizon date and the totals", () => {
+    // ⚠ `{{total}}`, NEVER `{{count}}` — `count` is i18next's plural-resolution
+    // trigger, so a bundle carrying only the base key resolves through a
+    // fallback path. F41's rule 11, inherited, and asserted over the whole block
+    // rather than on one string.
+    expect(HE_F42.filter(([, value]) => value.includes("{{count}}"))).toEqual([]);
+    expect(i18n.t("atelier.capacity.load", { hours: 6, date: "11.8", capacity: 12 })).toBe(
+      "6 שעות עד 11.8 מתוך 12",
+    );
+    expect(i18n.t("atelier.capacity.loadNoCapacity", { hours: 4 })).toBe("4 שעות");
+    expect(i18n.t("atelier.capacity.backlog", { hours: 46 })).toBe("סה״כ 46 שעות בתור");
+    expect(i18n.t("atelier.capacity.unassignedRow", { hours: 4 })).toBe("לא משויך · 4 שעות");
+  });
+
+  it("spells overload with the SAME two words in all three renderings", () => {
+    // The panel row, the assign <option> and the assign cue. A manager who
+    // reads it on a row and hears it on a cue must not have to work out that
+    // they are the same fact — so the option and the cue are asserted to
+    // CONTAIN the row's own string rather than to match a transcription.
+    const over = i18n.t("atelier.capacity.over");
+    expect(over).toBe("עומס יתר");
+    expect(i18n.t("atelier.cue.assignedOverload", { seamstress: "נועה לוי" })).toContain(over);
+    expect(i18n.t("atelier.capacity.optionRow", { name: "נועה לוי", detail: over })).toBe(
+      "נועה לוי · עומס יתר",
+    );
+  });
+
+  it("composes the assign option's separator from a key, not from a TSX literal", () => {
+    // F41 renders {row.display_name} alone in this <option> and declares no key
+    // of this shape, so all three option strings would otherwise ship as bare
+    // Hebrew literals in TSX — outside the `ar` parity guard and outside this
+    // fold. Even the « · » is an interpolation of `optionRow`.
+    expect(i18n.t("atelier.capacity.optionRow", { name: "נועה", detail: "x" })).toBe("נועה · x");
+    expect(i18n.t("atelier.capacity.optionRemaining", { hours: 6 })).toBe("נותרו 6 שעות");
+    expect(i18n.t("atelier.capacity.optionAssigned", { hours: 6 })).toBe("6 שעות משויכות");
+  });
+
+  it("names the seamstress in the two cues that outlive her row's control", () => {
+    // The dialog has closed and focus has gone back to a trigger that says only
+    // «שעות», so the cue is the only thing that says WHOSE hours were saved.
+    // Clearing is a different sentence and not a parameter: her own number is
+    // gone and the boutique's applies, and «עודכנו השעות» on a clear would be
+    // true and useless.
+    expect(i18n.t("atelier.capacity.cue.saved", { name: "נועה לוי" })).toContain("נועה לוי");
+    expect(i18n.t("atelier.capacity.cue.cleared", { name: "נועה לוי" })).toContain("נועה לוי");
+    expect(i18n.t("atelier.capacity.cue.saved", { name: "נועה לוי" })).not.toBe(
+      i18n.t("atelier.capacity.cue.cleared", { name: "נועה לוי" }),
+    );
+    // The settings save names nobody — the subject is the boutique.
+    expect(i18n.t("atelier.settings.cue.saved")).toBe("ההגדרות נשמרו.");
+  });
+
+  it("mirrors NO server bound in any Hebrew sentence", () => {
+    // ⚠ 168 is MAX_WEEKLY_CAPACITY_HOURS and 1440 is MAX_BAND_MINUTES. A
+    // Hebrew sentence quoting one is a mirror exactly as much as a TypeScript
+    // constant is, WITH NONE OF THE PROTECTION —
+    // test_frontend_constant_parity.py scrapes only the two validation.ts
+    // files, so raising the DB CHECK would leave the sentence lying silently
+    // and greenly. F41 declared `form.error.dueDateHorizon` and CUT IT AT
+    // REVIEW for this rule, and its reason is recorded in the F41 block above.
+    //
+    // The copy states the SHAPE of the mistake; the server's 400 states the
+    // range. F41's whole-block digit guard already forbids every literal digit
+    // under `atelier.`, so this is the named twin rather than a second net.
+    expect(HE_F42.filter(([, value]) => /168|1440/.test(value))).toEqual([]);
+    expect(i18n.t("atelier.capacity.error.hours")).toBe("צריך מספר שעות שלם ולא שלילי.");
+    expect(i18n.t("atelier.settings.error.minutes")).toBe("צריך מספר דקות שלם וחיובי.");
+    // ⚠ «ולא שלילי» on the capacity field and «חיובי» on the band field, and
+    // the difference is real: a band of 0 minutes is meaningless, a capacity of
+    // 0 hours is a seamstress who is not available this week.
+    expect(i18n.t("atelier.capacity.error.hours")).not.toBe(
+      i18n.t("atelier.settings.error.minutes"),
+    );
+  });
+
+  it("keeps the two Hebrew default branches apart and out of English", () => {
+    // main.py's bodies are ENGLISH and this console is Hebrew-only; the
+    // concrete message this route produces is `_require_seamstress`'s literal
+    // "staff_user_id must be a live seamstress". Two strings, so a manager with
+    // both dialogs open in one minute can tell which save failed.
+    expect(i18n.t("atelier.capacity.error.server")).not.toBe(
+      i18n.t("atelier.settings.error.server"),
+    );
+    for (const key of ["atelier.capacity.error.server", "atelier.settings.error.server"]) {
+      expect(i18n.t(key)).toContain("אפשר לנסות שוב");
+    }
+  });
+
+  it("says nothing about a boutique default, on a boutique that has none", () => {
+    // Two help strings, because one of them would be a lie exactly when it is
+    // read most: every boutique on day one has no default at all, and
+    // `hoursHelp` promises a fallback that does not exist there.
+    expect(i18n.t("atelier.capacity.hoursHelp", { hours: 30 })).toContain("30");
+    expect(i18n.t("atelier.capacity.hoursHelpNoDefault")).not.toContain("{{");
+    expect(i18n.t("atelier.capacity.hoursHelp", { hours: 30 })).not.toBe(
+      i18n.t("atelier.capacity.hoursHelpNoDefault"),
+    );
+  });
+
+  it("declares three byte-identical «שמירה» keys rather than sharing one", () => {
+    // §0 rule 8's deliberate duplication, F41's F-9 pattern: saving a person's
+    // hours, saving the boutique's ruler and saving a ticket are THREE facts,
+    // and a shared key is how one of them ends up renamed for all three.
+    expect(i18n.t("atelier.capacity.submit")).toBe("שמירה");
+    expect(i18n.t("atelier.settings.submit")).toBe("שמירה");
+    expect(i18n.t("atelier.form.submitEdit")).toBe("שמירה");
+  });
+
+  it("promises no notification, in any tense", () => {
+    // Trivially satisfied — nothing in F42 sends, notifies or texts anything —
+    // and asserted anyway, because «נודיע לתופרת» is exactly the sentence a
+    // well-meaning editor would add to an overload cue. It would be a lie
+    // before it was a red.
+    const values = HE_F42.map(([, value]) => value);
+    expect(values.filter((value) => /נשלח|תישלח|בדרך|נודיע|הודעה/.test(value))).toEqual([]);
+  });
+
+  it("carries the approved Hebrew VALUE for every capacity key, not merely the key", () => {
+    // F41 declared no `ar` VALUE guard, so without this twin F42's forty
+    // hand-transcribed strings would ship with only the presence check — which
+    // passes on an English string, a `TODO`, or a different Hebrew wording.
+    // There is still no he/ar parity guard anywhere in this repo (F15's Risk
+    // 5), so each block declares its own.
+    const arTranslation = ar.translation as Record<string, string>;
+    const drifted = HE_F42.filter(([key, value]) => arTranslation[key] !== value).map(
+      ([key]) => key,
+    );
+    expect(drifted).toEqual([]);
   });
 });
 

@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.auth.rate_limit import FixedWindowRateLimiter
+from app.auth.service import StaffContext
 from app.boutique.service import BoutiqueSettingsService
 from app.boutique.validation import WeeklyRuleInput
 from app.catalog.service import CatalogNotFoundError, CatalogService
@@ -169,6 +170,15 @@ async def _seed(factory: async_sessionmaker[AsyncSession], identity: _Identity) 
     )
     await _boutique(factory).update_settings(
         tenant.id,
+        # F42: a required keyword, and no audit row is written — these calls
+        # carry no `atelier` block.
+        actor=StaffContext(
+            id=uuid.uuid4(),
+            tenant_id=tenant.id,
+            email="owner@bella.example",
+            display_name="Owner",
+            role="owner",
+        ),
         profile={
             "essence": identity.essence,
             "phone": identity.phone,

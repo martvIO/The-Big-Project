@@ -5,7 +5,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { run } from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
-import type { AtelierBoardResponse, AtelierTicket, TicketStage } from "../api";
+import i18n from "../i18n";
+import type { AtelierBoardResponse, AtelierTicket, SeamstressRef, TicketStage } from "../api";
 import { AtelierSection } from "../components/AtelierSection";
 import { IDLE_STOP_MS, POLL_INTERVAL_MS } from "../lib/usePoll";
 
@@ -22,6 +23,8 @@ vi.mock("../api", async () => {
       advanceStage: vi.fn(),
       undoStage: vi.fn(),
       deleteTicket: vi.fn(),
+      setSeamstressCapacity: vi.fn(),
+      updateSettings: vi.fn(),
     },
   };
 });
@@ -34,6 +37,8 @@ const assignTicket = vi.mocked(api.assignTicket);
 const createTicket = vi.mocked(api.createTicket);
 const updateTicket = vi.mocked(api.updateTicket);
 const deleteTicket = vi.mocked(api.deleteTicket);
+const setSeamstressCapacity = vi.mocked(api.setSeamstressCapacity);
+const updateSettings = vi.mocked(api.updateSettings);
 
 // 11:07Z is 14:07 in Jerusalem (IDT, UTC+3) and 07:07 in New York — and the test
 // script pins TZ=America/New_York, so an unzoned read prints 07:07 and every
@@ -76,15 +81,35 @@ const BANDS = [
   { band: "full_day", minutes: 480 },
 ] as const;
 
+// F42 widened SeamstressRef by four fields and AtelierBoardResponse by three.
+// The defaults here are the state a boutique that has never opened the capacity
+// dialog is in — no capacity anywhere, no load — so every F41 assertion in this
+// file keeps testing what it tested.
+function seamstress(overrides: Partial<SeamstressRef> = {}): SeamstressRef {
+  return {
+    id: NOA_ID,
+    display_name: "נועה לוי",
+    assignable: true,
+    weekly_capacity_hours: null,
+    capacity_is_default: false,
+    assigned_minutes: 0,
+    due_soon_minutes: 0,
+    ...overrides,
+  };
+}
+
 function board(
   tickets: AtelierTicket[],
   overrides: Partial<AtelierBoardResponse> = {},
 ): AtelierBoardResponse {
   return {
     tickets,
-    seamstresses: [{ id: NOA_ID, display_name: "נועה לוי", assignable: true }],
+    seamstresses: [seamstress()],
     effort_bands: BANDS.map((entry) => ({ ...entry })),
     truncated: false,
+    unassigned_minutes: 0,
+    default_weekly_capacity_hours: null,
+    due_soon_through: "2026-08-11",
     ...overrides,
   };
 }
@@ -123,6 +148,8 @@ beforeEach(() => {
   createTicket.mockReset();
   updateTicket.mockReset();
   deleteTicket.mockReset();
+  setSeamstressCapacity.mockReset();
+  updateSettings.mockReset();
 });
 
 afterEach(() => {
@@ -148,6 +175,20 @@ async function clickAndSettle(node: HTMLElement) {
 
 const STAGE_WORDS = ["התקבל", "בעבודה", "בקרה", "מוכן", "נמסר"] as const;
 
+// ⚠ F42 adds a SIXTH <section> and a SIXTH <h3> — the seamstress panel — and it
+// renders ABOVE the columns, so every shipped structural assertion that counted
+// or indexed «all of them» now has to say which it meant. It always meant the
+// COLUMNS; nothing about the five changed.
+function columnRegions(): HTMLElement[] {
+  return screen.getAllByRole("region").filter((node) => node.getAttribute("aria-labelledby") !== "atelier-h-capacity");
+}
+
+function columnHeadings(): HTMLElement[] {
+  return screen
+    .getAllByRole("heading", { level: 3 })
+    .filter((node) => node.id !== "atelier-h-capacity");
+}
+
 // --- §9.1: five named regions of five named lists ---------------------------
 
 describe("the board's structure", () => {
@@ -171,7 +212,7 @@ describe("the board's structure", () => {
     mount();
     await screen.findByText("מיכל לוי");
 
-    const regions = screen.getAllByRole("region");
+    const regions = columnRegions();
     expect(regions).toHaveLength(5);
     regions.forEach((region, index) => {
       expect(region.getAttribute("aria-labelledby")).not.toBeNull();
@@ -188,7 +229,7 @@ describe("the board's structure", () => {
     mount();
     await screen.findByText("מיכל לוי");
 
-    const intake = screen.getAllByRole("heading", { level: 3 })[0];
+    const intake = columnHeadings()[0];
     expect(intake).toHaveTextContent("התקבל · 2");
     expect(intake.textContent).not.toContain("כרטיס");
   });
@@ -216,7 +257,9 @@ describe("the board's structure", () => {
     await screen.findByText("רותם כהן");
 
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(1);
-    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(5);
+    expect(columnHeadings()).toHaveLength(5);
+    // …and the panel's is the sixth, ABOVE them, which is where its content is.
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(6);
     expect(screen.queryAllByRole("heading", { level: 4 })).toHaveLength(0);
   });
 
@@ -230,7 +273,7 @@ describe("the board's structure", () => {
     mount();
     await screen.findByText("מיכל לוי");
 
-    const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent ?? "");
+    const headings = columnHeadings().map((h) => h.textContent ?? "");
     STAGE_WORDS.forEach((word, index) => expect(headings[index]).toContain(word));
 
     // Server order, verbatim: due_date ASC is the bride-date rank the epic
@@ -557,8 +600,13 @@ describe("the board states", () => {
     mount();
     await screen.findByText("אין עדיין כרטיסי תפירה");
 
-    expect(screen.queryAllByRole("region")).toHaveLength(0);
+    expect(columnRegions()).toHaveLength(0);
     expect(screen.queryByRole("navigation", { name: "מעבר לשלב" })).toBeNull();
+    // ⚠ …and the PANEL is still here, which is the point of it gating on the
+    // envelope rather than on the tickets: this is the branch a brand-new
+    // boutique opens on, and setting capacity before the first intake is the
+    // useful order.
+    expect(screen.getByRole("region", { name: /תופרות/ })).toBeInTheDocument();
     const body = screen.getByText(/כל כרטיס עובר חמישה שלבים/);
     for (const word of STAGE_WORDS) {
       expect(body).toHaveTextContent(word);
@@ -728,8 +776,8 @@ describe("the board states", () => {
     expect(
       within(screen.getByRole("list", { name: "בעבודה" })).getByText("מיכל לוי"),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { level: 3 })[1]).toHaveTextContent("בעבודה · 1");
-    expect(screen.getAllByRole("heading", { level: 3 })[0]).toHaveTextContent("התקבל · 0");
+    expect(columnHeadings()[1]).toHaveTextContent("בעבודה · 1");
+    expect(columnHeadings()[0]).toHaveTextContent("התקבל · 0");
   });
 
   it("suppresses every tick while a mutation is in flight", async () => {
@@ -930,8 +978,8 @@ describe("which controls exist — the two authorization axes, rendered", () => 
     getAtelierBoard.mockResolvedValue(
       board([ticket({ assigned_staff_user_id: NOA_ID })], {
         seamstresses: [
-          { id: NOA_ID, display_name: "נועה לוי", assignable: true },
-          { id: OTHER_SEAMSTRESS, display_name: "רותם", assignable: true },
+          seamstress(),
+          seamstress({ id: OTHER_SEAMSTRESS, display_name: "רותם" }),
         ],
       }),
     );
@@ -1074,14 +1122,17 @@ describe("the card's facts", () => {
     // inference — and it is the signal a manager needs to reassign.
     getAtelierBoard.mockResolvedValue(
       board([ticket({ assigned_staff_user_id: NOA_ID })], {
-        seamstresses: [{ id: NOA_ID, display_name: "נועה לוי", assignable: false }],
+        seamstresses: [seamstress({ assignable: false })],
       }),
     );
     mount();
     await screen.findByText("מיכל לוי");
 
-    expect(screen.getByText(/תופרת שאינה פעילה/)).toBeInTheDocument();
+    // ⚠ Scoped to the card since F42: the PANEL's row for the same seamstress
+    // carries the same shipped word, off the same flag — one fact, two
+    // surfaces, and the card's is the one this test is about.
     const card = screen.getByText("מיכל לוי").closest("li") as HTMLElement;
+    expect(within(card).getByText(/תופרת שאינה פעילה/)).toBeInTheDocument();
     expect(within(card).queryByText("נועה לוי")).toBeNull();
   });
 
@@ -1387,7 +1438,10 @@ describe("the intake and edit dialog", () => {
       notes: "להרים 4 ס״מ, לצרף חגורה",
     });
     await waitFor(() => expect(screen.getByText(/30\.9\.2026/)).toBeInTheDocument());
-    expect(screen.getByText(/חצי יום/)).toBeInTheDocument();
+    // Scoped to the card since F42: «חצי יום» is also a band field's label in
+    // the panel's settings dialog, which is always in the tree.
+    const card = screen.getByText("מיכל לוי").closest("li") as HTMLElement;
+    expect(within(card).getByText(/חצי יום/)).toBeInTheDocument();
   });
 
   it("puts a server refusal in ONE alert INSIDE the dialog, above the footer", async () => {
@@ -1687,7 +1741,7 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
 
     expect(container.querySelectorAll("[data-ticket-id]")).toHaveLength(1);
     expect(document.activeElement).toBe(
-      screen.getAllByRole("heading", { level: 3 })[0],
+      columnHeadings()[0],
     );
     expect(document.activeElement).toHaveTextContent("התקבל");
   });
@@ -1730,8 +1784,8 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     getAtelierBoard.mockResolvedValue(
       board([ticket({ assigned_staff_user_id: OTHER_SEAMSTRESS })], {
         seamstresses: [
-          { id: NOA_ID, display_name: "נועה לוי", assignable: true },
-          { id: OTHER_SEAMSTRESS, display_name: "רותם", assignable: true },
+          seamstress(),
+          seamstress({ id: OTHER_SEAMSTRESS, display_name: "רותם" }),
         ],
       }),
     );
@@ -1739,7 +1793,7 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
 
     await waitFor(() => expect(screen.queryByRole("button", { name: /לקחת/ })).toBeNull());
     // The card stayed put, so the destination is its own column's heading.
-    expect(document.activeElement).toBe(screen.getAllByRole("heading", { level: 3 })[0]);
+    expect(document.activeElement).toBe(columnHeadings()[0]);
     expect(document.activeElement).toHaveTextContent("התקבל");
   });
 
@@ -2057,5 +2111,539 @@ describe("axe", () => {
 
     const results = await run(container);
     expect(results.violations).toEqual([]);
+  });
+});
+
+// --- F42: the panel, the sorted picker and the overload cue ------------------
+
+const CAPACITY_TITLE = "שעות שבועיות";
+const SETTINGS_TITLE = "הגדרות התפירה";
+
+// 12 h = 720 min. Every load below is measured against it.
+const HOURS = 12;
+
+// ⚠ Scoped to the panel REGION, because the same name also renders in an
+// <option>, in a card's assignee line and — after a save — inside the cue's own
+// <bdi>, which is ABOVE the panel in DOM order.
+function panelRow(name: string): HTMLElement {
+  return within(screen.getByRole("region", { name: /תופרות/ }))
+    .getByText(name)
+    .closest("li") as HTMLElement;
+}
+
+function assignOptions(): string[] {
+  return Array.from(
+    screen.getByRole("combobox", { name: "תופרת — מיכל לוי" }).querySelectorAll("option"),
+  ).map((node) => node.textContent ?? "");
+}
+
+describe("the panel's insertion point", () => {
+  it("renders in the ZERO-TICKET branch, above the EmptyState, with every seamstress at «0 שעות»", async () => {
+    // ⚠ That branch replaces BOTH the columns and the rail, and it is the one a
+    // brand-new boutique is in — so a panel rendered only beside the columns
+    // would be invisible on exactly the screen where setting capacity before
+    // the first intake is the useful order. It is also BOTH of D2's "first
+    // thing a new boutique sees" states at once.
+    getAtelierBoard.mockResolvedValue(
+      board([], {
+        seamstresses: [seamstress({ weekly_capacity_hours: HOURS })],
+        due_soon_through: "2026-08-11",
+      }),
+    );
+    mount();
+    await screen.findByText("אין עדיין כרטיסי תפירה");
+
+    const panel = screen.getByRole("region", { name: /תופרות/ });
+    expect(panel.textContent).toContain("0 שעות עד 11.8.2026 מתוך 12");
+    const empty = screen.getByText("אין עדיין כרטיסי תפירה");
+    expect(panel.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps the pause control the FIRST stop inside the section", async () => {
+    // F41's D17 / SC 2.2.2, non-negotiable: a mechanism to stop a moving
+    // surface, placed AFTER the content it governs, is reachable only by
+    // walking the list that is repainting under the walk. The panel goes below
+    // it, never above.
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const stops = Array.from(
+      document.querySelectorAll<HTMLElement>('button, [tabindex]:not([tabindex="-1"])'),
+    ).filter((node) => node.closest("dialog") === null);
+    expect(stops[0].getAttribute("aria-label")).toBe("השהיה — לוח התפירה");
+  });
+
+  it("renders NO panel while the board is still loading and on the outage branch", async () => {
+    // A panel with no envelope has no denominator, no horizon and no rows — it
+    // would be four empty strings claiming to be a roster.
+    getAtelierBoard.mockRejectedValue(new ApiError(500, "SERVER_ERROR", "boom"));
+    mount();
+    await screen.findByText("לא הצלחנו לטעון את לוח התפירה כרגע.");
+    expect(screen.queryByRole("region", { name: /תופרות/ })).toBeNull();
+  });
+});
+
+describe("the assign picker — sorted by remaining capacity, and never blocked", () => {
+  const ORDERED = {
+    seamstresses: [
+      // Deliberately handed to the console in the SERVER's order
+      // (display_name, id) so a missing sort renders THIS order and reds.
+      seamstress({
+        id: OWNER_ID,
+        display_name: "נועה",
+        weekly_capacity_hours: HOURS,
+        due_soon_minutes: 900,
+        assigned_minutes: 900,
+      }),
+      seamstress({
+        id: NOA_ID,
+        display_name: "דנה",
+        weekly_capacity_hours: HOURS,
+        due_soon_minutes: 60,
+        assigned_minutes: 60,
+      }),
+      seamstress({ id: OTHER_SEAMSTRESS, display_name: "רותי", assigned_minutes: 240 }),
+    ],
+  };
+
+  it("orders the options headroom → unknown → overloaded, and labels each with its number", async () => {
+    // ⚠ THE MIDDLE GROUP IS THE WHOLE POINT. Two groups would put every
+    // capacity-set row ahead of every capacity-less one — INCLUDING A ROW AT
+    // 400 % — so on the state D2 says every boutique starts in, the first
+    // option in the control, the one a hurried shift manager takes, would be the
+    // person the panel three inches above is drawing in red.
+    getAtelierBoard.mockResolvedValue(board([ticket()], ORDERED));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    expect(assignOptions()).toEqual([
+      "לא משויך",
+      "דנה · נותרו 11 שעות",
+      "רותי · 4 שעות משויכות",
+      "נועה · עומס יתר",
+    ]);
+  });
+
+  it("composes every option from KEYS — including the « · » separator", async () => {
+    // ⚠ F41 renders `{row.display_name}` alone here and declares no key of this
+    // shape, so all three strings would otherwise ship as BARE HEBREW LITERALS
+    // IN TSX — outside the `ar` parity guard, outside `HE_F41`'s prefix fold,
+    // untranslated, with both the standing rule and the acceptance line for
+    // `atelier.capacity.*` blind to them.
+    getAtelierBoard.mockResolvedValue(board([ticket()], ORDERED));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const source = readFileSync(
+      resolve(__dirname, "../components/AtelierSection.tsx"),
+      "utf8",
+    );
+    for (const key of [
+      "atelier.capacity.optionRow",
+      "atelier.capacity.optionRemaining",
+      "atelier.capacity.optionAssigned",
+      "atelier.capacity.over",
+    ]) {
+      expect(source).toContain(key);
+    }
+    // ⚠ Even the « · » is `optionRow`'s own interpolation, so changing the
+    // bundle changes every option — which is what makes «no bare Hebrew literal
+    // in this TSX» a property rather than a promise.
+    expect(i18n.t("atelier.capacity.optionRow", { name: "א", detail: "ב" })).toBe("א · ב");
+    // ⚠ An <option> takes no markup, so `isolateLtr` type-errors here and
+    // `dir="ltr"` would REVERSE a Hebrew name. Every string is safe by
+    // construction instead: each ENDS in a Hebrew word, so no numeral sits at a
+    // paragraph edge.
+    for (const option of assignOptions().slice(1)) {
+      expect(option).toMatch(/[֐-׿]$/);
+    }
+  });
+
+  it("neither hides nor disables an overloaded seamstress, and asks no confirmation", async () => {
+    // OVERLOAD FLAGS, NEVER BLOCKS. Every reallocation is a human action, and a
+    // console that refused one would be the platform overruling the person who
+    // can see the room.
+    getAtelierBoard.mockResolvedValue(board([ticket()], ORDERED));
+    assignTicket.mockResolvedValue(ticket({ assigned_staff_user_id: OWNER_ID }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const select = screen.getByRole("combobox", { name: "תופרת — מיכל לוי" });
+    const overloaded = Array.from(select.querySelectorAll("option")).find((node) =>
+      node.textContent?.includes("עומס יתר"),
+    ) as HTMLOptionElement;
+    expect(overloaded.disabled).toBe(false);
+
+    fireEvent.change(select, { target: { value: OWNER_ID } });
+    await clickAndSettle(screen.getByRole("button", { name: "שיוך — מיכל לוי" }));
+    expect(assignTicket).toHaveBeenCalledWith(T1, OWNER_ID);
+    expect(screen.queryByRole("dialog", { hidden: true, name: /עומס/ })).toBeNull();
+  });
+});
+
+describe("the overload cue — the only channel a screen-reader user has for this fact", () => {
+  it("announces the overload clause when THIS ticket pushes her over", async () => {
+    // ⚠ F41's D17 forbids the poll from writing into the announced region, so a
+    // sighted user watches the bar turn red on the next tick and a
+    // screen-reader user gets NOTHING AT ALL unless the cue says it — which
+    // would make overload a sighted-only signal on the one action that causes
+    // it, on a screen where a11y is a legal bar.
+    //
+    // ⚠ THE DUE DATE IS EXPLICIT AND INSIDE `due_soon_through`. The fixture's
+    // default is 2026-08-12 — one day PAST the envelope's 2026-08-11 — and
+    // this assertion on that ticket is precisely the defect the sibling test
+    // below now pins: the cue announcing minutes the server's FILTER excludes.
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ effort_minutes: 120, due_date: "2026-08-10" })], {
+        seamstresses: [
+          seamstress({
+            display_name: "נועה לוי",
+            weekly_capacity_hours: HOURS,
+            due_soon_minutes: 660,
+            assigned_minutes: 660,
+          }),
+        ],
+      }),
+    );
+    assignTicket.mockResolvedValue(ticket({ assigned_staff_user_id: NOA_ID }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "תופרת — מיכל לוי" }), {
+      target: { value: NOA_ID },
+    });
+    await clickAndSettle(screen.getByRole("button", { name: "שיוך — מיכל לוי" }));
+    expect(screen.getByTestId("atelier-cue").textContent).toBe("שויך לנועה לוי — עומס יתר.");
+  });
+
+  it("announces the PLAIN cue for a ticket due AFTER the board's horizon", async () => {
+    // ⚠ THE MUTATION CATCHER for the horizon fold. Same seamstress, same 120
+    // minutes, same 660/720 as the test above — only the due date moves, to one
+    // day past `due_soon_through`. A console that adds the effort unfiltered
+    // computes 780 > 720 and announces «עומס יתר», but `due_soon_minutes` is
+    // `SUM(...) FILTER (WHERE due_date <= horizon)`: the next tick leaves her at
+    // 660, the bar renders 91.7 % in `bg-gold-strong`, and `Row`'s sentence
+    // carries no «עומס יתר» — so the announced channel would state the opposite
+    // of every rendered surface, permanently, with no colleague and no race.
+    //
+    // Re-inline `wouldOverload(target, ticket.effort_minutes)` at the call site
+    // and this test reds while every other cue test stays green.
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ effort_minutes: 120, due_date: "2026-08-12" })], {
+        seamstresses: [
+          seamstress({
+            display_name: "נועה לוי",
+            weekly_capacity_hours: HOURS,
+            due_soon_minutes: 660,
+            assigned_minutes: 660,
+          }),
+        ],
+      }),
+    );
+    assignTicket.mockResolvedValue(ticket({ assigned_staff_user_id: NOA_ID }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "תופרת — מיכל לוי" }), {
+      target: { value: NOA_ID },
+    });
+    await clickAndSettle(screen.getByRole("button", { name: "שיוך — מיכל לוי" }));
+    expect(screen.getByTestId("atelier-cue").textContent).toBe("שויך לנועה לוי.");
+  });
+
+  it("announces the PLAIN cue when it does not, and for an UNCONFIGURED seamstress", async () => {
+    // ⚠ The null guard is what stops `null * 60 = 0` announcing «עומס יתר» on
+    // EVERY assign to an unconfigured seamstress — correct on screen, green
+    // under axe, and a legal-accessibility regression on the one channel a
+    // screen-reader user has.
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ effort_minutes: 480 })], {
+        seamstresses: [seamstress({ display_name: "נועה לוי", assigned_minutes: 2760 })],
+      }),
+    );
+    assignTicket.mockResolvedValue(ticket({ assigned_staff_user_id: NOA_ID }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "תופרת — מיכל לוי" }), {
+      target: { value: NOA_ID },
+    });
+    await clickAndSettle(screen.getByRole("button", { name: "שיוך — מיכל לוי" }));
+    expect(screen.getByTestId("atelier-cue").textContent).toBe("שויך לנועה לוי.");
+  });
+
+  it("never announces an overload when the ticket is RE-COMMITTED to its current holder", async () => {
+    // ⚠ `due_soon_minutes` is her PRE-WRITE load and already includes anything
+    // she holds. The shipped commit fires whenever a draft exists and the
+    // Select's value defaults to the current assignee — so arrowing away and
+    // back and committing sends a NO-OP assign to the current holder. Without
+    // the `!==` gate the console adds minutes it has already counted and
+    // announces a FALSE overload with no colleague and no race.
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ effort_minutes: 120, assigned_staff_user_id: NOA_ID })], {
+        seamstresses: [
+          seamstress({
+            display_name: "נועה לוי",
+            weekly_capacity_hours: HOURS,
+            due_soon_minutes: 660,
+            assigned_minutes: 660,
+          }),
+        ],
+      }),
+    );
+    assignTicket.mockResolvedValue(ticket({ assigned_staff_user_id: NOA_ID }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const select = screen.getByRole("combobox", { name: "תופרת — מיכל לוי" });
+    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.change(select, { target: { value: NOA_ID } });
+    await clickAndSettle(screen.getByRole("button", { name: "שיוך — מיכל לוי" }));
+    expect(screen.getByTestId("atelier-cue").textContent).toBe("שויך לנועה לוי.");
+  });
+});
+
+describe("the capacity save — patched onto the held row, three keys and no more", () => {
+  const LOADED = {
+    seamstresses: [
+      seamstress({
+        display_name: "נועה לוי",
+        weekly_capacity_hours: HOURS,
+        capacity_is_default: true,
+        due_soon_minutes: 900,
+        assigned_minutes: 2760,
+      }),
+    ],
+    default_weekly_capacity_hours: HOURS,
+  };
+
+  async function openCapacityDialog() {
+    await clickAndSettle(screen.getByRole("button", { name: "שעות — נועה לוי" }));
+    return screen.getByRole("dialog", { hidden: true, name: CAPACITY_TITLE });
+  }
+
+  it("does NOT change the rendered load or drop the «עומס יתר» word", async () => {
+    // ⚠ THE ACCEPTANCE CRITERION THE ORIGINAL DESIGN WOULD HAVE FAILED. The
+    // write answers CAPACITY FACTS ONLY — it has no load aggregate and buying
+    // one would be a second business statement on a write — so the only
+    // reachable pair is (0, 0). Patching that in would COLLAPSE HER BAR AND
+    // DROP HER OVERLOAD WORD for up to five seconds, at the exact moment a
+    // manager is looking at it. The console keeps both numbers from the last
+    // tick.
+    getAtelierBoard.mockResolvedValue(board([ticket()], LOADED));
+    setSeamstressCapacity.mockResolvedValue({
+      id: NOA_ID,
+      display_name: "נועה לוי",
+      assignable: true,
+      weekly_capacity_hours: 24,
+      capacity_is_default: false,
+    });
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const row = panelRow("נועה לוי");
+    expect(row.textContent).toContain("עומס יתר");
+    expect(row.textContent).toContain("סה״כ 46 שעות בתור");
+
+    const dialog = await openCapacityDialog();
+    fireEvent.change(within(dialog).getByLabelText("שעות בשבוע"), { target: { value: "24" } });
+    await clickAndSettle(within(dialog).getByRole("button", { name: "שמירה" }));
+
+    await waitFor(() => expect(setSeamstressCapacity).toHaveBeenCalledWith(NOA_ID, 24));
+    const after = panelRow("נועה לוי");
+    // The DENOMINATOR moved; the two load numbers did not.
+    expect(after.textContent).toContain("15 שעות עד 11.8.2026 מתוך 24");
+    expect(after.textContent).toContain("סה״כ 46 שעות בתור");
+    // …and «ברירת מחדל של הבוטיק» is gone, because the number is now hers.
+    expect(after.textContent).not.toContain("ברירת מחדל של הבוטיק");
+  });
+
+  it("announces «עודכנו השעות» on a set and «חזרה לברירת המחדל» on a clear", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()], LOADED));
+    setSeamstressCapacity.mockResolvedValue({
+      id: NOA_ID,
+      display_name: "נועה לוי",
+      assignable: true,
+      weekly_capacity_hours: HOURS,
+      capacity_is_default: true,
+    });
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    let dialog = await openCapacityDialog();
+    fireEvent.change(within(dialog).getByLabelText("שעות בשבוע"), { target: { value: "24" } });
+    await clickAndSettle(within(dialog).getByRole("button", { name: "שמירה" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("atelier-cue").textContent).toBe("נועה לוי — עודכנו השעות."),
+    );
+
+    dialog = await openCapacityDialog();
+    await clickAndSettle(within(dialog).getByRole("button", { name: "חזרה לברירת המחדל" }));
+    await clickAndSettle(within(dialog).getByRole("button", { name: "שמירה" }));
+    await waitFor(() => expect(setSeamstressCapacity).toHaveBeenLastCalledWith(NOA_ID, null));
+    expect(screen.getByTestId("atelier-cue").textContent).toBe("נועה לוי — חזרה לברירת המחדל.");
+  });
+
+  it("keeps the BOARD ALIVE on a 403 and renders the refusal inside the dialog", async () => {
+    // ⚠ THE PANEL'S TWO WRITES DO NOT RIDE THE {401,403} TERMINAL RULE, and the
+    // reason is not shared with any F41 write: `poll.fail`'s rule reads a 403 as
+    // «her access to THIS BOARD has ended», which is true of every F41 write
+    // because their gate is the router's own three roles. The capacity route
+    // and PUT /manage/settings carry PER-ROUTE tightenings, so their 403 means
+    // «not this control» — and blanking a board she may still read would be the
+    // console punishing her for a button it offered her.
+    getAtelierBoard.mockResolvedValue(board([ticket()], LOADED));
+    setSeamstressCapacity.mockRejectedValue(new ApiError(403, "FORBIDDEN", "nope"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const dialog = await openCapacityDialog();
+    fireEvent.change(within(dialog).getByLabelText("שעות בשבוע"), { target: { value: "24" } });
+    await clickAndSettle(within(dialog).getByRole("button", { name: "שמירה" }));
+
+    expect(within(dialog).getByRole("alert").textContent).toBe(
+      "לא ניתן לשמור את השעות. אפשר לנסות שוב.",
+    );
+    expect((dialog as HTMLDialogElement).open).toBe(true);
+
+    // ⚠ AND THE ASSERTION THAT ACTUALLY BINDS IS AFTER THE DISMISSAL. While the
+    // dialog is open the shipped C7 rule DEFERS a terminal, so a board that has
+    // already gone terminal still looks alive — a check made here alone passes
+    // on a build that calls `poll.fail`. Closing it is what forces the
+    // question.
+    await clickAndSettle(within(dialog).getByRole("button", { name: "ביטול" }));
+    expect(screen.queryByText(/אין הרשאה לצפות/)).toBeNull();
+    expect(screen.getByText("מיכל לוי")).toBeTruthy();
+  });
+
+  it("renders the HEBREW refusal for an unmapped 400 and never the server's English", async () => {
+    // The concrete case is `_require_seamstress`'s literal
+    // "staff_user_id must be a live seamstress", which `main.py` returns
+    // VERBATIM as `str(exc)` — into a Hebrew-only console.
+    getAtelierBoard.mockResolvedValue(board([ticket()], LOADED));
+    setSeamstressCapacity.mockRejectedValue(
+      new ApiError(400, "VALIDATION_ERROR", "staff_user_id must be a live seamstress"),
+    );
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const dialog = await openCapacityDialog();
+    fireEvent.change(within(dialog).getByLabelText("שעות בשבוע"), { target: { value: "24" } });
+    await clickAndSettle(within(dialog).getByRole("button", { name: "שמירה" }));
+
+    const alert = within(dialog).getByRole("alert");
+    expect(alert.textContent).not.toMatch(/[A-Za-z]/);
+    expect(alert.textContent).toBe("לא ניתן לשמור את השעות. אפשר לנסות שוב.");
+  });
+});
+
+describe("the settings save — one request, and nothing patched on the way back", () => {
+  it("sends the whole atelier block and announces it", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()], { default_weekly_capacity_hours: 30 }));
+    updateSettings.mockResolvedValue({ profile: {}, toggles: {} });
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    await clickAndSettle(screen.getByRole("button", { name: "הגדרות — לוח התפירה" }));
+    const dialog = screen.getByRole("dialog", { hidden: true, name: SETTINGS_TITLE });
+    fireEvent.change(within(dialog).getByLabelText("חצי יום — דקות"), {
+      target: { value: "300" },
+    });
+    await clickAndSettle(within(dialog).getByRole("button", { name: "שמירה" }));
+
+    await waitFor(() =>
+      expect(updateSettings).toHaveBeenCalledWith({
+        atelier: {
+          effort_bands: {
+            thirty_min: 30,
+            one_hour: 60,
+            two_hours: 120,
+            half_day: 300,
+            full_day: 480,
+          },
+          default_weekly_capacity_hours: 30,
+        },
+      }),
+    );
+    expect(screen.getByTestId("atelier-cue").textContent).toBe("ההגדרות נשמרו.");
+  });
+
+  it("patches NOTHING into the held envelope — the next tick replaces it whole", async () => {
+    // ⚠ C7, ACCEPTED AND RECORDED. `default_weekly_capacity_hours` and
+    // `effort_bands` are ENVELOPE fields the poll owns; patching them from a
+    // different endpoint's response would put a SECOND WRITER on data the board
+    // is authoritative for — the same shape the capacity route refuses for
+    // `assigned_minutes`, one level up. So for up to one tick (≤5 s, and
+    // `poll.reschedule` re-arms at the current backoff) the rendered bands are
+    // the previous mapping's. The dialog's own cue already told her the write
+    // landed.
+    getAtelierBoard.mockResolvedValue(board([ticket()], { default_weekly_capacity_hours: 30 }));
+    updateSettings.mockResolvedValue({ profile: {}, toggles: {} });
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    await clickAndSettle(screen.getByRole("button", { name: "הגדרות — לוח התפירה" }));
+    let dialog = screen.getByRole("dialog", { hidden: true, name: SETTINGS_TITLE });
+    fireEvent.change(within(dialog).getByLabelText("חצי יום — דקות"), {
+      target: { value: "300" },
+    });
+    await clickAndSettle(within(dialog).getByRole("button", { name: "שמירה" }));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
+
+    await clickAndSettle(screen.getByRole("button", { name: "הגדרות — לוח התפירה" }));
+    dialog = screen.getByRole("dialog", { hidden: true, name: SETTINGS_TITLE });
+    expect(within(dialog).getByLabelText("חצי יום — דקות")).toHaveValue(240);
+  });
+
+  it("keeps the board alive when the settings write is refused", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    updateSettings.mockRejectedValue(new ApiError(403, "FORBIDDEN", "nope"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    await clickAndSettle(screen.getByRole("button", { name: "הגדרות — לוח התפירה" }));
+    const dialog = screen.getByRole("dialog", { hidden: true, name: SETTINGS_TITLE });
+    await clickAndSettle(within(dialog).getByRole("button", { name: "שמירה" }));
+
+    expect(within(dialog).getByRole("alert").textContent).toBe(
+      "לא ניתן לשמור את ההגדרות. אפשר לנסות שוב.",
+    );
+    // Dismissed, because the deferred terminal is what would otherwise hide the
+    // difference between «handled locally» and «handled five seconds later».
+    await clickAndSettle(within(dialog).getByRole("button", { name: "ביטול" }));
+    expect(screen.queryByText(/אין הרשאה לצפות/)).toBeNull();
+    expect(screen.getByText("מיכל לוי")).toBeTruthy();
+  });
+});
+
+describe("C7 — a terminal DEFERS while a PANEL dialog is open", () => {
+  it("does not unmount a settings dialog holding six edited band values", async () => {
+    // ⚠ Without the panel's `onDialogOpenChange` signal ORed into `dialogOpen`,
+    // a 401 tick arriving while she is halfway through re-tuning the ruler
+    // replaces the whole section with «פג תוקף» and DISCARDS EVERY EDIT. The
+    // session outlives a shift, so the realistic reader is a phone left on a
+    // bench.
+    getAtelierBoard.mockResolvedValueOnce(board([ticket()]));
+    getAtelierBoard.mockRejectedValue(new ApiError(401, "UNAUTHENTICATED", "gone"));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    await clickAndSettle(screen.getByRole("button", { name: "הגדרות — לוח התפירה" }));
+    const dialog = screen.getByRole("dialog", { hidden: true, name: SETTINGS_TITLE });
+    fireEvent.change(within(dialog).getByLabelText("חצי יום — דקות"), {
+      target: { value: "300" },
+    });
+
+    await advanceTimers(POLL_INTERVAL_MS);
+    expect((dialog as HTMLDialogElement).open).toBe(true);
+    expect(within(dialog).getByLabelText("חצי יום — דקות")).toHaveValue(300);
+    expect(screen.queryByText(/תוקף החיבור פג/)).toBeNull();
+
+    // …and it lands the moment she dismisses it.
+    await clickAndSettle(within(dialog).getByRole("button", { name: "ביטול" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("תוקף החיבור פג"),
+    );
   });
 });

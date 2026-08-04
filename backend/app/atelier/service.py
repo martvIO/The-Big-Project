@@ -58,6 +58,8 @@ from app.atelier.schemas import (
     AtelierBoardResponse,
     AtelierTicket,
     CreateTicketRequest,
+    SeamstressCapacityResponse,
+    SetCapacityRequest,
     StageRequest,
     UpdateTicketRequest,
 )
@@ -86,6 +88,7 @@ from app.errors import DomainNotFoundError
 from app.models.alteration_ticket import AlterationTicket
 from app.models.constants import AuditAction, EffortBand, StaffRole, TicketStage
 from app.models.customer import Customer
+from app.models.staff_user import StaffUser
 from app.notifications.validation import normalize_israeli_mobile
 from app.storefront.validation import today_jerusalem
 
@@ -108,6 +111,12 @@ EDITABLE_FIELDS = (
 
 Bands = Mapping[EffortBand, int]
 
+# D3's rolling week. NOT `DELIVERED_WINDOW_DAYS`, which happens to be 7 too and
+# means something else entirely: that one bounds what the board RENDERS after a
+# garment goes out, this one bounds what the BAR counts as due. Sharing a
+# constant between them would tie a display window to a capacity horizon.
+LOAD_HORIZON_DAYS = 7
+
 
 class AtelierService:
     def __init__(
@@ -126,18 +135,37 @@ class AtelierService:
 
     # --- the poll ------------------------------------------------------------
 
-    async def board(self, tenant_id: UUID, *, bands: Bands) -> AtelierBoardResponse:
-        """THREE business statements, and that number is the budget: the tickets,
-        their customers' names in one `IN`, and the assignee union. The bands are
-        not a fourth — they came off the request's already-bound tenant context.
+    async def board(
+        self, tenant_id: UUID, *, bands: Bands, default_capacity_hours: int | None
+    ) -> AtelierBoardResponse:
+        """FOUR business statements, and that number is the budget: the tickets,
+        their customers' names in one `IN`, the assignee union, and F42's load
+        aggregate. F41 fixed the budget at THREE and called it that; the fourth is
+        D3's and §Conflicts 8 sizes it — ≈7 statements, ≈12 round trips and 3
+        pool checkouts per tick per device, against F41's ≈6/≈11/3. F29 is handed
+        that figure by name.
+
+        Neither the bands NOR the capacity default is a statement: both come off
+        the request's already-bound `TenantContext.settings`. That is the whole
+        reason the router resolves them — `TenantsRepository` opens its own
+        session inside every method, so it cannot join this `tenant_session` and
+        either one would cost a fifth pool checkout every five seconds.
+
+        ⚠ ONE CLOCK CALL AND ONE DATE SOURCE. The horizon is derived from the
+        `today` this method already holds for the delivered window and the
+        `overdue` flag. A second `today_jerusalem(self._clock)` could be read on
+        either side of Jerusalem midnight and the envelope would then ship a
+        `due_soon_through` the filter never used.
         """
         today = today_jerusalem(self._clock)
+        horizon = today + datetime.timedelta(days=LOAD_HORIZON_DAYS)
         async with tenant_session(self._sessions, tenant_id) as session:
             tickets, truncated = await self._tickets.board(session, tenant_id, today=today)
             customers = await self._customers.by_ids(
                 session, tenant_id, [row.customer_id for row in tickets]
             )
             assignees = await self._tickets.assignees(session, tenant_id)
+            load = await self._tickets.load_by_assignee(session, tenant_id, horizon=horizon)
         return AtelierBoardResponse.build(
             tickets=tickets,
             customers=customers,
@@ -145,6 +173,9 @@ class AtelierService:
             bands=bands,
             truncated=truncated,
             today=today,
+            load=load,
+            default_capacity_hours=default_capacity_hours,
+            due_soon_through=horizon,
         )
 
     # --- intake --------------------------------------------------------------
@@ -471,6 +502,61 @@ class AtelierService:
                 details={"stage": stage.value},
             )
 
+    # --- capacity ------------------------------------------------------------
+
+    async def set_capacity(
+        self,
+        tenant_id: UUID,
+        staff_user_id: UUID,
+        request: SetCapacityRequest,
+        *,
+        actor: StaffContext,
+        tenant_default: int | None,
+    ) -> SeamstressCapacityResponse:
+        """Her weekly hours (D6). No role check here: this route's refusal
+        depends on NOTHING BUT THE ROLE, which is the single criterion a
+        `RoleGate` can express, so it carries `require_role(OWNER,
+        SHIFT_MANAGER)` on the route — `delete`'s shape exactly — and putting it
+        here too would be the same rule in two places that can disagree.
+
+        `tenant_default` arrives from the router off `TenantContext.settings`,
+        the way the bands do, at zero statements.
+
+        Two statements: the target read (which is also the audit row's `from`)
+        and the guarded UPDATE. There is deliberately no third — a single-assignee
+        `SUM(effort_minutes)` would let this answer a whole `SeamstressRef`, but
+        the console already holds both load numbers from the last tick and the
+        next one corrects them.
+        """
+        async with tenant_session(self._sessions, tenant_id) as session:
+            # One indistinguishable 400 for a receptionist, a retired staffer, an
+            # unknown id and another tenant's id (D6/D13). There is no 404 here.
+            row = await self._require_seamstress(session, tenant_id, staff_user_id)
+            # ⚠ INTO A LOCAL, BEFORE THE WRITE. The UPDATE's `evaluate`
+            # synchronization stamps the new hours onto this very instance, so a
+            # capture afterwards records the new value as the old one
+            # (`floor/service.py:108-116`).
+            before = row.weekly_capacity_hours
+
+            refreshed = await self._staff.set_weekly_capacity_hours(
+                session, tenant_id, staff_user_id, hours=request.weekly_capacity_hours
+            )
+            if refreshed is None:
+                # Zero rows: she was soft-deleted BETWEEN the check and the
+                # UPDATE. A race, and this route's only 404.
+                raise DomainNotFoundError("staff_user")
+
+            if refreshed.weekly_capacity_hours != before:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.ATELIER_CAPACITY_SET,
+                    actor_id=actor.id,
+                    entity=str(staff_user_id),
+                    details={"from": before, "to": refreshed.weekly_capacity_hours},
+                )
+            return SeamstressCapacityResponse.from_row(refreshed, tenant_default=tenant_default)
+
     # --- helpers -------------------------------------------------------------
 
     @staticmethod
@@ -501,7 +587,7 @@ class AtelierService:
 
     async def _require_seamstress(
         self, session: AsyncSession, tenant_id: UUID, staff_user_id: UUID
-    ) -> None:
+    ) -> StaffUser:
         """⚠ POINT-IN-TIME, AND A NUDGE RATHER THAN AN INVARIANT. Nothing
         re-validates it afterwards and two shipped writers break it the moment
         they run — `StaffUsersRepository.update` sets `role` unconditionally and
@@ -514,10 +600,17 @@ class AtelierService:
         and that no load bar will ever show. This keeps the common mistake out of
         the column. `by_id` already filters `deleted_at IS NULL`, so a retired
         staffer and an unknown id are one refusal.
+
+        It RETURNS the row rather than only refusing, so F42's capacity write can
+        take its audit `from` off the statement this already ran. The three
+        shipped callers ignore the value and the refusal is byte-identical; a
+        second `by_id` on the capacity path would be a second statement saying
+        what this one just read.
         """
         staff = await self._staff.by_id(session, tenant_id, staff_user_id)
         if staff is None or staff.role != StaffRole.SEAMSTRESS.value:
             raise AtelierValidationError("staff_user_id must be a live seamstress")
+        return staff
 
     async def _resolve_dress_name(
         self,

@@ -54,6 +54,7 @@ async def test_owner_configures_boutique_end_to_end(app_role_url: str) -> None:
 
         await service.update_settings(
             tenant.id,
+            actor=staff,
             profile={
                 "phone": "+972-3-555-0100",
                 "address": "1 Dizengoff St, Tel Aviv",
