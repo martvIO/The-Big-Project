@@ -200,6 +200,23 @@ class BookingCancelledBy(StrEnum):
     EXPIRED = "expired"
 
 
+class MarketingConsentSource(StrEnum):
+    """Which surface took the consent. The DB pins this exact set —
+    `customers_marketing_consent_source_check` (0024) — and it has ONE member
+    on purpose.
+
+    F33's walk-in check-in is deliberately NOT here (plan DR-10). Its opt-in
+    lives on `queue_tickets.marketing_opt_in_at` and stays there: that form has
+    no possession proof of any kind, so promoting it into this column would
+    launder an unverified submission into evidence that a specific woman
+    consented — degrading every other row in a column whose only job is to be
+    provable under the Spam Law. Adding `'walk_in'` here means widening the
+    CHECK in a migration, in the feature that builds the verified promotion.
+    """
+
+    BOOKING_FORM = "booking_form"
+
+
 class ScheduledMessageKind(StrEnum):
     # The DB pins this exact set (0010). E4's hold-expiry sweep and E5's offer
     # cascade widen the CHECK when they arrive — pre-adding speculative kinds is

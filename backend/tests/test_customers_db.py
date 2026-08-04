@@ -49,7 +49,7 @@ from app.db.repositories.message_log import (
 )
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
-from app.models.constants import BookingStatus, MessageKind
+from app.models.constants import BookingStatus, MarketingConsentSource, MessageKind
 from app.models.customer import Customer
 from app.models.message_log import MessageLog
 
@@ -993,5 +993,100 @@ async def test_the_four_consent_columns_round_trip_as_aware_utc_and_default_to_a
         assert fresh.marketing_consent_at.tzinfo is not None
         assert fresh.marketing_consent_withdrawn_at.tzinfo is not None
         assert fresh.erased_at.tzinfo is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_record_marketing_consent_stamps_only_when_no_consent_is_on_record(
+    app_role_url: str,
+) -> None:
+    """A7's guard is `AND marketing_consent_at IS NULL` in the WHERE, not an
+    `if` in Python — so two concurrent bookings cannot both decide the column
+    was empty and race to stamp it.
+
+    The second half is the one that matters legally: the ORIGINAL timestamp is
+    the Spam-Law evidence of WHEN she agreed, and a re-stamp on her next booking
+    would move the proof forward by a year.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            customer_id = await _seed_customer(session, tenant_id, phone=PHONE_X, name="מיכל לוי")
+            assert await CUSTOMERS.record_marketing_consent(session, tenant_id, customer_id) is True
+
+        async with tenant_session(factory, tenant_id) as session:
+            first = await CUSTOMERS.by_id(session, tenant_id, customer_id)
+        assert first is not None
+        assert first.marketing_consent_at is not None
+        assert first.marketing_consent_source == MarketingConsentSource.BOOKING_FORM.value
+        stamped_at = first.marketing_consent_at
+
+        async with tenant_session(factory, tenant_id) as session:
+            second = await CUSTOMERS.record_marketing_consent(session, tenant_id, customer_id)
+            assert second is False
+
+        async with tenant_session(factory, tenant_id) as session:
+            again = await CUSTOMERS.by_id(session, tenant_id, customer_id)
+        assert again is not None
+        assert again.marketing_consent_at == stamped_at
+    finally:
+        await engine.dispose()
+
+
+async def test_withdraw_marketing_consent_is_additive_idempotent_and_cannot_break_the_check(
+    app_role_url: str,
+) -> None:
+    """A8, all three legs, and the third is the one the CHECK makes load-bearing.
+
+    `customers_marketing_withdraw_check` REJECTS a withdrawal stamp on a row
+    with no consent — it does not silently ignore it — so a withdraw statement
+    without `AND marketing_consent_at IS NOT NULL` raises IntegrityError for
+    every customer who never ticked the box, which is the majority of them. The
+    guard in the WHERE is what keeps the constraint unreachable (D15).
+
+    Leg 2 is `changed: false` on a repeat: the withdrawal instant is evidence
+    too, and moving it on a double-tap would misdate the boutique's record of
+    when it stopped being allowed to send.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        async with tenant_session(factory, tenant_id) as session:
+            consenting = await _seed_customer(session, tenant_id, phone=PHONE_X, name="מיכל לוי")
+            never = await _seed_customer(session, tenant_id, phone=PHONE_Y, name="נועה כהן")
+            await CUSTOMERS.record_marketing_consent(session, tenant_id, consenting)
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await CUSTOMERS.withdraw_marketing_consent(session, tenant_id, consenting) is True
+            )
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await CUSTOMERS.by_id(session, tenant_id, consenting)
+        assert row is not None
+        assert row.marketing_consent_withdrawn_at is not None
+        # ADDITIVE: the consent stamp survives, because it is the evidence that
+        # the sends made before this instant were lawful.
+        assert row.marketing_consent_at is not None
+        withdrawn_at = row.marketing_consent_withdrawn_at
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await CUSTOMERS.withdraw_marketing_consent(session, tenant_id, consenting) is False
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            repeat = await CUSTOMERS.by_id(session, tenant_id, consenting)
+        assert repeat is not None
+        assert repeat.marketing_consent_withdrawn_at == withdrawn_at
+
+        # The never-consenting subject: no row matches, no IntegrityError, and
+        # the column is still NULL afterwards.
+        async with tenant_session(factory, tenant_id) as session:
+            assert await CUSTOMERS.withdraw_marketing_consent(session, tenant_id, never) is False
+        async with tenant_session(factory, tenant_id) as session:
+            untouched = await CUSTOMERS.by_id(session, tenant_id, never)
+        assert untouched is not None
+        assert untouched.marketing_consent_withdrawn_at is None
     finally:
         await engine.dispose()

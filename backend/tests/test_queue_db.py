@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from app.auth.rate_limit import FixedWindowRateLimiter
+from app.db.repositories.queue_tickets import QueueTicketsRepository
 from app.db.tenant import tenant_session
 from app.models.constants import QueueTicketStatus, VisitType
 from app.models.queue_ticket import QueueTicket
@@ -47,6 +48,8 @@ from app.queue.service import QueueService
 pytestmark = pytest.mark.db
 
 PHONE = "+972501234567"
+
+QUEUE_TICKETS = QueueTicketsRepository()
 
 # Both instants fall on the SAME UTC day (2026-07-18) and on two DIFFERENT
 # Jerusalem days: 23:00 on the 18th and 00:30 on the 19th, IDT being UTC+3 in
@@ -255,5 +258,92 @@ async def test_a_done_ticket_still_reads_back_and_reports_no_position(
         assert view.status == QueueTicketStatus.DONE.value
         assert view.position is None
         assert view.id == ticket_id
+    finally:
+        await engine.dispose()
+
+
+async def test_withdraw_marketing_opt_in_clears_every_ticket_for_that_phone(
+    app_role_url: str,
+) -> None:
+    """A9 — the §30A revocation arm for a walk-in (plan DR-10).
+
+    The shipped `checkin.optIn` string promises she may ask us to remove the
+    consent, and DR-10 declines the promotion of a walk-in opt-in into
+    `customers` — so without this statement there is no row anywhere the
+    withdraw route could reach for a woman who only ever walked in.
+
+    NOT scoped to `queue_day`: a consent she gave three visits ago is still a
+    consent she is revoking, so every ticket carrying her number is cleared.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        first = await _check_in(factory, tenant_id, BEFORE_MIDNIGHT, marketing_opt_in=True)
+        second = await _check_in(factory, tenant_id, NEXT_MORNING, marketing_opt_in=True)
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await QUEUE_TICKETS.withdraw_marketing_opt_in(session, tenant_id, phone=PHONE) == 2
+            )
+
+        async with tenant_session(factory, tenant_id) as session:
+            for ticket_id in (first, second):
+                row = await session.get(QueueTicket, ticket_id)
+                assert row is not None
+                assert row.marketing_opt_in_at is None
+            # The rest of the ticket is untouched — this is a consent
+            # withdrawal, not an erasure, and she is still in the queue.
+            still_there = await session.get(QueueTicket, second)
+            assert still_there is not None
+            assert still_there.name == "נועה"
+            assert still_there.phone == PHONE
+    finally:
+        await engine.dispose()
+
+
+async def test_withdraw_marketing_opt_in_is_zero_not_an_error_for_a_phone_with_no_opt_in(
+    app_role_url: str,
+) -> None:
+    """0, never a raise and never a 404 upstream: a walk-in who never ticked the
+    box and a number with no ticket at all are the SAME outcome she asked for,
+    and distinguishing them at the route would turn a front-desk revocation into
+    a presence oracle over the queue."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        await _check_in(factory, tenant_id, BEFORE_MIDNIGHT, marketing_opt_in=False)
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await QUEUE_TICKETS.withdraw_marketing_opt_in(session, tenant_id, phone=PHONE) == 0
+            )
+            assert (
+                await QUEUE_TICKETS.withdraw_marketing_opt_in(
+                    session, tenant_id, phone="+972500000000"
+                )
+                == 0
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_withdraw_marketing_opt_in_touches_no_other_tenants_ticket(
+    app_role_url: str,
+) -> None:
+    """RLS is the fence, and the explicit tenant predicate is the second one.
+    The two tenants share a phone number deliberately — the same woman may walk
+    into two boutiques on the platform, and one boutique's front desk must not
+    be able to revoke a consent she gave the other."""
+    engine, factory = _factory(app_role_url)
+    mine = uuid.uuid4()
+    theirs = uuid.uuid4()
+    try:
+        await _check_in(factory, mine, BEFORE_MIDNIGHT, marketing_opt_in=True)
+        other_ticket = await _check_in(factory, theirs, BEFORE_MIDNIGHT, marketing_opt_in=True)
+        async with tenant_session(factory, mine) as session:
+            assert await QUEUE_TICKETS.withdraw_marketing_opt_in(session, mine, phone=PHONE) == 1
+
+        async with tenant_session(factory, theirs) as session:
+            row = await session.get(QueueTicket, other_ticket)
+            assert row is not None
+            assert row.marketing_opt_in_at is not None
     finally:
         await engine.dispose()
