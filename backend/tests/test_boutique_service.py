@@ -377,6 +377,153 @@ async def test_merge_settings_preserves_concurrently_written_sibling_key(
         await engine.dispose()
 
 
+# The uncommitted-writer interleave's two windows — `test_queue_dispatch_db.py`'s
+# numbers.
+HOLD_SECONDS = 0.6
+ISSUE_SECONDS = 0.05
+
+
+async def test_an_atelier_patch_does_not_clobber_a_concurrent_profile_write(
+    app_role_url: str,
+) -> None:
+    """⚠ THE SAME CLAIM AS THE TEST ABOVE AND DELIBERATELY NOT ITS METHOD, AND
+    THE NEIGHBOUR IS THE TRAP.
+
+    `test_merge_settings_preserves_concurrently_written_sibling_key` uses
+    `asyncio.gather` LEGITIMATELY: its mechanism is `||` over two single-statement
+    UPDATEs, so whichever runs second blocks on the row lock, re-reads and merges,
+    and the ORDER is irrelevant to the outcome.
+
+    F42's mutation is a different one — *replace the atomic statement with a
+    Python read-modify-write* (`by_id` → mutate the dict → `UPDATE … SET settings
+    = :whole`) — and its failure depends ENTIRELY on the losing writer's READ
+    happening before the other's COMMIT and its WRITE after. Under `gather` that
+    is luck: the read usually lands after the commit, the stale snapshot never
+    forms, and the mutation survives green.
+
+    So this one is ORDERED, by a lock rather than by a sleep. The sibling writer
+    holds the row's write lock uncommitted; `merge_settings`' plain SELECT (in the
+    mutated build) reads straight past it and sees settings WITHOUT `profile`,
+    while its UPDATE blocks; the sibling commits; the UPDATE proceeds. The real
+    `||` has no separate read at all, so it re-reads the committed row under
+    EvalPlanQual and both keys survive. The mutation writes its stale whole and
+    `profile` is gone.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"clobber-{uuid.uuid4().hex[:8]}", name="Clobber")
+        written = asyncio.Event()
+
+        async def _uncommitted_profile_write() -> None:
+            async with factory() as session, session.begin():
+                await session.execute(
+                    text(
+                        "UPDATE tenants SET settings = settings || CAST(:patch AS jsonb) "
+                        "WHERE id = :tenant_id"
+                    ),
+                    {
+                        "patch": json.dumps({"profile": {"phone": "03-555-0100"}}),
+                        "tenant_id": tenant.id,
+                    },
+                )
+                written.set()
+                # Still UNCOMMITTED for this long, holding the row lock. Exiting
+                # the block is the commit.
+                await asyncio.sleep(HOLD_SECONDS)
+
+        sibling = asyncio.create_task(_uncommitted_profile_write())
+        await written.wait()
+        await asyncio.sleep(ISSUE_SECONDS)
+
+        merged = await tenants.merge_settings(
+            tenant.id,
+            atelier={"effort_bands": ATELIER_BANDS, "default_weekly_capacity_hours": 36},
+        )
+        await sibling
+
+        assert merged is not None
+        assert merged["profile"] == {"phone": "03-555-0100"}, (
+            "the atelier save read a snapshot without the concurrent profile write "
+            "and wrote the whole column back over it"
+        )
+        assert merged["atelier"]["default_weekly_capacity_hours"] == 36
+
+        # …and it is really in the column, not merely in the RETURNING.
+        refreshed = await tenants.by_id(tenant.id)
+        assert refreshed is not None
+        assert refreshed.settings["profile"] == {"phone": "03-555-0100"}
+        assert refreshed.settings["atelier"]["effort_bands"] == ATELIER_BANDS
+    finally:
+        await engine.dispose()
+
+
+async def test_two_sequential_atelier_saves_leave_the_SECOND_and_BOTH_audit_rows(
+    app_role_url: str,
+) -> None:
+    """⚠ NOT A MUTATION — THE BEHAVIOUR IS THE ASSERTION, and it is D5's designed
+    lost update.
+
+    The block is replaced WHOLE on every save, so the second manager's mapping
+    wins entirely and the first's tuned `half_day` is simply gone. There is no
+    version, no if-match and no 409: a conflict dialog because a colleague
+    touched the same settings four seconds ago is the platform second-guessing a
+    staffing call that is hers to make.
+
+    What makes that acceptable is the TRAIL, and this is where it is proved:
+    BOTH saves leave an audit row carrying its whole new value, so the mapping
+    that was overwritten is recoverable from `audit_log` even though nothing in
+    `tenants` remembers it. That is also what makes D12's no-`from` choice
+    load-bearing rather than lazy — the row before is the row before.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"lastwins-{uuid.uuid4().hex[:8]}", name="Last")
+        first_actor, second_actor = _actor(tenant.id), _actor(tenant.id)
+        second_bands = {**ATELIER_BANDS, "half_day": 240}
+
+        await service.update_settings(
+            tenant.id,
+            actor=first_actor,
+            atelier={"effort_bands": ATELIER_BANDS, "default_weekly_capacity_hours": 36},
+        )
+        saved = await service.update_settings(
+            tenant.id,
+            actor=second_actor,
+            atelier={"effort_bands": second_bands, "default_weekly_capacity_hours": 20},
+        )
+
+        assert saved.atelier == {
+            "effort_bands": second_bands,
+            "default_weekly_capacity_hours": 20,
+        }
+        again = await service.get_settings(tenant.id)
+        assert again.atelier["effort_bands"]["half_day"] == 240
+        assert again.atelier["default_weekly_capacity_hours"] == 20
+
+        async with tenant_session(factory, tenant.id) as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(AuditLog)
+                        .where(AuditLog.action == AuditAction.ATELIER_SETTINGS_UPDATED.value)
+                        .order_by(AuditLog.created_at)
+                    )
+                ).all()
+            )
+        assert [row.actor_id for row in rows] == [first_actor.id, second_actor.id]
+        # The overwritten mapping survives HERE and nowhere else.
+        assert rows[0].details["effort_bands"]["half_day"] == 300
+        assert rows[1].details["effort_bands"]["half_day"] == 240
+        assert rows[0].details["default_weekly_capacity_hours"] == 36
+    finally:
+        await engine.dispose()
+
+
 # --- appointment types CRUD ---
 
 
