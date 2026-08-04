@@ -297,9 +297,23 @@ describe("CheckinPage collection notice", () => {
   it("renders the notice as visible text naming the boutique", async () => {
     await renderLoadedForm();
 
-    const notice = screen.getByText(t("checkin.notice", { boutique: BOUTIQUE_NAME }));
+    // `normalizer: (text) => text` — the DEFAULT normalizer collapses runs of
+    // whitespace in the DOM text but leaves the expected string alone, so from
+    // F20 on (a three-paragraph notice) the default would never match and the
+    // only fixes available are this or asserting a substring. Raw-vs-raw is the
+    // stronger of the two: it proves the paragraph breaks reached the DOM.
+    const notice = screen.getByText(t("checkin.notice", { boutique: BOUTIQUE_NAME }), {
+      normalizer: (text) => text,
+    });
     expect(notice).toBeVisible();
     expect(notice).toHaveTextContent(BOUTIQUE_NAME);
+    // ⚠ AND THAT THEY SURVIVE RENDERING. jsdom keeps `\n` in textContent under
+    // any CSS, so the assertion above passes on a block that paints the three
+    // approved paragraphs as one wall of text. `white-space: pre-line` is what
+    // makes the break visible, it is copy.md R1, and this is the only place it
+    // can be checked at all — deleting the class from CheckinPage reddens here.
+    expect(notice).toHaveClass("whitespace-pre-line");
+    expect(notice.textContent?.split("\n\n")).toHaveLength(3);
     // Not behind a disclosure: notice at the moment of collection means visible
     // at the moment of collection.
     expect(notice.closest("details")).toBeNull();

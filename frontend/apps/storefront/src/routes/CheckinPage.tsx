@@ -351,8 +351,16 @@ export function CheckinPage() {
       {/* The notice sits ABOVE the box it describes, and is never behind a
           disclosure: notice at the moment of collection means visible at the
           moment of collection. Both strings are counsel-gated in he.ts; nothing
-          here may hardcode any part of either. */}
-      <p className="max-w-[60ch] text-sm text-ink-muted">
+          here may hardcode any part of either.
+
+          ⚠ `whitespace-pre-line` IS LOAD-BEARING, not styling (F20 / copy.md
+          R1). The approved notice is THREE blank-line-separated paragraphs —
+          purpose, the public queue board, and rights — and CSS `white-space`
+          defaults to collapsing every newline, so without this class the three
+          render as one unbroken wall of text a woman in a doorway will not read
+          to the end of. This is the ONE component edit F20's values-only swap
+          needed, and it hardcodes no part of either string. */}
+      <p className="max-w-[60ch] text-sm whitespace-pre-line text-ink-muted">
         {t("checkin.notice", { boutique: boutique.name })}
       </p>
 

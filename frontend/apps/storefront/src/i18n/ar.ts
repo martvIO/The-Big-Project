@@ -27,6 +27,13 @@ export const ar = {
       checkin: "רישום לתור",
       queuePosition: "מקומך בתור",
       queueBoard: "לוח התור",
+      // F20.
+      privacy: "הודעת פרטיות",
+    },
+    // F20. The footer link is on every route, so the notice is one tap from
+    // any of them.
+    footer: {
+      privacy: "הודעת פרטיות",
     },
     manage: {
       title: "התור שלך",
@@ -64,6 +71,17 @@ export const ar = {
       payExpired: "הזמן שמור לך פג",
       payUnresolved:
         "עדיין לא קיבלנו אישור על התשלום. אין צורך לשלם שוב — נשמח שתתקשרי אלינו ונבדוק יחד.",
+      // F20. The collection notice's chrome and the marketing consent label.
+      // ⚠ `marketingOptIn` is a LEGAL CONSENT STRING and is byte-identical to
+      // `checkin.optIn` below in both bundles — an Arabic launch that translated
+      // one and not the other would put two different §30A consents on one
+      // product. It is not in the value-parity test for the reason `checkin`'s
+      // two are: that guard is scoped to the four counsel-gated keys by name.
+      collectionNoticeHeading: "המידע שאת מוסרת לנו",
+      collectionNoticeLink: "לעמוד הפרטיות המלא",
+      marketingOptIn:
+        "אני מאשרת קבלת הודעות SMS מ{{boutique}} על מבצעים, קולקציות חדשות ואירועים. אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת.",
+      marketingOptInHint: "לא חובה. קביעת התור אינה תלויה בסימון התיבה.",
     },
     // F19. The first `errors` key to reach this bundle — the block exists here
     // now so the next feature appends rather than re-deciding where it goes.
@@ -90,15 +108,18 @@ export const ar = {
       visitBride: "מדידת כלה",
       visitEvening: "שמלת ערב",
       visitTypeRequired: "צריך לבחור סוג ביקור כדי להמשיך",
-      // F59 amended this value in BOTH files at once, and it has to stay that
-      // way: it is one legal text, and an Arabic launch that carried the
-      // pre-board wording while Hebrew carried the board clause would be two
-      // different notices on one form. See he.ts for why each phrase is what it
-      // is.
+      // F20's APPROVED REPLACEMENT for both values (copy.md Strings 6 and 7),
+      // swapped here in the SAME COMMIT as he.ts. F59 amended these in both
+      // files at once and it has to stay that way: it is one legal text, and a
+      // launch carrying interim Arabic beside approved Hebrew would be two
+      // different notices on one form. See he.ts for what was struck from each
+      // and why. `i18n-keys.test.ts` now compares the two bundles' VALUES for
+      // these two keys, which is what makes forgetting this file a red suite
+      // rather than a silent divergence.
       notice:
-        "הפרטים שאת ממלאת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך — ונמחקים כמה ימים לאחר הביקור. מקומך בתור והמילה הראשונה בשם שהזנת מוצגים בלוח התור של הבוטיק — עמוד אינטרנט ציבורי שכל מי שיודע את כתובת האתר של הבוטיק יכול לפתוח, ולא רק מסך שנמצא בתוך החנות. מספר הטלפון שלך לא מוצג שם. הפרטים לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה; אם סימנת אותה, השם ומספר הטלפון יישמרו לצורך זה עד שתבקשי להסיר את ההסכמה.",
+        "הפרטים שאת מוסרת כאן נשמרים אצל {{boutique}} לצורך ניהול התור בלבד — לשמור את מקומך ולקרוא לך כשיגיע תורך. מסירתם היא מרצון; בלי שם ובלי מספר נייד לא נוכל לרשום אותך לתור, ותמיד אפשר לפנות לאחת מאיתנו כאן.\n\nמקומך בתור והמילה הראשונה בשם שהזנת מוצגים בלוח התור של הבוטיק — עמוד אינטרנט ציבורי שכל מי שיודע את כתובת האתר של הבוטיק יכול לפתוח, ולא רק מסך שנמצא בתוך החנות. מספר הטלפון שלך לא מוצג שם.\n\nהפרטים לא ישמשו לפניות שיווקיות אלא אם סימנת את התיבה שלמטה, ואפשר לבקש מאיתנו להסיר את ההסכמה בכל עת. את הפרטים אנחנו שומרות רק כל עוד הם דרושים לניהול התור, ואפשר לבקש מאיתנו לעיין במידע שנשמר עלייך, לתקן אותו או למחוק אותו. פירוט מלא בעמוד הפרטיות של האתר.",
       optIn:
-        "אני מאשרת ש{{boutique}} תשלח לי הודעות SMS על מבצעים, קולקציות חדשות ואירועים. אפשר להסיר את ההסכמה בכל הודעה.",
+        "אני מאשרת קבלת הודעות SMS מ{{boutique}} על מבצעים, קולקציות חדשות ואירועים. אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת.",
       submit: "הצטרפות לתור",
       submitting: "רושמות אותך לתור",
       budgetSpent:
@@ -136,6 +157,16 @@ export const ar = {
       called: "גשי לדלפק",
       loading: "טוענות את לוח התור",
       loadFailed: "לא הצלחנו להציג את לוח התור כרגע.",
+    },
+    // F20's /privacy page chrome. The three DOCUMENTS are not here and are not
+    // in he.ts either — they ride GET /storefront/boutique, so there is exactly
+    // one copy of each and no bundle can drift from it.
+    privacy: {
+      title: "הודעת פרטיות",
+      noticeHeading: "המידע שאנחנו אוספות ומה אנחנו עושות בו",
+      dpaHeading: "מי מעבד את המידע ואיך הוא נשמר",
+      subprocessorsHeading: "ספקי התשתית",
+      updated: "עודכן לאחרונה: 4.8.2026",
     },
   },
 } as const;
