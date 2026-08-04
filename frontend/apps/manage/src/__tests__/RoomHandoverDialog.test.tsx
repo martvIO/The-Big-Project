@@ -277,26 +277,17 @@ describe("the handover itself", () => {
 
 // --- focus -------------------------------------------------------------------
 
-describe("focus", () => {
-  it("returns to «העברה לעמיתה» on cancel", async () => {
-    // ⚠ THIS ONE ASSERTS THE OUTCOME, NOT OUR MECHANISM, and it is labelled so
-    // rather than left to look stronger than it is: jsdom implements the
-    // <dialog> close focusing steps, so deleting the [openDialog] restore effect
-    // leaves this GREEN — verified by running that mutation. The effect earns
-    // its keep on the path the platform CANNOT serve, where the trigger has gone
-    // with its assignment; the non-vacuous tests for it are the MOVE 5 pair and
-    // the registry's DC-10 case, and all three red when it is deleted.
-    mount();
-    await screen.findByText("חדר 2");
-    const trigger = screen.getByRole("button", { name: "העברה לעמיתה — חדר 2" });
-    trigger.focus();
-    const modal = await openHandover();
-
-    fireEvent.click(within(modal).getByRole("button", { name: "ביטול" }));
-
-    await waitFor(() => expect(trigger).toHaveFocus());
-  });
-
+// The plain "returns to «העברה לעמיתה» on cancel" case USED TO LIVE HERE and was
+// REMOVED — it could not fail. jsdom 29's HTMLDialogElementImpl is an empty subclass
+// (9 lines, no showModal), so `test/setup.ts` installs a stub that sets `open = true`
+// and moves no focus; the test focused the trigger itself before opening, and the
+// stub never took it away. Its own comment claimed "jsdom implements the <dialog>
+// close focusing steps" — that was simply false.
+// The rule IS proven in `frontend/e2e/dialog-focus.spec.ts` against mutations M1 and
+// M3b, in a browser that implements <dialog>. `Modal` is shared, so that platform
+// restore path is this dialog's too.
+// MOVE 5 below is the half the platform cannot serve, and it reds when deleted.
+describe("focus — the release the platform cannot serve", () => {
   it("MOVE 5 — a tick that releases the assignment closes it, never onto <body>", async () => {
     mount();
     await screen.findByText("חדר 2");
