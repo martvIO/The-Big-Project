@@ -219,6 +219,9 @@ class CustomersService:
                 for row in messages
             ],
             messages_total=messages_total,
+            marketing_consent_at=customer.marketing_consent_at,
+            marketing_consent_withdrawn_at=customer.marketing_consent_withdrawn_at,
+            erased_at=customer.erased_at,
         )
 
 

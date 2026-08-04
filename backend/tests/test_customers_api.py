@@ -146,6 +146,14 @@ def _detail() -> CustomerDetail:
             )
         ],
         messages_total=97,
+        # F20 DR-13: the three consent fields the CRM card renders a badge from.
+        # A CONSENTED-AND-WITHDRAWN subject, deliberately — it is the only state
+        # where both timestamps are non-null, so a console that collapsed them
+        # into one boolean would render it wrong, and a payload seeded with the
+        # simpler state would not notice.
+        marketing_consent_at=STARTS_AT,
+        marketing_consent_withdrawn_at=STARTS_AT + datetime.timedelta(days=30),
+        erased_at=None,
     )
 
 
@@ -491,3 +499,32 @@ def test_no_fenced_key_reaches_the_wire_on_any_route(
         assert {"notes", "tags", "messages_total"} <= keys
     else:
         assert payload["items"]
+
+
+def test_the_detail_carries_the_three_consent_fields_and_the_list_does_not() -> None:
+    """⚠ F20 DR-13, and the second half is as load-bearing as the first.
+
+    The detail gains them because Gate 1 Q4 admits a shift manager to
+    `marketing-withdraw` and NOT to the privacy panel — so this card is the only
+    surface where a front-desk staffer can see what she is being asked to
+    revoke, and without it Q4's ruling is reachable only by an owner who goes
+    looking somewhere else first.
+
+    The LIST gains nothing: no consent column, no filter, no sort. A customer
+    directory that renders a marketing-consent state per row is a marketing
+    audience list on the busiest screen in the console, and nothing in v1 sends
+    marketing at all.
+    """
+    fake = FakeCustomersService()
+    client = _client(fake)
+    with client:
+        detail = client.get(DETAIL_PATH).json()
+        listed = client.get(LIST_PATH).json()
+
+    assert detail["marketing_consent_at"] is not None
+    assert detail["marketing_consent_withdrawn_at"] is not None
+    assert detail["erased_at"] is None
+
+    consent_keys = {"marketing_consent_at", "marketing_consent_withdrawn_at", "erased_at"}
+    assert not consent_keys & set(_all_keys(listed)), "the customer LIST leaks the consent state"
+    assert set(CustomerRow.model_fields) == {"id", "name", "phone", "tags"}

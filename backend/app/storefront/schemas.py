@@ -128,6 +128,24 @@ class BoutiqueResponse(BaseModel):
     instagram: str | None
     hours: list[HoursRow]
     exceptions: list[ExceptionRow]
+    # F20 D13 — the two documents and the platform sub-processor list, on the
+    # fetch `StorefrontLayout` already makes on every route.
+    #
+    # There is deliberately NO `/storefront/privacy`. `PrivacyPage` copies
+    # `AccessibilityPage`'s refusal to render a spinner or an error in place of
+    # a legally-required document — and that argument only transfers if the page
+    # has no network dependency of its own. A page-level fetch would put a 500,
+    # a dropped connection or a 429 off the shared per-tenant read budget
+    # between a bride and her §11 notice. Folded into this response, the failure
+    # mode is identical to the layout's: the whole page fails, never the
+    # document alone.
+    #
+    # The notice is on the hot path regardless — it must render INSIDE the
+    # booking form's `details` step, at the moment she types her name — so a
+    # second endpoint would buy a second failure mode and no saved bytes.
+    privacy_notice_text: str
+    privacy_dpa_text: str
+    privacy_subprocessors_text: str
 
 
 class SlotRow(BaseModel):

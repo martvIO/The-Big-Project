@@ -194,6 +194,13 @@ def public_boutique(view: StorefrontBoutiqueView) -> BoutiqueResponse:
 
     return BoutiqueResponse(
         name=view.name,
+        # THREE more EXPLICIT reads, resolved upstream — never a passthrough of
+        # `settings["privacy"]`, which would let a key a later feature adds to
+        # that object reach the public page by default. The sub-processor list is
+        # the platform's and ignores any override (D14).
+        privacy_notice_text=view.privacy.notice_text,
+        privacy_dpa_text=view.privacy.dpa_text,
+        privacy_subprocessors_text=view.privacy.subprocessors_text,
         essence=field("essence"),
         description=field("description"),
         phone=field("phone"),
