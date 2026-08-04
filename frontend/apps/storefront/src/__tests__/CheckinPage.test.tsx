@@ -6,6 +6,7 @@ import { StorefrontLayout } from "../components/StorefrontLayout";
 import i18n from "../i18n";
 import { CheckinPage } from "../routes/CheckinPage";
 import { expectFocus } from "../test/focus";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // Spread the real module so ApiError keeps its real implementation — the page
 // branches on error CODE, and a stubbed error class would make the throttle
@@ -38,6 +39,7 @@ function boutique(overrides: Partial<BoutiqueResponse> = {}): BoutiqueResponse {
     instagram: "alma.bridal",
     hours: [],
     exceptions: [],
+    ...PRIVACY_FIXTURE,
     ...overrides,
   };
 }

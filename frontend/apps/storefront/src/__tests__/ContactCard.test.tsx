@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { BoutiqueResponse } from "../api";
 import { ContactCard } from "../components/ContactCard";
 import i18n from "../i18n";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // Importing the app's i18n instance initialises the default one useTranslation
 // reads, so the labels below are the production strings.
@@ -19,6 +20,7 @@ function boutique(patch: Partial<BoutiqueResponse> = {}): BoutiqueResponse {
     instagram: null,
     hours: [],
     exceptions: [],
+    ...PRIVACY_FIXTURE,
     ...patch,
   };
 }

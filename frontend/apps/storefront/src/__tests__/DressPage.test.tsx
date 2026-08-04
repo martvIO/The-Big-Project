@@ -5,6 +5,7 @@ import type { BoutiqueResponse, StorefrontDetail, StorefrontMedia } from "../api
 import { StorefrontLayout } from "../components/StorefrontLayout";
 import i18n from "../i18n";
 import { DressPage } from "../routes/DressPage";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // ApiError, isNotFound and errorMessageOr stay REAL: the archived-dress branch
 // and the "never render the server's English message" rule are what half this
@@ -34,6 +35,7 @@ const BOUTIQUE: BoutiqueResponse = {
   instagram: null,
   hours: [],
   exceptions: [],
+  ...PRIVACY_FIXTURE,
 };
 
 function photo(url: string | null): StorefrontMedia {

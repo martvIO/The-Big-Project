@@ -6,6 +6,7 @@ import type { BoutiqueResponse, ExceptionRow, HoursRow } from "../api";
 import { StorefrontLayout } from "../components/StorefrontLayout";
 import i18n from "../i18n";
 import { AboutPage } from "../routes/AboutPage";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // /about is the trust surface, and everything on it comes from the ONE
 // layout-level getBoutique(). So the route is exercised through StorefrontLayout
@@ -53,6 +54,7 @@ function boutique(patch: Partial<BoutiqueResponse> = {}): BoutiqueResponse {
       { day_of_week: 4, open_time: "10:00:00", close_time: "19:00:00" },
     ],
     exceptions: [],
+    ...PRIVACY_FIXTURE,
     ...patch,
   };
 }

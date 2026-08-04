@@ -17,6 +17,7 @@ import { BookPage } from "../routes/BookPage";
 import { handOff, matchRoute, usePathname } from "../router";
 import { expectFocus } from "../test/focus";
 import { inPaintGap } from "../test/interleave";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // Spread the real module so ApiError and errorMessage* keep their real
 // implementations — the load-failure copy under test is chosen by CODE mapping,
@@ -91,6 +92,7 @@ function boutique(overrides: Partial<BoutiqueResponse> = {}): BoutiqueResponse {
     instagram: "alma.bridal",
     hours: [],
     exceptions: [],
+    ...PRIVACY_FIXTURE,
     ...overrides,
   };
 }

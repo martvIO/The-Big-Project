@@ -4,6 +4,7 @@ import { resetBoutiqueCache } from "../api";
 import type { BoutiqueResponse } from "../api";
 import { StorefrontLayout, useBoutique } from "../components/StorefrontLayout";
 import i18n from "../i18n";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // The shell every route renders inside: the skip link's target, the focus
 // target the router moves to, the statutory footer, and the ONE getBoutique()
@@ -19,6 +20,7 @@ const BOUTIQUE: BoutiqueResponse = {
   instagram: "alma.bridal",
   hours: [],
   exceptions: [],
+  ...PRIVACY_FIXTURE,
 };
 
 // A brand-new tenant: no phone, no Instagram. The footer must not render an
@@ -124,8 +126,8 @@ describe("skip link and focus target", () => {
 });
 
 describe("footer", () => {
-  it.each(["/", "/dress/d1", "/about", "/accessibility"])(
-    "carries the about and accessibility-statement links on %s",
+  it.each(["/", "/dress/d1", "/about", "/accessibility", "/book/details", "/checkin", "/q/t1", "/b/tok"])(
+    "carries the about, accessibility-statement and privacy links on %s",
     async (pathname) => {
       renderAt(pathname);
       await settled();
@@ -140,6 +142,15 @@ describe("footer", () => {
       expect(links.getByRole("link", { name: i18n.t("a11y.statementLink") })).toHaveAttribute(
         "href",
         "/accessibility",
+      );
+      // F20 / PPL §11. The route list above is the assertion, not the link: this
+      // shell wraps EVERY storefront route, so the four collection surfaces —
+      // the booking form, the walk-in check-in, the position page and the manage
+      // link a bride reaches from an SMS — are one tap from the notice, and none
+      // of them needed a link of its own.
+      expect(links.getByRole("link", { name: i18n.t("footer.privacy") })).toHaveAttribute(
+        "href",
+        "/privacy",
       );
     },
   );
@@ -171,8 +182,9 @@ describe("footer", () => {
       });
     expect(contacts).toHaveLength(0);
     // Each contact link owns the "·" before it, so a stray separator is how a
-    // missing field leaks visually even when no link renders.
-    expect(within(footer()).queryAllByText("·")).toHaveLength(1);
+    // missing field leaks visually even when no link renders. TWO from F20 on:
+    // about · accessibility · privacy, all three unconditional.
+    expect(within(footer()).queryAllByText("·")).toHaveLength(2);
   });
 });
 

@@ -6,6 +6,7 @@ import { StorefrontLayout } from "../components/StorefrontLayout";
 import i18n from "../i18n";
 import { AccessibilityPage } from "../routes/AccessibilityPage";
 import { DressPage } from "../routes/DressPage";
+import { PRIVACY_FIXTURE } from "../test/boutique";
 
 // הצהרת נגישות is a legal obligation under IS 5568 §35, so these tests guard
 // what an auditor checks: real document semantics, the declared standard, the
@@ -37,6 +38,7 @@ const BOUTIQUE: BoutiqueResponse = {
   instagram: "boutique_annabel",
   hours: [],
   exceptions: [],
+  ...PRIVACY_FIXTURE,
 };
 
 // The class of defect, not the one string that caused it: the removed

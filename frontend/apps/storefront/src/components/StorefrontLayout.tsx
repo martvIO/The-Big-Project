@@ -152,6 +152,19 @@ export function StorefrontLayout({ children }: { children: ReactNode }) {
               ·
             </span>
             <A11yStatementLink href="/accessibility">{t("a11y.statementLink")}</A11yStatementLink>
+            <span aria-hidden="true" className="text-ink-muted">
+              ·
+            </span>
+            {/* F20. Third and unconditional — the two links beside it are
+                unconditional for the same reason, and the ones after it are not
+                because a boutique may publish neither channel. Every storefront
+                route renders inside this shell, so ONE link here puts the notice
+                one tap from the catalogue, a dress page, /book, /b/{token},
+                /checkin and /q/{id} alike. §11 wants the document reachable, not
+                merely published. */}
+            <Link to="/privacy" className={footerLinkClass}>
+              {t("footer.privacy")}
+            </Link>
             {instagram !== null && (
               <>
                 <span aria-hidden="true" className="text-ink-muted">
