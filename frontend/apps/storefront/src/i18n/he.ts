@@ -413,6 +413,31 @@ export const he = {
       // claiming it was hers.
       lastFromDevice: "הרישום האחרון שנעשה מהמכשיר הזה",
 
+      // F60's disclosure, in the existing `checkin` section rather than a new
+      // top-level `guide` one (DL21): both strings render on this page and
+      // nowhere else, and `checkin` is already in i18n-keys.test.ts's SECTIONS,
+      // so the dotted-literal source scan covers them with no edit to the
+      // scanner.
+      //
+      // ⚠ THE CONTENT FENCE IS POSITIVE AND IT IS LOAD-BEARING ON GATE 1. The
+      // hint names THE QUEUE and only the queue: what checking in puts her into,
+      // what she gets back, and that a staffer calls her by name. It states no
+      // data-handling fact of any kind. `checkin.notice` below is the notice AT
+      // THE MOMENT OF COLLECTION and is never behind a disclosure — a collapsed
+      // «מה קורה עם הפרטים שלי?» beside a legally-mandated always-visible notice
+      // would be a second, unapproved notice at the same collection point.
+      //
+      // The label is the READER'S QUESTION, not the product's heading: she is
+      // standing in a doorway with a phone, deciding whether to fill in a form
+      // for strangers. A question mark is fine; only «!» is banned.
+      guideTrigger: "מה קורה אחרי הרישום?",
+      // Three facts and no fourth. It avoids «שליחה» entirely so nothing here can
+      // read as a message going anywhere, and it does NOT mention the public
+      // queue board — that is `checkin.notice`'s counsel-gated clause, and
+      // repeating it here would be the second notice.
+      guideHint:
+        "הרישום מכניס אותך לתור ההמתנה של הבוטיק — בסיום נפתח עמוד עם מקומך בתור שאפשר להשאיר פתוח בטלפון, ואשת צוות תקרא לך בשם כשיגיע תורך.",
+
       name: "שם מלא",
       phone: "טלפון נייד",
       // The only place the format is taught on this surface, so it must keep
