@@ -119,10 +119,21 @@ const NAV_LABELS = [
   // after the `floor` row, which neither of these two roles can see — hence
   // position 10 here and not 11.
   "קוד סריקה",
-  // The two owner-only rows, last. Everything above is reachable by a shift
+  // The THREE owner-only rows, last. Everything above is reachable by a shift
   // manager, which is what keeps the assertions below a `.slice(0, 11)`.
   "צוות",
   "סליקה ותשלומים",
+  // F20. Owner-only, and that is derivable rather than arbitrary: the panel's
+  // FIRST step is the §13 export, which is owner-only on the server, so a shift
+  // manager who could open this section would reach no action inside it. Her
+  // path to Gate 1 Q4's marketing withdrawal is the customer card, where a
+  // front-desk staffer looks a caller up anyway — POST
+  // /manage/privacy/marketing-withdraw carries NO route-level gate and inherits
+  // the router's (OWNER, SHIFT_MANAGER) one.
+  //
+  // Appended AFTER «סליקה ותשלומים», so the shift manager's eleven-row prefix is
+  // untouched and `.slice(0, 11)` still means what it meant.
+  "פרטיות",
 ];
 
 function navItems(): string[] {
@@ -138,14 +149,14 @@ beforeEach(() => {
 });
 
 describe("the console nav is role-filtered", () => {
-  it("shows an owner all thirteen sections including Staff and the gateway", async () => {
+  it("shows an owner all fourteen sections including Staff, the gateway and privacy", async () => {
     me.mockResolvedValue(staff("owner"));
     render(<App />);
     await screen.findByRole("navigation");
     expect(navItems()).toEqual(NAV_LABELS);
   });
 
-  it("shows a shift manager eleven sections and neither owner-only one", async () => {
+  it("shows a shift manager eleven sections and none of the three owner-only ones", async () => {
     me.mockResolvedValue(staff("shift_manager"));
     render(<App />);
     await screen.findByRole("navigation");
@@ -155,6 +166,11 @@ describe("the console nav is role-filtered", () => {
     // refuses her on all four /manage/gateway routes with a 403. The filter
     // exists so she is not shown a door that answers one.
     expect(screen.queryByRole("button", { name: "סליקה ותשלומים" })).toBeNull();
+    // F20. The row is invisible to her and the server would refuse the section's
+    // own first action anyway — but the WITHDRAWAL she does own is reachable, on
+    // the customer card, which is what makes hiding this door correct rather
+    // than a permission she quietly lost.
+    expect(screen.queryByRole("button", { name: "פרטיות" })).toBeNull();
   });
 
   // ⚠ SPLIT at F41, and the split is the point. This `it.each` used to carry
@@ -205,7 +221,7 @@ describe("the console nav is role-filtered", () => {
     expect(screen.getByRole("heading", { name: "צוות בקומה" })).toBeInTheDocument();
   });
 
-  it("keeps the owner's thirteen and the shift manager's eleven free of the floor row", () => {
+  it("keeps the owner's fourteen and the shift manager's eleven free of the floor row", () => {
     // The floor panel reaches those two roles UNDER «לוח היום», never as a
     // second nav row — spec D11, and the reason «הצוות בקומה» is absent from
     // NAV_LABELS above even though App.tsx's NAV has fourteen rows.
@@ -216,7 +232,7 @@ describe("the console nav is role-filtered", () => {
     // as well. F53 moved four of the five and left this one behind, which is why
     // it is spelled out here: a nav row is five coordinated edits, not one.
     expect(NAV_LABELS).not.toContain("הצוות בקומה");
-    expect(NAV_LABELS).toHaveLength(13);
+    expect(NAV_LABELS).toHaveLength(14);
   });
 
   it("does not white-screen on a role the enum does not know", async () => {

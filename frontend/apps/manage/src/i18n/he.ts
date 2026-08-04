@@ -2242,5 +2242,127 @@ export const he = {
       "המסך הזה מחבר את הבוטיק לחשבון הסליקה שדרכו נגבות המקדמות, ומטעמי אבטחה הפרטים אינם ניתנים לצפייה אחרי השמירה — שמירה נוספת מחליפה אותם במלואם.",
     "guide.gateway.2":
       "כל עוד אין חשבון מחובר, תור נקבע גם בלי מקדמה — המתג בהגדרות נשאר כפי שהוא, והמקדמה פשוט אינה נגבית עד שהחיבור יושלם.",
+
+    // F20's privacy section. ⚠ THE LEGAL HEBREW IS NOT HERE and may never be:
+    // the privacy notice, the processor clause, the sub-processor list, the
+    // not-lawyer-reviewed disclaimer and the `reason`-field hint all ride
+    // `GET /manage/privacy` (`PrivacyResponse.disclaimer_text` /
+    // `.erase_reason_hint`). A copy here would be a second place for a legal
+    // string to drift, and would put the one document a tenant may NOT edit into
+    // a file a frontend change edits freely. `i18n.test.ts` asserts the absence.
+    "nav.privacy": "פרטיות",
+    // The section's h2.
+    "privacy.heading": "הודעת הפרטיות של הבוטיק",
+    // The two textarea labels. What each document IS lives in the disclaimer the
+    // API serves above them, so these are names and not explanations.
+    "privacy.noticeLabel": "הודעת הפרטיות",
+    "privacy.dpaLabel": "סעיף עיבוד המידע",
+    // Per field, so she can tell at a glance which document she has taken
+    // ownership of. Two badges rather than one line about the pair: they are
+    // overridden independently.
+    "privacy.isDefault": "נוסח ברירת מחדל",
+    "privacy.isCustom": "נוסח משלך",
+    // D4's revert sentinel, as a control rather than as folklore about clearing a
+    // box. It submits "" — `merge_settings` is one `settings || :patch::jsonb`
+    // and `||` can add or replace a JSONB key but never remove one, so "" is the
+    // only revert an owner can actually reach.
+    "privacy.revert": "חזרה לנוסח ברירת המחדל",
+    // ⚠ WCAG 2.5.3: the accessible name STARTS with the visible label, so speech
+    // input can say what it reads. Two revert controls on one screen need to be
+    // distinguishable by name, which is the whole reason this key exists.
+    "privacy.revertAria": "חזרה לנוסח ברירת המחדל של {{document}}",
+    // ⚠ BYTES, NOT CHARACTERS, and that is not pedantry: the server's cap is
+    // `MAX_PRIVACY_TEXT_BYTES = 8 × 1024` measured on the UTF-8 encoding, and
+    // Hebrew is two bytes per character. A character counter would tell an owner
+    // she has 8 000 left when the server will refuse her at 4 096.
+    "privacy.bytes": "{{used}} מתוך {{max}} בתים",
+    "privacy.tooLong": "הנוסח ארוך מדי ולא יישמר. אפשר לקצר אותו.",
+    "privacy.save": "שמירת הנוסח",
+    "privacy.saved": "הנוסח נשמר",
+    // The read-only block. It gets a heading and no control of any kind — the
+    // absence IS the disclosure (Gate 1 Q3 / D14), and the disclaimer above says
+    // in words why the box is missing so nobody has to guess.
+    "privacy.subprocessorsHeading": "ספקי התשתית",
+    "privacy.loadFailed": "לא הצלחנו לטעון את נוסחי הפרטיות כרגע.",
+    "privacy.saveFailed": "לא הצלחנו לשמור את הנוסח כרגע.",
+    // The §13/§14 panel.
+    "privacy.subjectHeading": "בקשות של לקוחות למידע ולמחיקה",
+    // The two operational duties NO CODE ENFORCES, stated where the person who
+    // owes them is standing. The 30-day clock has no timer and the identity check
+    // has no field; both are named in the compliance record as manual procedure,
+    // and this line is the only place the console says so.
+    "privacy.subjectIntro":
+      "החוק מחייב להשיב לפנייה בתוך שלושים יום, ולוודא את זהות הפונה לפני מסירת מידע או מחיקתו — כדי שהפרטים לא יגיעו לאדם אחר.",
+    "privacy.phoneLabel": "מספר הטלפון של הלקוחה",
+    // ⚠ ONE CONTROL, TWO OUTCOMES, and it is deliberately named for both. The
+    // §13 export IS the lookup step (D17): the erase and the withdrawal are keyed
+    // on `customer_id`, and this response is the only place that id comes from —
+    // step 2 of the erase overwrites `customers.phone`, so a phone-keyed erase
+    // would destroy its own lookup key.
+    "privacy.lookup": "חיפוש והפקת עותק",
+    "privacy.lookupHint": "אפשר להזין עשר ספרות, למשל 0501234567.",
+    "privacy.notFound": "לא נמצאה לקוחה עם המספר הזה.",
+    "privacy.subjectLabel": "הלקוחה שנמצאה",
+    "privacy.download": "הורדת העותק כקובץ",
+    // The `reason` field. Its HINT is not here — `erase_reason_hint` rides
+    // `GET /manage/privacy` with the rest of the approved Hebrew.
+    "privacy.reasonLabel": "למה נמחק המידע",
+    // «מחיקה», the word §14 uses and the word the endpoint earns. Never
+    // «אנונימיזציה»: the survivor set is de-identified with a controlled
+    // re-identification key, and a word implying the data is gone would
+    // misdescribe it to the one person who has to answer for it.
+    "privacy.erase": "מחיקת המידע של הלקוחה",
+    "privacy.eraseConfirmTitle": "מחיקת המידע של הלקוחה",
+    // Says what SURVIVES as well as what goes. An owner who expects the row to
+    // vanish and finds a booking history the next morning has been told the
+    // wrong thing at the one moment she could not undo it.
+    "privacy.eraseConfirmBody":
+      "הפעולה הזאת אינה הפיכה. השם, מספר הטלפון, ההערות והתגיות יימחקו, והתורים יישארו במערכת בלי הפרטים המזהים — כנדרש לצורכי הרישום והדיווח.",
+    // ⚠ THE CONFIRMATION IS HER PHONE DIGITS RE-TYPED, and every part of that is
+    // deliberate. An ASCII LTR digit run has no bidi ambiguity in an RTL field,
+    // which a Hebrew word like «מחק» would; it is already on screen, so this is a
+    // transcription and not a memory test; and it is DIFFERENT FOR EVERY SUBJECT,
+    // so it cannot be satisfied by muscle memory the way one fixed word can.
+    "privacy.eraseConfirmLabel": "להקלדת אישור, יש להקליד את מספר הטלפון של הלקוחה",
+    "privacy.eraseConfirmMismatch": "המספר שהוקלד אינו תואם.",
+    "privacy.eraseConfirmCta": "מחיקה סופית",
+    "privacy.cancel": "ביטול",
+    "privacy.erased": "המידע נמחק",
+    "privacy.alreadyErased": "המידע של הלקוחה הזאת כבר נמחק.",
+    // ⚠ SHARED WITH F53'S CUSTOMER CARD, which is where a front-desk staffer
+    // actually looks a caller up — and the shift manager's path to Gate 1 Q4,
+    // since the privacy section itself is owner-only. One vocabulary for one
+    // consent, in one namespace: two spellings of a §30A state in one console is
+    // how the two surfaces start disagreeing.
+    "privacy.consentLabel": "הסכמה לדיוור",
+    "privacy.consentNone": "לא ניתנה",
+    "privacy.consentActive": "ניתנה",
+    "privacy.consentWithdrawn": "הוסרה",
+    // No confirmation step and that is a decision: withdrawal is the LESSER
+    // action, it is reversible by asking again, and §30A says revocation may not
+    // be conditioned — a modal asking «are you sure?» at the counter is a
+    // condition, however small.
+    "privacy.withdraw": "הסרת ההסכמה לדיוור",
+    "privacy.withdrawn": "ההסכמה הוסרה",
+    // A subject with no live consent. Not an error: it is the outcome she asked
+    // for either way, and the front desk should not have to tell the two apart.
+    "privacy.withdrawNoop": "לא הייתה הסכמה פעילה להסיר.",
+    "privacy.withdrawFailed": "לא הצלחנו להסיר את ההסכמה כרגע.",
+    "privacy.exportFailed": "לא הצלחנו להפיק את העותק כרגע.",
+    "privacy.eraseFailed": "לא הצלחנו למחוק את המידע כרגע.",
+    // The 409. The console maps it because the server's English message would
+    // otherwise render into a Hebrew RTL screen at the one moment she is deciding
+    // whether to destroy a record.
+    "privacy.error.BOOKING_ACTIVE": "ללקוחה יש תור עתידי מאושר. אפשר לבטל אותו ואז למחוק את המידע.",
+    "privacy.error.TOO_MANY_ATTEMPTS": "בוצעו הרבה בקשות בזמן קצר. אפשר לנסות שוב בעוד זמן מה.",
+    "privacy.error.NOT_AUTHORIZED": "הפעולה הזאת פתוחה לבעלת הבוטיק בלבד.",
+
+    // The fifteenth section's two guide steps. `guide.`-namespaced, so they ride
+    // HE_F60 by prefix and inherit its register guards and its ar-value guard —
+    // the namespace names the payload, not the feature that added the key.
+    "guide.privacy.1":
+      "במסך הזה נמצאים שני נוסחים שהלקוחה רואה באתר — הודעת הפרטיות וסעיף עיבוד המידע — ואפשר לערוך כל אחד מהם בנפרד; רשימת ספקי התשתית שמתחתיהם נקבעת על ידי מפעילת הפלטפורמה ואינה ניתנת לעריכה.",
+    "guide.privacy.2":
+      "בחלק התחתון מטפלים בפניות של לקוחות: מחפשים לפי מספר טלפון, ההפקה מורידה עותק של כל המידע שנשמר עליה, ומחיקה היא פעולה שאינה הפיכה — התורים נשארים במערכת בלי הפרטים המזהים.",
   },
 } as const;

@@ -44,6 +44,11 @@ const SECTIONS = [
   "floor",
   "checkinQr",
   "atelier",
+  // F20, the fifteenth. Spelled out rather than derived, which is the whole
+  // point of this list: `i18n.test.ts` derives ITS walk from `GUIDE_STEPS`, so
+  // if this one derived too, a section added to the union with no steps could
+  // never be caught by either.
+  "privacy",
 ];
 
 /**

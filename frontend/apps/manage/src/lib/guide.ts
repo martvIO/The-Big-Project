@@ -6,10 +6,11 @@
 // documents, in which `vi.mock`'s live binding silently resolves to the real
 // module inside `importActual` and a test passes while asserting nothing.
 //
-// The union is moved ACROSS AS SHIPPED: same fourteen members, same order, same
-// three ordinal comments. Member order is behaviourally irrelevant, so
-// reordering it during the move would be a diff a reviewer has to read for
-// nothing — and it would cost the record of who added what.
+// The union was moved ACROSS AS SHIPPED at F60: same members, same order, same
+// ordinal comments. Member order is behaviourally irrelevant, so reordering it
+// during the move would have been a diff a reviewer has to read for nothing —
+// and it would have cost the record of who added what. F20 appends, for the
+// same reason.
 export type SectionKey =
   | "dashboard"
   | "profile"
@@ -27,14 +28,17 @@ export type SectionKey =
   // F33's printable check-in code — the THIRTEENTH.
   | "checkinQr"
   // F41's atelier — the FOURTEENTH.
-  | "atelier";
+  | "atelier"
+  // F20's privacy documents and subject requests — the FIFTEENTH, and the third
+  // owner-only row.
+  | "privacy";
 
 // One NON-EMPTY tuple of i18n keys per section, listed in `NAV` order
 // (`App.tsx:83-152`), which is deliberately not the union's declaration order
 // above — a reader walks the guide in the order the nav offers the sections.
 //
 // ⚠ `satisfies Record<SectionKey, readonly [string, ...string[]]>` IS THE WHOLE
-// MECHANISM. A fifteenth `SectionKey` with no steps is a TYPE ERROR, and a
+// MECHANISM. A SIXTEENTH `SectionKey` with no steps is a TYPE ERROR, and a
 // section with zero steps is UNREPRESENTABLE — which is how «the button never
 // lies» is enforced at the only moment it can be enforced cheaply, since
 // `pnpm --filter manage typecheck` gates the merge. There is deliberately NO
@@ -61,4 +65,5 @@ export const GUIDE_STEPS = {
   checkinQr: ["guide.checkinQr.1", "guide.checkinQr.2"],
   staff: ["guide.staff.1", "guide.staff.2"],
   gateway: ["guide.gateway.1", "guide.gateway.2"],
+  privacy: ["guide.privacy.1", "guide.privacy.2"],
 } as const satisfies Record<SectionKey, readonly [string, ...string[]]>;

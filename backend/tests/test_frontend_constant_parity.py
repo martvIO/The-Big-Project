@@ -40,6 +40,7 @@ from app.booking.validation import jerusalem_day_index
 from app.catalog import validation as catalog_validation
 from app.customers import validation as customers_validation
 from app.floor import validation as floor_validation
+from app.privacy import validation as privacy_validation
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANAGE_VALIDATION_TS = REPO_ROOT / "frontend/apps/manage/src/validation.ts"
@@ -108,6 +109,23 @@ MIRRORS = (
         floor_validation,
         ("MAX_ROOM_LABEL_LENGTH", "MAX_SOS_NOTE_LENGTH"),
         id="manage-floor",
+    ),
+    # F20's one. The console renders a BYTE counter straight off this number
+    # beneath each privacy document, and Hebrew is two bytes per character — so
+    # the drift here is not a 400 she can read, it is a counter that tells an
+    # owner her legal notice has room when the API will refuse it, or that it is
+    # too long when it is not.
+    #
+    # ⚠ It is declared in `validation.ts` as a plain `8192` and not as
+    # `8 * 1024`, because `_CONST_RE` matches `export const NAME = <digits>;` and
+    # silently skips an arithmetic expression — which is how a mirror stops being
+    # a mirror while both tests below stay green. `MAX_TERMS_TEXT_BYTES` is
+    # exactly that shape and is exactly why it is not in this table.
+    pytest.param(
+        MANAGE_VALIDATION_TS,
+        privacy_validation,
+        ("MAX_PRIVACY_TEXT_BYTES",),
+        id="manage-privacy",
     ),
     pytest.param(
         STOREFRONT_VALIDATION_TS,

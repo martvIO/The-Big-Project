@@ -967,6 +967,16 @@ export interface CustomerDetailResponse {
   // an anonymous endpoint and are always the newest, so fifty of them evict
   // every confirmation and reminder from the window.
   messages_total: number;
+  // F20. Effective consent is `marketing_consent_at !== null &&
+  // marketing_consent_withdrawn_at === null` — THREE states, not a boolean, and
+  // the card renders all three. Withdrawal is ADDITIVE rather than a clear:
+  // wiping the grant timestamp would destroy the Spam-Law evidence that consent
+  // existed when a message was sent.
+  marketing_consent_at: string | null;
+  marketing_consent_withdrawn_at: string | null;
+  // Set by the §14 erase. The card reads it so a scrubbed row is not offered a
+  // withdrawal control for a consent that no longer has a subject.
+  erased_at: string | null;
 }
 
 // Optional, NOT nullable: an omitted key is "unchanged" on the wire, and the
@@ -975,6 +985,147 @@ export interface CustomerDetailResponse {
 export interface UpdateCustomerRequest {
   notes?: string;
   tags?: string[];
+}
+
+// --- privacy wire types (mirror backend/app/privacy/schemas.py) --------------
+//
+// ⚠ `disclaimer_text` and `erase_reason_hint` ARRIVE ON THIS RESPONSE and are
+// deliberately not in `i18n/he.ts`. They are the same approved legal Hebrew the
+// storefront and the API already serve, and F33's `checkin.notice` comment
+// states the rule they follow: no second copy may exist anywhere. A bundled copy
+// would be a second place for a legal string to drift.
+
+export interface PrivacyResponse {
+  notice_text: string;
+  // What lets the console say «נוסח ברירת מחדל» instead of making the owner diff
+  // two documents by eye. Per field, because the two are overridden separately.
+  notice_is_default: boolean;
+  dpa_text: string;
+  dpa_is_default: boolean;
+  // ⚠ READ-ONLY BY CONSTRUCTION (Gate 1 Q3 / D14). `resolve_privacy` never reads
+  // this out of the tenant blob, so there is no request shape that could change
+  // it — a boutique may rewrite what she PROMISES about processing and may not
+  // misstate WHO the processors are. There is no field for it on the update.
+  subprocessors_text: string;
+  disclaimer_text: string;
+  erase_reason_hint: string;
+}
+
+// ⚠ BOTH KEYS REQUIRED, and that is correctness rather than style (D16).
+// `merge_settings` is one `settings = settings || :patch::jsonb` and `||`
+// replaces WHOLE top-level keys, so a patch naming only `notice_text` replaces
+// the entire `privacy` object and the server reads the now-absent `dpa_text` as
+// "use the platform default" — an owner who overrode her processor clause on
+// Monday and edits only her notice on Tuesday would silently lose Monday's work,
+// with no error anywhere and un-reviewed platform Hebrew back on /privacy.
+//
+// `null` is a VALUE the owner sends: revert this field to the default. Omitting
+// the key is a 422. `AtelierSettingsUpdate` above is the shipped precedent for
+// the same trap one level down.
+export interface PrivacyUpdate {
+  notice_text: string | null;
+  dpa_text: string | null;
+}
+
+// Her row, including the CRM columns F53 added. `notes` is a free-text paragraph
+// the console writes ABOUT her and accretes across a year of fittings — it is her
+// personal data held by the controller and §13 reaches it.
+export interface ExportedSubject {
+  id: string;
+  phone: string;
+  name: string;
+  created_at: string;
+  notes: string | null;
+  tags: string[];
+  marketing_consent_at: string | null;
+  marketing_consent_source: string | null;
+  marketing_consent_withdrawn_at: string | null;
+  erased_at: string | null;
+}
+
+export interface ExportedBooking {
+  id: string;
+  starts_at: string;
+  status: string;
+  appointment_type_name: string;
+  dress_name: string | null;
+  dress_size: string | null;
+  notes: string | null;
+  attendance_confirmed_at: string | null;
+  checked_in_at: string | null;
+  terms_version_accepted: number;
+  terms_accepted_at: string;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
+}
+
+// FOUR fields. `provider_message_id`, `error`, `phone` and `booking_id` have no
+// field on the server's model at any depth — they are operator diagnostics about
+// a carrier, not the subject's personal data. `body` IS included: it is the
+// message she received, and a §13 request that withheld it would be answering a
+// different question.
+export interface ExportedMessage {
+  kind: string;
+  status: string;
+  created_at: string;
+  body: string;
+}
+
+export interface ExportedTerms {
+  version: number;
+  terms_text: string;
+  refundable_until_hours_before: number;
+  forfeit_percent: number;
+}
+
+export interface SubjectExportResponse {
+  subject: ExportedSubject;
+  bookings: ExportedBooking[];
+  messages: ExportedMessage[];
+  accepted_terms: ExportedTerms[];
+}
+
+// ⚠ KEYED ON `customer_id`, NEVER ON THE PHONE (D17), which is why the export
+// above is also the LOOKUP step and why the console's panel is ordered the way
+// it is. Step 2 of the erase overwrites `customers.phone` and the server's
+// lookup is exact equality, so a phone-keyed erase would destroy its own key:
+// the documented idempotent repeat would be unreachable, and the two available
+// answers were a 404 contradicting the contract or a 200-with-zero-counts that
+// cannot tell "already done" from "you mistyped a digit" — the latter writing a
+// `privacy_subject_erased` audit row for a subject who was never touched, i.e. a
+// fabricated §14 record on the one path where the record IS the deliverable.
+export interface SubjectEraseRequest {
+  customer_id: string;
+  reason?: string | null;
+}
+
+export interface SubjectEraseResponse {
+  customer_id: string;
+  // So a second tap reads as "done" rather than "nothing happened, try again".
+  already_erased: boolean;
+  bookings_scrubbed: number;
+  messages_scrubbed: number;
+  otp_codes_purged: number;
+  scheduled_messages_purged: number;
+}
+
+// EXACTLY ONE of the two. Two arms because there are two stores: a bride who
+// booked online has a `customers` row and her consent lives there; a walk-in has
+// only a `queue_tickets` row, because the check-in form never writes `customers`
+// and F20 declines to promote an unverified counter opt-in into provable
+// consent. The console only ever sends the `customer_id` arm — the phone arm
+// exists for a walk-in who cannot be looked up at all, and serving her is a
+// manual procedure in the compliance record.
+export interface MarketingWithdrawRequest {
+  customer_id?: string;
+  phone?: string;
+}
+
+export interface MarketingWithdrawResponse {
+  // False for a subject who had no live consent — including a phone with no
+  // ticket at all, which is deliberately NOT a 404: telling those apart would
+  // turn a front-desk revocation into a presence oracle over the queue.
+  changed: boolean;
 }
 
 export interface CustomerListQuery {
@@ -1453,6 +1604,34 @@ export const api = {
     body: UpdateCustomerRequest,
   ): Promise<CustomerDetailResponse> {
     return apiFetch(customerPath(customerId), { method: "PATCH", body });
+  },
+
+  // F20. Owner-only, EXCEPT `withdrawMarketingConsent` — see its own comment.
+  getPrivacy(): Promise<PrivacyResponse> {
+    return apiFetch("/manage/privacy");
+  },
+  // Full replace, never partial: see `PrivacyUpdate`. `null` per field means
+  // "revert to the platform default".
+  updatePrivacy(body: PrivacyUpdate): Promise<PrivacyResponse> {
+    return apiFetch("/manage/privacy", { method: "PUT", body });
+  },
+  // ALSO the lookup step. Its `subject.id` is the `customer_id` the other two
+  // take, and there is no other way to obtain one (D17).
+  exportSubject(phone: string, reason?: string): Promise<SubjectExportResponse> {
+    return apiFetch("/manage/privacy/subject-export", {
+      method: "POST",
+      body: { phone, reason: reason ?? null },
+    });
+  },
+  eraseSubject(body: SubjectEraseRequest): Promise<SubjectEraseResponse> {
+    return apiFetch("/manage/privacy/subject-erase", { method: "POST", body });
+  },
+  // ⚠ THE ONE PRIVACY ROUTE A SHIFT MANAGER MAY CALL (Gate 1 Q4). It carries no
+  // route-level gate on the server and inherits the router's (OWNER,
+  // SHIFT_MANAGER) one, which is why the customer card — not the owner-only
+  // privacy section — is where this is reachable from.
+  withdrawMarketingConsent(body: MarketingWithdrawRequest): Promise<MarketingWithdrawResponse> {
+    return apiFetch("/manage/privacy/marketing-withdraw", { method: "POST", body });
   },
 
   // Owner-only, all four: the server's RoleGate is the control, and a shift
