@@ -2049,5 +2049,198 @@ export const he = {
     // of them has just silently reverted the other's work; the recovery path is
     // the audit trail, and there is deliberately no UI for it.
     "atelier.settings.cue.saved": "ההגדרות נשמרו.",
+
+    // --- F60 guided walkthrough (the «מדריך» header button) ---
+    //
+    // FLAT dotted literals, appended, exactly like every block above. The nested
+    // `nav:` object at the top of this file is deliberately untouched: it is the
+    // file's merge-conflict zone while sibling features land.
+    //
+    // ⚠ NO `nav.guide` KEY, and that is an assertion rather than an omission.
+    // F60 adds no console section and no nav row — `SectionKey` stays fourteen,
+    // `NAV` stays fourteen — and the trigger is a header control beside
+    // «יציאה». ⚠ And no `guide.triggerAria` (DL20): the trigger's accessible
+    // name IS its visible «מדריך», which makes WCAG 2.5.3 true here by
+    // construction, since an aria-label over visible text is the one shape 2.5.3
+    // can fail.
+    //
+    // ⚠ EVERY GUILLEMET-QUOTED LABEL BELOW IS BYTE-IDENTICAL TO THE SHIPPED
+    // CONTROL IT NAMES, and for `hours`, `types`, `terms` and `catalog` the
+    // component is the only place those words exist (`grep -c useTranslation` is
+    // 0 for all four). A quoted label that drifts from its control is this
+    // deck's failure mode and no test in this repo can see it.
+    "guide.trigger": "מדריך",
+    // «מדריך» and not «עזרה»: help is what you want when something is broken,
+    // and nothing here is broken — this is the manual, opened deliberately.
+    "guide.title": "מדריך — {{section}}",
+    // {{section}} is the ALREADY-TRANSLATED nav label, derived by GuideOverlay as
+    // `t(`nav.${section}`)`, so no section name is transcribed twice and a nav
+    // label edit never desynchronises the guide. No <bdi> and no isolate: all
+    // fourteen labels are pure Hebrew, so there is no run to reorder.
+    "guide.progress": "שלב {{step}} מתוך {{total}} במדריך",
+    // ⚠ The trailing «במדריך» is load-bearing twice (copy.md C-1): it keeps both
+    // digits between Hebrew words — D5's bidi rule, which is unsatisfiable for a
+    // two-number Hebrew counter without a trailing noun — and it names which of
+    // the console's role="status" regions is speaking when the live region utters
+    // this line alone. `isolateLtr` is NOT the alternative: it splits on
+    // `indexOf` (lib/booking.tsx:76), so on «שלב 3 מתוך 3» it isolates the FIRST
+    // 3 and leaves the trailing one bare.
+    "guide.next": "הבא",
+    "guide.prev": "הקודם",
+    // Replaces «הבא» on the last step, in the same position. «סיום» and not
+    // «סגירה»: it says YOU HAVE REACHED THE END, which «סגירה» does not — and the
+    // two must differ, because they sit side by side in the same footer.
+    "guide.done": "סיום",
+    // The persistent ghost dismiss, on EVERY step (DL19). A new key rather than a
+    // reuse of «ביטול», and the reason is register: `SosRaiseDialog` dismisses an
+    // ACTION IN PROGRESS, and a walkthrough has none, so «ביטול» reads as «cancel
+    // what?». ⚠ THIS IS THE ONLY POINTER ROUTE OUT of the dialog — `Modal` binds
+    // no backdrop click and the chrome has no X — so on a boutique tablet with no
+    // Esc key it is the whole exit.
+    "guide.close": "סגירה",
+
+    // Steps, in NAV order. One sentence each, and the em-dash carries the
+    // subordinate clause: longer and the live region reads two utterances for one
+    // step change; shorter and the step is a label rather than help.
+    "guide.dashboard.1":
+      "המסך מציג שני טווחים נפרדים — תפוסה בשבעת הימים הקרובים, ומתחתיו סיכום של שבועות שכבר הסתיימו — ומתחת לכל מספר יש שורה שמסבירה מה בדיוק נספר בו.",
+    // DashboardSection:10-13 states it outright — «It has NO interactive control
+    // of any kind» — so the step says so instead of letting her hunt for one.
+    "guide.dashboard.2":
+      "אין כאן מה לשנות ואין על מה ללחוץ — מספר שנראה לא נכון נבדק במסך שממנו הוא הגיע, למשל «תורים» או «שעות פעילות».",
+
+    // F10 made phone/address/description/maps_url world-readable, and a
+    // home-based owner had typed her home address into a field that had only ever
+    // been private. That is the one thing this step exists for.
+    "guide.profile.1":
+      "החלק העליון, «פרופיל הבוטיק», הוא מה שהלקוחות רואות בדף הפומבי — טלפון, כתובת, קישור למפות ותיאור — ולכן כתובת שאינה מיועדת לפרסום לא נכתבת כאן.",
+    "guide.profile.2":
+      "המתג «בוטיק לכלות בלבד» מסמן את כל סוגי התורים כמיועדים לכלות, ומשנה את מה שהלקוחה רואה כשהיא בוחרת סוג תור.",
+    // ⚠ Names no unreachable section: it does NOT say «סליקה ותשלומים», which is
+    // an owner-only nav row a shift manager reading this step cannot open.
+    "guide.profile.3":
+      "המתג «גביית מקדמות מופעלת» נשמר כאן, אבל מקדמה תיגבה בפועל רק אחרי שחשבון הסליקה של הבוטיק יחובר.",
+
+    "guide.hours.1":
+      "הטבלה העליונה היא השבוע הקבוע — לכל יום שעת «פתיחה», שעת «סגירה» ומספר תורים מקבילים בעמודת «קיבולת» — והיא זו שמייצרת את המועדים שהלקוחה רואה.",
+    "guide.hours.2":
+      "תאריך חריג הוא חריגה חד־פעמית מהשבוע הקבוע — יום «סגור כל היום», או יום עם שעות אחרות — ומוסיפים אותו למטה, בנפרד מהטבלה.",
+    "guide.hours.3":
+      "שינוי כאן משפיע על מועדים שעדיין אפשר להזמין ולא על תור שכבר נקבע — תור קיים נשאר במקומו עד שמישהי מזיזה אותו במסך «תורים».",
+
+    "guide.types.1":
+      "סוג תור קובע כמה זמן הפגישה נמשכת ולמי היא מוצעת — «כלות בלבד» או «כולם» — וזה מה שהלקוחה בוחרת כשהיא מזמינה.",
+    // «מקדמה» throughout, never «פיקדון»: the console ships both words for one
+    // thing and this deck picks the one on the two switches an owner touches.
+    // F60 repairs neither payments block (copy.md C-2).
+    "guide.types.2":
+      "אם מסומן «נדרשת מקדמה», הסכום בשדה «מקדמה (₪)» הוא הסכום לסוג הזה בלבד, ולכל סוג יכול להיות סכום אחר.",
+    "guide.types.3":
+      "השדה «סדר תצוגה» קובע את הסדר שבו הסוגים מופיעים בפני הלקוחה, וסוג שכבר לא בשימוש עובר «העברה לארכיון» ולא נמחק.",
+
+    "guide.terms.1":
+      "מדיניות הביטולים נשמרת בגרסאות — כל גרסה נשמרת עם התאריך שבו נוצרה, ואף גרסה אינה נערכת ואינה נמחקת אחרי שנוצרה.",
+    // ⚠ TermsSection:21 (`const isOwner = role === "owner"`) hides the publish
+    // form from a shift manager, so this step describes versioning and names the
+    // act as the OWNER'S rather than promising a control the reader may not have
+    // (DL7). Consistent with the section's own shift-manager line.
+    "guide.terms.2":
+      "לקוחה שהזמינה תור מחויבת לגרסה שהייתה בתוקף באותו רגע, ולכן גרסה חדשה חלה על הזמנות חדשות בלבד — ויצירת גרסה חדשה היא פעולה של בעלת הבוטיק.",
+
+    "guide.catalog.1":
+      "כל שמלה נפתחת בכפתור «עריכה», ובתוכה נמצאים השם, התיאור, המחיר והמתג שקובע אם המחיר מוצג ללקוחה או שמופיע במקומו «מחיר בתיאום».",
+    // Describes what the CONSOLE list shows and makes no claim about the
+    // storefront — the earlier draft asserted a sold-out size stays visible on the
+    // public site, which this deck did not verify.
+    "guide.catalog.2":
+      "טבלת המידות שבתוך השמלה קובעת אילו מידות קיימות וכמה יחידות יש מכל אחת, ושמלה שכל מידותיה אזלו מסומנת ברשימה כ«אזל מהמלאי».",
+    "guide.catalog.3":
+      "התמונות מועלות בתוך השמלה ואפשר לשנות את סדרן, ושמלה בלי תמונות מסומנת ברשימה כ«אין תמונות».",
+
+    "guide.bookings.1":
+      "הרשימה מציגה את התורים של תאריך אחד בכל פעם — התאריך נבחר למעלה בשדה «תאריך» — ומצב כל תור («מאושר», «התקיים», «לא הגיעה», «בוטל») מופיע בשורה שלו.",
+    "guide.bookings.2":
+      "לחיצה על שורה פותחת את «פרטי התור» — הלקוחה, המועד, השמלה ומצב התשלום — ו«חזרה לרשימה» מחזירה לאותו תאריך.",
+    // ⚠ THE ONE STRING IN THIS BLOCK THE /נשלח|תישלח|בדרך/ GUARD IS AIMED AT.
+    // Resolved by wording rather than by dodging, and the wording is also the true
+    // statement: `booking.deliveryNotice` exists because the platform swallows
+    // send errors and therefore has NO evidence a message was delivered. The step
+    // says what the console records, then says what it is not.
+    "guide.bookings.3":
+      "שינוי מועד וביטול נעשים מתוך «פרטי התור», והמסך רושם את מה שהשתנה בבוטיק — הוא אינו עדות למה שהגיע ללקוחה בטלפון שלה.",
+
+    "guide.customers.1":
+      "כרטיס לקוחה מרכז את היסטוריית התורים שלה, הערות פנימיות שנראות לצוות הבוטיק בלבד, ותגיות לסימון.",
+    // Writes «יומן ההודעות» (definite) where the shipped heading is «יומן הודעות»
+    // (indefinite) — a heading names a thing, a sentence refers back to one. The
+    // one intentional inflection in this block. Never «הודעות שנשלחו», which the
+    // register guard forbids and which would be false over failed rows.
+    "guide.customers.2":
+      "החיפוש למעלה עובד לפי שם או לפי מספר טלפון, ו«יומן ההודעות» שבתוך הכרטיס הוא לקריאה בלבד — אי אפשר לערוך או למחוק בו שורה.",
+
+    "guide.board.1":
+      "הלוח מציג את תורי היום הנוכחי בלבד, לפי שעה, והשורה «עכשיו» מסמנת בתוכם את הרגע הזה — לתאריך אחר עוברים למסך «תורים».",
+    "guide.board.2":
+      "כשלקוחה מגיעה לוחצים «הגיעה» בשורה שלה והפעולה נרשמת עם השעה, ו«ביטול הרישום» מבטל את הרישום הזה בלבד ולא את התור.",
+    // ⚠ Names the PANEL (App.tsx:258-263 renders it beneath the board for these
+    // two roles), never the nav row «הצוות בקומה», which is FLOOR_ONLY and which
+    // neither reader of this step can see. ⚠ And it names the EVENT «עודכן», never
+    // a refresh rate: usePoll's backoff stretches 5s → ~60s, so any number is true
+    // at tick 1 and false by tick 5.
+    "guide.board.3":
+      "מתחת ללוח מופיע פאנל הקומה — מי מהצוות נמצאת בקומה, מצב חדרי המדידה והממתינות בתור — והשורה «עודכן» למעלה אומרת מתי המידע נקרא לאחרונה.",
+
+    // For reception, a sales assistant and a seamstress this is the only screen
+    // they will ever see, so these are the three longest sentences in the block —
+    // three panels totalling ~2,900 lines.
+    "guide.floor.1":
+      "החלק העליון מראה מי מהצוות נמצאת בקומה ובאיזה מצב — «פנויה», «תפוסה» או «בהפסקה» — ו«להפסקה» ו«חזרה» הם אותו כפתור שמשנה את המצב שלך או של עמיתה.",
+    // ⚠ The masculine «פנוי / תפוס» here and the feminine «פנויה / תפוסה» above are
+    // DELIBERATELY DIFFERENT WORDS for different subjects (a room, a woman), per
+    // `rooms.free`'s own comment. The step keeps them apart.
+    "guide.floor.2":
+      "בחלק «חדרי מדידה» כל חדר הוא «פנוי» או «תפוס» — «שחרור» מפנה חדר בסיום המדידה, ו«העברה לעמיתה» משאיר את הלקוחה בחדר ומעביר את האחריות עליו.",
+    // Teaches in advance the single most confusing thing on this panel: «שבצי
+    // לחדר» vanishes from every row at one moment, and `waitlist.noFreeRoom` is
+    // the only other surface that explains why.
+    "guide.floor.3":
+      "ב«ממתינות בתור» מופיעות מי שנרשמו בכניסה מהטלפון, לפי סדר הגעה — «קראי» מסמן שקראת לה בשמה, «שבצי לחדר» מכניס אותה לחדר, וכשאין חדר פנוי הכפתור נעלם עד שיתפנה אחד.",
+
+    // «נמסר» quoted as shipped, and deliberately never «נשלח» — which the register
+    // guard rejects outright and which is why the stage is named that way.
+    "guide.atelier.1":
+      "לוח התפירה בנוי מחמישה שלבים — «התקבל», «בעבודה», «בקרה», «מוכן» ו«נמסר» — וכרטיס עובר ביניהם לפי הסדר הזה.",
+    // Lists what a card HOLDS and says nothing about who may change it — that is
+    // step 3's job, and step 3 is honest about it.
+    "guide.atelier.2":
+      "כרטיס נפתח בלחיצה ומרכז את הלקוחה, השמלה, תאריך היעד, משך העבודה המשוער והתופרת המשויכת אליו.",
+    // ⚠ THE ONLY PLACE IN THE PRODUCT WHERE THE ATELIER'S PERMISSION MODEL IS
+    // WRITTEN DOWN. AtelierSection's `mayWork` deliberately renders no
+    // explanation — no disabled button, no lock glyph, no «אין לך הרשאה» line — on
+    // a screen she opens fifty times a shift. The walkthrough she opens
+    // deliberately is where the other half of that argument lands.
+    "guide.atelier.3":
+      "הכפתורים שמופיעים על כרטיס תלויים בתפקיד ובשיוך — תופרת עובדת על הכרטיסים שלה ועל כרטיסים שעדיין לא שויכו, ועל כרטיס של עמיתה היא רואה את הפרטים בלבד.",
+
+    "guide.checkinQr.1":
+      "הדף הזה הוא השלט לכניסה — מי שסורקת את הקוד מהטלפון שלה מגיעה ישירות לטופס הרישום לתור, והכתובת מודפסת גם באותיות למי שהמצלמה שלה לא מצליחה לסרוק.",
+    // Says THE ADDRESS STAYS THE SAME ADDRESS rather than «the code never
+    // changes»: the first is what the poster shows and this deck can see, the
+    // second is a claim about a token's lifetime it cannot.
+    "guide.checkinQr.2":
+      "«הדפסה» מדפיסה את הדף הזה כפי שהוא, והכתובת נשארת אותה כתובת — אפשר להדפיס שלט חדש בכל פעם שהקודם נקרע או דוהה.",
+
+    // Reuses `staff.passwordNotice`'s wording rather than respelling it: a second
+    // spelling of one fact in one console is a defect.
+    "guide.staff.1":
+      "הוספת אשת צוות דורשת שם, אימייל, תפקיד וסיסמה — התפקיד הוא שקובע לאילו מסכים היא נכנסת, ואת הסיסמה יש למסור לה בעצמך משום שהמערכת אינה מעבירה אותה לאיש.",
+    // «השבתה», never «מחיקה»: the row is soft-deleted and its audit trail lives.
+    "guide.staff.2":
+      "«השבתה» עוצרת את הגישה של אשת הצוות לניהול הבוטיק ואינה מוחקת אותה — ההיסטוריה שלה נשמרת ואפשר להחזיר אותה בכל עת.",
+
+    "guide.gateway.1":
+      "המסך הזה מחבר את הבוטיק לחשבון הסליקה שדרכו נגבות המקדמות, ומטעמי אבטחה הפרטים אינם ניתנים לצפייה אחרי השמירה — שמירה נוספת מחליפה אותם במלואם.",
+    "guide.gateway.2":
+      "כל עוד אין חשבון מחובר, תור נקבע גם בלי מקדמה — המתג בהגדרות נשאר כפי שהוא, והמקדמה פשוט אינה נגבית עד שהחיבור יושלם.",
   },
 } as const;

@@ -11,34 +11,17 @@ import { CheckinQrSection } from "./components/CheckinQrSection";
 import { CustomersSection } from "./components/CustomersSection";
 import { DashboardSection } from "./components/DashboardSection";
 import { GatewaySection } from "./components/GatewaySection";
+import { GuideOverlay } from "./components/GuideOverlay";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
 import { ProfileSection } from "./components/ProfileSection";
 import { SosOverlay } from "./components/SosOverlay";
 import { StaffSection } from "./components/StaffSection";
 import { TermsSection } from "./components/TermsSection";
+import type { SectionKey } from "./lib/guide";
 import { SosProvider } from "./lib/sos";
 import { FloorPanel } from "./components/FloorPanel";
 import { TypesSection } from "./components/TypesSection";
-
-type SectionKey =
-  | "dashboard"
-  | "profile"
-  | "hours"
-  | "types"
-  | "terms"
-  | "catalog"
-  | "bookings"
-  | "customers"
-  | "board"
-  | "staff"
-  | "gateway"
-  // F57's floor — the TWELFTH member since F53 added `customers`.
-  | "floor"
-  // F33's printable check-in code — the THIRTEENTH.
-  | "checkinQr"
-  // F41's atelier — the FOURTEENTH.
-  | "atelier";
 
 const ALL = ["owner", "shift_manager"] as const;
 
@@ -243,6 +226,11 @@ export function App() {
           nav={nav}
           activeKey={activeKey}
           onNavigate={(key) => setSection(key as SectionKey)}
+          // `activeKey` and not `section`: it is ALREADY the role-filtered truth
+          // (:194-210 falls back to `reachable[0]?.key`), so a receptionist can
+          // only ever be offered `floor`'s three steps and F60 re-implements no
+          // permission filter.
+          guide={<GuideOverlay section={activeKey} />}
         >
           {activeKey === "dashboard" && <DashboardSection />}
           {activeKey === "profile" && <ProfileSection />}

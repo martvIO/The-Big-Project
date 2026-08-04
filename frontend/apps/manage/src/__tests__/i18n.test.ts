@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import i18n from "../i18n";
 import { ar } from "../i18n/ar";
 import { he } from "../i18n/he";
+import { GUIDE_STEPS } from "../lib/guide";
 import { ROLE_LABEL_KEY } from "../lib/roles";
 import { STAGE_LABEL_KEY } from "../lib/stages";
 
@@ -94,6 +95,13 @@ const HE_F42 = HE_F41.filter(
     key.startsWith("atelier.settings.") ||
     key === "atelier.cue.assignedOverload",
 );
+
+// F60's guided walkthrough. NO `nav.` term in this selector either, and that is
+// an assertion rather than an omission: the guide adds no console section and no
+// nav row — `SectionKey` stays fourteen, `NAV` stays fourteen, `Nav.test.tsx`
+// needs no edit — and `guide.trigger` is a header control beside «יציאה», not
+// `nav.guide`.
+const HE_F60 = entries(he.translation, (key) => key.startsWith("guide."));
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -107,6 +115,7 @@ const HE = [
   ...HE_F58,
   ...HE_F41,
   ...HE_F37,
+  ...HE_F60,
 ];
 
 describe("F15 keys resolve", () => {
@@ -1245,6 +1254,83 @@ describe("F42 capacity keys resolve", () => {
   });
 });
 
+describe("F60 guide keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // 7 chrome + 36 steps. Its own floor, for the reason every block above has
+    // one: folded into an existing list without it, this feature's rows could
+    // shrink by 43 and the suite would stay green.
+    expect(HE_F60.length).toBeGreaterThanOrEqual(43);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // Declare the constant and forget the spread and the resolve check, BOTH
+    // register guards and the `ar` value guard silently skip all 43
+    // hand-transcribed strings and stay green. Nothing else in this file
+    // notices.
+    expect(HE.map(([key]) => key)).toContain("guide.trigger");
+  });
+
+  it("adds no nav row, and that is an assertion rather than an omission", () => {
+    // `SectionKey` stays fourteen and `NAV` stays fourteen: the guide is a
+    // header control beside «יציאה», not a fifteenth section.
+    expect(HE_F60.filter(([key]) => key.startsWith("nav."))).toEqual([]);
+    expect("nav.guide" in he.translation).toBe(false);
+  });
+
+  it("resolves every key GUIDE_STEPS names, not merely every key he.ts holds", () => {
+    // ⚠ THIS IS THE ONE DIRECTION THE FOLD CANNOT COVER, and it is AC2 as
+    // written. The resolve check above walks HE — i.e. the keys that EXIST in
+    // he.ts — so a step key mistyped in `guide.ts` (`guide.floor.33` beside a
+    // shipped `guide.floor.3`) leaves the floor at 43, leaves every register and
+    // parity guard green, and renders the raw key into a Hebrew dialog. This
+    // walks the table instead.
+    for (const steps of Object.values(GUIDE_STEPS)) {
+      for (const key of steps) {
+        expect(i18n.t(key)).not.toBe(key);
+      }
+    }
+  });
+
+  it("resolves the nav label the dialog title is built from, for all fourteen", () => {
+    // P-1. `GuideOverlay` derives the title's section name as `t(`nav.${section}`)`
+    // rather than taking it as a prop, and this is the one test that proves the
+    // lookup is TOTAL: five of the fourteen resolve through the nested `nav:`
+    // object (he.ts:14-20) and nine through `ignoreJSONStructure`'s flat
+    // fallback. Neither path may be "fixed" against the other.
+    //
+    // Derived from GUIDE_STEPS deliberately: its completeness against the
+    // fourteen shipped sections is pinned by GuideOverlay.test.tsx §1's
+    // spelled-out set, so deriving here cannot silently cover thirteen.
+    for (const key of Object.keys(GUIDE_STEPS)) {
+      expect(i18n.t(`nav.${key}`)).not.toBe(`nav.${key}`);
+    }
+  });
+
+  it("interpolates the section, step and total placeholders", () => {
+    expect(i18n.t("guide.title", { section: i18n.t("nav.board") })).toBe("מדריך — לוח היום");
+    // ⚠ THE TRAILING «במדריך» IS LOAD-BEARING TWICE (copy.md C-1): it keeps both
+    // digits between Hebrew words, which is D5's bidi rule and is unsatisfiable
+    // for a two-number Hebrew counter without a trailing noun; and the live
+    // region utters this line alone, so one word naming WHICH of the console's
+    // role="status" regions is speaking is the floor.idleStopped-vs-
+    // board.idleStopped argument applied here.
+    //
+    // ⚠ `isolateLtr` is NOT the alternative and would be actively wrong: it
+    // splits on `text.indexOf(value)` (lib/booking.tsx:76), so on «שלב 3 מתוך 3»
+    // it isolates the FIRST 3 and leaves the trailing one bare — on the
+    // most-visited step of every three-step section.
+    expect(i18n.t("guide.progress", { step: 2, total: 3 })).toBe("שלב 2 מתוך 3 במדריך");
+  });
+
+  it("names no 2.5.3 loop, because there is no *Aria key in this block", () => {
+    // DL20, stated rather than left to be discovered as an omission. The
+    // trigger's accessible name IS its visible «מדריך», so WCAG 2.5.3 is true
+    // here by construction and an aria-label over visible text — the one shape
+    // 2.5.3 can fail — never enters the bundle.
+    expect(HE_F60.filter(([key]) => key.endsWith("Aria"))).toEqual([]);
+  });
+});
+
 describe("the register, mechanically", () => {
   const values = HE.map(([, value]) => value);
 
@@ -1307,6 +1393,22 @@ describe("the ar bundle", () => {
     // is not cosmetic: «בדרך» could re-enter the product through ar.ts alone.
     const arTranslation = ar.translation as Record<string, string>;
     const drifted = HE_F37.filter(([key, value]) => arTranslation[key] !== value).map(
+      ([key]) => key,
+    );
+    expect(drifted).toEqual([]);
+  });
+
+  it("carries the approved Hebrew VALUE for every guide key, not merely the key", () => {
+    // AC3, and the fourth twin beside HE_F36, HE_F58 and HE_F37 — each block
+    // declares its own because the guards above are scoped BY NAME. The rule is
+    // `ar[key] === he[key]`, NOT "non-empty": presence alone passes on an
+    // English string, on a `TODO`, and on a DIFFERENT Hebrew wording, and 43
+    // keys are transcribed by hand into two files. On this namespace a
+    // different wording is not cosmetic — «נשלח» could re-enter the product
+    // through ar.ts alone, on 36 sentences the register guards only read in
+    // he.ts.
+    const arTranslation = ar.translation as Record<string, string>;
+    const drifted = HE_F60.filter(([key, value]) => arTranslation[key] !== value).map(
       ([key]) => key,
     );
     expect(drifted).toEqual([]);
