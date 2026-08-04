@@ -998,3 +998,81 @@ describe("sos endpoints", () => {
     }
   });
 });
+
+// --- seamstress capacity + the atelier settings block (Feature 42) ---
+
+describe("atelier capacity and settings", () => {
+  const STAFF_ID = "11111111-2222-3333-4444-555555555555";
+
+  it("posts the capacity write to the TARGET's own path, id-encoded", async () => {
+    // The acting identity is the session cookie and the TARGET is the path —
+    // `assign`'s split, for `assign`'s reason. A body carrying the target id
+    // would let a request name one person in the path and another in the body.
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, {
+        id: STAFF_ID,
+        display_name: "דנה",
+        assignable: true,
+        weekly_capacity_hours: 24,
+        capacity_is_default: false,
+      }),
+    );
+    await api.setSeamstressCapacity("a b/c", 24);
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/atelier/seamstresses/a%20b%2Fc/capacity");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ weekly_capacity_hours: 24 });
+  });
+
+  it("sends `null` as a VALUE and never as an omitted key", async () => {
+    // ⚠ The server's field is required with no default: `null` CLEARS her hours
+    // back to the boutique's, and an omitted key is a malformed request. A
+    // client that dropped the key on a clear would get a 400 it could not
+    // explain, so the payload is asserted rather than assumed.
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, {
+        id: STAFF_ID,
+        display_name: "דנה",
+        assignable: true,
+        weekly_capacity_hours: null,
+        capacity_is_default: false,
+      }),
+    );
+    await api.setSeamstressCapacity(STAFF_ID, null);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body) as Record<string, unknown>;
+    expect(body).toEqual({ weekly_capacity_hours: null });
+    expect("weekly_capacity_hours" in body).toBe(true);
+  });
+
+  it("sends the WHOLE atelier block — both keys — on a settings save", async () => {
+    // ⚠ `merge_settings` is one atomic `settings = settings || :patch::jsonb`
+    // and `||` merges at the TOP LEVEL ONLY, so a patch carrying a PARTIAL
+    // `atelier` object replaces the whole key and deletes what it did not name.
+    // One dialog, one save, one request, both keys — structural, not a
+    // convention.
+    const fetchMock = stubFetch(() => jsonResponse(200, { profile: {}, toggles: {} }));
+    await api.updateSettings({
+      atelier: {
+        effort_bands: {
+          thirty_min: 30,
+          one_hour: 60,
+          two_hours: 120,
+          half_day: 300,
+          full_day: 540,
+        },
+        default_weekly_capacity_hours: 30,
+      },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      atelier: {
+        effort_bands: {
+          thirty_min: 30,
+          one_hour: 60,
+          two_hours: 120,
+          half_day: 300,
+          full_day: 540,
+        },
+        default_weekly_capacity_hours: 30,
+      },
+    });
+  });
+});

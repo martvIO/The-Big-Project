@@ -113,14 +113,34 @@ export interface ToggleSettings {
   brides_only?: boolean;
 }
 
+// ⚠ The server's `SettingsResponse` also carries an `atelier` block since F42
+// and it is DELIBERATELY not mirrored here: nothing in this console reads it.
+// The settings dialog prefills from the ATELIER BOARD envelope, which the poll
+// already holds, and patching a poll-owned field from a different endpoint's
+// response would put a second writer on data the board is authoritative for.
 export interface Settings {
   profile: ProfileSettings;
   toggles: ToggleSettings;
 }
 
+// F42. ⚠ A FULL REPLACE OF THE WHOLE `atelier` BLOCK — both keys REQUIRED, no
+// optional anywhere, and that is structural rather than a convention.
+// `merge_settings` is one atomic `settings = settings || :patch::jsonb` and `||`
+// merges at the TOP LEVEL ONLY, so a patch carrying a PARTIAL `atelier` object
+// replaces the whole key and DELETES what it did not name. A "save bands"
+// button and a "save default hours" button would silently erase each other's
+// work; one dialog, one save, one request is what makes that unreachable.
+export interface AtelierSettingsUpdate {
+  effort_bands: Record<EffortBand, number>;
+  // `null` CLEARS the boutique's default. Required, so a bands-only save cannot
+  // silently drop it — the shallow-merge trap above wearing a different hat.
+  default_weekly_capacity_hours: number | null;
+}
+
 export interface UpdateSettingsRequest {
   profile?: ProfileSettings;
   toggles?: ToggleSettings;
+  atelier?: AtelierSettingsUpdate;
 }
 
 export type AppointmentAudience = "all" | "brides_only";
@@ -1045,6 +1065,25 @@ export interface EffortBandRef {
   minutes: number;
 }
 
+// F42's capacity write answers CAPACITY FACTS ONLY — it is deliberately NOT a
+// `SeamstressRef`.
+//
+// ⚠ THE MISSING TWO FIELDS ARE THE POINT. `SeamstressRef` requires
+// `assigned_minutes` and `due_soon_minutes`; this path has no aggregate (the
+// load sums are a board read inside the poll's own session) and buying one
+// would be a second business statement on a write. The only value reachable
+// without it is `(0, 0)` — which would collapse her bar and drop her «עומס יתר»
+// word for up to five seconds on this feature's primary surface, at the moment
+// a manager is looking at it. The console is already holding both numbers from
+// the last tick and patches ONLY the three keys below onto the held row.
+export interface SeamstressCapacityResponse {
+  id: string;
+  display_name: string;
+  assignable: boolean;
+  weekly_capacity_hours: number | null;
+  capacity_is_default: boolean;
+}
+
 // An ENVELOPE, not a bare array: F42 adds capacity to `seamstresses` and F43
 // fitting counts to a ticket, so an array would make the first of those a
 // breaking shape change on a screen that polls every five seconds.
@@ -1506,5 +1545,23 @@ export const api = {
   // un-delete.
   deleteTicket(ticketId: string): Promise<OkResponse> {
     return apiFetch(`${ticketPath(ticketId)}/delete`, { method: "POST" });
+  },
+  // F42. The SECOND per-route tightening on this router, `delete`'s shape
+  // exactly: owner and shift manager only. A seamstress may not set her own
+  // weekly hours or anybody else's — it is the DENOMINATOR every other bar in
+  // the workroom is read against, so it is a staffing decision about the whole
+  // board's arithmetic rather than a record of work she has done.
+  //
+  // ⚠ The acting identity is the session cookie and the TARGET is the PATH —
+  // `assign`'s split, for `assign`'s reason. `null` is a VALUE meaning "use the
+  // boutique's default" and never an omitted key.
+  setSeamstressCapacity(
+    staffUserId: string,
+    hours: number | null,
+  ): Promise<SeamstressCapacityResponse> {
+    return apiFetch(
+      `/manage/atelier/seamstresses/${encodeURIComponent(staffUserId)}/capacity`,
+      { method: "POST", body: { weekly_capacity_hours: hours } },
+    );
   },
 };
