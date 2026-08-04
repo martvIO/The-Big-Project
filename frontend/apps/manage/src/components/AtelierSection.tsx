@@ -17,13 +17,22 @@ import { useTranslation } from "react-i18next";
 import { api, ApiError } from "../api";
 import type {
   AtelierBoardResponse,
+  AtelierSettingsUpdate,
   AtelierTicket,
   EffortBand,
   EffortBandRef,
   SeamstressRef,
   TicketStage,
 } from "../api";
+import { SeamstressPanel } from "./SeamstressPanel";
 import { isolateBidi, isolateLtr } from "../lib/booking";
+import {
+  hoursFromMinutes,
+  overloaded,
+  remainingMinutes,
+  sortByRemainingCapacity,
+  wouldOverload,
+} from "../lib/capacity";
 import { jerusalemTime, plainDate, todayJerusalem } from "../lib/jerusalem";
 import { bandLabel, laterStages, STAGE_LABEL_KEY, STAGE_ORDER } from "../lib/stages";
 import { IDLE_STOP_MINUTES, usePoll } from "../lib/usePoll";
@@ -209,7 +218,12 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
   // under an open dialog would silently discard typed work, and a 401 arriving
   // mid-form is exactly the case: the session outlives a shift, so the realistic
   // reader is a phone left on a bench.
-  const dialogOpen = form !== null || pendingDelete !== null;
+  // ⚠ C7 — AND THE PANEL'S TWO DIALOGS COUNT. They live inside SeamstressPanel
+  // where this component cannot see them, so the panel reports its own state
+  // upward; without it a 401 tick unmounts a settings dialog holding six edited
+  // band values.
+  const [panelDialogOpen, setPanelDialogOpen] = useState(false);
+  const dialogOpen = form !== null || pendingDelete !== null || panelDialogOpen;
 
   // ⚠ A COUNTER, not the payload, and NOT `[boardData]` in a dependency array:
   // `setBoardData` BAILS OUT of a reference-identical payload, so keying the
@@ -469,6 +483,16 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
    */
   const runMutation = async <T,>(
     send: () => Promise<T>,
+    // ⚠ F42's TWO PANEL WRITES PASS `false`, and the reason is not shared with
+    // any F41 write. `poll.fail`'s {401,403} rule reads a 403 as «her access to
+    // THIS BOARD has ended» — true of every write above, whose gate is the
+    // router's own three roles. The capacity route and PUT /manage/settings
+    // carry PER-ROUTE tightenings to owner + shift_manager, so their 403 means
+    // «not this control», and blanking a board she may still READ would be the
+    // console punishing her for a button it offered her. A 401 is still the
+    // session, and the next tick (≤5 s) classifies it through the shipped rule
+    // rather than through a second classifier here.
+    terminalOnFailure = true,
   ): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> => {
     mutationsRef.current += 1;
     poll.clearTick();
@@ -476,7 +500,9 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
     try {
       return { ok: true, value: await send() };
     } catch (error) {
-      poll.fail(error);
+      if (terminalOnFailure) {
+        poll.fail(error);
+      }
       return { ok: false, error };
     } finally {
       mutationsRef.current -= 1;
@@ -614,10 +640,99 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       // assign, so focus is the referent and the ticket is already named. Two
       // names in one string is what the shipped `isolateBidi(text, value)`
       // cannot isolate without inventing a second helper.
-      const seamstress =
-        boardRef.current?.seamstresses.find((row) => row.id === staffUserId)?.display_name ?? "";
-      return { text: t("atelier.cue.assigned", { seamstress }), name: seamstress };
+      const target = boardRef.current?.seamstresses.find((row) => row.id === staffUserId);
+      const seamstress = target?.display_name ?? "";
+      // ⚠ F41's D17 forbids the poll from writing into the announced region, so
+      // a sighted user watches the bar turn red on the next tick and a
+      // screen-reader user gets NOTHING AT ALL unless the cue says it — which
+      // would make overload a SIGHTED-ONLY signal on the one action that causes
+      // it, on a screen where a11y is a legal bar.
+      //
+      // ⚠ GATED ON AN ACTUAL MOVE. `due_soon_minutes` is her PRE-WRITE load and
+      // already includes anything she holds; the commit fires whenever a draft
+      // exists and the Select's value defaults to the current assignee, so
+      // arrowing away and back and committing sends a NO-OP assign to the
+      // current holder. Ungated, the console would add minutes it has already
+      // counted and announce a false overload with no colleague and no race.
+      //
+      // ⚠ And it is `wouldOverload` and nothing else — NO arithmetic and no
+      // `60` at this call site. A hand-rolled predicate that dropped the null
+      // guard computes `null * 60 = 0` in JS and announces «עומס יתר» on EVERY
+      // assign to an unconfigured seamstress: correct on screen, green under
+      // axe, and a legal-accessibility regression on the one channel a
+      // screen-reader user has.
+      const over =
+        target !== undefined &&
+        ticket.assigned_staff_user_id !== staffUserId &&
+        wouldOverload(target, ticket.effort_minutes);
+      return {
+        text: t(over ? "atelier.cue.assignedOverload" : "atelier.cue.assigned", { seamstress }),
+        name: seamstress,
+      };
     });
+  };
+
+  /**
+   * ⚠ THE ANSWER IS CAPACITY FACTS ONLY, AND ONLY THREE KEYS ARE PATCHED. The
+   * write has no load aggregate — buying one would be a second business
+   * statement on a write — so the only pair it could carry is `(0, 0)`, which
+   * would COLLAPSE HER BAR AND DROP HER «עומס יתר» WORD for up to five seconds
+   * on this feature's own primary surface, at the moment a manager is looking
+   * at it. `assigned_minutes` and `due_soon_minutes` keep their last-tick
+   * values and the next tick replaces the envelope whole.
+   */
+  const saveCapacity = async (staffUserId: string, hours: number | null): Promise<boolean> => {
+    const result = await runMutation(
+      () => api.setSeamstressCapacity(staffUserId, hours),
+      false,
+    );
+    if (!result.ok) {
+      return false;
+    }
+    const patched = result.value;
+    const held = boardRef.current;
+    if (held !== null) {
+      applyBoard({
+        ...held,
+        seamstresses: held.seamstresses.map((row) =>
+          row.id === patched.id
+            ? {
+                ...row,
+                assignable: patched.assignable,
+                weekly_capacity_hours: patched.weekly_capacity_hours,
+                capacity_is_default: patched.capacity_is_default,
+              }
+            : row,
+        ),
+      });
+    }
+    // Keyed on what SHE DID, not on what came back: «חזרה לברירת המחדל» is the
+    // act, and the server's answer is the same resolved number either way.
+    setCue({
+      text: t(hours === null ? "atelier.capacity.cue.cleared" : "atelier.capacity.cue.saved", {
+        name: patched.display_name,
+      }),
+      name: patched.display_name,
+    });
+    return true;
+  };
+
+  /**
+   * ⚠ NOTHING IS PATCHED FROM THIS RESPONSE (C7, accepted). `effort_bands` and
+   * `default_weekly_capacity_hours` are ENVELOPE fields the poll owns, and
+   * patching them from a different endpoint's answer would put a second writer
+   * on data the board is authoritative for. So for up to one tick every
+   * rendered default and every `bandLabel` is the previous mapping's — bounded,
+   * self-correcting, with no user action, and the dialog's own cue has already
+   * told her the write landed.
+   */
+  const saveAtelierSettings = async (patch: AtelierSettingsUpdate): Promise<boolean> => {
+    const result = await runMutation(() => api.updateSettings({ atelier: patch }), false);
+    if (!result.ok) {
+      return false;
+    }
+    setCue({ text: t("atelier.settings.cue.saved"), name: null });
+    return true;
   };
 
   const confirmDelete = (ticket: AtelierTicket) => {
@@ -868,7 +983,14 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
     </Button>
   );
 
-  const seamstresses = boardData?.seamstresses ?? [];
+  // ⚠ SORTED ONCE, HERE, and read by BOTH render sites — the panel's <ul> and
+  // every card's assign <Select>. A per-card sort would run it sixty times a
+  // paint on a five-second poll. Sorted on the CLIENT and never in the SQL:
+  // `remaining` is a pure function of two fields already on the wire, so a
+  // server sort would be a second ordering to keep in step and would reorder
+  // the payload for every other consumer. A NEW array, so the held envelope
+  // keeps the server's own `display_name, id` order.
+  const seamstresses = sortByRemainingCapacity(boardData?.seamstresses ?? []);
 
   return (
     <section ref={sectionRef} className="space-y-4">
@@ -930,6 +1052,28 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       >
         {cue.name === null ? cueText : isolateBidi(cueText, cue.name)}
       </p>
+
+      {/* ⚠ ONE CONDITIONAL, ABOVE ALL FOUR BOARD BRANCHES AND BELOW THE CUE.
+          The zero-ticket branch replaces both the columns AND the rail, so a
+          panel rendered only beside the columns would be invisible on exactly
+          the screen a brand-new boutique opens on — where setting capacity
+          before the first intake is the useful order. It gates on the ENVELOPE
+          and not on the tickets: with no payload there is no denominator, no
+          horizon and no roster, and four empty strings claiming to be a panel
+          is worse than no panel. */}
+      {boardData !== null && (
+        <SeamstressPanel
+          seamstresses={seamstresses}
+          unassignedMinutes={boardData.unassigned_minutes}
+          dueSoonThrough={boardData.due_soon_through}
+          role={role}
+          defaultCapacityHours={boardData.default_weekly_capacity_hours}
+          bands={boardData.effort_bands}
+          onSaveCapacity={saveCapacity}
+          onSaveAtelierSettings={saveAtelierSettings}
+          onDialogOpenChange={setPanelDialogOpen}
+        />
+      )}
 
       {boardData === null && !loadFailed && (
         <Card>
@@ -1298,6 +1442,33 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
+/**
+ * The half of an assign option that says WHY it is where it is in the list.
+ *
+ * ⚠ EVERY PART IS A KEY, INCLUDING THE « · » SEPARATOR, which is `optionRow`'s
+ * own interpolation. F41 renders `{row.display_name}` alone here and declares no
+ * key of this shape, so all three strings would otherwise ship as BARE HEBREW
+ * LITERALS IN TSX — outside the `ar` parity guard, outside `HE_F41`'s prefix
+ * fold, and invisible to the acceptance line for `atelier.capacity.*`.
+ *
+ * ⚠ An `<option>` takes no markup, so `isolateLtr` type-errors here and
+ * `dir="ltr"` would REVERSE a Hebrew name. All three are safe by construction
+ * instead: each ENDS in a Hebrew word, so no numeral ever lands at a paragraph
+ * edge — «רותי · 4» is the shape that breaks and none of these is it.
+ */
+function assignDetail(row: SeamstressRef, t: Translate): string {
+  const remaining = remainingMinutes(row);
+  if (remaining === null) {
+    return t("atelier.capacity.optionAssigned", {
+      hours: hoursFromMinutes(row.assigned_minutes),
+    });
+  }
+  if (overloaded(row)) {
+    return t("atelier.capacity.over");
+  }
+  return t("atelier.capacity.optionRemaining", { hours: hoursFromMinutes(remaining) });
+}
+
 interface TicketCardProps {
   ticket: AtelierTicket;
   bands: readonly EffortBandRef[];
@@ -1519,7 +1690,10 @@ function TicketCard({
                     .filter((row) => row.assignable)
                     .map((row) => (
                       <option key={row.id} value={row.id}>
-                        {row.display_name}
+                        {t("atelier.capacity.optionRow", {
+                          name: row.display_name,
+                          detail: assignDetail(row, t),
+                        })}
                       </option>
                     ))}
                 </Select>
