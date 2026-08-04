@@ -34,7 +34,7 @@ The epic's technical centre is one index. Pre-decided #31 fixes fitting-room occ
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
 | 36 | Fitting-room registry + staff↔client↔room↔dress assignment | **done (PR #37)** | `.planning/specs/fitting-rooms.md` | `.planning/plans/fitting-rooms.md` | F8, F13, F31, F34, F57 |
-| 37 | SOS: targeted page, full-screen alert, ack/resolve, **30s escalation** | todo | — | — | F31, F36, F57 · *F35 dep dropped 2026-07-31* |
+| 37 | SOS: targeted page, full-screen alert, ack/resolve, **30s escalation** | **done (PR #41)** | `.planning/specs/sos-paging.md` | `.planning/plans/sos-paging.md` | F31, F36, F57 · *F35 dep dropped 2026-07-31* |
 
 **Order is F36 → F37 and it is forced, not chosen** (pre-decided #37). F37 attaches the raiser's current room to the alert so the responder knows where to go — that field is F36's assignment row, and without it an SOS says "help" without saying "here". Neither feature's design comes to the user: Q2 named only the staff shift board (F34) and the seamstress capacity matrix (F42) as novel patterns, so E7's screens assemble from F34's board shell and self-approve at the design gate.
 

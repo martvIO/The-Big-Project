@@ -693,7 +693,8 @@ queue:
     slug: sos-paging
     epic: E7
     title: "SOS: targeted page, full-screen alert, ack/resolve, 30s escalation"
-    status: building
+    status: merged
+    pr: 41
     deps: [F31, F36, F57]
     spec: .planning/specs/sos-paging.md
     plan: .planning/plans/sos-paging.md
@@ -729,6 +730,40 @@ queue:
       schema — there is no on-shift column anywhere — so targeting reads a live
       `sessions` row instead, which is literally what the device-identity ruling
       describes and cannot go stale.
+    shipped: >-
+      MERGED 2026-08-04 as PR #41, ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN.
+      Migration 0022_sos_alerts. Build ran 21 agents with zero failures. Gates on the
+      merged tree: 2111 backend fast (main was 1956), 726 backend db ON REAL POSTGRES
+      (645), 104 ui / 1017 storefront / 1086 manage (950), 98 e2e (88), one alembic head.
+      **THIS COMPLETES EPIC E7** — F36 and F37 are its only two features.
+      THE HARD PART WAS NOT THE FEATURE, IT WAS THE MERGE. F58 landed mid-build and both
+      features extend the same floor module: 14 CONFLICTED FILES and two migrations both
+      claiming revision 0021. A rebase would have replayed 20 commits through those
+      conflicts, so it was merged instead (the shape F36 and F58 both used).
+      ⚠ THE THING TO CARRY: ONE CONFLICT GIT RESOLVED CLEANLY AND WRONGLY.
+      `assert len(live) == 18` — BOTH SIDES HAD WRITTEN 18, so git merged it with no
+      marker at all, while the true merged route count is 23. No conflict marker can
+      show you that class; only re-deriving the number from the live route table can.
+      The same discipline caught the migration rename capturing pre-edit content.
+      HOW LOSS WAS RULED OUT rather than assumed: every conflicted test file was counted
+      against BOTH parents and lands at exactly `main + HEAD - base`
+      (test_floor_api 39, walker 23, FloorPanel 47, RoomsPanel 70, i18n 95), the route
+      table was extracted from all three revisions and set-compared (23 = 18 + 18 - 13,
+      an exact union), and all ten of the two features' routes were hit through the test
+      client. The ROLE WALKER still asserts SET EQUALITY (NON_ELEVATED_REACH 17/17/23)
+      and was NOT weakened to make the merge pass — its docstring forbids that.
+      F58's e2e harness won outright; F37's vendored copy is gone, no fork.
+      ONE FALSE CLAIM THIS REPO HAD CARRIED SINCE F36 IS NOW CORRECTED. `_OccupiedError`'s
+      docstring said parenting the conflict base onto DomainValidationError "would make
+      the shipped handler answer 400 and leave both 409 handlers unreachable". Mutation:
+      EVERY HTTP ASSERTION STAYED GREEN — Starlette takes the first __mro__ match, so a
+      handler registered on the concrete class still wins. What the parentage actually
+      decides is that a subclass shipped WITHOUT a handler answers a loud 500 rather than
+      a quiet, plausible 400. Rule kept, reason rewritten.
+      ALSO: two of the plan's mutation claims are unprovable by a db test — tenant_session
+      is session.begin(), so a 409 rolls back the very audit row the mutation was meant to
+      expose. Both are pinned by the fast suite instead, and the docstrings now say so
+      rather than leaving an implied guarantee.
     note: >-
       AMENDED BY THREE USER RULINGS 2026-07-31. (1) 30s auto-escalation is
       REINSTATED, overriding pre-decided #29's "no escalation timer". (2) Targeting
