@@ -125,6 +125,21 @@ function dialog(page: Page, title: string): Locator {
   return page.getByRole("dialog").filter({ has: page.getByRole("heading", { name: title }) });
 }
 
+// ⚠ **AXE MUST NOT SCAN A DIALOG MID-ANIMATION, and this cost one red run.**
+// `Modal`'s panel enters on `--animate-modal-panel` (`modal-panel` over
+// `--motion-base` = 200 ms, `theme.css:83`), which fades opacity from 0. While
+// an ancestor's opacity is below 1 axe BLENDS the background it measures
+// against, so the gold confirm button and the field's `text-xs text-ink-muted`
+// help line report a `color-contrast` violation that does not exist a frame
+// later — a failure that appears and disappears with the machine's load. Polled
+// on the computed opacity rather than slept on, so a token change cannot make
+// the wait too short.
+async function settled(dialogLocator: Locator): Promise<void> {
+  await expect
+    .poll(() => dialogLocator.evaluate((el) => getComputedStyle(el).opacity))
+    .toBe("1");
+}
+
 async function axeViolations(page: Page): Promise<string[]> {
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.map(
@@ -351,6 +366,9 @@ test("atelier capacity: an INHERITED row opens EMPTY, and «חזרה לבריר�
   await expect(footer.getByRole("button", { name: USE_DEFAULT })).toHaveCount(0);
   await expect(capacity.getByRole("button", { name: USE_DEFAULT })).toBeVisible();
 
+  await settled(capacity);
+  expect(await axeViolations(page)).toEqual([]);
+
   await capacity.getByLabel(HOURS_LABEL).fill("30");
   await capacity.getByRole("button", { name: USE_DEFAULT }).click();
   await expect(capacity.getByLabel(HOURS_LABEL)).toHaveValue("");
@@ -469,6 +487,7 @@ test("atelier capacity: the settings dialog prefills from the envelope and saves
   await expect(settings).not.toContainText("168");
   await expect(settings).not.toContainText("1440");
 
+  await settled(settings);
   expect(await axeViolations(page)).toEqual([]);
 
   await settings.getByLabel("חצי יום — דקות", { exact: true }).fill("300");
