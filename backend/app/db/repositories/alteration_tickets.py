@@ -380,6 +380,121 @@ class AlterationTicketsRepository:
         rows = list((await session.execute(stmt)).scalars().all())
         return rows[:BOARD_TICKET_LIMIT], len(rows) > BOARD_TICKET_LIMIT
 
+    async def load_by_assignee(
+        self, session: AsyncSession, tenant_id: UUID, *, horizon: datetime.date
+    ) -> dict[UUID | None, tuple[int, int]]:
+        """`(due_soon_minutes, assigned_minutes)` per assignee, NULL included.
+
+        ⚠ TWO SUMS, ONE STATEMENT, AND THE FIRST ONE IS WHAT THE BAR RENDERS.
+        `weekly_capacity_hours` is a RATE — hours per WEEK. A single unfiltered
+        `SUM(effort_minutes)` over every undelivered ticket is a STOCK: the whole
+        backlog, with no date predicate anywhere and, by BOARD_TICKET_LIMIT's own
+        comment above, no bound at all. Dividing the second by the first is not a
+        utilisation of anything, and the error is chronic and one-directional — a
+        40 h/week seamstress holding six weeks of evenly-spread forward work
+        renders at 600 %, clamped, red, on day one, in any boutique with a book.
+        A bar that is red in the steady state is a bar nobody reads.
+
+        So the FILTERed sum is the numerator the bar divides by a week of
+        capacity, and `assigned_minutes` keeps the whole undelivered queue on the
+        wire under its own name, stated in words beside the bar, so the backlog is
+        never hidden.
+
+        ⚠ MINUTES OUT, ALWAYS. `weekly_capacity_hours` is HOURS and this is
+        MINUTES, and THE SERVER NEVER MULTIPLIES THE TWO — both reach the wire in
+        their own units under their own names, and the single `× 60` in the
+        feature is the console's `capacityMinutes()`. An hours/minutes mix-up here
+        would be wrong by 60× and dimensionally plausible on both sides;
+        test_the_hours_and_the_minutes_never_meet_on_the_server is the catcher.
+
+        ⚠ `delivered_at IS NULL` IS THE WHOLE DEFINITION OF "not yet delivered",
+        AND IT IS ONE COLUMN. It is NOT `stage != 'delivered'`: `stage` is derived
+        in PYTHON by `stage_of` as the rightmost stamped column and has no SQL
+        expression at all, so re-deriving that rule here would be a second copy of
+        the state machine, in a second language, that a concurrent write can
+        desynchronise. `deleted_at IS NULL` goes with it; the tenant predicate is
+        the house redundant defence beside RLS.
+
+        NO stamp predicate of any kind, deliberately: a ticket at `intake` counts
+        in full, because a seamstress holding ten un-started jobs is not free and
+        a numerator that only counted started work would read her as idle on the
+        exact morning she is drowning.
+
+        NO delivered-window predicate. DELIVERED_WINDOW_DAYS bounds what the board
+        RENDERS, not what the load counts — every delivered ticket is excluded
+        outright. Stated because a reader who knows the board read will look for
+        the window here and must not add it.
+
+        NO `BOARD_TICKET_LIMIT`. The aggregate is UNCAPPED, and that is the
+        argument against the free alternative: folding the load in Python over the
+        tickets `board()` already fetched costs zero statements and under-counts
+        every bar on a truncated board — i.e. in exactly the overloaded boutique
+        the feature exists for. `truncated: true` and a correct set of bars
+        coexist, and must. What bounds the scan instead is the partial index
+        F42's migration buys, whose predicate is this WHERE clause minus the
+        tenant.
+
+        NO `assigned_staff_user_id IS NOT NULL`: the NULL group is the UNASSIGNED
+        PILE, which is the first thing a capacity view must show, and dropping it
+        here would mean a second statement to get it back.
+
+        NO `HAVING` and no filtering of GROUPS. The FILTER narrows one SUM, never
+        the group set — a seamstress whose every job is due next month is still
+        here with `due_soon_minutes = 0` and a real `assigned_minutes`, which is
+        precisely the row a manager wants to reassign work TO. The COALESCE is
+        what makes that 0 rather than a NULL; the unfiltered sum needs none,
+        because a group exists only if it has a row and `effort_minutes` is NOT
+        NULL.
+
+        A seamstress with no live tickets is ABSENT from the result entirely. The
+        envelope's fold reads her as `(0, 0)`, which is what keeps her in the
+        panel rather than vanishing from it.
+
+        ⚠ A ticket that was delivered and then UNDONE re-enters the load
+        immediately — the undo clears `delivered_at`, so the row rejoins on the
+        next tick with no other write. The garment is back in the workroom, and
+        this is the one path by which a bar goes UP with nobody assigning
+        anything.
+
+        Computed on read; nothing is stored. A stored `assigned_minutes` on
+        `staff_users` would have to be maintained by EIGHT writers — intake with
+        an assignee, `update` when the band changes, `assign`, `claim`, `release`,
+        advance-to-delivered, undo-of-delivered and `soft_delete` — each a place
+        to forget it and each needing its own predicate not to race the other
+        seven. This is one statement and it cannot be stale.
+
+        `horizon` is `today_jerusalem + 7 days`, a ROLLING week rather than a
+        Sunday-anchored calendar one: a calendar anchor would need the DENOMINATOR
+        pro-rated by day-of-week, which is a per-horizon projection and is F40's
+        shape. Passed in from the `today` the caller already holds, so no second
+        clock call and no second date source enters the feature. Overdue rows are
+        INSIDE the horizon by arithmetic (`due_date < today <= horizon`) and not
+        by a special case, which is correct: late work is the most urgent there
+        is.
+        """
+        stmt = (
+            select(
+                AlterationTicket.assigned_staff_user_id,
+                func.coalesce(
+                    func.sum(AlterationTicket.effort_minutes).filter(
+                        AlterationTicket.due_date <= horizon
+                    ),
+                    0,
+                ),
+                func.sum(AlterationTicket.effort_minutes),
+            )
+            .where(
+                AlterationTicket.tenant_id == tenant_id,
+                AlterationTicket.deleted_at.is_(None),
+                AlterationTicket.delivered_at.is_(None),
+            )
+            .group_by(AlterationTicket.assigned_staff_user_id)
+        )
+        return {
+            assignee: (int(due_soon), int(assigned))
+            for assignee, due_soon, assigned in (await session.execute(stmt)).all()
+        }
+
     async def assignees(self, session: AsyncSession, tenant_id: UUID) -> list[StaffUser]:
         """The board's `seamstresses[]` — A UNION, NOT A FILTER (D9/D12).
 
