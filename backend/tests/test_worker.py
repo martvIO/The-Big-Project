@@ -8,13 +8,15 @@ either job must not silence every other boutique.
 """
 
 import dataclasses
+import datetime
 import uuid
 from typing import Any
 
 from app.booking.comms import CommsTenant, DrainResult
 from app.core.config import Settings
 from app.payments.sweeper import SweepResult
-from app.worker import build_sender, poll_once
+from app.privacy.retention import RetentionResult
+from app.worker import build_sender, poll_once, retention_tick
 
 
 @dataclasses.dataclass(frozen=True)
@@ -203,3 +205,135 @@ def test_the_deposit_hold_is_settings_tunable_and_defaults_to_fifteen_minutes() 
     is what test_deposit_sweeper_db parameterizes."""
     assert Settings().deposit_hold_seconds == 900
     assert Settings(deposit_hold_seconds=60).deposit_hold_seconds == 60
+
+
+# --- F20's retention tick ----------------------------------------------------
+#
+# `retention_tick` is a SEPARATE function from `poll_once` and that separation is
+# what makes it testable at all. `main()` is a bare `while True:` + `asyncio.sleep`
+# that no test in this file invokes, so a cadence assertion written against it
+# would have to mock `asyncio.sleep` around an infinite loop — a hang, not a test.
+# It also could not live INSIDE `poll_once`: that one is per-tick and this one is
+# per-hour, and the whole subject here is the comparison that tells them apart.
+
+
+class FakeRunner:
+    """Programmable exactly like FakeComms and FakeSweeper — the runner's own SQL
+    is the db suite's business; what belongs here is whether it runs at all."""
+
+    def __init__(self, outcome: RetentionResult | Exception | None = None) -> None:
+        self._outcome = outcome if outcome is not None else RetentionResult()
+        self.runs = 0
+
+    async def run(self, *, dry_run: bool = False) -> RetentionResult:
+        self.runs += 1
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        return self._outcome
+
+
+NOW = datetime.datetime(2026, 8, 4, 12, 0, tzinfo=datetime.UTC)
+
+
+async def test_retention_does_not_fire_before_its_interval_has_elapsed() -> None:
+    """The poller keeps its 60-second cadence; retention gets its own hour. The
+    returned `next_at` is UNCHANGED, so the deadline does not drift forward one
+    poll interval at a time and quietly become "never"."""
+    runner = FakeRunner()
+    due_at = NOW + datetime.timedelta(seconds=1)
+
+    next_at = await retention_tick(
+        runner,  # type: ignore[arg-type]
+        now=NOW,
+        next_at=due_at,
+        enabled=True,
+        interval_seconds=3600,
+    )
+
+    assert runner.runs == 0
+    assert next_at == due_at
+
+
+async def test_retention_fires_once_its_interval_elapsed_and_advances_the_deadline() -> None:
+    runner = FakeRunner(RetentionResult(tenants=2, rows={"otp_codes": 7}))
+
+    next_at = await retention_tick(
+        runner,  # type: ignore[arg-type]
+        now=NOW,
+        next_at=NOW,
+        enabled=True,
+        interval_seconds=3600,
+    )
+
+    assert runner.runs == 1
+    assert next_at == NOW + datetime.timedelta(seconds=3600)
+
+
+async def test_the_flag_off_calls_the_runner_zero_times() -> None:
+    """Gate 1 Q2 ships `retention_enabled=False`, so this is the DEPLOYED path.
+    "Disabled" has to mean the unattended irreversible mass-DELETE is never
+    reached — not that it runs and reports nothing."""
+    runner = FakeRunner(RetentionResult(rows={"bookings": 500}))
+
+    next_at = await retention_tick(
+        runner,  # type: ignore[arg-type]
+        now=NOW,
+        next_at=NOW - datetime.timedelta(days=1),
+        enabled=False,
+        interval_seconds=3600,
+    )
+
+    assert runner.runs == 0
+    assert next_at == NOW - datetime.timedelta(days=1)
+
+
+async def test_a_raising_retention_run_is_swallowed_and_still_advances() -> None:
+    """Its own try block, `poll_once`'s separate-try discipline with a third job.
+    An exception escaping here would kill the process loop and take every
+    boutique's reminders and F19's deposit sweeper with it — the retention job
+    is the LEAST urgent of the three and must never be the one that stops them.
+
+    It advances the deadline anyway: a permanently failing run that kept its
+    deadline in the past would re-enter on every 60-second poll instead of
+    hourly, turning one broken tenant into a hot loop.
+    """
+    runner = FakeRunner(RuntimeError("a chunk blew up"))
+
+    next_at = await retention_tick(
+        runner,  # type: ignore[arg-type]
+        now=NOW,
+        next_at=NOW,
+        enabled=True,
+        interval_seconds=3600,
+    )
+
+    assert runner.runs == 1
+    assert next_at == NOW + datetime.timedelta(seconds=3600)
+
+
+async def test_the_poller_and_the_sweeper_are_untouched_by_a_broken_retention_run() -> None:
+    """The "and vice versa" leg: the three jobs are three calls with three try
+    blocks, so a tick containing a failing retention run still drains and sweeps
+    every tenant."""
+    tenants = [_tenant("bella"), _tenant("vered")]
+    comms = FakeComms({})
+    sweeper = FakeSweeper()
+    runner = FakeRunner(RuntimeError("retention blew up"))
+
+    await retention_tick(
+        runner,  # type: ignore[arg-type]
+        now=NOW,
+        next_at=NOW,
+        enabled=True,
+        interval_seconds=3600,
+    )
+    totals = await poll_once(comms, FakeTenants(tenants), sweeper)  # type: ignore[arg-type]
+
+    assert [t.slug for t in comms.drained] == ["bella", "vered"]
+    assert sweeper.swept == [t.id for t in tenants]
+    assert totals == DrainResult()
+
+
+def test_the_retention_cadence_is_settings_tunable_and_ships_disarmed() -> None:
+    assert Settings().retention_enabled is False
+    assert Settings().retention_poll_interval_seconds == 3600
