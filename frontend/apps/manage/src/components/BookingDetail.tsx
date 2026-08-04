@@ -362,13 +362,25 @@ export function BookingDetail({ bookingId, onBack, onBookingChanged }: BookingDe
               <Fact label={t("booking.createdAt")}>
                 <Instant value={detail.created_at} />
               </Fact>
+              {/* ONE Fact, TWO bodies. F50 made both terms columns nullable, as
+                  a PAIR, so a walk-in has no evidence to show — and the honest
+                  answer is a sentence naming the absence, not a Fact rendering
+                  «גרסה null» beside jerusalemDate(null). The row is not dropped:
+                  a missing label would read as "the screen forgot", which is the
+                  ambiguity `source` exists to remove. */}
               <Fact label={t("booking.terms")}>
-                {isolateLtr(
-                  t("booking.termsVersion", { version: detail.terms_version_accepted }),
-                  String(detail.terms_version_accepted),
+                {detail.terms_version_accepted === null || detail.terms_accepted_at === null ? (
+                  t("booking.termsNone")
+                ) : (
+                  <>
+                    {isolateLtr(
+                      t("booking.termsVersion", { version: detail.terms_version_accepted }),
+                      String(detail.terms_version_accepted),
+                    )}
+                    {" · "}
+                    <bdi dir="ltr">{jerusalemDate(detail.terms_accepted_at)}</bdi>
+                  </>
                 )}
-                {" · "}
-                <bdi dir="ltr">{jerusalemDate(detail.terms_accepted_at)}</bdi>
               </Fact>
               <Fact label={t("booking.manageLink")}>
                 {/* Words, never a chip — one Badge per screen region, and the

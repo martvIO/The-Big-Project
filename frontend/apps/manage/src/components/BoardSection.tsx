@@ -3,11 +3,12 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Skeleton } from "@boutique/ui";
 import { api, ApiError } from "../api";
-import type { OwnerBookingDetail, OwnerBookingRow } from "../api";
+import type { OwnerBookingDetail, OwnerBookingRow, WalkInBookingRequest } from "../api";
 import { bookingErrorText, isolateLtr, statusBadge } from "../lib/booking";
 import { jerusalemTime, plainDate, todayJerusalem } from "../lib/jerusalem";
 import { IDLE_STOP_MINUTES, usePoll } from "../lib/usePoll";
 import type { TickOutcome } from "../lib/usePoll";
+import { WalkInDialog } from "./WalkInDialog";
 
 // The poll's six mechanisms, its three constants and the {401,403} terminal
 // classifier moved to lib/usePoll.ts in F57 — the second caller, which is the
@@ -42,6 +43,7 @@ export function BoardSection() {
   const [busyIds, setBusyIds] = useState<readonly string[]>([]);
   const [stranded, setStranded] = useState<readonly string[]>([]);
   const [rowError, setRowError] = useState<{ id: string; text: string } | null>(null);
+  const [walkInOpen, setWalkInOpen] = useState(false);
 
   const cueRef = useRef<HTMLParagraphElement>(null);
   const movedRef = useRef<HTMLSpanElement>(null);
@@ -284,6 +286,49 @@ export function BoardSection() {
     }
   };
 
+  // F50. `mutate`'s discipline verbatim, with ONE deliberate difference and one
+  // guard that difference forces.
+  //
+  // The difference: the re-arm is `poll.refresh()` and not `poll.reschedule()`.
+  // A new row belongs at (starts_at, seat_index) order rather than at the head,
+  // so patching it in client-side would mean writing a second sorter for a list
+  // the server already orders and the next tick re-sorts anyway. One extra
+  // request per walk-in — call it one an hour — buys the server's own ordering
+  // and no divergence.
+  //
+  // ⚠ The guard: `reschedule()` NO-OPS while the loop is stopped, which is what
+  // let F34 put its re-arm in an unguarded .finally(). `refresh()` has no such
+  // guard — it is three unconditional statements — so on the 401/403 arm, where
+  // the board's terminal screen has already taken over, an unguarded .finally()
+  // fires one more request against a session already known to be dead. One local
+  // flag, and no second classifier: `poll.fail` is the hook's.
+  const create = async (body: WalkInBookingRequest): Promise<string | null> => {
+    mutationsRef.current += 1;
+    poll.clearTick();
+    poll.bump();
+    let terminated = false;
+    try {
+      const created = await api.createWalkInBooking(body);
+      setWalkInOpen(false);
+      setCue(t("walkin.createdCue", { name: created.customer_name }));
+      // NO focus move here, unlike mutate(): the «תור חדש» trigger does not
+      // unmount, so the native <dialog> returns focus to it on close and
+      // stealing that for the cue would be a jump she did not ask for.
+      return null;
+    } catch (error) {
+      if (poll.fail(error)) {
+        terminated = true;
+        return null;
+      }
+      return bookingErrorText(error, t);
+    } finally {
+      mutationsRef.current -= 1;
+      if (mutationsRef.current === 0 && !terminated) {
+        poll.refresh();
+      }
+    }
+  };
+
   const heading = <h2 className="text-lg font-semibold text-ink">{t("board.heading")}</h2>;
 
   if (terminal !== null) {
@@ -411,6 +456,26 @@ export function BoardSection() {
           )}
         </div>
       )}
+
+      {rows !== null && (
+        // F50. OUTSIDE the Card and outside the freshness bar, and both are
+        // decisions. Not `EmptyState`'s `action` slot — that slot exists and
+        // would hold a Button, but it renders ONLY when the day is empty, and
+        // the bride at the counter arrives on a full board at least as often;
+        // one button in one place beats the same button declared twice. Not in
+        // the freshness bar either: «השהיה» beside «תור חדש» is a pause control
+        // touching a create control, and a hurried thumb should not have those
+        // adjacent.
+        //
+        // `terminal` needs no clause — that screen returns above.
+        <div>
+          <Button variant="secondary" size="md" onClick={() => setWalkInOpen(true)}>
+            {t("board.newWalkIn")}
+          </Button>
+        </div>
+      )}
+
+      <WalkInDialog open={walkInOpen} onClose={() => setWalkInOpen(false)} onConfirm={create} />
 
       {/* The ONE announced region, and the poll may never write into it: a
           role="status" update every five seconds passes every automated check
@@ -548,6 +613,14 @@ export function BoardSection() {
                           </div>
                           <p className="text-sm text-ink-muted">
                             <bdi>{booking.appointment_type_name}</bdi>
+                            {booking.source === "walk_in" && (
+                              // F50. One muted word, in the attendance
+                              // treatment: muted words, never a second Badge and
+                              // never a tint. A walk-in row is an ordinary
+                              // booking and every floor verb works on it — this
+                              // says where it came from, nothing more.
+                              <> · {t("booking.sourceWalkIn")}</>
+                            )}
                             {booking.attendance_confirmed_at !== null && (
                               // Muted words, never a second Badge.
                               <> · {t("booking.attendanceConfirmed")}</>
