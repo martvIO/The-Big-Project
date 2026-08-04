@@ -101,6 +101,11 @@ export function CustomerDetail({ customerId, onBack, onCustomerChanged }: Custom
   const [tagError, setTagError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // F20 / §30A. Its own error slot, not `saveError`: the withdrawal is a
+  // different action on a different route, and a failed revocation announced in
+  // the notes form's alert would read as "your notes did not save".
+  const [consentError, setConsentError] = useState<string | null>(null);
+  const [withdrawing, setWithdrawing] = useState(false);
 
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const saveAlertRef = useRef<HTMLParagraphElement | null>(null);
@@ -214,6 +219,40 @@ export function CustomerDetail({ customerId, onBack, onCustomerChanged }: Custom
     }
   };
 
+  // ⚠ THREE STATES, NOT A BOOLEAN. Effective consent is
+  // `marketing_consent_at IS NOT NULL AND marketing_consent_withdrawn_at IS
+  // NULL`; withdrawal is ADDITIVE because clearing the grant timestamp would
+  // destroy the Spam-Law evidence that the consent existed when a message was
+  // sent. So «הוסרה» is a real third state and not the absence of the first, and
+  // collapsing the two would tell a staffer a woman never consented when the
+  // record says she did and then revoked.
+  const consentKey =
+    detail === null || detail.marketing_consent_at === null
+      ? "privacy.consentNone"
+      : detail.marketing_consent_withdrawn_at === null
+        ? "privacy.consentActive"
+        : "privacy.consentWithdrawn";
+  const consentLive = consentKey === "privacy.consentActive";
+
+  const handleWithdraw = async () => {
+    if (detail === null) return;
+    setWithdrawing(true);
+    setConsentError(null);
+    try {
+      await api.withdrawMarketingConsent({ customer_id: detail.id });
+      // Patched locally rather than refetched. The response is one boolean, and
+      // re-reading the whole card to learn what we just did would blank the
+      // booking history and the message log for the length of a round trip.
+      // Written only AFTER the call resolves — an optimistic flip would tell a
+      // staffer she had honoured a §30A revocation that never landed.
+      setDetail({ ...detail, marketing_consent_withdrawn_at: new Date().toISOString() });
+    } catch {
+      setConsentError(t("privacy.withdrawFailed"));
+    } finally {
+      setWithdrawing(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* First in reading order, and rendered unconditionally: without it a
@@ -250,10 +289,55 @@ export function CustomerDetail({ customerId, onBack, onCustomerChanged }: Custom
 
       {detail !== null && (
         <>
-          <Card>
+          <Card className="space-y-3">
             <Fact label={t("customers.phoneLabel")}>
               <bdi dir="ltr">{detail.phone}</bdi>
             </Fact>
+            {/* ⚠ F20 / Gate 1 Q4, AND THIS IS WHERE THAT RULING BECOMES
+                REACHABLE. The privacy section is owner-only because its first
+                step is the §13 export; `POST /manage/privacy/marketing-withdraw`
+                deliberately carries NO route-level gate and inherits the
+                router's (OWNER, SHIFT_MANAGER) one. A shift manager taking the
+                call has to be able to honour «אפשר לבקש מאיתנו להסיר את ההסכמה
+                בכל עת» from the screen she is already on — and looking a caller
+                up is what this card is for.
+
+                No role prop and no client-side filter: the server admits both
+                console roles, so a filter here would be this component lying
+                about the API rather than mirroring it. */}
+            <Fact label={t("privacy.consentLabel")}>
+              {/* The WORD carries the state and the variant is redundant
+                  reinforcement — colour is never the sole indicator. */}
+              <Badge
+                data-testid="customer-consent"
+                variant={consentLive ? "neutral" : "muted"}
+              >
+                {t(consentKey)}
+              </Badge>
+            </Fact>
+            {consentLive && (
+              // Rendered ONLY where there is a live consent to withdraw: a
+              // control that answers `changed: false` is a control that did
+              // nothing, and offering it on a card with no consent invites a
+              // staffer to "do it again" on a subject who never gave one.
+              //
+              // No confirmation step, and that is §30A rather than an oversight:
+              // revocation may not be conditioned, and a modal asking «are you
+              // sure?» at the counter is a condition however small.
+              <Button
+                variant="secondary"
+                size="md"
+                loading={withdrawing}
+                onClick={() => void handleWithdraw()}
+              >
+                {t("privacy.withdraw")}
+              </Button>
+            )}
+            {consentError !== null && (
+              <p role="alert" className="text-sm text-danger">
+                {consentError}
+              </p>
+            )}
           </Card>
 
           <Card className="space-y-4">
