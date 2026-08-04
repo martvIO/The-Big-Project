@@ -2065,6 +2065,51 @@ rulings_2026_07_30:             # taken in the finish-the-project planning sessi
   - "F15 phone-correction without OTP is ACKNOWLEDGED as shipped for owner AND shift_manager."
 
 known_vacuous:                  # tests that CANNOT fail, found 2026-08-04. Not flaky — blind.
+  # ==================================================================
+  # ==== AUDITED AND CLOSED 2026-08-04 by PR #44. ====================
+  # ==================================================================
+  # THE MECHANISM BELOW IS CORRECT AND CONFIRMED — jsdom 29.1.1's
+  # HTMLDialogElementImpl is a NINE-LINE EMPTY SUBCLASS (read from
+  # node_modules, not inferred), so every setup.ts passes its install
+  # guard and the stub is live.
+  #
+  # THE BLAST RADIUS BELOW WAS WRONG, AND WRONG IN THE EXPENSIVE
+  # DIRECTION — it invited deleting sound coverage. Five of the six
+  # named files are DISCIPLINED. The decisive mechanic the note missed:
+  # `fireEvent.click` does not move focus in jsdom and `render` focuses
+  # nothing, so activeElement is <body> for a whole click-driven flow.
+  # An assertion that a node HAS focus after a close can then only pass
+  # if the component ran an explicit .focus() — THAT IS REAL COVERAGE.
+  # Vacuity requires the test to PRE-PLACE focus on its own assertion
+  # target (`trigger.focus()` -> open -> close -> expect(trigger)),
+  # because the stub never takes it away.
+  #
+  # EXACTLY FOUR ASSERTIONS MATCHED, all one copied template:
+  #   RoomsRegistryDialog.test.tsx  x2   (in the stated radius)
+  #   RoomDressDialog.test.tsx      x1   (NOT in it — audit found it)
+  #   RoomHandoverDialog.test.tsx   x1   (NOT in it — audit found it)
+  # The last two carried a comment asserting "jsdom implements the
+  # <dialog> close focusing steps". FALSE, and worse than no comment:
+  # it made an unfailable test read as a deliberately-weak one.
+  #
+  # THE REAL HOLE WAS A GAP, NOT BAD TESTS. Nothing anywhere asserted
+  # that focus ENTERS a dialog, that Tab is trapped, or that a real
+  # Escape dismisses it — none of it expressible under the stub. Closed
+  # by frontend/e2e/dialog-focus.spec.ts: 4 rules x 2 dialogs, each RUN
+  # against the mutation that removes what it measures. M1 (the stub,
+  # reproduced in Chromium) reds SEVEN OF EIGHT, which is the argument
+  # for the file in one number.
+  #
+  # STOREFRONT HAS NO DIALOG AT ALL — no Modal import, no <dialog> in
+  # any component. Its setup.ts stub is dead code and its comment
+  # ("the @boutique/ui Modal behind the booking CTA") is stale.
+  # packages/ui's own Modal.test.tsx has no focus/trap/Esc assertion
+  # whatsoever and is correctly scoped.
+  #
+  # STANDING RULE, unchanged and now proven: assert dialog focus, traps
+  # and Esc in PLAYWRIGHT, never vitest. But do NOT call a unit
+  # assertion vacuous without checking whether it PRE-PLACED focus —
+  # over-claiming vacuity deletes working tests.
   - what: "every vitest assertion about <dialog> focus, the focus TRAP, or Esc-to-close"
     found_by: F60's spec review
     evidence: >-
@@ -2089,7 +2134,25 @@ known_vacuous:                  # tests that CANNOT fail, found 2026-08-04. Not 
       Assert dialog focus, traps and Esc in PLAYWRIGHT, never vitest. A named e2e test per
       rule, each with the deletion that reddens it. If a unit test must touch a dialog,
       restrict it to content and callbacks.
-    owner: unassigned — audit the six files at the next epic boundary
+    owner: CLOSED 2026-08-04 by PR #44 — see the block above for what the audit changed
+
+known_product_bugs:             # real defects found but deliberately not fixed in the PR that found them
+  - what: "/fake-pay answers 200 with a blank storefront shell when PAYMENT_PROVIDER is unset"
+    found_by: PR #44's harness verification, driving the real stack
+    evidence: >-
+      `/fake-pay` is not in EXEMPT_PATHS and `fake-pay` is not a reserved first segment,
+      so `_SpaFallbackRoute` claims the path and returns the storefront HTML shell with a
+      200. With PAYMENT_PROVIDER=fake and an unknown session it is a clean 404
+      (FakePayService.facts raises DomainNotFoundError) — so the two configurations differ
+      in the one direction that matters and the WRONG one is silent.
+    why_it_matters: >-
+      A deposit deployment whose payment provider is misconfigured redirects the bride to
+      a URL that answers 200 with a blank page. Nothing logs, nothing 404s, nothing is
+      diagnosable — she just sees nothing and the booking never completes. The clean
+      discriminator a human can use today is the bare path: `GET /fake-pay` is 400
+      VALIDATION_ERROR when registered and 200 text/html when not.
+    fix: "add the fake-pay path to `_SpaFallbackRoute`'s decline set, so it 404s"
+    owner: unassigned — one-line change, pick it up with any E4/E5 payments feature
 
 known_flaky:                    # nondeterministic tests — they gate every merge, so treat as debt
   - test: "backend/tests/test_booking_owner_db.py::test_two_concurrent_reschedules_of_one_booking_never_self_collide"
