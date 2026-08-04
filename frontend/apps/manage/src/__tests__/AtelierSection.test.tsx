@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { run } from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
-import type { AtelierBoardResponse, AtelierTicket, TicketStage } from "../api";
+import type { AtelierBoardResponse, AtelierTicket, SeamstressRef, TicketStage } from "../api";
 import { AtelierSection } from "../components/AtelierSection";
 import { IDLE_STOP_MS, POLL_INTERVAL_MS } from "../lib/usePoll";
 
@@ -76,15 +76,35 @@ const BANDS = [
   { band: "full_day", minutes: 480 },
 ] as const;
 
+// F42 widened SeamstressRef by four fields and AtelierBoardResponse by three.
+// The defaults here are the state a boutique that has never opened the capacity
+// dialog is in — no capacity anywhere, no load — so every F41 assertion in this
+// file keeps testing what it tested.
+function seamstress(overrides: Partial<SeamstressRef> = {}): SeamstressRef {
+  return {
+    id: NOA_ID,
+    display_name: "נועה לוי",
+    assignable: true,
+    weekly_capacity_hours: null,
+    capacity_is_default: false,
+    assigned_minutes: 0,
+    due_soon_minutes: 0,
+    ...overrides,
+  };
+}
+
 function board(
   tickets: AtelierTicket[],
   overrides: Partial<AtelierBoardResponse> = {},
 ): AtelierBoardResponse {
   return {
     tickets,
-    seamstresses: [{ id: NOA_ID, display_name: "נועה לוי", assignable: true }],
+    seamstresses: [seamstress()],
     effort_bands: BANDS.map((entry) => ({ ...entry })),
     truncated: false,
+    unassigned_minutes: 0,
+    default_weekly_capacity_hours: null,
+    due_soon_through: "2026-08-11",
     ...overrides,
   };
 }
@@ -930,8 +950,8 @@ describe("which controls exist — the two authorization axes, rendered", () => 
     getAtelierBoard.mockResolvedValue(
       board([ticket({ assigned_staff_user_id: NOA_ID })], {
         seamstresses: [
-          { id: NOA_ID, display_name: "נועה לוי", assignable: true },
-          { id: OTHER_SEAMSTRESS, display_name: "רותם", assignable: true },
+          seamstress(),
+          seamstress({ id: OTHER_SEAMSTRESS, display_name: "רותם" }),
         ],
       }),
     );
@@ -1074,7 +1094,7 @@ describe("the card's facts", () => {
     // inference — and it is the signal a manager needs to reassign.
     getAtelierBoard.mockResolvedValue(
       board([ticket({ assigned_staff_user_id: NOA_ID })], {
-        seamstresses: [{ id: NOA_ID, display_name: "נועה לוי", assignable: false }],
+        seamstresses: [seamstress({ assignable: false })],
       }),
     );
     mount();
@@ -1730,8 +1750,8 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     getAtelierBoard.mockResolvedValue(
       board([ticket({ assigned_staff_user_id: OTHER_SEAMSTRESS })], {
         seamstresses: [
-          { id: NOA_ID, display_name: "נועה לוי", assignable: true },
-          { id: OTHER_SEAMSTRESS, display_name: "רותם", assignable: true },
+          seamstress(),
+          seamstress({ id: OTHER_SEAMSTRESS, display_name: "רותם" }),
         ],
       }),
     );
