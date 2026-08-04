@@ -22,47 +22,50 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F20                    # ==================================================================
-                                # ==== HANDOFF, 2026-08-04 (SECOND) — THE QUEUE IS FULLY OPEN ====
+current: null                   # ==================================================================
+                                # ==== HANDOFF, 2026-08-04 (THIRD) — NOTHING IN FLIGHT ============
                                 # ==================================================================
-                                # F20's Gate 1 IS CLEARED. The user answered all five questions this
-                                # session; the rulings are in the F20 queue entry's `gate_1_cleared`
-                                # field and in the spec's "Gate 1 — resolutions" table. ONE of the
-                                # five OVERRULES the spec (Q4: marketing-withdraw ships
-                                # (OWNER, SHIFT_MANAGER), not owner-only) and the spec is already
-                                # amended in the four places that ruling reaches.
+                                # 24 MERGED · 21 BUILDABLE · 1 PARKED FOREVER (F32, subsumed).
+                                # (PR #44 is not in that count — it was debt + infrastructure,
+                                # not a queue entry. Two PRs shipped, one queue entry closed.)
+                                # TWELVE ARE ELIGIBLE RIGHT NOW, verified by resolving deps against
+                                # the merged set rather than by reading file order:
+                                #   F50 F21 F22 F24 F25 F27 F28 F35 F38 F44 F47 F49
+                                # NOTHING IS USER-BLOCKED. Two user items remain and BOTH are
+                                # DEPLOY-time, not build-time: the 3 DNS records and the 2 Twilio
+                                # values. The queue can run to exhaustion without another answer.
                                 #
-                                # CONSEQUENCE: NOTHING IN THE QUEUE IS USER-BLOCKED ANY MORE.
-                                # 22 features remain buildable — 21 that were queued plus F20 — and
-                                # the seven that were stranded behind F20 (F21, F29, F38, F39, F40,
-                                # F45 and F20 itself) are now reachable. F32 stays parked forever
-                                # (subsumed into F34). Two user items remain but they are DEPLOY-time,
-                                # not build-time: the 3 DNS records and the 2 Twilio values.
+                                # THIS SESSION SHIPPED TWO PRs:
+                                #   #44  QA foundation — the real-world harness + the dialog audit
+                                #   #45  F20 PPL compliance (migration 0024) — Gate 1 cleared by the
+                                #        user, all five answered, Q4 OVERRULING the spec
                                 #
-                                # THE PICK IS F20, DELIBERATELY OVERRIDING FILE ORDER (which says
-                                # F50). F20 heads the only 4-deep chain left — F20 → F38 → F39 → F40 —
-                                # and gates F21, F29, F45 besides. Every other eligible entry is a
-                                # leaf. After F20 merges, revert to plain file order: F50, F22, F24,
-                                # F25, F27, F28, F35, F44, F47, F49, then the wave they unlock.
+                                # THE NEXT PICK reverts to plain file order: F50 (walk-in bookings,
+                                # SMC-6), then F22, F24, F25, F27, F28, F35, F44, F47, F49 — all
+                                # eligible now — then the wave they unlock (F21, F38, F23, F26, F43,
+                                # F46), then F29/F39/F48, then F40, then F45 last.
+                                # F20's merge unblocked F21 and F38, which head the remaining depth.
                                 #
-                                # ⚠ TWO DEBTS ARE STILL OWED and are now PHASE 0 of the finish plan:
-                                # (1) THE known_vacuous AUDIT — six apps/manage test files mount a
-                                #     Modal and their dialog-focus assertions may be incapable of
-                                #     failing. See the known_vacuous block.
-                                # (2) THE REAL-WORLD HARNESS, which SUBSUMES the never-run E7
-                                #     epic-boundary QA pass. THE FINDING THAT MAKES THIS URGENT:
-                                #     frontend/e2e/fixtures/manage.ts says in its own header that it
-                                #     STUBS THE API, so it proves the CONSOLE and not the CONTRACT —
-                                #     "a backend change that renames a payload key passes every test
-                                #     in this file while breaking production." The backend suite never
-                                #     opens a browser. THE TWO HALVES OF THIS PRODUCT HAVE ONLY EVER
-                                #     BEEN TESTED APART. Postgres 16 is running locally, F55 already
-                                #     serves both SPAs same-origin, app/cli.py provisions a tenant and
-                                #     tenancy is hostname-derived (so *.localtest.me works) — the
-                                #     harness is a runbook plus ONE seed script, not a framework.
-                                #     `provision` creates ONLY tenant+owner+audit, so a demo boutique
-                                #     needs seeding; seed it THROUGH THE REAL HTTP API so the seeder
-                                #     is itself a contract test.
+                                # ⚠ THE ONE THING STILL OWED, and it is now CHEAP because the harness
+                                # exists: NOBODY HAS WALKED THE JOURNEYS. docs/real-world-qa.md §3
+                                # holds five of them (bride / walk-in / floor / atelier / cross) and
+                                # PR #44 proved only BOOT, TENANCY, STATIC SERVING, THE SEED CONTRACT
+                                # AND THE STOREFRONT READS. The browser assertions — real <dialog>
+                                # focus, the SOS 30s wall-clock escalation, payload-key drift on
+                                # POST /storefront/bookings and /storefront/checkin — remain
+                                # UNVERIFIED CLAIMS. Run it at the next epic boundary; the recipe is
+                                # in the runbook and every command in it was actually executed.
+                                # RLS is also unexercised there — that run was as `postgres`.
+                                #
+                                # WHY THE HARNESS EXISTS AT ALL, so nobody deletes it as redundant:
+                                # frontend/e2e/fixtures/manage.ts says in its own header that it
+                                # STUBS THE API, so it proves the CONSOLE and not the CONTRACT —
+                                # "a backend change that renames a payload key passes every test in
+                                # this file while breaking production." The backend suite never opens
+                                # a browser. THE TWO HALVES OF THIS PRODUCT HAD ONLY EVER BEEN TESTED
+                                # APART. F20 then proved the point within hours: nine e2e tests went
+                                # red on a fixture that predated the feature, and the local build
+                                # never noticed.
                                 #
                                 # ---- previous handoff, still accurate on everything else ----
                                 #
@@ -1216,11 +1219,72 @@ queue:
     slug: ppl-compliance
     epic: E4
     title: PPL compliance build
-    status: queued
+    status: merged
+    pr: 45
+    attempts: 1
     deps: [F13]
     spec_gate: user            # DISCHARGED 2026-08-04 — kept as the record of what it was
     blocker: null              # was: Gate 1, 5 questions, parked from 2026-07-30
     spec: .planning/specs/ppl-compliance.md
+    plan: .planning/plans/ppl-compliance.md
+    copy: .planning/design/screens/privacy/copy.md
+    shipped: >-
+      SHIPPED as PR #45, merged 2026-08-04. Migration 0024. 24 commits, 96 files,
+      +12042/-72. ALL THREE GATING JOBS GREEN ON THE FIRST CI RUN — bought, not lucky:
+      the db-marked tests were run locally against a throwaway PG16 on :55432 before the
+      push (819 passed), which is the F34 discipline.
+      GATES AT MERGE: lint exit 0 (mypy app tests scripts, 302 files) · 2334 fast ·
+      819 db · 2461 frontend (ui 104, storefront 1088, manage 1269) · 143 e2e ·
+      `alembic heads` = 0024, exactly one head.
+
+      THE PLANNING PASS PAID FOR ITSELF THREE TIMES, and all three would have failed the
+      build outright. The spec was 5 days and NINE MERGED FEATURES old; re-verifying every
+      citation found 16 drifts.
+      (1) THE SUB-PROCESSOR LIST WAS ABOUT TO BE FALSE IN A STATUTORY DISCLOSURE. The spec
+      says twice, in bold, "no SMS provider yet — must not name Twilio as live". STALE:
+      F54 shipped app/notifications/twilio.py after it was written. Named CONDITIONALLY
+      now, under a disclosure principle stated once and applied uniformly — the first
+      draft had applied three different standards to three processors, which a reviewing
+      lawyer finds in one pass.
+      (2) A LIVE PROMISE F20 WAS ABOUT TO BREAK. he.ts:483 (shipped) tells a woman who
+      ticks the box that her details are kept UNTIL SHE ASKS TO REMOVE THE CONSENT. The
+      retention job would have destroyed them in 7 days, and she could not have withdrawn
+      anyway — marketing-withdraw keyed on customer_id and F33 never writes `customers`.
+      Fixed by BUILDING the revocation half (a phone arm) and striking the false clause.
+      (3) PHASE F WOULD NOT HAVE TYPECHECKED. SectionKey is a compile-time gate; adding
+      `privacy` forces a non-empty GUIDE_STEPS.privacy tuple in BOTH i18n bundles.
+
+      REVIEW: three lenses. TWO INDEPENDENT REVIEWERS CONVERGED ON THE SAME DEFECT, which
+      is the strongest signal this setup produces. §14 ERASE NEVER TOUCHED queue_tickets.
+      The transaction covered customers, bookings, message_log, otp_codes,
+      scheduled_messages. A walk-in row holds `name` and `phone`, both nullable=False,
+      the phone normalised to E.164 SPECIFICALLY SO IT MATCHES customers.phone EXACTLY —
+      the model's own comment states the equality that makes re-identification trivial.
+      A bride who booked online AND checked in by QR got a 200, an erased_at stamp, and
+      her real name and mobile left in place PERMANENTLY, because the only thing that
+      would ever scrub them is the retention policy and retention_enabled ships False
+      (Q2). It made the shipped Hebrew FALSE. export_subject was incomplete for the same
+      woman. 12 findings applied in one round, 2 rejected with recorded reasons.
+      THE REJECTION WORTH REMEMBERING: a proposed UI for the walk-in phone arm would have
+      put the control on an owner-only panel and left the SHIFT MANAGER — the role Q4
+      exists for, and the one the finding's own scenario names on the telephone — exactly
+      as stuck, while LOOKING fixed.
+
+      PROOFS: 15 mutants in Phase C alone, all red, including `dependencies=OWNER_ONLY`
+      added to marketing-withdraw (reds four tests — the Q4 positive-absence assertion
+      genuinely bites). FOUR VACUOUS TESTS FOUND AND FIXED OR DELETED: a booking-page
+      LIMIT test a Python slice satisfied (now captures emitted SQL via a
+      before_cursor_execute listener); resolve_privacy({}) green across the whole suite;
+      a PrivacyPage assertion a no-op substituteBoutique could not redden; and one
+      deleted outright for having no unique mutation.
+      NINE E2E TESTS WERE RED AND THE LOCAL BUILD NEVER NOTICED — the Playwright boutique
+      fixture predates F20 and sent none of the three now-required documents, so
+      undefined.split gave a blank page with no <h1>. Fixed the FIXTURE, not the
+      component: the field is non-optional on the wire type, so a guard in BookPage would
+      be dead code that also hid the next drift. The reason it got that far is that plan
+      §5 named three required E2E properties and NONE had been built.
+      A GATES AGENT CAUGHT ITSELF: one mutation failed tsc, so Playwright ran the stale
+      dist and "passed". It discarded that result rather than banking it.
     gate_1_cleared: >-
       2026-08-04. ALL FIVE Gate 1 questions answered by the user; the resolutions
       table is in the spec under "Gate 1 — resolutions" and the spec's status is
@@ -2040,11 +2104,29 @@ in_run_gates:                   # block a specific feature; the user clears them
   # entry's `gate_1_cleared` field for the rulings. ONE ASK SURVIVES, and it is a
   # REVIEW rather than a block: the user approves the drafted Hebrew copy.md before
   # F20's PR merges. F20 builds now.
+  # ==== F20's LAST ASK IS DISCHARGED 2026-08-04 — copy APPROVED, PR #45 merged ====
   - id: F20
-    what: "APPROVE the drafted Hebrew copy at .planning/design/screens/privacy/copy.md before the PR merges (Q1 ruling: Claude drafts, user approves)"
-    asks: 1
-    blocks: "the PR merge, NOT the build"
-    sharpest: "Five strings go in front of members of the public in Hebrew: the §11 collection notice, its §30A revocation sentence, the boutique's DPA prose, the platform sub-processor list, and the owner-facing not-lawyer-reviewed disclaimer. Read the notice as a bride standing in a doorway would, not as a lawyer would. This is the drafting approval only — the standing counsel review in user_actions still has to happen before pilot go-live."
+    what: "APPROVE the drafted Hebrew copy at .planning/design/screens/privacy/copy.md"
+    asks: 0
+    status: DISCHARGED 2026-08-04 — user approved as drafted; PR #45 merged
+    still_open: >-
+      NOT the counsel review. That stays in `user_actions` and must happen before pilot
+      go-live. What makes it cheap is structural rather than lucky: the text lives in
+      `tenants.settings`, so counsel's version is ONE settings field per tenant, or one
+      constant for every tenant that has not overridden. The sub-processor list is
+      platform-owned (Q3), so amending IT reaches every tenant including the overriders.
+    sharpest: >-
+      Ten strings went in front of members of the public in Hebrew. The two that carried
+      the most judgement: the §30A revocation sentence encodes Q4 as «אפשר לבקש מאיתנו»
+      / «אפשר לומר זאת לכל אחת מאיתנו» — the BOUTIQUE, never «the owner», because a bride
+      in a shop cannot tell which woman behind the counter that is; and the Twilio bullet
+      is CONDITIONAL, because `sms_provider` ships unset and staging runs `fake`, so an
+      unconditional claim would be false on the deployment we actually run while omitting
+      it entirely would be the worse error.
+  # F33's own notice question is DISCHARGED TOO, by the same approval: F20 replaced the
+  # interim string at he.ts:483 with the counsel-shaped text (commit 1a5a091, "the
+  # counsel swap on the walk-in notice, in both bundles"). See the F33 entry below —
+  # its interim sentence is no longer shipped.
   # F33 — like F19's MD3, this blocks ONE STRING, not the feature. F33 builds and
   # ships with a neutral interim sentence in the notice slot.
   - id: F33
