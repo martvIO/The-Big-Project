@@ -160,17 +160,25 @@ FLOOR_OPEN = {
     FLOOR_SOS_CANCEL,
 }
 
-# F41's seven, same templates-not-urls rule. test_atelier_api.ATELIER_ROUTES is
-# the CONCRETE spelling, used by the HTTP walks below.
+# F41's seven plus F42's capacity write, same templates-not-urls rule.
+# test_atelier_api.ATELIER_ROUTES is the CONCRETE spelling, used by the HTTP
+# walks below.
 #
-# ⚠ DELETE IS SPLIT OUT, AND THIS IS NOT TIDINESS. The walker classifies on
-# `effective = frozenset.intersection(*role_sets)`, and delete carries a
-# per-route require_role(OWNER, SHIFT_MANAGER) on top of the router's three — so
-# its effective set is {owner, shift_manager} and seamstress is NOT in it. A
-# seamstress row that named delete would be one element larger than reality and
-# would RED A CORRECT BUILD on the one test F57's Risk 1 declares untouchable,
-# which is the exact situation that gets a test relaxed.
+# ⚠ BOTH TIGHTENED ROUTES ARE SPLIT OUT, AND THIS IS NOT TIDINESS. The walker
+# classifies on `effective = frozenset.intersection(*role_sets)`, and each of
+# these carries a per-route require_role(OWNER, SHIFT_MANAGER) on top of the
+# router's three — so its effective set is {owner, shift_manager} and seamstress
+# is NOT in it. A seamstress row that named either would be one element larger
+# than reality and would RED A CORRECT BUILD on the one test F57's Risk 1
+# declares untouchable, which is the exact situation that gets a test relaxed.
 ATELIER_DELETE = ("POST", "/manage/atelier/tickets/{ticket_id}/delete")
+# ⚠ F42's, and it is the SECOND instance of exactly the shape that breaks under
+# `any(...)`. She may not set her own weekly hours or anybody else's: they are
+# the DENOMINATOR every other bar in the workroom is read against, which makes
+# it a staffing decision about the whole board's arithmetic rather than a record
+# of work she has done.
+ATELIER_CAPACITY = ("POST", "/manage/atelier/seamstresses/{staff_user_id}/capacity")
+ATELIER_ELEVATED = {ATELIER_DELETE, ATELIER_CAPACITY}
 ATELIER_OPEN = {
     ("GET", "/manage/atelier/tickets"),
     ("POST", "/manage/atelier/tickets"),
@@ -178,7 +186,7 @@ ATELIER_OPEN = {
     ("POST", "/manage/atelier/tickets/{ticket_id}/assign"),
     ("POST", "/manage/atelier/tickets/{ticket_id}/stage/advance"),
     ("POST", "/manage/atelier/tickets/{ticket_id}/stage/undo"),
-    ATELIER_DELETE,
+    *ATELIER_ELEVATED,
 }
 
 # ⚠ THE EXHAUSTIVE REACH OF EACH NON-ELEVATED ROLE, one row each, asserted as a
@@ -201,7 +209,7 @@ ATELIER_OPEN = {
 NON_ELEVATED_REACH: dict[str, frozenset[tuple[str, str]]] = {
     StaffRole.RECEPTION.value: frozenset(FLOOR_OPEN),
     StaffRole.SALES_ASSISTANT.value: frozenset(FLOOR_OPEN),
-    StaffRole.SEAMSTRESS.value: frozenset(FLOOR_OPEN | (ATELIER_OPEN - {ATELIER_DELETE})),
+    StaffRole.SEAMSTRESS.value: frozenset(FLOOR_OPEN | (ATELIER_OPEN - ATELIER_ELEVATED)),
 }
 
 # The probe for "a role the enum does not know", shared verbatim by
@@ -428,14 +436,47 @@ def test_each_non_elevated_role_reaches_exactly_its_own_routes() -> None:
     #    ⚠ WHAT THE WIDENING ACTUALLY CATCHES, verified by mutation rather than
     #    assumed. Every route in a role's reach row is already caught by that
     #    role's equality above — deleting it makes `reach[role]` one element
-    #    short. ATELIER_DELETE is the ONE declared route in NOBODY's row, so it
-    #    is invisible to all three equalities: narrow `declared` back to
-    #    FLOOR_OPEN, delete the /delete route from the router, and this test
-    #    stays GREEN. That is the vacuity this line exists to prevent, and it is
-    #    the same reason ATELIER_DELETE had to be named as a constant at all.
+    #    short. The two ATELIER_ELEVATED routes are the declared routes in
+    #    NOBODY's row, so they are invisible to all three equalities: narrow
+    #    `declared` back to FLOOR_OPEN, delete /delete or F42's /capacity from
+    #    the router, and this test stays GREEN. That is the vacuity this line
+    #    exists to prevent, and it is the same reason both had to be named as
+    #    constants at all.
     declared = FLOOR_OPEN | ATELIER_OPEN
     missing = declared - seen
     assert not missing, f"the tables name routes that no longer exist: {sorted(missing)}"
+
+
+def test_the_capacity_route_is_tightened_in_the_route_table() -> None:
+    """The structural half of F42's per-route gate, `test_atelier_api`'s
+    end-to-end seamstress-403 being the other.
+
+    It asserts the gate is THERE and narrows to exactly {owner, shift_manager} —
+    the per-role equalities above cannot, because a route in nobody's reach row
+    is invisible to all three of them, and the anti-vacuity half only notices the
+    route disappearing entirely.
+
+    ⚠ NOT in OWNER_ONLY, and that is not an omission: both gates on this route
+    admit shift_manager, so `test_route_table_matches_the_permission_matrix`'s
+    `all(...)` branch passes unedited.
+    """
+    app = create_app(resolver=_null_resolver)
+    method, path = ATELIER_CAPACITY
+    for route in _leaf_routes(app):
+        if getattr(route, "path", None) != path:
+            continue
+        if method not in (getattr(route, "methods", None) or ()):
+            continue
+        role_sets = list(_gate_role_sets(route.dependant))
+        assert frozenset({StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value}) in role_sets, (
+            f"{method} {path} lost its per-route tightening"
+        )
+        effective = frozenset.intersection(*role_sets)
+        assert effective == frozenset({StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value}), (
+            f"{method} {path} admits {sorted(effective)}"
+        )
+        return
+    pytest.fail(f"{method} {path} not found in the route table")
 
 
 def test_terms_publishing_is_owner_only_in_the_route_table() -> None:
