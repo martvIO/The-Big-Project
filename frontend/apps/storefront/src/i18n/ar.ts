@@ -77,6 +77,12 @@ export const ar = {
     checkin: {
       heading: "רישום לתור",
       lastFromDevice: "הרישום האחרון שנעשה מהמכשיר הזה",
+      // F60. Value-parity with he.ts is a TEST here, not a convention — the
+      // storefront's first, deliberately scoped to these two keys. The hint names
+      // the queue and states no data-handling fact, in both bundles.
+      guideTrigger: "מה קורה אחרי הרישום?",
+      guideHint:
+        "הרישום מכניס אותך לתור ההמתנה של הבוטיק — בסיום נפתח עמוד עם מקומך בתור שאפשר להשאיר פתוח בטלפון, ואשת צוות תקרא לך בשם כשיגיע תורך.",
       name: "שם מלא",
       phone: "טלפון נייד",
       phoneHint: "כדי שנוכל לקרוא לך כשיגיע תורך. אפשר להזין עשר ספרות, למשל 0501234567.",

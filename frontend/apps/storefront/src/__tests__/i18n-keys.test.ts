@@ -149,6 +149,29 @@ describe("the ar bundle", () => {
     expect(missing).toEqual([]);
   });
 
+  it("carries the approved Hebrew VALUE for both F60 hint keys, not merely the key", () => {
+    // ⚠ A VALUE-PARITY CHECK, AND THE STOREFRONT'S FIRST. The F19 block above is
+    // a PRESENCE check (`typeof resolve(key, ar.translation) === "string"`) and
+    // the empty-string walk below is a non-empty check — both pass on an English
+    // string, on a `TODO`, and on a DIFFERENT Hebrew wording. Two keys are
+    // transcribed by hand into two files here, and this is the guard that sees
+    // the third case.
+    //
+    // Deliberately scoped to these two keys (DL21). Widening it across the whole
+    // bundle is a different feature's decision to take: F20's counsel swap makes
+    // `checkin.notice` a two-file edit ON PURPOSE, and a blanket parity guard
+    // would have to be relaxed the day Arabic is actually translated.
+    // ⚠ The `typeof === "string"` leg is not decoration: `resolve` returns
+    // `undefined` for a missing key, so an equality check alone passes
+    // VACUOUSLY when NEITHER bundle carries the key — which is exactly the state
+    // this guard was written in.
+    for (const key of ["checkin.guideTrigger", "checkin.guideHint"]) {
+      const hebrew = resolve(key, he.translation);
+      expect(typeof hebrew).toBe("string");
+      expect(resolve(key, ar.translation)).toBe(hebrew);
+    }
+  });
+
   it("carries no empty string at any depth", () => {
     // i18next's returnEmptyString default renders "" rather than falling back to
     // `he`, so an empty placeholder would BLANK the page rather than show

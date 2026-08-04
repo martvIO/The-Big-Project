@@ -496,6 +496,111 @@ describe("CheckinPage leaves the Router's mount effects alone", () => {
   });
 });
 
+// --- F60's disclosure --------------------------------------------------------
+
+describe("CheckinPage queue hint", () => {
+  function hintTrigger(): HTMLElement {
+    return screen.getByRole("button", { name: t("checkin.guideTrigger") });
+  }
+
+  it("is collapsed on arrival, with aria-expanded false and NO aria-controls", async () => {
+    // ⚠ `aria-controls` is CONDITIONAL and that is not fussiness. A dangling
+    // IDREF is what axe reports as `aria-valid-attr-value`, the same reason
+    // `A11yMenu.tsx:120-122` writes it this way.
+    await renderLoadedForm();
+
+    expect(hintTrigger()).toHaveAttribute("aria-expanded", "false");
+    expect(hintTrigger()).not.toHaveAttribute("aria-controls");
+    expect(screen.queryByText(t("checkin.guideHint"))).not.toBeInTheDocument();
+  });
+
+  it("reveals the hint on a press, flips aria-expanded and points aria-controls at it", async () => {
+    await renderLoadedForm();
+
+    fireEvent.click(hintTrigger());
+
+    expect(hintTrigger()).toHaveAttribute("aria-expanded", "true");
+    const controls = hintTrigger().getAttribute("aria-controls");
+    expect(typeof controls).toBe("string");
+    expect(document.getElementById(controls ?? "")).toHaveTextContent(t("checkin.guideHint"));
+  });
+
+  it("is withheld in BOTH degraded arms, with the form", async () => {
+    // No boutique, no form, nothing to explain. The hint describes the QUEUE the
+    // form puts her into, so it may not outlive the form.
+    loadBoutique.mockReturnValue(new Promise(() => undefined));
+    const loading = renderPage();
+    expect(await screen.findByRole("status")).toHaveTextContent(t("checkin.loading"));
+    expect(
+      screen.queryByRole("button", { name: t("checkin.guideTrigger") }),
+    ).not.toBeInTheDocument();
+    loading.unmount();
+
+    loadBoutique.mockRejectedValue(new ApiError(404, "TENANT_NOT_FOUND", "No active boutique."));
+    renderPage();
+    await screen.findByRole("alert");
+    expect(
+      screen.queryByRole("button", { name: t("checkin.guideTrigger") }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("sits AFTER the recovery offer and BEFORE the name field, in both pointer arms", async () => {
+    // Putting an orientation hint above a live «resume your existing ticket»
+    // link would bury the more useful control.
+    const noPointer = await renderLoadedForm();
+    expect(
+      hintTrigger().compareDocumentPosition(nameField()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    noPointer.unmount();
+
+    window.sessionStorage.setItem("checkin:ticket", TICKET_ID);
+    await renderLoadedForm();
+    const offer = screen.getByRole("link", { name: t("checkin.lastFromDevice") });
+    expect(
+      offer.compareDocumentPosition(hintTrigger()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      hintTrigger().compareDocumentPosition(nameField()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the hint above the 44px touch floor", async () => {
+    // This page has a 44px floor on a public phone surface — the chips carry an
+    // explicit `min-h-11 min-w-11` (:35) and the retry and submit are both
+    // `size="md"`. F60 does not lower it.
+    await renderLoadedForm();
+
+    expect(hintTrigger().className).toContain("min-h-11");
+  });
+
+  it("moves no focus and traps nothing — the press leaves focus on the trigger", async () => {
+    // ⚠ THE THIRD DECK TO DECLINE `ManageBookingPage`'s reveal-focus-move, and
+    // the reasons compound: that file has NO Esc handler anywhere (its close is
+    // a ghost «ביטול» at :469-483) and an Esc handler is only needed BECAUSE
+    // focus moved; the move is `LOOP-STATE`'s only frontend `known_flaky` entry;
+    // and there is nothing here to move focus TO — one sentence with nothing
+    // focusable in it. APG's disclosure moves no focus.
+    //
+    // ⚠ This asserts what the component does NOT do, so it is not the vacuous
+    // focus class DL17 bans: there is no `<dialog>` and no stub in the path.
+    // «nothing is trapped» is proved in Chromium by `e2e/guide.spec.ts` T9.
+    await renderLoadedForm();
+
+    hintTrigger().focus();
+    fireEvent.click(hintTrigger());
+
+    expect(document.activeElement).toBe(hintTrigger());
+  });
+
+  it("passes axe with zero violations with the hint revealed", async () => {
+    const { container } = await renderLoadedForm();
+    fireEvent.click(hintTrigger());
+
+    const results = await run(container);
+    expect(results.violations).toEqual([]);
+  }, 20000);
+});
+
 // --- accessibility ----------------------------------------------------------
 
 describe("CheckinPage accessibility", () => {

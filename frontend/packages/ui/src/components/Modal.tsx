@@ -10,13 +10,21 @@ export interface ModalProps {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  // → aria-describedby on the <dialog>. OPTIONAL, and omitted React writes no
+  // attribute at all, so every shipped call site is byte-identical in behaviour.
+  //
+  // Not cosmetic: showModal() puts focus on the first focusable control, so with
+  // aria-labelledby alone a screen-reader user hears the dialog's name and then a
+  // button label, and never hears the body. A caller whose body is the point of
+  // the dialog points this at the paragraph that carries it.
+  describedById?: string;
 }
 
 // Native <dialog>: free focus trap, top-layer stacking, Esc handling, and focus
 // return to the trigger. Motion is split across two elements — the panel
 // (scale 0.97->1 + fade at --motion-base) and the ::backdrop (fade at
 // --motion-fast) — per the design.
-export function Modal({ open, onClose, title, children, footer }: ModalProps) {
+export function Modal({ open, onClose, title, children, footer, describedById }: ModalProps) {
   const ref = useRef<HTMLDialogElement>(null);
   // useId, not a literal — a screen may mount two Modals at once (e.g. DressEditor
   // + its embedded MediaGallery), and duplicate ids break aria-labelledby.
@@ -42,6 +50,7 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
       }}
       onClose={onClose}
       aria-labelledby={titleId}
+      aria-describedby={describedById}
       className={cn(
         "m-auto w-[min(28rem,calc(100vw-2rem))] rounded-md bg-surface-raised p-6 text-ink shadow-lg",
         "animate-modal-panel backdrop:bg-ink/40 backdrop:animate-modal-backdrop",

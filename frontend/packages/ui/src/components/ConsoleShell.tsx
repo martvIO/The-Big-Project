@@ -18,6 +18,10 @@ export interface ConsoleShellProps {
   onNavigate: (key: string) => void;
   banner?: ReactNode;
   progress?: ReactNode;
+  // A chrome control rendered beside the logout button, in the header row. No
+  // default and no knowledge of what it is: the shell owns the slot, the caller
+  // owns the control.
+  guide?: ReactNode;
   children: ReactNode;
 }
 
@@ -36,6 +40,7 @@ export function ConsoleShell({
   onNavigate,
   banner,
   progress,
+  guide,
   children,
 }: ConsoleShellProps) {
   return (
@@ -45,9 +50,21 @@ export function ConsoleShell({
       <header className="border-b border-border">
         <div className="mx-auto flex max-w-[720px] items-center justify-between px-4 py-3">
           <span className="font-display text-lg text-ink">{boutiqueName}</span>
-          <button type="button" onClick={onLogout} className={cn("text-sm text-ink-muted hover:text-ink", focusRing)}>
-            {logoutLabel}
-          </button>
+          {/* ⚠ THE WRAPPER IS NOT COSMETIC. This row is `justify-between` and had
+              exactly TWO children; a bare third child makes it distribute three
+              items across the row, so the boutique name, the guide and the logout
+              come out evenly spread and the two chrome controls stop reading as a
+              pair. One wrapper restores two groups. */}
+          <div className="flex items-center gap-4">
+            {guide}
+            <button
+              type="button"
+              onClick={onLogout}
+              className={cn("text-sm text-ink-muted hover:text-ink", focusRing)}
+            >
+              {logoutLabel}
+            </button>
+          </div>
         </div>
         {/* Contract (b) plain nav: it swaps the single #console-main panel, so it
             uses aria-current + aria-controls (NOT aria-expanded disclosure links,

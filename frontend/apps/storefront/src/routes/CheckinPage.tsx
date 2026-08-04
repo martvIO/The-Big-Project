@@ -131,6 +131,10 @@ export function CheckinPage() {
   // second one.
   const [failures, setFailures] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  // F60's disclosure, and the WHOLE of its state. No ref, no effect, no
+  // onKeyDown, no Esc handler, no focus move — see the JSX below.
+  const [hintRevealed, setHintRevealed] = useState(false);
+  const hintId = useId();
 
   const nameRef = useRef<HTMLInputElement | null>(null);
   const phoneRef = useRef<HTMLInputElement | null>(null);
@@ -262,6 +266,54 @@ export function CheckinPage() {
           >
             {t("checkin.lastFromDevice")}
           </Link>
+        </p>
+      )}
+
+      {/* F60's orientation hint, as the APG DISCLOSURE and nothing more:
+          `aria-expanded` announces the state and the reader's very next item IS
+          the hint, because the <p> follows the button in DOM order.
+
+          ⚠ NO ref, NO effect, NO onKeyDown, NO Esc handler, NO focus move, and
+          this is the THIRD deck to decline `ManageBookingPage`'s reveal-focus
+          move. (1) That file has no Esc handler anywhere — its close is a ghost
+          «ביטול» at :469-483 — and an Esc handler is only needed BECAUSE focus
+          moved. (2) That move is the only frontend entry on LOOP-STATE's
+          `known_flaky` list and has already parked a green PR. (3) There is
+          nothing to move focus TO: this reveals one sentence with nothing
+          focusable in it, and a tabIndex={-1} paragraph is a destination
+          invented so an Esc handler has something to close from.
+
+          ⚠ `aria-controls` is CONDITIONAL: while collapsed the <p> does not
+          exist, and a dangling IDREF is what axe reports as
+          `aria-valid-attr-value` (`A11yMenu.tsx:120-122`'s reason).
+
+          ⚠ THE CONTENT FENCE IS POSITIVE AND LOAD-BEARING ON GATE 1. The hint
+          names THE QUEUE and only the queue. `checkin.notice` below is the
+          notice AT THE MOMENT OF COLLECTION, always visible and never behind a
+          disclosure; a collapsed «מה קורה עם הפרטים שלי?» beside it would be a
+          second, unapproved notice at the same collection point.
+
+          Below the recovery offer and above the first field: an orientation hint
+          above a live «resume your ticket» link would bury the more useful
+          control. `size="md"` (min-h-11), matching the retry, the submit and the
+          chips' explicit min-h-11 min-w-11 — a public phone surface with a 44px
+          floor F60 does not lower. */}
+      <div className="flex">
+        <Button
+          variant="ghost"
+          size="md"
+          aria-expanded={hintRevealed}
+          aria-controls={hintRevealed ? hintId : undefined}
+          onClick={() => {
+            setHintRevealed(!hintRevealed);
+          }}
+        >
+          {t("checkin.guideTrigger")}
+        </Button>
+      </div>
+      {hintRevealed && (
+        <p id={hintId} className="max-w-[60ch] text-base text-ink-muted">
+          {t("checkin.guideHint")}
         </p>
       )}
 
