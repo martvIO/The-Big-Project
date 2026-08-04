@@ -1889,6 +1889,33 @@ rulings_2026_07_30:             # taken in the finish-the-project planning sessi
   - "F33 QR check-in is KEPT (builds after F20), resolving the SMC epic's self-contradiction."
   - "F15 phone-correction without OTP is ACKNOWLEDGED as shipped for owner AND shift_manager."
 
+known_vacuous:                  # tests that CANNOT fail, found 2026-08-04. Not flaky — blind.
+  - what: "every vitest assertion about <dialog> focus, the focus TRAP, or Esc-to-close"
+    found_by: F60's spec review
+    evidence: >-
+      jsdom ships NO <dialog> implementation — HTMLDialogElement-impl.js is an empty
+      subclass — so BOTH `frontend/apps/{manage,storefront}/src/test/setup.ts` stub
+      `showModal` as `this.open = true`. That stub performs NO focus move, installs NO
+      trap and fires NO `cancel` event. Any unit test asserting those things is therefore
+      measuring the stub, not the platform, and would pass with the component's focus code
+      deleted entirely.
+    blast_radius: >-
+      Six shipped manage test files mount a Modal: BookingDetail, AtelierSection,
+      SosRaiseDialog, SosOverlay, RoomsRegistryDialog, StaffSection. Their NON-dialog
+      focus assertions are fine; the dialog ones are not. This has NOT been audited
+      feature by feature — F60 discovered it and routed its own nine focus criteria to
+      e2e instead, which is the correct remedy.
+    why_it_matters: >-
+      a11y here is a LEGAL requirement (IS 5568 / WCAG 2.0 AA) and axe cannot see a focus
+      move that never happened. This repo has shipped a focus-drops-to-<body> defect FIVE
+      times; a whole class of test that CANNOT catch the sixth is worse than no test,
+      because it reads as coverage.
+    how_to_apply: >-
+      Assert dialog focus, traps and Esc in PLAYWRIGHT, never vitest. A named e2e test per
+      rule, each with the deletion that reddens it. If a unit test must touch a dialog,
+      restrict it to content and callbacks.
+    owner: unassigned — audit the six files at the next epic boundary
+
 known_flaky:                    # nondeterministic tests — they gate every merge, so treat as debt
   - test: "backend/tests/test_booking_owner_db.py::test_two_concurrent_reschedules_of_one_booking_never_self_collide"
     seen: "2026-08-03 during F59's build, in a full local db run against Postgres 16.14"
