@@ -60,6 +60,13 @@ import type { Recorder } from "./fixtures/manage";
 //       something took focus. The registry's own proof of that is M3b; M1 is
 //       its proof that a focus return happens at all.
 //
+// ⚠ A THIRD DIALOG KEEPS THESE FOUR RULES ELSEWHERE: F50's walk-in dialog, in
+// `walk-in.spec.ts`, with its own M1/M2/M3 ledger. It lives there rather than
+// here only because its fixtures — a customer search and an appointment-type
+// list — are that feature's, and duplicating them into this file would put one
+// feature's stubs in two places. Anyone auditing "which dialogs have focus
+// proofs" should read both.
+//
 // Rule 4 is the platform's too on the ordinary path — a native <dialog> returns
 // focus to its opener on close, and MOVE 4 / MOVE G exist for the path it
 // cannot serve, where the trigger has UNMOUNTED. `RoomsRegistryDialog.test.tsx`
