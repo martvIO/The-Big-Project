@@ -32,14 +32,17 @@ import dataclasses
 import datetime
 import enum
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 from uuid import UUID
 
 from sqlalchemy import ColumnElement, Text, cast, delete, func, or_, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
+from app.db.repositories.audit_log import AuditLogRepository
+from app.db.repositories.tenants import TenantsRepository
+from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.models.constants import AuditAction
 from app.models.customer import Customer
@@ -367,3 +370,154 @@ POLICIES: tuple[RetentionPolicy, ...] = (
     ),
     RetentionPolicy("customers", RetentionAction.SCRUB, ("customers",), _scrub_customers),
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class RetentionResult:
+    tenants: int = 0
+    #: Tenants whose run raised and was skipped. Surfaced rather than swallowed:
+    #: a silently degraded retention job still reports "ran fine" to the only
+    #: operator who would ever look.
+    failed_tenants: int = 0
+    #: Rows touched, per policy name, summed across tenants.
+    rows: dict[str, int] = dataclasses.field(default_factory=dict)
+
+
+class RetentionRunner:
+    """Owns the tenant loop, the chunk loop and the audit trail, so no policy
+    repeats any of them.
+
+    `tenants` and `policies` are injectable because the loop's containment
+    properties — a short page ends the drain, MAX_CHUNKS bounds it, one tenant's
+    failure never reaches another, a dry run writes nothing — are true before any
+    row exists and should not need a database to assert. Production never passes
+    either.
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        settings: Settings,
+        clock: Callable[[], datetime.datetime] | None = None,
+        tenants: TenantsRepository | None = None,
+        policies: tuple[RetentionPolicy, ...] = POLICIES,
+    ) -> None:
+        self._session_factory = session_factory
+        self._settings = settings
+        self._clock = clock
+        # list_all(), NEVER list_active() — D21. See TenantsRepository.list_all.
+        self._tenants = tenants or TenantsRepository(session_factory)
+        self._policies = policies
+        self._audit = AuditLogRepository()
+
+    def _now(self) -> datetime.datetime:
+        now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
+        return now.astimezone(datetime.UTC)
+
+    async def run(self, *, dry_run: bool = False) -> RetentionResult:
+        now = self._now()
+        tenants = await self._tenants.list_all()
+        rows: dict[str, int] = {}
+        failed = 0
+        for tenant in tenants:
+            try:
+                touched = await self._run_for_tenant(tenant.id, now=now, dry_run=dry_run)
+            except Exception:
+                # One tenant's failure is logged and skipped, never allowed to
+                # stop the others — `poll_once`'s rule with higher stakes: the
+                # clock the other boutiques are on is a legal duty, and nothing
+                # else in the system would notice it had stopped.
+                logger.exception("retention failed for tenant %s", tenant.id)
+                failed += 1
+                continue
+            for name, count in touched.items():
+                rows[name] = rows.get(name, 0) + count
+        return RetentionResult(tenants=len(tenants), failed_tenants=failed, rows=rows)
+
+    async def _run_for_tenant(
+        self, tenant_id: UUID, *, now: datetime.datetime, dry_run: bool
+    ) -> dict[str, int]:
+        touched: dict[str, int] = {}
+        for policy in self._policies:
+            count = await self._drain(policy, tenant_id, now=now, dry_run=dry_run)
+            if not count:
+                # A RUN THAT TOUCHED NOTHING WRITES NO ROW. Six rows per tenant
+                # per hour of "deleted 0" is permanent bloat in the one table
+                # with no retention class of its own.
+                continue
+            touched[policy.name] = count
+            if not dry_run:
+                await self._record(policy, tenant_id, count)
+        return touched
+
+    async def _drain(
+        self, policy: RetentionPolicy, tenant_id: UUID, *, now: datetime.datetime, dry_run: bool
+    ) -> int:
+        """One page per transaction (`backfill.py`'s shape), inside that tenant's
+        `tenant_session`: `scheduled_messages` was not allowed to be this
+        codebase's first RLS exception, and a job that hard-deletes is not going
+        to be either.
+
+        A dry run is NOT looped. It consumes no rows, so a chunk loop over a
+        counting statement would report the same page MAX_CHUNKS times.
+        """
+        if dry_run:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                return await self._call(policy, session, tenant_id, now=now, dry_run=True)
+        total = 0
+        for _ in range(MAX_CHUNKS):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                count = await self._call(policy, session, tenant_id, now=now, dry_run=False)
+            total += count
+            if count < CHUNK_SIZE:
+                return total
+        logger.warning(
+            "retention: tenant %s policy %s hit MAX_CHUNKS — the next tick continues it",
+            tenant_id,
+            policy.name,
+        )
+        return total
+
+    async def _call(
+        self,
+        policy: RetentionPolicy,
+        session: AsyncSession,
+        tenant_id: UUID,
+        *,
+        now: datetime.datetime,
+        dry_run: bool,
+    ) -> int:
+        return await policy.run(
+            session,
+            tenant_id,
+            now=now,
+            settings=self._settings,
+            limit=CHUNK_SIZE,
+            dry_run=dry_run,
+        )
+
+    async def _record(self, policy: RetentionPolicy, tenant_id: UUID, count: int) -> None:
+        """The tenant's own evidence that its clock ran, in its own transaction.
+
+        The trade-off, stated: a crash between the last chunk's commit and this
+        insert loses the row for work that did happen. The alternative — writing
+        it inside every chunk transaction — is up to MAX_CHUNKS rows per policy
+        per tick, in the table that has no retention class to reclaim them.
+
+        `details` carries counts and table NAMES only. Never a name, never a
+        phone: `audit_log` has no retention policy and platform operators read
+        across tenants.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=audit_action(policy),
+                entity=policy.tables[0],
+                details={
+                    "rows": count,
+                    "action": policy.action.value,
+                    "tables": list(policy.tables),
+                },
+            )

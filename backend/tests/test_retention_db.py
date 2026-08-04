@@ -26,7 +26,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings
+from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
+from app.models.audit_log import AuditLog
 from app.models.booking import Booking
 from app.models.constants import ScheduledMessageKind
 from app.models.customer import Customer
@@ -36,7 +38,7 @@ from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.models.session import Session as SessionRow
 from app.models.terms_version import TermsVersion
-from app.privacy.retention import CHUNK_SIZE, POLICIES, _purge
+from app.privacy.retention import CHUNK_SIZE, POLICIES, RetentionRunner, _purge
 from app.privacy.validation import ERASED_NAME, ERASED_PHONE_PREFIX
 
 pytestmark = pytest.mark.db
@@ -541,5 +543,243 @@ async def test_the_app_role_can_still_read_that_table(app_role_url: str) -> None
             assert (
                 await session.execute(text("SELECT count(*) FROM terms_versions"))
             ).scalar_one() == 0
+    finally:
+        await engine.dispose()
+
+
+# --- D22: every policy's predicate is falsified by its own action -------------
+#
+# `POLICY_FIXTURES` is keyed by `policy.name` and the KEY SET IS ASSERTED EQUAL to
+# the registry FIRST. That ordering is the whole design. The plan's first draft
+# said only "a second consecutive run touches zero rows, as a loop over POLICIES",
+# and the honest answer to "what single-line deletion makes that red?" was NONE:
+# for any policy whose fixture happened to match nothing, run 1 returns 0, run 2
+# returns 0, and the assertion passes. One shared fixture across six tables with
+# clocks from 15 minutes to 7 years will not match all six. `first > 0` is what
+# arms it, and the key-set equality is what makes "a policy added later is covered
+# without editing this test" true rather than merely hoped for.
+
+
+async def _fixture_otp_codes(factory: Any, tenant_id: uuid.UUID) -> None:
+    await _add(
+        factory,
+        tenant_id,
+        OtpCode(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            phone="+972501234567",
+            code_hash="x",
+            expires_at=NOW,
+            created_at=NOW - datetime.timedelta(hours=1),
+        ),
+    )
+
+
+async def _fixture_sessions(factory: Any, tenant_id: uuid.UUID) -> None:
+    await _add(
+        factory,
+        tenant_id,
+        SessionRow(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            staff_user_id=uuid.uuid4(),
+            token_hash="dead",
+            expires_at=NOW - DAY,
+        ),
+    )
+
+
+async def _fixture_queue_tickets(factory: Any, tenant_id: uuid.UUID) -> None:
+    await _add(factory, tenant_id, _ticket(tenant_id, age_days=30))
+
+
+async def _fixture_message_log(factory: Any, tenant_id: uuid.UUID) -> None:
+    await _add(
+        factory,
+        tenant_id,
+        MessageLog(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            phone="+972501234567",
+            kind="reminder",
+            body="שלום",
+            status="sent",
+            created_at=NOW - datetime.timedelta(days=800),
+        ),
+    )
+
+
+async def _fixture_bookings(factory: Any, tenant_id: uuid.UUID) -> None:
+    await _add(
+        factory,
+        tenant_id,
+        _booking(tenant_id, uuid.uuid4(), starts_at=NOW - datetime.timedelta(days=365 * 8)),
+    )
+
+
+async def _fixture_customers(factory: Any, tenant_id: uuid.UUID) -> None:
+    await _add(factory, tenant_id, _customer(tenant_id, age_days=90, phone="+972504444444"))
+
+
+POLICY_FIXTURES = {
+    "otp_codes": _fixture_otp_codes,
+    "sessions": _fixture_sessions,
+    "queue_tickets": _fixture_queue_tickets,
+    "message_log": _fixture_message_log,
+    "bookings": _fixture_bookings,
+    "customers": _fixture_customers,
+}
+
+
+def test_every_registered_policy_has_a_self_consumption_fixture() -> None:
+    """A policy added without a fixture is a FAILURE, not a silent pass. Without
+    this the loop below would simply not cover it, which is exactly the vacuum
+    that made the first draft's version of D22 unfalsifiable."""
+    assert set(POLICY_FIXTURES) == {policy.name for policy in POLICIES}
+
+
+@pytest.mark.parametrize("policy_name", [policy.name for policy in POLICIES])
+async def test_a_second_consecutive_run_touches_zero_rows(
+    app_role_url: str, policy_name: str
+) -> None:
+    """The invariant F38's staff SCRUB inherits, which is why it lives on the
+    registry rather than in one policy's comment.
+
+    ACCEPTANCE, stated so it can be checked rather than believed: deleting
+    `Customer.erased_at.is_(None)` from the customers policy must turn the
+    `customers` case RED, and deleting `QueueTicket.name != ERASED_NAME` must
+    turn the `queue_tickets` case RED. Both were run; both did.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        await POLICY_FIXTURES[policy_name](factory, tenant_id)
+
+        first = await _apply(factory, tenant_id, policy_name)
+        second = await _apply(factory, tenant_id, policy_name)
+
+        assert first > 0, "the fixture matched nothing — the invariant would be vacuous"
+        assert second == 0
+    finally:
+        await engine.dispose()
+
+
+async def test_a_second_customers_run_leaves_erased_at_byte_identical(
+    app_role_url: str,
+) -> None:
+    """The consequence the count alone cannot show. For a §14 subject whose
+    bookings have since been purged, `erased_at` is the PROOF of her erasure —
+    and the first draft overwrote it hourly."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        await _add(factory, tenant_id, _customer(tenant_id, age_days=90, phone="+972505555555"))
+
+        assert await _apply(factory, tenant_id, "customers") == 1
+        stamped = (await _rows(factory, tenant_id, Customer))[0].erased_at
+
+        later = NOW + datetime.timedelta(days=1)
+        assert await _apply(factory, tenant_id, "customers", now=later) == 0
+        assert (await _rows(factory, tenant_id, Customer))[0].erased_at == stamped
+    finally:
+        await engine.dispose()
+
+
+# --- the runner against real Postgres ---------------------------------------
+#
+# Deliberately driven with a POLICY SUBSET. `list_all()` reaches every tenant in
+# this session-scoped cluster, including the ones other db modules created, so a
+# full-registry run here would hard-delete their rows out from under them. The
+# subset is chosen so that only rows THIS test aged can qualify.
+
+
+def _runner(factory: Any, policies: tuple[Any, ...]) -> RetentionRunner:
+    return RetentionRunner(
+        factory,
+        settings=SETTINGS,
+        clock=lambda: NOW,
+        policies=policies,
+    )
+
+
+async def _audit_rows(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID
+) -> list[AuditLog]:
+    async with tenant_session(factory, tenant_id) as session:
+        stmt = select(AuditLog).where(AuditLog.tenant_id == tenant_id)
+        return list((await session.execute(stmt)).scalars().all())
+
+
+async def test_the_runner_writes_one_audit_row_for_the_policy_that_touched_rows(
+    app_role_url: str,
+) -> None:
+    engine, factory = _factory(app_role_url)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"ret-{uuid.uuid4().hex[:8]}", name="Retention")
+        await _add(factory, tenant.id, _ticket(tenant.id, age_days=30))
+
+        result = await _runner(
+            factory, (POLICY_BY_NAME["queue_tickets"], POLICY_BY_NAME["customers"])
+        ).run()
+
+        assert result.failed_tenants == 0
+        assert result.rows["queue_tickets"] >= 1
+
+        rows = await _audit_rows(factory, tenant.id)
+        assert [row.action for row in rows] == ["retention_queue_tickets"]
+        assert rows[0].entity == "queue_tickets"
+        assert rows[0].details == {
+            "rows": 1,
+            "action": "scrub",
+            "tables": ["queue_tickets"],
+        }
+        # No name, no phone: audit_log has no retention class and platform
+        # operators read across tenants.
+        assert "נועה" not in str(rows[0].details)
+    finally:
+        await engine.dispose()
+
+
+async def test_a_dry_run_against_real_postgres_writes_neither_data_nor_evidence(
+    app_role_url: str,
+) -> None:
+    engine, factory = _factory(app_role_url)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"dry-{uuid.uuid4().hex[:8]}", name="Dry run")
+        await _add(factory, tenant.id, _ticket(tenant.id, age_days=30))
+
+        result = await _runner(factory, (POLICY_BY_NAME["queue_tickets"],)).run(dry_run=True)
+
+        assert result.rows["queue_tickets"] >= 1
+        assert (await _rows(factory, tenant.id, QueueTicket))[0].name == "נועה"
+        assert await _audit_rows(factory, tenant.id) == []
+    finally:
+        await engine.dispose()
+
+
+async def test_a_suspended_and_an_offboarded_boutiques_clocks_still_run(
+    app_role_url: str,
+) -> None:
+    """D21, end to end. Under `list_active()` these two tenants' rows were never
+    reachable at all — which made "nothing is ever deleted" permanently true for
+    precisely the boutiques most likely to hold abandoned data, and made
+    suspension a way to opt out of a duty the platform enforces on the
+    controller's behalf."""
+    engine, factory = _factory(app_role_url)
+    tenants = TenantsRepository(factory)
+    try:
+        suspended = await tenants.insert(slug=f"sus-{uuid.uuid4().hex[:8]}", name="Suspended")
+        offboarded = await tenants.insert(slug=f"off-{uuid.uuid4().hex[:8]}", name="Off-boarded")
+        for tenant in (suspended, offboarded):
+            await _add(factory, tenant.id, _ticket(tenant.id, age_days=30))
+        assert await tenants.suspend(suspended.id) is True
+        assert await tenants.soft_delete(offboarded.id) is True
+
+        await _runner(factory, (POLICY_BY_NAME["queue_tickets"],)).run()
+
+        for tenant in (suspended, offboarded):
+            assert (await _rows(factory, tenant.id, QueueTicket))[0].name == ERASED_NAME
     finally:
         await engine.dispose()
