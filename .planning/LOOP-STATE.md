@@ -22,8 +22,49 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # ⛔ NOTHING IS IN FLIGHT. No worktrees, no open feature PRs.
-                                # A fresh session starts at step 2 (pick the next feature).
+current: F20                    # ==================================================================
+                                # ==== HANDOFF, 2026-08-04 (SECOND) — THE QUEUE IS FULLY OPEN ====
+                                # ==================================================================
+                                # F20's Gate 1 IS CLEARED. The user answered all five questions this
+                                # session; the rulings are in the F20 queue entry's `gate_1_cleared`
+                                # field and in the spec's "Gate 1 — resolutions" table. ONE of the
+                                # five OVERRULES the spec (Q4: marketing-withdraw ships
+                                # (OWNER, SHIFT_MANAGER), not owner-only) and the spec is already
+                                # amended in the four places that ruling reaches.
+                                #
+                                # CONSEQUENCE: NOTHING IN THE QUEUE IS USER-BLOCKED ANY MORE.
+                                # 22 features remain buildable — 21 that were queued plus F20 — and
+                                # the seven that were stranded behind F20 (F21, F29, F38, F39, F40,
+                                # F45 and F20 itself) are now reachable. F32 stays parked forever
+                                # (subsumed into F34). Two user items remain but they are DEPLOY-time,
+                                # not build-time: the 3 DNS records and the 2 Twilio values.
+                                #
+                                # THE PICK IS F20, DELIBERATELY OVERRIDING FILE ORDER (which says
+                                # F50). F20 heads the only 4-deep chain left — F20 → F38 → F39 → F40 —
+                                # and gates F21, F29, F45 besides. Every other eligible entry is a
+                                # leaf. After F20 merges, revert to plain file order: F50, F22, F24,
+                                # F25, F27, F28, F35, F44, F47, F49, then the wave they unlock.
+                                #
+                                # ⚠ TWO DEBTS ARE STILL OWED and are now PHASE 0 of the finish plan:
+                                # (1) THE known_vacuous AUDIT — six apps/manage test files mount a
+                                #     Modal and their dialog-focus assertions may be incapable of
+                                #     failing. See the known_vacuous block.
+                                # (2) THE REAL-WORLD HARNESS, which SUBSUMES the never-run E7
+                                #     epic-boundary QA pass. THE FINDING THAT MAKES THIS URGENT:
+                                #     frontend/e2e/fixtures/manage.ts says in its own header that it
+                                #     STUBS THE API, so it proves the CONSOLE and not the CONTRACT —
+                                #     "a backend change that renames a payload key passes every test
+                                #     in this file while breaking production." The backend suite never
+                                #     opens a browser. THE TWO HALVES OF THIS PRODUCT HAVE ONLY EVER
+                                #     BEEN TESTED APART. Postgres 16 is running locally, F55 already
+                                #     serves both SPAs same-origin, app/cli.py provisions a tenant and
+                                #     tenancy is hostname-derived (so *.localtest.me works) — the
+                                #     harness is a runbook plus ONE seed script, not a framework.
+                                #     `provision` creates ONLY tenant+owner+audit, so a demo boutique
+                                #     needs seeding; seed it THROUGH THE REAL HTTP API so the seeder
+                                #     is itself a contract test.
+                                #
+                                # ---- previous handoff, still accurate on everything else ----
                                 #
                                 # ==================================================================
                                 # ==== HANDOFF, 2026-08-04 — READ THIS FIRST ====
@@ -1175,11 +1216,41 @@ queue:
     slug: ppl-compliance
     epic: E4
     title: PPL compliance build
-    status: parked
+    status: queued
     deps: [F13]
-    spec_gate: user
-    blocker: "Gate 1 — spec written 2026-07-30 and awaiting USER approval (legal surface, Interview Q1). 5 questions listed at the spec's head."
+    spec_gate: user            # DISCHARGED 2026-08-04 — kept as the record of what it was
+    blocker: null              # was: Gate 1, 5 questions, parked from 2026-07-30
     spec: .planning/specs/ppl-compliance.md
+    gate_1_cleared: >-
+      2026-08-04. ALL FIVE Gate 1 questions answered by the user; the resolutions
+      table is in the spec under "Gate 1 — resolutions" and the spec's status is
+      now APPROVED — build.
+        Q1 Hebrew copy  → CLAUDE DRAFTS, user approves copy.md before the PR merges.
+                          It is a BUILD TASK (authored first), not a precondition to
+                          starting. Does NOT discharge the standing counsel review.
+        Q2 retention_enabled → ships False. Two amber checklist rows (40, 42)
+                          accepted over a green flag on an unattended irreversible
+                          delete with no backup. D9-revised stands.
+        Q3 DPA override → NARROW. Sub-processor list stays platform-owned. D14 stands.
+        Q4 marketing-withdraw → ⚠ OVERRULES THE SPEC. Ships (OWNER, SHIFT_MANAGER),
+                          not owner-only. The spec is AMENDED in four places (API
+                          table, D15 paragraph, D15 decision log, both test sections).
+                          The route carries NO route-level require_role and is the ONE
+                          privacy route absent from OWNER_ONLY — asserted POSITIVELY,
+                          because a default-deny walker cannot tell a deliberate
+                          omission from a forgotten one and a later author adding it
+                          back would silently revoke a permission the user granted.
+        Q5 retention periods → as specified, with the digit-drop floors. Still flagged
+                          for counsel at the F21 audit; they live in Settings, so
+                          counsel changing one is one env var for all tenants.
+    why_this_is_the_pick: >-
+      BUILD F20 FIRST, overriding the loop's file-order rule (which would pick F50).
+      F20 heads the ONLY 4-deep chain left in the queue — F20 → F38 → F39 → F40 — and
+      additionally gates F21, F29 and F45: seven entries in all. Every other eligible
+      entry is a leaf or near-leaf, so taking F20 first makes the critical path 4
+      features instead of 5+. Its spec was already written AND adversarially reviewed
+      (25 findings, 24 applied); only the gate was open, and it is now closed. After
+      F20 merges, revert to plain file order.
     note: >-
       Q8: ship a platform-written Hebrew default for the collection notice and
       DPA, overridable per boutique from settings. Not lawyer-reviewed.
@@ -1965,10 +2036,15 @@ in_run_gates:                   # block a specific feature; the user clears them
   # entry's blocker, sets it back to `queued` and builds.
   # CLEARED 2026-07-31: F17 — Gate 1 approved, all four answers in the spec's
   # "Gate 1 resolutions"; the entry is `queued` and E4 is unblocked.
+  # CLEARED 2026-08-04 — all five answered. Kept as the record; see the F20 queue
+  # entry's `gate_1_cleared` field for the rulings. ONE ASK SURVIVES, and it is a
+  # REVIEW rather than a block: the user approves the drafted Hebrew copy.md before
+  # F20's PR merges. F20 builds now.
   - id: F20
-    what: ".planning/specs/ppl-compliance.md — Gate 1 approval (legal surface)"
-    asks: 5
-    sharpest: "retention_enabled now defaults FALSE, so two security-checklist rows merge amber rather than green. Accept, or overrule back to default-on with no backup to undo an irreversible mass-delete."
+    what: "APPROVE the drafted Hebrew copy at .planning/design/screens/privacy/copy.md before the PR merges (Q1 ruling: Claude drafts, user approves)"
+    asks: 1
+    blocks: "the PR merge, NOT the build"
+    sharpest: "Five strings go in front of members of the public in Hebrew: the §11 collection notice, its §30A revocation sentence, the boutique's DPA prose, the platform sub-processor list, and the owner-facing not-lawyer-reviewed disclaimer. Read the notice as a bride standing in a doorway would, not as a lawyer would. This is the drafting approval only — the standing counsel review in user_actions still has to happen before pilot go-live."
   # F33 — like F19's MD3, this blocks ONE STRING, not the feature. F33 builds and
   # ships with a neutral interim sentence in the notice slot.
   - id: F33
