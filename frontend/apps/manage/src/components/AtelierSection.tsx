@@ -28,6 +28,7 @@ import { SeamstressPanel } from "./SeamstressPanel";
 import { isolateBidi, isolateLtr } from "../lib/booking";
 import {
   hoursFromMinutes,
+  loadMinutes,
   overloaded,
   remainingMinutes,
   sortByRemainingCapacity,
@@ -640,7 +641,8 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       // assign, so focus is the referent and the ticket is already named. Two
       // names in one string is what the shipped `isolateBidi(text, value)`
       // cannot isolate without inventing a second helper.
-      const target = boardRef.current?.seamstresses.find((row) => row.id === staffUserId);
+      const held = boardRef.current;
+      const target = held?.seamstresses.find((row) => row.id === staffUserId);
       const seamstress = target?.display_name ?? "";
       // ⚠ F41's D17 forbids the poll from writing into the announced region, so
       // a sighted user watches the bar turn red on the next tick and a
@@ -655,16 +657,27 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       // current holder. Ungated, the console would add minutes it has already
       // counted and announce a false overload with no colleague and no race.
       //
-      // ⚠ And it is `wouldOverload` and nothing else — NO arithmetic and no
-      // `60` at this call site. A hand-rolled predicate that dropped the null
-      // guard computes `null * 60 = 0` in JS and announces «עומס יתר» on EVERY
-      // assign to an unconfigured seamstress: correct on screen, green under
-      // axe, and a legal-accessibility regression on the one channel a
-      // screen-reader user has.
+      // ⚠ AND IT IS `loadMinutes` AND NOT `ticket.effort_minutes`. The sum
+      // `wouldOverload` adds to is `SUM(...) FILTER (WHERE due_date <=
+      // horizon)`, so a ticket due after `due_soon_through` — the normal case,
+      // since assignment happens at intake and the wedding is weeks out —
+      // contributes NOTHING to it. Unfiltered, this cue announces «עומס יתר»
+      // for minutes the server will never count, and every rendered surface
+      // then contradicts it: the bar stays gold, `Row`'s sentence carries no
+      // word, and D17 forbids the poll from retracting what was announced.
+      //
+      // ⚠ And it is `wouldOverload`/`loadMinutes` and nothing else — NO
+      // arithmetic, no `60` and no date compare at this call site. A
+      // hand-rolled predicate that dropped the null guard computes
+      // `null * 60 = 0` in JS and announces «עומס יתר» on EVERY assign to an
+      // unconfigured seamstress: correct on screen, green under axe, and a
+      // legal-accessibility regression on the one channel a screen-reader user
+      // has.
       const over =
+        held !== null &&
         target !== undefined &&
         ticket.assigned_staff_user_id !== staffUserId &&
-        wouldOverload(target, ticket.effort_minutes);
+        wouldOverload(target, loadMinutes(ticket, held.due_soon_through));
       return {
         text: t(over ? "atelier.cue.assignedOverload" : "atelier.cue.assigned", { seamstress }),
         name: seamstress,

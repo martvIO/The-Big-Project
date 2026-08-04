@@ -466,11 +466,16 @@ describe("the write controls — role-gated, and the gate is not cosmetics", () 
   });
 
   it("renders NO control at all for a seamstress", () => {
-    // ⚠ NOT A DEAD BUTTON — THE WHOLE BOARD. She is admitted to the board by
-    // the router and refused by both write routes, so a control she can tap
-    // produces a 403 → runMutation's catch → poll.fail → usePoll's {401,403}
-    // terminal rule → her entire atelier board is replaced by «אין הרשאה»,
-    // because she tapped something this console offered her.
+    // ⚠ She is admitted to the board by the router and refused by BOTH write
+    // routes, so an ungated control is one whose only possible outcome is a
+    // 403 — a button the console offers her and the server is certain to
+    // refuse. This assertion is what reds when the gate is deleted.
+    //
+    // It is NOT the board's last line: both panel writes pass
+    // `terminalOnFailure = false`, so their 403 never reaches `poll.fail` and
+    // never trips usePoll's {401,403} terminal rule. AtelierSection's «keeps
+    // the BOARD ALIVE on a 403» pins that separately, and the two must not be
+    // "reconciled" by restoring the terminal flag.
     mount({
       seamstresses: [
         seamstress({ id: DANA, display_name: "דנה" }),
@@ -734,7 +739,10 @@ describe("the capacity dialog — one field, one write, and the anti-conversion 
     });
     expect(
       within(openCapacity("דנה")).getByLabelText("שעות בשבוע"),
-    ).toHaveValue(24);
+      // A STRING, not `24`: the field is no longer `type="number"` (empty is a
+      // value here, and a number input turns bad input into a CLEAR), so
+      // `toHaveValue` reads the raw text.
+    ).toHaveValue("24");
     unmount();
 
     mount({
@@ -743,7 +751,7 @@ describe("the capacity dialog — one field, one write, and the anti-conversion 
     });
     expect(
       within(openCapacity("דנה")).getByLabelText("שעות בשבוע"),
-    ).toHaveValue(null);
+    ).toHaveValue("");
   });
 
   it("puts «חזרה לברירת המחדל» in the BODY and gives the footer exactly two buttons", () => {
@@ -774,7 +782,7 @@ describe("the capacity dialog — one field, one write, and the anti-conversion 
     });
     const dialog = openCapacity("דנה");
     fireEvent.click(within(dialog).getByRole("button", { name: "חזרה לברירת המחדל" }));
-    expect(within(dialog).getByLabelText("שעות בשבוע")).toHaveValue(null);
+    expect(within(dialog).getByLabelText("שעות בשבוע")).toHaveValue("");
     expect(onSaveCapacity).not.toHaveBeenCalled();
   });
 
@@ -800,16 +808,25 @@ describe("the capacity dialog — one field, one write, and the anti-conversion 
     expect(within(dialog).queryByText(/ברירת המחדל של הבוטיק/)).toBeNull();
   });
 
-  it("carries min and inputMode but NO max — 168 is a server bound", () => {
+  it("carries inputMode but NOT type=number, and no min and no max", () => {
     // ⚠ `max={168}` would mirror MAX_WEEKLY_CAPACITY_HOURS on the client with
     // none of the protection: `test_frontend_constant_parity.py` scrapes only
     // the two validation.ts files, so raising the DB CHECK would leave the
     // attribute lying, silently and greenly. The copy states the SHAPE; the
     // server's 400 states the range.
+    //
+    // ⚠ AND NO `type="number"`, WHICH IS NOT COSMETIC ON THIS FIELD. Empty here
+    // is a VALUE — the one that clears her hours back to the boutique's — and a
+    // number input reports `value === ""` for anything that is not a valid
+    // floating-point literal, so `12e` pasted from a roster would arrive as a
+    // CLEAR. `min` goes with it: it applies to `type=number` and nothing else,
+    // and an attribute the browser ignores is a mirror with no protection.
+    // TypesSection's deposit field is the shipped precedent.
     mount();
     const field = within(openCapacity("דנה")).getByLabelText("שעות בשבוע");
-    expect(field.getAttribute("min")).toBe("0");
+    expect(field.getAttribute("type")).not.toBe("number");
     expect(field.getAttribute("inputmode")).toBe("numeric");
+    expect(field.getAttribute("min")).toBeNull();
     expect(field.getAttribute("max")).toBeNull();
     // The phone field's `dir="ltr"` is NOT copied: that field holds `+`, `-`
     // and spaces — NEUTRALS, which reorder at an RTL boundary. A bare integer
@@ -860,16 +877,16 @@ describe("the capacity dialog — one field, one write, and the anti-conversion 
     // + role="alert" and flips the border, so the message is announced where it
     // was made.
     //
-    // ⚠ «abc» and «true» are NOT in this list and cannot be: `type="number"`'s
-    // own value-sanitization algorithm empties them before any handler runs
-    // (verified in jsdom, and it is the same algorithm in every browser). A
-    // NON-NUMERIC string reaching the wire is the SERVER's `StrictInt` case, and
-    // there is no client path to it at all.
+    // ⚠ «abc» and «true» reach `wholeOrEmpty` intact and are refused with the
+    // rest — this field is deliberately NOT `type="number"` (see the two tests
+    // below), so nothing is emptied before the handler runs. A non-numeric
+    // string reaching the WIRE is the server's `StrictInt` case, and there is
+    // still no client path to it.
     const onSaveCapacity = vi.fn(() => Promise.resolve(true));
     mount({ onSaveCapacity });
     const dialog = openCapacity("דנה");
     const field = within(dialog).getByLabelText("שעות בשבוע");
-    for (const bad of ["-4", "7.5"]) {
+    for (const bad of ["-4", "7.5", "abc", "true"]) {
       fireEvent.change(field, { target: { value: bad } });
       fireEvent.click(within(dialog).getByRole("button", { name: "שמירה" }));
       await waitFor(() =>
@@ -882,6 +899,34 @@ describe("the capacity dialog — one field, one write, and the anti-conversion 
     }
     // And the dialog is still open with her text intact — nothing was eaten.
     expect((dialog as HTMLDialogElement).open).toBe(true);
+  });
+
+  it("refuses a browser BAD-INPUT empty rather than CLEARING her hours", async () => {
+    // ⚠ EMPTY IS A VALUE ON THIS FIELD, WHICH IS WHAT MAKES `type="number"`
+    // DESTRUCTIVE HERE. A number input reports `value === ""` for any text that
+    // is not a valid floating-point literal — `12e` pasted from a roster, or a
+    // stray `-` from the keypad — so a shift manager mistyping in נועה's dialog
+    // would send `weekly_capacity_hours: null`, clear her column, and read
+    // «חזרה לברירת המחדל» as the confirmation. Worse, React's number-input path
+    // only writes the node when `node.value !== "" + props.value`, and both
+    // sides are `""` — so the box still VISIBLY reads `12e` while the state is
+    // empty. The band fields are immune because empty is already a refusal
+    // there; only the two fields where empty MEANS something are exposed.
+    //
+    // jsdom runs the same value-sanitization algorithm, so restoring
+    // `type="number"` on the field reds this test.
+    const onSaveCapacity = vi.fn(() => Promise.resolve(true));
+    mount({ onSaveCapacity, defaultCapacityHours: 30 });
+    const dialog = openCapacity("דנה");
+    const field = within(dialog).getByLabelText("שעות בשבוע");
+    fireEvent.change(field, { target: { value: "12e" } });
+    // The raw text survives the round trip — she can see and correct it.
+    expect((field as HTMLInputElement).value).toBe("12e");
+    fireEvent.click(within(dialog).getByRole("button", { name: "שמירה" }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert").textContent).toBe("צריך מספר שעות שלם ולא שלילי."),
+    );
+    expect(onSaveCapacity).not.toHaveBeenCalled();
   });
 
   it("keeps the field enabled while the confirm carries `loading`", async () => {
@@ -946,7 +991,8 @@ describe("the settings dialog — one save, both keys, always", () => {
     }
     expect(
       within(dialog).getByLabelText("ברירת מחדל: שעות בשבוע"),
-    ).toHaveValue(30);
+      // A STRING for the capacity field's reason — no `type="number"` here either.
+    ).toHaveValue("30");
   });
 
   it("labels each band from its OWN word, never by reverse-looking-up its minutes", () => {
@@ -1003,6 +1049,27 @@ describe("the settings dialog — one save, both keys, always", () => {
       }),
     );
     expect(onSaveAtelierSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a browser BAD-INPUT empty on the BOUTIQUE default rather than wiping it", async () => {
+    // ⚠ THE SAME HOLE, ONE TAP WIDER. This field's `null` wipes the tenant-wide
+    // default for every inherited seamstress at once, and the confirmation is
+    // the generic «ההגדרות נשמרו» — which says nothing about a clear. It is
+    // `type`-less for the capacity field's reason; restoring `type="number"`
+    // reds this test.
+    const onSaveAtelierSettings = vi.fn(() => Promise.resolve(true));
+    mount({ bands: BANDS, defaultCapacityHours: 12, onSaveAtelierSettings });
+    const dialog = openSettings();
+    const field = within(dialog).getByLabelText("ברירת מחדל: שעות בשבוע");
+    fireEvent.change(field, { target: { value: "20-" } });
+    expect((field as HTMLInputElement).value).toBe("20-");
+    fireEvent.click(within(dialog).getByRole("button", { name: "שמירה" }));
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert").textContent).toBe(
+        "צריך מספר שעות שלם ולא שלילי, או ריק.",
+      ),
+    );
+    expect(onSaveAtelierSettings).not.toHaveBeenCalled();
   });
 
   it("sends null for an emptied default, and refuses a bad number on its own field", async () => {

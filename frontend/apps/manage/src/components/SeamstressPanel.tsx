@@ -20,11 +20,18 @@ import { plainDate } from "../lib/jerusalem";
 // to lib/ would edit a file this task does not own for one line. Both write
 // controls gate on it.
 //
-// ⚠ THE GATE IS NOT COSMETICS. A seamstress is admitted to the board by the
-// router and refused by both write routes, so a control she can tap produces a
-// 403 → runMutation's catch → poll.fail → usePoll's {401,403} terminal rule →
-// her ENTIRE atelier board is replaced by «אין הרשאה», because she tapped
-// something this console offered her.
+// ⚠ THE GATE IS NOT COSMETICS, BUT IT IS ALSO NOT THE BOARD'S LAST LINE. A
+// seamstress is admitted to the board by the router and refused by both write
+// routes, so an ungated control is one the server is certain to refuse — a
+// button whose only outcome is a 403 should not render at all.
+//
+// It is NOT what keeps her board alive. Both panel writes pass
+// `terminalOnFailure = false` (AtelierSection.tsx), so their 403 never reaches
+// `poll.fail` and never trips usePoll's {401,403} terminal rule: a per-route
+// refusal means "not this control", never "not this board". That opt-out is
+// load-bearing on its own and is pinned by AtelierSection's «keeps the BOARD
+// ALIVE on a 403». Deleting THIS gate yields a dead button and an in-dialog
+// Hebrew error, which `renders NO control at all for a seamstress` reds.
 const ELEVATED = new Set(["owner", "shift_manager"]);
 
 const HEADING_ID = "atelier-h-capacity";
@@ -484,10 +491,28 @@ export function SeamstressPanel({
                   ? t("atelier.capacity.hoursHelpNoDefault")
                   : t("atelier.capacity.hoursHelp", { hours: defaultCapacityHours })
               }
-              type="number"
-              inputMode="numeric"
-              min={0}
-              /* ⚠ NO `max`. 168 is MAX_WEEKLY_CAPACITY_HOURS — a SERVER bound —
+              /* ⚠ NO `type="number"`, AND NOT AS A STYLE CHOICE. On THIS field
+                 the empty string is a VALUE — the one that CLEARS her hours
+                 back to the boutique's — and a number input reports
+                 `value === ""` for any text that is not a valid floating-point
+                 literal (`12e`, a stray `-`, a pasted `12 `). So browser
+                 bad-input would arrive as a deliberate clear: the server wipes
+                 her column and the cue reads «חזרה לברירת המחדל». React makes
+                 it silent too — its number-input path only writes the node when
+                 `node.value !== "" + props.value`, and both sides are `""`, so
+                 the box still visibly reads `12e`. Raw text instead, and
+                 `wholeOrEmpty` refuses it. `inputMode="numeric"` keeps the
+                 phone keypad; TypesSection's deposit field is the precedent,
+                 and RoomsRegistryDialog names the same hazard.
+
+                 The band fields keep `type="number"`: empty is already a
+                 refusal there, so nothing destructive is reachable.
+
+                 ⚠ `min` goes with it — it applies to `type=number` and nothing
+                 else, and an attribute the browser ignores is a mirror of a
+                 server bound with none of the protection.
+
+                 ⚠ NO `max` either. 168 is MAX_WEEKLY_CAPACITY_HOURS — a SERVER bound —
                  and mirroring it here would have none of the protection a
                  mirrored constant gets: `test_frontend_constant_parity.py`
                  scrapes only the two validation.ts files, so raising the CHECK
@@ -497,6 +522,7 @@ export function SeamstressPanel({
                  ⚠ And NO `dir="ltr"`, which the phone field carries because it
                  holds `+`, `-` and spaces — NEUTRALS that reorder at an RTL
                  boundary. A bare integer is one uninterrupted EN run. */
+              inputMode="numeric"
               value={hoursDraft}
               error={hoursError ?? undefined}
               onChange={(event) => setHoursDraft(event.target.value)}
@@ -594,9 +620,13 @@ export function SeamstressPanel({
           <Input
             label={t("atelier.settings.defaultCapacity")}
             help={t("atelier.settings.defaultCapacityHelp")}
-            type="number"
+            /* ⚠ NO `type="number"` and NO `min`, for the capacity field's
+               reason — one tap wider. Empty is a VALUE here too, and this one
+               wipes the tenant-wide default for every INHERITED seamstress at
+               once, under the generic «ההגדרות נשמרו» which says nothing about
+               a clear. The five band fields above keep `type="number"`: empty
+               is already a refusal there. */
             inputMode="numeric"
-            min={0}
             value={defaultDraft}
             error={defaultError ?? undefined}
             onChange={(event) => setDefaultDraft(event.target.value)}

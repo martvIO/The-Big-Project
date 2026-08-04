@@ -2289,8 +2289,13 @@ describe("the overload cue — the only channel a screen-reader user has for thi
     // screen-reader user gets NOTHING AT ALL unless the cue says it — which
     // would make overload a sighted-only signal on the one action that causes
     // it, on a screen where a11y is a legal bar.
+    //
+    // ⚠ THE DUE DATE IS EXPLICIT AND INSIDE `due_soon_through`. The fixture's
+    // default is 2026-08-12 — one day PAST the envelope's 2026-08-11 — and
+    // this assertion on that ticket is precisely the defect the sibling test
+    // below now pins: the cue announcing minutes the server's FILTER excludes.
     getAtelierBoard.mockResolvedValue(
-      board([ticket({ effort_minutes: 120 })], {
+      board([ticket({ effort_minutes: 120, due_date: "2026-08-10" })], {
         seamstresses: [
           seamstress({
             display_name: "נועה לוי",
@@ -2310,6 +2315,41 @@ describe("the overload cue — the only channel a screen-reader user has for thi
     });
     await clickAndSettle(screen.getByRole("button", { name: "שיוך — מיכל לוי" }));
     expect(screen.getByTestId("atelier-cue").textContent).toBe("שויך לנועה לוי — עומס יתר.");
+  });
+
+  it("announces the PLAIN cue for a ticket due AFTER the board's horizon", async () => {
+    // ⚠ THE MUTATION CATCHER for the horizon fold. Same seamstress, same 120
+    // minutes, same 660/720 as the test above — only the due date moves, to one
+    // day past `due_soon_through`. A console that adds the effort unfiltered
+    // computes 780 > 720 and announces «עומס יתר», but `due_soon_minutes` is
+    // `SUM(...) FILTER (WHERE due_date <= horizon)`: the next tick leaves her at
+    // 660, the bar renders 91.7 % in `bg-gold-strong`, and `Row`'s sentence
+    // carries no «עומס יתר» — so the announced channel would state the opposite
+    // of every rendered surface, permanently, with no colleague and no race.
+    //
+    // Re-inline `wouldOverload(target, ticket.effort_minutes)` at the call site
+    // and this test reds while every other cue test stays green.
+    getAtelierBoard.mockResolvedValue(
+      board([ticket({ effort_minutes: 120, due_date: "2026-08-12" })], {
+        seamstresses: [
+          seamstress({
+            display_name: "נועה לוי",
+            weekly_capacity_hours: HOURS,
+            due_soon_minutes: 660,
+            assigned_minutes: 660,
+          }),
+        ],
+      }),
+    );
+    assignTicket.mockResolvedValue(ticket({ assigned_staff_user_id: NOA_ID }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "תופרת — מיכל לוי" }), {
+      target: { value: NOA_ID },
+    });
+    await clickAndSettle(screen.getByRole("button", { name: "שיוך — מיכל לוי" }));
+    expect(screen.getByTestId("atelier-cue").textContent).toBe("שויך לנועה לוי.");
   });
 
   it("announces the PLAIN cue when it does not, and for an UNCONFIGURED seamstress", async () => {

@@ -5,6 +5,7 @@ import type { SeamstressRef } from "../api";
 import {
   capacityMinutes,
   hoursFromMinutes,
+  loadMinutes,
   loadRatio,
   overloaded,
   remainingMinutes,
@@ -172,6 +173,41 @@ describe("null capacity and zero capacity render OPPOSITELY", () => {
   it("keeps zero capacity out of the headroom group and null out of the word", () => {
     expect(remainingMinutes(row({ weekly_capacity_hours: 0, due_soon_minutes: 360 }))).toBe(-360);
     expect(remainingMinutes(row({ weekly_capacity_hours: null, due_soon_minutes: 360 }))).toBeNull();
+  });
+});
+
+describe("loadMinutes — the cue's hypothetical is filtered exactly as the SUM is", () => {
+  // ⚠ `due_soon_minutes` is `SUM(effort_minutes) FILTER (WHERE due_date <=
+  // horizon)`. Adding a ticket due AFTER `due_soon_through` predicts a number
+  // the server will never compute: the cue says «עומס יתר», the next tick
+  // leaves her sum untouched, and the bar and the row's sentence both say she
+  // is fine — with no colleague and no race. Assignment normally happens at
+  // intake, when the due date is weeks out, so it is the COMMON case.
+  const THROUGH = "2026-08-11";
+
+  it("counts a ticket due inside the horizon", () => {
+    expect(loadMinutes({ effort_minutes: 120, due_date: "2026-08-10" }, THROUGH)).toBe(120);
+  });
+
+  it("counts a ticket due ON the horizon — the server's `<=`, not `<`", () => {
+    expect(loadMinutes({ effort_minutes: 120, due_date: THROUGH }, THROUGH)).toBe(120);
+  });
+
+  it("counts NOTHING for a ticket due one day past it", () => {
+    expect(loadMinutes({ effort_minutes: 120, due_date: "2026-08-12" }, THROUGH)).toBe(0);
+  });
+
+  it("counts an OVERDUE ticket, exactly as the SQL does", () => {
+    // `due_date < today <= horizon` satisfies the FILTER, and the board carries
+    // overdue tickets with a live assign control on them.
+    expect(loadMinutes({ effort_minutes: 480, due_date: "2026-07-01" }, THROUGH)).toBe(480);
+  });
+
+  it("compares the two plain dates lexicographically, across a month and a year edge", () => {
+    // Both are the server's `YYYY-MM-DD`, so no `Date` and no `lib/jerusalem`
+    // arithmetic — and a zero-padded ISO date sorts as a string.
+    expect(loadMinutes({ effort_minutes: 30, due_date: "2026-09-01" }, "2026-08-31")).toBe(0);
+    expect(loadMinutes({ effort_minutes: 30, due_date: "2026-12-31" }, "2027-01-02")).toBe(30);
   });
 });
 

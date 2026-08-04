@@ -98,8 +98,39 @@ export function overloaded(row: SeamstressRef): boolean {
 }
 
 /**
+ * The minutes THIS ticket adds to `due_soon_minutes` — its effort inside the
+ * board's horizon, and ZERO outside it.
+ *
+ * ⚠ THE SUM THE BAR RENDERS IS FILTERED, SO THE CUE'S HYPOTHETICAL MUST BE.
+ * `due_soon_minutes` is `SUM(effort_minutes) FILTER (WHERE due_date <=
+ * horizon)`, and `due_soon_through` IS that horizon on the wire. Adding a
+ * ticket due after it predicts a number the server will never compute: the cue
+ * announces «עומס יתר», the next tick leaves her sum untouched, and the bar
+ * (gold, 91.7 %) and the row's sentence (no «עומס יתר») both say she is fine —
+ * with no colleague and no race, and D17 forbids the poll from retracting it.
+ * Assignment normally happens at intake, when the due date is weeks out, so
+ * that is the COMMON case and not the exotic one.
+ *
+ * ⚠ A LEXICOGRAPHIC COMPARE AND NO `Date`. Both sides are the server's plain
+ * `YYYY-MM-DD`, which sorts as a string, so this needs no `lib/jerusalem`
+ * arithmetic and cannot read the device clock. An OVERDUE ticket
+ * (`due_date < today <= horizon`) counts, exactly as the SQL counts it.
+ */
+export function loadMinutes(
+  ticket: { effort_minutes: number; due_date: string },
+  dueSoonThrough: string,
+): number {
+  return ticket.due_date <= dueSoonThrough ? ticket.effort_minutes : 0;
+}
+
+/**
  * "Would THIS ticket push her over?" — the hypothetical `overloaded(row)` cannot
  * answer because it takes a row.
+ *
+ * ⚠ `extraMinutes` MUST ALREADY BE FILTERED — it is added to a filtered sum, so
+ * it is `loadMinutes(ticket, board.due_soon_through)` and never a raw
+ * `effort_minutes`. Both live here so the filter and the comparison cannot
+ * drift apart at the one call site.
  *
  * ⚠ NO ARITHMETIC AND NO `60` HERE OR AT ITS CALL SITE. Hand-rolled at the
  * assign handler, this is where drift is most expensive: a `>=` on one side, or
