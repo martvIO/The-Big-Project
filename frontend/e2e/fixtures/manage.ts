@@ -59,6 +59,13 @@ export const MANAGE = "http://localhost:4174/manage/";
 // adds a stub and not a fork.
 const API_FAMILIES = new Set([
   "appointment-types",
+  // ⚠ F42 ADDS THIS ROW, AND ITS ABSENCE WAS A REAL HOLE. `MANAGE_API` in
+  // `apps/manage/vite.config.ts` names FIFTEEN segments and this set had
+  // fourteen: F58 built the harness alongside F41 rather than after it. An
+  // atelier call therefore fell THROUGH the interception to `vite preview`'s
+  // proxy — which serves the SPA shell for an unproxied path — so the board
+  // would have rendered its outage line with nothing anywhere saying why.
+  "atelier",
   "auth",
   "availability",
   "bookings",
@@ -382,6 +389,98 @@ export function raisedAlert(alert: SosAlert, rerouted = false): unknown {
   return { alert, rerouted };
 }
 
+// --- the atelier board (F41 + F42) -------------------------------------------
+
+export interface AtelierSeamstress {
+  id: string;
+  display_name: string;
+  assignable: boolean;
+  weekly_capacity_hours: number | null;
+  capacity_is_default: boolean;
+  assigned_minutes: number;
+  due_soon_minutes: number;
+}
+
+// The state every boutique is in on day one: nobody configured, nothing held.
+export function atelierSeamstress(
+  overrides: Partial<AtelierSeamstress> = {},
+): AtelierSeamstress {
+  return {
+    id: "sm-1",
+    display_name: "דנה",
+    assignable: true,
+    weekly_capacity_hours: null,
+    capacity_is_default: false,
+    assigned_minutes: 0,
+    due_soon_minutes: 0,
+    ...overrides,
+  };
+}
+
+export interface AtelierTicket {
+  id: string;
+  customer_name: string;
+  due_date: string;
+  overdue: boolean;
+  effort_minutes: number;
+  assigned_staff_user_id: string | null;
+  dress_id: string | null;
+  dress_name: string | null;
+  dress_size: string | null;
+  notes: string | null;
+  stage: string;
+  intake_at: string | null;
+  in_progress_at: string | null;
+  qc_at: string | null;
+  ready_at: string | null;
+  delivered_at: string | null;
+}
+
+export function atelierTicket(overrides: Partial<AtelierTicket> = {}): AtelierTicket {
+  return {
+    id: "at-1",
+    customer_name: "מיכל לוי",
+    due_date: "2099-01-20",
+    overdue: false,
+    effort_minutes: 120,
+    assigned_staff_user_id: null,
+    dress_id: null,
+    dress_name: null,
+    dress_size: null,
+    notes: null,
+    stage: "intake",
+    intake_at: "2099-01-04T07:00:00Z",
+    in_progress_at: null,
+    qc_at: null,
+    ready_at: null,
+    delivered_at: null,
+    ...overrides,
+  };
+}
+
+// The platform's five, resolved. ⚠ `due_soon_through` is the SERVER's horizon
+// and the client cannot compute it: `lib/jerusalem.ts` ships zero date
+// arithmetic, and a browser that has crossed Jerusalem midnight while the
+// payload was held would print a date the SQL never filtered on.
+export function atelierBoard(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    tickets: [],
+    seamstresses: [atelierSeamstress()],
+    effort_bands: [
+      { band: "thirty_min", minutes: 30 },
+      { band: "one_hour", minutes: 60 },
+      { band: "two_hours", minutes: 120 },
+      { band: "half_day", minutes: 240 },
+      { band: "full_day", minutes: 480 },
+    ],
+    truncated: false,
+    unassigned_minutes: 0,
+    default_weekly_capacity_hours: null,
+    due_soon_through: "2099-01-11",
+    ...overrides,
+  };
+}
+
 // --- install -----------------------------------------------------------------
 
 export interface ManageApiOptions {
@@ -472,4 +571,8 @@ export function queuePath(ticketId: string): string {
 
 export function sosPath(alertId: string): string {
   return `/manage/floor/sos/${encodeURIComponent(alertId)}`;
+}
+
+export function capacityPath(staffUserId: string): string {
+  return `/manage/atelier/seamstresses/${encodeURIComponent(staffUserId)}/capacity`;
 }
