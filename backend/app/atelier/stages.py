@@ -15,6 +15,7 @@ from typing import Any
 
 from app.models.alteration_ticket import AlterationTicket
 from app.models.constants import EffortBand, TicketStage
+from app.models.staff_user import StaffUser
 
 # One column per stage, in declaration order. The mapping is separate from the
 # enum because the enum is the WIRE contract and these are column names — F44
@@ -134,3 +135,53 @@ def effort_bands(settings: dict[str, Any]) -> dict[EffortBand, int]:
         band: _positive_int(stored.get(band.value), DEFAULT_EFFORT_BANDS[band])
         for band in EffortBand
     }
+
+
+# 0022's CHECK ceiling, restated once so the column bound and the settings bound
+# cannot drift. `boutique/validation.py` imports it from HERE and not from
+# `atelier/validation.py`: this module imports only `app.models`, so the edge
+# stays acyclic, while `atelier/validation.py` would drag `app.booking.validation`
+# and `app.catalog.validation` in behind it (D5).
+MAX_WEEKLY_CAPACITY_HOURS = 168
+
+
+def default_capacity_hours(settings: dict[str, Any]) -> int | None:
+    """The tenant's house default, or None. THERE IS NO PLATFORM DEFAULT.
+
+    The asymmetry with `effort_bands`' five is deliberate (D2) and it is two
+    arguments: `effort_minutes` is NOT NULL so band resolution must always answer
+    a number, while `weekly_capacity_hours` is nullable and "unknown" is
+    representable; and a wrong band is bounded inside five coarse presets while a
+    wrong capacity is a DENOMINATOR that renders every one of her bars at a
+    fraction of the truth, in the colour that says everything is fine.
+
+    ⚠ IT DOES NOT SHARE `_positive_int`. That helper's range is `1..1440` and it
+    refuses `0`; this one's is `0..168` and `0` is a value it must keep — "the
+    boutique is stood down this week". One helper with two range parameters would
+    be a parameterised abstraction over two call sites whose only interesting
+    property is precisely the boundary it would have to parameterise.
+    """
+    atelier = settings.get("atelier")
+    stored = atelier.get("default_weekly_capacity_hours") if isinstance(atelier, dict) else None
+    if isinstance(stored, bool) or not isinstance(stored, int):
+        return None
+    return stored if 0 <= stored <= MAX_WEEKLY_CAPACITY_HOURS else None
+
+
+def resolve_capacity(row: StaffUser, tenant_default: int | None) -> tuple[int | None, bool]:
+    """Returns (resolved_hours, capacity_is_default).
+
+    ⚠ `is not None`, NEVER truthiness. `0` is a DELIBERATE value — "she is not
+    available this week" (D1) — and `or` would hand her the boutique's default,
+    render her bar at a fraction of the truth in the non-overload colour, print
+    «ברירת מחדל של הבוטיק» on a number she personally set, and sort her FIRST in
+    the assign Select. The shipped `settings.get("atelier") or {}` idiom is
+    exactly the habit that produces the bug here, which is why this is code and
+    not a sentence.
+
+    `capacity_is_default` is False when the answer is None: there is nothing to
+    have defaulted to, and the row renders «לא הוגדרה קיבולת» with no bar.
+    """
+    if row.weekly_capacity_hours is not None:
+        return row.weekly_capacity_hours, False
+    return tenant_default, tenant_default is not None
