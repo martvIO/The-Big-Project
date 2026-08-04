@@ -143,18 +143,23 @@ async def subject_erase(
 
 @router.post("/privacy/marketing-withdraw")
 async def marketing_withdraw(
-    request: Request, service: Service, body: MarketingWithdrawRequest
+    request: Request, staff: Staff, service: Service, body: MarketingWithdrawRequest
 ) -> MarketingWithdrawResponse:
     """⚠ NO `dependencies=OWNER_ONLY` — Gate 1 Q4. See the module docstring; the
     absence is asserted positively in test_staff_role_gating.py.
 
-    No `staff` parameter either, and for the same reason the two GETs in
-    `customers/router.py` declare none: nothing here reads the acting identity.
-    This route writes no audit row — it is a consent state change the subject
-    herself asked for over the telephone, and `audit_log` is exempt from every
-    retention class, so a row per revocation would accumulate `customer_id`s
-    forever to record the one action that takes nothing away.
+    It DOES take `staff`, and the first draft's argument for omitting it was
+    wrong twice. `PLATFORM_DPA_HE` publishes to every bride that staff changes
+    to a customer's record are written to an activity log, and this is a staff
+    change to a customer's record — the only privacy route a non-owner can
+    reach, i.e. the one with the widest role exposure and no trail. The bloat
+    objection ("a row per revocation forever") is answered by the service
+    writing the row only when something actually changed: the underlying
+    statements are self-falsifying, so a repeat writes nothing.
     """
     return await service.withdraw_marketing(
-        get_current_tenant(request).id, customer_id=body.customer_id, raw_phone=body.phone
+        get_current_tenant(request).id,
+        customer_id=body.customer_id,
+        raw_phone=body.phone,
+        actor=staff,
     )

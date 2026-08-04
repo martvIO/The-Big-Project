@@ -52,6 +52,7 @@ from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.models.session import Session as SessionRow
 from app.privacy.validation import ERASED_NAME, ERASED_PHONE_PREFIX
+from app.storefront.validation import BOUTIQUE_TIMEZONE
 
 logger = logging.getLogger("app")
 
@@ -245,7 +246,16 @@ async def _scrub_queue_tickets(
     entitled to is the ability to REVOKE, which did not exist and which F20 builds
     (the `phone` arm on marketing-withdraw); the copy drops the retention promise.
     """
-    cutoff_day = _cutoff(now, settings.retention_queue_ticket_seconds).date()
+    # ⚠ `.astimezone(BOUTIQUE_TIMEZONE)` before `.date()`, because `queue_day` is
+    # a JERUSALEM calendar date (`today_jerusalem` at check-in) and `now` is UTC.
+    # A bare `.date()` compares a UTC-derived day to a Jerusalem-derived one and
+    # is off by a day for the two-to-three hours before Israeli midnight. It is
+    # ±1 day on a 7-day window and harmless there — but the floor for this class
+    # is 2 days, and the idiom is simply wrong for any future class with a
+    # short clock.
+    cutoff_day = (
+        _cutoff(now, settings.retention_queue_ticket_seconds).astimezone(BOUTIQUE_TIMEZONE).date()
+    )
     where = [
         QueueTicket.tenant_id == tenant_id,
         QueueTicket.queue_day <= cutoff_day,
@@ -327,11 +337,19 @@ async def _scrub_customers(
     Three conjuncts and all three are load-bearing:
       * orphaned — no booking row points here, which only becomes true after the
         bookings policy has run, hence the registry order;
-      * older than the 30-day orphan grace — NOT padding. A customer row is only
-        ever created inside `create_booking`, so the sole way one is orphaned
-        early is F15's phone correction re-pointing a booking at an existing
-        row. Without a grace, a mistaken correction is anonymised within the
-        hour and unrecoverable;
+      * older than the 30-day grace — and read the clock it is measured on
+        BEFORE relying on it. The grace runs from `created_at`, not from the
+        instant the row became orphaned, because nothing on the row records
+        when that happened: F15's phone correction re-points the OTHER row's
+        `customer_id` and never touches this one, so `updated_at` will not
+        serve either.
+        ⚠ **Consequence, stated rather than implied**: it protects a row created
+        in the last 30 days and NOTHING ELSE. A correction that orphans a
+        customer who first booked six months ago satisfies this conjunct
+        already, and the next tick anonymises her. A real orphan clock is a new
+        column and belongs with F21's audit (`.planning/ppl-compliance-record.md`
+        §1.1 class A); until then the containment is that `retention_enabled`
+        ships False;
       * `erased_at IS NULL` — D22. Delete this one line and the policy re-scrubs
         its own output forever.
 

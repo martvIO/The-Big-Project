@@ -92,11 +92,20 @@ def build_parser() -> argparse.ArgumentParser:
     retention.add_argument(
         "--operator", required=True, help="operator identity for the audit trail"
     )
+    # ⚠ THE REHEARSAL IS THE DEFAULT AND ARMING IS THE DELIBERATE ACT.
+    #
+    # `run_retention` is deliberately NOT gated on `retention_enabled`, so this
+    # subcommand is the one place where Gate 1 Q2's disarm — the whole reason the
+    # scheduled job ships off, pending F21's tested restore — can be defeated by
+    # one command. With `--dry-run` opt-in, the command an operator types from
+    # memory was the irreversible multi-tenant hard DELETE and the safe one was
+    # the one they had to remember. Inverted: `--armed` is a sentence you cannot
+    # type by accident, and a mistyped rehearsal now counts rows instead of
+    # destroying them.
     retention.add_argument(
-        "--dry-run",
+        "--armed",
         action="store_true",
-        dest="dry_run",
-        help="count what each policy would touch and write nothing",
+        help="actually delete. Without it the run only counts what each policy would touch",
     )
 
     return parser
@@ -146,7 +155,7 @@ async def _dispatch(
     if args.command == "backfill-booking-links":
         return _report(await service.backfill_booking_links(operator=args.operator))
     if args.command == "retention":
-        return _report(await service.run_retention(operator=args.operator, dry_run=args.dry_run))
+        return _report(await service.run_retention(operator=args.operator, dry_run=not args.armed))
     if args.command == "list":
         _print_tenants(await service.list_tenants())
         return 0

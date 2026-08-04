@@ -40,12 +40,14 @@ from app.models.constants import AuditAction, BookingStatus
 from app.models.customer import Customer
 from app.models.message_log import MessageLog
 from app.models.otp_code import OtpCode
+from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.models.terms_version import TermsVersion
 from app.notifications.validation import normalize_israeli_mobile
 from app.privacy.schemas import (
     ExportedBooking,
     ExportedMessage,
+    ExportedQueueTicket,
     ExportedSubject,
     ExportedTerms,
     MarketingWithdrawResponse,
@@ -205,8 +207,28 @@ class PrivacyService:
                 (
                     await session.execute(
                         select(MessageLog)
-                        .where(*_her_messages(tenant_id, customer, bookings))
+                        .where(*_her_messages(tenant_id, customer.phone, bookings))
                         .order_by(MessageLog.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            # DR-9's fourth collection point. `queue_tickets.phone` is stored
+            # normalised E.164 "so it matches customers.phone exactly" (the
+            # column's own comment), which is what makes this reachable at all
+            # for a bride who both booked online and walked in. §13 reaches it:
+            # the row holds her real name and her real number.
+            tickets = list(
+                (
+                    await session.execute(
+                        select(QueueTicket)
+                        .where(
+                            QueueTicket.tenant_id == tenant_id,
+                            QueueTicket.phone == phone,
+                            QueueTicket.deleted_at.is_(None),
+                        )
+                        .order_by(QueueTicket.queue_day, QueueTicket.created_at)
                     )
                 )
                 .scalars()
@@ -279,6 +301,19 @@ class PrivacyService:
                         body=row.body,
                     )
                     for row in messages
+                ],
+                queue_tickets=[
+                    ExportedQueueTicket(
+                        id=row.id,
+                        queue_day=row.queue_day,
+                        created_at=row.created_at,
+                        name=row.name,
+                        phone=row.phone,
+                        visit_type=row.visit_type,
+                        status=row.status,
+                        marketing_opt_in_at=row.marketing_opt_in_at,
+                    )
+                    for row in tickets
                 ],
                 accepted_terms=[
                     ExportedTerms(
@@ -434,9 +469,40 @@ class PrivacyService:
                 (
                     await session.execute(
                         update(MessageLog)
-                        .where(*_her_messages(tenant_id, customer, booking_ids))
+                        .where(*_her_messages(tenant_id, phone, booking_ids))
                         .values(phone=ERASED_PHONE_PREFIX + str(customer_id), body="")
                         .returning(MessageLog.id)
+                        .execution_options(synchronize_session=False)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            # 4b. Her walk-in check-ins (DR-9's fourth collection point). Without
+            #     this statement the erase returns 200 and leaves her REAL NAME
+            #     and her REAL E.164 NUMBER standing in `queue_tickets` — and the
+            #     only thing that would ever remove them is the queue retention
+            #     policy, which ships disarmed (Gate 1 Q2). The public Hebrew
+            #     promises the survivors are kept «בלי שמך ובלי מספר הטלפון שלך»;
+            #     that sentence is true only with this line.
+            #
+            #     Matched on the phone HELD IN PYTHON — step 2 destroyed the
+            #     column — and deliberately NOT filtered on `deleted_at`: an
+            #     erasure must reach every copy, including a row some future
+            #     feature soft-deletes. The placeholder is per row, the
+            #     `customers` convention, so a tenant's Nth erasure cannot
+            #     collide with its first.
+            tickets_scrubbed = len(
+                (
+                    await session.execute(
+                        update(QueueTicket)
+                        .where(
+                            QueueTicket.tenant_id == tenant_id,
+                            QueueTicket.phone == phone,
+                        )
+                        .values(name=ERASED_NAME, phone=ERASED_PHONE_PREFIX + str(customer_id))
+                        .returning(QueueTicket.id)
                         .execution_options(synchronize_session=False)
                     )
                 )
@@ -480,6 +546,7 @@ class PrivacyService:
             counts = {
                 "bookings_scrubbed": bookings_scrubbed,
                 "messages_scrubbed": messages_scrubbed,
+                "queue_tickets_scrubbed": tickets_scrubbed,
                 "otp_codes_purged": otp_purged,
                 "scheduled_messages_purged": scheduled_purged,
             }
@@ -505,6 +572,7 @@ class PrivacyService:
         *,
         customer_id: uuid.UUID | None,
         raw_phone: str | None,
+        actor: StaffContext,
     ) -> MarketingWithdrawResponse:
         """The lesser action, short of erasure (D15) — and the ONE privacy route
         a shift manager may take (Gate 1 Q4).
@@ -516,22 +584,71 @@ class PrivacyService:
         outcome she asked for. An unknown `customer_id` DOES 404 — the console
         only ever sends one it got from a lookup, so a miss there means the id
         is wrong rather than that the answer is "nothing to do".
+
+        **Audited only when something changed.** `PLATFORM_DPA_HE` promises the
+        public that staff changes to a customer's record are logged, and this is
+        one; the `changed` guard is what keeps that promise without letting the
+        one route a shift manager can spam accumulate rows in the one table that
+        is exempt from every retention class. The phone arm needs the row most —
+        it NULLs its own evidence.
         """
         self._spend(self._withdraw_limiter, tenant_id)
         async with tenant_session(self._session_factory, tenant_id) as session:
             if customer_id is not None:
-                if await self._customers.by_id(session, tenant_id, customer_id) is None:
+                subject = await self._customers.by_id(session, tenant_id, customer_id)
+                if subject is None:
                     raise SubjectNotFoundError
                 changed = await self._customers.withdraw_marketing_consent(
                     session, tenant_id, customer_id
                 )
+                if changed:
+                    await self._audit_withdrawal(
+                        session,
+                        tenant_id,
+                        actor=actor,
+                        customer_id=customer_id,
+                        phone=subject.phone,
+                    )
                 return MarketingWithdrawResponse(changed=changed)
             if raw_phone is None:  # pragma: no cover - the schema forbids it
                 raise DomainValidationError("Send exactly one of customer_id or phone.")
+            phone = normalize_israeli_mobile(raw_phone)
             cleared = await self._queue_tickets.withdraw_marketing_opt_in(
-                session, tenant_id, phone=normalize_israeli_mobile(raw_phone)
+                session, tenant_id, phone=phone
             )
+            if cleared:
+                await self._audit_withdrawal(
+                    session, tenant_id, actor=actor, customer_id=None, phone=phone, cleared=cleared
+                )
             return MarketingWithdrawResponse(changed=cleared > 0)
+
+    async def _audit_withdrawal(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        *,
+        actor: StaffContext,
+        customer_id: uuid.UUID | None,
+        phone: str,
+        cleared: int | None = None,
+    ) -> None:
+        """`phone_last4` and never the number, D19's rule applied to the third
+        subject route. The phone arm has no `customer_id` to carry — that is the
+        whole point of the split — so `entity` is the last four digits, which is
+        also the most of a number that may be written here."""
+        details: dict[str, Any] = {"phone_last4": _last4(phone)}
+        if customer_id is not None:
+            details["customer_id"] = str(customer_id)
+        if cleared is not None:
+            details["tickets_cleared"] = cleared
+        await self._audit.record(
+            session,
+            tenant_id=tenant_id,
+            action=AuditAction.PRIVACY_MARKETING_WITHDRAWN,
+            actor_id=actor.id,
+            entity=str(customer_id) if customer_id is not None else str(_last4(phone)),
+            details=details,
+        )
 
     def _spend(self, limiter: FixedWindowRateLimiter, tenant_id: uuid.UUID) -> None:
         """Read the budget then record against it. Recorded on EVERY call, not
@@ -547,6 +664,7 @@ class PrivacyService:
 _ZERO_COUNTS = {
     "bookings_scrubbed": 0,
     "messages_scrubbed": 0,
+    "queue_tickets_scrubbed": 0,
     "otp_codes_purged": 0,
     "scheduled_messages_purged": 0,
 }
@@ -589,16 +707,25 @@ def _subject_details(
     return details
 
 
-def _her_messages(tenant_id: uuid.UUID, customer: Customer, bookings: list[Any]) -> list[Any]:
+def _her_messages(tenant_id: uuid.UUID, phone: str, bookings: list[Any]) -> list[Any]:
     """`phone = :hers OR booking_id IN (:her bookings)`, shared by the export and
     the erase so the two cannot disagree about which rows are hers.
+
+    ⚠ **A `str`, never the `Customer`.** The erase's step 2 overwrites
+    `customers.phone`, and this predicate is built at step 4. Taking the ORM
+    object made the phone leg correct only because nothing between them expires
+    the identity map — add a `commit()` or drop `synchronize_session=False` and
+    it silently resolves to `erased:{id}`, matching nothing and leaving her
+    pre-correction number in `message_log` forever. The call site holds the
+    string it captured before step 2; this signature is what makes that the only
+    thing it can pass.
 
     `bookings` may be `Booking` rows or bare ids — the export holds the rows it
     already read and the erase holds a projection of ids, and materialising the
     other shape at either call site would be a second statement for nothing.
     """
     ids = [row if isinstance(row, uuid.UUID) else row.id for row in bookings]
-    legs = [MessageLog.phone == customer.phone]
+    legs = [MessageLog.phone == phone]
     if ids:
         legs.append(MessageLog.booking_id.in_(ids))
     return [

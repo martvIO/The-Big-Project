@@ -43,6 +43,14 @@ ERASED_PHONE_PREFIX = "erased:"
 # a paragraph invites a paragraph about a named person.
 MAX_ERASE_REASON_BYTES = 500
 
+# The cap on a raw phone as TYPED, in characters, before
+# `normalize_israeli_mobile` regexes it. A trust-boundary bound and not a format
+# rule — the format rule is that function's, and it runs a `fullmatch` plus a
+# `re.sub` over whatever arrives. 32 holds every shape a human types
+# (`+972 50-123-4567`, `050 123 4567`) with room to spare, and stops a
+# body-limit-sized string reaching the regex at all.
+MAX_PHONE_INPUT_CHARS = 32
+
 # The three subject budgets. Per-tenant, one instance each — never one limiter
 # with three keys, which would give all three routes ONE shared ceiling
 # (`.memory/patterns/limiter-max-is-per-instance`).

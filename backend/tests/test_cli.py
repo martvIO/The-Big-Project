@@ -180,23 +180,30 @@ def test_backfill_takes_no_slug() -> None:
 # --- F20's retention run -----------------------------------------------------
 
 
-def test_retention_maps_through_with_dry_run_and_reads_no_password() -> None:
-    """`--dry-run` is how an operator inspects the first real run before trusting
-    the scheduled one. Like `list` and the backfill it must never prompt: a
-    command run from a deploy hook that blocks on getpass hangs the deploy."""
+def test_retention_reads_no_password() -> None:
+    """Like `list` and the backfill it must never prompt: a command run from a
+    deploy hook that blocks on getpass hangs the deploy."""
     service = FakeService(CommandResult(ok=True, message="would touch 12 row(s)"))
 
     def _no_password() -> str:
         raise AssertionError("retention must not read a password")
 
-    args = build_parser().parse_args(["retention", "--operator", "ops", "--dry-run"])
+    args = build_parser().parse_args(["retention", "--operator", "ops", "--armed"])
     assert run(args, service, _no_password) == 0
-    assert service.calls == [("run_retention", {"operator": "ops", "dry_run": True})]
+    assert service.calls == [("run_retention", {"operator": "ops", "dry_run": False})]
 
 
-def test_retention_defaults_to_an_armed_run() -> None:
+def test_retention_defaults_to_a_rehearsal_and_arming_is_explicit() -> None:
+    """⚠ INVERTED, deliberately. `run_retention` is not gated on
+    `retention_enabled`, so this subcommand is the one place Gate 1 Q2's disarm
+    can be defeated — and with `--dry-run` opt-in, the command typed from memory
+    was the irreversible multi-tenant hard DELETE while the safe one was the one
+    you had to remember. A mistyped rehearsal now counts rows."""
     service = FakeService()
     assert _dispatch(["retention", "--operator", "ops"], service) == 0
+    assert service.calls[-1][1]["dry_run"] is True
+
+    assert _dispatch(["retention", "--operator", "ops", "--armed"], service) == 0
     assert service.calls[-1][1]["dry_run"] is False
 
 
@@ -233,5 +240,9 @@ def test_retention_takes_no_slug() -> None:
 
 
 def test_retention_failure_is_a_nonzero_exit() -> None:
+    """The CLI half only. That `run_retention` can actually PRODUCE `ok=False` —
+    it could not, before: `ok=True` was unconditional and `failed_tenants`
+    reached the message and nothing else — is
+    `test_retention_db.test_a_run_with_a_failing_tenant_is_not_ok`."""
     service = FakeService(CommandResult(ok=False, message="boom"))
     assert _dispatch(["retention", "--operator", "ops"], service) == 1

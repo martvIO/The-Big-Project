@@ -184,7 +184,15 @@ class ProvisioningService:
         verb = "would touch" if dry_run else "touched"
         failures = f", {result.failed_tenants} tenant(s) FAILED" if result.failed_tenants else ""
         return CommandResult(
-            ok=True,
+            # ⚠ NOT an unconditional True. `RetentionRunner` contains a failing
+            # tenant so one boutique cannot stop another's clocks — which means
+            # the ONLY signal that a tenant failed is this exit code, and an
+            # `ok=True` that mentioned failures in prose alone reported a clean
+            # run to cron, to `$?` and to every wrapper. `retention.py`'s own
+            # docstring names that exact failure ("a silently degraded retention
+            # job still reports 'ran fine' to the only operator who would ever
+            # look") and the CLI layer was doing it.
+            ok=result.failed_tenants == 0,
             message=(
                 f"{verb} {touched} row(s) across {result.tenants} tenant(s){failures}: "
                 f"{result.rows or 'nothing due'}"

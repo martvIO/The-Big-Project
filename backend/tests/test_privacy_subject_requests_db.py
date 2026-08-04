@@ -373,6 +373,137 @@ async def test_the_erase_scrubs_her_and_leaves_the_enumerated_survivors_intact(
         await engine.dispose()
 
 
+async def test_the_erase_reaches_her_walk_in_check_ins(app_role_url: str) -> None:
+    """⚠ THE FOURTH COLLECTION POINT, and it is the one that made the shipped
+    Hebrew false.
+
+    `queue_tickets.name` and `queue_tickets.phone` are both `NOT NULL` and hold
+    her REAL name and her REAL normalised E.164 number — the column's own
+    comment records that the number matches `customers.phone` exactly, which is
+    what makes a bride who booked online in March and walked in in June one
+    person in two tables.
+
+    Without the step-4b statement this erase answers 200, stamps `erased_at` and
+    leaves both standing FOREVER: the only other thing that would ever remove
+    them is the `queue_tickets` retention policy, and `retention_enabled` ships
+    `False` (Gate 1 Q2). `PLATFORM_NOTICE_HE` promises the survivors are kept
+    «בלי שמך ובלי מספר הטלפון שלך» and the compliance record instructs the owner
+    to say so to a regulator. Delete the `update(QueueTicket)` and the two
+    `ERASED_*` assertions below both fail.
+
+    The second ticket, on a different number, is what proves the predicate is
+    keyed on HER phone rather than draining the tenant's queue.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    other_phone = "+972529998877"
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(
+            factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone
+        )
+        customer_id = claim.booking.customer_id
+        async with tenant_session(factory, tenant_id) as session:
+            for day, ticket_phone, name in (
+                (PAST_DATE, phone, "נועה לוי"),
+                (PAST_DATE - datetime.timedelta(days=40), phone, "נועה לוי"),
+                (PAST_DATE, other_phone, "מיכל כהן"),
+            ):
+                await QUEUE_TICKETS.insert(
+                    session,
+                    tenant_id=tenant_id,
+                    queue_day=day,
+                    name=name,
+                    phone=ticket_phone,
+                    visit_type=VisitType.BRIDE.value,
+                    marketing_opt_in_at=PAST_NOW,
+                )
+
+        summary = await _privacy(factory).erase_subject(
+            tenant_id, customer_id=customer_id, actor=_staff(tenant_id), reason=None
+        )
+
+        assert summary.queue_tickets_scrubbed == 2
+        async with tenant_session(factory, tenant_id) as session:
+            tickets = (
+                (
+                    await session.execute(
+                        select(QueueTicket)
+                        .where(QueueTicket.tenant_id == tenant_id)
+                        .order_by(QueueTicket.queue_day)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        hers = [row for row in tickets if row.name != "מיכל כהן"]
+        assert len(hers) == 2
+        for ticket in hers:
+            assert ticket.name == ERASED_NAME
+            assert ticket.phone == ERASED_PHONE_PREFIX + str(customer_id)
+        untouched = [row for row in tickets if row.name == "מיכל כהן"]
+        assert [row.phone for row in untouched] == [other_phone]
+    finally:
+        await engine.dispose()
+
+
+async def test_the_export_carries_her_walk_in_check_ins(app_role_url: str) -> None:
+    """§13 is the same completeness question as §14, one route earlier: a bride
+    the console CAN look up must be shown the check-in rows the boutique holds
+    about her, not only her bookings. Delete the `select(QueueTicket)` from
+    `export_subject` and this is an empty list."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        await _claim(factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone)
+        async with tenant_session(factory, tenant_id) as session:
+            await QUEUE_TICKETS.insert(
+                session,
+                tenant_id=tenant_id,
+                queue_day=PAST_DATE,
+                name="נועה לוי",
+                phone=phone,
+                visit_type=VisitType.BRIDE.value,
+                marketing_opt_in_at=PAST_NOW,
+            )
+            await QUEUE_TICKETS.insert(
+                session,
+                tenant_id=tenant_id,
+                queue_day=PAST_DATE,
+                name="מיכל כהן",
+                phone="+972529998877",
+                visit_type=VisitType.BRIDE.value,
+            )
+
+        payload = await _privacy(factory).export_subject(
+            tenant_id, raw_phone=phone, actor=_staff(tenant_id), reason=None
+        )
+
+        assert len(payload.queue_tickets) == 1
+        ticket = payload.queue_tickets[0]
+        assert ticket.name == "נועה לוי"
+        assert ticket.phone == phone
+        assert ticket.queue_day == PAST_DATE
+        assert ticket.marketing_opt_in_at is not None
+        # The queue's own management state is NOT her data, the `seat_index`
+        # rule one table over.
+        assert set(ticket.model_dump()) == {
+            "id",
+            "queue_day",
+            "created_at",
+            "name",
+            "phone",
+            "visit_type",
+            "status",
+            "marketing_opt_in_at",
+        }
+    finally:
+        await engine.dispose()
+
+
 async def test_the_erased_manage_token_no_longer_resolves(app_role_url: str) -> None:
     """NULLing `manage_token_hash` is what kills the still-live SMS link, and
     the only honest way to assert it is through the public lookup the link
@@ -944,19 +1075,23 @@ async def test_the_withdraw_customer_arm_is_additive_and_404s_an_unknown_id(
         customer_id = claim.booking.customer_id
         service = _privacy(factory)
 
-        first = await service.withdraw_marketing(tenant_id, customer_id=customer_id, raw_phone=None)
+        first = await service.withdraw_marketing(
+            tenant_id, customer_id=customer_id, raw_phone=None, actor=_staff(tenant_id)
+        )
         assert first.changed is True
         row = await _customer(factory, tenant_id, customer_id)
         assert row.marketing_consent_withdrawn_at is not None
         assert row.marketing_consent_at is not None
 
         repeat = await service.withdraw_marketing(
-            tenant_id, customer_id=customer_id, raw_phone=None
+            tenant_id, customer_id=customer_id, raw_phone=None, actor=_staff(tenant_id)
         )
         assert repeat.changed is False
 
         with pytest.raises(SubjectNotFoundError):
-            await service.withdraw_marketing(tenant_id, customer_id=uuid.uuid4(), raw_phone=None)
+            await service.withdraw_marketing(
+                tenant_id, customer_id=uuid.uuid4(), raw_phone=None, actor=_staff(tenant_id)
+            )
     finally:
         await engine.dispose()
 
@@ -996,7 +1131,7 @@ async def test_the_withdraw_phone_arm_normalises_and_never_touches_customers(
         service = _privacy(factory)
 
         cleared = await service.withdraw_marketing(
-            tenant_id, customer_id=None, raw_phone="050-123-4567"
+            tenant_id, customer_id=None, raw_phone="050-123-4567", actor=_staff(tenant_id)
         )
         assert cleared.changed is True
 
@@ -1021,12 +1156,86 @@ async def test_the_withdraw_phone_arm_normalises_and_never_touches_customers(
             ).scalars().all() == []
 
         repeat = await service.withdraw_marketing(
-            tenant_id, customer_id=None, raw_phone="050-123-4567"
+            tenant_id, customer_id=None, raw_phone="050-123-4567", actor=_staff(tenant_id)
         )
         assert repeat.changed is False
         unknown = await service.withdraw_marketing(
-            tenant_id, customer_id=None, raw_phone="052-999-8877"
+            tenant_id, customer_id=None, raw_phone="052-999-8877", actor=_staff(tenant_id)
         )
         assert unknown.changed is False
+    finally:
+        await engine.dispose()
+
+
+async def test_a_withdrawal_that_changed_something_writes_exactly_one_audit_row(
+    app_role_url: str,
+) -> None:
+    """`PLATFORM_DPA_HE` publishes to every bride that staff changes to a
+    customer's record are written to an activity log. This is one, and it is the
+    ONE privacy route a non-owner can reach (Gate 1 Q4) — the widest role
+    exposure on the surface.
+
+    Both arms, because the phone arm needs the row MORE: it NULLs
+    `queue_tickets.marketing_opt_in_at`, so afterwards the row is
+    indistinguishable from a walk-in who never ticked the box and the boutique
+    can evidence neither that she asked nor that it complied.
+
+    A REPEAT writes nothing — the guard is `changed`, and the underlying
+    statements are self-falsifying — which is what keeps a route a shift manager
+    can call 120 times an hour from bloating the one table with no clock.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    walk_in_phone = "+972529998877"
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(
+            factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone
+        )
+        customer_id = claim.booking.customer_id
+        async with tenant_session(factory, tenant_id) as session:
+            await CUSTOMERS.record_marketing_consent(session, tenant_id, customer_id)
+            await QUEUE_TICKETS.insert(
+                session,
+                tenant_id=tenant_id,
+                queue_day=PAST_DATE,
+                name="נועה לוי",
+                phone=walk_in_phone,
+                visit_type=VisitType.BRIDE.value,
+                marketing_opt_in_at=PAST_NOW,
+            )
+        service = _privacy(factory)
+
+        await service.withdraw_marketing(
+            tenant_id, customer_id=customer_id, raw_phone=None, actor=_staff(tenant_id)
+        )
+        await service.withdraw_marketing(
+            tenant_id, customer_id=None, raw_phone=walk_in_phone, actor=_staff(tenant_id)
+        )
+        # Both repeats change nothing and must therefore leave no trace.
+        await service.withdraw_marketing(
+            tenant_id, customer_id=customer_id, raw_phone=None, actor=_staff(tenant_id)
+        )
+        await service.withdraw_marketing(
+            tenant_id, customer_id=None, raw_phone=walk_in_phone, actor=_staff(tenant_id)
+        )
+
+        rows = [
+            row
+            for row in await _audit(factory, tenant_id)
+            if row.action == AuditAction.PRIVACY_MARKETING_WITHDRAWN.value
+        ]
+        assert len(rows) == 2
+        by_arm = {("customer_id" in row.details): row for row in rows}
+        assert by_arm[True].details["customer_id"] == str(customer_id)
+        assert by_arm[True].details["phone_last4"] == phone[-4:]
+        assert by_arm[False].details["phone_last4"] == walk_in_phone[-4:]
+        assert by_arm[False].details["tickets_cleared"] == 1
+        # D19's rule, third route: `phone_last4` and never the number, no name.
+        written = str([row.details for row in rows])
+        assert phone not in written
+        assert walk_in_phone not in written
+        assert "נועה לוי" not in written
     finally:
         await engine.dispose()

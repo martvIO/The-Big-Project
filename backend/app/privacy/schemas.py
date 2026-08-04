@@ -16,8 +16,9 @@ access request that withheld it would be answering a different question.
 import datetime
 import uuid
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
+from app.privacy.validation import MAX_PHONE_INPUT_CHARS
 from app.schemas import ForbidExtraModel
 
 
@@ -76,9 +77,15 @@ class SubjectExportRequest(ForbidExtraModel):
     (D17): its `subject.id` is the `customer_id` they take.
 
     `reason` is optional here and audited, same rule and same cap as the erase's.
+
+    The cap is a TRUST-BOUNDARY bound, not a format rule.
+    `normalize_israeli_mobile` runs a `fullmatch` and a `re.sub` over whatever
+    arrives, so an unbounded field regexes a multi-megabyte body before
+    rejecting it — every other free-text field on this surface is capped
+    (8 KB documents, 500-byte reason) and this one was the hole.
     """
 
-    phone: str
+    phone: str = Field(max_length=MAX_PHONE_INPUT_CHARS)
     reason: str | None = None
 
 
@@ -133,6 +140,27 @@ class ExportedMessage(BaseModel):
     body: str
 
 
+class ExportedQueueTicket(BaseModel):
+    """Her walk-in check-ins (DR-9's fourth collection point). `queue_tickets`
+    holds a real name and a normalised E.164 number, so a §13 answer that
+    omitted it would understate what the boutique holds about a bride who both
+    booked online and walked in.
+
+    `skip_count`, `called_at` and `requeued_at` are absent for the reason
+    `ExportedBooking` omits `seat_index` — they are the boutique's
+    queue-management state, not a fact about her.
+    """
+
+    id: uuid.UUID
+    queue_day: datetime.date
+    created_at: datetime.datetime
+    name: str
+    phone: str
+    visit_type: str
+    status: str
+    marketing_opt_in_at: datetime.datetime | None
+
+
 class ExportedTerms(BaseModel):
     """What she actually agreed to, at the version she agreed to it. The
     boutique's terms are hers to have a copy of — she accepted them."""
@@ -147,6 +175,7 @@ class SubjectExportResponse(BaseModel):
     subject: ExportedSubject
     bookings: list[ExportedBooking]
     messages: list[ExportedMessage]
+    queue_tickets: list[ExportedQueueTicket]
     accepted_terms: list[ExportedTerms]
 
 
@@ -177,6 +206,7 @@ class SubjectEraseResponse(BaseModel):
     already_erased: bool
     bookings_scrubbed: int
     messages_scrubbed: int
+    queue_tickets_scrubbed: int
     otp_codes_purged: int
     scheduled_messages_purged: int
 
@@ -196,7 +226,8 @@ class MarketingWithdrawRequest(ForbidExtraModel):
     """
 
     customer_id: uuid.UUID | None = None
-    phone: str | None = None
+    #: Same trust-boundary cap as `SubjectExportRequest.phone` — see its docstring.
+    phone: str | None = Field(default=None, max_length=MAX_PHONE_INPUT_CHARS)
 
     @model_validator(mode="after")
     def _exactly_one(self) -> "MarketingWithdrawRequest":

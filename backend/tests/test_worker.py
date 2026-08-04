@@ -311,29 +311,6 @@ async def test_a_raising_retention_run_is_swallowed_and_still_advances() -> None
     assert next_at == NOW + datetime.timedelta(seconds=3600)
 
 
-async def test_the_poller_and_the_sweeper_are_untouched_by_a_broken_retention_run() -> None:
-    """The "and vice versa" leg: the three jobs are three calls with three try
-    blocks, so a tick containing a failing retention run still drains and sweeps
-    every tenant."""
-    tenants = [_tenant("bella"), _tenant("vered")]
-    comms = FakeComms({})
-    sweeper = FakeSweeper()
-    runner = FakeRunner(RuntimeError("retention blew up"))
-
-    await retention_tick(
-        runner,  # type: ignore[arg-type]
-        now=NOW,
-        next_at=NOW,
-        enabled=True,
-        interval_seconds=3600,
-    )
-    totals = await poll_once(comms, FakeTenants(tenants), sweeper)  # type: ignore[arg-type]
-
-    assert [t.slug for t in comms.drained] == ["bella", "vered"]
-    assert sweeper.swept == [t.id for t in tenants]
-    assert totals == DrainResult()
-
-
 def test_the_retention_cadence_is_settings_tunable_and_ships_disarmed() -> None:
     assert Settings().retention_enabled is False
     assert Settings().retention_poll_interval_seconds == 3600

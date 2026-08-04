@@ -36,7 +36,15 @@ import { MAX_PRIVACY_TEXT_BYTES, utf8Bytes } from "../validation";
 // The codes this section renders its own Hebrew for. Everything else falls
 // through to `errorMessage()`. Kept by hand, exactly like GatewaySection's and
 // StaffSection's.
-const MAPPED_CODES = new Set(["BOOKING_ACTIVE", "TOO_MANY_ATTEMPTS", "NOT_AUTHORIZED"]);
+const MAPPED_CODES = new Set([
+  // ⚠ THE SERVER'S SPELLING, verbatim. `main.py` sends
+  // `SUBJECT_HAS_ACTIVE_BOOKING`; a shortened alias here silently missed the
+  // set and rendered the API's ENGLISH sentence in an RTL Hebrew console,
+  // while the Hebrew below stayed a key nothing could reach.
+  "SUBJECT_HAS_ACTIVE_BOOKING",
+  "TOO_MANY_ATTEMPTS",
+  "NOT_AUTHORIZED",
+]);
 
 // The §13 export, as a file. A `data:` URL rather than `URL.createObjectURL`:
 // the payload is one customer's record and is small, there is no object to

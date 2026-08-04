@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -40,7 +40,7 @@ from app.models.scheduled_message import ScheduledMessage
 from app.models.session import Session as SessionRow
 from app.models.terms_version import TermsVersion
 from app.platform.service import ProvisioningService
-from app.privacy.retention import CHUNK_SIZE, POLICIES, RetentionRunner, _purge
+from app.privacy.retention import CHUNK_SIZE, POLICIES, RetentionResult, RetentionRunner, _purge
 from app.privacy.validation import ERASED_NAME, ERASED_PHONE_PREFIX
 
 pytestmark = pytest.mark.db
@@ -240,6 +240,32 @@ async def test_a_queue_ticket_past_its_week_is_scrubbed_and_a_recent_one_is_not(
         await engine.dispose()
 
 
+async def test_the_queue_cutoff_day_is_jerusalem_not_utc(app_role_url: str) -> None:
+    """`queue_day` is written from `today_jerusalem`; `now` here is UTC. In the
+    two-to-three hours before Israeli midnight the two calendars disagree, and a
+    bare `.date()` on the UTC cutoff compares a UTC day to a Jerusalem day.
+
+    22:00Z on 2026-08-04 is 01:00 on 2026-08-05 in Jerusalem, so the seven-day
+    cutoff day is 2026-07-29 there and 2026-07-28 in UTC. A ticket from
+    2026-07-29 is seven Jerusalem days old and due. Drop the
+    `.astimezone(BOUTIQUE_TIMEZONE)` and this counts 0.
+
+    ±1 day is harmless on a 7-day window; the floor for this class is 2 days and
+    the idiom would be plainly wrong for any future class with a short clock.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    late = datetime.datetime(2026, 8, 4, 22, 0, tzinfo=datetime.UTC)
+    try:
+        boundary = _ticket(tenant_id, age_days=0)
+        boundary.queue_day = datetime.date(2026, 7, 29)
+        await _add(factory, tenant_id, boundary)
+
+        assert await _apply(factory, tenant_id, "queue_tickets", now=late) == 1
+    finally:
+        await engine.dispose()
+
+
 async def test_an_opted_in_queue_ticket_is_scrubbed_like_any_other(app_role_url: str) -> None:
     """The assertion that PINS DR-11's blocker resolution instead of leaving it
     in prose. The shipped notice promised to keep an opted-in walk-in's name and
@@ -338,11 +364,25 @@ async def test_a_seven_year_old_booking_goes_with_its_scheduled_messages(
 async def test_the_booking_page_limit_is_in_the_sql_not_a_python_slice(
     app_role_url: str,
 ) -> None:
-    """Three due bookings and a limit of two: exactly two go. A LIMIT applied
-    after an unbounded read would pass every assertion about WHICH rows go and
-    still let one tenant's seven-year backlog be materialised in memory."""
+    """Three due bookings and a limit of two: exactly two go — AND the ceiling is
+    in the statement Postgres receives.
+
+    ⚠ The row assertions alone do not prove the second half, and this test used
+    to make only them. Replace `_page(...)` with an unbounded
+    `select(Booking.id).where(...)` sliced `[:limit]` in Python and every count
+    below still holds while one tenant's seven-year backlog is materialised in
+    memory — which is the failure the docstring claimed to guard. So the emitted
+    SQL is captured and asserted directly: reading `bookings` without a LIMIT is
+    the defect, not deleting the wrong rows.
+    """
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
+    seen: list[str] = []
+
+    def _record(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        seen.append(" ".join(statement.split()))
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _record)
     try:
         customer = _customer(tenant_id, age_days=2600, phone="+972501234567")
         doomed = [
@@ -351,11 +391,21 @@ async def test_the_booking_page_limit_is_in_the_sql_not_a_python_slice(
         ]
         await _add(factory, tenant_id, customer, *doomed)
 
+        seen.clear()
         assert await _apply(factory, tenant_id, "bookings", limit=2) == 2
+        # The READ is what must be bounded. The two DELETEs that follow it are
+        # bounded by construction — they take the id list this SELECT returned,
+        # which is the whole reason `_purge_bookings` materialises the page
+        # rather than deleting from a subquery.
+        reads = [sql for sql in seen if sql.upper().startswith("SELECT") and "bookings" in sql]
+        assert reads, "the drain emitted no read against bookings"
+        assert all("LIMIT" in sql.upper() for sql in reads), reads
+
         assert len(await _ids(factory, tenant_id, Booking)) == 1
         assert await _apply(factory, tenant_id, "bookings", limit=2) == 1
         assert await _ids(factory, tenant_id, Booking) == set()
     finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _record)
         await engine.dispose()
 
 
@@ -839,5 +889,48 @@ def test_the_operator_run_writes_exactly_one_platform_row_per_invocation(
         rows = _platform_rows(migrated_db, operator)
         assert [action for action, _ in rows] == ["retention_run", "retention_run"]
         assert [details["dry_run"] for _, details in rows] == [True, False]
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_a_run_with_a_failing_tenant_is_not_ok(
+    app_role_url: str, migrated_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """⚠ THE EXIT CODE IS THE ONLY SIGNAL, and `ok=True` was unconditional.
+
+    `RetentionRunner` deliberately CONTAINS a failing tenant so one boutique
+    cannot stop another's clocks, which means nothing else notices. With
+    `ok=True` the CLI printed the failure count inside a line beginning `OK:`
+    and `_report` returned 0 — cron's mail-on-failure stayed silent and every
+    `$?` wrapper recorded a clean run of a job whose own module docstring names
+    that exact failure mode.
+
+    The runner is stubbed rather than the service faked: the logic under test is
+    `run_retention`'s own mapping of `failed_tenants` onto `ok`, plus the fact
+    that the platform row is STILL written on the failure path — a run that
+    pointed an irreversible job at production and then broke is the run an
+    incident review most wants to find.
+    """
+
+    class FailingRunner:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def run(self, *, dry_run: bool = False) -> Any:
+            return RetentionResult(tenants=3, failed_tenants=3, rows={})
+
+    monkeypatch.setattr("app.platform.service.RetentionRunner", FailingRunner)
+    engine = create_async_engine(app_role_url, poolclass=NullPool)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    operator = f"ops-{uuid.uuid4().hex[:8]}"
+    try:
+        result = asyncio.run(
+            ProvisioningService(factory).run_retention(operator=operator, dry_run=False)
+        )
+
+        assert result.ok is False
+        assert "3 tenant(s) FAILED" in result.message
+        rows = _platform_rows(migrated_db, operator)
+        assert [details["failed_tenants"] for _, details in rows] == [3]
     finally:
         asyncio.run(engine.dispose())

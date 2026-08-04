@@ -55,6 +55,7 @@ Per data class: categories of subject and data, purpose, legal basis, recipients
 | **Recipients** | the boutique's OWNER and SHIFT_MANAGER (full record); all five staff roles see the **name** only, on the floor panel (§1.5); Railway (hosting); Twilio (the number only, when sending is enabled) |
 | **Retention** | **SCRUB**, not purge. `retention_orphan_customer_seconds` = 30 d (`config.py:241`), and only once no booking points at the row and `erased_at IS NULL` (`app/privacy/retention.py:312-356`). In practice the row therefore lives as long as her longest-lived booking (7 y) and is then anonymised in place |
 | **Why scrub** | `bookings.customer_id`, `alteration_tickets.customer_id` and F22's waitlist are no-FK pointers; a purge leaves them dangling with no way to tell "erased" from "never existed" |
+| ⚠ **The 30-day grace is not an orphan clock** | It runs from `created_at`, because nothing on the row records when it *became* orphaned — F15's phone correction re-points the OTHER row and never touches this one, so `updated_at` will not serve either. It therefore protects a row created in the last 30 days and **nothing else**: a correction that orphans a customer who first booked six months ago satisfies the conjunct already, and the next tick anonymises her irreversibly. Contained today only by `retention_enabled=False`. **A real orphan clock is a new column. Owner: F21's audit. Trigger: BEFORE `RETENTION_ENABLED` is ever set.** |
 | **Security** | forced RLS per tenant; owner/shift-manager gate on every read route (`app/customers/router.py:76`, `app/booking/owner_router.py:83`); `no-store` on every `/manage` response; unique index on `(tenant_id, phone)` so an erasure placeholder is per-row |
 
 #### B. `bookings` — the appointment and the terms-acceptance evidence
@@ -132,6 +133,12 @@ Per data class: categories of subject and data, purpose, legal basis, recipients
 | **Erasure** | **The `subject-erase` transaction does not touch it.** Her alteration notes survive an erasure, linked by `customer_id` to a row that by then carries `[erased]` and an `erased_at` stamp |
 | **Reading taken** | Recorded, not silently absorbed. The surviving text is a garment record (measurements, hem, bustle) rather than an identity record, and after the erase it resolves only to an anonymised customer row — the same *de-identified with a controlled re-identification key* status as the surviving bookings (§2.5). It is nonetheless free text a person wrote about a named woman, and an erasure that leaves it is weaker than one that does not. **Owner: F21's audit, or F38 (which extends this registry) — whichever comes first. Until then §2.8's manual procedure covers it: the owner clears the notes by hand on the atelier card before invoking the erase.** |
 
+#### K. `sos_alerts` — the floor's distress signal ⚠ **gap, stated rather than papered over**
+
+`note` is FOUR WORDS of free text a staff member types while raising an alert (`app/models/sos_alert.py:58`), plus who raised it, who it targeted and which fitting room. **Subjects: the boutique's own staff — and, whenever the note names her, the bride in the room.** Purpose: getting help to a person during an incident. Recipients: the roles that see the floor panel.
+
+**No retention clock, and the `subject-erase` transaction does not reach it.** A note reading «כלה בחדר 2, נועה לוי, התעלפה» is personal data about a named woman with no class, no clock and no erasure path — the same shape as class G, and it was undisclosed rather than disclosed until this entry. The mitigation that exists is the field's own size: four words, and the console copy asks for what is happening rather than who. **Owner: F21's audit, or F38 (which extends the retention registry) — whichever comes first.** Until then §2.8's manual procedure covers it: the operator clears the note by hand alongside the `queue_tickets` and `alteration_tickets` work.
+
 #### H. `payments` — deposits
 
 Amounts, status, timestamps, provider session/transaction ids, booking id (`app/models/payment.py`). **No name, no phone, no free text.** `app_user` holds no `DELETE` on this table or on `tenant_gateway_credentials` (migration `0012:147-148`) — a hard delete would destroy financial evidence and the credential-rotation trail — so **no retention policy may name either**, and a test walks `policy.tables` to prove none does. Consequence, accepted and recorded: the 7-year booking purge leaves a payment row pointing at a booking that no longer exists (plan Risk R-B). Not a disclosure of personal data; a dangling financial record.
@@ -174,8 +181,8 @@ Three properties worth stating because they are enforced rather than intended:
 ### 1.3 Where the record is written
 
 - Scheduled: the existing `worker` process, third job in the loop, own `try` so a wedged retention run cannot silence another boutique's reminders or F19's deposit sweeper (`app/worker.py:132`, `retention_tick`).
-- Operator-invoked: `python -m app.cli retention --operator NAME [--dry-run]`. `--operator` is `required=True` **on this subcommand only** — the five other subcommands default it to `$USER`, and `$USER` on a shared box is not an audit identity for an irreversible multi-tenant delete. One `platform_audit_log` row per invocation.
-- `--dry-run` counts what each policy *would* touch and issues no write. **This is how the first real run against production data is inspected before `RETENTION_ENABLED` is ever set.**
+- Operator-invoked: `python -m app.cli retention --operator NAME [--armed]`. `--operator` is `required=True` **on this subcommand only** — the five other subcommands default it to `$USER`, and `$USER` on a shared box is not an audit identity for an irreversible multi-tenant delete. One `platform_audit_log` row per invocation.
+- **The rehearsal is the DEFAULT; `--armed` is required to write.** A bare `retention --operator NAME` counts what each policy *would* touch and issues no write — **this is how the first real run against production data is inspected before `RETENTION_ENABLED` is ever set.** The flag is inverted deliberately: `run_retention` is not gated on `retention_enabled`, so this subcommand is the single place Gate 1 Q2's disarm can be defeated, and the command typed from memory must not be the irreversible multi-tenant hard DELETE.
 
 ### 1.4 Sub-processors
 
@@ -290,6 +297,7 @@ In the console the flow is: type the phone → **Look up** → the resolved subj
 | `customers` | `name` → `[erased]`; `phone` → `erased:{customer_id}` (per row, so any number of erasures fit under the unique index); `notes` → NULL; `tags` → `{}`; `erased_at` stamped; marketing consent stamped as withdrawn **if one existed** |
 | `bookings` (hers) | `notes` → NULL; `manage_token_hash` → NULL — **this is what kills the still-live SMS link** |
 | `message_log` | `phone` → placeholder, `body` → `''`, matched on **her phone OR her booking ids**. The `OR` is not belt-and-braces: a past phone correction re-points a booking at an existing customer row and orphans the old rows, so a phone-only predicate would leave her pre-correction number in the log |
+| `queue_tickets` (hers, matched on the phone held in Python) | `name` → `[erased]`; `phone` → `erased:{customer_id}`. **Every ticket, every day, and soft-deleted rows too** — an erasure must reach every copy. Without this statement her real name and her real mobile number survive a §14 erasure PERMANENTLY, because the only other thing that would remove them is the `queue_tickets` retention clock and `retention_enabled` ships `False` |
 | `otp_codes` | **purged** — the whole row is her data |
 | `scheduled_messages` (hers) | **purged** — including any raw manage token still held for a future send |
 
@@ -301,9 +309,13 @@ These are the boutique's business and tax record plus the evidence of which canc
 
 **How to describe that survivor set, precisely, and the wording matters:**
 
-> The surviving rows carry **no name, no phone number and no free text**, and are re-identifiable only by an actor who can already read `audit_log` — the owner and the platform operator, both of whom held the data before the erasure. **It is not anonymous data. It is a de-identified business record with a controlled re-identification key.**
+> The surviving rows carry **no name and no phone number**, and are re-identifiable only by an actor who can already read `audit_log` — the owner and the platform operator, both of whom held the data before the erasure. **It is not anonymous data. It is a de-identified business record with a controlled re-identification key.**
+>
+> **One exception, and state it rather than omitting it: `alteration_tickets.notes` survives** (class G) — free text a member of staff wrote about her, in practice her measurements, linked by `customer_id` to a row that by then carries `[erased]`. §2.8 step 3's manual procedure is how it is cleared today, and the owner and trigger for closing it properly are recorded in class G.
 
-Say that, in those words, if you are ever asked. Calling it "anonymous" would be a claim that fails the first time someone opens the audit log — and the `customer_id` **must** be in that log, because it is the only thing that makes an Amendment-13 complaint answerable at all.
+Say that, in those words, if you are ever asked.
+
+⚠ **An earlier draft of this box said "no name, no phone number and no free text"** while class G two sections above disclosed that her alteration notes survive. Whichever sentence a regulator was shown, one of them was false — and this box is the one the controller is instructed to recite. The words above are the true ones. Calling it "anonymous" would be a claim that fails the first time someone opens the audit log — and the `customer_id` **must** be in that log, because it is the only thing that makes an Amendment-13 complaint answerable at all.
 
 ### 2.6 The marketing opt-out — the lesser action short of erasure
 
@@ -325,6 +337,13 @@ Exactly one of the two fields may be sent; the schema rejects both-set and neith
 **Withdrawal is additive and never erases the consent.** `marketing_consent_at` stays. Proving a consent *existed at the moment a message was sent* is the Spam-Law defence; clearing it would destroy the evidence. Effective consent = `marketing_consent_at IS NOT NULL AND marketing_consent_withdrawn_at IS NULL`.
 
 **The phone arm never writes `customers`.** It exists so the revocation sentence in the walk-in consent copy is *true for a walk-in*, not to promote her unverified submission into a provable consent (class C).
+
+**Both arms are audited, and only when something changed.** One `privacy_marketing_withdrawn` row per effective revocation, carrying `phone_last4` (and `customer_id` on the id arm) and nothing else. `PLATFORM_DPA_HE` publishes to every bride that staff changes to a customer's record are written to an activity log; this is a staff change to a customer's record, and per Gate 1 Q4 it is the one privacy route a non-owner can reach — i.e. the widest role exposure on the surface. The `changed` guard is what keeps that promise without letting a route a shift manager may call 120 times an hour accumulate rows in the one table with no clock: the underlying statements are self-falsifying, so a repeat writes nothing. It matters most on the **phone** arm, which NULLs `marketing_opt_in_at` and therefore destroys its own evidence — afterwards the row is indistinguishable from a walk-in who never ticked the box.
+
+> ⚠ **The walk-in (phone) arm has NO CONSOLE CONTROL. It is operator-only today.**
+> Every frontend caller of `marketing-withdraw` sends `customer_id` — the privacy panel and F53's customer card — and both are keyed on a `customers` row a pure walk-in does not have. So the arm that makes «אפשר לבקש מאיתנו להסיר את ההסכמה בכל עת» true at the counter is reachable only by the platform operator, by hand.
+> **Do not tell a walk-in caller it is self-service.** Take the request, record it in your diary per §2.7, and ask the platform operator to run it.
+> The correct home for the control is the **queue console** — the surface a shift manager actually has — and not the owner-only privacy panel; putting it on the privacy panel would leave the shift manager on the telephone exactly as stuck while looking fixed. **Owner: user/team. Trigger: F24's client portal or the next queue-console feature, whichever comes first.**
 
 ### 2.7 The `reason` field — record **why**, never **who**
 

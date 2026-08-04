@@ -100,10 +100,16 @@ describe("PrivacyPage — document semantics", () => {
     ]);
   });
 
-  it("names the boutique the notice is about", async () => {
+  it("names the boutique INSIDE the notice body, not only in the subtitle", async () => {
     const { main } = await renderPage();
 
-    expect(within(main).getAllByText(BOUTIQUE_NAME).length).toBeGreaterThan(0);
+    // ⚠ SCOPED TO THE DOCUMENT, and that scope is the whole test. Unscoped, this
+    // matched the page's own `<bdi>{siteName}</bdi>` subtitle — so reducing
+    // `substituteBoutique` to `return text` left it green while its three
+    // siblings in the substitution block all went red. It asserted the presence
+    // of a heading, under a title claiming to assert the notice.
+    const notice = within(main).getByTestId("privacy-notice");
+    expect(within(notice).getAllByText(new RegExp(BOUTIQUE_NAME)).length).toBeGreaterThan(0);
   });
 
   it("passes axe with zero violations", async () => {

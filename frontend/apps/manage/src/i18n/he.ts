@@ -2353,7 +2353,7 @@ export const he = {
     // The 409. The console maps it because the server's English message would
     // otherwise render into a Hebrew RTL screen at the one moment she is deciding
     // whether to destroy a record.
-    "privacy.error.BOOKING_ACTIVE": "ללקוחה יש תור עתידי מאושר. אפשר לבטל אותו ואז למחוק את המידע.",
+    "privacy.error.SUBJECT_HAS_ACTIVE_BOOKING": "ללקוחה יש תור עתידי מאושר. אפשר לבטל אותו ואז למחוק את המידע.",
     "privacy.error.TOO_MANY_ATTEMPTS": "בוצעו הרבה בקשות בזמן קצר. אפשר לנסות שוב בעוד זמן מה.",
     "privacy.error.NOT_AUTHORIZED": "הפעולה הזאת פתוחה לבעלת הבוטיק בלבד.",
 

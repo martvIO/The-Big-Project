@@ -585,6 +585,25 @@ class AuditAction(StrEnum):
     # exact identifier the erase exists to destroy.
     PRIVACY_SUBJECT_EXPORTED = "privacy_subject_exported"
     PRIVACY_SUBJECT_ERASED = "privacy_subject_erased"
+    # The §30A revocation, and it is written on BOTH arms.
+    #
+    # `PLATFORM_DPA_HE` publishes, to every bride on every boutique's /privacy
+    # page, that «פעולות שינוי ומחיקה שהצוות מבצע במידע של לקוחה נרשמות ביומן
+    # פעילות» — staff changes and deletions to a customer's data are recorded in
+    # an activity log. This is a staff-performed change to a customer's data, and
+    # per Gate 1 Q4 it is the ONE privacy route a non-owner can reach, so it is
+    # the route with the widest role exposure and was the one with no trail.
+    #
+    # Written ONLY when `changed` is true, which is what answers the bloat
+    # objection the route's first draft raised: the statement is self-falsifying
+    # (`IS NOT NULL` / `IS NULL` guards), so a repeat writes nothing.
+    #
+    # The phone arm needs it more than the id arm, not less: that arm NULLs
+    # `queue_tickets.marketing_opt_in_at`, so after it runs the row is
+    # indistinguishable from a walk-in who never ticked the box. Without this row
+    # the boutique can evidence neither that she asked nor that it complied.
+    # `details` carries `phone_last4` and never the number.
+    PRIVACY_MARKETING_WITHDRAWN = "privacy_marketing_withdrawn"
 
     RETENTION_OTP_CODES = "retention_otp_codes"
     RETENTION_SESSIONS = "retention_sessions"

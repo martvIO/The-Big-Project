@@ -68,6 +68,7 @@ function exported(overrides: Partial<SubjectExportResponse["subject"]> = {}): Su
     },
     bookings: [],
     messages: [],
+    queue_tickets: [],
     accepted_terms: [],
   };
 }
@@ -347,6 +348,7 @@ describe("PrivacySection subject requests", () => {
       already_erased: false,
       bookings_scrubbed: 2,
       messages_scrubbed: 4,
+      queue_tickets_scrubbed: 1,
       otp_codes_purged: 1,
       scheduled_messages_purged: 0,
     });
@@ -372,7 +374,7 @@ describe("PrivacySection subject requests", () => {
 
   it("renders the 409 in Hebrew rather than the server's English", async () => {
     eraseSubject.mockRejectedValue(
-      new ApiError(409, "BOOKING_ACTIVE", "Customer has a confirmed future booking."),
+      new ApiError(409, "SUBJECT_HAS_ACTIVE_BOOKING", "Customer has a confirmed future booking."),
     );
     await open();
     await lookup();
@@ -383,7 +385,7 @@ describe("PrivacySection subject requests", () => {
 
     fireEvent.click(screen.getByRole("button", { name: i18n.t("privacy.eraseConfirmCta") }));
 
-    expect(await screen.findByText(i18n.t("privacy.error.BOOKING_ACTIVE"))).toBeInTheDocument();
+    expect(await screen.findByText(i18n.t("privacy.error.SUBJECT_HAS_ACTIVE_BOOKING"))).toBeInTheDocument();
     expect(screen.queryByText(/Customer has a confirmed/)).toBeNull();
   });
 

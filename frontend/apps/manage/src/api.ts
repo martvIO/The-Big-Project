@@ -1071,6 +1071,23 @@ export interface ExportedMessage {
   body: string;
 }
 
+// Her walk-in check-ins — the fourth collection point. `queue_tickets` holds a
+// real name and a real E.164 number, so a §13 answer that omitted it would
+// understate what the boutique holds about a bride who both booked and walked
+// in. `skip_count` / `called_at` / `requeued_at` are absent for the reason
+// `ExportedBooking` omits `seat_index`: queue-management state, not a fact
+// about her.
+export interface ExportedQueueTicket {
+  id: string;
+  queue_day: string;
+  created_at: string;
+  name: string;
+  phone: string;
+  visit_type: string;
+  status: string;
+  marketing_opt_in_at: string | null;
+}
+
 export interface ExportedTerms {
   version: number;
   terms_text: string;
@@ -1082,6 +1099,7 @@ export interface SubjectExportResponse {
   subject: ExportedSubject;
   bookings: ExportedBooking[];
   messages: ExportedMessage[];
+  queue_tickets: ExportedQueueTicket[];
   accepted_terms: ExportedTerms[];
 }
 
@@ -1105,6 +1123,7 @@ export interface SubjectEraseResponse {
   already_erased: boolean;
   bookings_scrubbed: number;
   messages_scrubbed: number;
+  queue_tickets_scrubbed: number;
   otp_codes_purged: number;
   scheduled_messages_purged: number;
 }

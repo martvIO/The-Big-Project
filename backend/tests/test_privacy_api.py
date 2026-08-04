@@ -38,6 +38,7 @@ from app.models.constants import MessageKind, MessageStatus, StaffRole
 from app.privacy.schemas import (
     ExportedBooking,
     ExportedMessage,
+    ExportedQueueTicket,
     ExportedSubject,
     ExportedTerms,
     MarketingWithdrawResponse,
@@ -45,7 +46,11 @@ from app.privacy.schemas import (
     SubjectEraseResponse,
     SubjectExportResponse,
 )
-from app.privacy.service import SubjectNotFoundError, privacy_response
+from app.privacy.service import (
+    SubjectHasActiveBookingError,
+    SubjectNotFoundError,
+    privacy_response,
+)
 from app.privacy.text import (
     PLATFORM_DISCLAIMER_HE,
     PLATFORM_NOTICE_HE,
@@ -89,6 +94,11 @@ PRIVACY_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
 
 SPEC_ERROR_CODES = {
     "NOT_AUTHENTICATED",
+    # ⚠ The 409 the console MAPS. It reaches HTTP through main.py's exception
+    # handler and nothing asserted the spelling over the wire, so the frontend
+    # shortened it to `BOOKING_ACTIVE` and rendered the API's English sentence
+    # in an RTL Hebrew console while the Hebrew stayed a dead key.
+    "SUBJECT_HAS_ACTIVE_BOOKING",
     "NOT_AUTHORIZED",
     "VALIDATION_ERROR",
     "NOT_FOUND",
@@ -180,6 +190,18 @@ def _export() -> SubjectExportResponse:
                 body="הפגישה שלך אושרה",
             )
         ],
+        queue_tickets=[
+            ExportedQueueTicket(
+                id=uuid.uuid4(),
+                queue_day=CREATED_AT.date(),
+                created_at=CREATED_AT,
+                name="מיכל לוי",
+                phone="+972501234567",
+                visit_type="bride",
+                status="done",
+                marketing_opt_in_at=CREATED_AT,
+            )
+        ],
         accepted_terms=[
             ExportedTerms(
                 version=3,
@@ -225,9 +247,12 @@ class FakePrivacyService:
     recorded calls would make those tests assert nothing.
     """
 
-    def __init__(self, *, missing: bool = False, clock: Any = None) -> None:
+    def __init__(
+        self, *, missing: bool = False, has_active_booking: bool = False, clock: Any = None
+    ) -> None:
         self.calls: list[dict[str, Any]] = []
         self.missing = missing
+        self.has_active_booking = has_active_booking
         tick = clock if clock is not None else (lambda: 0.0)
         self.export_limiter = FixedWindowRateLimiter(SUBJECT_EXPORT_MAX_PER_WINDOW, 3600.0, tick)
         self.erase_limiter = FixedWindowRateLimiter(SUBJECT_ERASE_MAX_PER_WINDOW, 3600.0, tick)
@@ -294,17 +319,25 @@ class FakePrivacyService:
         self._spend(self.erase_limiter, tenant_id)
         if self.missing:
             raise SubjectNotFoundError
+        if self.has_active_booking:
+            raise SubjectHasActiveBookingError
         return SubjectEraseResponse(
             customer_id=customer_id,
             already_erased=False,
             bookings_scrubbed=2,
             messages_scrubbed=4,
+            queue_tickets_scrubbed=1,
             otp_codes_purged=1,
             scheduled_messages_purged=2,
         )
 
     async def withdraw_marketing(
-        self, tenant_id: uuid.UUID, *, customer_id: uuid.UUID | None, raw_phone: str | None
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        customer_id: uuid.UUID | None,
+        raw_phone: str | None,
+        actor: StaffContext,
     ) -> MarketingWithdrawResponse:
         self.calls.append(
             {
@@ -312,6 +345,7 @@ class FakePrivacyService:
                 "tenant_id": tenant_id,
                 "customer_id": customer_id,
                 "phone": raw_phone,
+                "actor_id": actor.id,
             }
         )
         self._spend(self.withdraw_limiter, tenant_id)
@@ -721,6 +755,13 @@ def test_every_spec_error_code_is_asserted() -> None:
             ).json()["error"]["code"]
         )
         seen.add(client.put("/manage/privacy", json={"notice_text": "x"}).json()["error"]["code"])
+        blocked = _client(FakePrivacyService(has_active_booking=True))
+        with blocked:
+            refused = blocked.post(
+                "/manage/privacy/subject-erase", json={"customer_id": str(CUSTOMER_ID)}
+            )
+        assert refused.status_code == 409
+        seen.add(refused.json()["error"]["code"])
         fresh = FakePrivacyService()
         throttled = _client(fresh)
         with throttled:
@@ -733,6 +774,28 @@ def test_every_spec_error_code_is_asserted() -> None:
     assert seen == SPEC_ERROR_CODES, (
         f"missing={SPEC_ERROR_CODES - seen} extra={seen - SPEC_ERROR_CODES}"
     )
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (SUBJECT_EXPORT[1], {"phone": "0" * 200}),
+        (MARKETING_WITHDRAW[1], {"phone": "0" * 200}),
+    ],
+)
+def test_an_oversized_phone_is_refused_at_the_boundary(path: str, body: dict[str, Any]) -> None:
+    """A TRUST-BOUNDARY bound, not a format rule. `normalize_israeli_mobile` runs
+    a `fullmatch` and a `re.sub` over whatever arrives, so an unbounded field
+    hands a body-limit-sized string to a regex before rejecting it. Every other
+    free-text field on this surface is capped; these two were the hole."""
+    client = _client(FakePrivacyService())
+    with client:
+        response = client.post(path, json=body)
+
+    # The house shape: a refused request body is a 400 `VALIDATION_ERROR`, the
+    # same answer `test_a_put_with_an_unknown_key_is_a_house_shape_400` pins.
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 def test_the_byte_cap_is_what_the_console_counts_against() -> None:
