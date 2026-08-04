@@ -2364,5 +2364,53 @@ export const he = {
       "במסך הזה נמצאים שני נוסחים שהלקוחה רואה באתר — הודעת הפרטיות וסעיף עיבוד המידע — ואפשר לערוך כל אחד מהם בנפרד; רשימת ספקי התשתית שמתחתיהם נקבעת על ידי מפעילת הפלטפורמה ואינה ניתנת לעריכה.",
     "guide.privacy.2":
       "בחלק התחתון מטפלים בפניות של לקוחות: מחפשים לפי מספר טלפון, ההפקה מורידה עותק של כל המידע שנשמר עליה, ומחיקה היא פעולה שאינה הפיכה — התורים נשארים במערכת בלי הפרטים המזהים.",
+
+    // --- F50: the walk-in booking -------------------------------------------
+    //
+    // ALL OF IT IS STAFF-FACING CONSOLE COPY, which is the self-approving class.
+    // There is no public-facing string in this feature: the request body is two
+    // ids, so nothing is obtained from the subject and no §11 notice is owed.
+    //
+    // The board's one new control. Its accessible name IS its visible text, so
+    // there is no *Aria row and WCAG 2.5.3 holds by construction.
+    "board.newWalkIn": "תור חדש",
+
+    // The detail's terms Fact, second body. It states the fact rather than
+    // leaving a hole — «גרסה null» beside an empty date is what the absence
+    // rendered as before this key existed.
+    "booking.termsNone": "נוצר בבוטיק · אין אישור תנאים",
+    // The row's one muted word, in the attendance treatment: never a second
+    // Badge and never a tint.
+    "booking.sourceWalkIn": "נכנסה",
+
+    "walkin.title": "תור חדש בבוטיק",
+    "walkin.searchLabel": "לקוחה",
+    // Both legs, because the server searches both and a staffer reading a phone
+    // off a card would otherwise not know she may.
+    "walkin.searchHelp": "אפשר לחפש לפי שם או לפי מספר טלפון.",
+    "walkin.resultsLegend": "בחירת הלקוחה",
+    // ⚠ THE LOAD-BEARING ONE — D3 as product copy. A walk-in for a customer the
+    // boutique does not yet hold is out of scope on purpose: her route in is the
+    // check-in form at the door, which is behind an approved notice. Not an
+    // error and not role="alert": it is the ordinary answer to a search that
+    // matched nothing. «קוד סריקה» is the shipped nav label of that screen.
+    "walkin.empty":
+      "לא נמצאה לקוחה עם השם או הטלפון האלה. לקוחה חדשה נרשמת דרך טופס הרישום בכניסה — הקוד נמצא במסך «קוד סריקה».",
+    // Stated, never absorbed — the board's own truncation rule, and it bites the
+    // same way here: two brides with one name and only one of them on screen.
+    "walkin.truncated": "מוצגות {{count}} הלקוחות הראשונות. אפשר לדייק את החיפוש.",
+    "walkin.searchFailed": "לא הצלחנו לחפש לקוחות כרגע.",
+    "walkin.typeLabel": "סוג הפגישה",
+    "walkin.typePlaceholder": "בחירת סוג פגישה",
+    "walkin.typesFailed": "לא הצלחנו לטעון את סוגי הפגישות כרגע.",
+    "walkin.typesEmpty": "לא הוגדרו סוגי פגישות. אפשר להגדיר אותם במסך «סוגי תורים».",
+    "walkin.confirm": "יצירת התור",
+    // This dialog IS the confirm: the consequence sits above the one submit
+    // rather than stacking a second focus trap for a decision she is reading.
+    "walkin.consequence": "התור נפתח עכשיו והלקוחה מסומנת כמי שהגיעה.",
+    // The board's announced cue, in board.checkedInCue's shape: it names the
+    // bride, because after one tap on a forty-row board a nameless confirmation
+    // is useless exactly when the board is busy.
+    "walkin.createdCue": "נוצר תור חדש עבור {{name}}.",
   },
 } as const;
