@@ -57,10 +57,19 @@ export function ConsoleShell({
               pair. One wrapper restores two groups. */}
           <div className="flex items-center gap-4">
             {guide}
+            {/* ⚠ `min-h-11 px-2` — SIZED LIKE ITS SIBLING, and it was not. This
+                measured 29 × 21 px in a real browser: under the 44 px floor
+                every other control in this console holds, and under WCAG 2.5.8's
+                own 24 × 24 on the width. The `guide` slot beside it has carried
+                exactly these two utilities since F60, with a comment explaining
+                that the ≈52 → ≈68 px header growth is deliberate; this one
+                simply never got them.
+                Background is transparent, so the 44 px box is invisible and the
+                header is still two text labels side by side. */}
             <button
               type="button"
               onClick={onLogout}
-              className={cn("text-sm text-ink-muted hover:text-ink", focusRing)}
+              className={cn("min-h-11 px-2 text-sm text-ink-muted hover:text-ink", focusRing)}
             >
               {logoutLabel}
             </button>

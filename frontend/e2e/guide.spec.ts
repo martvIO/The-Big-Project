@@ -649,3 +649,41 @@ test("checkin: zero axe A/AA violations with the hint revealed", async ({ page }
   // No animation on this surface, but the same rule: measure a settled page.
   expect(await axeViolations(page)).toEqual([]);
 });
+
+// --- the console header's two chrome controls, MEASURED ----------------------
+
+// The walkthrough measured «יציאה» at 29 × 21 px. That fails even WCAG 2.5.8's
+// 24 × 24 (AA in 2.2) and is well under the 44 px floor every other control in
+// this console holds — including the «מדריך» button standing directly beside it,
+// which carries `min-h-11 px-2` and says so in a comment.
+//
+// ⚠ MEASURED, and it has to be: jsdom has no layout engine, so the unit suite
+// can only assert the class string. This is the same instrument
+// `atelier-capacity.spec.ts` uses for the same reason, and this file already
+// owns the header — `guide: Tab from the dialog lands on «יציאה»` is fifty lines
+// up.
+//
+// ⚠ It asserts BOTH controls, not just the one that was wrong. The pair is the
+// point: they sit in one flex row and read as a pair, and the defect was that
+// one of them silently was not sized like its sibling.
+test("guide: both header chrome controls clear the 44 px touch floor, MEASURED", async ({
+  page,
+}) => {
+  await gotoConsole(page);
+
+  for (const [label, control] of [
+    [LOGOUT, page.getByRole("button", { name: LOGOUT })],
+    [GUIDE, guideTrigger(page)],
+  ] as const) {
+    const box = await control.boundingBox();
+    expect(box, `${label} has no box`).not.toBeNull();
+    expect(box?.height ?? 0, `${label} is under the 44 px touch floor`).toBeGreaterThanOrEqual(44);
+    // Width too — the walkthrough's 29 px was the WIDTH, and «יציאה» is a short
+    // enough word that a control with no inline padding is narrower than it is
+    // tall. WCAG 2.5.8's own floor is 24, which this already cleared and which
+    // is why the height check alone would not have caught it.
+    expect(box?.width ?? 0, `${label} is under the 24 px WCAG 2.5.8 floor`).toBeGreaterThanOrEqual(
+      24,
+    );
+  }
+});
