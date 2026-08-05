@@ -986,6 +986,27 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         # Same body as every other resolution failure — no distinguishable 404s.
         return JSONResponse(TENANT_NOT_FOUND_BODY, status_code=404)
 
+    # ⚠ THE UNROUTED 404, and it is registered by STATUS CODE rather than by
+    # exception type. Starlette raises its own `HTTPException(404)` from the
+    # router when nothing matched, and answered `{"detail": "Not Found"}` — while
+    # every HANDLED error below is `{"error": {code, message}}`. Both frontends
+    # read `response.data.error.message` (FRONTEND.md mandates it, and each
+    # `api.ts`'s `errorMessage()` is built on it), so `error` was undefined here
+    # and every stale-URL 404 reached the user as the generic fallback string.
+    #
+    # ⚠ It cannot swallow the SPA catch-all or the exact `/manage` route: both
+    # are real routes that MATCH, so no 404 is ever raised for them. Nor the
+    # 405s — `_SpaFallbackRoute.matches` declines EXEMPT_PATHS and the reserved
+    # segments before a method is looked at, leaving the partial match to raise
+    # 405 and not 404. `test_spa_serving.py` pins all three.
+    #
+    # ⚠ NOT registered for `StarletteHTTPException` generally: that would also
+    # capture the 405 and every other status Starlette raises, which is exactly
+    # the collapse this app has spent nine handlers avoiding.
+    @app.exception_handler(404)
+    async def _unrouted(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(NOT_FOUND_BODY, status_code=404)
+
     @app.exception_handler(InvalidCredentialsError)
     async def _invalid_credentials(request: Request, exc: InvalidCredentialsError) -> JSONResponse:
         # One body for wrong-password AND unknown-email — no account enumeration.

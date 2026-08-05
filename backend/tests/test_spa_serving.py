@@ -351,6 +351,60 @@ def test_an_unknown_manage_path_is_a_404_not_the_console_shell(client: TestClien
     assert client.get("/manage/not-a-section").status_code == 404
 
 
+@pytest.mark.parametrize("path", ["/manage/nope", "/storefront/nope"])
+def test_an_unrouted_path_answers_the_platform_error_envelope(
+    client: TestClient, path: str
+) -> None:
+    """Every HANDLED error in this app is `{"error": {code, message}}`, and both
+    frontends read `response.data.error.message` — `FRONTEND.md` mandates it, and
+    `errorMessage()` in each `api.ts` is built on it. Starlette's own 404 body is
+    `{"detail": "Not Found"}`, so `error` is undefined there and every stale-URL
+    404 reached the user as the generic fallback string instead of anything about
+    the request.
+
+    Both reserved segments, because `_SpaFallbackRoute` declines both and each is
+    a different frontend's base URL."""
+    resp = client.get(path)
+
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json() == {"error": {"code": "NOT_FOUND", "message": "Resource not found."}}
+    # The shape the shipped handlers use, restated as the property rather than
+    # as a literal: `detail` is what must NOT be there.
+    assert "detail" not in resp.json()
+
+
+def test_the_envelope_does_not_cost_the_spa_catch_all_its_shell(client: TestClient) -> None:
+    """The one way this fix could break the product: an over-broad 404 handler
+    that swallowed the storefront's client-side routes. `/about` is a real
+    storefront route with no backend route behind it — it MUST still be a 200
+    HTML shell, not a JSON envelope."""
+    resp = client.get("/about")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+
+
+def test_the_envelope_does_not_cost_the_manage_shell_its_exact_route(client: TestClient) -> None:
+    """The other way: `/manage` is an EXACT `_serve_file` route, one URL and no
+    subtree. It must stay a 200 shell while `/manage/nope` beside it is an
+    envelope."""
+    resp = client.get("/manage")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert client.get("/manage/nope").status_code == 404
+
+
+def test_a_405_is_still_a_405_and_not_the_404_envelope(client: TestClient) -> None:
+    """A status-code handler registered for 404 must not be reached by the 405
+    that `test_a_post_only_api_path_keeps_its_405` exists to protect."""
+    resp = client.get("/storefront/otp/send")
+
+    assert resp.status_code == 405
+    assert resp.json() != {"error": {"code": "NOT_FOUND", "message": "Resource not found."}}
+
+
 # --- no static directory ---
 
 

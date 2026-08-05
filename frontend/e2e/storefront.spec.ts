@@ -61,7 +61,12 @@ const BOUTIQUE = {
   // single home for that, and a copy here would be a second place for a legal
   // string to drift. What they do carry are the two shapes the renderer handles —
   // the `{{boutique}}` token, and a blank-line paragraph break.
-  privacy_notice_text: "הודעת פרטיות של {{boutique}}.\n\nפסקה שנייה של ההודעה.",
+  // Three SHAPES, not three sentences: the `{{boutique}}` token, a blank-line
+  // paragraph break, and a BULLET RUN. The third is what makes the WCAG 1.3.1
+  // list assertions below — and every axe scan of this page — real; the three
+  // shipped documents carry seventeen `•` lines between them.
+  privacy_notice_text:
+    "הודעת פרטיות של {{boutique}}.\n\nפסקה שנייה של ההודעה.\n\nהזכויות שלך:\n• לעיין\n• לתקן\n• למחוק",
   privacy_dpa_text: "תנאי עיבוד מידע של {{boutique}}.",
   privacy_subprocessors_text: "ספקי תשתית.",
 };
@@ -1631,6 +1636,8 @@ const NAME_LABEL = "שם מלא";
 const PHONE_LABEL = "טלפון נייד";
 const CODE_LABEL = "קוד האימות";
 const CUSTOMER_NAME = "נועה כהן";
+const DATE_LABEL = "תאריך";
+const NAME_REQUIRED = "צריך למלא שם כדי שנוכל לרשום את התור.";
 const TYPED_PHONE = "050-123 4567";
 const WIRE_PHONE = "+972501234567";
 const OTP_CODE = "123456";
@@ -1843,6 +1850,85 @@ test("storefront booking: the generic path walks all five steps to a confirmatio
       marketing_consent: false,
     },
   ]);
+});
+
+// --- implicit submission, which only a real browser can measure --------------
+
+// The walkthrough typed a valid name on /book/details and pressed Enter: no
+// navigation, no error, no role=alert, no console output. It recorded
+// `{hasForm:false, continueBtn:{type:'button', insideForm:false}}` — the flow
+// was not a <form> at all, so a phone keyboard's Go key was dead on the last
+// field and she had to Tab past the notes textarea AND the marketing checkbox to
+// reach «המשך».
+//
+// ⚠ THIS TEST LIVES HERE AND NOT IN VITEST BECAUSE IT CANNOT LIVE THERE. jsdom
+// does not implement implicit form submission, and this workspace ships no
+// `@testing-library/user-event` to emulate it — so no jsdom assertion can press
+// Enter and watch the step advance. `BookPage.test.tsx` asserts the STRUCTURE
+// (a form exists, the control is type=submit, the field and the control share
+// it) on every fast run; this is the only place the BEHAVIOUR is real.
+//
+// Mutation ledger, run against a real build of this file.
+// ⚠ M2 AND M3 WERE OVERSTATED WHEN FIRST WRITTEN, and both are now what actually
+// reproduced — the review that caught it is the same class of finding as the
+// /fake-pay correction in LOOP-STATE.md: a claim nobody re-ran.
+//   M1  `<ForwardForm>` reverted to the shipped `<>` fragment + a
+//       `type="button"` control — this test reds, and the vitest structural test
+//       reds with it.
+//   M2  the forward control changed to `type="button" onClick={onForward}` — the
+//       click path kept, only implicit submission killed. THIS TEST REDS AT THE
+//       SLOT STEP (`/book/slot`, the date field). It does NOT red at details:
+//       run in isolation, the second test below still passes under M2, because
+//       the details step has exactly ONE field that blocks implicit submission
+//       (the name text; a TextArea and a Checkbox block nothing) and HTML submits
+//       a button-less form in that case. "All three red" was never true — the
+//       first step failing is what stops the other two being reached.
+//   M3  `noValidate` removed from ForwardForm — the SECOND test reds, not this
+//       one. This test fills a VALID name, so constraint validation has nothing
+//       to object to; the refusal case is where the native bubble replaces the
+//       authored Hebrew. That is why the two tests are separate.
+test("storefront booking: Enter in a field advances the step, on every step that has one", async ({
+  page,
+}) => {
+  await installApi(page);
+
+  // SLOT — Enter in the date field, the only text-shaped control on the step.
+  await gotoBooking(page, "/book/slot");
+  await page.getByRole("radio", { name: new RegExp(BOOK_TYPE) }).check();
+  await chip(page, SLOT_LABEL).click();
+  await page.getByLabel(DATE_LABEL).press("Enter");
+  await expectStep(page, "details");
+
+  // DETAILS — the step the walkthrough measured, and the one `noValidate`
+  // decides: `required` on this very field would otherwise raise a native
+  // bubble instead of running `forwardDetails`.
+  await page.getByLabel(NAME_LABEL).fill(CUSTOMER_NAME);
+  await page.getByLabel(NAME_LABEL).press("Enter");
+  await expectStep(page, "terms");
+
+  // TERMS — Enter on the consent checkbox. Space still toggles it; Enter is the
+  // platform's «do the form's action», which is the same action «המשך» takes.
+  await page.getByRole("checkbox").check();
+  await page.getByRole("checkbox").press("Enter");
+  await expectStep(page, "verify");
+});
+
+test("storefront booking: a bad name pressed through with Enter raises the AUTHORED error, not a native bubble", async ({
+  page,
+}) => {
+  // The half `noValidate` exists for. Without it Chromium's own constraint
+  // validation intercepts the submit and shows an untranslated LTR bubble, and
+  // `forwardDetails` — which owns the Hebrew message, the role="alert" and the
+  // focus move to the first failure — never runs at all.
+  await installApi(page);
+  await gotoDetails(page);
+
+  await page.getByLabel(NAME_LABEL).press("Enter");
+
+  await expectStep(page, "details");
+  await expect(page.getByRole("alert").filter({ hasText: NAME_REQUIRED })).toBeVisible();
+  await expect(page.getByLabel(NAME_LABEL)).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByLabel(NAME_LABEL)).toBeFocused();
 });
 
 // --- §11 row 2: the item-based path ------------------------------------------
@@ -2516,6 +2602,72 @@ test("storefront check-in: the form mints a ticket and lands on that ticket's ow
   expect(await page.evaluate(() => sessionStorage.getItem("checkin:ticket"))).toBe(TICKET_FIRST);
 });
 
+// ⚠ THE BEHAVIOURAL HALF OF `/checkin`'s <form>, and it can only live here.
+// jsdom implements no implicit form submission, so `CheckinPage.test.tsx` can
+// assert the structure and dispatch a synthetic `submit` — it can never press
+// the key. And this is the ONE surface that is only ever used on a phone: the QR
+// taped to the shop window, a woman standing in the doorway, the keyboard's Go
+// key sitting where the submit button would be. It was dead until this branch.
+//
+// The booking flow got its <form> and this page did not, which is the drift the
+// pair of tests below closes: same shape, same two proofs, one per surface.
+//
+// Mutation ledger, run against a real build of this file:
+//   MC1  `type="submit"` on «הצטרפות לתור» -> `type="button" onClick={forward}`,
+//        the <form> left in place — BOTH tests below red. The form then has no
+//        submit button and TWO fields that block implicit submission (the name
+//        text and the tel), which per HTML is the case where Enter does nothing
+//        at all. The click path still works, so only these two catch it.
+//   MC2  `noValidate` removed from the form — the SECOND test reds: the unchecked
+//        `required` radios make Chromium raise its own untranslated bubble and
+//        `forward` never runs, so the authored Hebrew, the role="alert" and the
+//        focus move all vanish together. The first test stays green, because a
+//        fully-filled form satisfies constraint validation — which is exactly
+//        why the refusal case is asserted separately.
+test("storefront check-in: Enter in the phone field mints the ticket, with no tap on the button", async ({
+  page,
+}) => {
+  await installApi(page);
+  const posted = captureCheckins(page);
+
+  await gotoCheckin(page);
+  await fillCheckin(page);
+
+  // The last field she fills on a phone, and the one whose keyboard shows «Go».
+  const [response] = await Promise.all([
+    page.waitForResponse((r) => new URL(r.url()).pathname === "/storefront/checkin"),
+    page.getByLabel(PHONE_LABEL).press("Enter"),
+  ]);
+
+  expect(response.status()).toBe(201);
+  await expect(page).toHaveURL(`${STOREFRONT}/q/${TICKET_FIRST}`);
+  // One create, not two: the implicit submission and the click must not both
+  // fire, which is what `type="submit"` with no onClick buys.
+  expect(posted).toEqual([
+    { name: CUSTOMER_NAME, phone: WIRE_PHONE, visit_type: "bride", marketing_opt_in: false },
+  ]);
+});
+
+test("storefront check-in: Enter with no visit type raises the AUTHORED refusal, not a native bubble", async ({
+  page,
+}) => {
+  // The half `noValidate` exists for, and the reason it is not decoration: both
+  // visit-type radios carry `required` on WCAG 3.3.2 grounds (no `*` marker), so
+  // Chromium's own constraint validation would intercept this submit and show an
+  // untranslated LTR bubble instead of running `forward`.
+  await installApi(page);
+  await gotoCheckin(page);
+
+  await page.getByLabel(NAME_LABEL).fill(CUSTOMER_NAME);
+  await page.getByLabel(PHONE_LABEL).fill(TYPED_PHONE);
+  await page.getByLabel(PHONE_LABEL).press("Enter");
+
+  await expect(page.getByRole("alert").filter({ hasText: VISIT_TYPE_REQUIRED })).toBeVisible();
+  // Still on the form, and no request was ever issued.
+  await expect(page).toHaveURL(`${STOREFRONT}/checkin`);
+  await expect(page.getByRole("button", { name: CHECKIN_SUBMIT })).toBeVisible();
+});
+
 test("storefront check-in: zero axe A/AA violations — the form, the form in error, and the live position", async ({
   page,
 }) => {
@@ -2856,9 +3008,20 @@ test("storefront privacy: the three documents render in their statutory order, e
     PRIVACY_SUBPROCESSORS_HEAD,
   ]);
 
-  // The blank line in the fixture became a second <p>, rather than one block of
-  // text with a newline in it.
-  await expect(page.getByTestId("privacy-notice").locator("p")).toHaveCount(2);
+  // The blank lines in the fixture became separate <p>, rather than one block of
+  // text with newlines in it: two prose blocks plus the third block's lead line.
+  await expect(page.getByTestId("privacy-notice").locator("p")).toHaveCount(3);
+
+  // ⚠ WCAG 1.3.1, and it shipped broken: the three documents put their bullet
+  // lines inside <p class="whitespace-pre-line"> with zero <ul>/<ol>/<li>
+  // anywhere. axe passes that and CANNOT DO OTHERWISE — it has no way to know
+  // text beginning with «•» was meant to be a list — so this is the assertion
+  // that has to be written by hand, on the page whose entire purpose is
+  // communicating an enumerated set of rights and recipients.
+  await expect(page.getByTestId("privacy-notice").getByRole("listitem")).toHaveCount(3);
+  await expect(page.getByTestId("privacy-notice").getByRole("listitem").first()).toHaveText(
+    "לעיין",
+  );
 
   // {{boutique}} was filled in, and the literal token never reaches the page.
   await expect(page.getByTestId("privacy-notice")).toContainText(BOUTIQUE.name);
@@ -2900,8 +3063,16 @@ test("storefront privacy: the details step carries the §11 notice, and it is th
   // text, so a second copy pasted into the bundle would have to match byte for
   // byte to survive — which is the point.
   const onForm = (await notice.innerText()).replace(COLLECTION_NOTICE_HEAD, "");
+  // …and on the same SEMANTICS. One renderer serves both surfaces, so the
+  // bullet run is a real list on the §11 screen too — it was a paragraph on
+  // both, which is the half D13 could not see.
+  const itemsOnForm = await notice.getByRole("listitem").allInnerTexts();
+  expect(itemsOnForm).toEqual(["לעיין", "לתקן", "למחוק"]);
   await gotoSettled(page, "/privacy");
   const onPage = await page.getByTestId("privacy-notice").innerText();
+  expect(await page.getByTestId("privacy-notice").getByRole("listitem").allInnerTexts()).toEqual(
+    itemsOnForm,
+  );
   for (const block of [NOTICE_BLOCK_1, NOTICE_BLOCK_2]) {
     expect(onForm, `the booking form dropped: ${block}`).toContain(block);
     expect(onPage, `/privacy dropped: ${block}`).toContain(block);

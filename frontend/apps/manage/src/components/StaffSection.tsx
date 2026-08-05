@@ -314,10 +314,18 @@ export function StaffSection({ staffId }: { staffId: string }) {
                   {roleWord(row.role)}
                 </Badge>
                 {isSelf && <span className="text-xs text-ink-muted">{t("staff.selfMarker")}</span>}
+                {/* ⚠ BOTH CONTROLS ARE NAMED AFTER THE ROW, and both were
+                    nameless: seven staff meant seven identical «עריכה» and six
+                    identical «השבתה» in one list, one of which ends a
+                    colleague's access. «{action} — {name}» is the console's own
+                    shape — the floor, waitlist and atelier panels all use it —
+                    and the visible word leads so WCAG 2.5.3 holds for speech
+                    input. No bidi markup: an aria-label takes none. */}
                 <span className="ms-auto flex gap-2">
                   <Button
                     type="button"
                     variant="secondary"
+                    aria-label={t("staff.editAria", { name: row.display_name })}
                     onClick={() => {
                       setEditingId(row.id);
                       setEditDraft(draftFrom(row));
@@ -334,6 +342,7 @@ export function StaffSection({ staffId }: { staffId: string }) {
                     <Button
                       type="button"
                       variant="danger"
+                      aria-label={t("staff.deactivateAria", { name: row.display_name })}
                       onClick={(event) => {
                         deactivateTrigger.current = event.currentTarget;
                         setPending(row);

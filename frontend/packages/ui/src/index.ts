@@ -33,6 +33,8 @@ export { ToastProvider } from "./components/Toast";
 export type { ToastProviderProps } from "./components/Toast";
 export { useToast } from "./components/toast-context";
 export type { ToastOptions, ToastVariant, ShowToast } from "./components/toast-context";
+export { ErrorBoundary } from "./components/ErrorBoundary";
+export type { ErrorBoundaryProps } from "./components/ErrorBoundary";
 export { SkipLink, VisuallyHidden } from "./components/A11y";
 export type { SkipLinkProps } from "./components/A11y";
 

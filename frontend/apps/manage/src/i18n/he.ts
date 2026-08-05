@@ -258,6 +258,18 @@ export const he = {
     "staff.editCta": "עריכה",
     // «השבתה», never «מחיקה»: the row is soft-deleted and its audit trail lives.
     "staff.deactivateCta": "השבתה",
+    // ⚠ ADDED LATE, and their absence was the defect: both row controls had a
+    // null aria-label, so seven staff rendered seven identical «עריכה» and six
+    // identical «השבתה» in one list — one of which ends a colleague's access.
+    // The «{action} — {name}» shape is the console's own, copied from
+    // `atelier.editAria` / `floor.breakStartAria` / `rooms.releaseAria` rather
+    // than invented, and WCAG 2.5.3 is why the visible word comes FIRST: speech
+    // input has to be able to say what it reads.
+    //
+    // No bidi treatment — an aria-label takes no markup, the same exemption the
+    // atelier and floor arias record.
+    "staff.editAria": "עריכה — {{name}}",
+    "staff.deactivateAria": "השבתה — {{name}}",
     "staff.displayNameLabel": "שם לתצוגה",
     "staff.emailLabel": "אימייל",
     "staff.roleLabel": "תפקיד",
@@ -1390,6 +1402,18 @@ export const he = {
     // The dialog returns focus to «כרטיס חדש» and NOT to the new card, so this
     // is the only thing that says which ticket was opened.
     "atelier.cue.created": "{{name}} — נפתח כרטיס.",
+    // ⚠ WRITTEN LATE, and its absence WAS the defect: `setCue` sat inside the
+    // create branch, so editing a ticket was the one mutation on this board that
+    // announced nothing at all. A sighted user sees the dialog close; without
+    // this string a screen-reader user gets silence she cannot tell from a
+    // failed save.
+    //
+    // It NAMES the ticket even though the card does not move, which is the one
+    // place the naming rule above is deliberately not followed: an edit replaces
+    // five fields at once, so there is no single «new value» to name in its
+    // place — and native <dialog> hands focus back to «עריכה», a control whose
+    // own accessible name is «עריכה — {{name}}», so the two agree.
+    "atelier.cue.updated": "{{name}} — הכרטיס עודכן.",
     // ⚠ THE SINGLE MOST IMPORTANT STRING IN THIS BLOCK: for a sighted user the
     // move is self-evident because the card is visibly in another column, and
     // FOR A SCREEN-READER USER THIS SENTENCE IS THE MOVE.

@@ -367,7 +367,14 @@ describe("the send", () => {
     expect(dialog).not.toHaveTextContent("אירעה שגיאה בלתי צפויה");
     // The note survives, so a retry costs one tap.
     expect(within(dialog).getByLabelText("מה צריך")).toHaveValue("צריך סיכות");
-    expect(document.activeElement).toBe(within(dialog).getByRole("alert"));
+    // ⚠ MOVE F lands in a PASSIVE effect, so it is NOT flushed by the `waitFor`
+    // above — that one returns the moment the alert TEXT is committed, one React
+    // phase before the focus move. Asserting focus bare passes only while the
+    // machine is idle enough for the effect to sneak in first; under parallel
+    // load it read the send button (which jsdom leaves focused, since `blur()`
+    // no-ops on the `disabled` control — the very case this guard allows) and
+    // this test failed ~50% of the time. Wait for the move, do not race it.
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole("alert")));
   });
 
   it("MOVE F's other direction — a failure landing after she tabbed back to the note leaves it alone", async () => {

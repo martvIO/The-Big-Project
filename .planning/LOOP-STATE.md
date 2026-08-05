@@ -47,14 +47,21 @@ current: F61                    # ==============================================
                                 # the merged set rather than by reading file order:
                                 #   F21 F22 F24 F25 F27 F28 F35 F38 F44 F47 F49
                                 #
-                                # ⚠ NINE PRODUCT DEFECTS ARE LOGGED IN `known_product_bugs` and NONE
-                                # is fixed. Six are a11y, which is a LEGAL requirement here
-                                # (IS 5568 / WCAG 2.0 AA), and the two worst are invisible to BOTH
-                                # test suites by construction — a role="status" that never fires and
-                                # an aria-invalid that lies about corrected input. They will not be
-                                # caught by any gate; they need a deliberate feature.
-                                # SUGGESTED: one small a11y/UX batch before more features. Every fix
-                                # is 1-3 lines and each has its file named in the entry.
+                                # ✅ THE NINE WALKTHROUGH DEFECTS ARE ALL FIXED — F61, the a11y/UX
+                                # batch this block asked for. DO NOT RE-PICK THEM: every entry in
+                                # `known_product_bugs` now carries `fixed_in: F61` and the test that
+                                # reds if the fix is reverted, and every one of those mutations was
+                                # RUN. Six were a11y, a LEGAL requirement here (IS 5568 / WCAG 2.0 AA).
+                                # The two worst were invisible to both suites by construction — a
+                                # role="status" that never fires and an aria-invalid that lies about
+                                # corrected input — and the batch closed the instruments too:
+                                # a MutationObserver on the live region for the first, and a real
+                                # Chromium keypress for the implicit-submission half of the second.
+                                # F61 also found a TENTH, in the fix for the fifth: `/checkin` had the
+                                # same missing <form> as the booking flow and the first pass shipped
+                                # only the booking half. Read `known_product_bugs`' new header for the
+                                # three lessons that outlive the nine — the live-region one is a
+                                # STILL-OPEN sweep across three more files.
                                 # NOTHING IS USER-BLOCKED. Two user items remain and BOTH are
                                 # DEPLOY-time, not build-time: the 3 DNS records and the 2 Twilio
                                 # values. The queue can run to exhaustion without another answer.
@@ -2417,7 +2424,28 @@ known_product_bugs:             # real defects found but deliberately not fixed 
   # ==== THE PATTERN: BOTH TOP DEFECTS ARE THINGS NEITHER SUITE CAN SEE — a           ====
   # ==== role="status" that never fires and an aria-invalid that lies. Invisible to   ====
   # ==== vitest (jsdom) and to the intercepted Playwright suite alike.                ====
+  #
+  # ==== ✅ ALL NINE ARE FIXED IN F61 (2026-08-05). DO NOT RE-PICK THEM. =============
+  # Each carries `fixed_in: F61` with the test that reds if the fix is reverted; every
+  # one of those mutations was run, not merely named. They are kept rather than deleted
+  # because the ENTRY is the record of what the walkthrough could see that the gates
+  # could not — that is the reusable part, and deleting it loses it.
+  #
+  # THREE THINGS F61 LEARNED THAT ARE WORTH MORE THAN THE NINE FIXES:
+  #   1. `role="status"` is not enough. React SKIPS the DOM text write when a live
+  #      region re-renders to the same string, so a cue that repeats verbatim is
+  #      SILENT. Two comments in this repo asserted the opposite. The nonce+key on
+  #      `AtelierSection`'s cue is the fix; `FloorPanel.tsx:270`, `GuideOverlay.tsx:49`
+  #      and `RoomsRegistryDialog.tsx:160` still carry the wrong belief and are the
+  #      obvious next sweep — RoomsRegistryDialog happens to be safe by accident,
+  #      because it clears to "" before every write.
+  #   2. A padded test budget is not free. Three budgets went to 60s here; the number
+  #      that justified two of them was WRONG BY 16× and nobody checked. See
+  #      `known_flaky` for the re-measured baselines.
+  #   3. A comment that misdescribes a SIBLING file is the same defect class as the
+  #      /fake-pay overstatement above. Review round 1 caught one on this branch.
   - what: "/checkin pins its validation errors after the user corrects them"
+    fixed_in: F61 — clearError() on all three onChange; CheckinPage.test.tsx reds on removing any one
     severity: MEDIUM · a11y · NEVER-WORKED
     where: "frontend/apps/storefront/src/routes/CheckinPage.tsx (name/phone/visitType onChange)"
     evidence: >-
@@ -2432,6 +2460,10 @@ known_product_bugs:             # real defects found but deliberately not fixed 
       drift between two surfaces that should share one behaviour, not a missing idea.
     fix: "call clearError('name'|'phone'|'visitType') in the three onChange handlers"
   - what: "editing an atelier ticket is the only mutation that announces nothing"
+    fixed_in: >-
+      F61 — setCue lifted out of the create branch, atelier.cue.updated added to he.ts + ar.ts,
+      AND a nonce keying the span inside the region so a REPEATED edit of one bride (whose text
+      is byte-identical) still mutates it. Two AtelierSection.test.tsx tests, four mutations run.
     severity: MEDIUM · a11y · NEVER-WORKED
     where: "frontend/apps/manage/src/components/AtelierSection.tsx — setCue is inside `if (form.mode === 'create')`"
     evidence: >-
@@ -2443,6 +2475,7 @@ known_product_bugs:             # real defects found but deliberately not fixed 
       indistinguishable from a failed save.
     fix: "add atelier.cue.updated to he.ts + ar.ts and lift setCue out of the create branch"
   - what: "the erase confirmation rejects the phone format its own lookup just accepted"
+    fixed_in: F61 — phoneKey() normalises both sides; PrivacySection.test.tsx reds on restoring the exact compare
     severity: MEDIUM · destructive-action UX
     where: "frontend/apps/manage/src/components/PrivacySection.tsx — exact compare against stored E.164"
     evidence: >-
@@ -2456,6 +2489,7 @@ known_product_bugs:             # real defects found but deliberately not fixed 
       different customer to erase.
     fix: "compare normalised digits, or say +972… in the label"
   - what: "every staff-row button is nameless"
+    fixed_in: F61 — aria-label="{action} — {name}"; StaffSection.test.tsx asserts the names are UNIQUE, not merely present
     severity: MEDIUM · a11y
     where: "frontend/apps/manage/src/components/StaffSection.tsx row buttons"
     evidence: >-
@@ -2467,6 +2501,9 @@ known_product_bugs:             # real defects found but deliberately not fixed 
       render «{action} — {name}», and the runbook cites that as the rule.
     fix: "aria-label={`${action} — ${name}`}, matching the floor panels"
   - what: "the booking flow is not a <form>; Enter in a text field does nothing"
+    fixed_in: >-
+      F61 — ForwardForm on all three booking steps AND on /checkin, which the first pass missed;
+      structure in vitest, the keypress in Playwright (jsdom has no implicit submission).
     severity: MEDIUM · UX
     where: "frontend/apps/storefront/src/routes/BookPage.tsx — document.querySelector('form') is null"
     evidence: >-
@@ -2478,6 +2515,7 @@ known_product_bugs:             # real defects found but deliberately not fixed 
       must Tab past the notes textarea AND the marketing checkbox to reach «המשך».
     fix: "one <form onSubmit> wrapper plus type=submit"
   - what: "unrouted paths escape the platform error envelope"
+    fixed_in: F61 — @app.exception_handler(404); a 405 guard test stops it widening to StarletteHTTPException
     severity: LOW-MEDIUM
     where: "backend/app/main.py — no 404 exception handler"
     evidence: "/manage/nope and /storefront/nope answer {\"detail\":\"Not Found\"}; every HANDLED error is {\"error\":{code,message}}"
@@ -2486,11 +2524,16 @@ known_product_bugs:             # real defects found but deliberately not fixed 
       so every stale-URL 404 reaches the user as the generic fallback string.
     fix: "one @app.exception_handler(404) emitting the envelope"
   - what: "the logout button is 29x21 px"
+    fixed_in: F61 — min-h-11 px-2; guide.spec.ts MEASURES boundingBox in Chromium, the only instrument that can
     severity: LOW · a11y
     where: "frontend/apps/manage — «יציאה»"
     evidence: "measured 29 x 21; fails even WCAG 2.5.8 AA (24 x 24). Every other console control is 44 px high."
     fix: "size it like its siblings"
   - what: "neither SPA has a React error boundary"
+    fixed_in: >-
+      F61 — one boundary per app root. NOTE the scope, because the entry below overstates it: a ROOT
+      boundary replaces the SOS overlay along with everything else. It buys a sentence and a reload,
+      NOT a surviving emergency channel. That would need a second boundary around the overlay.
     severity: MEDIUM-LOW
     where: "grep -rn 'ErrorBoundary|componentDidCatch|getDerivedStateFromError' apps packages -> 0 source hits"
     evidence: >-
@@ -2503,6 +2546,9 @@ known_product_bugs:             # real defects found but deliberately not fixed 
       CHANNEL.
     fix: "one boundary per app root rendering the existing outage copy + a reload control"
   - what: "the privacy documents render 17 bulleted lines with no list semantics"
+    fixed_in: >-
+      F61 — PrivacyProse parses bullet runs into <ul>/<li> at the RENDERER; backend/app/privacy/
+      is untouched, so the byte cap and the no-HTML invariant both still hold.
     severity: LOW-MEDIUM · a11y · WCAG 1.3.1 (A)
     where: "/privacy and the §11 details notice — `•` inside <p class='whitespace-pre-line'>, zero <ul>/<ol>/<li>"
     why_it_matters: >-
@@ -2624,7 +2670,35 @@ known_flaky:                    # nondeterministic tests — they gate every mer
       perfectly good feature — and worse, it trains whoever is watching to
       re-run red CI without reading it, which is how a real failure gets waved
       through. Fix the wait, do not raise the timeout.
-    owner: unassigned — pick up at the E4 boundary or sooner if it recurs
+    owner: >-
+      unassigned — pick up at the E4 boundary or sooner if it recurs. PARTLY ANSWERED by
+      F61, which fixed seven load-flaky frontend tests by TIGHTENING waits and not one by
+      raising a timeout: `getBy` -> `findBy`, a bare read -> `waitFor`, and an
+      `await act(async () => {})` before an Esc that cannot be waited for. Same class of
+      race as this entry, different files (SosRaiseDialog, WaitlistPanel, SeamstressPanel,
+      SosOverlay, CatalogPage). This specific ManageBookingPage assertion was NOT touched.
+  # ---- ACCEPTED DEBT, not a flake: three padded budgets, recorded so nobody re-derives ----
+  - test: >-
+      frontend/apps/manage/src/__tests__/AtelierSection.test.tsx :: 5c and 5d (60 s each) ·
+      frontend/apps/storefront/src/__tests__/CatalogPage.test.tsx :: load-more (60 s test, 30 s per wait)
+    seen: "2026-08-05, F61 review round 1 — the reviewer flagged the padding, the verifier flagged the number behind it"
+    evidence: >-
+      The commit that raised 5c/5d from 20 s to 60 s wrote "measured idle on an M-series
+      laptop they take 16.4 s and 15.3 s". RE-MEASURED THREE WAYS AND IT IS WRONG BY 16×:
+        isolated, that file alone        5c 0.98 s   5d 0.93 s
+        with the storefront alongside    5c 1.07 s   5d 1.02 s
+        the whole gate concurrent        5c 3.87 s   5d 1.15 s   CatalogPage 2.91 s
+      What IS real is the SPREAD — 4× between alone and under `pnpm -r test` — and PR #39's
+      first CI run, where a 5 s budget genuinely timed out on the contended 2-core runner.
+    why_it_matters: >-
+      A test whose true cost is ~4 s inside a 60 s budget passes through a 15× regression in
+      silence, and these three now own the frontend gate's tail. The budgets are KEPT — the
+      150-card board and the 50-dress catalogue are the mechanism, not padding, and shrinking
+      either deletes the defect instead of the delay — but the baselines above are the numbers
+      to watch, and they are now written into all three test files.
+      THE LESSON, which is the same one the /fake-pay entry taught: a measurement nobody
+      re-ran is not evidence. This one survived a commit message, a code comment and a review.
+    owner: unassigned — LOW; revisit only if the gate's tail becomes a problem
 
 rulings_2026_07_31:             # the user supplied credentials; E4 unblocked
   - "PAYMENTS: Lemon Squeezy TEST MODE is E4's engine behind F17's port. It is a development engine only — LS is merchant-of-record and the deposit is legally the boutique's money, so it can never carry live deposits. The production Israeli PSP is deferred to before-live-money and is one adapter file."
@@ -2642,6 +2716,51 @@ rulings_2026_07_31:             # the user supplied credentials; E4 unblocked
   - "ROLES: StaffRole widens to reception / sales_assistant / seamstress. Their first consumer is the floor program, which is the bar pre-decided #24 and constants.py both set for adding a role. 'sales_assistant' supersedes #24's 'sales' slug. F31's route walker default-denies all three on every existing /manage route; each floor feature admits them explicitly to its own surface, and F51's staff CRUD is NOT rebuilt — only its role select widens."
   - "ATELIER: the kanban states are the brief's intake -> in_progress -> qc -> ready -> delivered. Those LABELS supersede pre-decided #39's five names, and E9 had no QC state; #39's MECHANISM is untouched — five nullable TIMESTAMPTZ columns, no status enum. The date key is due_date, subsuming E9's wedding_date, because an evening gown has no wedding. F42 ships the SIMPLIFIED capacity model (weekly_capacity_hours per seamstress, load bar red when the sum of undelivered effort exceeds it) and its F40 roster dependency is DROPPED for this run — the roster projection is the recorded upgrade path, and F40 is an E8 feature nowhere near being built."
 ```
+
+## Session report — 2026-08-05 (F61, the a11y/UX batch)
+
+**All nine walkthrough defects fixed, plus a tenth found inside one of the fixes.** One branch, one review round, one adversarial verification round. No migration.
+
+| # | Defect | Fixed in | The test that reds if reverted |
+|---|---|---|---|
+| 1 | `/checkin` pins validation errors after correction | `CheckinPage.tsx` | `CheckinPage.test.tsx` — per-field isolation, `aria-invalid` + message |
+| 2 | Editing an atelier ticket announces nothing | `AtelierSection.tsx` | two tests; the second uses a **MutationObserver**, the only instrument that can see it |
+| 3 | Erase confirm rejects its own lookup's phone format | `PrivacySection.tsx` | `PrivacySection.test.tsx` |
+| 4 | Every staff-row button is nameless | `StaffSection.tsx` | `StaffSection.test.tsx` — asserts names are **unique**, not merely present |
+| 5 | Booking flow is not a `<form>` | `BookPage.tsx` **+ `CheckinPage.tsx`** | structure in vitest, the keypress in Playwright |
+| 6 | Unrouted paths escape the error envelope | `backend/app/main.py` | `test_spa_serving.py`, incl. a 405 guard |
+| 7 | Logout control 29 × 21 px | `ConsoleShell.tsx` | `guide.spec.ts` — `boundingBox()` in real Chromium |
+| 8 | Neither SPA has an error boundary | `packages/ui` + both `main.tsx` | behaviour in `packages/ui`, wiring in each app |
+| 9 | Privacy bullets have no list semantics | `PrivacyProse.tsx` | vitest ×3 + e2e ×2; backend privacy text untouched |
+
+**The tenth: `/checkin` had defect 5 too, and the first pass shipped only the booking half** — while editing that very file for defect 1. A comment in `BookPage.tsx` even asserted the check-in form already carried the same `required`/`noValidate` reasoning; it had no `<form>` at all. The kiosk surface is the one that is *only* ever used on a phone, where the keyboard's Go key **is** the submit button.
+
+### What the two review rounds actually bought
+
+**Both rounds' best findings were about claims, not code** — the same lesson as the `/fake-pay` correction:
+
+- A commit message, a code comment and a review had all carried "measured idle these tests take 16.4 s and 15.3 s". Re-measured three ways: **0.98 s / 0.93 s isolated, 3.87 s / 1.15 s under the concurrent gate**. Wrong by 16×, and it was the sole justification for a 20 s → 60 s budget raise. See `known_flaky`.
+- The booking e2e's own mutation ledger claimed a mutation "reds all three steps". Re-run: it reds at the **slot** step only — details still advances, because HTML submits a button-less form that has exactly one implicit-submission-blocking field. Ledger corrected against a real build.
+- A source comment asserted `setCue` with an equal value "is a React no-op". It never is — a fresh object always re-renders. What actually stayed silent is React's **text-child diff**, which skips the DOM write when the string is unchanged. That is defect 2's other half (below), and three more files still carry the wrong belief.
+
+**The half of defect 2 the first fix left silent.** `atelier.cue.updated` interpolates only `{{name}}`, so a *second* edit of one bride produces byte-identical cue text — and therefore no DOM mutation and no announcement. Fix her date, save; reopen, fix her notes, save: silence indistinguishable from a failed save, which is exactly what the cue exists to remove. Fixed with a **nonce on the cue state keying a span inside the live region**, so the `<p role="status">` is never remounted (an added region is not announced) but its child always is. One guard on the writer covers all eight call sites — including the two other repeatable cues, capacity-save and settings-save.
+
+**Still open, and it is a real sweep:** `FloorPanel.tsx:270`, `GuideOverlay.tsx:49` and `RoomsRegistryDialog.tsx:160` carry the same wrong comment. `RoomsRegistryDialog` is safe by accident (it clears to `""` before every write); the other two are not audited.
+
+### Gates, run on this tree
+
+| Gate | Result |
+|---|---|
+| `pytest -m "not db"` | **2351 passed** |
+| `pytest -m "db and not s3"` | **845 passed** (9 s3-marked error locally — no MinIO; unrelated to this diff) |
+| `ruff check` · `ruff format --check` · `mypy` | clean · 328 formatted · **302 files, no issues** |
+| `pnpm -r lint` · `pnpm -r typecheck` | clean · clean |
+| `pnpm -r test` | **2515 passed** (ui 108 / storefront 1097 / manage 1310) |
+| `pnpm -r build` | clean |
+| `pnpm e2e` | **155 passed** (was 153; +2 for `/checkin`'s Enter) |
+| `frontend/scripts/qa-greps.sh` | exit 0 |
+
+---
 
 ## Session report — 2026-08-03 → 2026-08-04
 

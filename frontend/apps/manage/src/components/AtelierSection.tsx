@@ -147,10 +147,22 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
   // The cue carries its interpolated NAME alongside its text, because the name
   // has to render inside a bare <bdi> and a flat string cannot say where it
   // starts. `name: null` is every cue that interpolates no person.
-  const [cue, setCue] = useState<{ text: string; name: string | null }>({
+  //
+  // ⚠ AND A NONCE, which is what makes a REPEATED cue audible. React skips the
+  // `nodeValue` write when a text child re-renders to the same string, so a
+  // second «הכרטיס עודכן» for the same bride — or a second capacity save with
+  // the same hours, or a second settings save — mutated NOTHING inside
+  // role="status" and announced nothing. The nonce keys the span below, so
+  // every write replaces that node and the region always sees a childList
+  // mutation. One guard on the writer covers all eight call sites; a per-cue
+  // workaround would have to be remembered by whoever adds the ninth.
+  const [cue, writeCue] = useState<{ text: string; name: string | null; nonce: number }>({
     text: "",
     name: null,
+    nonce: 0,
   });
+  const setCue = (next: { text: string; name: string | null }) =>
+    writeCue((current) => ({ ...next, nonce: current.nonce + 1 }));
   // ticket id -> the `data-control` of the ONE control that is loading. A-busy
   // disables the tapped control and nothing else: one tap must not freeze the
   // board for the other staffer standing beside her.
@@ -457,11 +469,13 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
     }
   }, [deleteAlert]);
 
-  // ⚠ THE CUE IS WRITTEN ONLY WHEN ITS VALUE ACTUALLY CHANGES. Assigning a
-  // non-empty string to a text node runs the DOM's string-replace-all and
-  // produces a real childList mutation inside role="status" EVEN WHEN THE TWO
-  // STRINGS ARE BYTE-IDENTICAL. setCue with an equal value is a React no-op, so
-  // the guard is the setState itself — and the poll never calls it at all.
+  // ⚠ CORRECTED. This block used to claim that writing a byte-identical string
+  // still mutates the text node, and that `setCue` with an equal value is a
+  // React no-op. BOTH ARE FALSE HERE. `setCue` always builds a fresh object, so
+  // it never bails out — and React, on re-render, compares the text child and
+  // SKIPS the DOM write when the string is unchanged, which is exactly the case
+  // that stayed silent. The nonce on the cue state is what fixes it; the poll
+  // still never writes here at all.
 
   const pause = () => {
     poll.pause();
@@ -889,15 +903,17 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       });
     }
     setUpdatedAt(new Date().toISOString());
-    if (form.mode === "create") {
-      // Names the bride because native <dialog> returned focus to «כרטיס חדש»
-      // and NOT to the new card, so this is the only thing that says which
-      // ticket was opened.
-      setCue({
-        text: t("atelier.cue.created", { name: saved.customer_name }),
+    // ⚠ OUTSIDE the mode branch, and it was inside it: the edit path announced
+    // NOTHING on a successful 200. Both cues name the bride — create because
+    // native <dialog> returns focus to «כרטיס חדש» and NOT to the new card, so
+    // nothing else says which ticket was opened; update because an edit replaces
+    // five fields at once and has no single new value to name in its place.
+    setCue({
+      text: t(form.mode === "create" ? "atelier.cue.created" : "atelier.cue.updated", {
         name: saved.customer_name,
-      });
-    }
+      }),
+      name: saved.customer_name,
+    });
     setForm(null);
   };
 
@@ -1056,14 +1072,22 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
 
       {/* The cue: role="status", user-initiated outcomes ONLY. The poll may
           never write here — a status update every five seconds on a shared board
-          would talk continuously for a whole shift. */}
+          would talk continuously for a whole shift.
+
+          ⚠ THE <p> IS NEVER REMOUNTED — only the keyed span inside it is. That
+          asymmetry is the whole trick: a live region added to the document is
+          not announced, but a childList mutation INSIDE a region that was
+          already there is. The `key` is `cue.nonce`, so a cue whose text repeats
+          verbatim still replaces this node. See the writer for why. */}
       <p
         data-testid="atelier-cue"
         role="status"
         tabIndex={-1}
         className="text-sm text-ink-muted"
       >
-        {cue.name === null ? cueText : isolateBidi(cueText, cue.name)}
+        <span key={cue.nonce}>
+          {cue.name === null ? cueText : isolateBidi(cueText, cue.name)}
+        </span>
       </p>
 
       {/* ⚠ ONE CONDITIONAL, ABOVE ALL FOUR BOARD BRANCHES AND BELOW THE CUE.

@@ -860,11 +860,20 @@ describe("AC17 — Esc, and the keyboard route IN that MOVE A alone does not pro
     field.focus();
     fireEvent.change(field, { target: { value: "0501234567" } });
 
+    // ⚠ FLUSH BEFORE THE KEY. The capture listener this test exercises is
+    // ATTACHED in a passive effect, and `findByText` resolves at the commit
+    // before those run. An Esc dispatched into that window hits no listener at
+    // all and is simply lost — unlike a focus move, there is nothing left to
+    // wait for afterwards, which is why waitFor below cannot rescue it.
+    await act(async () => {});
     fireEvent.keyDown(field, { key: "Escape" });
 
     // ⚠ Esc-from-outside is a DELIBERATE keypress, not an involuntary arrival,
     // which is the whole of DC-1's distinction: it lands on the control.
-    expect(document.activeElement).toBe(acceptControl(ALERT_A));
+    // The route-in is a passive effect the keyDown does not flush, so this waits
+    // for the move rather than racing it — bare, it lost that race under the
+    // concurrent gate. Same fix as the sibling test below.
+    await waitFor(() => expect(document.activeElement).toBe(acceptControl(ALERT_A)));
     expect(field.value).toBe("0501234567");
   });
 
@@ -875,9 +884,15 @@ describe("AC17 — Esc, and the keyboard route IN that MOVE A alone does not pro
     const field = screen.getByLabelText("טלפון");
     field.focus();
 
+    // Same flush as the sibling above: the capture listener is attached in a
+    // passive effect, and an Esc dispatched before it lands is lost outright.
+    await act(async () => {});
     fireEvent.keyDown(field, { key: "Escape" });
     const accept = acceptControl(ALERT_A);
-    expect(document.activeElement).toBe(accept);
+    // ⚠ The route-in lands in a passive effect, so it is not flushed by the
+    // keyDown itself. Bare, this assertion races the effect and fails under
+    // parallel load.
+    await waitFor(() => expect(document.activeElement).toBe(accept));
 
     fireEvent.keyDown(accept, { key: "Escape" });
     await waitFor(() => expect(cards()).toHaveLength(0));

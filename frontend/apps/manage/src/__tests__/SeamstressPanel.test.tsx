@@ -973,7 +973,10 @@ describe("the capacity dialog — one field, one write, and the anti-conversion 
     // which is painted inert, unfocusable and pruned from the a11y tree.
     const footer = dialog.querySelector(".mt-6.flex.justify-end") as HTMLElement;
     expect(alert.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(document.activeElement).toBe(alert);
+    // ⚠ `findByRole` resolves when the alert is COMMITTED; the focus move is a
+    // passive effect one phase later. Bare, this read raced that effect and
+    // caught <body> under the concurrent gate.
+    await waitFor(() => expect(document.activeElement).toBe(alert));
   });
 });
 
@@ -1139,7 +1142,8 @@ describe("the settings dialog — one save, both keys, always", () => {
     const alert = await within(dialog).findByRole("alert");
     expect(alert.textContent).toBe("לא ניתן לשמור את ההגדרות. אפשר לנסות שוב.");
     expect((dialog as HTMLDialogElement).open).toBe(true);
-    expect(document.activeElement).toBe(alert);
+    // The focus move is a passive effect; a bare read here races it.
+    await waitFor(() => expect(document.activeElement).toBe(alert));
   });
 
   it("freezes the five platform bands on a save with NO edit, deliberately", async () => {
