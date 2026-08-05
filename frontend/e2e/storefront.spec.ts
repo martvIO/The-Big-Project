@@ -1631,6 +1631,8 @@ const NAME_LABEL = "שם מלא";
 const PHONE_LABEL = "טלפון נייד";
 const CODE_LABEL = "קוד האימות";
 const CUSTOMER_NAME = "נועה כהן";
+const DATE_LABEL = "תאריך";
+const NAME_REQUIRED = "צריך למלא שם כדי שנוכל לרשום את התור.";
 const TYPED_PHONE = "050-123 4567";
 const WIRE_PHONE = "+972501234567";
 const OTP_CODE = "123456";
@@ -1843,6 +1845,77 @@ test("storefront booking: the generic path walks all five steps to a confirmatio
       marketing_consent: false,
     },
   ]);
+});
+
+// --- implicit submission, which only a real browser can measure --------------
+
+// The walkthrough typed a valid name on /book/details and pressed Enter: no
+// navigation, no error, no role=alert, no console output. It recorded
+// `{hasForm:false, continueBtn:{type:'button', insideForm:false}}` — the flow
+// was not a <form> at all, so a phone keyboard's Go key was dead on the last
+// field and she had to Tab past the notes textarea AND the marketing checkbox to
+// reach «המשך».
+//
+// ⚠ THIS TEST LIVES HERE AND NOT IN VITEST BECAUSE IT CANNOT LIVE THERE. jsdom
+// does not implement implicit form submission, and this workspace ships no
+// `@testing-library/user-event` to emulate it — so no jsdom assertion can press
+// Enter and watch the step advance. `BookPage.test.tsx` asserts the STRUCTURE
+// (a form exists, the control is type=submit, the field and the control share
+// it) on every fast run; this is the only place the BEHAVIOUR is real.
+//
+// Mutation ledger, run against this file:
+//   M1  `<ForwardForm>` reverted to the shipped `<>` fragment + a
+//       `type="button"` control — ALL THREE steps red here, and the vitest
+//       structural test reds with them.
+//   M2  `type="submit"` on the forward control changed back to `type="button"`,
+//       the form left in place — all three red. A form with no submit button has
+//       no implicit submission.
+//   M3  `noValidate` removed from the form — the DETAILS step reds: the name
+//       field's `required` makes Chromium raise its own bubble and the step
+//       never advances. That is the mutation that proves the attribute is
+//       load-bearing rather than decoration.
+test("storefront booking: Enter in a field advances the step, on every step that has one", async ({
+  page,
+}) => {
+  await installApi(page);
+
+  // SLOT — Enter in the date field, the only text-shaped control on the step.
+  await gotoBooking(page, "/book/slot");
+  await page.getByRole("radio", { name: new RegExp(BOOK_TYPE) }).check();
+  await chip(page, SLOT_LABEL).click();
+  await page.getByLabel(DATE_LABEL).press("Enter");
+  await expectStep(page, "details");
+
+  // DETAILS — the step the walkthrough measured, and the one `noValidate`
+  // decides: `required` on this very field would otherwise raise a native
+  // bubble instead of running `forwardDetails`.
+  await page.getByLabel(NAME_LABEL).fill(CUSTOMER_NAME);
+  await page.getByLabel(NAME_LABEL).press("Enter");
+  await expectStep(page, "terms");
+
+  // TERMS — Enter on the consent checkbox. Space still toggles it; Enter is the
+  // platform's «do the form's action», which is the same action «המשך» takes.
+  await page.getByRole("checkbox").check();
+  await page.getByRole("checkbox").press("Enter");
+  await expectStep(page, "verify");
+});
+
+test("storefront booking: a bad name pressed through with Enter raises the AUTHORED error, not a native bubble", async ({
+  page,
+}) => {
+  // The half `noValidate` exists for. Without it Chromium's own constraint
+  // validation intercepts the submit and shows an untranslated LTR bubble, and
+  // `forwardDetails` — which owns the Hebrew message, the role="alert" and the
+  // focus move to the first failure — never runs at all.
+  await installApi(page);
+  await gotoDetails(page);
+
+  await page.getByLabel(NAME_LABEL).press("Enter");
+
+  await expectStep(page, "details");
+  await expect(page.getByRole("alert").filter({ hasText: NAME_REQUIRED })).toBeVisible();
+  await expect(page.getByLabel(NAME_LABEL)).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByLabel(NAME_LABEL)).toBeFocused();
 });
 
 // --- §11 row 2: the item-based path ------------------------------------------

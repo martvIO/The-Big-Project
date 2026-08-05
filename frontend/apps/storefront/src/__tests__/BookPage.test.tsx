@@ -909,6 +909,36 @@ describe("BookPage details step", () => {
     expect(window.location.pathname).toBe("/book/terms");
   });
 
+  // The walkthrough measured `{hasForm:false, continueBtn:{type:'button',
+  // insideForm:false}}` on this step: the flow was not a <form> at all, so Enter
+  // in a text field did nothing and a phone keyboard's Go key was dead on the
+  // last field — she had to Tab past the notes textarea AND the marketing
+  // checkbox to reach «המשך».
+  //
+  // ⚠ THIS IS THE STRUCTURAL HALF, and it is deliberately not claimed to be the
+  // behavioural one. jsdom does NOT implement implicit form submission and this
+  // workspace ships no `@testing-library/user-event`, so no assertion here can
+  // press Enter and watch the step advance. `e2e/storefront.spec.ts` does that
+  // in a real browser; this asserts the exact three facts the walkthrough
+  // recorded, on every fast test run.
+  it("is a real form whose «המשך» submits it — the three facts the walkthrough measured", async () => {
+    const { container } = await walkToDetails();
+
+    const form = container.querySelector("form");
+    expect(form).not.toBeNull();
+    expect(forward()).toHaveAttribute("type", "submit");
+    expect(forward().closest("form")).toBe(form);
+    // The text field and the button are in the SAME form, which is the whole of
+    // what makes implicit submission reach this step's validator.
+    expect(screen.getByLabelText(i18n.t("booking.name")).closest("form")).toBe(form);
+    // ⚠ `noValidate`, and it is load-bearing: the name field carries `required`
+    // for AT, and native constraint validation would block the submit and show a
+    // browser bubble INSTEAD of `forwardDetails` — killing the authored Hebrew,
+    // the role="alert" and the focus move to the first failure in one go.
+    expect(form).toHaveAttribute("novalidate");
+    expect(screen.getByLabelText(i18n.t("booking.name"))).toBeRequired();
+  });
+
   it("labels both fields visibly — a placeholder is never a label", async () => {
     await walkToDetails();
 

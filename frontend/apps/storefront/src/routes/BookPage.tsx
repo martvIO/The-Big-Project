@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { FormEvent, MouseEvent as ReactMouseEvent, Ref } from "react";
+import type { FormEvent, MouseEvent as ReactMouseEvent, ReactNode, Ref } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -306,23 +306,65 @@ function PhoneOnly({
   );
 }
 
-// Alone on the last row, inline-end from 768. NEVER disabled and never carrying
-// aria-describedby — disabled drops a control from the tab order, which makes a
-// description from it unreadable. It submits, and it fails visibly.
-function ForwardRow({ onClick }: { onClick: () => void }) {
+// The step's content and its forward control, as ONE REAL <form>.
+//
+// ⚠ It was not a form at all. `document.querySelector('form')` was null on
+// slot/details/terms and the control was `type="button"`, so Enter in a text
+// field did nothing — no navigation, no error, no announcement — and on a phone
+// the keyboard's Go key was dead on the last field, leaving her to Tab past the
+// notes textarea and the marketing checkbox to reach «המשך». The verify step
+// four hundred lines below has had its `<form onSubmit>` since it shipped, with
+// a comment saying why; these three simply never got one.
+//
+// ONE component for all three steps rather than three wrappers: the per-step
+// validation and navigation stay entirely in the caller's own `forward*`
+// handler, which the click and the implicit submission now share by
+// construction. There is no second path to keep in step.
+//
+// ⚠ `noValidate` IS LOAD-BEARING, not tidiness. The name field carries
+// `required` — WCAG 3.3.2 without a `*` marker — and native constraint
+// validation on a real submit would block it and raise the browser's own bubble
+// INSTEAD of running `forwardDetails`: the authored Hebrew, the `role="alert"`
+// and the focus move to the first failure would all die together, and the check
+// -in form's radios carry the same `required` for the same reason. This keeps
+// `required` announcing and leaves the validating to the handler.
+//
+// The button is NEVER disabled and never carries aria-describedby — disabled
+// drops a control from the tab order, which makes a description from it
+// unreadable. It submits, and it fails visibly.
+//
+// ⚠ The Enter key on the two Checkboxes (terms consent, marketing consent) now
+// submits, which is correct: Space still toggles, and Enter on a form control is
+// the platform's «do the form's action» — the same action «המשך» takes, through
+// the same validator. Enter in the notes TextArea inserts a newline and never
+// submits, which is also the platform's.
+function ForwardForm({ onForward, children }: { onForward: () => void; children: ReactNode }) {
   const { t } = useTranslation();
 
   return (
-    <div className="flex md:justify-end">
-      <Button
-        variant="primary"
-        size="lg"
-        onClick={onClick}
-        className="w-full min-w-[140px] md:w-auto"
-      >
-        {t("booking.continue")}
-      </Button>
-    </div>
+    // The page container's own `gap-6`, restated: the wrapper must not collapse
+    // the spacing it now sits between.
+    <form
+      noValidate
+      className="flex flex-col gap-6"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onForward();
+      }}
+    >
+      {children}
+      {/* Alone on the last row, inline-end from 768. */}
+      <div className="flex md:justify-end">
+        <Button
+          type="submit"
+          variant="primary"
+          size="lg"
+          className="w-full min-w-[140px] md:w-auto"
+        >
+          {t("booking.continue")}
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -1187,7 +1229,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
             <Skeleton variant="text" lines={2} className="h-11" />
           </Card>
         ) : (
-          <>
+          <ForwardForm onForward={forward}>
             <Card className="flex flex-col gap-6">
               <TypePicker
                 types={entry.types}
@@ -1233,9 +1275,7 @@ export function BookPage({ step, dressId }: BookPageProps) {
                 ref={timeRef}
               />
             </Card>
-
-            <ForwardRow onClick={forward} />
-          </>
+          </ForwardForm>
         ))}
 
       {step === "details" && (
@@ -1287,141 +1327,144 @@ export function BookPage({ step, dressId }: BookPageProps) {
             </div>
           )}
 
-          <Card className="flex flex-col gap-6">
-            {dressId !== undefined && (
-              <div className="flex flex-col gap-4">
-                {bindingLoading ? (
-                  <div className="flex items-center gap-3">
-                    <Skeleton variant="image" className="w-16" />
-                    <Skeleton variant="text" lines={1} className="w-40" />
-                  </div>
-                ) : dressGone ? (
-                  // The whole binding block is gone with it — cover, name and
-                  // fieldset — and the line takes its place. Cautionary, never
-                  // danger: nothing she did failed.
-                  <p role="alert" className="text-sm text-warning-text">
-                    {t("booking.dressGoneGeneric")}
-                  </p>
-                ) : (
-                  dress !== null && (
-                    <>
-                      <div className="flex items-center gap-3">
-                        {/* alt="" — the dress name is the adjacent visible text.
-                            NOT a link: leaving the flow discards the draft, and
-                            there is no draft persistence to come back to. */}
-                        {dress.media[0]?.url != null && (
-                          <img
-                            src={dress.media[0].url}
-                            alt=""
-                            loading="lazy"
-                            decoding="async"
-                            className="w-16 shrink-0 rounded-md bg-surface object-cover shadow-sm aspect-[3/4]"
-                          />
+          {/* The §11 notice and the return-reason alert stay OUTSIDE the form:
+              they are a statutory statement and a message about the last
+              submit, not controls of this one. */}
+          <ForwardForm onForward={forwardDetails}>
+            <Card className="flex flex-col gap-6">
+              {dressId !== undefined && (
+                <div className="flex flex-col gap-4">
+                  {bindingLoading ? (
+                    <div className="flex items-center gap-3">
+                      <Skeleton variant="image" className="w-16" />
+                      <Skeleton variant="text" lines={1} className="w-40" />
+                    </div>
+                  ) : dressGone ? (
+                    // The whole binding block is gone with it — cover, name and
+                    // fieldset — and the line takes its place. Cautionary, never
+                    // danger: nothing she did failed.
+                    <p role="alert" className="text-sm text-warning-text">
+                      {t("booking.dressGoneGeneric")}
+                    </p>
+                  ) : (
+                    dress !== null && (
+                      <>
+                        <div className="flex items-center gap-3">
+                          {/* alt="" — the dress name is the adjacent visible text.
+                              NOT a link: leaving the flow discards the draft, and
+                              there is no draft persistence to come back to. */}
+                          {dress.media[0]?.url != null && (
+                            <img
+                              src={dress.media[0].url}
+                              alt=""
+                              loading="lazy"
+                              decoding="async"
+                              className="w-16 shrink-0 rounded-md bg-surface object-cover shadow-sm aspect-[3/4]"
+                            />
+                          )}
+                          {/* R19. Owner-authored, so a bare <bdi> — dir="ltr" on
+                              a Hebrew dress name is itself a bidi defect. */}
+                          <p className="font-display text-lg text-ink">
+                            {t("booking.forDress")} <bdi>{dress.name}</bdi>
+                          </p>
+                        </div>
+                        {sizes === null && (
+                          // Polite, not an alert: nothing failed and nothing
+                          // vanished — the dress simply has no bookable variants.
+                          <p role="status" className="text-sm text-warning-text">
+                            {t("booking.dressGoneGeneric")}
+                          </p>
                         )}
-                        {/* R19. Owner-authored, so a bare <bdi> — dir="ltr" on
-                            a Hebrew dress name is itself a bidi defect. */}
-                        <p className="font-display text-lg text-ink">
-                          {t("booking.forDress")} <bdi>{dress.name}</bdi>
-                        </p>
-                      </div>
-                      {sizes === null && (
-                        // Polite, not an alert: nothing failed and nothing
-                        // vanished — the dress simply has no bookable variants.
-                        <p role="status" className="text-sm text-warning-text">
-                          {t("booking.dressGoneGeneric")}
-                        </p>
-                      )}
-                    </>
-                  )
-                )}
-                <span aria-hidden="true" className="h-px bg-border" />
-              </div>
-            )}
+                      </>
+                    )
+                  )}
+                  <span aria-hidden="true" className="h-px bg-border" />
+                </div>
+              )}
 
-            <Input
-              label={t("booking.name")}
-              type="text"
-              // A Latin name is ordinary on a Hebrew form.
-              dir="auto"
-              autoComplete="name"
-              enterKeyHint="next"
-              required
-              maxLength={MAX_CUSTOMER_NAME_LENGTH}
-              value={name}
-              error={fieldErrors.name}
-              onChange={(event) => {
-                setName(event.target.value);
-                clearError("name");
-                clearReturn("details");
-              }}
-              ref={nameRef}
-            />
-
-            {/* Between the two text fields on purpose: it is the only control
-                here a mid-flow answer can invalidate, and a returning bride
-                should not scroll past her own typed answers to reach it. */}
-            {sizes !== null && (
-              <SizeChips
-                sizes={sizes}
-                value={size}
-                error={fieldErrors.size}
-                notice={returnReason === "size" ? t("booking.sizeGoneRepick") : undefined}
-                onChange={(picked) => {
-                  setSize(picked);
-                  clearError("size");
-                  clearReturn("size");
+              <Input
+                label={t("booking.name")}
+                type="text"
+                // A Latin name is ordinary on a Hebrew form.
+                dir="auto"
+                autoComplete="name"
+                enterKeyHint="next"
+                required
+                maxLength={MAX_CUSTOMER_NAME_LENGTH}
+                value={name}
+                error={fieldErrors.name}
+                onChange={(event) => {
+                  setName(event.target.value);
+                  clearError("name");
+                  clearReturn("details");
                 }}
-                ref={sizeRef}
+                ref={nameRef}
               />
-            )}
 
-            <TextArea
-              label={t("booking.notes")}
-              help={t("booking.notesHint")}
-              dir="auto"
-              rows={4}
-              showCount
-              maxLength={MAX_BOOKING_NOTES_LENGTH}
-              value={notes}
-              error={fieldErrors.notes}
-              onChange={(event) => {
-                setNotes(event.target.value);
-                clearError("notes");
-                clearReturn("details");
-              }}
-              // Logical: the default `resize: both` lets a drag widen the field
-              // past the column and produce horizontal scroll at 375.
-              className="[resize:block]"
-              ref={notesRef}
-            />
+              {/* Between the two text fields on purpose: it is the only control
+                  here a mid-flow answer can invalidate, and a returning bride
+                  should not scroll past her own typed answers to reach it. */}
+              {sizes !== null && (
+                <SizeChips
+                  sizes={sizes}
+                  value={size}
+                  error={fieldErrors.size}
+                  notice={returnReason === "size" ? t("booking.sizeGoneRepick") : undefined}
+                  onChange={(picked) => {
+                    setSize(picked);
+                    clearError("size");
+                    clearReturn("size");
+                  }}
+                  ref={sizeRef}
+                />
+              )}
 
-            {/* Communications Law §30A, and all four of its properties are
-                STRUCTURAL here rather than promised:
+              <TextArea
+                label={t("booking.notes")}
+                help={t("booking.notesHint")}
+                dir="auto"
+                rows={4}
+                showCount
+                maxLength={MAX_BOOKING_NOTES_LENGTH}
+                value={notes}
+                error={fieldErrors.notes}
+                onChange={(event) => {
+                  setNotes(event.target.value);
+                  clearError("notes");
+                  clearReturn("details");
+                }}
+                // Logical: the default `resize: both` lets a drag widen the field
+                // past the column and produce horizontal scroll at 375.
+                className="[resize:block]"
+                ref={notesRef}
+              />
 
-                SEPARATE and UNBUNDLED — the required terms checkbox is two
-                navigations away on the `terms` step, so neither box can be
-                ticked by a gesture aimed at the other, and no single control
-                collects both consents.
+              {/* Communications Law §30A, and all four of its properties are
+                  STRUCTURAL here rather than promised:
 
-                AFFIRMATIVE and DEFAULT-OFF — `useState(false)`, and nothing
-                writes it but this control.
+                  SEPARATE and UNBUNDLED — the required terms checkbox is two
+                  navigations away on the `terms` step, so neither box can be
+                  ticked by a gesture aimed at the other, and no single control
+                  collects both consents.
 
-                NOT A CONDITION — `forwardDetails` does not read it, so the flow
-                advances whether or not it is ticked. That is the anti-detriment
-                rule: a consent a bride fears will cost her the appointment is not
-                free consent.
+                  AFFIRMATIVE and DEFAULT-OFF — `useState(false)`, and nothing
+                  writes it but this control.
 
-                A native <Checkbox> and never a Toggle: a legal consent announces
-                checked/unchecked, and role="switch" announces on/off. */}
-            <Checkbox
-              label={t("booking.marketingOptIn", { boutique: boutique?.name ?? "" })}
-              description={t("booking.marketingOptInHint")}
-              checked={marketingConsent}
-              onCheckedChange={setMarketingConsent}
-            />
-          </Card>
+                  NOT A CONDITION — `forwardDetails` does not read it, so the flow
+                  advances whether or not it is ticked. That is the anti-detriment
+                  rule: a consent a bride fears will cost her the appointment is not
+                  free consent.
 
-          <ForwardRow onClick={forwardDetails} />
+                  A native <Checkbox> and never a Toggle: a legal consent announces
+                  checked/unchecked, and role="switch" announces on/off. */}
+              <Checkbox
+                label={t("booking.marketingOptIn", { boutique: boutique?.name ?? "" })}
+                description={t("booking.marketingOptInHint")}
+                checked={marketingConsent}
+                onCheckedChange={setMarketingConsent}
+              />
+            </Card>
+          </ForwardForm>
         </>
       )}
 
@@ -1435,59 +1478,59 @@ export function BookPage({ step, dressId }: BookPageProps) {
               {t("errors.termsStale")}
             </p>
           )}
-          <Card className="flex flex-col gap-4">
-            {/* The two numbers sit ABOVE the prose because they are what she is
-                actually agreeing to, and a paragraph is where numbers hide.
-                Weight and a divider carry the distinction — never a tinted
-                callout, which would read as an alert two neutral facts are not. */}
-            {/* R19: both numbers are isolated here, mid-sentence, which is why
-                each string is a lead and a tail rather than one interpolation.
-                The % rides inside the bdi — "50%" is one LTR run, not a digit
-                run and a stray neutral. */}
-            <p className="text-base font-semibold text-ink">
-              {t("booking.refundWindow")}{" "}
-              <bdi dir="ltr">{terms.refundable_until_hours_before}</bdi>{" "}
-              {t("booking.refundWindowSuffix")}
-            </p>
-            <p className="text-base font-semibold text-ink">
-              {t("booking.forfeit")} <bdi dir="ltr">{terms.forfeit_percent}%</bdi>{" "}
-              {t("booking.forfeitSuffix")}
-            </p>
+          <ForwardForm onForward={forwardTerms}>
+            <Card className="flex flex-col gap-4">
+              {/* The two numbers sit ABOVE the prose because they are what she is
+                  actually agreeing to, and a paragraph is where numbers hide.
+                  Weight and a divider carry the distinction — never a tinted
+                  callout, which would read as an alert two neutral facts are not. */}
+              {/* R19: both numbers are isolated here, mid-sentence, which is why
+                  each string is a lead and a tail rather than one interpolation.
+                  The % rides inside the bdi — "50%" is one LTR run, not a digit
+                  run and a stray neutral. */}
+              <p className="text-base font-semibold text-ink">
+                {t("booking.refundWindow")}{" "}
+                <bdi dir="ltr">{terms.refundable_until_hours_before}</bdi>{" "}
+                {t("booking.refundWindowSuffix")}
+              </p>
+              <p className="text-base font-semibold text-ink">
+                {t("booking.forfeit")} <bdi dir="ltr">{terms.forfeit_percent}%</bdi>{" "}
+                {t("booking.forfeitSuffix")}
+              </p>
 
-            <span aria-hidden="true" className="h-px bg-border" />
+              <span aria-hidden="true" className="h-px bg-border" />
 
-            {/* A React text child, and only ever that: no dangerouslySetInnerHTML,
-                no markdown renderer, no sanitise-then-inject. The owner is
-                semi-trusted but this is a public, anonymous, multi-tenant
-                surface, so any HTML path is stored XSS for every visitor.
-                pre-line keeps her line breaks and collapses her stray spaces;
-                dir="auto" because owners paste English clauses; anywhere because
-                a pasted 200-character URL must not scroll the page sideways. No
-                inner scroller at any width — two scroll contexts on a phone is a
-                trap, and a scrollable box is a tab stop between the policy and
-                the consent. */}
-            <div dir="auto" className="whitespace-pre-line text-base text-ink [overflow-wrap:anywhere]">
-              {terms.terms_text}
-            </div>
+              {/* A React text child, and only ever that: no dangerouslySetInnerHTML,
+                  no markdown renderer, no sanitise-then-inject. The owner is
+                  semi-trusted but this is a public, anonymous, multi-tenant
+                  surface, so any HTML path is stored XSS for every visitor.
+                  pre-line keeps her line breaks and collapses her stray spaces;
+                  dir="auto" because owners paste English clauses; anywhere because
+                  a pasted 200-character URL must not scroll the page sideways. No
+                  inner scroller at any width — two scroll contexts on a phone is a
+                  trap, and a scrollable box is a tab stop between the policy and
+                  the consent. */}
+              <div dir="auto" className="whitespace-pre-line text-base text-ink [overflow-wrap:anywhere]">
+                {terms.terms_text}
+              </div>
 
-            <span aria-hidden="true" className="h-px bg-border" />
+              <span aria-hidden="true" className="h-px bg-border" />
 
-            {/* Last in flow, below the prose: a consent control reachable before
-                the thing consented to is how unread consent happens. */}
-            <Checkbox
-              label={t("booking.acceptTerms")}
-              checked={accepted}
-              error={fieldErrors.accept}
-              onCheckedChange={(next) => {
-                setAcceptedVersion(next ? terms.version : null);
-                clearError("accept");
-                clearReturn("terms");
-              }}
-              ref={acceptRef}
-            />
-          </Card>
-
-          <ForwardRow onClick={forwardTerms} />
+              {/* Last in flow, below the prose: a consent control reachable before
+                  the thing consented to is how unread consent happens. */}
+              <Checkbox
+                label={t("booking.acceptTerms")}
+                checked={accepted}
+                error={fieldErrors.accept}
+                onCheckedChange={(next) => {
+                  setAcceptedVersion(next ? terms.version : null);
+                  clearError("accept");
+                  clearReturn("terms");
+                }}
+                ref={acceptRef}
+              />
+            </Card>
+          </ForwardForm>
         </>
       )}
 
