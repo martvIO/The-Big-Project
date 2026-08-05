@@ -147,6 +147,7 @@ def _booking_service(
         phone_limiter=_loose(),
         tenant_limiter=_loose(),
         verify_limiter=_loose(),
+        ip_limiter=_loose(),
         clock=lambda: now,
     )
     return BookingService(

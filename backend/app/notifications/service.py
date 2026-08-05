@@ -206,6 +206,7 @@ class OtpService:
         phone_limiter: FixedWindowRateLimiter,
         tenant_limiter: FixedWindowRateLimiter,
         verify_limiter: FixedWindowRateLimiter,
+        ip_limiter: FixedWindowRateLimiter,
         dev_code: str | None = None,
         clock: WallClock = _utc_now,
     ) -> None:
@@ -214,21 +215,44 @@ class OtpService:
         self._phone_limiter = phone_limiter
         self._tenant_limiter = tenant_limiter
         self._verify_limiter = verify_limiter
+        # ⚠ ITS OWN INSTANCE, never a third key on `phone_limiter`. `max_attempts`
+        # lives on the LIMITER and not on the key, so two keys sharing one
+        # instance share one ceiling — a shipped-bug class in this repo
+        # (`booking/service.py:233-236` says it in the code).
+        self._ip_limiter = ip_limiter
         self._dev_code = dev_code
         self._clock = clock
         self._otp_codes = OtpCodesRepository()
 
-    async def send(self, tenant_id: UUID, raw_phone: str) -> None:
-        """Both budgets are checked AFTER normalization, so every spelling of a
-        number shares one bucket.
+    async def send(self, tenant_id: UUID, raw_phone: str, *, ip: str | None = None) -> None:
+        """All three budgets are checked AFTER normalization, so every spelling of
+        a number shares one bucket.
 
-        The two exhaustions answer differently, deliberately. A tripped TENANT
-        ceiling is an operational fact about the boutique and 429s. A tripped
-        PHONE budget is a fact about one person — answering 429 would turn this
-        endpoint into an oracle for "is this number mid-booking at this
-        boutique", on a surface whose whole posture is that known and unknown
-        phones are indistinguishable. So it returns the same 204 as a real send
-        and simply sends nothing."""
+        The exhaustions answer differently, deliberately. A tripped TENANT ceiling
+        is an operational fact about the boutique and 429s. A tripped PHONE budget
+        is a fact about one person — answering 429 would turn this endpoint into
+        an oracle for "is this number mid-booking at this boutique", on a surface
+        whose whole posture is that known and unknown phones are
+        indistinguishable. So it returns the same 204 as a real send and simply
+        sends nothing.
+
+        **The IP budget answers like the PHONE one and never like the tenant one**
+        (F21, row R16). It is the same oracle keyed differently: a 429 keyed on
+        address still separates "this send would have happened" from "it would
+        not", on the one surface designed to make those two indistinguishable.
+
+        ⚠ **`ip` IS `None` ON EVERY DEPLOYMENT WE CURRENTLY HAVE, so this budget
+        is INERT.** `client_ip` returns `None` unless `trust_forwarded_for`, which
+        ships `False` (`config.py:37`), and flipping it is a host fact — only
+        correct behind exactly one trusted proxy that appends XFF. Row R16 is
+        therefore **AMBER, not green**: the per-phone/per-tenant clauses are
+        discharged, the per-IP clause is code-complete and unarmed, and its
+        enablement (with the distributed limiter that makes any of these survive a
+        second worker process) is the parked `F62` entry's. The `ip is None` guard
+        below is what makes the inert state a skip rather than one shared
+        `otp:ip:None` bucket that would throttle every customer in the country
+        against one another.
+        """
         phone = normalize_israeli_mobile(raw_phone)
         # Before the budgets and before any write. "No provider" is known at
         # boot and permanent, unlike a transient send failure — so it must not
@@ -238,14 +262,24 @@ class OtpService:
             raise SmsNotConfiguredError
         phone_key = f"otp:phone:{tenant_id}:{phone}"
         tenant_key = f"otp:tenant:{tenant_id}"
+        # NOT tenant-scoped: a script walking numbers across boutiques is one
+        # actor, and the address is the only thing that stays constant while the
+        # phone key (per number) and the tenant key (per boutique) both rotate
+        # out from under it. That rotation is the gap this budget closes.
+        ip_key = None if ip is None else f"otp:ip:{ip}"
         if self._tenant_limiter.is_blocked(tenant_key):
             raise OtpThrottledError
         if self._phone_limiter.is_blocked(phone_key):
+            return
+        if ip_key is not None and self._ip_limiter.is_blocked(ip_key):
+            # Silent, like the phone budget above it. Never OtpThrottledError.
             return
         # Recorded on the ATTEMPT, success or failure — the resource being
         # metered is the send itself (same reasoning as the storefront throttle).
         self._phone_limiter.record_failure(phone_key)
         self._tenant_limiter.record_failure(tenant_key)
+        if ip_key is not None:
+            self._ip_limiter.record_failure(ip_key)
 
         code = generate_otp_code()
         body = otp_sms_body(code)

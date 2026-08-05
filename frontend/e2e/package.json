@@ -8,9 +8,9 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
-    "@playwright/test": "^1.62.0",
-    "@types/node": "^26.1.1",
-    "oxlint": "^1.71.0",
-    "typescript": "^5.7.0"
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.1.2",
+    "oxlint": "^1.77.0",
+    "typescript": "^5.9.3"
   }
 }

@@ -294,6 +294,48 @@ describe("the live region", () => {
     fireEvent.click(trigger());
     expect(region().textContent).toBe("");
   });
+
+  // ⚠ F61's DEFECT #2, ASKED OF THIS FILE — and the answer came back NO DEFECT,
+  // which is why this test pins the property rather than a fix. React skips the
+  // `nodeValue` write when a live region re-renders to the same string, so a cue
+  // that repeats verbatim is SILENT (FloorPanel carried exactly that bug). This
+  // region does not, and the reason is worth naming because it is ACCIDENTAL:
+  // the trigger's `setAnnounced("")` resets the region on every open, so the
+  // reopened walkthrough's step 2 is written over an empty string and never over
+  // an identical one. That one line is doing a nonce's job.
+  //
+  // The leg above reads `textContent` and CANNOT see this: the text is right in
+  // both the working and the silent version — that is the whole problem. A
+  // MutationObserver is the only instrument, and deleting `setAnnounced("")`
+  // from the trigger is the deletion that reds it.
+  it("announces the SAME step again after a reopen, whose text is byte-identical", () => {
+    render(tree("floor"));
+    fireEvent.click(trigger());
+    const panel = within(dialogEl());
+
+    fireEvent.click(panel.getByRole("button", { name: i18n.t("guide.next") }));
+    const spoken = region().textContent;
+    expect(spoken).toContain(i18n.t("guide.floor.2"));
+
+    fireEvent.click(panel.getByRole("button", { name: i18n.t("guide.close") }));
+    fireEvent.click(trigger());
+
+    // `Modal` never unmounts its children, so this is the SAME node across the
+    // close and the reopen — which is what lets one observer span both.
+    const node = region();
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((batch) => records.push(...batch));
+    observer.observe(node, { childList: true, characterData: true, subtree: true });
+
+    fireEvent.click(panel.getByRole("button", { name: i18n.t("guide.next") }));
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+
+    // Byte-identical to the first walkthrough's step 2 — the premise — and the
+    // region mutated anyway, which is the only thing an AT reacts to.
+    expect(node.textContent).toBe(spoken);
+    expect(records.length).toBeGreaterThan(0);
+  });
 });
 
 describe("an SOS page closes the guide", () => {

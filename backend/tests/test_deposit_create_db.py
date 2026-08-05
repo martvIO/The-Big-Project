@@ -125,6 +125,7 @@ async def _service(
         phone_limiter=_limiter(),
         tenant_limiter=_limiter(),
         verify_limiter=_limiter(),
+        ip_limiter=_limiter(),
         clock=lambda: NOW,
     )
     return BookingService(

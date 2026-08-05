@@ -29,6 +29,19 @@ TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="בלה כלות", se
 STAFF_ID = uuid.uuid4()
 TOKEN = "session-token-abc"
 
+
+class _TrustingSettings:
+    """Only `trust_forwarded_for` is read by the send route. A real `Settings`
+    would work too; this makes the single field under test unmissable."""
+
+    trust_forwarded_for = True
+
+
+async def _null_resolver(slug: str) -> TenantContext | None:
+    """No host resolves — enough to build the real app and read its wiring."""
+    return None
+
+
 SEND_PATH = "/storefront/otp/send"
 VERIFY_PATH = "/storefront/otp/verify"
 PATHS = [SEND_PATH, VERIFY_PATH]
@@ -46,11 +59,13 @@ class StubOtpService:
         self.verify_error: Exception | None = None
         self.send_calls: list[tuple[uuid.UUID, str]] = []
         self.verify_calls: list[tuple[uuid.UUID, str, str]] = []
+        self.send_ips: list[str | None] = []
 
-    async def send(self, tenant_id: uuid.UUID, raw_phone: str) -> None:
+    async def send(self, tenant_id: uuid.UUID, raw_phone: str, *, ip: str | None = None) -> None:
         if self.send_error is not None:
             raise self.send_error
         self.send_calls.append((tenant_id, raw_phone))
+        self.send_ips.append(ip)
 
     async def verify(self, tenant_id: uuid.UUID, raw_phone: str, code: str) -> VerifyResult:
         if self.verify_error is not None:
@@ -237,3 +252,118 @@ def test_send_error_mapping(error: Exception, status: int, code: str) -> None:
     assert resp.json()["error"]["code"] == code
     # Fixed bodies: no provider name or provider-supplied text ever leaks.
     assert "twilio" not in resp.text.lower()
+
+
+# --- F21 B5 / row R16: the per-IP send budget's wiring, and its inertness ---
+
+
+def test_the_send_route_hands_the_service_no_ip_on_the_shipped_default() -> None:
+    """⚠ THIS IS THE ASSERTION THAT KEEPS ROW R16 AMBER RATHER THAN GREEN.
+
+    `trust_forwarded_for` ships `False` (`config.py:37`), so `client_ip` returns
+    `None`, so the per-IP budget the service now carries is NEVER SPENT on any
+    deployment we currently have. The code is correct and INERT. Ticking R16
+    green on the strength of the code alone would be exactly the failure D2
+    exists to prevent — a checklist row describing a mechanism that does not run.
+
+    Arming it is a host fact, not a code change: `TRUST_FORWARDED_FOR=true` is
+    only correct on a deployment that terminates exactly one trusted proxy which
+    appends `X-Forwarded-For`, and getting it wrong turns the budget into a single
+    global bucket keyed on the proxy. Enablement is the parked `F62` entry's,
+    together with the distributed limiter.
+
+    An `X-Forwarded-For` header IS sent here, so the test cannot pass merely
+    because nothing offered an address.
+    """
+    client, stub = _client()
+    with client:
+        resp = client.post(
+            SEND_PATH, json={"phone": PHONE}, headers={"x-forwarded-for": "203.0.113.9"}
+        )
+    assert resp.status_code == 204
+    assert stub.send_ips == [None], (
+        "the router derived a client IP with trust_forwarded_for=False — the "
+        "budget is no longer inert, and row R16's amber reasoning is now wrong"
+    )
+
+
+def test_the_send_route_hands_the_service_the_forwarded_ip_when_a_proxy_is_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half: the wiring is real, and flipping one setting arms it. The
+    LAST XFF entry is taken — with exactly one trusted hop that is the address the
+    proxy saw, and every earlier entry is client-supplied and forgeable."""
+    monkeypatch.setattr("app.notifications.router.get_settings", lambda: _TrustingSettings())
+    client, stub = _client()
+    with client:
+        resp = client.post(
+            SEND_PATH,
+            json={"phone": PHONE},
+            headers={"x-forwarded-for": "198.51.100.7, 203.0.113.9"},
+        )
+    assert resp.status_code == 204
+    assert stub.send_ips == ["203.0.113.9"]
+
+
+def test_a_trusted_proxy_with_no_forwarded_header_yields_no_ip_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ THE THIRD ARM, ADDED BY THE 2026-08-05 REVIEW, AND THE ONE THAT WAS A
+    LIVE DEFECT RATHER THAN A GAP.
+
+    `client_ip` used to fall back to `request.client.host` here — the socket
+    peer, which on the deployment `TRUST_FORWARDED_FOR=true` describes is the
+    PROXY. Every request that reached the app without going through the proxy
+    would then have shared one `otp:ip:<proxy>` bucket: 20 sends an hour for the
+    entire platform, spent silently, with the victims seeing "code sent" and no
+    SMS. `auth/client_ip.py`'s own docstring names that exact failure — "a single
+    global bucket that reads as working" — as the reason the module exists, so
+    the file contradicted itself on its last line.
+
+    `None` means the caller skips the per-IP key entirely (`ip_key` in
+    `notifications/service.py`), which is one budget not metering rather than
+    every customer of every boutique metered against one another.
+    """
+    monkeypatch.setattr("app.notifications.router.get_settings", lambda: _TrustingSettings())
+    client, stub = _client()
+    with client:
+        # TestClient always supplies a peer address ("testclient"), so the old
+        # fallback had something to return and this is not a vacuous assertion.
+        resp = client.post(SEND_PATH, json={"phone": PHONE})
+    assert resp.status_code == 204
+    assert stub.send_ips == [None], (
+        "a trusted-proxy deployment derived an address from a request that never "
+        "passed the proxy — the per-IP budget is one global bucket again"
+    )
+
+
+def test_the_shipped_app_gives_every_otp_budget_its_own_limiter_instance() -> None:
+    """⚠ WRITTEN BECAUSE A MUTATION CAME BACK GREEN. Reusing one
+    `FixedWindowRateLimiter` for the IP budget and the phone budget in `main.py`
+    left every test in this module and in `test_notifications_service.py` passing:
+    the service tests inject their own limiters, so they never see the wiring, and
+    nothing else looked at it.
+
+    `max_attempts` lives on the LIMITER and not on the key
+    (`.memory/limiter-max-is-per-instance`, and `booking/service.py:233-236` says
+    it in the code: "A SEPARATE instance, not a second key on create_limiter").
+    Two keys on one instance share one ceiling — a boutique's whole tenant budget
+    spent by one number, or every customer in the country throttled against one
+    another. This is the assertion that makes the wiring, not just the logic, a
+    tested property.
+
+    Pairwise identity over the four, so a fifth budget added later cannot quietly
+    join an existing instance either.
+    """
+    app = create_app(resolver=_null_resolver)
+    otp = app.state.otp_service
+    limiters = {
+        "phone": otp._phone_limiter,
+        "tenant": otp._tenant_limiter,
+        "verify": otp._verify_limiter,
+        "ip": otp._ip_limiter,
+    }
+    for name, limiter in limiters.items():
+        others = {other: obj for other, obj in limiters.items() if other != name}
+        shared = [other for other, obj in others.items() if obj is limiter]
+        assert not shared, f"the {name} budget shares its limiter instance with {shared}"

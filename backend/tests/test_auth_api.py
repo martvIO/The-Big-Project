@@ -1,11 +1,13 @@
 import time
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.auth.dependencies import get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import InvalidCredentialsError, StaffContext
+from app.core.config import Settings
 from app.main import create_app
 from app.tenancy.middleware import TenantContext
 
@@ -115,3 +117,38 @@ def test_unknown_tenant_host_is_404_before_auth() -> None:
     with TestClient(app, base_url="http://ghost.localtest.me") as client:
         resp = client.post("/manage/auth/login", json={"email": "x@y.z", "password": "p"})
     assert resp.status_code == 404
+
+
+def test_the_session_cookie_is_secure_outside_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F21 B5 / row R15. `test_login_sets_host_only_httponly_cookie` above checks
+    `HttpOnly`, `SameSite=Lax` and the absence of `Domain=` and stops there. The
+    fourth flag was never asserted, and it is the one that decides whether the
+    session survives a hostile network: without `Secure` a downgrade to http on
+    any subdomain of the boutique replays the cookie in cleartext.
+
+    Driven end to end rather than off `Settings.secure_cookies` alone — the
+    property row 15 audits is what the browser receives, and a config flag nobody
+    passes to `set_cookie` reads exactly the same in a unit test.
+
+    Mutation-checked: making `secure_cookies` return True unconditionally
+    (`config.py:243-245`) reds the dev leg; returning False unconditionally reds
+    the staging and production legs.
+    """
+    for env, expected in (("dev", False), ("staging", True), ("production", True)):
+        extra: dict[str, str] = (
+            {}
+            if env == "dev"
+            else {"database_url": "postgresql+asyncpg://u:p@h/db", "base_domain": "example.com"}
+        )
+        settings = Settings(app_env=env, **extra)  # type: ignore[arg-type]
+        monkeypatch.setattr("app.auth.router.get_settings", lambda s=settings: s)
+
+        fake = FakeAuthService()
+        with _app(fake) as client:
+            resp = client.post(
+                "/manage/auth/login", json={"email": "owner@bella.example", "password": "correct"}
+            )
+        assert resp.status_code == 200, env
+        set_cookie = resp.headers["set-cookie"].lower()
+        assert "boutique_session=" in set_cookie
+        assert ("secure" in set_cookie) is expected, f"{env}: secure flag should be {expected}"

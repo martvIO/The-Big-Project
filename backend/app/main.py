@@ -147,7 +147,7 @@ from app.queue.qr import CheckinQrService
 from app.queue.router import router as queue_router
 from app.queue.service import QueueService
 from app.queue.validation import CheckinThrottledError
-from app.security_headers import SecurityHeadersMiddleware
+from app.security_headers import SecurityHeadersMiddleware, build_csp
 from app.storage.base import (
     MediaNotConfiguredError,
     MediaStorage,
@@ -698,7 +698,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # Added LAST = OUTERMOST, and that is the whole point: it is what puts the
     # headers on the TENANT_NOT_FOUND 404 that TenantResolutionMiddleware
     # returns from its own dispatch without reaching a handler.
-    app.add_middleware(SecurityHeadersMiddleware)
+    # The CSP is built HERE, from these Settings, because the media origin it
+    # admits is a deployment fact — a deployment with no bucket gets a strictly
+    # tighter policy rather than a broken one (D3).
+    app.add_middleware(SecurityHeadersMiddleware, csp=build_csp(settings))
 
     app.state.auth_service = AuthService(get_session_factory(), settings)
     # Its own service beside the auth one, never methods on it: AuthService
@@ -808,6 +811,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         verify_limiter=FixedWindowRateLimiter(
             max_attempts=settings.otp_verify_max_per_phone_window,
             window_seconds=settings.otp_verify_phone_window_seconds,
+            clock=time.monotonic,
+        ),
+        # ⚠ ITS OWN INSTANCE, beside phone_limiter and tenant_limiter and never a
+        # third key on either: max_attempts lives on the LIMITER, so two keys
+        # sharing one instance share one ceiling
+        # (.memory/limiter-max-is-per-instance).
+        ip_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.otp_send_max_per_ip_window,
+            window_seconds=settings.otp_send_ip_window_seconds,
             clock=time.monotonic,
         ),
         dev_code=settings.otp_dev_code,

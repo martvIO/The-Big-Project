@@ -7,6 +7,14 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
-    "@playwright/test": "^1.62.0"
+    "@playwright/test": "^1.62.1"
+  },
+  "pnpm": {
+    "auditConfig": {
+      "ignoreGhsas": []
+    }
+  },
+  "auditWaivers": {
+    "_doc": "One row per id in pnpm.auditConfig.ignoreGhsas above, and NOTHING may be silenced without one. Four required fields: the GHSA id (the key), `why` — one sentence on why the advisory does not reach this product, `added` — the date it was waived, and `expires` — the date it stops being waived, at most 90 days out. An expired waiver REDS the build, on purpose: re-audit the advisory and write a new waiver, never extend one in place. Enforced by scripts/audit-waivers.mjs, which runs in the gating `Dependency audits` CI job — see that file's header for why the enforcement is a script and not this note. The backend half is `uvx pip-audit --ignore-vuln <id>` in ci.yml, which carries the same four fields in a YAML comment."
   }
 }

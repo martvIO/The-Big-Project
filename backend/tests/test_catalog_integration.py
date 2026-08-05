@@ -63,6 +63,13 @@ from app.storage.memory import InMemoryMediaStorage
 
 pytestmark = pytest.mark.db
 
+# F21 D6: every catalog mutation now takes the acting staffer's id and writes
+# one audit_log row. These suites drive the SERVICE directly, below the router
+# that would supply it from the session, so one module-level id is enough — what
+# the row carries is `test_catalog_audit_db.py`'s subject, not theirs.
+ACTOR_ID = uuid.uuid4()
+
+
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 TENANT_ID = uuid.UUID("33333333-3333-4333-8333-333333333333")
@@ -251,6 +258,7 @@ async def _dress(service: CatalogService, tenant_id: uuid.UUID, name: str = "Aur
         price_visible=True,
         reserved=False,
         sort_order=0,
+        actor_id=ACTOR_ID,
     )
     return created.row.id
 
@@ -266,7 +274,7 @@ async def _upload(
     """Presign, then simulate the browser's POST by putting the object under the
     exact key the policy pinned."""
     presigned = await service.presign_media(
-        tenant_id, dress_id, content_type=JPEG, byte_size=len(body)
+        tenant_id, dress_id, content_type=JPEG, byte_size=len(body), actor_id=ACTOR_ID
     )
     storage.put(key=presigned.fields["key"], content_type=JPEG, body=body)
     return presigned
@@ -295,6 +303,7 @@ async def test_dress_crud_lifecycle(app_role_url: str) -> None:
             price_visible=True,
             reserved=False,
             sort_order=2,
+            actor_id=ACTOR_ID,
         )
         # Zero variants is out_of_stock by derivation, never by a stored flag.
         assert created.summary.out_of_stock is True
@@ -311,6 +320,7 @@ async def test_dress_crud_lifecycle(app_role_url: str) -> None:
             price_visible=False,
             reserved=True,
             sort_order=5,
+            actor_id=ACTOR_ID,
         )
         assert updated.row.name == "Aurora II"
         assert updated.row.description is None
@@ -345,6 +355,7 @@ async def test_variant_replace_is_a_full_replacement(app_role_url: str) -> None:
                 VariantInput(size_label=" 38 ", quantity=2, sort_order=0),
                 VariantInput(size_label="US  6", quantity=0, sort_order=1),
             ],
+            actor_id=ACTOR_ID,
         )
         assert [variant.size_label for variant in first.variants] == ["38", "US 6"]
         assert first.summary.total_quantity == 2
@@ -352,12 +363,15 @@ async def test_variant_replace_is_a_full_replacement(app_role_url: str) -> None:
         assert first.summary.out_of_stock is False
 
         second = await service.replace_variants(
-            tenant, dress_id, [VariantInput(size_label="42", quantity=0, sort_order=0)]
+            tenant,
+            dress_id,
+            [VariantInput(size_label="42", quantity=0, sort_order=0)],
+            actor_id=ACTOR_ID,
         )
         assert [variant.size_label for variant in second.variants] == ["42"]
         assert second.summary.out_of_stock is True
 
-        cleared = await service.replace_variants(tenant, dress_id, [])
+        cleared = await service.replace_variants(tenant, dress_id, [], actor_id=ACTOR_ID)
         assert cleared.variants == []
         assert cleared.summary.variant_count == 0
         assert cleared.summary.out_of_stock is True
@@ -392,6 +406,7 @@ async def test_duplicate_sizes_are_refused(app_role_url: str, labels: tuple[str,
                     VariantInput(size_label=labels[0], quantity=1, sort_order=0),
                     VariantInput(size_label=labels[1], quantity=1, sort_order=1),
                 ],
+                actor_id=ACTOR_ID,
             )
         detail = await service.get_dress(tenant, dress_id)
         assert detail.variants == []
@@ -427,10 +442,16 @@ async def test_partial_unique_index_is_the_backstop_below_the_service(app_role_u
         # The index is partial on deleted_at IS NULL, so a replaced matrix frees
         # its labels for reuse rather than poisoning them forever.
         await service.replace_variants(
-            tenant, dress_id, [VariantInput(size_label="US 6", quantity=1, sort_order=0)]
+            tenant,
+            dress_id,
+            [VariantInput(size_label="US 6", quantity=1, sort_order=0)],
+            actor_id=ACTOR_ID,
         )
         reused = await service.replace_variants(
-            tenant, dress_id, [VariantInput(size_label="us 6", quantity=2, sort_order=0)]
+            tenant,
+            dress_id,
+            [VariantInput(size_label="us 6", quantity=2, sort_order=0)],
+            actor_id=ACTOR_ID,
         )
         assert [variant.size_label for variant in reused.variants] == ["us 6"]
     finally:
@@ -454,20 +475,24 @@ async def test_media_presign_confirm_delete_lifecycle(app_role_url: str) -> None
         assert pending_view.media == []
         assert pending_view.slots_remaining == MAX_MEDIA_PER_DRESS - 1
 
-        confirmed = await service.confirm_media(tenant, dress_id, presigned.media_id)
+        confirmed = await service.confirm_media(
+            tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID
+        )
         assert [item.row.id for item in confirmed.media] == [presigned.media_id]
         assert confirmed.media[0].row.sort_order == 0
         assert confirmed.media_count == 1
         assert confirmed.cover is not None
         assert confirmed.cover.row.id == presigned.media_id
 
-        after_delete = await service.delete_media(tenant, dress_id, presigned.media_id)
+        after_delete = await service.delete_media(
+            tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID
+        )
         assert after_delete.media == []
         assert after_delete.media_count == 0
         assert await storage.head_object(key=presigned.fields["key"]) is None
 
         with pytest.raises(CatalogNotFoundError):
-            await service.delete_media(tenant, dress_id, presigned.media_id)
+            await service.delete_media(tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID)
     finally:
         await engine.dispose()
 
@@ -481,10 +506,10 @@ async def test_confirm_without_an_upload_is_not_uploaded(app_role_url: str) -> N
     try:
         dress_id = await _dress(service, tenant)
         presigned = await service.presign_media(
-            tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+            tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
         )
         with pytest.raises(MediaNotUploadedError):
-            await service.confirm_media(tenant, dress_id, presigned.media_id)
+            await service.confirm_media(tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID)
         # The row stays pending and remains confirmable.
         assert await _pending_count(factory, tenant) == 1
     finally:
@@ -522,13 +547,15 @@ async def test_storage_outage_on_confirm_leaves_the_row_confirmable(app_role_url
         presigned = await _upload(service, storage, tenant, dress_id)
 
         with pytest.raises(MediaStorageUnavailableError):
-            await service.confirm_media(tenant, dress_id, presigned.media_id)
+            await service.confirm_media(tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID)
         assert await _pending_count(factory, tenant) == 1
         # Read through the dict, not head_object: the outage is still armed.
         assert presigned.fields["key"] in storage.objects
 
         storage.head_fails = False
-        confirmed = await service.confirm_media(tenant, dress_id, presigned.media_id)
+        confirmed = await service.confirm_media(
+            tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID
+        )
         assert [item.row.id for item in confirmed.media] == [presigned.media_id]
         assert confirmed.media[0].row.sort_order == 0
         assert await _pending_count(factory, tenant) == 0
@@ -549,7 +576,7 @@ async def test_confirm_deletes_an_object_whose_magic_bytes_disagree(app_role_url
         dress_id = await _dress(service, tenant)
         presigned = await _upload(service, storage, tenant, dress_id, body=HTML_BODY)
         with pytest.raises(MediaMismatchError):
-            await service.confirm_media(tenant, dress_id, presigned.media_id)
+            await service.confirm_media(tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID)
         assert await storage.head_object(key=presigned.fields["key"]) is None
     finally:
         await engine.dispose()
@@ -564,11 +591,13 @@ async def test_media_reorder_requires_an_exact_permutation(app_role_url: str) ->
     try:
         dress_id = await _dress(service, tenant)
         first = await _upload(service, storage, tenant, dress_id)
-        await service.confirm_media(tenant, dress_id, first.media_id)
+        await service.confirm_media(tenant, dress_id, first.media_id, actor_id=ACTOR_ID)
         second = await _upload(service, storage, tenant, dress_id)
-        await service.confirm_media(tenant, dress_id, second.media_id)
+        await service.confirm_media(tenant, dress_id, second.media_id, actor_id=ACTOR_ID)
 
-        reordered = await service.reorder_media(tenant, dress_id, [second.media_id, first.media_id])
+        reordered = await service.reorder_media(
+            tenant, dress_id, [second.media_id, first.media_id], actor_id=ACTOR_ID
+        )
         assert [item.row.id for item in reordered.media] == [second.media_id, first.media_id]
         assert [item.row.sort_order for item in reordered.media] == [0, 1]
 
@@ -579,7 +608,7 @@ async def test_media_reorder_requires_an_exact_permutation(app_role_url: str) ->
             [uuid.uuid4(), uuid.uuid4()],
         ):
             with pytest.raises(MediaOrderMismatchError):
-                await service.reorder_media(tenant, dress_id, payload)
+                await service.reorder_media(tenant, dress_id, payload, actor_id=ACTOR_ID)
 
         unchanged = await service.get_dress(tenant, dress_id)
         assert [item.row.id for item in unchanged.media] == [second.media_id, first.media_id]
@@ -601,15 +630,18 @@ async def test_archive_then_restore_keeps_individually_deleted_photos_deleted(
     try:
         dress_id = await _dress(service, tenant)
         await service.replace_variants(
-            tenant, dress_id, [VariantInput(size_label="38", quantity=1, sort_order=0)]
+            tenant,
+            dress_id,
+            [VariantInput(size_label="38", quantity=1, sort_order=0)],
+            actor_id=ACTOR_ID,
         )
         kept = await _upload(service, storage, tenant, dress_id)
-        await service.confirm_media(tenant, dress_id, kept.media_id)
+        await service.confirm_media(tenant, dress_id, kept.media_id, actor_id=ACTOR_ID)
         dropped = await _upload(service, storage, tenant, dress_id)
-        await service.confirm_media(tenant, dress_id, dropped.media_id)
-        await service.delete_media(tenant, dress_id, dropped.media_id)
+        await service.confirm_media(tenant, dress_id, dropped.media_id, actor_id=ACTOR_ID)
+        await service.delete_media(tenant, dress_id, dropped.media_id, actor_id=ACTOR_ID)
 
-        await service.archive_dress(tenant, dress_id)
+        await service.archive_dress(tenant, dress_id, actor_id=ACTOR_ID)
 
         # Archived dresses vanish from the active list and stay readable.
         assert (await service.list_dresses(tenant)).total == 0
@@ -628,11 +660,12 @@ async def test_archive_then_restore_keeps_individually_deleted_photos_deleted(
                 price_visible=True,
                 reserved=False,
                 sort_order=0,
+                actor_id=ACTOR_ID,
             )
         with pytest.raises(CatalogNotFoundError):
-            await service.archive_dress(tenant, dress_id)
+            await service.archive_dress(tenant, dress_id, actor_id=ACTOR_ID)
 
-        restored = await service.restore_dress(tenant, dress_id)
+        restored = await service.restore_dress(tenant, dress_id, actor_id=ACTOR_ID)
         assert restored.row.deleted_at is None
         assert [variant.size_label for variant in restored.variants] == ["38"]
         assert [item.row.id for item in restored.media] == [kept.media_id]
@@ -644,7 +677,7 @@ async def test_archive_then_restore_keeps_individually_deleted_photos_deleted(
         assert still_deleted is None
 
         with pytest.raises(CatalogNotFoundError):
-            await service.restore_dress(tenant, dress_id)
+            await service.restore_dress(tenant, dress_id, actor_id=ACTOR_ID)
     finally:
         await engine.dispose()
 
@@ -672,9 +705,9 @@ async def test_concurrent_variant_replaces_never_union(app_role_url: str) -> Non
         other_id = await _dress(service, tenant, name="Belle")
 
         await asyncio.gather(
-            service.replace_variants(tenant, dress_id, set_a),
-            service.replace_variants(tenant, dress_id, set_b),
-            service.replace_variants(tenant, other_id, other_set),
+            service.replace_variants(tenant, dress_id, set_a, actor_id=ACTOR_ID),
+            service.replace_variants(tenant, dress_id, set_b, actor_id=ACTOR_ID),
+            service.replace_variants(tenant, other_id, other_set, actor_id=ACTOR_ID),
         )
 
         final = await service.get_dress(tenant, dress_id)
@@ -699,7 +732,9 @@ async def test_concurrent_presigns_respect_the_cap(app_role_url: str) -> None:
         dress_id = await _dress(service, tenant)
         outcomes = await asyncio.gather(
             *(
-                service.presign_media(tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY))
+                service.presign_media(
+                    tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
+                )
                 for _ in range(MAX_MEDIA_PER_DRESS + 1)
             ),
             return_exceptions=True,
@@ -744,22 +779,24 @@ async def test_rejected_presigns_still_cost_throttle_budget(app_role_url: str) -
         dress_id = await _dress(service, tenant)
         for _ in range(MAX_MEDIA_PER_DRESS):
             await service.presign_media(
-                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
             )
 
         with pytest.raises(MediaLimitReachedError):
             await service.presign_media(
-                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
             )
         with pytest.raises(MediaPresignThrottledError):
             await service.presign_media(
-                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
             )
 
         # The throttle is per tenant, not global: a second tenant is untouched.
         other = uuid.uuid4()
         other_dress = await _dress(service, other)
-        await service.presign_media(other, other_dress, content_type=JPEG, byte_size=len(JPEG_BODY))
+        await service.presign_media(
+            other, other_dress, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
+        )
     finally:
         await engine.dispose()
 
@@ -792,21 +829,23 @@ async def test_a_presign_that_cannot_be_signed_releases_its_slot(app_role_url: s
 
         with pytest.raises(MediaNotConfiguredError):
             await broken.presign_media(
-                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
             )
         assert await _pending_count(factory, tenant) == 0
 
         # Budget of one: the failed attempt was recorded, so the next is throttled.
         with pytest.raises(MediaPresignThrottledError):
             await broken.presign_media(
-                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
             )
 
         # And the slot is genuinely free once storage recovers.
         healthy = _service(factory, InMemoryMediaStorage())
         detail = await healthy.get_dress(tenant, dress_id)
         assert detail.slots_remaining == MAX_MEDIA_PER_DRESS
-        await healthy.presign_media(tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY))
+        await healthy.presign_media(
+            tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
+        )
         assert (await healthy.get_dress(tenant, dress_id)).slots_remaining == (
             MAX_MEDIA_PER_DRESS - 1
         )
@@ -824,8 +863,8 @@ async def test_confirm_is_idempotent_and_never_forks_a_row(app_role_url: str) ->
         dress_id = await _dress(service, tenant)
         presigned = await _upload(service, storage, tenant, dress_id)
 
-        first = await service.confirm_media(tenant, dress_id, presigned.media_id)
-        again = await service.confirm_media(tenant, dress_id, presigned.media_id)
+        first = await service.confirm_media(tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID)
+        again = await service.confirm_media(tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID)
         assert [(item.row.id, item.row.sort_order) for item in first.media] == [
             (item.row.id, item.row.sort_order) for item in again.media
         ]
@@ -848,8 +887,8 @@ async def test_confirm_is_idempotent_and_never_forks_a_row(app_role_url: str) ->
         second_dress = await _dress(service, tenant, name="Belle")
         raced = await _upload(service, storage, tenant, second_dress)
         both = await asyncio.gather(
-            service.confirm_media(tenant, second_dress, raced.media_id),
-            service.confirm_media(tenant, second_dress, raced.media_id),
+            service.confirm_media(tenant, second_dress, raced.media_id, actor_id=ACTOR_ID),
+            service.confirm_media(tenant, second_dress, raced.media_id, actor_id=ACTOR_ID),
         )
         assert [view.media[0].row.sort_order for view in both] == [0, 0]
     finally:
@@ -868,8 +907,8 @@ async def test_concurrent_confirms_get_distinct_sort_orders(app_role_url: str) -
         second = await _upload(service, storage, tenant, dress_id)
 
         await asyncio.gather(
-            service.confirm_media(tenant, dress_id, first.media_id),
-            service.confirm_media(tenant, dress_id, second.media_id),
+            service.confirm_media(tenant, dress_id, first.media_id, actor_id=ACTOR_ID),
+            service.confirm_media(tenant, dress_id, second.media_id, actor_id=ACTOR_ID),
         )
 
         detail = await service.get_dress(tenant, dress_id)
@@ -892,17 +931,17 @@ async def test_stale_pendings_are_excluded_and_swept(app_role_url: str) -> None:
         dress_id = await _dress(filling, tenant)
         stale = [
             await filling.presign_media(
-                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
             )
             for _ in range(MAX_MEDIA_PER_DRESS)
         ]
         with pytest.raises(MediaLimitReachedError):
             await filling.presign_media(
-                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+                tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
             )
 
         thirteenth = await sweeping.presign_media(
-            tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+            tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
         )
         assert await _pending_count(factory, tenant) == 1
         assert thirteenth.media_id not in {presigned.media_id for presigned in stale}
@@ -911,7 +950,9 @@ async def test_stale_pendings_are_excluded_and_swept(app_role_url: str) -> None:
         # it is about to orphan — that is what bounds the orphan window to one
         # TTL plus the next presign rather than forever.
         storage.put(key=thirteenth.fields["key"], content_type=JPEG, body=JPEG_BODY)
-        await sweeping.presign_media(tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY))
+        await sweeping.presign_media(
+            tenant, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
+        )
         assert await storage.head_object(key=thirteenth.fields["key"]) is None
     finally:
         await engine.dispose()
@@ -983,10 +1024,13 @@ async def test_list_page_issues_a_fixed_statement_count(app_role_url: str) -> No
             dress_id = await _dress(service, tenant, name=f"Dress {index}")
             if index < 3:
                 await service.replace_variants(
-                    tenant, dress_id, [VariantInput(size_label="38", quantity=1, sort_order=0)]
+                    tenant,
+                    dress_id,
+                    [VariantInput(size_label="38", quantity=1, sort_order=0)],
+                    actor_id=ACTOR_ID,
                 )
                 presigned = await _upload(service, storage, tenant, dress_id)
-                await service.confirm_media(tenant, dress_id, presigned.media_id)
+                await service.confirm_media(tenant, dress_id, presigned.media_id, actor_id=ACTOR_ID)
 
         with _catalog_statements(engine) as statements:
             page = await service.list_dresses(tenant, limit=50)
@@ -1022,7 +1066,10 @@ async def test_list_views_are_dress_views_without_detail_payload(app_role_url: s
     try:
         dress_id = await _dress(service, tenant)
         await service.replace_variants(
-            tenant, dress_id, [VariantInput(size_label="38", quantity=4, sort_order=0)]
+            tenant,
+            dress_id,
+            [VariantInput(size_label="38", quantity=4, sort_order=0)],
+            actor_id=ACTOR_ID,
         )
         page = await service.list_dresses(tenant)
         row = page.items[0]

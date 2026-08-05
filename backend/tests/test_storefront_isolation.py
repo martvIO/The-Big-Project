@@ -56,6 +56,13 @@ from app.tenancy.middleware import TenantContext
 
 pytestmark = pytest.mark.db
 
+# F21 D6: every catalog mutation now takes the acting staffer's id and writes
+# one audit_log row. These suites drive the SERVICE directly, below the router
+# that would supply it from the session, so one module-level id is enough — what
+# the row carries is `test_catalog_audit_db.py`'s subject, not theirs.
+ACTOR_ID = uuid.uuid4()
+
+
 SLUG_A = "sfa"
 SLUG_B = "sfb"
 
@@ -214,9 +221,13 @@ async def _dress(
         price_visible=True,
         reserved=False,
         sort_order=0,
+        actor_id=ACTOR_ID,
     )
     await service.replace_variants(
-        tenant_id, view.row.id, [VariantInput(size_label="38", quantity=2, sort_order=0)]
+        tenant_id,
+        view.row.id,
+        [VariantInput(size_label="38", quantity=2, sort_order=0)],
+        actor_id=ACTOR_ID,
     )
     return view.row.id
 
@@ -433,7 +444,7 @@ def test_an_archived_dress_leaves_the_public_surface_entirely(app_role_url: str)
         tenant_a = asyncio.run(_seed(factory, IDENTITY_A))
         kept = asyncio.run(_dress(factory, tenant_a.id, "Aurora"))
         archived = asyncio.run(_dress(factory, tenant_a.id, "Camellia"))
-        asyncio.run(_catalog(factory).archive_dress(tenant_a.id, archived))
+        asyncio.run(_catalog(factory).archive_dress(tenant_a.id, archived, actor_id=ACTOR_ID))
         app = _storefront_app(factory, {SLUG_A: _context(tenant_a, SLUG_A)})
 
         with TestClient(app, base_url=f"http://{SLUG_A}.localtest.me") as client:

@@ -15,8 +15,18 @@ dev:
 worker:
 	cd "$(BACKEND)" && uv run python -m app.worker
 
+# DATABASE_URL points at a CLOSED port on purpose. A `not db` test must never
+# open a database connection, but nothing stopped one: the default
+# DEV_DATABASE_URL is localhost:5432, so a fast-lane test that accidentally
+# reaches a real query passes on any dev box running a local Postgres and fails
+# on CI, which has none (Testcontainers binds a random port and is wired in only
+# through the `db` fixtures). That exact divergence shipped
+# test_hsts_reaches_the_tenant_not_found_404 green and reddened CI. With the
+# port closed, the local gate reproduces CI's environment and any such test
+# fails here first, with ConnectionRefused pointing straight at the culprit.
+# Only this target: `test-db`/`test-all` run the db lane, which needs a real URL.
 test:
-	cd "$(BACKEND)" && uv run pytest -m "not db" -q
+	cd "$(BACKEND)" && DATABASE_URL="postgresql+asyncpg://boutique:closed@127.0.0.1:1/no-db-in-the-fast-lane" uv run pytest -m "not db" -q
 
 test-db:
 	cd "$(BACKEND)" && uv run pytest -m db -q

@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
 
+from app.auth.client_ip import client_ip
 from app.auth.cookies import clear_session_cookie, set_session_cookie
 from app.auth.dependencies import get_auth_service, get_current_staff
 from app.auth.rate_limit import FixedWindowRateLimiter
@@ -26,19 +27,6 @@ def _staff_response(staff: StaffContext) -> StaffResponse:
     )
 
 
-def _client_ip(request: Request, trust_forwarded_for: bool) -> str | None:
-    # Per-IP limiting is only meaningful with the REAL client IP. Without a trusted
-    # proxy that appends XFF, request.client.host is the proxy → a global bucket, so
-    # we skip the per-IP key entirely (None). With one trusted proxy hop, the last
-    # XFF entry is the client the proxy saw.
-    if not trust_forwarded_for:
-        return None
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[-1].strip()
-    return request.client.host if request.client else None
-
-
 @router.post("/login")
 async def login(
     request: Request,
@@ -54,7 +42,7 @@ async def login(
     # Per-(tenant,email) is the always-on brute-force control; the per-IP key is
     # extra and only present when we can trust a real client IP.
     keys = [f"t:{tenant.id}:e:{email}"]
-    ip = _client_ip(request, settings.trust_forwarded_for)
+    ip = client_ip(request, settings.trust_forwarded_for)
     if ip is not None:
         keys.append(f"ip:{ip}")
 

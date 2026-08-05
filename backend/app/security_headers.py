@@ -8,25 +8,82 @@ from its own dispatch, without ever reaching a handler. On a public storefront
 that is the single most-served response to anyone probing the domain, and an
 inner middleware would miss it entirely.
 
-**X-Frame-Options: DENY is API defense-in-depth, not the clickjacking fix for
-the manage console.** The framable document is `index.html`, served by Vite in
-dev and by a static host in production — neither passes through this
-middleware. That requirement belongs to the frontend-deploy pipeline and is
-recorded in the F10 spec's Risks 2. Embedding a tenant storefront in a
-third-party site is not supported in v1; a per-tenant `frame-ancestors`
-allowlist is E10's if a boutique ever asks for one.
+**`frame-ancestors 'none'` is now the clickjacking control, and
+`X-Frame-Options: DENY` is the defence-in-depth it was always described as.**
+This paragraph used to say the opposite — that the framable `index.html` was
+served by Vite in dev and a static host in production and so never passed
+through this middleware. **F55 (PR #26) made that false**: FastAPI serves both
+SPA shells itself (`main.py`'s `_SpaFallbackRoute` and the `/manage` mount;
+`test_spa_serving.py:182-186` asserts the shells carry these headers), and CI
+copies each `dist/` into `app/static/`. Both shells therefore pass through here
+and get the full policy. Embedding a tenant storefront in a third-party site is
+still not supported; a per-tenant `frame-ancestors` allowlist is E10's if a
+boutique ever asks for one.
 
-**HSTS and CSP are deliberately absent, not forgotten.** HSTS needs the real
-domain and a TLS-termination decision that `external-applications.md` #2 still
-blocks, and stamping a `max-age` against a `.invalid` staging host is
-meaningless. A CSP for a Vite bundle needs a nonce or hash story authored
-against a deployed artifact, and there is no frontend deploy pipeline to author
-it against yet. Owner: F21. Trigger: the domain is purchased.
+**HSTS and the CSP are emitted here, closing `.planning/security-checklist-v1.md`
+row `R33` ("Security headers: HSTS, CSP, X-Frame-Options, X-Content-Type-Options")
+and, for the CSP's third-party-script clause, `R28`.** The row was cited here as
+"checklist row 33" before F21; the ids are frozen as `R<n>` labels now, so the
+citation survives renumbering rather than silently pointing at whatever ends up
+on that line. **The two blockers this paragraph used to
+name were both wrong.** It said HSTS "needs the real domain and a
+TLS-termination decision". It needs neither: a browser applies an HSTS header
+only to the host that sent it (plus that host's subtree under
+`includeSubDomains`), so it can never reach a sibling of a shared parent and
+emitting it from `*.up.railway.app` is safe — and a browser ignores HSTS over
+plain HTTP anyway, which is why one scheme condition replaces a config flag. It
+also said a CSP "needs a nonce or hash story authored against a deployed
+artifact": the deployed artifact has nothing inline (Tailwind v4 compiles at
+build time and the build emits an external stylesheet), so there is nothing for
+a nonce to cover, and the pipeline it said did not exist has existed since F55.
+
+**Neither header may join `SECURITY_HEADERS`.** That dict is compared with `==`
+by seven test modules, which is only meaningful for headers that are
+unconditional and constant. The CSP is settings-derived (`build_csp`, built once
+at `create_app()` time) and HSTS is request-derived (`_effective_scheme`), so
+both are emitted BESIDE the dict by the same middleware and carry their own
+tests in `tests/test_security_headers.py`.
 """
+
+import re
+from urllib.parse import urlsplit
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
+from starlette.types import ASGIApp
+
+from app.core.config import Settings
+
+CSP_HEADER = "Content-Security-Policy"
+
+HSTS_HEADER = "Strict-Transport-Security"
+# No `preload`. Submission to the browser preload list is effectively
+# irreversible and is a decision for a domain that resolves, not for
+# *.up.railway.app.
+HSTS_VALUE = "max-age=31536000; includeSubDomains"
+
+# An allowlist, not a denylist of the characters that happen to be dangerous
+# today: a netloc is `host[:port]` (or a bracketed IPv6 literal), and anything
+# outside that set cannot be part of one. This is what refuses `;`, whitespace,
+# `,`, `*`, quotes and `/` in one line without having to enumerate them.
+_SAFE_NETLOC = re.compile(r"[A-Za-z0-9._~%:\[\]-]+")
+
+# D3's ten, in order. `build_csp` re-reads its OWN output against this, so a
+# directive spliced in from settings — or one dropped by an edit — is a failure
+# at `create_app()` rather than a policy nobody re-read.
+CSP_DIRECTIVES = (
+    "default-src",
+    "script-src",
+    "style-src",
+    "img-src",
+    "font-src",
+    "connect-src",
+    "form-action",
+    "frame-ancestors",
+    "base-uri",
+    "object-src",
+)
 
 SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
@@ -37,11 +94,162 @@ SECURITY_HEADERS = {
 }
 
 
+def media_csp_origin(settings: Settings) -> str | None:
+    """The one origin the policy must admit that is not `'self'` — the media
+    bucket, which serves dress photos over presigned GET (`img-src`) and receives
+    presigned POST uploads from `apps/manage/src/api.ts` (`connect-src`).
+
+    Reduced to scheme + netloc because a CSP source is an ORIGIN: a trailing
+    slash or a path turns it into a path match with different semantics, and the
+    browser silently applies the different one.
+
+    The BUCKET NAME never appears. `storage/s3.py:73-78` records that an explicit
+    `endpoint_url` forces path-style addressing, and the default endpoint is the
+    regional host itself — so the URL is `s3.<region>.amazonaws.com/<bucket>` and
+    never `<bucket>.s3.<region>.amazonaws.com`. That is what makes this one line
+    rather than a bucket-name-dependent branch.
+
+    `None` when no bucket is configured. No bucket is a supported deployment
+    (config.py:265-269), and it gets a strictly TIGHTER policy — never a broken
+    one.
+
+    ⚠ THE ORIGIN IS VALIDATED, NOT JUST REDUCED, SINCE THE 2026-08-05 REVIEW.
+    Both inputs were spliced into the policy raw. A CSP is a `;`-delimited list
+    and **the browser honours the FIRST occurrence of a directive**, so
+    `MEDIA_REGION="x; frame-ancestors *"` emitted `frame-ancestors *` ahead of
+    this module's own `frame-ancestors 'none'` and turned clickjacking back on;
+    `https://*` wildcarded `connect-src`. `MEDIA_ENDPOINT_URL` was already
+    boot-blocked in production and forced `https://` outside dev, and
+    `"https://x.test; frame-ancestors *"` satisfies both of those — while
+    `MEDIA_REGION` had no check beyond non-empty. (`\\r\\n` was never a header
+    injection: `urlsplit` drops it. This is directive injection inside one
+    header's value.)
+
+    It needs env write access, so it is config integrity rather than an
+    internet-facing hole — and a wrong media setting is already a boot failure in
+    this product (`config.py`'s `_require_usable_media_config`: a MISSING bucket
+    is supported, a WRONG one is not), so this raises rather than quietly
+    dropping the origin. A silently-dropped origin would break every dress photo
+    with no explanation.
+    """
+    if not settings.media_bucket:
+        return None
+    raw = settings.media_endpoint_url or f"https://s3.{settings.media_region}.amazonaws.com"
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not _SAFE_NETLOC.fullmatch(parts.netloc):
+        raise ValueError(
+            "the media origin does not reduce to a bare http(s) host — refusing to "
+            f"splice {raw!r} into the Content-Security-Policy. Check MEDIA_REGION "
+            "and MEDIA_ENDPOINT_URL."
+        )
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def build_csp(settings: Settings) -> str:
+    """D3's ten directives, built at `create_app()` time from `Settings` — never
+    a module constant, because the media origin is a deployment fact.
+
+    `style-src` carries no `'unsafe-inline'`: the build emits an external
+    stylesheet and Tailwind v4 compiles at build time. If that ever changes, the
+    CSP reds in e2e, which is the correct place for it to red.
+
+    `frame-ancestors 'none'` is what actually stops clickjacking on the shells
+    now that FastAPI serves them; `X-Frame-Options: DENY` stays as the
+    defence-in-depth it was always described as. `form-action` and `base-uri`
+    close the two injection shapes a `default-src` does not.
+
+    **`img-src` carries `data:` and no other directive does.** D3 named
+    `assetsInlineLimit` (Vite's default, 4096) as a live tripwire, and it was
+    already tripped when the browser test first ran: `modryn-mark.svg` is 973
+    bytes, so the build inlines it as a `data:image/svg+xml` URI and the console
+    login screen's MODRYN lockup — its own h1 — is refused by an `img-src` of
+    `'self'` alone. One source on one directive is the prescribed widening. It
+    must never spread: a data URI cannot execute, which is the whole reason it is
+    tolerable here and intolerable on `script-src` or `connect-src`.
+    """
+    media = media_csp_origin(settings)
+    img = f"'self' data: {media}" if media else "'self' data:"
+    external = f"'self' {media}" if media else "'self'"
+    policy = "; ".join(
+        (
+            "default-src 'self'",
+            "script-src 'self'",
+            "style-src 'self'",
+            f"img-src {img}",
+            "font-src 'self'",
+            f"connect-src {external}",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'none'",
+            "object-src 'none'",
+        )
+    )
+    # The invariant R28's evidence implicitly claims, asserted on the string that
+    # is actually emitted rather than on the tuple above: exactly these ten
+    # directives, exactly once each, in this order. `media_csp_origin` now
+    # refuses a netloc that could carry a `;`, so this is the second line of
+    # defence and not the first — but it is the one that survives someone
+    # widening the policy from a new settings field later, and it is what makes
+    # "ten directives" a runtime fact rather than a sentence in a checklist.
+    #
+    # SPLIT ON `;`, NOT ON `"; "`. A CSP separator is a bare semicolon; the space
+    # is this builder's own formatting. Splitting on the two-character form meant
+    # an injected `https://x;frame-ancestors *` — no space — left `img-src` as a
+    # single part, so the tuple still equalled CSP_DIRECTIVES and the check
+    # passed while `frame-ancestors *` was emitted AHEAD of the real
+    # `frame-ancestors 'none'`, which is the occurrence a browser honours. Found
+    # by the 2026-08-05 round-2 review. Unreachable through the settings today —
+    # `media_csp_origin` refuses a netloc carrying `;` — but this leg's whole
+    # stated purpose is the case where that first line of defence does not apply.
+    emitted = tuple(part.strip().split(" ", 1)[0] for part in policy.split(";"))
+    if emitted != CSP_DIRECTIVES:
+        raise ValueError(f"the emitted CSP is not D3's ten directives in order: {emitted}")
+    return policy
+
+
+def _effective_scheme(request: Request) -> str:
+    """The scheme the OUTERMOST hop served, which on Railway is never the scheme
+    this process sees on `request.url` — TLS terminates at the edge and the app
+    is spoken to over plain HTTP.
+
+    `x-forwarded-proto` is read here WITHOUT a `trust_forwarded_for` guard, and
+    the asymmetry with `client_ip` (auth/client_ip.py) is deliberate rather than an
+    oversight. A spoofed `x-forwarded-for` poisons a rate-limit bucket keyed by
+    IP — a real attack with a real budget to spend. A spoofed
+    `x-forwarded-proto: https` over plain HTTP makes the app emit an HSTS header
+    that the browser then IGNORES, because HSTS delivered over http is ignored by
+    specification. There is nothing to spend and nothing to poison, so this needs
+    no config flag and no trusted-proxy declaration.
+
+    The LAST entry wins: a proxy chain appends, so the final element is what the
+    hop closest to this process actually served. Reading the first would let a
+    client-supplied prefix decide it.
+    """
+    forwarded = request.headers.get("x-forwarded-proto")
+    if forwarded:
+        return forwarded.split(",")[-1].strip().lower()
+    return request.url.scheme
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: ASGIApp, *, csp: str) -> None:
+        # Passed in rather than read here: the policy is built ONCE from Settings
+        # at create_app() time, so no request pays for a urlsplit and a test can
+        # build an app with any deployment's policy without patching globals.
+        super().__init__(app)
+        self._csp = csp
+
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         # setdefault, not assignment: a route that has a documented reason to
         # differ keeps its own value rather than being silently overwritten.
         for header, value in SECURITY_HEADERS.items():
             response.headers.setdefault(header, value)
+        # Both of these are emitted BESIDE SECURITY_HEADERS and never inside it.
+        # Seven test modules compare that dict with `==` on the strength of every
+        # member being unconditional and constant; the CSP is settings-derived
+        # and HSTS is request-derived, so neither can join it.
+        response.headers.setdefault(CSP_HEADER, self._csp)
+        if _effective_scheme(request) == "https":
+            response.headers.setdefault(HSTS_HEADER, HSTS_VALUE)
         return response

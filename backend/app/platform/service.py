@@ -199,10 +199,36 @@ class ProvisioningService:
             ),
         )
 
-    async def list_tenants(self) -> list[TenantSummary]:
-        async with self._session_factory() as session:
+    async def list_tenants(self, *, operator: str) -> list[TenantSummary]:
+        """⚠ THE ONLY READ IN THIS FILE THAT WRITES A ROW, and F21's D6 says why:
+        it is a FULL CROSS-TENANT read — every boutique's slug, trading name and
+        status in one output — and before F21 it was the one privileged operation
+        in the CLI that left no trail at all. `--operator` was already parsed
+        (`cli.py:68-69`) and then discarded, which is the shape of a decision
+        nobody made.
+
+        Checklist row 38 reads "data ACCESS by operators", not "data changes",
+        and D19 already settled that reading once for `PRIVACY_SUBJECT_EXPORTED`:
+        assembling a whole record into one view IS the access it means. The
+        standing rule that no GET handler writes a row (`dashboard/service.py`
+        :373) is untouched — that rule is about a tenant's staff reading their own
+        boutique through HTTP, and this is a platform operator reading across all
+        of them from a shell.
+
+        Bare `self._session_factory()`, not `tenant_session`: the row is
+        platform-scoped and belongs to no tenant, so `target_tenant_id` stays
+        NULL. `session.begin()` is explicit for `_fail_provision`'s reason — the
+        read alone needed no transaction, and the write does.
+        """
+        async with self._session_factory() as session, session.begin():
             stmt = select(Tenant).where(Tenant.deleted_at.is_(None)).order_by(Tenant.created_at)
             rows = (await session.execute(stmt)).scalars().all()
+            await self._audit.record(
+                session,
+                operator=operator,
+                action=PlatformAuditAction.TENANTS_LISTED,
+                details={"tenants": len(rows)},
+            )
         return [
             TenantSummary(slug=t.slug, name=t.name, status=t.status, created_at=t.created_at)
             for t in rows

@@ -1237,3 +1237,62 @@ def test_the_rounding_agora_goes_to_the_customer() -> None:
     lands on the side of the person whose money it is: the boutique forfeits
     `amount * percent // 100` and she is refunded the remainder."""
     assert _refund(STARTS, amount=501) == 501 - 250
+
+
+def test_phone_correction_needs_no_otp_and_admits_both_roles() -> None:
+    """F21 B5 / D10. F15 Risk 2, re-derived from the code at production scale and
+    pinned so the day someone changes it, they change it deliberately.
+
+    THE RULING, VERBATIM (`rulings_2026_07_30`):
+
+        "F15 phone-correction without OTP is ACKNOWLEDGED as shipped for owner
+        AND shift_manager."
+
+    F21 CHANGES NO BEHAVIOUR HERE. The risk is accepted, the acceptance is
+    current, and it was made knowing both roles reach the route — narrowing the
+    gate to owner-only would reverse a ruling inside a hardening feature. What
+    this test adds is that the next change to either half is a red test rather
+    than a quiet widening.
+
+    ⚠ AND IT MUST NOT CITE `owner-booking-management.md:560`. That sentence
+    accepted Risk 2 as "bounded by the owner-role guard", and the bound was
+    removed when F31 landed SHIFT_MANAGER before F15 merged. The acknowledgment
+    stands; the reasoning that preceded it does not, and the checklist must not
+    quote it.
+
+    Two halves, both asserted:
+
+    - **No OTP and no step-up.** The whole request is one field, `phone`. A live
+      session cookie is the entire precondition: no password re-entry, no
+      per-action token, no second factor. Server-side it is a single unconditioned
+      POST, and the only ceremony is a client-side confirm modal.
+    - **Both roles.** `owner` and `shift_manager`, of the five `StaffRole`
+      members exactly those two, via the router-level
+      `require_role(OWNER, SHIFT_MANAGER)` with no per-route tightening.
+
+    Mutation-checked: narrowing the route to `require_role(StaffRole.OWNER)` reds
+    the shift_manager leg; adding any required second body field reds both legs.
+    """
+    for role in (StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value):
+        fake = FakeOwnerBookingService()
+        with _client(fake, role=role) as client:
+            resp = client.post(PHONE_PATH, json=PHONE_BODY)
+        assert resp.status_code == 200, f"{role} → {resp.text}"
+        call = fake.call("correct_phone")
+        # The service saw the new number and nothing else that could carry a
+        # one-time code: an OTP would have to arrive as a second body field, and
+        # `phone` is the only one the schema accepts.
+        assert set(PHONE_BODY) == {"phone"}
+        assert call["phone"] == PHONE_BODY["phone"]
+        assert call["staff"].role == role
+
+
+def test_the_phone_correction_schema_accepts_no_second_factor_field() -> None:
+    """The other direction of "no OTP": a client that WANTS to send one cannot.
+    `extra="forbid"` on the request model means an `otp` key is a 400, so nobody
+    can add a step-up on the client side and believe it is enforced."""
+    fake = FakeOwnerBookingService()
+    with _client(fake) as client:
+        resp = client.post(PHONE_PATH, json={**PHONE_BODY, "otp": "123456"})
+    assert resp.status_code == 400, resp.text
+    assert fake.calls == []

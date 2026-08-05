@@ -37,7 +37,7 @@ class ProvisioningLike(Protocol):
     async def reset_owner_password(
         self, *, slug: str, owner_email: str, new_password: str, operator: str
     ) -> CommandResult: ...
-    async def list_tenants(self) -> list[TenantSummary]: ...
+    async def list_tenants(self, *, operator: str) -> list[TenantSummary]: ...
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -157,7 +157,7 @@ async def _dispatch(
     if args.command == "retention":
         return _report(await service.run_retention(operator=args.operator, dry_run=not args.armed))
     if args.command == "list":
-        _print_tenants(await service.list_tenants())
+        _print_tenants(await service.list_tenants(operator=args.operator))
         return 0
     return 2
 

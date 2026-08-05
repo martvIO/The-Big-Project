@@ -100,6 +100,7 @@ def _service(
     phone_limiter: FixedWindowRateLimiter | None = None,
     tenant_limiter: FixedWindowRateLimiter | None = None,
     verify_limiter: FixedWindowRateLimiter | None = None,
+    ip_limiter: FixedWindowRateLimiter | None = None,
     dev_code: str | None = None,
 ) -> tuple[OtpService, SmsSender, WallClockStub]:
     actual_sender = sender if sender is not None else FakeSmsSender()
@@ -111,6 +112,7 @@ def _service(
         phone_limiter=phone_limiter if phone_limiter is not None else _loose_limiter(),
         tenant_limiter=tenant_limiter if tenant_limiter is not None else _loose_limiter(),
         verify_limiter=verify_limiter if verify_limiter is not None else _loose_limiter(),
+        ip_limiter=ip_limiter if ip_limiter is not None else _loose_limiter(),
         dev_code=dev_code,
         clock=clock,
     )
@@ -536,5 +538,123 @@ async def test_send_sms_still_sends_to_a_real_number(app_role_url: str) -> None:
         )
         assert row.status == MessageStatus.SENT.value
         assert len(sender.outbox) == 1
+    finally:
+        await engine.dispose()
+
+
+# --- F21 B5 / row R16: the per-IP send budget ---
+#
+# ⚠ AMBER, NOT GREEN, AND THE TESTS BELOW SAY SO IN THE ASSERTIONS. `_client_ip`
+# returns None unless `trust_forwarded_for`, which ships False (`config.py:37`),
+# so on every deployment we currently have the router hands `ip=None` and this
+# budget is NEVER SPENT. The code is correct and inert. Enablement is a host fact
+# — `TRUST_FORWARDED_FOR=true` is only correct behind exactly one trusted proxy
+# that appends XFF — and it is owned by the parked F62 entry, together with the
+# distributed (Redis) limiter that makes any of these budgets survive a second
+# worker process.
+
+
+def _tight_limiter(max_attempts: int) -> FixedWindowRateLimiter:
+    return FixedWindowRateLimiter(
+        max_attempts=max_attempts, window_seconds=3600, clock=time.monotonic
+    )
+
+
+async def test_the_otp_send_budget_meters_the_client_ip_when_one_is_trusted(
+    app_role_url: str,
+) -> None:
+    """N different phones from ONE address. Neither the phone budget nor the
+    tenant budget catches this — that is the whole gap: the phone key is per
+    number and a script that walks numbers never repeats one."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    otp, sender, _ = _service(factory, ip_limiter=_tight_limiter(3))
+    assert isinstance(sender, FakeSmsSender)
+    try:
+        for n in range(3):
+            await otp.send(tenant_id, f"05012345{n:02d}", ip="203.0.113.9")
+        assert len(sender.outbox) == 3
+        await otp.send(tenant_id, "0501234599", ip="203.0.113.9")
+        assert len(sender.outbox) == 3, "the fourth send from a spent IP was not refused"
+    finally:
+        await engine.dispose()
+
+
+async def test_a_tripped_ip_budget_is_silent_and_never_a_429(app_role_url: str) -> None:
+    """⚠ THE ONE WAY THIS TASK COULD SHIP A REGRESSION WHILE MAKING A CHECKLIST
+    ROW LOOK BETTER. A tripped IP budget must answer exactly like a tripped PHONE
+    budget — the same silent 204 — and never like the tenant one. `service.py`
+    :225-231 argues it at length: a 429 here is an oracle for "is this number
+    mid-booking at this boutique", and an IP-keyed 429 is that same oracle keyed
+    differently."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    otp, _, _ = _service(factory, ip_limiter=_tight_limiter(1))
+    try:
+        await otp.send(tenant_id, PHONE, ip="203.0.113.9")
+        # Returns, does not raise. OtpThrottledError is what becomes a 429.
+        await otp.send(tenant_id, "0507654321", ip="203.0.113.9")
+    finally:
+        await engine.dispose()
+
+
+async def test_the_otp_send_budget_skips_the_ip_key_when_no_proxy_is_trusted(
+    app_role_url: str,
+) -> None:
+    """C5, asserted rather than described: with the SHIPPED default the router
+    hands `ip=None` and this budget is inert. Row R16 is amber for exactly this
+    reason, and a green row on a mechanism that does not run is the failure D2
+    exists to prevent."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    otp, sender, _ = _service(factory, ip_limiter=_tight_limiter(1))
+    assert isinstance(sender, FakeSmsSender)
+    try:
+        for n in range(4):
+            await otp.send(tenant_id, f"05012345{n:02d}", ip=None)
+        assert len(sender.outbox) == 4, "the IP budget metered something with no IP"
+    finally:
+        await engine.dispose()
+
+
+async def test_the_ip_budget_is_its_own_limiter_instance(app_role_url: str) -> None:
+    """⚠ THE HOUSE RULE THIS TEST EXISTS FOR. `max_attempts` lives on the LIMITER,
+    not on the key (`.memory/limiter-max-is-per-instance`, and `booking/service.py`
+    :233-236 states it in the code: "A SEPARATE instance, not a second key on
+    create_limiter"). Two keys sharing one instance share one ceiling, and that is
+    a shipped-bug class in this repo.
+
+    The discriminator is TWO DIFFERENT CEILINGS observed on the same run. Drive ONE
+    phone from four DISTINCT addresses with `ip` capped at 2 and `phone` capped at
+    4: each address is a fresh IP bucket, so all four sends must land and the fifth
+    must be refused BY THE PHONE budget. Sharing one instance would collapse both
+    keys into one bucket of 2 and stop the run at the third send — which is
+    precisely the shipped-bug shape, and precisely what a single ceiling looks like
+    from outside.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    ip_limiter = _tight_limiter(2)
+    phone_limiter = _tight_limiter(4)
+    otp, sender, _ = _service(factory, ip_limiter=ip_limiter, phone_limiter=phone_limiter)
+    assert isinstance(sender, FakeSmsSender)
+    assert ip_limiter is not phone_limiter
+    try:
+        for n in range(4):
+            await otp.send(tenant_id, PHONE, ip=f"203.0.113.{n}")
+        assert len(sender.outbox) == 4, (
+            "a send was refused before the phone ceiling — the two keys are sharing "
+            "one limiter instance, so they are sharing one ceiling"
+        )
+        await otp.send(tenant_id, PHONE, ip="203.0.113.99")
+        assert len(sender.outbox) == 4, "the phone ceiling did not hold"
+
+        # And the mirror: the IP budget genuinely holds at ITS ceiling, on an
+        # address that has not been spent, for phones the phone budget has not.
+        for n in range(2):
+            await otp.send(tenant_id, f"05099999{n:02d}", ip="198.51.100.4")
+        assert len(sender.outbox) == 6
+        await otp.send(tenant_id, "0509999999", ip="198.51.100.4")
+        assert len(sender.outbox) == 6, "the IP ceiling did not hold"
     finally:
         await engine.dispose()

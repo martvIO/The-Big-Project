@@ -223,6 +223,7 @@ class _Rig:
                 phone_limiter=_loose(),
                 tenant_limiter=_loose(),
                 verify_limiter=_loose(),
+                ip_limiter=_loose(),
                 clock=_clock,
             ),
             create_limiter=_loose(),

@@ -2896,6 +2896,96 @@ test("storefront wall board: the empty board is a designed state with its own ax
   expect(await axeViolations(page)).toEqual([]);
 });
 
+// --- journeys 2b and 2c: the board's REMAINING render branches (F21 B6) -------
+//
+// Plan C1. `public-queue-board.md`'s A29 asks for zero violations on every
+// MATERIALLY DIFFERENT state, and the spec's claim that /queue had none was
+// half wrong: journeys 1 and 2 above already close the populated and the empty
+// board, both through this file's shared `axeViolations` with no
+// `.disableRules()` and no `.exclude()`. So the residual was DERIVED from
+// `QueueBoardPage.tsx`'s own render branches rather than assumed, and it is
+// exactly two — the same two the plan predicted:
+//
+//   loading   — transient, a role="status" line with no controls; the page is
+//               never in it once `gotoSettled` has resolved, so it is not a
+//               scannable state.
+//   populated — journey 1.  ✔ shipped
+//   empty     — journey 2.  ✔ shipped
+//   overflow  — `hidden > 0` adds the «ועוד N בתור» line, which NO other state
+//               renders.  ← below
+//   failed    — `view.kind === "failed"` adds a role="alert" AND a retry button,
+//               and it is the only branch on this route with an interactive
+//               control that is not the pause.  ← below
+//
+// A third scan of the populated DOM would have been coverage theatre; these two
+// are not the same DOM.
+
+const BOARD_OVERFLOW = "ועוד 35 בתור";
+const BOARD_FAILED = "לא הצלחנו להציג את לוח התור כרגע.";
+const BOARD_RETRY = "ניסיון נוסף";
+const BOARD_RESUME = "חידוש העדכון";
+
+test("storefront wall board: the overflow line is a state of its own and has its own axe pass", async ({
+  page,
+}) => {
+  // Five rows fit a panel; forty women are in the queue. The board must say so
+  // without scrolling, paging or moving — and the count is COMPUTED
+  // (waiting_total − entries.length), so 40 − 5 = 35.
+  await installApi(page, "populated", BOUTIQUE, { queue: [ok(boardBody(5, 40))] });
+  await gotoSettled(page, "/queue");
+
+  await expect(page.getByTestId("queue-board-row")).toHaveCount(5);
+  await expect(page.getByTestId("queue-board-overflow")).toHaveText(BOARD_OVERFLOW);
+
+  // The same 2.2.2 pause journey 1 takes, and for the same reason: a 5s poll
+  // repainting under an analyze() run is the one flake this file could grow.
+  await page.getByRole("button", { name: PAUSE }).click();
+  await expect(page.getByTestId("queue-board-freshness")).toContainText(BOARD_PAUSED_AT);
+
+  expect(await axeViolations(page)).toEqual([]);
+});
+
+test("storefront wall board: the outage arm is a designed state with its own axe pass", async ({
+  page,
+}) => {
+  // The FIRST request fails and nothing ever loaded, which is the arm that
+  // renders the alert and the retry control. A constant reply queue means every
+  // 5-60s retry fails too, so the state is stable under the scan rather than
+  // flipping mid-analyze.
+  await installApi(page, "populated", BOUTIQUE, {
+    queue: [{ status: 503, body: { error: { code: "SERVICE_UNAVAILABLE", message: "down" } } }],
+  });
+
+  // ⚠ NOT `gotoSettled`, and the reason is a property of the page rather than a
+  // convenience. That helper's ONE /queue tell is the freshness line, and in
+  // THIS arm the freshness line is deliberately EMPTY: `updatedAt` is null until
+  // the first success, and `freshness()` returns null rather than rendering the
+  // bare lead «עודכן » — «the page's only honesty signal claiming an update that
+  // never happened, at the name scale, on a wall, for as long as the server is
+  // down» (QueueBoardPage.tsx:275-288). The <span> is present and zero-sized, so
+  // `toBeVisible` times out. The alert is this state's own tell.
+  await page.goto(`${STOREFRONT}/queue`);
+
+  // ⚠ THE ANTI-VACUITY LEG. A board that rendered nothing at all would also
+  // score zero violations — and «a blank screen reads as אין ממתינות and a woman
+  // acts on it» is the exact failure QueueBoardPage.tsx:456-462 exists to
+  // prevent. So the alert and the retry control are asserted present before
+  // anything is scanned.
+  await expect(page.getByRole("alert")).toHaveText(BOARD_FAILED);
+  await expect(page.getByTestId("queue-board-row")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: BOARD_RETRY })).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+
+  // The retry loop backs off to 5-60s and every attempt answers the same 503, so
+  // the DOM is already stable — the pause is taken anyway, for the same reason
+  // journey 1 takes it, and because the 2.2.2 control has to be there in the arm
+  // where the wall is most likely to be left alone.
+  await page.getByRole("button", { name: PAUSE }).click();
+  await expect(page.getByRole("button", { name: BOARD_RESUME })).toBeVisible();
+
+  expect(await axeViolations(page)).toEqual([]);
+});
+
 // --- journey 3: the panel it is designed for ----------------------------------
 
 test("storefront wall board: the wall board fits a 1080p screen", async ({ page }) => {

@@ -53,6 +53,13 @@ from app.storefront.validation import (
 
 pytestmark = pytest.mark.db
 
+# F21 D6: every catalog mutation now takes the acting staffer's id and writes
+# one audit_log row. These suites drive the SERVICE directly, below the router
+# that would supply it from the session, so one module-level id is enough — what
+# the row carries is `test_catalog_audit_db.py`'s subject, not theirs.
+ACTOR_ID = uuid.uuid4()
+
+
 JPEG = "image/jpeg"
 JPEG_BODY = b"\xff\xd8\xff" + b"\x00" * 1021
 
@@ -116,6 +123,7 @@ async def _dress(
         price_visible=True,
         reserved=False,
         sort_order=sort_order,
+        actor_id=ACTOR_ID,
     )
     return created.row.id
 
@@ -139,7 +147,7 @@ async def _pending_photo(
     """Presigned and never uploaded — an unverified object that must not reach a
     signed URL on any public surface."""
     presigned = await catalog.presign_media(
-        tenant_id, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+        tenant_id, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
     )
     return presigned.media_id
 
@@ -151,10 +159,10 @@ async def _ready_photo(
     dress_id: uuid.UUID,
 ) -> uuid.UUID:
     presigned = await catalog.presign_media(
-        tenant_id, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+        tenant_id, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
     )
     storage.put(key=presigned.fields["key"], content_type=JPEG, body=JPEG_BODY)
-    await catalog.confirm_media(tenant_id, dress_id, presigned.media_id)
+    await catalog.confirm_media(tenant_id, dress_id, presigned.media_id, actor_id=ACTOR_ID)
     return presigned.media_id
 
 
@@ -203,7 +211,10 @@ async def test_list_issues_exactly_three_statements(app_role_url: str) -> None:
         ]
         for dress_id in featured:
             await catalog.replace_variants(
-                tenant, dress_id, [VariantInput(size_label="38", quantity=1, sort_order=0)]
+                tenant,
+                dress_id,
+                [VariantInput(size_label="38", quantity=1, sort_order=0)],
+                actor_id=ACTOR_ID,
             )
             await _ready_photo(catalog, storage, tenant, dress_id)
         await _seed_catalog(catalog, tenant, CATALOG_PAGE_SIZE - len(featured), sort_order=1)
@@ -244,6 +255,7 @@ async def test_detail_issues_exactly_three_statements(app_role_url: str) -> None
                 VariantInput(size_label="38", quantity=2, sort_order=0),
                 VariantInput(size_label="40", quantity=0, sort_order=1),
             ],
+            actor_id=ACTOR_ID,
         )
         for _ in range(2):
             await _ready_photo(catalog, storage, tenant, target)
@@ -274,7 +286,7 @@ async def test_archived_dress_is_absent_from_list_and_404_on_detail(app_role_url
     try:
         kept = await _dress(catalog, tenant, "Aurora")
         archived = await _dress(catalog, tenant, "Camellia")
-        await catalog.archive_dress(tenant, archived)
+        await catalog.archive_dress(tenant, archived, actor_id=ACTOR_ID)
 
         page = await storefront.list_dresses(tenant)
         assert [item.row.id for item in page.items] == [kept]

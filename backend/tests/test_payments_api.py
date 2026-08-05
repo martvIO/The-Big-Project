@@ -9,12 +9,16 @@ route in neither of them keeps them green either way.
 """
 
 import datetime
+import re
 import time
+import typing
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 from test_boutique_api import TENANT, TOKEN, FakeAuthService
 
 from app.auth.dependencies import get_auth_service
@@ -416,3 +420,109 @@ def test_a_forged_origin_is_refused_before_the_route() -> None:
         )
     assert resp.status_code == 403
     assert fake.calls == []
+
+
+# --- F21 B5 / row R24: no PAN on our origin, derived from the live route table ---
+
+# Every spelling a card field plausibly takes, including the ones a well-meaning
+# "just store the last four for the receipt" change would reach for. `pan` is
+# matched as a WHOLE WORD or a snake_case segment: `company` and `panel` are not
+# card fields and must not red this.
+_CARD_FIELD = re.compile(
+    r"(^|_)(card|cardnumber|pan|cvv|cvc|cvv2|ccv|expiry|exp_month|exp_year|"
+    r"expmonth|expyear|cardholder|track1|track2)($|_)",
+    re.IGNORECASE,
+)
+
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+async def _null_resolver(slug: str) -> TenantContext | None:
+    return None
+
+
+def _leaf_routes(node: Any) -> Iterator[Any]:
+    for route in getattr(node, "routes", []):
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            yield from _leaf_routes(inner)
+            continue
+        yield route
+
+
+def _model_fields(model: type[BaseModel], seen: set[type[BaseModel]]) -> Iterator[tuple[str, str]]:
+    """Every field name reachable from a request model, nested models included —
+    `variants: list[VariantIn]` hides its fields one level down, and a card field
+    would hide just as well."""
+    if model in seen:
+        return
+    seen.add(model)
+    for name, field in model.model_fields.items():
+        yield model.__name__, name
+        for arg in (field.annotation, *typing.get_args(field.annotation)):
+            for inner in (arg, *typing.get_args(arg)):
+                if isinstance(inner, type) and issubclass(inner, BaseModel):
+                    yield from _model_fields(inner, seen)
+
+
+def _request_models() -> dict[type[BaseModel], set[tuple[str, str]]]:
+    """Pydantic models bound to a BODY parameter of a mutating route, read off the
+    live app. Derived rather than hand-listed: R24's audited property is "no PAN
+    reaches our origin", and a hand list is true on the day it is written."""
+    app = create_app(resolver=_null_resolver)
+    models: dict[type[BaseModel], set[tuple[str, str]]] = {}
+    for route in _leaf_routes(app):
+        if not (getattr(route, "methods", None) or set()) - _READ_METHODS:
+            continue
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is None:
+            continue
+        for annotation in typing.get_type_hints(endpoint).values():
+            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                for owner, field in _model_fields(annotation, set()):
+                    models.setdefault(annotation, set()).add((owner, field))
+    return models
+
+
+def test_no_request_schema_carries_a_card_field() -> None:
+    """Row 24 as amended by D8: the audited property is "no PAN is proxied, logged
+    or stored on our origin", and it is provider-independent — Grow was demoted to
+    one candidate on 2026-07-31 and the shipped engine is Lemon Squeezy test mode,
+    so a row naming a provider audits nothing.
+
+    True by CONSTRUCTION today: the gateway integration is redirect-only
+    (`payments/base.py` returns a `redirect_url` and never a charge payload), and
+    no request schema anywhere in `app/` has a card field. Derived from the route
+    table so it stays true after the next schema rather than after the next audit.
+
+    Mutation-checked: adding `card_number: str` to any request DTO reds it, and so
+    does `pan`, `cvv` and `exp_month`.
+    """
+    models = _request_models()
+    # The pattern is applied to the BARE field name: its `(^|_)…($|_)` anchors are
+    # what keep `company` and `panel` out, and prefixing the owner class would
+    # silently defeat both of them.
+    offenders = sorted(
+        f"{owner}.{field}"
+        for fields in models.values()
+        for owner, field in fields
+        if _CARD_FIELD.search(field)
+    )
+    # Two anti-vacuity legs: an empty walk, or a walk that missed the models this
+    # very module posts to, would pass while proving nothing.
+    assert models, "no request model was discovered — the walk is broken"
+    seen = {f"{owner}.{field}" for fields in models.values() for owner, field in fields}
+    assert "SetGatewayCredentialsRequest.fields" in seen, (
+        f"the walk missed a known request model; saw {sorted(seen)[:10]}"
+    )
+    assert not offenders, f"card-shaped fields on request schemas: {offenders}"
+
+
+def test_the_card_field_pattern_does_not_fire_on_ordinary_names() -> None:
+    """`pan` inside `company` and `panel` is not a card number. A pattern that
+    reds on those would be relaxed by the first person it inconveniences, and the
+    relaxation is where the real field slips through."""
+    for benign in ("company", "panel_id", "expanded", "discard", "credential_fields"):
+        assert not _CARD_FIELD.search(benign), benign
+    for hostile in ("card_number", "card", "pan", "cvv", "exp_month", "cardholder_name"):
+        assert _CARD_FIELD.search(hostile), hostile
