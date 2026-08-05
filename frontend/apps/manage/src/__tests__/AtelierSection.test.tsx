@@ -1896,14 +1896,22 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     });
     expect(control.isConnected).toBe(false);
     expect(document.activeElement).toBe(moved);
-    // ⚠ 20s, and the board size is why. 150 cards is not padding — it is what
+    // ⚠ 60s, and the board size is why. 150 cards is not padding — it is what
     // makes React exceed its 5 ms frame budget and yield BETWEEN the commit and
     // its passive flush, which is the whole mechanism this test exists to catch.
     // Shrinking the board to fit the default 5 s timeout would silently delete
     // the defect instead of the delay. jsdom renders those cards in ~0.7-4.7 s
     // here and CI's contended 2-core runner is several times slower: it timed
     // out at 5 s on the first run of PR #39.
-  }, 20_000);
+    //
+    // ⚠ RAISED FROM 20s, WHICH WAS NEVER REALISTIC. Measured IDLE on an M-series
+    // laptop this test takes ~16.4 s (5d ~15.3 s) — under 20 % headroom. The
+    // repo's own gate runs `pnpm -r test`, which puts the storefront's 1094
+    // tests on the same cores, and both boards then blow the budget: they were
+    // the residue after AC30 was fixed, red in roughly half of concurrent runs
+    // and red on the pre-existing base commit too. The budget was the defect,
+    // not the board, so the budget moved.
+  }, 60_000);
 
   it("5d — the same BIG board, where the stale pass carries the CAPTURED count itself", async () => {
     // ⚠ THE BOUNDARY 5c LEAVES OPEN. 5c's stale pass carries a count BELOW the
@@ -1941,8 +1949,8 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     });
     expect(control.isConnected).toBe(false);
     expect(document.activeElement).toBe(moved);
-    // Same 20 s, same reason as 5c — it shares 5c's 150-card fixture.
-  }, 20_000);
+    // Same 60 s, same reason as 5c — it shares 5c's 150-card fixture.
+  }, 60_000);
 
   it("steals NOTHING back that the user moved while a write was in flight", async () => {
     // ⚠ THE `document.activeElement === document.body` GUARD IS WHAT MAKES THE
