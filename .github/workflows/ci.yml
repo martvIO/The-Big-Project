@@ -121,7 +121,13 @@ jobs:
   deploy-staging:
     name: Deploy staging (Railway)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [backend, frontend]
+    # `e2e` is here since F21 because it carries the entire axe pass, and a legal
+    # accessibility requirement (IS 5568) that does not block a deploy is not a
+    # gate — it is a report. Without it an a11y regression reached staging with a
+    # green tick. This lengthens the merge path and that cost is accepted
+    # deliberately (spec Risk 4); if the suite flakes, fix the flake rather than
+    # adding a retry count.
+    needs: [backend, frontend, e2e]
     runs-on: ubuntu-latest
     concurrency:
       group: staging-deploy
@@ -216,22 +222,45 @@ jobs:
             | jq -e '.status == "ok" and .media == "configured"' > /dev/null
 
   audit:
-    name: Dependency audits (warn-only)
-    # warn-only until the E4 ship gate flips this to blocking
-    # (.planning/security-checklist-v1.md → "Dependency scanning green in CI")
+    name: Dependency audits
+    # BLOCKING since F21 (.planning/security-checklist-v1.md → R34, "Dependency
+    # scanning green in CI"). It was warn-only until the nine transitive
+    # devDependency advisories it reported were actually cleared, by a lockfile
+    # refresh onto patched versions — not by relaxing the job.
+    #
+    # The frontend half runs the FULL `pnpm audit`, deliberately NOT `--prod`.
+    # `--prod` would be green today for free and would be a permanent blind spot
+    # over exactly the packages that assemble the bundle: a compromised vite,
+    # rolldown or postcss ships to production inside dist/ while never appearing
+    # in a production dependency tree. Auditing the toolchain that builds the
+    # artifact is the point (spec D4).
+    #
+    # When this job reds because the registry is down: RETRY. Do not add
+    # --ignore-registry-errors — it turns every outage into a silent pass, which
+    # is the same defect as continue-on-error wearing another name.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - name: pip-audit (backend)
         working-directory: backend
+        # To waive a backend advisory, append `--ignore-vuln <PYSEC-or-GHSA-id>`
+        # below and put its four required fields in a comment on the same line:
+        # the id, one sentence on why it does not reach this product, the date it
+        # was waived, and an expiry at most 90 days out. Re-audit at the expiry —
+        # do not extend a waiver in place. (The frontend half is enforced
+        # mechanically; see scripts/audit-waivers.mjs. This half is on review,
+        # because pip-audit takes its ignores as flags rather than as data.)
         run: |
           uv export --locked --no-emit-project -o requirements-audit.txt
           uvx pip-audit -r requirements-audit.txt
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: frontend/package.json
+      # Runs BEFORE the audit: an expired or unexplained waiver must red with its
+      # own message, not let `pnpm audit` pass quietly on a silence nobody owns.
+      - name: Dependency-audit waivers are in good standing
+        run: node frontend/scripts/audit-waivers.mjs
       - name: pnpm audit (frontend)
         working-directory: frontend
         run: pnpm audit
