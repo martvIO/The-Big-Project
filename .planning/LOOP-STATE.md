@@ -22,8 +22,22 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # ==================================================================
-                                # ==== HANDOFF, 2026-08-04 (THIRD) — NOTHING IN FLIGHT ============
+current: F61                    # ==================================================================
+                                # ==== HANDOFF, 2026-08-05 — F61 IS IN FLIGHT, IN REVIEW ==========
+                                # ==================================================================
+                                # F61 (a11y-walkthrough-fixes) has 17 commits and ALL TEN LOCAL
+                                # GATES GREEN at 82c406b. Reviewer 1 returned six findings, zero
+                                # blockers. Reviewer 2 + one fix round remain, then PR + merge gate.
+                                # The full resume recipe is in the F61 queue entry at the TOP of
+                                # `queue:` — read it before picking anything else.
+                                #
+                                # ⚠ A PREVIOUS SESSION DIED MID-REVIEW AND LEFT SOURCE MUTATED.
+                                # A reviewer doing mutation testing reverts a fix, checks the test
+                                # reds, then restores. Kill it in between and the revert is what
+                                # survives. `git status` the worktree before trusting any resumed
+                                # review. See the F61 entry's `hazard_seen_2026_08_05`.
+                                #
+                                # ---- the 2026-08-04 handoff, still accurate below ----
                                 # ==================================================================
                                 # 25 MERGED · 20 BUILDABLE · 1 PARKED FOREVER (F32, subsumed).
                                 # (PR #44 is not in that count — it was debt + infrastructure,
@@ -225,6 +239,72 @@ current: null                   # ==============================================
                                 # how the loop reads them.
 
 queue:
+  # ==================================================================
+  # ==== F61 — IN FLIGHT RIGHT NOW. READ THIS BEFORE PICKING ANY  ====
+  # ==== OTHER ENTRY. It is at the top because it is unfinished,   ====
+  # ==== not because it outranks the roadmap.                      ====
+  # ==================================================================
+  - id: F61
+    slug: a11y-walkthrough-fixes
+    epic: cross
+    title: "The nine defects the first real-world walkthrough found"
+    status: in-review
+    attempts: 1
+    deps: []
+    branch: feature/a11y-walkthrough-fixes
+    worktree: .worktrees/a11y-walkthrough-fixes
+    migration: none
+    resume_at: >-
+      REVIEW ROUND. The build and all ten local gates are DONE and GREEN at 82c406b
+      (17 commits). Reviewer 1 (quality) returned six findings, ZERO blockers. Reviewer 2
+      (adversarial a11y) and the one fix round are what remain, then PR + merge gate.
+      The workflow is resumable: Workflow({scriptPath: <session>/workflows/scripts/
+      modryn-f61-a11y-fixes-wf_f4681394-ac0.js, resumeFromRunId: "wf_f4681394-ac0"}) —
+      agents 1-3 replay from cache.
+    what_it_fixes: >-
+      All nine entries in `known_product_bugs` that carry no `fixed_in`. Do NOT re-pick
+      them as new work. They are marked here rather than in that block on purpose: the
+      block is only edited when F61 MERGES, so a reader of `main` alone never sees a fix
+      claimed before it landed.
+    gates_at_82c406b: >-
+      ruff 0 · ruff-format 0 · mypy 302 files 0 · pytest not-db 2351 · pytest db 845
+      (9 s3 errors = no Docker, environmental) · pnpm lint/typecheck 0 · vitest 2511
+      (ui 108, storefront 1094, manage 1309) · build 0 · e2e 153 with axe ZERO violations
+      · qa-greps 0 · alembic heads 0025, ONE head, identical to main — no migration.
+    open_review_findings: >-
+      Reviewer 1, six findings, none blocking. The one that matters:
+      (1) MEDIUM — /checkin STILL has fix #5's exact defect. The batch wrapped the
+      BOOKING flow in a <form> so Enter advances, then wrote a comment at BookPage.tsx
+      claiming the check-in form shares the treatment. It does not — CheckinPage.tsx has
+      no <form> at all, so Enter and a phone keyboard's Go key are still dead on the
+      KIOSK surface, which is the one where it matters most. Fix it or correct the
+      comment; a comment asserting something false about a sibling file is exactly the
+      misdirection the /fake-pay entry was corrected for.
+      (2) LOW-MEDIUM — the new atelier cue interpolates only {{name}}, so two consecutive
+      edits of the SAME ticket produce byte-identical text; React skips the DOM text
+      write, no childList mutation fires in the role="status", and nothing is announced.
+      The same silence the fix exists to remove, surviving in the repeat case.
+      (3) LOW — enterKeyHint="next" now mislabels a key that submits.
+      (4) LOW — the root boundary's comments cite the SOS channel, but a ROOT boundary
+      replaces the SOS overlay too. Reword or add a second boundary.
+      (5) LOW-MEDIUM — LOOP-STATE bookkeeping (this entry answers half of it).
+      (6) LOW — three vitest budgets went to 60 s; record the measured baselines
+      (~16.4 s / ~15.3 s idle) in `known_flaky` as accepted debt, so a 3.6x regression
+      cannot pass silently.
+    hazard_seen_2026_08_05: >-
+      ⚠ A REVIEWER THAT DIES MID-MUTATION LEAVES SOURCE REVERTED. The 2026-08-05 session
+      died between reviewer 2's revert and its restore, leaving
+      apps/storefront/src/main.tsx modified with the ErrorBoundary's real i18n keys
+      swapped for fabricated ones. Committing that would have shipped an error boundary
+      rendering two MISSING translation keys — the fallback for a crashed app, itself
+      broken. ALWAYS `git status` the worktree before trusting a resumed review, and
+      `git checkout --` anything a mutation left behind.
+    note: >-
+      NOT a roadmap feature — a fix batch for defects found by driving the assembled
+      product in a real browser. It exists as a queue entry only so an interrupted
+      session is resumable. When it merges, mark it `merged`, add `fixed_in: F61` to the
+      nine `known_product_bugs` entries, and delete this block's top-of-queue position.
+
   # ==================================================================
   # ==== FLOOR-MANAGEMENT PROGRAM (2026-07-31) — BUILDS FIRST      ====
   # ==== Position IS priority: the loop picks the first eligible    ====
