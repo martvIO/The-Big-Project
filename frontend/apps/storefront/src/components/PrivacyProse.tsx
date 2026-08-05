@@ -30,7 +30,9 @@ export function PrivacyProse({ text, className }: { text: string; className?: st
           segment.kind === "list" ? (
             // `list-disc` because Tailwind's preflight strips the UA marker, and
             // `ps-5` because the indent has to follow the writing direction —
-            // `pl-5` would hang the markers off the wrong side in Hebrew.
+            // the physical-side equivalent hangs the markers off the wrong edge
+            // in Hebrew. (Naming that class literally here trips qa-greps.sh's
+            // physical-direction check, which greps text, not syntax.)
             <ul key={`${blockIndex}-${index}`} className={cn(className, "list-disc ps-5")}>
               {segment.items.map((item, itemIndex) => (
                 <li key={itemIndex}>{item}</li>
