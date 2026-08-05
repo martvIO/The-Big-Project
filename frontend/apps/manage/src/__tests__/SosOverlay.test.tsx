@@ -877,7 +877,10 @@ describe("AC17 — Esc, and the keyboard route IN that MOVE A alone does not pro
 
     fireEvent.keyDown(field, { key: "Escape" });
     const accept = acceptControl(ALERT_A);
-    expect(document.activeElement).toBe(accept);
+    // ⚠ The route-in lands in a passive effect, so it is not flushed by the
+    // keyDown itself. Bare, this assertion races the effect and fails under
+    // parallel load.
+    await waitFor(() => expect(document.activeElement).toBe(accept));
 
     fireEvent.keyDown(accept, { key: "Escape" });
     await waitFor(() => expect(cards()).toHaveLength(0));

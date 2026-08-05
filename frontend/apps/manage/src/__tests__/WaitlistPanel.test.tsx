@@ -987,7 +987,10 @@ describe("the six focus moves", () => {
     });
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveAttribute("tabindex", "-1");
-    expect(document.activeElement).toBe(alert);
+    // ⚠ `findByRole` resolves when the alert is COMMITTED; the focus move is a
+    // passive effect one phase later. Asserting it bare races the effect and
+    // fails under parallel load. Wait for the move, do not race it.
+    await waitFor(() => expect(document.activeElement).toBe(alert));
   });
 
   it("MOVE 2 — a success that LEAVES the row in place returns focus to its control", async () => {
