@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Skeleton } from "@boutique/ui";
 import type { BadgeVariant } from "@boutique/ui";
@@ -101,10 +101,31 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   // The cue carries its interpolated NAME alongside its text, because the name
   // has to render inside a bare <bdi> and a flat string cannot say where it
   // starts. `name: null` is every cue that interpolates no person.
-  const [cue, setCue] = useState<{ text: string; name: string | null }>({
+  //
+  // ⚠ AND A NONCE, which is what makes a REPEATED cue audible. React skips the
+  // `nodeValue` write when a text child re-renders to the same string, so a
+  // second «הקריאה נרשמה.» for the next woman in the queue — the cue that
+  // interpolates nothing at all — mutated NOTHING inside role="status" and
+  // announced nothing. Same for a second skip and a second removal. The nonce
+  // keys the span below, so every write replaces that node and the region always
+  // sees a childList mutation. One guard on the writer covers all nine call
+  // sites, four of them in child panels through `onCue`; a per-cue workaround
+  // would have to be remembered by whoever adds the tenth.
+  //
+  // `useCallback` with no deps because `onCue` is a DEPENDENCY of SosCentre's
+  // pending-cue effect (SosCentre.tsx:269) — this used to be React's own stable
+  // `setCue`, and handing that effect a fresh identity on every render would be
+  // a behaviour change smuggled in beside an accessibility fix.
+  const [cue, writeCue] = useState<{ text: string; name: string | null; nonce: number }>({
     text: "",
     name: null,
+    nonce: 0,
   });
+  const setCue = useCallback(
+    (next: { text: string; name: string | null }) =>
+      writeCue((current) => ({ ...next, nonce: current.nonce + 1 })),
+    [],
+  );
   const [busyIds, setBusyIds] = useState<readonly string[]>([]);
   const [cardError, setCardError] = useState<{ id: string; text: string } | null>(null);
 
@@ -265,14 +286,19 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
     };
   }, []);
 
-  // ⚠ Write the cue ONLY when its value actually changes. Assigning a
-  // non-empty string to a text node runs the DOM's string-replace-all and
-  // produces a real childList mutation inside role="status" EVEN WHEN THE TWO
-  // STRINGS ARE BYTE-IDENTICAL (F34's F-7). setCue with an equal value is a
-  // no-op in React, so the guard is the setState itself — what the test has to
-  // do is drive several consecutive ticks with the cue already populated,
-  // because a single-tick assertion passes against the broken version whenever
-  // the cue starts empty.
+  // ⚠ CORRECTED (F21 T11). This block used to claim that writing a
+  // byte-identical string still mutates the text node, and that `setCue` with an
+  // equal value is a React bail-out that guards against a spurious repeat. BOTH
+  // ARE FALSE, and the second one had the danger backwards. `setCue` always
+  // builds a fresh object, so it never bails out — and React, on re-render,
+  // compares the text child and SKIPS the DOM write when the string is
+  // unchanged, which is exactly the case that stayed SILENT. The nonce on the
+  // cue state above is what fixes it.
+  //
+  // F34's F-7 remains true and is a DIFFERENT property: the poll may never write
+  // here at all, and `the cue does NOT change across several consecutive ticks`
+  // is the test that holds it. A single-tick assertion passes against the broken
+  // version whenever the cue starts empty, so that test populates the cue first.
 
   useEffect(() => {
     // After a SUCCESSFUL toggle, focus returns to the tapped control. Unlike
@@ -605,7 +631,14 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
         tabIndex={-1}
         className="text-sm text-ink-muted"
       >
-        {cue.name === null ? cueText : isolateBidi(cueText, cue.name)}
+        {/* ⚠ THE <p> IS NEVER REMOUNTED — only the keyed span inside it is. That
+            asymmetry is the whole trick: a live region ADDED to the document is
+            not announced, but a childList mutation INSIDE a region that was
+            already there is. The `key` is `cue.nonce`, so a cue whose text
+            repeats verbatim still replaces this node. See the writer for why. */}
+        <span key={cue.nonce}>
+          {cue.name === null ? cueText : isolateBidi(cueText, cue.name)}
+        </span>
       </p>
 
       {showFreshness && (

@@ -25,6 +25,11 @@ vi.mock("../api", async () => {
       // fires on mount. Infrastructure, not an expectation — every assertion
       // below is untouched (spec D15).
       listFloorClients: vi.fn(),
+      // F21 T11: the panel already renders WaitlistPanel, whose «קראי» is the
+      // one cue in this tree whose text interpolates NOTHING — so it is where a
+      // byte-identical repeat is reachable. Infrastructure, not an expectation:
+      // every assertion above and below is untouched.
+      callQueueTicket: vi.fn(),
       getSos: vi.fn(),
       raiseSos: vi.fn(),
       acceptSos: vi.fn(),
@@ -39,6 +44,7 @@ const getFloor = vi.mocked(api.getFloor);
 const startStaffBreak = vi.mocked(api.startStaffBreak);
 const endStaffBreak = vi.mocked(api.endStaffBreak);
 const listFloorClients = vi.mocked(api.listFloorClients);
+const callQueueTicket = vi.mocked(api.callQueueTicket);
 const getSos = vi.mocked(api.getSos);
 
 // 11:07Z is 14:07 in Jerusalem (IDT, UTC+3) and 07:07 in New York — and the test
@@ -90,6 +96,7 @@ function waiting(overrides: Partial<WaitlistEntry> = {}): WaitlistEntry {
 
 // 10:25Z is 42 minutes before NOW, and 42 is the deck's own worked example.
 const ASSIGNED_AT = "2026-08-04T10:25:00Z";
+const SECOND_TICKET = "66666666-6666-6666-6666-666666666666";
 const ROOM_ID = "33333333-3333-3333-3333-333333333333";
 const ASSIGNMENT_ID = "44444444-4444-4444-4444-444444444444";
 
@@ -122,6 +129,7 @@ beforeEach(() => {
   endStaffBreak.mockReset();
   listFloorClients.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
+  callQueueTicket.mockReset();
   getSos.mockReset();
   getSos.mockResolvedValue({ alerts: [], server_now: NOW });
 });
@@ -396,6 +404,65 @@ describe("the cue region", () => {
 
     const freshness = screen.getByText(/עודכן/);
     expect(freshness.closest("[aria-hidden]")).toBeNull();
+  });
+
+  // ⚠ F61's DEFECT #2, NARROWED ONTO THIS PANEL — and it is the receptionist's
+  // most repeated act of the day. `waitlist.calledCue` is «הקריאה נרשמה.», a
+  // constant that interpolates NOTHING (he.ts:1166), so calling the next woman
+  // in the queue after the last one produces byte-identical text. `setCue`
+  // always builds a fresh object, so React never bails out of the state update —
+  // but on re-render it compares the text child, SKIPS the `nodeValue` write,
+  // and no mutation lands inside role="status". The second call, and the third,
+  // and every one after, announced NOTHING. Same for «הועברה לסוף התור» on two
+  // skips and «הוסרה מהתור» on two removals.
+  //
+  // A MutationObserver is the instrument and the ONLY one: `toHaveTextContent`
+  // cannot see this, because the text is correct both times — that is the whole
+  // problem. Precedent: AtelierSection.test.tsx's byte-identical edit cue.
+  it("announces a SECOND queue call, whose cue text is byte-identical to the first", async () => {
+    const noa = waiting();
+    const shira = waiting({ id: SECOND_TICKET, name: "שירה לוי", position: 2 });
+    getFloor.mockResolvedValue(floor([card()], [], [noa, shira]));
+    callQueueTicket.mockImplementation((ticketId: string) =>
+      Promise.resolve({
+        entries: [noa, shira].map((one) =>
+          one.id === ticketId ? { ...one, called: true } : one,
+        ),
+        truncated: false,
+      }),
+    );
+    mount();
+    await screen.findByText("נועה בר");
+
+    fireEvent.click(screen.getByRole("button", { name: "קראי — נועה בר" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("floor-cue")).toHaveTextContent("הקריאה נרשמה."),
+    );
+    const cue = screen.getByTestId("floor-cue");
+    const spoken = cue.textContent;
+
+    // Installed AFTER the first cue has landed, so it can only ever see the
+    // second — subtree because the text lives in a keyed child of the region.
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((batch) => records.push(...batch));
+    observer.observe(cue, { childList: true, characterData: true, subtree: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "קראי — שירה לוי" }));
+    await waitFor(() => expect(callQueueTicket).toHaveBeenCalledTimes(2));
+    // Not the call count alone: that resolves the instant the request leaves,
+    // which can be before the cue is written. The badge is the rendered proof
+    // the response landed and the panel repainted.
+    await waitFor(() => {
+      const li = document.querySelector(`[data-entry-id="${SECOND_TICKET}"]`) as HTMLElement;
+      expect(within(li).getByText("נקראה")).toBeInTheDocument();
+    });
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+
+    // The text did NOT change — that is the premise — and the region mutated
+    // anyway, which is the only thing an assistive technology reacts to.
+    expect(cue.textContent).toBe(spoken);
+    expect(records.length).toBeGreaterThan(0);
   });
 });
 

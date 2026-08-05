@@ -44,11 +44,29 @@ export function GuideOverlay({ section }: { section: SectionKey }) {
       skipRef.current = false;
       return;
     }
-    // ⚠ CONTENT IS STATE, NEVER `t(steps[index])` INLINE IN THE JSX.
-    // `AtelierSection.tsx:445-449` records the mechanism: assigning a string to a
-    // text node is a real childList mutation inside role="status" EVEN WHEN THE
-    // TWO STRINGS ARE BYTE-IDENTICAL, and `setState` with an equal value is a
-    // React no-op — so the `setState` is the guard.
+    // ⚠ CONTENT IS STATE, NEVER `t(steps[index])` INLINE IN THE JSX — but the
+    // reason this block used to give was FALSE and had the danger backwards. It
+    // claimed that writing a byte-identical string still mutates the text node
+    // and that `setState` with an equal value is a React no-op that guards
+    // against a spurious repeat. What actually happens is the opposite: React
+    // compares the text child on re-render and SKIPS the DOM write when the
+    // string is unchanged, so a live region rewritten to the same sentence is
+    // SILENT. (`AtelierSection.tsx:471-477` carries the corrected statement;
+    // F21 T11 found FloorPanel shipping the real bug.)
+    //
+    // ⚠ THIS REGION IS SAFE, AND NOT BY DESIGN. Two things make a repeat
+    // impossible here, and both must survive any edit to this component: the
+    // sentence embeds `step` (so two consecutive fires of this effect can never
+    // produce the same string, since `index` is the only thing that changes it),
+    // and the trigger's `setAnnounced("")` clears the region on every open (so a
+    // reopened walkthrough writes step 2 over "" rather than over an identical
+    // step 2). Delete either and this region goes silent on a repeat.
+    // `GuideOverlay.test.tsx`'s MutationObserver leg is what reds if you do —
+    // `toHaveTextContent` cannot see it, because the text is right either way.
+    //
+    // The state indirection stands on its own merit regardless: it is what lets
+    // the open commit be SKIPPED, so the step is announced once by
+    // aria-describedby and not twice.
     setAnnounced(
       `${t("guide.progress", { step: index + 1, total: steps.length })} · ${t(steps[index])}`,
     );
@@ -139,6 +157,12 @@ export function GuideOverlay({ section }: { section: SectionKey }) {
           // IN THIS ORDER: step 1 every time, an empty live region, and a
           // reopen that never resumes mid-walkthrough nor re-announces the
           // previously visited section's last sentence.
+          //
+          // ⚠ `setAnnounced("")` CARRIES A SECOND JOB IT WAS NOT WRITTEN FOR,
+          // and it is the one that keeps this region audible: reopening the same
+          // section and stepping to the same step produces a byte-identical
+          // sentence, which React would SKIP writing — so without this clear the
+          // second walkthrough would be silent. See the announce effect above.
           setIndex(0);
           setAnnounced("");
           skipRef.current = true;
