@@ -2929,6 +2929,35 @@ remaining_work_estimate:        # synced 2026-08-05. Anchored on THIS session's 
     - "The nine known_product_bugs. F61 (this session) is taking them as one batch."
     - "brain-sync: .brain reports ~70 stale pages and ~640 missing. Reconcile with /brain-sync at an epic boundary, never mid-feature."
 
+epic_boundary_owed:             # loop step 9. An epic is not `done` until its row here is closed.
+  - epic: E4
+    completed_by: "F21 (PR #48), merged 2026-08-05"
+    status: PARTIAL — two of four steps run, two owed
+    done: >-
+      (1) FULL `make e2e` ON MERGED main — RUN 2026-08-05 after the merge: 170/170
+      passed, exit 0. (2) AXE ZERO CONFIRMED: 35 axe-assertion specs plus the 2 new
+      CSP specs, all green; every "violation" string in the log is a TEST NAME
+      asserting zero, none a failure — checked rather than assumed.
+      Partial credit on (3): F21 drove REAL CHROMIUM against the REAL BUILT BUNDLES
+      over 18 surfaces and 261 tab stops (`.planning/a11y-audit-v1.md`) — but that
+      was a KEYBOARD/A11Y walk, not E4's own user journeys. It does not discharge (3).
+    owed: >-
+      (3) A REAL-CHROMIUM CLICK-THROUGH OF E4'S USER JOURNEYS via the Playwright MCP
+      tools against `vite preview` — the DEPOSIT journey above all (Lemon Squeezy test
+      mode is the shipped engine, F17's port + F18's adapter + F19's flow), plus the
+      PPL surfaces F20 shipped (/privacy, consent capture, subject export/erase).
+      NOTE the standing warning that makes this worth doing: frontend/e2e stubs the
+      API in its own fixture header, so the suite proves the CONSOLE and not the
+      CONTRACT. A payload-key rename passes all 170 tests and breaks production.
+      (4) `/brain-sync`. The `brain` CI job (continue-on-error) warns stale for at
+      least security_headers.py, catalog/service.py, platform/service.py and
+      notifications/service.py — F21's own edits. Repo-wide the SessionStart hook
+      reports ~86 stale / ~676 missing. Reconcile at a boundary, never mid-feature.
+    ⚠: >-
+      DO NOT mark E4 `done` on the strength of the two steps that ARE run. Recording a
+      partial pass as a pass is the exact failure F21 spent two review rounds catching
+      in its own guard — see the `current:` header's operational lesson.
+
 walkthrough_coverage_gaps:      # what the 2026-08-04 run did NOT prove. Silence here reads as coverage.
   - id: G1
     what: "RLS WAS NEVER EXERCISED. By anyone. THE MOST CONSEQUENTIAL ITEM IN THE RUN."
