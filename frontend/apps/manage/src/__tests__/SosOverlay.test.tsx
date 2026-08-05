@@ -860,6 +860,12 @@ describe("AC17 — Esc, and the keyboard route IN that MOVE A alone does not pro
     field.focus();
     fireEvent.change(field, { target: { value: "0501234567" } });
 
+    // ⚠ FLUSH BEFORE THE KEY. The capture listener this test exercises is
+    // ATTACHED in a passive effect, and `findByText` resolves at the commit
+    // before those run. An Esc dispatched into that window hits no listener at
+    // all and is simply lost — unlike a focus move, there is nothing left to
+    // wait for afterwards, which is why waitFor below cannot rescue it.
+    await act(async () => {});
     fireEvent.keyDown(field, { key: "Escape" });
 
     // ⚠ Esc-from-outside is a DELIBERATE keypress, not an involuntary arrival,
@@ -878,6 +884,9 @@ describe("AC17 — Esc, and the keyboard route IN that MOVE A alone does not pro
     const field = screen.getByLabelText("טלפון");
     field.focus();
 
+    // Same flush as the sibling above: the capture listener is attached in a
+    // passive effect, and an Esc dispatched before it lands is lost outright.
+    await act(async () => {});
     fireEvent.keyDown(field, { key: "Escape" });
     const accept = acceptControl(ALERT_A);
     // ⚠ The route-in lands in a passive effect, so it is not flushed by the
