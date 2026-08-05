@@ -3,21 +3,32 @@ import type { Locator, Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import {
   MANAGE,
+  appointmentTypes,
   assignment,
+  availabilityPayload,
+  bookingList,
+  customerList,
+  dashboardPopulated,
   dispatchResult,
+  dressList,
   floorPayload,
+  gatewayStatus,
   installManageApi,
   ok,
+  privacyPayload,
   queuePath,
   refuse,
   room,
   roomPath,
+  settingsPayload,
   staff,
   staffCard,
+  staffList,
+  termsHistory,
   waitlist,
   waitlistEntry,
 } from "./fixtures/manage";
-import type { WaitlistEntry } from "./fixtures/manage";
+import type { Reply, WaitlistEntry } from "./fixtures/manage";
 
 // The console's first coverage BEHIND its login screen. `a11y.spec.ts` keeps
 // the three unauthenticated `manage:` tests — they are the login screen's own
@@ -686,3 +697,144 @@ test("manage floor: an empty queue is a quiet designed state and removes every d
   await expect(page.getByRole("button", { name: CLAIM })).toBeVisible();
   expect(api.of("/manage/floor").length).toBeGreaterThan(0);
 });
+
+// --- axe: the eleven console sections that had no scan at all (B6 · R47) -----
+//
+// D7 item 2, as amended by plan C3. `guide.ts` declares FIFTEEN `SectionKey`s.
+// Four were already scanned in a real browser — `floor` and `board` above,
+// `atelier` three times in `atelier-capacity.spec.ts`, and `dashboard` only
+// INCIDENTALLY, through `guide.spec.ts:625`, where the scan is taken with a
+// `dialog:modal` open over it. A scan of a different DOM is not this section's
+// scan, so `dashboard` keeps its own row here.
+//
+// ⚠ **THE LIMIT IS THE ONE THIS FILE'S BANNER ALREADY STATES AT :31-33, AND
+// THESE ELEVEN INHERIT IT EXACTLY: the harness stubs the API, so they prove the
+// CONSOLE and not the CONTRACT.** A renamed payload key passes every one of
+// them. They are markup and accessibility instruments; `test_*_api.py`'s
+// set-equality assertions and the TypeScript types are what hold the wire.
+//
+// ⚠ **EVERY PAYLOAD IS POPULATED, AND EVERY ROW WAITS ON A TELL THAT ONLY THE
+// POPULATED STATE RENDERS.** `Skeleton` is `aria-hidden` with no text and an
+// outage is a bare `<p role="alert">` — both are nearly empty, and a scan of
+// either would pass while proving nothing about the section. The tell is the
+// anti-vacuity leg, and for `staff` it is deliberately the per-row «השבתה —
+// {{name}}»: that is the control F61's nameless-button defect lived on, and it
+// only exists on a row that is not the signed-in staffer.
+//
+// ⚠ **NO `.disableRules()` AND NO `.exclude()`, HERE OR ANYWHERE IN THIS
+// SUITE.** If one of these reds, the markup is wrong and the component is what
+// changes.
+
+const NAV_DASHBOARD = "סקירה";
+
+// The three owner-only rows — `staff`, `gateway`, `privacy` — are unreachable
+// as anyone else, and the other eight are `roles: ALL`, so one identity drives
+// all eleven.
+const OWNER = staff({ role: "owner", display_name: "רונית" });
+
+const AXE_SECTIONS: [
+  label: string,
+  nav: string,
+  replies: Record<string, Reply[]>,
+  settled: (page: Page) => Locator,
+][] = [
+  [
+    "dashboard",
+    NAV_DASHBOARD,
+    { "/manage/dashboard": [ok(dashboardPopulated())] },
+    // The <th scope="row"> in the appointment-types card, which exists only when
+    // that list is non-empty. The section heading and the role="status" summary
+    // line render in the zero state too.
+    (page) => page.getByRole("rowheader", { name: "מדידה ראשונה" }),
+  ],
+  [
+    "profile",
+    "פרופיל והגדרות",
+    { "/manage/settings": [ok(settingsPayload())] },
+    (page) => page.getByRole("textbox", { name: "משפט פתיחה" }),
+  ],
+  [
+    "hours",
+    "שעות פעילות",
+    { "/manage/availability": [ok(availabilityPayload())] },
+    // The weekly-rule <Select> — the section's only combobox, and it renders per
+    // rule row, so an empty `rules` array cannot satisfy it.
+    (page) => page.getByRole("combobox", { name: "יום" }),
+  ],
+  [
+    "types",
+    "סוגי תורים",
+    { "/manage/appointment-types": [ok(appointmentTypes())] },
+    (page) => page.getByRole("button", { name: "עריכה" }),
+  ],
+  [
+    "terms",
+    "מדיניות ביטולים",
+    { "/manage/terms": [ok(termsHistory())] },
+    // NOT the create form: an owner gets that with any payload, including the
+    // empty one that renders the setup-blocker panel instead of the history.
+    (page) => page.getByRole("heading", { name: "היסטוריית גרסאות (לקריאה בלבד)" }),
+  ],
+  [
+    "catalog",
+    "שמלות",
+    { "/manage/dresses": [ok(dressList())] },
+    (page) => page.getByRole("button", { name: /שמלת נסיכה/ }),
+  ],
+  [
+    "bookings",
+    "תורים",
+    { "/manage/bookings": [ok(bookingList())] },
+    (page) => page.getByRole("button", { name: /נועה כהן/ }),
+  ],
+  [
+    "customers",
+    "לקוחות",
+    { "/manage/customers": [ok(customerList())] },
+    (page) => page.getByRole("button", { name: /מיכל לוי/ }),
+  ],
+  [
+    "staff",
+    "צוות",
+    { "/manage/staff": [ok(staffList())] },
+    // F61's control, by name. `דנה כהן` is the non-self row.
+    (page) => page.getByRole("button", { name: "השבתה — דנה כהן" }),
+  ],
+  [
+    "gateway",
+    "סליקה ותשלומים",
+    // BOTH, and settings is not optional: the section loads them in one
+    // `Promise.all` inside one `try`, so a house 404 on settings rejects the
+    // pair and renders the outage line with no gateway markup at all.
+    {
+      "/manage/gateway": [ok(gatewayStatus())],
+      "/manage/settings": [ok(settingsPayload())],
+    },
+    (page) => page.getByRole("button", { name: "בדיקה עכשיו" }),
+  ],
+  [
+    "privacy",
+    "פרטיות",
+    { "/manage/privacy": [ok(privacyPayload())] },
+    (page) => page.getByRole("heading", { name: "ספקי התשתית" }),
+  ],
+];
+
+for (const [label, nav, replies, settled] of AXE_SECTIONS) {
+  test(`manage ${label}: zero axe A/AA violations on a populated section`, async ({ page }) => {
+    await installManageApi(page, { staff: OWNER, replies });
+    await page.goto(MANAGE);
+    // The console lands on `dashboard` for both elevated roles, so the nav is
+    // only clickable once that first section has rendered.
+    await expect(page.getByRole("heading", { level: 2, name: NAV_DASHBOARD })).toBeVisible();
+    // `exact` because «תורים» is a substring of «סוגי תורים» and the default
+    // accessible-name match is a substring match — without it the bookings row
+    // matches two nav buttons and reds on strict mode rather than on anything
+    // this test is about.
+    await page.getByRole("navigation").getByRole("button", { name: nav, exact: true }).click();
+
+    await expect(settled(page), `${label} never reached its populated state`).toBeVisible();
+
+    expect(await axeViolations(page)).toEqual([]);
+  });
+}

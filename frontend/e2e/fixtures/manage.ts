@@ -75,6 +75,15 @@ const API_FAMILIES = new Set([
   "dresses",
   "floor",
   "gateway",
+  // ⚠ F21 ADDS THIS ROW, AND ITS ABSENCE WAS THE SAME HOLE AS `atelier` ABOVE,
+  // one feature later. `MANAGE_API` in `apps/manage/vite.config.ts:19` names
+  // SIXTEEN segments and this set had fifteen: F58 built the harness before F20
+  // shipped `/manage/privacy`. So every privacy call fell THROUGH the
+  // interception to `vite preview`'s proxy — which serves the SPA shell for an
+  // unproxied path — and `PrivacySection` rendered its outage line with nothing
+  // anywhere saying why. Found by F21's axe sweep, which could not reach the
+  // §13 subject-request surface at all until this line existed.
+  "privacy",
   "settings",
   "slots",
   "staff",
@@ -315,6 +324,229 @@ export function dashboardPayload(): unknown {
       capacity: 0,
       booked: 0,
       utilization: null,
+    },
+  };
+}
+
+// --- F21: one populated payload per console section --------------------------
+//
+// ⚠ POPULATED, NEVER EMPTY, AND THAT IS THE WHOLE POINT. `manage.spec.ts`'s
+// `AXE_SECTIONS` sweep scans eleven sections that had no axe coverage at all,
+// and a section rendering its zero-row branch has almost no markup to scan: no
+// per-row buttons, no table, no badges. `staff`'s per-row «השבתה — {{name}}» is
+// exactly where F61's nameless-button defect lived, and it only exists on a row
+// that is NOT the signed-in staffer — so `staffList()` ships two.
+//
+// Wire shapes are hand-mirrored from `apps/manage/src/api.ts`, same rule as the
+// rest of this file: importing the app's types would drag its module graph into
+// the e2e typecheck. Nullable-but-required fields are sent as `null` rather than
+// omitted, because that is what the server does.
+
+export function settingsPayload(): unknown {
+  return {
+    profile: {
+      phone: "03-5551234",
+      address: "דיזנגוף 100, תל אביב",
+      description: "בוטיק שמלות כלה בלב תל אביב.",
+      maps_url: "https://maps.example.test/boutique",
+      essence: "השמלה שלך מתחילה כאן",
+      instagram: "modryn.boutique",
+    },
+    toggles: { deposits_enabled: true, brides_only: false },
+  };
+}
+
+export function availabilityPayload(): unknown {
+  return {
+    rules: [
+      { id: "ar-1", day_of_week: 0, open_time: "09:00:00", close_time: "17:00:00", capacity: 3 },
+    ],
+    // Non-null times on purpose: a closed-all-day exception renders a badge
+    // whose label collides with the add-exception toggle, and the settle tell
+    // has to be unambiguous.
+    exceptions: [
+      {
+        id: "ae-1",
+        date: "2099-04-14",
+        open_time: "10:00:00",
+        close_time: "13:00:00",
+        note: "ערב פסח",
+      },
+    ],
+  };
+}
+
+// A bare array, not an envelope.
+export function appointmentTypes(): unknown {
+  return [
+    {
+      id: "apt-1",
+      name: "מדידה ראשונה",
+      duration_minutes: 90,
+      audience: "all",
+      deposit_required: true,
+      deposit_amount_agorot: 25000,
+      sort_order: 0,
+    },
+  ];
+}
+
+export function termsHistory(): unknown {
+  // The SAME id in `current` and in `versions[0]`, so the «בתוקף» marker renders
+  // — the panel compares them by id.
+  const version = {
+    id: "tv-1",
+    version: 1,
+    terms_text: "ביטול עד 48 שעות לפני מועד התור מזכה בהחזר מלא של המקדמה.",
+    refundable_until_hours_before: 48,
+    forfeit_percent: 100,
+    created_by: "st-self",
+    created_at: "2099-01-02T09:00:00Z",
+  };
+  return { current: version, versions: [version], total: 1, offset: 0, limit: 50 };
+}
+
+export function dressList(): unknown {
+  return {
+    items: [
+      {
+        id: "dr-1",
+        name: "שמלת נסיכה",
+        description: "תחרה צרפתית, שובל קצר.",
+        price_agorot: 890000,
+        price_visible: true,
+        reserved: false,
+        sort_order: 0,
+        out_of_stock: false,
+        total_quantity: 3,
+        // > 0 so the row does not fall into its «לא הוגדרו מידות» branch.
+        variant_count: 2,
+        // No cover: a non-null one needs a presigned URL this harness cannot
+        // serve, and a broken <img> would be a defect the scan invented.
+        media_count: 0,
+        cover: null,
+        archived: false,
+        created_at: "2099-01-02T09:00:00Z",
+        updated_at: null,
+      },
+    ],
+    total: 1,
+    offset: 0,
+    limit: 24,
+  };
+}
+
+export function bookingList(): unknown {
+  return {
+    items: [
+      {
+        id: "bk-1",
+        starts_at: "2099-01-04T08:30:00Z",
+        status: "confirmed",
+        attendance_confirmed_at: null,
+        checked_in_at: null,
+        customer_name: "נועה כהן",
+        appointment_type_name: "מדידה ראשונה",
+        dress_name: null,
+        payment_status: "paid",
+        refund_due_agorot: null,
+        source: "storefront",
+      },
+    ],
+    total: 1,
+    offset: 0,
+    limit: 50,
+  };
+}
+
+export function customerList(): unknown {
+  return {
+    items: [{ id: "cu-1", name: "מיכל לוי", phone: "+972501234567", tags: ["כלה", "אביב 2099"] }],
+    total: 1,
+    offset: 0,
+    limit: 50,
+  };
+}
+
+// TWO rows, and the second one matters: the per-row danger control is behind
+// `!isSelf`, so a list holding only the signed-in staffer renders no «השבתה» at
+// all — and that button is the one F61's nameless-button defect lived on.
+export function staffList(): unknown {
+  return [
+    {
+      id: SELF_ID,
+      email: "owner@example.test",
+      display_name: "רונית",
+      role: "owner",
+      created_at: "2098-06-01T09:00:00Z",
+    },
+    {
+      id: "st-2",
+      email: "dana@example.test",
+      display_name: "דנה כהן",
+      role: "shift_manager",
+      created_at: "2099-01-02T09:00:00Z",
+    },
+  ];
+}
+
+// The CONNECTED branch, which is the one with controls: a validate button, a
+// disconnect button, three credential inputs and a save. `provider` is not
+// "fake" so the sandbox note stays out of the way of the section's own markup.
+export function gatewayStatus(): unknown {
+  return {
+    provider: "lemonsqueezy",
+    configured: true,
+    connected: true,
+    status: "valid",
+    last_validated_at: "2099-01-03T12:00:00Z",
+    credential_fields: ["merchant_id", "api_key", "webhook_secret"],
+  };
+}
+
+// One default section and one tenant-authored one, so BOTH badge variants and
+// the single revert control render from one payload.
+export function privacyPayload(): unknown {
+  return {
+    notice_text: "הבוטיק אוסף שם, טלפון והעדפות מדידה לצורך ניהול התורים בלבד.",
+    notice_is_default: true,
+    dpa_text: "המידע מעובד על ידי ספקי התשתית המפורטים למטה בלבד.",
+    dpa_is_default: false,
+    subprocessors_text: "אחסון: Hetzner (גרמניה)\nמסרונים: Twilio (אירלנד)",
+    disclaimer_text: "הנוסחים כאן לא נבדקו על ידי עורך דין מטעם הבוטיק.",
+    erase_reason_hint: "יש לתעד למה נמחק המידע, בלי לציין את פרטי הלקוחה.",
+  };
+}
+
+// `dashboardPayload()` above stays every-number-zero: it is the OTHER journeys'
+// default and exists so they do not open on somebody else's outage. This one is
+// the axe sweep's, because the zero payload renders the day-one state — no
+// `<table>`, no `<dl>`, no utilization bar, four cards saying «אין עדיין מספיק
+// נתונים». Scanning that would be scanning almost nothing.
+export function dashboardPopulated(): unknown {
+  return {
+    generated_on: "2099-01-04",
+    history: {
+      from_date: "2098-10-06",
+      to_date: "2099-01-04",
+      weeks: [
+        { week_start: "2098-12-21", bookings: 4 },
+        { week_start: "2098-12-28", bookings: 7 },
+      ],
+      status_totals: { confirmed: 2, cancelled: 3, no_show: 1, completed: 5 },
+      cancellation_rate: 0.2727,
+      cancelled_by_customer: 2,
+      cancelled_by_owner: 1,
+      no_show_rate: 0.1667,
+      appointment_types: [{ appointment_type_id: "apt-1", name: "מדידה ראשונה", bookings: 9 }],
+      customers: { total: 8, new: 3, returning: 5, repeat_rate: 0.625 },
+    },
+    forward: {
+      from_date: "2099-01-04",
+      to_date: "2099-01-31",
+      capacity: 40,
+      booked: 11,
+      utilization: 0.275,
     },
   };
 }
