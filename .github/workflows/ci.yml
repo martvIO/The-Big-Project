@@ -25,7 +25,7 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -52,7 +52,7 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: frontend/package.json
@@ -84,7 +84,7 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: frontend/package.json
@@ -110,7 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Brain drift check
@@ -142,7 +142,7 @@ jobs:
       group: staging-deploy
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The SPAs ride INSIDE the backend upload. `railway up` runs with
       # working-directory: backend and sends only that tree, so the built apps
       # have to be copied into it before the deploy — app/static/{manage,storefront}
@@ -249,7 +249,7 @@ jobs:
     # is the same defect as continue-on-error wearing another name.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
       - name: pip-audit (backend)
         working-directory: backend
