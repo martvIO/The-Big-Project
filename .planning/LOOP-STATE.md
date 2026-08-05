@@ -1701,9 +1701,25 @@ queue:
     slug: hardening-audits-uat
     epic: E4
     title: Hardening, audits & pilot UAT
-    status: specing
+    status: building
     attempts: 1
-    started: "2026-08-05 — the loop's own file-order pick; deps F15/F16/F20 all merged, no blocker."
+    spec: .planning/specs/hardening-audits-uat.md
+    plan: .planning/plans/hardening-audits-uat.md
+    started: >-
+      2026-08-05 — the loop's own file-order pick; deps F15/F16/F20 all merged, no blocker.
+      Worktree .worktrees/hardening-audits-uat on feature/hardening-audits-uat.
+      SPEC + PLAN BOTH FOUND THE DOCS WRONG, which is the whole point of a feature whose
+      subject is an audit document. The largest was a SCOPE REDUCTION: the accessibility
+      statement page — the one page the brief said to build — HAS SHIPPED SINCE F10
+      (AccessibilityPage.tsx, routed, footer-linked, Hebrew copy, 316 lines of unit tests,
+      axe-scanned twice). PrivacyPage.tsx says in its own header it was cloned FROM it.
+      The plan then found the spec wrong in six places of its own (C1-C6). The load-bearing
+      one is C2: playwright.config.ts serves both apps via `vite preview`, so FASTAPI IS
+      NEVER IN THE E2E REQUEST PATH and the spec's CSP acceptance criterion was
+      unachievable as written. Resolved with a committed fixture + a backend parity test
+      pinning it byte-for-byte, plus an anti-vacuity leg (a fully-blocked blank page also
+      scores zero axe violations).
+      F21 SHIPS NO MIGRATION — alembic heads must still print 0025 at push.
     deps: [F16, F15, F20]
     note: >-
       Pre-decided #11: rows needing no production environment (dependency
