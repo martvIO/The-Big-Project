@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { ReactNode } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -529,5 +531,30 @@ describe("Router document title, focus and scroll", () => {
     expect(window.scrollY).toBe(0);
     expect(document.title).not.toBe(titleBefore);
     expect(document.title).toBe(i18n.t("document.about"));
+  });
+});
+
+
+// --- the root error boundary's WIRING ---------------------------------------
+
+describe("the root error boundary is mounted around <App/>", () => {
+  it("wraps App in main.tsx, with nothing between them", () => {
+    // ⚠ THE SOURCE IS READ, and that is the honest instrument rather than a
+    // clever one. The boundary's BEHAVIOUR is tested in
+    // `packages/ui/src/__tests__/ErrorBoundary.test.tsx`; what no rendering test
+    // in this app can reach is `main.tsx`, which calls `createRoot` at module
+    // scope against a real `#root` — importing it mounts the whole app into the
+    // test DOM. So the WIRING is asserted the way this repo already asserts
+    // `vite.config.ts` and `ci.yml` in `test_spa_serving.py`: by reading the file.
+    //
+    // Without this, deleting the wrapper is a change that every test, every lint
+    // and every build passes — which is exactly how the product came to have no
+    // boundary at all.
+    // `import.meta.url` is a vite:// URL under vitest, so it is resolved from
+    // the project root instead — which is `apps/<app>` for every runner here.
+    const source = readFileSync(resolve(process.cwd(), "src/main.tsx"), "utf8");
+
+    expect(source).toMatch(/<ErrorBoundary[^>]*>\s*<App\s*\/>\s*<\/ErrorBoundary>/);
+    expect(source).toContain('from "@boutique/ui"');
   });
 });
