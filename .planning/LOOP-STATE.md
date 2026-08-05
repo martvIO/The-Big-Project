@@ -22,20 +22,34 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F61                    # ==================================================================
-                                # ==== HANDOFF, 2026-08-05 — F61 IS IN FLIGHT, IN REVIEW ==========
+current: null                   # ==================================================================
+                                # ==== HANDOFF, 2026-08-05 — NOTHING IN FLIGHT ====================
                                 # ==================================================================
-                                # F61 (a11y-walkthrough-fixes) has 17 commits and ALL TEN LOCAL
-                                # GATES GREEN at 82c406b. Reviewer 1 returned six findings, zero
-                                # blockers. Reviewer 2 + one fix round remain, then PR + merge gate.
-                                # The full resume recipe is in the F61 queue entry at the TOP of
-                                # `queue:` — read it before picking anything else.
+                                # 26 MERGED · 20 QUEUED · 1 PARKED FOREVER (F32, subsumed).
+                                # NOTHING IS USER-BLOCKED. The next pick is plain file order:
+                                # F21, then F22 F24 F25 F27 F28 F35 F38 F44 F47 F49 — ELEVEN are
+                                # eligible right now, so parallel sessions are worth running.
+                                # See `remaining_work_estimate` for the sizing and the ~4-5 day
+                                # (parallel) / ~11 day (sequential) figures, both anchored on
+                                # measured wall-clock rather than feel.
                                 #
-                                # ⚠ A PREVIOUS SESSION DIED MID-REVIEW AND LEFT SOURCE MUTATED.
-                                # A reviewer doing mutation testing reverts a fix, checks the test
-                                # reds, then restores. Kill it in between and the revert is what
-                                # survives. `git status` the worktree before trusting any resumed
-                                # review. See the F61 entry's `hazard_seen_2026_08_05`.
+                                # F61 SHIPPED (PR #47) AND CLOSED THE WALKTHROUGH DEBT. All nine
+                                # known_product_bugs carry `fixed_in: F61`; only /fake-pay remains,
+                                # and it is a LOW backend tidiness item.
+                                #
+                                # ⚠ THE OPERATIONAL LESSON OF THIS SESSION, worth more than the
+                                # fixes: A REVIEWER THAT DIES MID-MUTATION LEAVES SOURCE REVERTED.
+                                # One died between its revert and its restore, leaving fabricated
+                                # i18n keys in an ErrorBoundary — the fallback for a crashed app,
+                                # itself broken, one commit from shipping.
+                                # THE RULE IS NOT "CHECK FOR A DIRTY TREE". It is:
+                                #   1. is an agent LIVE?  find <dir> -name 'agent-*.jsonl' -mmin -5
+                                #   2. THEN read the tree.
+                                # Dirty + live  = work in progress, DO NOT TOUCH.
+                                # Dirty + dead  = a mutation to revert.
+                                # Getting that backwards costs either a live agent's work or a
+                                # shipped fabrication. This session got it wrong once in each
+                                # direction before settling on the ordering above.
                                 #
                                 # ---- the 2026-08-04 handoff, still accurate below ----
                                 # ==================================================================
@@ -247,70 +261,96 @@ current: F61                    # ==============================================
 
 queue:
   # ==================================================================
-  # ==== F61 — IN FLIGHT RIGHT NOW. READ THIS BEFORE PICKING ANY  ====
-  # ==== OTHER ENTRY. It is at the top because it is unfinished,   ====
-  # ==== not because it outranks the roadmap.                      ====
+  # ==== F61 — MERGED. Kept at the top only until the next feature ====
+  # ==== starts; move or delete it then.                            ====
   # ==================================================================
   - id: F61
     slug: a11y-walkthrough-fixes
     epic: cross
-    title: "The nine defects the first real-world walkthrough found"
-    status: in-review
+    title: "The TEN defects the first real-world walkthrough found (nine + one review found)"
+    status: merged
+    pr: 47
     attempts: 1
     deps: []
-    branch: feature/a11y-walkthrough-fixes
-    worktree: .worktrees/a11y-walkthrough-fixes
     migration: none
-    resume_at: >-
-      REVIEW ROUND. The build and all ten local gates are DONE and GREEN at 82c406b
-      (17 commits). Reviewer 1 (quality) returned six findings, ZERO blockers. Reviewer 2
-      (adversarial a11y) and the one fix round are what remain, then PR + merge gate.
-      The workflow is resumable: Workflow({scriptPath: <session>/workflows/scripts/
-      modryn-f61-a11y-fixes-wf_f4681394-ac0.js, resumeFromRunId: "wf_f4681394-ac0"}) —
-      agents 1-3 replay from cache.
-    what_it_fixes: >-
-      All nine entries in `known_product_bugs` that carry no `fixed_in`. Do NOT re-pick
-      them as new work. They are marked here rather than in that block on purpose: the
-      block is only edited when F61 MERGES, so a reader of `main` alone never sees a fix
-      claimed before it landed.
-    gates_at_82c406b: >-
-      ruff 0 · ruff-format 0 · mypy 302 files 0 · pytest not-db 2351 · pytest db 845
-      (9 s3 errors = no Docker, environmental) · pnpm lint/typecheck 0 · vitest 2511
-      (ui 108, storefront 1094, manage 1309) · build 0 · e2e 153 with axe ZERO violations
-      · qa-greps 0 · alembic heads 0025, ONE head, identical to main — no migration.
-    open_review_findings: >-
-      Reviewer 1, six findings, none blocking. The one that matters:
-      (1) MEDIUM — /checkin STILL has fix #5's exact defect. The batch wrapped the
-      BOOKING flow in a <form> so Enter advances, then wrote a comment at BookPage.tsx
-      claiming the check-in form shares the treatment. It does not — CheckinPage.tsx has
-      no <form> at all, so Enter and a phone keyboard's Go key are still dead on the
-      KIOSK surface, which is the one where it matters most. Fix it or correct the
-      comment; a comment asserting something false about a sibling file is exactly the
+    shipped: >-
+      SHIPPED as PR #47, merged 2026-08-05. 18 commits, 35 files, +1798/-359. NO
+      MIGRATION — alembic heads stayed 0025.
+      GATES AT MERGE: lint 0 · pytest not-db 2351 · pytest "db and not s3" 845 against
+      real PG16 · vitest 2515 (ui 108, storefront 1097, manage 1310) · build 0 · e2e 155
+      with axe ZERO violations · qa-greps 0.
+
+      WHY THESE NEEDED A BROWSER TO FIND, and the reason the walkthrough earns its keep:
+      TWO OF THEM ARE INVISIBLE TO BOTH SUITES BY CONSTRUCTION. vitest runs in jsdom,
+      where HTMLDialogElementImpl is a nine-line empty subclass and test/setup.ts stubs
+      showModal; the Playwright suite intercepts every API call and says so in its own
+      header ("it proves the CONSOLE and not the CONTRACT"). So a role="status" that
+      never fires and an aria-invalid that lies about corrected input both passed every
+      gate this repo had.
+
+      REVIEW FOUND A TENTH, AND IT WAS CREATED BY THE FIX FOR THE FIFTH. The batch
+      wrapped the BOOKING flow in a <form> so Enter advances, then wrote a comment
+      asserting the check-in form shared the treatment. It did not — CheckinPage.tsx had
+      no <form> at all, so Enter and a phone keyboard's Go key stayed dead on THE KIOSK
+      SURFACE, the one only ever used on a phone by a woman standing in a doorway. The
+      branch had touched those exact onChange handlers for defect #1 and not noticed.
+      A comment asserting something false about a sibling file is precisely the
       misdirection the /fake-pay entry was corrected for.
-      (2) LOW-MEDIUM — the new atelier cue interpolates only {{name}}, so two consecutive
-      edits of the SAME ticket produce byte-identical text; React skips the DOM text
-      write, no childList mutation fires in the role="status", and nothing is announced.
-      The same silence the fix exists to remove, surviving in the repeat case.
-      (3) LOW — enterKeyHint="next" now mislabels a key that submits.
-      (4) LOW — the root boundary's comments cite the SOS channel, but a ROOT boundary
-      replaces the SOS overlay too. Reword or add a second boundary.
-      (5) LOW-MEDIUM — LOOP-STATE bookkeeping (this entry answers half of it).
-      (6) LOW — three vitest budgets went to 60 s; record the measured baselines
-      (~16.4 s / ~15.3 s idle) in `known_flaky` as accepted debt, so a 3.6x regression
-      cannot pass silently.
+
+      THREE CLAIMS CORRECTED ON THE RECORD:
+      (1) A TEST BASELINE WAS WRONG BY 16x. Review reported ~16.4 s idle runtime behind a
+      padded budget. Re-measured three ways: 0.98 s isolated, 1.07 s beside storefront,
+      3.87 s under the full gate. Budgets kept — the 150-card board IS the mechanism —
+      but the real numbers now sit in all three files and in known_flaky, so a genuine
+      regression cannot hide behind a padded ceiling.
+      (2) The booking e2e ledger overstated its own mutations: one claimed to red "all
+      three steps" reds SLOT ONLY, because per the HTML spec a form with one blocking
+      field and no submit button still submits, and the details step has none that block.
+      (3) "/privacy has no axe scan" — REFUTED. It ships via AXE_ROUTES and its fixture
+      carries a bullet run, so the scan covers real <ul>/<li>.
+
+      TWO OF THE BUILD'S OWN PROOFS WERE VACUOUS AND IT CAUGHT THEM BY RUNNING THE
+      MUTATION RATHER THAN READING: a `typed === ""` guard unreachable against a real
+      subject (deleting it stayed green), and a list-parity fixture that separated its two
+      runs with a BLANK LINE, so a mutation merging every bullet in a block into one list
+      PASSED it. Both fixtures rebuilt to measure the boundary the code actually decides.
+
+      A PRE-EXISTING VITEST FLAKE FAMILY was diagnosed and fixed as collateral: ~50% red
+      under the concurrent gate, proved to predate these commits by reproducing 4/4 RED on
+      a worktree at ea7ddb4. Three causes — focus assertions racing passive effects,
+      selectors evaluated before mount, budgets too tight for a contended runner. 6/6
+      consecutive green after.
     hazard_seen_2026_08_05: >-
-      ⚠ A REVIEWER THAT DIES MID-MUTATION LEAVES SOURCE REVERTED. The 2026-08-05 session
-      died between reviewer 2's revert and its restore, leaving
-      apps/storefront/src/main.tsx modified with the ErrorBoundary's real i18n keys
-      swapped for fabricated ones. Committing that would have shipped an error boundary
-      rendering two MISSING translation keys — the fallback for a crashed app, itself
-      broken. ALWAYS `git status` the worktree before trusting a resumed review, and
-      `git checkout --` anything a mutation left behind.
+      ⚠ A REVIEWER THAT DIES MID-MUTATION LEAVES SOURCE REVERTED, and this run proved it.
+      A session died between reviewer 2's revert and its restore, leaving
+      apps/storefront/src/main.tsx with the ErrorBoundary's real i18n keys swapped for
+      FABRICATED ones. Committing that would have shipped an error boundary rendering two
+      MISSING translation keys — the fallback for a crashed app, itself broken.
+      THE RULE THAT FOLLOWS, and it is not "check for a dirty tree": CHECK WHETHER AN
+      AGENT IS LIVE (`find <transcript-dir> -name 'agent-*.jsonl' -mmin -5`), THEN check
+      the tree. A dirty worktree under a LIVE agent is work in progress and must not be
+      touched; a dirty worktree under a DEAD one is a mutation to revert. Confusing the
+      two costs either a destroyed agent's work or a shipped fabrication.
+    review_findings_all_resolved: >-
+      Two reviewers, six + adversarial findings, ZERO blockers, all applied or rejected
+      on the record in PR #47. Two rejections worth keeping: the "/privacy has no axe
+      scan" claim was REFUTED against the shipped AXE_ROUTES test, and two nits (a
+      redundant 405 assertion, a regex duplicated across two files) were declined because
+      neither can mislead — both fail red rather than silently green.
+      ⚠ THE "~16.4 s IDLE TEST RUNTIME" FIGURE THAT APPEARED IN REVIEW WAS WRONG BY 16x
+      and is corrected here so nobody re-derives from it: the real numbers are 0.98 s
+      isolated, 1.07 s beside storefront, 3.87 s under the whole gate. They live in the
+      three test files and in known_flaky.
     note: >-
       NOT a roadmap feature — a fix batch for defects found by driving the assembled
-      product in a real browser. It exists as a queue entry only so an interrupted
-      session is resumable. When it merges, mark it `merged`, add `fixed_in: F61` to the
-      nine `known_product_bugs` entries, and delete this block's top-of-queue position.
+      product in a real browser, which is why it has no spec or plan. The nine
+      `known_product_bugs` it discharged carry `fixed_in: F61` with, for each, the test
+      that reds if the fix is reverted. The tenth (/fake-pay) is untouched and still
+      open — correctly, it is a LOW backend tidiness item this batch was not scoped for.
+      STILL OPEN, recorded rather than smuggled in: FloorPanel.tsx, GuideOverlay.tsx and
+      RoomsRegistryDialog.tsx carry the SAME wrong live-region comment that caused defect
+      #2. RoomsRegistryDialog is safe BY ACCIDENT (it clears to "" first); the other two
+      are unaudited. That is the next sweep.
 
   # ==================================================================
   # ==== FLOOR-MANAGEMENT PROGRAM (2026-07-31) — BUILDS FIRST      ====
