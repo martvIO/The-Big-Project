@@ -20,7 +20,12 @@ and get the full policy. Embedding a tenant storefront in a third-party site is
 still not supported; a per-tenant `frame-ancestors` allowlist is E10's if a
 boutique ever asks for one.
 
-**HSTS and the CSP are emitted here, and the two blockers this paragraph used to
+**HSTS and the CSP are emitted here, closing `.planning/security-checklist-v1.md`
+row `R33` ("Security headers: HSTS, CSP, X-Frame-Options, X-Content-Type-Options")
+and, for the CSP's third-party-script clause, `R28`.** The row was cited here as
+"checklist row 33" before F21; the ids are frozen as `R<n>` labels now, so the
+citation survives renumbering rather than silently pointing at whatever ends up
+on that line. **The two blockers this paragraph used to
 name were both wrong.** It said HSTS "needs the real domain and a
 TLS-termination decision". It needs neither: a browser applies an HSTS header
 only to the host that sent it (plus that host's subtree under

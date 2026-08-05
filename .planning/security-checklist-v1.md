@@ -1,57 +1,197 @@
 # v1 Security Checklist — Ship Gate
 
-**Status**: open — every item must be checked (with evidence) before the pilot goes live.
+**Status**: audited at **F21** (2026-08-05) against the code as it stands, row by row.
 **Owned by**: E4 Feature 21. Referenced from `epics/ROADMAP.md` (v1 definition of done).
 
+> **Row ids are frozen.** Every row carries an explicit **`R<n>`** label whose
+> number is exactly the number it had before F21. Those numbers were accidental —
+> line numbers from the pre-F20 revision — but they are cited **by number** from
+> `.planning/ppl-compliance-record.md` (rows 32, 33, 40, 42, 43, 44),
+> from this file's own F20 blockquote, and from
+> `Backend/app/security_headers.py`. Any edit without the labels renumbers
+> everything below it and breaks all three citation sites at once, silently.
+> **A row created by a split takes a suffix (`R40a`/`R40b`), never a new
+> integer**, so the sequence can never shift again.
+
+> **What a verdict means here.** Every row below carries a verdict **and** either
+> (a) the file and the test that prove it, or (b) a named blocker and a named
+> owner. Nothing else is permitted. A row marked green on the strength of a
+> planning note is the failure this feature exists to catch, so every green below
+> was read off the tree at F21 and not off F21's own plan. **Where the tree
+> contradicted the spec's D2 table, the tree won — and §Divergences records each
+> one.**
+
+## Verdict summary
+
+| Verdict | Count | Rows |
+|---|---|---|
+| **GREEN** — proved, with a shipped test | **21** | R8 R9 R10 R11 · R15 R17 R18 · R21 · R24 R25 R28 · R33 R34 R35 · R38 R39 R41 R43 · R47 R49 R50 |
+| **AMBER** — one clause green, another owned elsewhere | **5** | R7 R12 R16 R42 R48 |
+| **UNCHECKED** — blocker named, owner `F62` | **5** | R26 R27 R31 R32 R44 |
+| **SPLIT** — `R40a` green (F20), `R40b` open (F46) | **1** | R40 |
+| | **32** | |
+
+Of the 21 green, **ten were closed by F21** (R9 R15 R24 R28 R33 R34 R38 R47 — plus R21 and R25 by amendment) and eleven were already true and are now pinned.
+
+---
+
 ## Tenant isolation
-- [ ] RLS `FORCE`d on all tenant tables; app DB role is non-owner; policies keyed to `current_setting('app.tenant_id')`
-- [ ] Unset tenant context returns zero rows (regression test)
-- [ ] CI cross-tenant isolation suite: every repository method + API endpoint probed as tenant A against tenant B's data — green, blocking, never removed
-- [ ] Tenant never accepted from client input (host-derived only)
-- [ ] S3 keys tenant-prefixed; media served via short-lived signed URLs
-- [ ] Provisioning CLI: access-restricted, every invocation audit-logged (incl. any RLS-bypass)
+
+- [ ] **`R7`** RLS `FORCE`d on all tenant tables; app DB role is non-owner; policies keyed to `current_setting('app.tenant_id')` — **AMBER**, two clauses, two owners.
+  - **Code clause — GREEN.** `db/rls.py:16-19` sets the policies; the non-owner role is created at `0002_tenants_app_role.py:63`; the boot guard `db/session.py:12-42` refuses `rolsuper`, `rolbypassrls` **and** table ownership. Proved by `test_tenant_isolation.py::test_every_tenant_id_table_has_forced_rls`, `::test_app_role_is_not_superuser_or_table_owner`, `::test_force_rls_is_enabled_on_probe`, and `test_role_guard.py`'s five cases.
+  - **F21 added the half that was provable here**: `test_role_guard.py::test_the_boot_guard_is_exempt_for_dev_and_for_nothing_else` and `::test_the_boot_guard_is_exempt_for_exactly_dev` — parametrised over `staging`, `production` and near-misses (`Dev`, `DEV`) that a widened comparison would admit. Reds on `not in ("dev","staging")`, on `.lower() != "dev"`, and on deleting the call.
+  - **Deployment clause — NOT PROVABLE HERE. Owner: `F62`.** `walkthrough_coverage_gaps` **G1**: on 2026-08-04 the app connected as `postgres` with `rolsuper = t`, so everything the runbook lists as binding under the app role was silently void for that whole run. `ensure_safe_database_role` is exempt when `app_env == "dev"` (`db/session.py:45-50`). Proving the *live* role needs a deployment.
+- [x] **`R8`** Unset tenant context returns zero rows (regression test) — **GREEN.** `db/rls.py:14` (`missing_ok := true`). `test_tenant_isolation.py::test_no_context_means_zero_rows`, `::test_garbage_context_fails_loudly_not_open`.
+- [x] **`R9`** CI cross-tenant isolation suite: every repository method + API endpoint probed as tenant A against tenant B's data — green, blocking, never removed — **GREEN, closed by F21.**
+  - `Backend/tests/test_cross_tenant_walker.py` (918 lines, six tests, `db`-marked, run locally against PG16). It enumerates the **live** FastAPI route table through `_leaf_routes`' `original_router` recursion, so a route added later is walked with no new test.
+  - **Measured on this tree**: 110 leaf `(method, path)` pairs · 5 `NOT_TENANT_SCOPED` · **105 tenant-scoped** · 6 `UNWALKABLE` (each with a reason string ≥ 40 chars, asserted) · 43 `NO_TENANT_OWNED_ID` · **56 actually driven** as tenant A with tenant B's ids in path, query and body.
+  - Four assertions, not one: status is 404 (`::test_every_tenant_scoped_route_refuses_another_tenants_ids`), **no 5xx** (`::test_no_route_answers_a_server_error`), **no response body echoes tenant B's ids at any status** (`::test_no_response_echoes_the_other_tenants_ids`), and walked ∪ exempt **is** the route table in both directions (`::test_the_walk_and_the_exemptions_are_the_whole_route_table`).
+  - **`::test_no_module_is_wholly_exempt`** is Risk 4 mechanised: a per-module floor (`privacy` ≥ 2 and `staff` ≥ 2 among them), plus a partition assertion so a module cannot drop out of the floor and quietly stop being checked.
+  - **No cross-tenant hole was found.** That is the result, and it is reported as a result rather than as an absence.
+  - The ten `test_*_isolation.py` files stay: they probe repository methods below HTTP, which the walker cannot reach, and this row names both halves. **⚠ See Divergence 4 — those files do not fail if the explicit `tenant_id ==` predicates are removed.**
+- [x] **`R10`** Tenant never accepted from client input (host-derived only) — **GREEN.** `tenancy/middleware.py:69, :74, :88-92`; no `tenant_id` on any request schema. `test_middleware.py::test_known_slug_resolves_and_binds_tenant`, `::test_failure_kinds_are_indistinguishable`, `::test_reserved_slug_never_reaches_resolver`, `::test_apex_and_foreign_hosts_are_404_without_resolver_call`; `test_catalog_isolation.py:459`.
+- [x] **`R11`** S3 keys tenant-prefixed; media served via short-lived signed URLs — **GREEN.** `catalog/keys.py:32`; TTL 300 s presign / 900 s GET (`catalog/validation.py:80-82`). `test_media_upload_s3.py::test_rewriting_the_key_to_another_tenant_prefix_is_rejected`, `::test_posting_after_the_policy_expires_is_rejected`, `::test_signed_get_downloads_the_object_and_then_expires`. **⚠ `s3`-marked — these run on CI against real MinIO, not in the local db suite.**
+- [ ] **`R12`** Provisioning CLI: access-restricted, every invocation audit-logged (incl. any RLS-bypass) — **AMBER**, two clauses, two owners.
+  - **Audit clause — GREEN, closed by F21.** `list_tenants` was the one privileged CLI operation leaving no trail: a full cross-tenant read taking an `--operator` flag it discarded (`cli.py:68-69`). It now writes a `platform_audit_log` row (`platform/service.py`), in the bare session it already opened. Proved by `test_provisioning.py::test_listing_tenants_writes_a_platform_audit_row`, with the operator name asserted present; `::test_each_state_change_writes_platform_audit` covers the rest.
+  - **Access-restriction clause — NOT PROVABLE HERE. Owner: `F62`.** "Access-restricted" means SSH/console access to the host. No host.
 
 ## Sessions & auth
-- [ ] Cookies `HttpOnly` + `Secure` + `SameSite=Lax`, scoped to the exact subdomain — never the parent domain
-- [ ] Login + OTP rate-limited per phone and per IP; OTP ≤5-min expiry, single-use
-- [ ] Booking-flow phone verification (OTP) enforced before customer record creation
-- [ ] Operator password-reset path via audited CLI only
+
+- [x] **`R15`** Cookies `HttpOnly` + `Secure` + `SameSite=Lax`, scoped to the exact subdomain — never the parent domain — **GREEN, closed by F21.** `auth/cookies.py:10-18` sets `httponly=True`, `samesite="lax"`, `path="/"` and **no `domain=`**, so the cookie is host-only. `Settings.secure_cookies` is `app_env != "dev"` (`core/config.py:243-245`). The existing test checked three of the four flags and stopped; `test_auth_api.py::test_the_session_cookie_is_secure_outside_dev` is the fourth, driven end to end across dev/staging/production. Reds when `secure_cookies` is forced either way.
+- [ ] **`R16`** Login + OTP rate-limited per phone and per IP; OTP ≤5-min expiry, single-use — **AMBER**, three clauses, two owners.
+  - **Per-phone / per-tenant / TTL / single-use — GREEN, F13/F16.** 5 per 3600 s send, 10 per 300 s verify, OTP TTL 300 s, single-use.
+  - **Per-IP on OTP send — CODE GREEN at F21, and INERT.** Shipped as its **own** `FixedWindowRateLimiter` instance (`main.py:820`), never a third key on an existing limiter — `.memory/limiter-max-is-per-instance`, since `max_attempts` lives on the limiter and not on the key. `_client_ip` was extracted to `app/auth/client_ip.py` and is shared by both routers rather than copied. **It returns `None` on every deployment we currently have**, because `trust_forwarded_for` ships `False` (`core/config.py:37`). Proved *both ways*: `test_notifications_api.py::test_the_otp_send_budget_meters_the_client_ip_when_one_is_trusted` and `::test_the_otp_send_budget_skips_the_ip_key_when_no_proxy_is_trusted` — the second is the assertion that the mechanism is inert by default, which is **why this row is amber and not green**. A tripped IP budget answers with the same silent 204 as the phone budget, never a 429, because a 429 here is an oracle for "is this number mid-booking at this boutique".
+  - **Per-IP *enablement* — Owner: `F62`.** `TRUST_FORWARDED_FOR=true` is only correct on a deployment terminating exactly one trusted proxy. A host fact.
+  - **Distributed limiter (Redis) — Owner: `F62`.** `auth/rate_limit.py:5-6` names it. Per-process buckets mean N instances → N × the budget.
+- [x] **`R17`** Booking-flow phone verification (OTP) enforced before customer record creation — **GREEN.** `booking/service.py:316-322` — step 1, before anything is written. `test_booking_service.py::test_unproven_phone_is_rejected_and_writes_nothing`.
+- [x] **`R18`** Operator password-reset path via audited CLI only — **GREEN.** `cli.py:63-66, :169-172` → `platform/service.py:211-241`, audit at `:234`; **no HTTP reset route exists**. `test_cli.py::test_password_is_not_a_cli_argument`; `test_provisioning.py::test_reset_password_changes_credentials`, `::test_each_state_change_writes_platform_audit`.
 
 ## Tokens & links
-- [ ] Manage/confirm/cancel tokens ≥128-bit random, stored hashed, expire at appointment time, idempotent on repeat use
+
+- [x] **`R21`** Manage/confirm/cancel tokens ≥128-bit random, stored hashed, **actions (confirm / cancel) expire at appointment time; the page stays readable, by decision (`booking/manage.py:9`)**, idempotent on repeat use — **GREEN, text amended (D8).**
+  - **The ≥128-bit clause is correct upward**: `auth/tokens.py:4` is `TOKEN_BYTES = 32`, so the tokens are **256-bit**, not 128. Pinned by `test_manage_token.py::test_a_minted_token_is_43_urlsafe_characters` (`token_urlsafe(32)` → 43 chars).
+  - **The amended expiry reading is pinned by a test that already existed**: `test_booking_comms_db.py:815::test_actions_expire_at_starts_at_but_the_page_stays_readable` drives the real `ManageBookingService` against real Postgres and asserts exactly this — `lookup` after `starts_at` answers 200 with the booking, while `confirm_attendance` and `cancel` both refuse. **⚠ See Divergence 2: F21 wrote no new test for this row.**
+  - **Stored hashed**: only the sha256 is ever persisted, which is what makes a rotated link unrecoverable (`booking/owner.py`).
 
 ## Payments (PCI SAQ-A)
-- [ ] Card entry exclusively on Grow's hosted page; no PAN ever proxied, logged, or stored on our origin
-- [ ] Webhook signature verification + replay protection; duplicate deliveries idempotent
-- [ ] Per-tenant gateway credentials KMS-encrypted; never logged
-- [ ] Receipt (קבלה) issuance confirmed for every charge and refund
-- [ ] CSP forbids card fields / third-party scripts on our origin
+
+- [x] **`R24`** Card entry exclusively on **the configured gateway's hosted page**; no PAN ever proxied, logged, or stored on our origin — **GREEN, text amended (D8), closed by F21.**
+  - **Why the text changed**: the row named *Grow*, which was demoted to one candidate on 2026-07-31. The shipped engine is Lemon Squeezy test mode, and production is boot-blocked for both `fake` and `lemonsqueezy` (`core/config.py:303-304, :311-314`). Naming a provider audits nothing; the property being audited — no PAN on our origin — is provider-independent.
+  - **Evidence**: redirect-only (`payments/base.py:76-79`), zero card fields anywhere in `app/`. `test_payments_api.py::test_no_request_schema_carries_a_card_field` walks **every Pydantic request model reachable from the live route table**, recursing into nested models, and asserts no field matches `/card|pan|cvv|cvc|expiry|exp_month|exp_year/i`. **Derived, not hand-listed**, so it stays true after the next schema. Anti-vacuity: `::test_the_card_field_pattern_does_not_fire_on_ordinary_names`. Reds on `card_number`/`pan`/`cvv`/`exp_month` added to a body model **and** on `cvv` added one level below one.
+- [x] **`R25`** Webhook signature verification + **replay-safe by idempotency**; duplicate deliveries idempotent — **GREEN, text amended (D8).**
+  - **Signature verification is real**: HMAC-SHA256 with `compare_digest` (`payments/lemonsqueezy.py:373-374`, `_matches` at `:431-435`). A mismatch is a 400, never a 503 — reporting a forgery as a provider blip invites a retry of the forgery.
+  - **Idempotency is proven**: a redelivery of an already-settled transaction writes nothing (`payments/service.py:611-617`), pinned by `test_deposit_confirm_db.py::test_a_redelivery_confirms_once_and_texts_once`.
+  - **Why the text changed, and what the residual is**: there is **no timestamp/nonce freshness window**, so a captured valid body can be replayed indefinitely — **as a no-op, every time**. "Replay protection" overstates what ships; "replay-safe by idempotency" is exactly what ships. Residual: **nil for money, non-nil for log noise.** Recorded, not papered over.
+- [ ] **`R26`** Per-tenant gateway credentials KMS-encrypted; never logged — **UNCHECKED. Blocker: an AWS KMS key (console/CLI action). Owner: `F62`.** The only adapter shipped is `FakeSecretBox`, base64 of JSON, whose own comment says *"THIS IS NOT ENCRYPTION"* (`payments/secretbox.py:61-62`). Nothing can ship wrong meanwhile: production is boot-blocked (`config.py:315-316`) and `0012`'s `provider IN ('fake')` CHECK means production can hold no credential row. **F17 Gate 1 Q2 already accepted this unchecked.**
+- [ ] **`R27`** Receipt (קבלה) issuance confirmed for every charge and refund — **UNCHECKED. Blocker: the production Israeli PSP (`external-applications.md` #3). Owner: `F62`.** Zero receipt code exists; `refund()` has no method and no consumer (`payments/base.py:106`).
+- [x] **`R28`** CSP forbids card fields / third-party scripts on our origin — **GREEN, closed by F21.**
+  - A settings-derived `Content-Security-Policy` is built at `create_app()` time (`security_headers.py::build_csp`, wired at `main.py:704`) — never a module constant, because the media origin is a deployment fact. Ten directives; `script-src 'self'`; `style-src` carries **no `'unsafe-inline'`**; `frame-ancestors 'none'`; `base-uri 'none'`; `object-src 'none'`; `form-action 'self'`.
+  - `media_csp_origin` reduces the bucket to scheme + netloc. Path-style addressing (`storage/s3.py:73-78`) is why the bucket name never appears in the host. **A deployment with no bucket gets a strictly tighter policy, never a broken one**, and `test_security_headers.py::test_the_csp_omits_the_media_origin_when_no_bucket_is_configured` is the test that says so.
+  - **The acceptance criterion is a real browser, not a header string** (`Frontend/e2e/csp.spec.ts`): the real policy — read from `frontend/e2e/fixtures/csp.txt`, which `test_security_headers.py::test_the_e2e_fixture_matches_the_emitted_policy` pins byte-for-byte to what the middleware emits — is injected onto the **real built bundle** by route interception, with a `securitypolicyviolation` listener installed **before any page script runs**, and an anti-vacuity leg asserting the app's root heading rendered (a CSP that blocks the module script leaves a blank page, which also has zero *further* violations).
+  - **The tripwire fired on its first run, exactly as designed.** `img-src` needed `data:`: the console login screen's MODRYN mark is a 973-byte inlined SVG, under Vite's 4096-byte `assetsInlineLimit`. The policy was widened by **one source, on one directive**, with the asset named — and `::test_the_csp_admits_data_uris_on_img_src_and_nowhere_else` pins that `data:` reached `img-src` and nothing else.
 
 ## Platform hardening
-- [ ] Secrets in AWS Secrets Manager (no plaintext env secrets in prod)
-- [ ] Rate limiting + WAF on public booking + OTP endpoints
-- [ ] Security headers: HSTS, CSP, X-Frame-Options, X-Content-Type-Options
-- [ ] Dependency scanning (pip-audit, npm audit) green in CI
-- [ ] Upload validation: content-type + size limits on presigned S3 uploads
+
+- [ ] **`R31`** Secrets in AWS Secrets Manager (no plaintext env secrets in prod) — **UNCHECKED. Blocker: a production environment to migrate secrets into. Owner: `F62`.** `core/config.py:11` reads `.env`; zero hits for `secretsmanager|vault|ssm` in `app/`.
+- [ ] **`R32`** Rate limiting + WAF on public booking + OTP endpoints — **UNCHECKED. Blocker: an AWS/Cloudflare console action against a live origin. Owner: `F62`.**
+  - **The rate-limiting clause is discharged** — twenty-odd `FixedWindowRateLimiter` instances are constructed at `main.py:731-961`, covering login, OTP send/verify/IP, storefront reads, booking create, manage lookup, owner SMS, queue create/position/board, terms, presign, gateway connect and the three privacy subject-request paths. Each budget is its own instance.
+  - **The row stays unchecked because the WAF clause has no code meaning here.** Splitting it would create a new integer id; the per-clause-owner convention is used instead, as on R7 and R16.
+- [x] **`R33`** Security headers: HSTS, CSP, X-Frame-Options, X-Content-Type-Options — **GREEN, closed by F21.** All four now ship.
+  - **HSTS** is scheme-gated: `Strict-Transport-Security: max-age=31536000; includeSubDomains` is emitted only when the effective scheme is https, reading the **last** `x-forwarded-proto` entry. **No `preload`** — submission is effectively irreversible and belongs to a domain that resolves. `test_security_headers.py::test_hsts_is_emitted_over_https`, `::test_hsts_is_absent_over_http`, `::test_hsts_honours_the_last_forwarded_proto_entry`, `::test_hsts_carries_no_preload`, `::test_hsts_reaches_the_tenant_not_found_404`.
+  - **Why `x-forwarded-proto` is read unguarded while `x-forwarded-for` is not**: a spoofed XFF poisons a rate-limit bucket — a real attack. A spoofed XFP over plain HTTP makes the app emit a header the browser **ignores by specification**. Nothing to spend, nothing to poison; so one scheme condition replaces a config flag.
+  - **`X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`** ship in `SECURITY_HEADERS` (`security_headers.py:60-66`).
+  - **Neither new header joined `SECURITY_HEADERS`, and that is structural**: seven test modules compare that dict with `==`, which is only meaningful for headers that are unconditional and constant. The CSP is settings-derived and HSTS is request-derived, so both are emitted **beside** the dict by the same middleware. `::test_the_security_headers_dict_is_unchanged` is the guard against a later author "tidying" them in.
+  - The middleware is registered **last** in `create_app()` and is therefore **outermost** (`main.py:704`), which is what puts it outside `TenantResolutionMiddleware` and gets the headers onto the `404 TENANT_NOT_FOUND` that middleware returns without reaching a handler — on a public storefront, the single most-served response to anyone probing the domain.
+- [x] **`R34`** Dependency scanning (pip-audit, npm audit) green in CI — **GREEN, closed by F21.**
+  - `.github/workflows/ci.yml`'s `audit` job is **no longer `continue-on-error`** and is named `Dependency audits`. `deploy-staging.needs` is now `[backend, frontend, e2e]`.
+  - **The gate is the FULL `pnpm audit`, deliberately not `--prod`.** `--prod` would be green today for free and would be a permanent blind spot over exactly the packages that assemble the bundle: a compromised `vite`, `rolldown` or `postcss` ships to production inside `dist/` while never appearing in a production dependency tree.
+  - The nine transitive devDependency advisories (4 high, 5 moderate — `undici`, `brace-expansion`, `js-yaml`, `postcss`) were **cleared by a lockfile refresh onto patched versions, not by relaxing the job**.
+  - **The waiver mechanism is enforced mechanically, not by prose**: `frontend/scripts/audit-waivers.mjs` runs **before** `pnpm audit` and reds on (1) a silenced advisory with no rationale, (2) a rationale for an advisory nobody is silencing, and (3) an expiry that has passed, is missing, or exceeds a 90-day cap. `package.json` is strict JSON and cannot carry a comment, and pnpm's `ignoreGhsas` has no concept of an expiry — without this script "an expired waiver reds the build" would be a sentence in a planning document and nothing else.
+  - `--ignore-registry-errors` is **deliberately absent**: it would turn every registry outage into a silent pass, the same defect as `continue-on-error` under another name. Retry instead.
+- [x] **`R35`** Upload validation: content-type + size limits on presigned S3 uploads — **GREEN.** Three layers: `catalog/validation.py:149-157`, `storage/s3.py:125-134`, `catalog/service.py:596-622`. `test_media_upload_s3.py` — four rejection tests plus `::test_confirm_deletes_an_honest_size_polyglot`, against real MinIO. **⚠ `s3`-marked: CI only.**
 
 ## Data protection (PPL / Data Security Regulations)
 
-> Rows 39-43 were assessed at **F20** (PPL compliance build). Three are green; two
-> are **amber** and stay unchecked, each with a named owner. An amber row is one
+> Rows `R39`–`R43` were assessed at **F20** (PPL compliance build). Three are green;
+> two are **amber** and stay unchecked, each with a named owner. An amber row is one
 > F20 partly discharged — checking it would hand F21 a lie to audit, which is the
 > failure F21 exists to catch. Evidence for all five: `.planning/ppl-compliance-record.md`.
-> Splitting rows 40 and 42 into their per-owner clauses is F21's edit, not F20's.
+> **F21 executed the splits F20 assigned it**: `R40` → `R40a`/`R40b` below, and `R42`'s
+> owner moved to `F62`.
 
-- [ ] Audit log on all owner/CLI mutations and data access by operators
-- [x] Privacy notice per tenant; DPA text in boutique ToS — **F20**: platform-written Hebrew notice + DPA clause, per-boutique overridable, rendered at every collection point and on `/privacy`; platform-owned sub-processor list, structurally un-overridable
-- [ ] Consent captured with timestamp + terms-version + source; marketing opt-in separate, unbundled, default OFF; opt-out honored in every marketing send — **AMBER (F20)**: capture, structural unbundling, structural default-off (a NULL timestamp, not a flippable boolean) and an owner/shift-manager opt-out writer with both arms all ship. **The send-time clause has no subject until a marketing send exists.** *Owner: F46.*
-- [x] PII-scrub job (true erasure, not soft-delete) tested — **F20**: the SCRUB action, its `customers` and `queue_tickets` consumers, and the `subject-erase` transaction, all db-tested against real Postgres
-- [ ] Retention jobs per data class running (OTP: minutes; queue entries: days; bookings: years; message log: months) — **AMBER (F20)**: six per-class policies ship, tested, with boot-validated floors; the queue-entries clause **closed at F20** (F33's tickets have a policy). **`retention_enabled` ships `False`** — the job is shipped but not *running*, because an unattended irreversible mass-delete must not precede a drilled restore (row 44). *Owner: F21.*
-- [x] Processing-activities record started; incident-response procedure written — **F20**: `.planning/ppl-compliance-record.md` §1 and §3
-- [ ] Backups automated; restore drilled; RPO/RTO documented — **gates row 42.**
+- [x] **`R38`** Audit log on all owner/CLI mutations and **data access by operators, where "access" means a read OF A DATA SUBJECT** — **GREEN, closed by F21, text amended (D6).**
+  - **The gap that was closed**: `app/catalog/` had **zero** `AuditLogRepository` usage — `grep -n audit catalog/service.py` returned nothing at all — and it is the module whose writes are publicly visible. Its **nine** mutating routes (of eleven declared; two are reads) now each write an audit row, inside the existing `tenant_session` so the row rides the same transaction as the mutation. Nine new `AuditAction` members, **no migration** (`audit_log.action` is unconstrained `TEXT`, `0003_auth.py:71-79`).
+  - `Backend/tests/test_catalog_audit_db.py` — one test per mutation, each asserting **exactly one** row with the right `action`, `actor_id` and `entity`, plus `::test_a_no_op_mutation_writes_no_row` so nine audit calls do not become nine spurious rows on every idempotent retry. Details payloads carry a media key, a dress id, a size label — **never a customer name** (`_last4` discipline, `booking/owner.py:93-96`).
+  - **The rest of the surface is fenced by a walker, not by a promise**: `Backend/tests/test_audit_coverage.py::test_every_mutating_manage_route_writes_an_audit_row_or_is_exempt` walks the live route table and requires every mutating `/manage` route to either reach an `AuditLogRepository.record` call or appear in `UNAUDITED_BY_DECISION` with a reason ≥ 40 chars naming where the decision lives in shipped code. **Twelve** entries. Three anti-vacuity legs. **The next unaudited route is a test failure.**
+  - **Why the text changed**: general console GETs are not audited, by the standing rule at `dashboard/service.py:373` (*"No GET handler in this product writes one"*). Reads **of a data subject** are audited — `privacy/service.py:269, :391, :568, :657`. The amended sentence is the shipped rule; the original sentence was never true.
+  - **⚠ One gap this walker FOUND rather than confirmed, and it is recorded rather than closed**: `PUT /manage/privacy` — publishing the boutique's own legal notice — writes no audit row, and **no decision to that effect existed anywhere before F21**. Same class as boutique's `profile`/`toggles` (the tenant editing its own text). D6 scopes F21's new rows to catalog + `list_tenants`, so F21 **records the silence rather than widening its own charter. Owner: `F62`**, alongside the audit read surface.
+- [x] **`R39`** Privacy notice per tenant; DPA text in boutique ToS — **GREEN, F20**: platform-written Hebrew notice + DPA clause, per-boutique overridable, rendered at every collection point and on `/privacy`; platform-owned sub-processor list, structurally un-overridable.
+- [x] **`R40a`** Consent captured with timestamp + terms-version + source; marketing opt-in separate, unbundled, default OFF — **GREEN, F20.** Capture, structural unbundling, structural default-off (a NULL timestamp, not a flippable boolean) and an owner/shift-manager opt-out writer with both arms all ship.
+- [ ] **`R40b`** Marketing opt-out honored in every marketing send — **OPEN. Blocker: no subject exists until a marketing send exists. Owner: `F46`.** F21 does not close this and did not attempt to; the split is the edit F20 explicitly assigned this feature.
+- [x] **`R41`** PII-scrub job (true erasure, not soft-delete) tested — **GREEN, F20**: the SCRUB action, its `customers` and `queue_tickets` consumers, and the `subject-erase` transaction, all db-tested against real Postgres.
+- [ ] **`R42`** Retention jobs per data class running (OTP: minutes; queue entries: days; bookings: years; message log: months) — **AMBER (F20), and the owner moves to `F62` (D9).**
+  - **Green half**: six per-class policies ship, tested, with boot-validated floors; the queue-entries clause closed at F20.
+  - **`retention_enabled` ships `False`** (`core/config.py:232`, asserted by `test_config.py:217` and `test_worker.py:315`) and **stays `False`**. The worker's scheduled path is genuinely gated on it (`worker.py:206, :215`); `run_retention` on the CLI is deliberately **not** gated (`cli.py:97`, `platform/service.py:156`) and defaults to a rehearsal that counts and writes nothing — `--armed` is required. That is the single place the disarm can be defeated, on purpose.
+  - **Why it stays disarmed**: an unattended irreversible mass-delete must not precede a drilled restore, and the drilled restore is `R44`, which is parked. **Owner: `F62`** — it moves with the flag.
+  - **⚠ F21's positive deliverable on this row is a finding, and it is a precondition on `F62`.** The 30-day orphan grace runs from `created_at`, because **nothing on the row records when a customer *became* orphaned**. It therefore protects a row created in the last 30 days and nothing else, and a phone correction that orphans a customer who first booked six months ago satisfies the conjunct **immediately**. Re-derived at F21: F15's correction re-points the *other* row and never touches this one (`booking/owner.py:1136-1161`), so `updated_at` will not serve as a proxy either. **A real orphan clock is a new column, and it belongs to whoever flips the flag.**
+- [x] **`R43`** Processing-activities record started; incident-response procedure written — **GREEN, F20**: `.planning/ppl-compliance-record.md` §1 and §3.
+- [ ] **`R44`** Backups automated; restore drilled; RPO/RTO documented — **UNCHECKED. Blocker: a drill needs something to restore — i.e. a production stand-up. Owner: `F62`. Gates `R42`.**
 
 ## Accessibility (IS 5568 / WCAG 2.0 AA — legal requirement)
-- [ ] axe-core automated pass on storefront + booking flow
-- [ ] Manual keyboard + screen-reader spot check
-- [ ] Contrast audit passed (gold-as-accent, dark ink for text)
-- [ ] Accessibility statement page published
+
+- [x] **`R47`** axe-core automated pass on storefront + booking flow — **GREEN, closed by F21.**
+  - Baseline: `storefront.spec.ts`'s nine `AXE_ROUTES` rows plus six bespoke journeys, all through a shared `axeViolations` that is `withTags(["wcag2a","wcag2aa"])`.
+  - **F21 added thirteen scans.** Eleven console sections (`dashboard profile hours types terms catalog bookings customers staff gateway privacy`) — `guide.ts:14-33` declares fifteen `SectionKey`s and four were already scanned. Plus two `/queue` states **derived from `QueueBoardPage.tsx`'s own render branches** rather than assumed: `overflow` (the computed «ועוד 35 בתור» line) and `failed` (a `role="alert"` plus a retry control). `populated` and `empty` were already closed, and a third scan of the same DOM would have been coverage theatre.
+  - **All thirteen scanned clean on the first run — no markup fix was needed.** That is the result.
+  - **`.disableRules()` and `.exclude()` remain at ZERO across the whole e2e suite**; the only textual hits are the two comments forbidding them. F21 is not the feature that introduced the first one.
+  - **⚠ A harness hole was found on the way, and it is the reason `privacy` could not have been scanned before**: `fixtures/manage.ts`'s `API_FAMILIES` listed fifteen path segments where `apps/manage/vite.config.ts:19` declares **sixteen**. `privacy` was missing, so every `/manage/privacy` call fell **through** the interception to `vite preview`'s proxy — which serves the SPA shell for an unproxied path — and `PrivacySection` rendered its outage line with nothing anywhere saying why. **The §13 subject-request surface was unreachable by any e2e test until F21 added that line.**
+  - **⚠ The scope limit is stated and not diluted**: `installManageApi` stubs the API, so every console scan proves the **console** and never the **contract** (`manage.spec.ts:31-33`).
+- [ ] **`R48`** Manual keyboard + screen-reader spot check — **AMBER**, two clauses. Evidence: **`.planning/a11y-audit-v1.md`**.
+  - **Keyboard clause — GREEN, closed by F21.** 18 surfaces, **261 tab stops** individually recorded with element, accessible name, computed focus ring and absolute document rect, driving **real Chromium** (Playwright 1.62.1's bundled build) against the **real built bundles** served by `vite preview`. **Zero keyboard defects.** Skip link reaches `MAIN#content`; the console dialog takes focus on open, traps Tab, closes on Escape and **restores focus to its opener**. Eleven geometric order flags were raised, reviewed against screenshots and dismissed with the reason recorded (the accessibility widget; a two-column RTL layout).
+  - **Screen-reader clause — NOT RUN. No screen reader was operated.** VoiceOver was unavailable to the auditor. Accessibility-tree inspection establishes what a screen reader is *given*, not what it *says*. `.planning/a11y-audit-v1.md` §4 lists the ten surfaces a human must still walk and the two questions only a listener can answer.
+  - **This row is amber, not green, and that is the whole point of the artifact.** See Divergence 1.
+- [x] **`R49`** Contrast audit passed (gold-as-accent, dark ink for text) — **GREEN.** `Frontend/packages/ui/src/__tests__/tokens.test.ts` computes WCAG 2.0 relative luminance from the token hexes — real maths, not eyeballing — and asserts the published ratios at **rest and on hover**, including the corrected `--color-border-input` (`#8A7A5E`, replacing `#B9A98F` at 2.03:1) and `--color-focus` (`#7F612B`). F21 added no new contrast code; this row is cited, not rebuilt.
+- [x] **`R50`** Accessibility statement page published — **GREEN.** `AccessibilityPage.tsx`, route + footer link + Hebrew. `__tests__/accessibility.test.tsx`; `AXE_ROUTES` rows 4 and 9; keyboard-walked at F21 (`a11y-audit-v1.md` row 4).
+
+---
+
+## Divergences — where the tree contradicted the spec's D2 table
+
+Recorded because a plan that silently corrects itself teaches the next reader to trust neither. **In every case the tree won.**
+
+1. **`R48` is AMBER, not "GREEN, closed by F21 (T12)".** D2 and the plan's §5 verdict table both list `R48` among the rows F21 closes green. **It is not closed green.** The plan named *VoiceOver on macOS* as the instrument; the agent that performed the pass could not operate a screen reader. The keyboard clause is green with a named instrument and 261 recorded tab stops; the screen-reader clause is **NOT RUN**. Marking the whole row green would have been precisely the defect this feature exists to catch — a verdict written from the plan rather than from what happened.
+2. **`R21`'s pin was not written, because it already existed.** The plan's Task 8 #4 specified a new test in `test_booking_manage_api.py`. `test_booking_comms_db.py:815::test_actions_expire_at_starts_at_but_the_page_stays_readable` already drives the real service against real Postgres and asserts exactly D8's amended reading. It was mutation-checked anyway (removing the clock check from `cancel` reds it) and a second copy was not written. `test_booking_manage_api.py` is **unmodified on this branch**. Likewise the ≥128-bit clause: `test_manage_token.py` already fixes the 43-character shape.
+3. **`R9`'s module floor is not the fourteen-module set the plan named.** The plan's Task 3 required `{auth, staff, boutique, customers, dashboard, privacy, platform, storage, booking, payments, floor, queue, catalog, atelier}` each to contribute ≥ 1 walked route. The shipped shape is three sets, not one: `MODULE_WALK_FLOOR` (ten modules with real numeric floors — `atelier` 6, `booking` 10, `boutique` 2, `catalog` 9, `customers` 2, `floor` 12, `privacy` 2, `queue` 4, `staff` 2, `storefront` 1), `MODULES_WITH_NO_ID_ROUTES` (`auth`, `dashboard`, `notifications`, `payments` — asserted to walk **exactly zero**, because none of their routes carries a tenant-owned id to substitute), and `MODULES_WITHOUT_ROUTES` (`platform`, `storage` — no HTTP surface at all). A partition assertion requires the three to cover the route table exactly, so a module cannot drop out and quietly stop being checked. **The acceptance bar the plan actually cared about holds**: `privacy` and `staff` both carry floors and neither is wholly exempt. `notifications` and `storefront` are modules the plan never named.
+4. **The ten `test_*_isolation.py` files do not prove defence-in-depth, and the walker does not either.** Under a mutation dropping the explicit `tenant_id ==` predicate from a repository method, those ten files stay **GREEN** — they run under RLS too, so RLS carries the assertion. **Nothing in the suite currently fails if those explicit predicates are removed.** What actually guards the RLS layer they are standing on is `db/session.py`'s boot guard, whose deployment clause is `R7`'s parked half and is owned by `F62`. Recorded here rather than left as an implication of `R9`'s text.
+5. **`UNAUDITED_BY_DECISION` is not the set D6 predicted.** The plan's Task 7 said its keys would be "exactly `boutique`'s `profile`/`toggles`/appointment-types/availability/terms-creation and `queue`'s check-in". The shipped set is twelve entries across `appointment-types` (3), `availability` (3), `terms` (1), **`floor` (4)** and **`privacy` (1)**. Two corrections: `queue`'s check-in is a **storefront** route (`app/queue/router.py:86`), not a `/manage` one, and the manage queue router mutates nothing at all (`queue/manage_router.py:29`: *"No rate limiter, no audit row, no AuditAction member. Nothing here writes"*) — so it was never in this walker's scope. And `profile`/`toggles` live on `PUT /manage/settings`, which **is** audited for its `atelier` key, so it sits in a separate `PARTIALLY_AUDITED_BY_DECISION` map with its unaudited half written down. `floor`'s four and `privacy`'s one were not anticipated by D6 at all.
+6. **`security_headers.py`'s checklist citation did not survive Task 5's docstring rewrite.** The plan flagged this as a Task 13 check, and the check failed: the rewritten docstring named neither "checklist row 33" nor `R33`. **Fixed in this commit** — the module docstring now cites `R33` (and `R28` for the CSP's third-party-script clause) by frozen id, so it survives renumbering rather than pointing at whatever ends up on that line.
+7. **The booking flow has five steps, not four.** The plan's Task 12 says "the booking flow's four steps"; `storefront.spec.ts`'s `STEP_TITLES` declares `slot → details → terms → verify → confirm`. All five were walked.
+8. **The plan's own done-when grep for this task is over-specified and cannot be satisfied.** It requires `grep -n "Grow\|expire at appointment time\|replay protection"` to return nothing. But **D8's verbatim replacement text for `R21` contains the phrase it replaces** — *"actions (confirm / cancel) expire at appointment time; the page stays readable"* — so any faithful application of D8 fails that grep by construction. The two other terms survive only inside the *"why the text changed"* notes, which are the audit trail and are worth more than a grep. **What was verified instead, and what a reviewer should check**: no **row text** names a payment provider (`R24` reads "the configured gateway's hosted page"), no row text claims replay *protection* (`R25` reads "replay-safe by idempotency"), and `R21`'s row text carries the full amended clause including "the page stays readable, by decision". The pre-amendment wording appears nowhere except as quoted history.
+9. **Confirmed rather than contradicted, and listed so the arithmetic is on the record**: catalog has **nine** mutating routes of eleven declared (C4) — asserted by `test_audit_coverage.py::test_catalog_is_no_longer_the_module_with_zero_audit_rows`; **seven** test modules compare `SECURITY_HEADERS` with `==` (C6); `SectionKey` has **fifteen** members with four already scanned (C3); `/queue` already had two bespoke axe journeys (C1); `R16` is amber because the per-IP key is inert by default (C5).
+
+---
+
+## PARKED — the durable source of truth for `F62`
+
+`F62`'s queue entry is reconstructible from this table alone. That redundancy is free and deliberate: if the PR body carrying the entry is ever lost, nothing here is.
+
+**Shared blocker for the whole table**: the three DNS records at DomainTheNet — `external-applications.md` #2 — and, where noted, a second cloud-console action.
+
+| Row | Clause parked | Blocker | Evidence F21 gathered |
+|---|---|---|---|
+| **`R7`** | the **live** DB role is `boutique_app`, not `postgres` | a deployment | `walkthrough_coverage_gaps` G1: on 2026-08-04 the app connected as `postgres` with `rolsuper = t`, so everything binding under the app role was silently void for that run. Guard exists (`db/session.py:12-42`), exempt only when `app_env == "dev"` (`:45-50`) — F21 pinned that the exemption is dev-only and nothing wider. **See Divergence 4: this guard is what the ten isolation files are actually standing on.** |
+| **`R12`** | access restriction | SSH/console access to a host | Audit clause **closed at F21** (`list_tenants` writes a `platform_audit_log` row). |
+| **`R16`** | per-IP **enablement** | a deployment terminating exactly one trusted proxy | F21 shipped the per-IP key on OTP send; it is **inert** because `_client_ip` returns `None` unless `TRUST_FORWARDED_FOR=true` (`config.py:37`). Set it at stand-up. |
+| **`R16`** | distributed limiter | Redis | `auth/rate_limit.py:5-6`. Per-process buckets mean N instances → N × the budget. |
+| **`R26`** | KMS-encrypted gateway credentials | an AWS KMS key | Only `FakeSecretBox` ships (*"THIS IS NOT ENCRYPTION"*, `payments/secretbox.py:61-62`). Production boot-blocked (`config.py:315-316`); `0012`'s `provider IN ('fake')` CHECK means production can hold no credential row. |
+| **`R27`** | receipt (קבלה) issuance | the production Israeli PSP (`external-applications.md` #3) | Zero receipt code; `refund()` has no method and no consumer (`payments/base.py:106`). |
+| **`R31`** | secrets in AWS Secrets Manager | a production environment | `core/config.py:11` reads `.env`; zero hits for `secretsmanager\|vault\|ssm` in `app/`. |
+| **`R32`** | WAF | AWS/Cloudflare console against a live origin | Rate-limiting clause discharged — ~20 limiter instances at `main.py:731-961`. |
+| **`R38`** | `PUT /manage/privacy` audit row **and** the audit **read surface** | scope, not infrastructure | **Found by F21's walker, recorded nowhere before.** Also: `audit_log` has **no read surface** — zero routers touch `AuditLogRepository`, so detecting the accepted F15 phone-correction risk is a manual DB query nobody is prompted to run. |
+| **`R42`** | retention jobs **running** | `R44`'s drilled restore | `retention_enabled` stays `False`. **⚠ Precondition before it is ever set**: the 30-day orphan grace runs from `created_at`; nothing records when a customer *became* orphaned, so a phone correction that orphans a six-month-old customer satisfies the conjunct immediately. `updated_at` is not a proxy (`booking/owner.py:1136-1161`). **A real orphan clock is a new column and it goes with the flag.** |
+| **`R44`** | backups automated, restore drilled, RPO/RTO written | something to restore | Gates `R42`. |
+| — | production stand-up: compute, prod wildcard DNS/TLS, prod Postgres | the DNS records | The epic folded this into F21; it is the definition of a host item. |
+| — | Terraform-izing `docs/infra-runbook.md` | account state | Terraform against no account state is an unverifiable plan. |
+| — | pilot onboarding with real Hebrew content + UAT sign-off | a URL that resolves | — |
+
+**Two residuals F21 recorded that are not checklist rows** (D10): the `audit_log` read surface above, and the owner-SMS throttle key `booking:owner_sms:{tenant_id}` — **per tenant, not per actor**, so one staffer can spend the whole boutique's budget. Filed in `known_product_bugs`; listed here because the fix and the audit read surface land in the same place.
