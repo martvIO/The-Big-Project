@@ -101,10 +101,26 @@ def test_hsts_carries_no_preload(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_hsts_reaches_the_tenant_not_found_404(monkeypatch: pytest.MonkeyPatch) -> None:
     """The single most-served response to anyone probing the domain, returned by
     TenantResolutionMiddleware from its own dispatch without reaching a handler.
-    The middleware is registered LAST = OUTERMOST precisely so it still lands."""
+    The middleware is registered LAST = OUTERMOST precisely so it still lands.
+
+    ⚠ THE RESOLVER MUST BE PASSED. `create_app()` with no resolver falls back to
+    `RepositoryTenantResolver(get_session_factory())` (main.py:688-689), and
+    `nosuch` is a VALID slug — so the middleware awaits it and asyncpg dials
+    `DEV_DATABASE_URL`'s localhost:5432. This is not a `db`-marked test, so on CI
+    (no server on 5432; Testcontainers binds a random port and is reached only
+    through the `db` fixtures) that is an OSError, while on a dev box that
+    happens to run a local Postgres it passes. Green locally, red on CI, same
+    source. A resolver that answers `None` without I/O reaches the SAME 404 from
+    the SAME dispatch, so the assertion is untouched — this is the shape
+    `test_the_csp_is_emitted_on_every_surface` below already uses.
+    """
+
+    async def resolver(slug: str) -> TenantContext | None:
+        return None
+
     settings = Settings(app_env="dev")
     monkeypatch.setattr("app.main.get_settings", lambda: settings)
-    client = TestClient(create_app(), base_url="http://nosuch.localtest.me")
+    client = TestClient(create_app(resolver=resolver), base_url="http://nosuch.localtest.me")
     resp = client.get("/storefront/boutique", headers={"x-forwarded-proto": "https"})
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND"
