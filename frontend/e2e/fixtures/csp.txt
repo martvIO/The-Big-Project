@@ -1,0 +1,19 @@
+# The Content-Security-Policy the backend's SecurityHeadersMiddleware emits.
+#
+# WHY THIS FILE EXISTS. playwright.config.ts serves both apps through
+# `vite preview`, so FastAPI is never in the e2e request path and the browser
+# never sees the real header. csp.spec.ts injects THIS string via route
+# interception instead, which is what lets a real Chromium apply a real policy to
+# the real built bundle.
+#
+# WHAT KEEPS IT HONEST. Backend/tests/test_security_headers.py::
+# test_the_e2e_fixture_matches_the_emitted_policy reads the single non-comment
+# line below and compares it BYTE-FOR-BYTE against build_csp(Settings(...)).
+# Drift between this file and the middleware is a red backend test, not a
+# silently weaker browser test. Do not hand-edit the policy line — change
+# app/security_headers.py and copy what the red test prints.
+#
+# SETTINGS THIS POLICY IS BUILT FROM (pinned in that test as FIXTURE_BUCKET /
+# FIXTURE_REGION): media_bucket=boutique-media, media_region=il-central-1,
+# media_endpoint_url unset -> the media origin is the regional S3 host.
+default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://s3.il-central-1.amazonaws.com; font-src 'self'; connect-src 'self' https://s3.il-central-1.amazonaws.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'
