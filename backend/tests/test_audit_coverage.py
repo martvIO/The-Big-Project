@@ -66,6 +66,8 @@ import typing
 from collections.abc import Iterator
 from typing import Any
 
+from citations import assert_citations_open
+
 from app.main import create_app
 from app.tenancy.middleware import TenantContext
 
@@ -267,8 +269,10 @@ def test_the_exemption_list_is_exactly_the_recorded_decisions() -> None:
 
     ⚠ THIS TEST USED TO CHECK ONLY `len(reason) > 40`, which is not the rule this
     module's docstring states, and two entries had drifted past it with a
-    rationale but no citation (found by the 2026-08-05 review). It now enforces
-    what the docstring claims: a `file.py:line` a reviewer can open.
+    rationale but no citation (found by the 2026-08-05 review). It then checked
+    the SHAPE of a citation, which `totally/fake.py:999999` satisfies — found by
+    the round-2 review. It now enforces what the docstring claims: a
+    `file.py:line` a reviewer can OPEN (`citations.py`).
 
     `PUT /manage/privacy` is the one exemption with nothing to cite, and that is
     the finding rather than a lapse — the walker FOUND it, no decision to that
@@ -277,9 +281,17 @@ def test_the_exemption_list_is_exactly_the_recorded_decisions() -> None:
     there later means someone recorded the decision properly and this exception
     should go.
     """
-    citation = re.compile(r"\w+/\w+\.py:\d+")
     assert set(UNAUDITED_BY_DECISION) >= RECORDED_ONLY_HERE, (
         f"prune the citation exception: {sorted(RECORDED_ONLY_HERE - set(UNAUDITED_BY_DECISION))}"
+    )
+    # The escape hatch is ONE route, pinned the way `(56, 54)` and
+    # `len(UNWALKABLE) == 6` are pinned elsewhere in this feature. Without a
+    # count, any future exemption opts out of the citation rule by containing the
+    # phrase below — an unbounded hatch inside the test that exists to bound one.
+    assert len(RECORDED_ONLY_HERE) == 1, (
+        f"RECORDED_ONLY_HERE is now {len(RECORDED_ONLY_HERE)} entries. A second "
+        "exemption with nothing to cite is a second silence nobody recorded — close "
+        "it or record the decision in the shipped code, do not widen this set."
     )
     for route, reason in UNAUDITED_BY_DECISION.items():
         assert len(reason) > 40, f"{route} carries no real reason"
@@ -288,7 +300,7 @@ def test_the_exemption_list_is_exactly_the_recorded_decisions() -> None:
                 f"{route} is exempt from the citation rule and must say why in its reason"
             )
             continue
-        assert citation.search(reason), (
+        assert assert_citations_open(reason, route), (
             f"{route}'s reason names no file:line. This module's rule is that an "
             "exemption cites where the decision was recorded in the shipped code — "
             "a rationale a reviewer cannot open is prose, not a record."

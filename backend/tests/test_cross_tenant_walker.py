@@ -84,6 +84,7 @@ from enum import StrEnum
 from typing import Any
 
 import pytest
+from citations import assert_citations_open
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
@@ -372,8 +373,12 @@ UNWALKABLE: dict[tuple[str, str], str] = {
 
 # WALKED, refuses with 404, and the 404 is NOT evidence of a tenant check. These
 # two routes answer 404 to the CALLER'S OWN ids as well, because a state guard
-# fires before anything tenant-scoped is decided — so their refusal here is
-# consistent with isolation but does not demonstrate it. Found by the 2026-08-05
+# refuses the walk's fixtures on grounds that have nothing to do with tenancy —
+# so their refusal here is consistent with isolation but does not demonstrate it.
+# (The tenant-scoped lookup runs FIRST in both — catalog/service.py:473,
+# floor/service.py:1647 — and the guard reads the row it returned. The point is
+# not that tenancy is unchecked; it is that the 404 does not DISCRIMINATE,
+# because the same 404 is what the caller's own id gets.) Found by the 2026-08-05
 # review, which then hand-probed both with the preconditions satisfied and found
 # both still refusing: no hole, a miscount. Subtracted from the discriminating
 # count so R9's evidence says what is true.
@@ -995,7 +1000,10 @@ def test_the_state_guarded_routes_are_walked_and_named(
             "fires before the tenant check"
         )
         assert len(reason) > 40, f"{route} needs a real reason, not {reason!r}"
-        assert re.search(r"\w+/\w+\.py:\d+", reason), (
+        # Openable, not merely citation-SHAPED: `totally/fake.py:999999` passed
+        # the old regex, which made the assertion below claim more than it
+        # checked (2026-08-05 round-2 review). See citations.py.
+        assert assert_citations_open(reason, route), (
             f"{route}'s reason must name the guard's file:line so it can be checked"
         )
 

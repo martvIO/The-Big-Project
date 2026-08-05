@@ -191,7 +191,17 @@ def build_csp(settings: Settings) -> str:
     # defence and not the first — but it is the one that survives someone
     # widening the policy from a new settings field later, and it is what makes
     # "ten directives" a runtime fact rather than a sentence in a checklist.
-    emitted = tuple(part.split(" ", 1)[0] for part in policy.split("; "))
+    #
+    # SPLIT ON `;`, NOT ON `"; "`. A CSP separator is a bare semicolon; the space
+    # is this builder's own formatting. Splitting on the two-character form meant
+    # an injected `https://x;frame-ancestors *` — no space — left `img-src` as a
+    # single part, so the tuple still equalled CSP_DIRECTIVES and the check
+    # passed while `frame-ancestors *` was emitted AHEAD of the real
+    # `frame-ancestors 'none'`, which is the occurrence a browser honours. Found
+    # by the 2026-08-05 round-2 review. Unreachable through the settings today —
+    # `media_csp_origin` refuses a netloc carrying `;` — but this leg's whole
+    # stated purpose is the case where that first line of defence does not apply.
+    emitted = tuple(part.strip().split(" ", 1)[0] for part in policy.split(";"))
     if emitted != CSP_DIRECTIVES:
         raise ValueError(f"the emitted CSP is not D3's ten directives in order: {emitted}")
     return policy

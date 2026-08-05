@@ -308,6 +308,30 @@ def test_the_emitted_policy_is_checked_against_its_own_directive_set() -> None:
         build_csp(settings)
 
 
+def test_the_directive_check_is_not_defeated_by_a_semicolon_with_no_space() -> None:
+    """⚠ FOUND BY THE 2026-08-05 ROUND-2 REVIEW. The check split on `"; "`, but a
+    CSP separator is a bare `;` — the space is `build_csp`'s own formatting.
+
+    So an origin of `https://x;frame-ancestors *` left `img-src ... ;frame-ancestors *`
+    as ONE part, `emitted` still equalled the ten directives, and the guard
+    passed while the policy carried `frame-ancestors *` ahead of its own
+    `frame-ancestors 'none'` — and a browser honours the first occurrence.
+
+    Driven by patching `media_csp_origin`, because the settings route to this
+    string is closed (`test_a_media_setting_cannot_inject_a_csp_directive`). That
+    is the point: this leg exists for the widening that has not been written yet,
+    so it must be proved against something the first line of defence never sees.
+    """
+    settings = _settings(media_bucket="b", media_region="il-central-1")
+    with (
+        mock.patch.object(
+            security_headers, "media_csp_origin", lambda _s: "https://x;frame-ancestors *"
+        ),
+        pytest.raises(ValueError, match="ten directives in order"),
+    ):
+        build_csp(settings)
+
+
 def test_the_csp_is_emitted_on_every_surface(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
