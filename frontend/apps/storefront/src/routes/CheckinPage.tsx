@@ -106,6 +106,12 @@ function Heading() {
   );
 }
 
+interface FieldErrors {
+  name?: string;
+  phone?: string;
+  visitType?: string;
+}
+
 export function CheckinPage() {
   const { t } = useTranslation();
   const { boutique, loading, error: boutiqueError, retry } = useBoutique();
@@ -120,11 +126,7 @@ export function CheckinPage() {
   const [phone, setPhone] = useState("");
   const [visitType, setVisitType] = useState<VisitType | null>(null);
   const [optIn, setOptIn] = useState(false);
-  const [fieldErrors, setFieldErrors] = useState<{
-    name?: string;
-    phone?: string;
-    visitType?: string;
-  }>({});
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   // A COUNTER, not the message: two identical failures in a row must each move
   // focus, and an effect keyed on the message alone would not re-run for the
@@ -184,6 +186,18 @@ export function CheckinPage() {
       sending.current = false;
       setSubmitting(false);
     }
+  };
+
+  // BookPage.tsx's `clearError`, and the same mechanism rather than a second
+  // one: these two surfaces collect the same answers through the same `Input`
+  // with the same `error={fieldErrors.name}` prop, and this page having no clear
+  // path at all was drift between them, not a missing idea.
+  //
+  // It does NOT validate — surfacing an error on input is what the comment below
+  // refuses. It only RETIRES the message the last submit wrote, which is what
+  // stops `aria-invalid="true"` outliving the correction that answered it.
+  const clearError = (field: keyof FieldErrors) => {
+    setFieldErrors((current) => ({ ...current, [field]: undefined }));
   };
 
   // Errors surface HERE and nowhere else — not on blur, which fires the moment
@@ -324,6 +338,7 @@ export function CheckinPage() {
         error={fieldErrors.name}
         onChange={(event) => {
           setName(event.target.value);
+          clearError("name");
         }}
       />
 
@@ -338,13 +353,17 @@ export function CheckinPage() {
         error={fieldErrors.phone}
         onChange={(event) => {
           setPhone(event.target.value);
+          clearError("phone");
         }}
       />
 
       <VisitTypePicker
         ref={visitRef}
         value={visitType}
-        onChange={setVisitType}
+        onChange={(picked) => {
+          setVisitType(picked);
+          clearError("visitType");
+        }}
         error={fieldErrors.visitType}
       />
 

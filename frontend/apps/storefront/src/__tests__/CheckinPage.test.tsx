@@ -125,6 +125,42 @@ describe("CheckinPage validation", () => {
     expect(screen.getByText(t("checkin.visitTypeRequired"))).toBeInTheDocument();
   });
 
+  // The defect the first real-world walkthrough found, and the reason this whole
+  // batch exists: `onChange` only called `setName(...)`, so `fieldErrors` was
+  // rewritten ONLY inside `forward()`. Every message and every
+  // `aria-invalid="true"` survived the correction until the NEXT submit — a
+  // screen reader calling a field invalid while it holds correct input.
+  //
+  // ⚠ Neither suite could see it. jsdom renders it faithfully and nobody
+  // asserted it; the Playwright suite stubs the API and never re-typed. It is
+  // asserted here on all three fields because the drift was three handlers.
+  it("retires each message the moment its own field is corrected, not at the next submit", async () => {
+    await renderLoadedForm();
+    fireEvent.click(submitButton());
+    expect(screen.getByText(t("booking.nameRequired"))).toBeInTheDocument();
+    expect(nameField()).toHaveAttribute("aria-invalid", "true");
+    expect(phoneField()).toHaveAttribute("aria-invalid", "true");
+
+    fireEvent.change(nameField(), { target: { value: "נועה" } });
+
+    expect(screen.queryByText(t("booking.nameRequired"))).not.toBeInTheDocument();
+    expect(nameField()).not.toHaveAttribute("aria-invalid");
+    // The OTHER two are untouched: correcting one field may not silence the two
+    // she has not reached yet.
+    expect(screen.getByText(t("booking.phoneInvalid"))).toBeInTheDocument();
+    expect(screen.getByText(t("checkin.visitTypeRequired"))).toBeInTheDocument();
+
+    fireEvent.change(phoneField(), { target: { value: "0501234567" } });
+
+    expect(screen.queryByText(t("booking.phoneInvalid"))).not.toBeInTheDocument();
+    expect(phoneField()).not.toHaveAttribute("aria-invalid");
+    expect(screen.getByText(t("checkin.visitTypeRequired"))).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(t("checkin.visitBride")));
+
+    expect(screen.queryByText(t("checkin.visitTypeRequired"))).not.toBeInTheDocument();
+  });
+
   it("issues NO request when validation fails", async () => {
     await renderLoadedForm();
 
