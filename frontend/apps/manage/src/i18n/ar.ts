@@ -144,6 +144,8 @@ export const ar = {
     "staff.selfMarker": "זו את",
     "staff.editCta": "עריכה",
     "staff.deactivateCta": "השבתה",
+    "staff.editAria": "עריכה — {{name}}",
+    "staff.deactivateAria": "השבתה — {{name}}",
     "staff.displayNameLabel": "שם לתצוגה",
     "staff.emailLabel": "אימייל",
     "staff.roleLabel": "תפקיד",

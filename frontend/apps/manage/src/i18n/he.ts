@@ -258,6 +258,18 @@ export const he = {
     "staff.editCta": "עריכה",
     // «השבתה», never «מחיקה»: the row is soft-deleted and its audit trail lives.
     "staff.deactivateCta": "השבתה",
+    // ⚠ ADDED LATE, and their absence was the defect: both row controls had a
+    // null aria-label, so seven staff rendered seven identical «עריכה» and six
+    // identical «השבתה» in one list — one of which ends a colleague's access.
+    // The «{action} — {name}» shape is the console's own, copied from
+    // `atelier.editAria` / `floor.breakStartAria` / `rooms.releaseAria` rather
+    // than invented, and WCAG 2.5.3 is why the visible word comes FIRST: speech
+    // input has to be able to say what it reads.
+    //
+    // No bidi treatment — an aria-label takes no markup, the same exemption the
+    // atelier and floor arias record.
+    "staff.editAria": "עריכה — {{name}}",
+    "staff.deactivateAria": "השבתה — {{name}}",
     "staff.displayNameLabel": "שם לתצוגה",
     "staff.emailLabel": "אימייל",
     "staff.roleLabel": "תפקיד",

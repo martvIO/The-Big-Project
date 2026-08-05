@@ -109,7 +109,48 @@ describe("StaffSection list", () => {
     expect(screen.getByText("זו את")).toBeInTheDocument();
     // The server refuses a self-deactivate with a 409; not drawing the button is
     // the cosmetic half of that, so she is never offered a door that refuses.
-    expect(screen.getAllByRole("button", { name: "השבתה" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^השבתה/ })).toHaveLength(1);
+    // …and the one that IS drawn is the OTHER woman's.
+    expect(screen.getByRole("button", { name: "השבתה — דנה" })).toBeInTheDocument();
+  });
+
+  // The walkthrough's finding: `aria-label`, `aria-labelledby` and
+  // `aria-describedby` were ALL null on both row buttons, so a boutique with
+  // seven staff rendered seven identical «עריכה» and six identical «השבתה» in
+  // one list — AND ONE OF THEM DEACTIVATES A COLLEAGUE'S ACCESS. A screen-reader
+  // user tabbing the list, or anyone driving it by speech, had nothing to tell
+  // them apart. It also broke the console's OWN convention: the floor, waitlist
+  // and atelier panels all render «{action} — {name}».
+  it("names every row control after the woman it acts on, in three-row shape", async () => {
+    const rows = [
+      OWNER,
+      member(),
+      member({ id: "33333333-3333-3333-3333-333333333333", display_name: "יעל" }),
+    ];
+    listStaff.mockResolvedValue(rows);
+    renderSection();
+    await screen.findByText("יעל");
+
+    for (const row of rows) {
+      // ⚠ `name:` is an ACCESSIBLE-NAME match, so this fails on the shipped
+      // version rather than merely finding the visible text: with no aria-label
+      // the name is «עריכה» for all three.
+      expect(
+        screen.getByRole("button", { name: `עריכה — ${row.display_name}` }),
+      ).toBeInTheDocument();
+    }
+    // WCAG 2.5.3: the accessible name STARTS with the visible label, so speech
+    // input can say what it reads.
+    for (const button of screen.getAllByRole("button", { name: /^עריכה/ })) {
+      expect(button.textContent).toBe("עריכה");
+    }
+    // No two controls in the list share a name — the actual defect, stated as
+    // the property rather than as three lookups.
+    const names = screen
+      .getAllByRole("button", { name: /^(עריכה|השבתה)/ })
+      .map((button) => button.getAttribute("aria-label"));
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toHaveLength(5); // 3 edits + 2 deactivates (never her own)
   });
 });
 
@@ -251,7 +292,7 @@ describe("StaffSection create", () => {
 describe("StaffSection inline edit", () => {
   function openEditFor(name: string): HTMLElement {
     const row = rowFor(name);
-    fireEvent.click(within(row).getByRole("button", { name: "עריכה" }));
+    fireEvent.click(within(row).getByRole("button", { name: /^עריכה/ }));
     return row;
   }
 
@@ -330,7 +371,7 @@ describe("StaffSection inline edit", () => {
 describe("StaffSection self edit", () => {
   function openOwnEdit(): HTMLElement {
     const row = rowFor("שרה");
-    fireEvent.click(within(row).getByRole("button", { name: "עריכה" }));
+    fireEvent.click(within(row).getByRole("button", { name: /^עריכה/ }));
     return row;
   }
 
@@ -411,7 +452,7 @@ describe("StaffSection self edit", () => {
     renderSection();
     await screen.findByText("דנה");
     const row = rowFor("דנה");
-    fireEvent.click(within(row).getByRole("button", { name: "עריכה" }));
+    fireEvent.click(within(row).getByRole("button", { name: /^עריכה/ }));
 
     fireEvent.change(within(row).getByLabelText("סיסמה חדשה"), {
       target: { value: "reset-for-her" },
@@ -429,7 +470,7 @@ describe("StaffSection self edit", () => {
 
 describe("StaffSection deactivate", () => {
   function openConfirm() {
-    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: "השבתה" }));
+    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^השבתה/ }));
     const dialog = screen.getByRole("dialog", { hidden: true });
     expect((dialog as HTMLDialogElement).open).toBe(true);
     return dialog;
@@ -463,7 +504,7 @@ describe("StaffSection deactivate", () => {
     await screen.findByText("dana (bella).");
 
     fireEvent.click(
-      within(rowFor("dana (bella).")).getByRole("button", { name: "השבתה" }),
+      within(rowFor("dana (bella).")).getByRole("button", { name: /^השבתה/ }),
     );
     const dialog = screen.getByRole("dialog", { hidden: true });
     const isolated = within(dialog as HTMLElement).getByText("dana (bella).");
@@ -483,7 +524,7 @@ describe("StaffSection deactivate", () => {
 
     await waitFor(() => expect((dialog as HTMLDialogElement).open).toBe(false));
     expect(deactivateStaff).not.toHaveBeenCalled();
-    expect(within(rowFor("דנה")).getByRole("button", { name: "השבתה" })).toHaveFocus();
+    expect(within(rowFor("דנה")).getByRole("button", { name: /^השבתה/ })).toHaveFocus();
   });
 
   it("moves focus to the heading once the row is gone", async () => {
@@ -549,7 +590,7 @@ describe("StaffSection accessibility", () => {
     listStaff.mockResolvedValue([OWNER, member()]);
     const { container } = renderSection();
     await screen.findByText("דנה");
-    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: "עריכה" }));
+    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^עריכה/ }));
     expect((await run(container)).violations).toEqual([]);
   }, 20000);
 
@@ -557,7 +598,7 @@ describe("StaffSection accessibility", () => {
     listStaff.mockResolvedValue([OWNER, member()]);
     const { container } = renderSection();
     await screen.findByText("דנה");
-    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: "השבתה" }));
+    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^השבתה/ }));
     expect((await run(container)).violations).toEqual([]);
   }, 20000);
 
@@ -625,7 +666,7 @@ describe("StaffSection carries the five roles F57 added", () => {
     renderInShell(<StaffSection staffId={ME} />);
     await screen.findByText("דנה");
 
-    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: "עריכה" }));
+    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^עריכה/ }));
 
     const selects = await screen.findAllByLabelText("תפקיד");
     expect(selects.length).toBeGreaterThan(0);
