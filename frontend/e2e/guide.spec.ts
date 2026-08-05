@@ -678,10 +678,12 @@ test("guide: both header chrome controls clear the 44 px touch floor, MEASURED",
     const box = await control.boundingBox();
     expect(box, `${label} has no box`).not.toBeNull();
     expect(box?.height ?? 0, `${label} is under the 44 px touch floor`).toBeGreaterThanOrEqual(44);
-    // Width too — the walkthrough's 29 px was the WIDTH, and «יציאה» is a short
-    // enough word that a control with no inline padding is narrower than it is
-    // tall. WCAG 2.5.8's own floor is 24, which this already cleared and which
-    // is why the height check alone would not have caught it.
+    // ⚠ THE HEIGHT IS THE ONE THAT BITES. The walkthrough measured 29 × 21: the
+    // 21 px height fails this 44 px floor, while the 29 px width already cleared
+    // WCAG 2.5.8's 24. The width assertion below therefore did NOT catch the
+    // shipped defect and is not claimed to — it is here because «יציאה» is a
+    // short enough word that a control with no inline padding can end up
+    // narrower than it is tall, which is the neighbouring regression.
     expect(box?.width ?? 0, `${label} is under the 24 px WCAG 2.5.8 floor`).toBeGreaterThanOrEqual(
       24,
     );

@@ -429,6 +429,60 @@ describe("CheckinPage field wiring", () => {
       expect(radio).toBeRequired();
     }
   });
+
+  // ⚠ THE STRUCTURAL HALF, exactly as `BookPage.test.tsx` says of its own. jsdom
+  // implements no implicit form submission and this workspace ships no
+  // `@testing-library/user-event`, so nothing here can press Enter and watch the
+  // ticket be minted — `e2e/storefront.spec.ts` does that in a real browser.
+  //
+  // The booking flow got its <form> and this page did not, which left Enter dead
+  // on the ONE surface that is only ever used on a phone: the QR taped to the
+  // window, a woman standing in the doorway, the keyboard's Go key doing nothing
+  // on the last field she filled.
+  it("is a real form whose «רישום» submits it, and the fields are inside it", async () => {
+    const { container } = await renderLoadedForm();
+
+    const form = container.querySelector("form");
+    expect(form).not.toBeNull();
+    expect(submitButton()).toHaveAttribute("type", "submit");
+    expect(submitButton().closest("form")).toBe(form);
+    // Both text fields and the radio group share it — that sharing is the whole
+    // of what carries an implicit submission into `forward`.
+    expect(nameField().closest("form")).toBe(form);
+    expect(phoneField().closest("form")).toBe(form);
+    expect(screen.getAllByRole("radio")[0].closest("form")).toBe(form);
+    // ⚠ `noValidate`, and load-bearing: both radios carry `required`, and native
+    // constraint validation would raise Chromium's own bubble INSTEAD of running
+    // `forward` — losing the authored Hebrew, the role="alert" and the focus
+    // move to the first failure in one go.
+    expect(form).toHaveAttribute("novalidate");
+  });
+
+  it("runs the same validator on a submit as on a tap — one path, not two", async () => {
+    // The behaviour behind the structure: submitting the form with a blank name
+    // must produce `forward`'s own three errors, not silence and not a native
+    // bubble. `fireEvent.submit` is as close as jsdom gets; the Enter key that
+    // triggers it in a browser is asserted in Playwright.
+    const { container } = await renderLoadedForm();
+
+    fireEvent.submit(container.querySelector("form") as HTMLFormElement);
+
+    expect(await screen.findByText(t("booking.nameRequired"))).toBeInTheDocument();
+    expect(nameField()).toHaveAttribute("aria-invalid", "true");
+    expect(createCheckin).not.toHaveBeenCalled();
+  });
+
+  it("submits the create when the form is valid, without touching the button", async () => {
+    createCheckin.mockResolvedValue(ticket());
+    const { container } = await renderLoadedForm();
+    await fillValid();
+
+    fireEvent.submit(container.querySelector("form") as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(createCheckin).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 // --- the tab-scoped courtesy pointer ----------------------------------------

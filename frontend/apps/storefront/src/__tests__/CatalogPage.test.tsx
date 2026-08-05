@@ -237,6 +237,11 @@ describe("CatalogPage load more", () => {
     // with «Unable to find role=link and name /שמלה 50/» — a wait that expired,
     // not a product fault. The page count is the subject of the test, so the
     // budgets moved, not the fixture. No assertion changed.
+    //
+    // ⚠ MEASURED BASELINE, so the padding is not a blank cheque: 2.91 s with
+    // ui + manage running alongside it, the shape the gate actually uses.
+    // Anything approaching 30 s here is a regression the budget will hide —
+    // `known_flaky` in LOOP-STATE.md carries the number.
     const SLOW = { timeout: 30_000 };
 
     renderCatalog();

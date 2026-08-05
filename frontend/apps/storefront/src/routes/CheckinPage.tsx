@@ -331,43 +331,71 @@ export function CheckinPage() {
         </p>
       )}
 
-      <Input
-        ref={nameRef}
-        label={t("checkin.name")}
-        value={name}
-        error={fieldErrors.name}
-        onChange={(event) => {
-          setName(event.target.value);
-          clearError("name");
-        }}
-      />
+      {/* ⚠ A REAL <form>, for the same reason BookPage's three steps are — and
+          this page was the sibling that half-fix left behind. `forward` was
+          reachable only by tapping «רישום»: Enter in the name or the phone field
+          did nothing, and the phone keyboard's Go key was dead on the last
+          field, on the ONE surface that is only ever used on a phone by a woman
+          standing in a doorway.
 
-      <Input
-        ref={phoneRef}
-        label={t("checkin.phone")}
-        type="tel"
-        inputMode="tel"
-        autoComplete="tel"
-        value={phone}
-        help={t("checkin.phoneHint")}
-        error={fieldErrors.phone}
-        onChange={(event) => {
-          setPhone(event.target.value);
-          clearError("phone");
-        }}
-      />
+          Everything from the first field to the submit, and nothing else: the
+          disclosure above it is a `type="button"` control that must not submit,
+          and the failure alert below it is written BY the submit.
 
-      <VisitTypePicker
-        ref={visitRef}
-        value={visitType}
-        onChange={(picked) => {
-          setVisitType(picked);
-          clearError("visitType");
-        }}
-        error={fieldErrors.visitType}
-      />
+          The container's `gap-6` is restated, because this wrapper now sits
+          between the page's children and would otherwise collapse their
+          spacing — `ForwardForm` does the same for the same reason.
 
-      {/* The notice sits ABOVE the box it describes, and is never behind a
+          ⚠ `noValidate` IS LOAD-BEARING. Both visit-type radios carry `required`
+          (WCAG 3.3.2 with no `*` marker), and native constraint validation on a
+          real submit would raise the browser's own untranslated bubble INSTEAD
+          of running `forward` — killing the authored Hebrew, the role="alert"
+          and the focus move to the first failure together. */}
+      <form
+        noValidate
+        className="flex flex-col gap-6"
+        onSubmit={(event) => {
+          event.preventDefault();
+          forward();
+        }}
+      >
+        <Input
+          ref={nameRef}
+          label={t("checkin.name")}
+          value={name}
+          error={fieldErrors.name}
+          onChange={(event) => {
+            setName(event.target.value);
+            clearError("name");
+          }}
+        />
+
+        <Input
+          ref={phoneRef}
+          label={t("checkin.phone")}
+          type="tel"
+          inputMode="tel"
+          autoComplete="tel"
+          value={phone}
+          help={t("checkin.phoneHint")}
+          error={fieldErrors.phone}
+          onChange={(event) => {
+            setPhone(event.target.value);
+            clearError("phone");
+          }}
+        />
+
+        <VisitTypePicker
+          ref={visitRef}
+          value={visitType}
+          onChange={(picked) => {
+            setVisitType(picked);
+            clearError("visitType");
+          }}
+          error={fieldErrors.visitType}
+        />
+
+        {/* The notice sits ABOVE the box it describes, and is never behind a
           disclosure: notice at the moment of collection means visible at the
           moment of collection. Both strings are counsel-gated in he.ts; nothing
           here may hardcode any part of either.
@@ -379,29 +407,29 @@ export function CheckinPage() {
           render as one unbroken wall of text a woman in a doorway will not read
           to the end of. This is the ONE component edit F20's values-only swap
           needed, and it hardcodes no part of either string. */}
-      <p className="max-w-[60ch] text-sm whitespace-pre-line text-ink-muted">
-        {t("checkin.notice", { boutique: boutique.name })}
-      </p>
+        <p className="max-w-[60ch] text-sm whitespace-pre-line text-ink-muted">
+          {t("checkin.notice", { boutique: boutique.name })}
+        </p>
 
-      {/* UNBUNDLED, and a native checkbox rather than a Toggle: a legal consent
-          announces checked/unchecked, and role="switch" announces on/off. */}
-      <Checkbox
-        label={t("checkin.optIn", { boutique: boutique.name })}
-        checked={optIn}
-        onCheckedChange={setOptIn}
-      />
+        {/* UNBUNDLED, and a native checkbox rather than a Toggle: a legal consent
+            announces checked/unchecked, and role="switch" announces on/off. */}
+        <Checkbox
+          label={t("checkin.optIn", { boutique: boutique.name })}
+          checked={optIn}
+          onCheckedChange={setOptIn}
+        />
 
-      <div className="flex">
-        <Button
-          variant="primary"
-          size="md"
-          fullWidthMobile
-          loading={submitting}
-          onClick={forward}
-        >
-          {t("checkin.submit")}
-        </Button>
-      </div>
+        <div className="flex">
+          {/* `type="submit"` and NO onClick: the tap and the implicit submission
+              now reach `forward` through one path, so there is no second route to
+              keep in step. `loading` disables it while a create is in flight,
+              which is also what makes Enter inert for that window — the same
+              refusal the `sending` ref gives the tap. */}
+          <Button type="submit" variant="primary" size="md" fullWidthMobile loading={submitting}>
+            {t("checkin.submit")}
+          </Button>
+        </div>
+      </form>
 
       {submitError !== null && (
         <p ref={alertRef} tabIndex={-1} role="alert" className="max-w-[60ch] text-base text-danger">

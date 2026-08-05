@@ -70,6 +70,14 @@ function exportHref(payload: SubjectExportResponse): string {
 // `test_frontend_constant_parity.py` scrapes for MIRRORED BOUNDS, and this is an
 // algorithm — the same reason `AtelierSection.tsx`'s `parsesAsMobile` sits
 // outside it.
+//
+// ⚠ And deliberately NOT merged with that sibling either, though they share the
+// `05… -> 972…` rewrite. `parsesAsMobile` answers "is this well-formed", returns
+// a boolean, and is allowed to reject; this answers "is this the same number",
+// returns a comparison key, and must never reject anything the server would
+// accept. Folding them would give one of the two a job it must not have, to save
+// three lines. The rewrite itself is the only shared part, and it is the part
+// that is trivially right.
 function phoneKey(raw: string): string {
   const digits = raw.replace(/\D/g, "");
   // The one rewrite that is not merely dropping noise: a local `05…` is the same

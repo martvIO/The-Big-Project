@@ -326,9 +326,10 @@ function PhoneOnly({
 // `required` — WCAG 3.3.2 without a `*` marker — and native constraint
 // validation on a real submit would block it and raise the browser's own bubble
 // INSTEAD of running `forwardDetails`: the authored Hebrew, the `role="alert"`
-// and the focus move to the first failure would all die together, and the check
-// -in form's radios carry the same `required` for the same reason. This keeps
-// `required` announcing and leaves the validating to the handler.
+// and the focus move to the first failure would all die together. `CheckinPage`
+// now carries the same `<form noValidate>` for the same reason — its visit-type
+// radios carry `required` on the same WCAG 3.3.2 grounds. This keeps `required`
+// announcing and leaves the validating to the handler.
 //
 // The button is NEVER disabled and never carries aria-describedby — disabled
 // drops a control from the tab order, which makes a description from it
@@ -1388,7 +1389,12 @@ export function BookPage({ step, dressId }: BookPageProps) {
                 // A Latin name is ordinary on a Hebrew form.
                 dir="auto"
                 autoComplete="name"
-                enterKeyHint="next"
+                // «go», not «next», and the form is why: `enterKeyHint` only
+                // LABELS the key, it does not bind it, and Enter here now submits
+                // the step rather than moving to the notes field. A key reading
+                // «next» that advances the whole step is the label lying about
+                // what pressing it does.
+                enterKeyHint="go"
                 required
                 maxLength={MAX_CUSTOMER_NAME_LENGTH}
                 value={name}

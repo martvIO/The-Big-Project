@@ -22,8 +22,10 @@ interface ErrorBoundaryState {
  * getDerivedStateFromError' apps packages` returned zero source hits, and React
  * 19 UNMOUNTS THE WHOLE TREE on an uncaught render error — so any throw in any
  * component left a white page with no text, no control and no way back but a
- * hard reload the user has to think of herself. On the manage console THAT PAGE
- * IS ALSO THE SOS EMERGENCY CHANNEL.
+ * hard reload the user has to think of herself. On the manage console that page
+ * is also where the SOS overlay lives, which is why a blank page is not an
+ * acceptable failure mode there — this restores a sentence and a reload, NOT the
+ * emergency channel itself. A root boundary replaces the overlay too.
  *
  * ⚠ A CLASS, and it has to be: `getDerivedStateFromError` and `componentDidCatch`
  * have no hook equivalent in React 19. This is the one class component in the

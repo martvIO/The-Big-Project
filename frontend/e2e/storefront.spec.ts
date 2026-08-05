@@ -1868,17 +1868,25 @@ test("storefront booking: the generic path walks all five steps to a confirmatio
 // (a form exists, the control is type=submit, the field and the control share
 // it) on every fast run; this is the only place the BEHAVIOUR is real.
 //
-// Mutation ledger, run against this file:
+// Mutation ledger, run against a real build of this file.
+// ⚠ M2 AND M3 WERE OVERSTATED WHEN FIRST WRITTEN, and both are now what actually
+// reproduced — the review that caught it is the same class of finding as the
+// /fake-pay correction in LOOP-STATE.md: a claim nobody re-ran.
 //   M1  `<ForwardForm>` reverted to the shipped `<>` fragment + a
-//       `type="button"` control — ALL THREE steps red here, and the vitest
-//       structural test reds with them.
-//   M2  `type="submit"` on the forward control changed back to `type="button"`,
-//       the form left in place — all three red. A form with no submit button has
-//       no implicit submission.
-//   M3  `noValidate` removed from the form — the DETAILS step reds: the name
-//       field's `required` makes Chromium raise its own bubble and the step
-//       never advances. That is the mutation that proves the attribute is
-//       load-bearing rather than decoration.
+//       `type="button"` control — this test reds, and the vitest structural test
+//       reds with it.
+//   M2  the forward control changed to `type="button" onClick={onForward}` — the
+//       click path kept, only implicit submission killed. THIS TEST REDS AT THE
+//       SLOT STEP (`/book/slot`, the date field). It does NOT red at details:
+//       run in isolation, the second test below still passes under M2, because
+//       the details step has exactly ONE field that blocks implicit submission
+//       (the name text; a TextArea and a Checkbox block nothing) and HTML submits
+//       a button-less form in that case. "All three red" was never true — the
+//       first step failing is what stops the other two being reached.
+//   M3  `noValidate` removed from ForwardForm — the SECOND test reds, not this
+//       one. This test fills a VALID name, so constraint validation has nothing
+//       to object to; the refusal case is where the native bubble replaces the
+//       authored Hebrew. That is why the two tests are separate.
 test("storefront booking: Enter in a field advances the step, on every step that has one", async ({
   page,
 }) => {
@@ -2592,6 +2600,72 @@ test("storefront check-in: the form mints a ticket and lands on that ticket's ow
   // The pointer is the ticket id and nothing else: no phone number ever reaches
   // the device's store (D8).
   expect(await page.evaluate(() => sessionStorage.getItem("checkin:ticket"))).toBe(TICKET_FIRST);
+});
+
+// ⚠ THE BEHAVIOURAL HALF OF `/checkin`'s <form>, and it can only live here.
+// jsdom implements no implicit form submission, so `CheckinPage.test.tsx` can
+// assert the structure and dispatch a synthetic `submit` — it can never press
+// the key. And this is the ONE surface that is only ever used on a phone: the QR
+// taped to the shop window, a woman standing in the doorway, the keyboard's Go
+// key sitting where the submit button would be. It was dead until this branch.
+//
+// The booking flow got its <form> and this page did not, which is the drift the
+// pair of tests below closes: same shape, same two proofs, one per surface.
+//
+// Mutation ledger, run against a real build of this file:
+//   MC1  `type="submit"` on «הצטרפות לתור» -> `type="button" onClick={forward}`,
+//        the <form> left in place — BOTH tests below red. The form then has no
+//        submit button and TWO fields that block implicit submission (the name
+//        text and the tel), which per HTML is the case where Enter does nothing
+//        at all. The click path still works, so only these two catch it.
+//   MC2  `noValidate` removed from the form — the SECOND test reds: the unchecked
+//        `required` radios make Chromium raise its own untranslated bubble and
+//        `forward` never runs, so the authored Hebrew, the role="alert" and the
+//        focus move all vanish together. The first test stays green, because a
+//        fully-filled form satisfies constraint validation — which is exactly
+//        why the refusal case is asserted separately.
+test("storefront check-in: Enter in the phone field mints the ticket, with no tap on the button", async ({
+  page,
+}) => {
+  await installApi(page);
+  const posted = captureCheckins(page);
+
+  await gotoCheckin(page);
+  await fillCheckin(page);
+
+  // The last field she fills on a phone, and the one whose keyboard shows «Go».
+  const [response] = await Promise.all([
+    page.waitForResponse((r) => new URL(r.url()).pathname === "/storefront/checkin"),
+    page.getByLabel(PHONE_LABEL).press("Enter"),
+  ]);
+
+  expect(response.status()).toBe(201);
+  await expect(page).toHaveURL(`${STOREFRONT}/q/${TICKET_FIRST}`);
+  // One create, not two: the implicit submission and the click must not both
+  // fire, which is what `type="submit"` with no onClick buys.
+  expect(posted).toEqual([
+    { name: CUSTOMER_NAME, phone: WIRE_PHONE, visit_type: "bride", marketing_opt_in: false },
+  ]);
+});
+
+test("storefront check-in: Enter with no visit type raises the AUTHORED refusal, not a native bubble", async ({
+  page,
+}) => {
+  // The half `noValidate` exists for, and the reason it is not decoration: both
+  // visit-type radios carry `required` on WCAG 3.3.2 grounds (no `*` marker), so
+  // Chromium's own constraint validation would intercept this submit and show an
+  // untranslated LTR bubble instead of running `forward`.
+  await installApi(page);
+  await gotoCheckin(page);
+
+  await page.getByLabel(NAME_LABEL).fill(CUSTOMER_NAME);
+  await page.getByLabel(PHONE_LABEL).fill(TYPED_PHONE);
+  await page.getByLabel(PHONE_LABEL).press("Enter");
+
+  await expect(page.getByRole("alert").filter({ hasText: VISIT_TYPE_REQUIRED })).toBeVisible();
+  // Still on the form, and no request was ever issued.
+  await expect(page).toHaveURL(`${STOREFRONT}/checkin`);
+  await expect(page.getByRole("button", { name: CHECKIN_SUBMIT })).toBeVisible();
 });
 
 test("storefront check-in: zero axe A/AA violations — the form, the form in error, and the live position", async ({

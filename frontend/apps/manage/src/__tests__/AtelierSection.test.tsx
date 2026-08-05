@@ -673,7 +673,12 @@ describe("the board states", () => {
     expect(
       screen
         .getAllByText("העדכון מושהה. לוח התפירה לא יתעדכן עד לחידוש.")
-        .filter((node) => node.getAttribute("data-testid") !== "atelier-cue"),
+        // ⚠ `closest`, not a testid equality check: the cue's text now lives in
+        // a keyed <span> INSIDE the region, so an equality filter on the node
+        // itself lets that span through and this count reads 2. What is being
+        // counted is the body line — everything the cue owns is excluded,
+        // wrapper included.
+        .filter((node) => node.closest('[data-testid="atelier-cue"]') === null),
     ).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "רענון" })).toBeNull();
   });
@@ -689,7 +694,7 @@ describe("the board states", () => {
     expect(
       screen
         .getAllByText(/עדכון לוח התפירה הופסק אחרי/)
-        .filter((node) => node.getAttribute("data-testid") !== "atelier-cue"),
+        .filter((node) => node.closest('[data-testid="atelier-cue"]') === null),
     ).toHaveLength(1);
     // ⚠ THE ONE THING THAT DIFFERS, and it is why there are two states: a board
     // that stopped by itself and does not say why is indistinguishable from a
@@ -1483,6 +1488,53 @@ describe("the intake and edit dialog", () => {
     expect(cue.querySelector("bdi")).toHaveTextContent("מיכל לוי");
   });
 
+  // ⚠ THE HALF THE FIRST FIX LEFT SILENT, and it is the same defect narrowed.
+  // `atelier.cue.updated` interpolates only {{name}}, so a SECOND edit of the
+  // same bride produces byte-identical text. `setCue` with a fresh object never
+  // fails React's bail-out — the state updates and the component re-renders —
+  // but React's text-child diff then skips the `nodeValue` write, no mutation
+  // lands inside role="status", and AT announces nothing. Fix her date, save;
+  // reopen, fix her notes, save: the second save was silence indistinguishable
+  // from a failed one, which is precisely what the edit cue exists to remove.
+  //
+  // A MutationObserver is the instrument, and the only one: `toHaveTextContent`
+  // CANNOT see this — the text is correct both times, and that is the problem.
+  // It is the same instrument the walkthrough used to find the original.
+  it("announces a REPEATED edit of one bride, whose cue text is byte-identical", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    updateTicket.mockResolvedValue(ticket({ due_date: "2026-09-30" }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    const editAgain = async (field: string, value: string) => {
+      fireEvent.click(screen.getByRole("button", { name: "עריכה — מיכל לוי" }));
+      const dialog = openDialog("עריכת כרטיס");
+      fireEvent.change(within(dialog).getByLabelText(field), { target: { value } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "שמירה" }));
+      await waitFor(() => expect((dialog as HTMLDialogElement).open).toBe(false));
+    };
+
+    await editAgain("תאריך יעד", "2026-09-30");
+    const cue = screen.getByTestId("atelier-cue");
+    const spoken = cue.textContent;
+    expect(spoken).toContain("הכרטיס עודכן.");
+
+    // Installed AFTER the first cue has landed, so it can only ever see the
+    // second one — subtree because the text lives in a keyed child of the region.
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((batch) => records.push(...batch));
+    observer.observe(cue, { childList: true, characterData: true, subtree: true });
+
+    await editAgain("הערות", "להרים 5 ס״מ");
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+
+    // The text did NOT change — that is the whole premise — and the region
+    // mutated anyway, which is the only thing an assistive technology reacts to.
+    expect(cue.textContent).toBe(spoken);
+    expect(records.length).toBeGreaterThan(0);
+  });
+
   it("puts a server refusal in ONE alert INSIDE the dialog, above the footer", async () => {
     // ⚠ Never a Toast behind a modal, and never a message the dialog dismisses
     // itself to show. This is where the horizon 400 lands, and it is what keeps
@@ -1905,13 +1957,22 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     // here and CI's contended 2-core runner is several times slower: it timed
     // out at 5 s on the first run of PR #39.
     //
-    // ⚠ RAISED FROM 20s, WHICH WAS NEVER REALISTIC. Measured IDLE on an M-series
-    // laptop this test takes ~16.4 s (5d ~15.3 s) — under 20 % headroom. The
-    // repo's own gate runs `pnpm -r test`, which puts the storefront's 1094
-    // tests on the same cores, and both boards then blow the budget: they were
-    // the residue after AC30 was fixed, red in roughly half of concurrent runs
-    // and red on the pre-existing base commit too. The budget was the defect,
-    // not the board, so the budget moved.
+    // ⚠ RAISED FROM 20s — AND THE NUMBER THAT JUSTIFIED IT WAS WRONG BY 16×.
+    // The commit that raised it wrote "measured idle on an M-series laptop they
+    // take 16.4 s and 15.3 s". RE-MEASURED, three ways, on this machine:
+    //   isolated, this file alone      5c 0.98 s   5d 0.93 s
+    //   with the storefront alongside  5c 1.07 s   5d 1.02 s
+    //   the whole gate concurrent      5c 3.87 s   5d 1.15 s
+    // So the budget is ~15× the WORST observed, not 20 % headroom over a
+    // 16 s floor. What is actually load-bearing is the SPREAD: the same test
+    // is 4× slower under `pnpm -r test` than alone, CI's contended 2-core
+    // runner is slower again, and a 5 s budget did time out there on PR #39's
+    // first run. Padding is the cheap side of that trade — shrinking the
+    // 150-card fixture would delete the mechanism instead of the delay.
+    //
+    // ⚠ THE PRICE, recorded rather than papered over: a 60 s budget lets a 15×
+    // regression pass silently. `known_flaky` in LOOP-STATE.md carries the
+    // baselines above so the next reader knows ~4 s is the number to watch.
   }, 60_000);
 
   it("5d — the same BIG board, where the stale pass carries the CAPTURED count itself", async () => {
@@ -1950,7 +2011,9 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     });
     expect(control.isConnected).toBe(false);
     expect(document.activeElement).toBe(moved);
-    // Same 60 s, same reason as 5c — it shares 5c's 150-card fixture.
+    // Same 60 s, same reason as 5c — it shares 5c's 150-card fixture. Measured
+    // 0.93 s isolated, 1.15 s under the concurrent gate; see 5c for the
+    // corrected numbers and for what the padding costs.
   }, 60_000);
 
   it("steals NOTHING back that the user moved while a write was in flight", async () => {
