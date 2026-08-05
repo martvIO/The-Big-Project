@@ -889,15 +889,17 @@ export function AtelierSection({ selfId, role }: AtelierSectionProps) {
       });
     }
     setUpdatedAt(new Date().toISOString());
-    if (form.mode === "create") {
-      // Names the bride because native <dialog> returned focus to «כרטיס חדש»
-      // and NOT to the new card, so this is the only thing that says which
-      // ticket was opened.
-      setCue({
-        text: t("atelier.cue.created", { name: saved.customer_name }),
+    // ⚠ OUTSIDE the mode branch, and it was inside it: the edit path announced
+    // NOTHING on a successful 200. Both cues name the bride — create because
+    // native <dialog> returns focus to «כרטיס חדש» and NOT to the new card, so
+    // nothing else says which ticket was opened; update because an edit replaces
+    // five fields at once and has no single new value to name in its place.
+    setCue({
+      text: t(form.mode === "create" ? "atelier.cue.created" : "atelier.cue.updated", {
         name: saved.customer_name,
-      });
-    }
+      }),
+      name: saved.customer_name,
+    });
     setForm(null);
   };
 

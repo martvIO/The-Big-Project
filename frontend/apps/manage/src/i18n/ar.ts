@@ -632,6 +632,7 @@ export const ar = {
     "atelier.effortMinutes": "{{minutes}} דק׳",
     "atelier.loading": "טוען את לוח התפירה…",
     "atelier.cue.created": "{{name}} — נפתח כרטיס.",
+    "atelier.cue.updated": "{{name}} — הכרטיס עודכן.",
     "atelier.cue.advanced": "{{name}} — שלב חדש: {{stage}}.",
     "atelier.cue.undone": "{{name}} — חזרה לשלב: {{stage}}.",
     "atelier.cue.assigned": "שויך ל{{seamstress}}.",

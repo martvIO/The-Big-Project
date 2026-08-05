@@ -1440,8 +1440,47 @@ describe("the intake and edit dialog", () => {
     await waitFor(() => expect(screen.getByText(/30\.9\.2026/)).toBeInTheDocument());
     // Scoped to the card since F42: «חצי יום» is also a band field's label in
     // the panel's settings dialog, which is always in the tree.
-    const card = screen.getByText("מיכל לוי").closest("li") as HTMLElement;
+    //
+    // ⚠ And scoped to the COLUMN as well since the edit cue was fixed: the cue
+    // now names the bride too, so a bare `getByText` matches two nodes.
+    const card = within(screen.getByRole("list", { name: "התקבל" }))
+      .getByText("מיכל לוי")
+      .closest("li") as HTMLElement;
     expect(within(card).getByText(/חצי יום/)).toBeInTheDocument();
+  });
+
+  // The walkthrough's finding: `setCue` sat inside `if (form.mode === "create")`,
+  // so a successful 200 UPDATE announced NOTHING — a MutationObserver installed
+  // before the save logged zero entries, and `atelier.cue.updated` did not exist
+  // in `he.ts` at all. A sighted user sees the dialog close; a screen-reader user
+  // gets silence indistinguishable from a failed save. Editing was the only
+  // mutation on this board with no cue.
+  it("announces the edit too — the create branch is not the only one that speaks", async () => {
+    getAtelierBoard.mockResolvedValue(board([ticket()]));
+    updateTicket.mockResolvedValue(ticket({ due_date: "2026-09-30" }));
+    mount();
+    await screen.findByText("מיכל לוי");
+
+    // Read BEFORE the action: the assertion is that the region CHANGED, so a cue
+    // that happened to be populated already could not carry the test.
+    const before = screen.getByTestId("atelier-cue").textContent;
+
+    fireEvent.click(screen.getByRole("button", { name: "עריכה — מיכל לוי" }));
+    const dialog = openDialog("עריכת כרטיס");
+    fireEvent.change(within(dialog).getByLabelText("תאריך יעד"), {
+      target: { value: "2026-09-30" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "שמירה" }));
+
+    await waitFor(() => expect((dialog as HTMLDialogElement).open).toBe(false));
+    const cue = screen.getByTestId("atelier-cue");
+    expect(cue.textContent).not.toBe(before);
+    expect(cue).toHaveTextContent("מיכל לוי — הכרטיס עודכן.");
+    // The bride's name rides in a bare <bdi>, exactly as the create cue's does —
+    // `cue.name` is what the region isolates, so a cue that set `name: null`
+    // would announce identically and render the Hebrew around a Latin name
+    // reordered.
+    expect(cue.querySelector("bdi")).toHaveTextContent("מיכל לוי");
   });
 
   it("puts a server refusal in ONE alert INSIDE the dialog, above the footer", async () => {
