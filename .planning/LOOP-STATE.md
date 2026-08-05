@@ -16,21 +16,57 @@ config:
     - "Backend (lint, types, tests)"
     - "Frontend (lint, types, build)"
     - "Frontend E2E (Playwright + axe)"
+    - "Dependency audits"        # NEW 2026-08-05 (F21/PR #48) — was warn-only,
+                                 # now gates. merge-gate.sh updated to match and
+                                 # its self-test re-run. pip-audit + pnpm audit +
+                                 # the waiver guard, all exit-0-or-red.
   warn_only_jobs:               # usually red — ignore
     - "Code wiki drift (warn-only)"
-    - "Dependency audits (warn-only)"
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F21                    # ==================================================================
-                                # ==== IN FLIGHT, 2026-08-05 — F21 hardening-audits-uat ===========
+current: null                   # ==================================================================
+                                # ==== HANDOFF, 2026-08-05 (late) — NOTHING IN FLIGHT =============
                                 # ==================================================================
-                                # F21 STARTED 2026-08-05. E4's last entry. Its note mandates a SPLIT:
-                                # the rows needing no production environment build now; the rows that
-                                # need a live staging host become a parked follow-up. The domain IS
-                                # bought (modryn.co.il) but its 3 DNS records are unadded, so there is
-                                # still no reachable host — the split stands.
+                                # 27 MERGED · 19 QUEUED · 2 PARKED (F32 subsumed forever; F62 NEW,
+                                # blocked on the 3 DNS records).
+                                # NOTHING IS USER-BLOCKED IN THE BUILDABLE QUEUE. Eligible right now,
+                                # computed by resolving deps against the merged set rather than read
+                                # off file order — ELEVEN, so parallel sessions are worth running:
+                                #   F22 F24 F25 F27 F28 F29 F35 F38 F44 F47 F49
+                                # F29 became eligible with F21's merge. The next pick in plain file
+                                # order is F22.
                                 #
+                                # ✅ EPIC E4 IS COMPLETE. F21 (PR #48) was its ship gate. What E4
+                                # could not close without a host is F62, below — and F62 is NOT a
+                                # to-do list of unexamined work: EVERY row in it was AUDITED at F21
+                                # against the code and found to need a deployed host, a cloud-console
+                                # action, or a human. Two of its items need NO host at all (R48's
+                                # screen-reader walk, R38's two scope items) and are parked rather
+                                # than blocked — they can be done any time.
+                                #
+                                # ⚠⚠ THERE ARE NOW **FOUR** GATING CI JOBS. "Dependency audits" came
+                                # off continue-on-error in F21. `config.gating_jobs` below,
+                                # merge-gate.sh AND merge-gate.test.sh were updated together, and the
+                                # self-test grew three checks — including one that BLOCKS THE OLD
+                                # "(warn-only)" NAME, so reverting the ci.yml rename cannot pass
+                                # silently. Only ONE warn-only job remains: "Code wiki drift".
+                                #
+                                # ⚠ THE OPERATIONAL LESSON OF F21, worth more than the rows it closed:
+                                # BOTH REVIEW ROUNDS FOUND THEIR BLOCKER IN THE FEATURE'S OWN GUARD,
+                                # not in the product. A hardening feature that claims a property it
+                                # does not have is WORSE than one that never claimed it, because it
+                                # closes the question — and that is what nearly shipped, twice, in the
+                                # mechanism rather than the code. The fix that finally held was a
+                                # SHAPE change (an allowlist: unrecognised config fails closed), never
+                                # a longer blocklist. When you write a guard, ask what it does with
+                                # the input it was not taught about.
+                                # Second lesson, cheaper: F21's ONE CI failure was a LOCAL FALSE-GREEN
+                                # — a `not db` test that dialled a real Postgres and passed only
+                                # because dev boxes run one on 5432. `make test` now points the fast
+                                # lane at a CLOSED PORT, so that class fails locally first.
+                                #
+                                # ---- the earlier 2026-08-05 handoff, still accurate below ----
                                 # 26 MERGED · 20 QUEUED · 1 PARKED FOREVER (F32, subsumed).
                                 # NOTHING IS USER-BLOCKED. The next pick is plain file order:
                                 # F21, then F22 F24 F25 F27 F28 F35 F38 F44 F47 F49 — ELEVEN are
@@ -1701,8 +1737,94 @@ queue:
     slug: hardening-audits-uat
     epic: E4
     title: Hardening, audits & pilot UAT
-    status: building
+    status: merged
+    pr: 48
     attempts: 1
+    shipped: >-
+      MERGED 2026-08-05 as PR #48. 17 commits, 60 files, +5.5k/-0.7k. NO MIGRATION —
+      alembic heads stayed 0025. E4's ship gate; the parked half became F62 below.
+      GATES AT MERGE: lint clean · pytest not-db 2393 · pytest "db and not s3" 876 on
+      real PG16 · vitest 2517 (ui 108, storefront 1097, manage 1312) · build clean ·
+      e2e 170 with axe ZERO · pip-audit + pnpm audit + the waiver guard all exit 0.
+      ⚠⚠ THIS FEATURE ADDED A FOURTH GATING CI JOB. "Dependency audits" is off
+      continue-on-error and renamed off "(warn-only)". `config.gating_jobs` above,
+      merge-gate.sh and merge-gate.test.sh are all updated; the self-test now runs
+      TEN checks including one that blocks the OLD warn-only name, so a revert of the
+      ci.yml rename cannot pass silently.
+      CHECKLIST OUTCOME: 33 rows frozen as R<n> ids — 21 GREEN, 5 AMBER, 5 RED-and-
+      parked, 1 SPLIT (R40a green/F20, R40b open/F46).
+
+      FOUR DEFECTS NO EXISTING SUITE COULD SEE, which is the argument for the feature:
+      (1) THE CSP WOULD HAVE BLANKED THE CONSOLE LOGIN SCREEN. The MODRYN mark is a
+      973-byte SVG, under Vite's 4096-byte assetsInlineLimit, so the build inlines it
+      as a data: URI and `img-src 'self'` refused it. The spec called this tripwire
+      hypothetical; it was ALREADY TRIPPED. Only a real browser against the real
+      bundle could tell — and note playwright.config.ts serves via `vite preview`, so
+      FASTAPI IS NEVER IN THE E2E REQUEST PATH; the policy is injected from a
+      committed fixture pinned byte-for-byte to the emitted one by a backend test.
+      (2) THE SHIPPED APP WIRED TWO OTP BUDGETS ONTO ONE LIMITER INSTANCE — two keys,
+      one ceiling, the shipped-bug class this repo already had. The whole suite stayed
+      green because the service tests inject their own limiters and never see main.py's
+      wiring. Now pinned by pairwise identity over all four budgets.
+      (3) FloorPanel.tsx's LIVE REGION WAS SILENT. `waitlist.calledCue` interpolates
+      nothing, so calling the next woman after the last one writes byte-identical text
+      and React skips the nodeValue write. Reception's most-repeated act of the day
+      announced NOTHING. A MutationObserver logged zero mutations before the fix.
+      GuideOverlay.tsx turned out to be CORRECT CODE WITH A WRONG COMMENT — its
+      setAnnounced("") was doing a nonce's job and nothing said so.
+      (4) fixtures/manage.ts's API_FAMILIES was missing `privacy`, so the §13
+      subject-request surface was UNREACHABLE BY ANY E2E TEST.
+
+      ⚠⚠ THE REVIEW LESSON, and it outlives the feature: BOTH REVIEW ROUNDS FOUND
+      THEIR BLOCKER IN THIS FEATURE'S OWN GUARD. Round 1: the waiver guard read
+      `ignoreGhsas` in package.json and pnpm silences through `ignoreCves` too, and
+      through pnpm-workspace.yaml. Round 2, against the fix: pnpm-workspace.yaml gets
+      NO KEY FILTER AT ALL (getOptionsFromPnpmSettings, dist/pnpm.cjs:18322, against
+      the pick() at :18286 for package.json), so `ignoreUnfixable: true`, `ignore:
+      [<id>]` and `fix: true` each took `pnpm audit` to exit 0 while the guard printed
+      `ok`. Both demonstrated end-to-end against the real guard, not reasoned.
+      THE FIX WAS A SHAPE CHANGE, NOT A LONGER LIST: an ALLOWLIST on that file — any
+      key not explicitly reasoned about fails closed — which also covers keys a FUTURE
+      pnpm adds (verified with an invented key). The blocklist was structurally wrong.
+      Round 2 also proved the guard's own selfTest() was PARTLY VACUOUS: deleting the
+      two lines the expiry fix was NAMED FOR left it passing, because one fixture
+      tripped both and one rollover date was already expired. All 16 guard lines are
+      now individually mutation-covered and each asserts the MESSAGE it expects rather
+      than mere redness.
+      A hardening feature that claims a property it does not have is worse than one
+      that never claimed it, because it closes the question. That is what nearly
+      shipped here, twice, in the mechanism rather than the product.
+
+      THE ONE CI FAILURE was a test bug and a LOCAL FALSE-GREEN, the most misleading
+      shape there is: test_hsts_reaches_the_tenant_not_found_404 called create_app()
+      with no resolver, so the tenant middleware dialled a real Postgres at
+      localhost:5432. It passed locally only because dev boxes run one there. THE GUARD
+      IS ONE LINE IN THE MAKEFILE — `make test` now points the fast lane at a closed
+      port, so any `not db` test that opens a connection fails LOCALLY first, naming
+      itself. Verified both directions. Running the whole fast lane with the DB
+      unreachable proved no sibling has the same latent bug.
+    honest_underclaims: >-
+      Recorded rather than smuggled, because this feature's whole subject is not doing
+      the opposite:
+      R48's SCREEN-READER HALF IS "NOT RUN" — no screen reader was operated. The
+      keyboard half WAS run for real (18 surfaces, 261 tab stops, real Chromium against
+      the real built bundles, zero defects; skip link, dialog focus trap, Escape and
+      focus RESTORATION all verified). a11y-audit-v1.md §4 names the ten surfaces a
+      human must walk. It needs a HUMAN, not a host — it is not DNS-gated.
+      R16 IS AMBER: the per-IP OTP key ships but is INERT until trust_forwarded_for
+      flips, and the test asserts the inertness both ways so it cannot read as green.
+      R42 STAYS UNCHECKED and its owner moved to F62 — retention_enabled stays False
+      because an unattended irreversible mass-delete must not precede a drilled restore.
+      THE TEN test_*_isolation.py FILES DO NOT PIN THE EXPLICIT tenant_id PREDICATES —
+      drop one and they stay GREEN, because they run under RLS too. Nothing in the
+      suite fails if those predicates are removed. Recorded against R7 rather than left
+      as false confidence; the boot guard is the real control.
+      WCAG 2.1/2.2 TAGS STAY DISABLED BY DECISION (IS 5568 tracks WCAG 2.0 AA) —
+      written into the artifact, because silence in an audit document reads as coverage.
+      THE WALKER FOUND NO CROSS-TENANT HOLE: 105 routes classified, 56 driven, and
+      review corrected "56 driven" to 54 DISCRIMINATING — two refuse everyone via a
+      state guard rather than the tenant check. Hand-probed with preconditions
+      satisfied; still refused. A miscount, not a hole, and now asserted as STATE_GUARDED.
     spec: .planning/specs/hardening-audits-uat.md
     plan: .planning/plans/hardening-audits-uat.md
     started: >-
@@ -1733,6 +1855,150 @@ queue:
       new phone, with no OTP. The user acknowledged this for the pilot; F21 must
       re-derive it from the code at production scale rather than treat the
       acknowledgment as a closed finding.
+
+  - id: F62
+    slug: production-standup-and-hosted-rows
+    epic: E4
+    title: "The security-checklist rows that need a deployed host, and the pilot UAT"
+    status: parked
+    deps: [F21]
+    migration: "one — the orphan clock; see R42's precondition below"
+    blocker: "the 3 DNS records at DomainTheNet — external-applications.md #2"
+    note: >-
+      CREATED BY F21. Every row here was AUDITED at F21 against the code and found
+      to need a deployed host, a cloud-console action, or a human — nothing here is
+      unassessed. Row ids are the frozen R<n> ids from
+      .planning/security-checklist-v1.md, which is the evidence document and the
+      DURABLE SOURCE OF TRUTH for this entry: if this text is lost, F62 is fully
+      reconstructible from that file's PARKED table alone.
+
+      ⚠ NOT EVERYTHING HERE IS GATED BY THE DNS RECORDS. R48's screen-reader walk
+      and R38's two scope items need no host and could be done today; they are
+      here because they are parked, not because they are blocked on DNS.
+
+      ROWS THIS ENTRY OWNS:
+      R7  (deployment clause) — prove the LIVE database role is boutique_app, not
+          postgres. walkthrough_coverage_gaps G1: on 2026-08-04 the app connected as
+          postgres with rolsuper = t, so everything the runbook lists as binding
+          under the app role was SILENTLY VOID for the whole run. The boot guard
+          exists (db/session.py:12-42) and is exempt when app_env == "dev"
+          (:45-50); F21 pinned that the exemption is dev-only and nothing wider
+          (test_role_guard.py, parametrised over staging/production/Dev/DEV).
+          ⚠ F21 FINDING, and it raises this row's stakes: the ten
+          test_*_isolation.py files do NOT prove defence-in-depth. Under a mutation
+          dropping the explicit `tenant_id ==` predicate from a repository method
+          they stay GREEN, because they run under RLS too — NOTHING in the suite
+          fails if those predicates are removed. What actually guards that layer is
+          this boot guard, which makes proving the live role the real control and
+          not a formality.
+      R9  (nothing owed — recorded so it is not re-litigated) CLOSED at F21.
+          test_cross_tenant_walker.py: 105 tenant-scoped routes, 56 driven with
+          tenant B's ids OF WHICH 54 DISCRIMINATE, 6 UNWALKABLE with reasons, 43
+          carrying no tenant-owned id. NO CROSS-TENANT HOLE WAS FOUND. Four
+          assertions: 404, no 5xx, no body echoes tenant B's ids at any status,
+          and walked ∪ exempt == the route table both ways. auth, dashboard,
+          notifications and payments are asserted to walk EXACTLY ZERO routes
+          because none carries a tenant-owned id.
+          ⚠ 54, not 56 (2026-08-05 review). A 404 is evidence only if the route
+          answers something else for the caller's OWN ids, and two refuse
+          everyone: dresses/{id}/restore (catalog/service.py:476 refuses a
+          non-archived dress) and floor/sos/{id}/accept (floor/service.py:1650
+          refuses the raiser her own page). Both 404s are a STATE GUARD, not the
+          tenant check. Hand-probed with the preconditions satisfied — both still
+          refused. No hole; a miscount, now named in STATE_GUARDED and asserted.
+      R12 (access-restriction clause) — "access-restricted" means SSH/console access
+          to the host. The audit clause CLOSED at F21 (list_tenants writes a
+          platform_audit_log row, with the --operator name it used to discard).
+      R16 (per-IP enablement + distributed limiter) — F21 SHIPPED the per-IP key on
+          OTP send, on its OWN limiter instance, but it is INERT: _client_ip returns
+          None unless TRUST_FORWARDED_FOR=true, which is only correct on a
+          deployment that terminates exactly one trusted proxy. Set it at stand-up.
+          Both arms are pinned (test_notifications_api.py), including the arm that
+          asserts the budget does NOT meter with the shipped default — which is why
+          the row is amber rather than green. Separately, auth/rate_limit.py:5-6
+          names Redis: per-process buckets mean N instances -> N × the budget.
+          ⚠⚠ PRECONDITION — DO NOT SET TRUST_FORWARDED_FOR=true UNTIL THIS IS
+          ANSWERED. 2026-08-05 review, reasoned rather than reproduced (the budget
+          is inert, so nothing ships broken — which is exactly why it must be
+          written down before someone arms it). The key is `otp:ip:{ip}`, NOT
+          tenant-scoped, at 20 sends/hour, and a tripped budget returns the same
+          silent 204 as a success. Armed, one actor behind a carrier CGNAT or an
+          office NAT spends 20 sends and EVERY OTHER CUSTOMER BEHIND THAT EGRESS
+          STOPS RECEIVING OTPs AT EVERY BOUTIQUE ON THE PLATFORM. The victim sees
+          "code sent" and no SMS; the operator sees no 429, no error and no
+          distinguishable log. The silence is correct for the PHONE budget — it
+          denies an oracle about one number — and wrong for an ADDRESS budget,
+          where it only hides an outage. DO NOT make the IP budget answer
+          distinguishably: that manufactures the oracle the silence exists to
+          deny. The real work is a cross-tenant key, a ceiling sized for shared
+          egress, and an operator-visible signal that is not a response body.
+          config.py:82-85 reasons about the ceiling and not at all about the
+          silence. HALF OF IT IS ALREADY CLOSED: client_ip.py fell back to
+          request.client.host — the proxy — whenever the header was absent, which
+          is "a global bucket that reads as working", the exact failure that
+          module's docstring says it exists to prevent. F21 now returns None
+          there (test_a_trusted_proxy_with_no_forwarded_header_yields_no_ip_at_all).
+      R26 — per-tenant gateway credentials KMS-encrypted. Only FakeSecretBox ships
+          ("THIS IS NOT ENCRYPTION", payments/secretbox.py:61-62). Production is
+          boot-blocked (config.py:315-316) and 0012's provider IN ('fake') CHECK
+          means production can hold no credential row, so nothing can ship wrong
+          meanwhile. F17 Gate 1 Q2 accepted this unchecked.
+      R27 — receipt (קבלה) issuance. Zero receipt code exists; refund() has no
+          method and no consumer (payments/base.py:106). Waits on the production
+          Israeli PSP (external-applications.md #3).
+      R31 — secrets in AWS Secrets Manager. core/config.py:11 reads .env; zero hits
+          for secretsmanager|vault|ssm in app/.
+      R32 (WAF clause) — AWS/Cloudflare console action against a live origin. The
+          rate-limiting clause is discharged: ~20 separate limiter instances at
+          main.py:731-961.
+      R38 (two scope items, NEITHER blocked on DNS) —
+          (a) PUT /manage/privacy writes NO AUDIT ROW, and F21's audit-coverage
+              walker FOUND this rather than confirming it: no decision to that
+              effect existed anywhere in the tree. Same class as boutique's
+              profile/toggles (the tenant editing its own text), so it is recorded
+              in UNAUDITED_BY_DECISION with that reasoning rather than closed —
+              D6 scopes F21's new rows to catalog + list_tenants and a hardening
+              feature does not widen its own charter. Decide it deliberately here.
+          (b) audit_log has NO READ SURFACE — zero routers touch AuditLogRepository,
+              so detecting the accepted F15 phone-correction risk is a manual DB
+              query nobody is prompted to run. Its own spec.
+          The catalog half CLOSED at F21: nine mutating routes, nine audit rows,
+          nine AuditAction members, and a walker that makes the next unaudited
+          route a test failure (twelve reviewed exemptions, each with a reason).
+      R42 — retention jobs RUNNING. retention_enabled stays False until row 44's
+          restore drill. ⚠ PRECONDITION, from F21's audit and
+          ppl-compliance-record.md:58 — BEFORE RETENTION_ENABLED is ever set: the
+          30-day orphan grace runs from created_at, because nothing on the row
+          records when a customer BECAME orphaned. It therefore protects a row
+          created in the last 30 days and nothing else, and a phone correction that
+          orphans a customer who first booked six months ago satisfies the conjunct
+          IMMEDIATELY. F15's correction re-points the OTHER row and never touches
+          this one (booking/owner.py:1136-1161), so updated_at will not serve as a
+          proxy either. A real orphan clock is a NEW COLUMN and it belongs to
+          whoever flips the flag — that is this entry, and it is this entry's one
+          migration.
+      R44 — backups automated, restore drilled, RPO/RTO written. Gates R42.
+      R48 (screen-reader clause) — ⚠ NOT ANTICIPATED BY F21'S PLAN, which expected
+          this row to close green. It did not. F21 RAN the keyboard half for real
+          (18 surfaces, 261 tab stops, real Chromium against the real built
+          bundles; zero defects; skip link, dialog focus trap, Escape and focus
+          RESTORATION all verified) and marked the screen-reader half NOT RUN,
+          because no screen reader was operated and an audit document that claims
+          coverage it does not have is worse than one that says "not run".
+          NEEDS A HUMAN WITH VOICEOVER, NOT A HOST — do it whenever.
+          .planning/a11y-audit-v1.md §4 lists the ten surfaces (booking flow first,
+          console privacy first of the three console sections) and the two
+          questions only a listener can answer: does /queue's 5-second poll
+          interrupt speech, and do the booking step transitions announce.
+      Production stand-up: compute, prod wildcard DNS/TLS, prod Postgres.
+      Terraform-izing docs/infra-runbook.md.
+      Pilot onboarding with real Hebrew content + UAT sign-off.
+
+      ONE RESIDUAL F21 RECORDED THAT IS NOT A CHECKLIST ROW (D10):
+      the owner-SMS throttle key is booking:owner_sms:{tenant_id} — PER TENANT,
+      not per actor, so one staffer can spend the whole boutique's budget.
+      Filed in known_product_bugs; listed here because the fix and R38(b)'s audit
+      read surface land in the same place.
 
   # ---- Deploy: the frontends have never been hosted anywhere ----
   - id: F55

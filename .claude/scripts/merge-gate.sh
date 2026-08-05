@@ -21,6 +21,10 @@ GATING_JOBS=(
   "Backend (lint, types, tests)"
   "Frontend (lint, types, build)"
   "Frontend E2E (Playwright + axe)"
+  # Added 2026-08-05 by F21 (PR #48), which took this job off continue-on-error
+  # and renamed it off "(warn-only)". It is a real gate now: pip-audit + pnpm
+  # audit + the waiver guard, all exit-0-or-red. A PR that reds it must not merge.
+  "Dependency audits"
 )
 
 pr="${1:-}"

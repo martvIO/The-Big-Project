@@ -20,6 +20,17 @@ Deposits are the boutique's no-show defense and a locked v1 requirement. This ep
 - [ ] With deposits enabled, a booking is only confirmed after a signature-verified Grow webhook (**J4 charge, not J5 hold** — locked decision); the customer pays on Grow's hosted page (no card data ever touches our origin); duplicate webhooks are idempotent; **a receipt is issued for every charge and refund**
 - [ ] Unpaid holds expire and release their slot automatically; cancellation inside the structured policy window (E2 #7) marks the payment refund-due with an owner task; outside it, forfeit is recorded against the accepted terms version; deposits-off appointment types confirm instantly with no payment step
 - [ ] `.planning/security-checklist-v1.md` fully green; PPL artifacts live (consent capture, privacy notice, DPA, PII scrub, retention jobs); backup/restore drilled; IS 5568 accessibility audit passed; pilot UAT signed off
+      → **AUDITED at F21 (PR #48), and it is deliberately NOT "fully green".** 33 rows,
+      frozen as `R<n>` ids: **21 GREEN · 5 AMBER · 5 RED-and-parked · 1 SPLIT**. Every
+      row now carries a verdict and evidence, or a named blocker and an owner — which
+      is the state this criterion was actually asking for, since the alternative was a
+      row marked green on the strength of a planning note. The rows that need a
+      deployed host, a cloud-console action or a human are **F62**, blocked on the 3
+      DNS records at DomainTheNet. Two of them (R48's screen-reader walk, R38's two
+      scope items) need **no host** and are parked, not blocked.
+      Still open here specifically: **R27 receipts** (zero receipt code exists; waits on
+      the production Israeli PSP, external-applications.md #3) and **R42 retention
+      running** (`retention_enabled` stays `False` until R44's restore drill).
 
 ---
 
@@ -31,7 +42,7 @@ Deposits are the boutique's no-show defense and a locked v1 requirement. This ep
 | 18 | ~~Grow~~ **Lemon Squeezy** payment sessions & webhooks | **done (PR #31)** | `.planning/specs/lemonsqueezy-adapter.md` | — | #17 |
 | 19 | Deposit booking flow | **done (PR #34)** | `.planning/specs/deposit-booking-flow.md` | `.planning/plans/deposit-booking-flow.md` | E2 #7, E3 #16, #18 |
 | 20 | PPL compliance build | **done (PR #45)** — migration `0024` | `.planning/specs/ppl-compliance.md` | `.planning/plans/ppl-compliance.md` | E3 #13 |
-| 21 | Hardening, audits & pilot UAT | todo — **now unblocked**, F20 merged | — | — | all v1 |
+| 21 | Hardening, audits & pilot UAT | **done (PR #48)** — split per pre-decided #11; the host-gated half is **F62** | — | — | all v1 |
 
 **#18's provider changed and the row above says so deliberately.** The 2026-07-31 ruling
 made **Lemon Squeezy test mode** E4's engine behind F17's provider-agnostic port. LS is
