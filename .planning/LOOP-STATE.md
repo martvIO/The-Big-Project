@@ -22,9 +22,15 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # ==================================================================
-                                # ==== HANDOFF, 2026-08-05 — NOTHING IN FLIGHT ====================
+current: F21                    # ==================================================================
+                                # ==== IN FLIGHT, 2026-08-05 — F21 hardening-audits-uat ===========
                                 # ==================================================================
+                                # F21 STARTED 2026-08-05. E4's last entry. Its note mandates a SPLIT:
+                                # the rows needing no production environment build now; the rows that
+                                # need a live staging host become a parked follow-up. The domain IS
+                                # bought (modryn.co.il) but its 3 DNS records are unadded, so there is
+                                # still no reachable host — the split stands.
+                                #
                                 # 26 MERGED · 20 QUEUED · 1 PARKED FOREVER (F32, subsumed).
                                 # NOTHING IS USER-BLOCKED. The next pick is plain file order:
                                 # F21, then F22 F24 F25 F27 F28 F35 F38 F44 F47 F49 — ELEVEN are
@@ -1695,7 +1701,9 @@ queue:
     slug: hardening-audits-uat
     epic: E4
     title: Hardening, audits & pilot UAT
-    status: queued
+    status: specing
+    attempts: 1
+    started: "2026-08-05 — the loop's own file-order pick; deps F15/F16/F20 all merged, no blocker."
     deps: [F16, F15, F20]
     note: >-
       Pre-decided #11: rows needing no production environment (dependency
