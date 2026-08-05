@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { SectionHeading } from "@boutique/ui";
-import { paragraphs, substituteBoutique } from "../lib/privacyText";
+import { substituteBoutique } from "../lib/privacyText";
+import { PrivacyProse } from "../components/PrivacyProse";
 import { useBoutique } from "../components/StorefrontLayout";
 
 // הודעת פרטיות. PPL §11 makes a collection notice a legal obligation, and
@@ -30,14 +31,20 @@ import { useBoutique } from "../components/StorefrontLayout";
 
 const bodyClass = "whitespace-pre-line text-base text-ink-muted [overflow-wrap:anywhere]";
 
-// One document: its own <h2> and its blank-line-separated paragraphs.
+// One document: its own <h2>, its blank-line-separated paragraphs and its
+// bullet runs as real lists.
 //
-// Blocks, not one pre-line <div>, because the bullet lists inside these strings
-// are visual and a single scrolling block would give a screen-reader user no
-// structure at all. The <h2> comes from a key and is never a line inside the
-// string (copy.md R7): baked in, it would render as a <p> — a visual heading
-// with no semantics, a WCAG 1.3.1 failure on the twin of the accessibility
-// statement.
+// Blocks, not one pre-line <div>, because a single scrolling block would give a
+// screen-reader user no structure at all. The <h2> comes from a key and is never
+// a line inside the string (copy.md R7): baked in, it would render as a <p> — a
+// visual heading with no semantics, a WCAG 1.3.1 failure on the twin of the
+// accessibility statement.
+//
+// ⚠ The bullet lists WERE that same failure and shipped that way: seventeen `•`
+// lines across the three documents, all inside <p>, with no <ul>/<li> anywhere.
+// `PrivacyProse` is now the one renderer both this page and the booking flow's
+// §11 notice use, which is what makes D13's «the same text» also «the same
+// semantics».
 function Document({ testId, heading, text }: { testId: string; heading: string; text: string }) {
   return (
     // `data-testid` because `SectionHeading` wraps its own <h2> in a div, so
@@ -48,14 +55,7 @@ function Document({ testId, heading, text }: { testId: string; heading: string; 
     // while every heading-count check stayed green).
     <div data-testid={testId} className="flex flex-col gap-3">
       <SectionHeading as="h2">{heading}</SectionHeading>
-      {paragraphs(text).map((block, index) => (
-        // The index is the key because the blocks ARE the content and never
-        // reorder: this list is derived from one immutable string per render,
-        // so there is no identity to preserve across one.
-        <p key={index} className={bodyClass}>
-          {block}
-        </p>
-      ))}
+      <PrivacyProse text={text} className={bodyClass} />
     </div>
   );
 }

@@ -66,3 +66,58 @@ export function paragraphs(text: string): string[] {
     .map((block) => block.trim())
     .filter((block) => block !== "");
 }
+
+/** One run of prose, or one bullet list, in document order. */
+export type Segment = { kind: "prose"; text: string } | { kind: "list"; items: string[] };
+
+// The three documents write every list the same way — a lead line, then
+// consecutive lines each opening with U+2022. `PLATFORM_NOTICE_HE` alone has
+// three such runs, and the platform carries seventeen bullet lines in total.
+const BULLET = "•";
+
+/**
+ * Split ONE block into its prose runs and its bullet runs.
+ *
+ * ⚠ THE PARSING BELONGS HERE, IN THE RENDERER, AND NOT IN THE TEXT. The three
+ * documents are settings values: byte-capped at 8192, no-HTML by invariant (a
+ * backend test asserts no `<` appears in any platform constant, because these
+ * are tenant-authored text on an anonymous public page and any HTML path is
+ * stored XSS), and boutique-overridable. Markup cannot be put in them, so the
+ * only place `•` can become `<li>` is at the point of render — which is also the
+ * only way BOTH surfaces get it, D13's requirement that `/privacy` and the §11
+ * collection notice render the same text the same way.
+ *
+ * Consecutive bullets join ONE list; anything between two runs closes the first
+ * — «למי המידע מגיע» must not announce as an item of «מה אנחנו מבקשות».
+ *
+ * The glyph is stripped from each item: the marker is the `<li>`'s own, and a
+ * literal `•` beside it would be painted twice and announced twice.
+ *
+ * ⚠ Non-bullet lines are RE-JOINED with `\n` rather than becoming one paragraph
+ * each. The caller renders prose in a `white-space: pre-line` element (copy.md
+ * R1) — an owner hand-editing a textarea wraps her own lines, and each of those
+ * is not a paragraph.
+ */
+export function segments(block: string): Segment[] {
+  const out: Segment[] = [];
+  for (const line of block.split("\n")) {
+    const trimmed = line.trim();
+    const last = out[out.length - 1];
+    if (trimmed.startsWith(BULLET)) {
+      const item = trimmed.slice(BULLET.length).trim();
+      if (last?.kind === "list") {
+        last.items.push(item);
+      } else {
+        out.push({ kind: "list", items: [item] });
+      }
+    } else if (last?.kind === "prose") {
+      last.text += `\n${line}`;
+    } else {
+      out.push({ kind: "prose", text: line });
+    }
+  }
+  // Same rule `paragraphs` applies: a prose run that is only whitespace
+  // announces as a blank paragraph. An empty `<li>` cannot arise — a line that
+  // is a bare `•` yields an empty item, which is content the owner typed.
+  return out.filter((segment) => segment.kind === "list" || segment.text.trim() !== "");
+}

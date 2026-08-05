@@ -158,13 +158,17 @@ describe("PrivacyPage — the text it renders", () => {
   });
 
   it("splits a document into one <p> per blank line, and preserves the newlines inside a block", async () => {
-    // copy.md R1. The three documents carry bullet lists as `•`-prefixed lines
-    // inside ONE block: split on every `\n` and each bullet becomes its own
-    // paragraph; render the whole document in one element and the blank-line
+    // copy.md R1. Split on every `\n` and a multi-line block becomes several
+    // paragraphs; render the whole document in one element and the blank-line
     // breaks vanish. Both halves are asserted, because the naive fixes for one
     // are the defect in the other.
+    //
+    // ⚠ The multi-line block here is deliberately NOT a bullet run any more —
+    // bullet runs are now real lists (see below), so a `•` fixture would be
+    // asserting the wrong property. Boutique owners hand-edit these in a
+    // textarea and a wrapped line is ordinary prose.
     const { main } = await renderPage({
-      privacy_notice_text: "פסקה ראשונה.\n\nפסקה שנייה:\n• פריט אחד\n• פריט שני",
+      privacy_notice_text: "פסקה ראשונה.\n\nפסקה שנייה:\nשורה שנייה\nשורה שלישית",
     });
 
     const first = within(main).getByText("פסקה ראשונה.");
@@ -174,8 +178,57 @@ describe("PrivacyPage — the text it renders", () => {
     expect(second).not.toBe(first);
     // One element, three lines — and `whitespace-pre-line` is what paints them
     // as three. jsdom applies no CSS, so the class IS the only checkable half.
-    expect(second.textContent).toBe("פסקה שנייה:\n• פריט אחד\n• פריט שני");
+    expect(second.textContent).toBe("פסקה שנייה:\nשורה שנייה\nשורה שלישית");
     expect(second).toHaveClass("whitespace-pre-line");
+  });
+
+  // The walkthrough's finding: the three documents put SEVENTEEN `•` lines
+  // inside `<p class="whitespace-pre-line">` with zero <ul>/<ol>/<li> anywhere.
+  // axe passes it and cannot do otherwise — axe cannot know text beginning with
+  // «•» was MEANT to be a list. A sighted user gets an enumerated set of rights
+  // and recipients; a screen-reader user got one undifferentiated paragraph, on
+  // the page whose entire purpose is communicating exactly those. WCAG 1.3.1,
+  // Level A, on a legal surface.
+  it("renders a bullet run as a real list, one <li> per bullet line", async () => {
+    const { main } = await renderPage({
+      privacy_notice_text: "הזכויות שלך:\n• לעיין\n• לתקן\n• למחוק\n\nפסקה אחרי הרשימה.",
+    });
+
+    const list = within(main).getByRole("list");
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(3);
+    // The glyph is DROPPED from the text: the list marker is the <li>'s own, and
+    // a literal «•» beside it would be announced twice and painted twice.
+    expect(items.map((item) => item.textContent)).toEqual(["לעיין", "לתקן", "למחוק"]);
+
+    // The lead line stays a paragraph — it introduces the list, it is not in it.
+    const lead = within(main).getByText("הזכויות שלך:");
+    expect(lead.tagName).toBe("P");
+    // …and the block AFTER the list is still its own paragraph, so the run is
+    // bounded rather than swallowing the rest of the document.
+    expect(within(main).getByText("פסקה אחרי הרשימה.").tagName).toBe("P");
+  });
+
+  it("closes a run at the first non-bullet line and opens a fresh list after it", async () => {
+    // ⚠ ONE BLOCK, prose between the two runs — NOT two blocks. Two blocks are
+    // already separated by `paragraphs()`, so a fixture with a blank line
+    // between them tests the split that was never broken and leaves the
+    // intra-block boundary — the one `segments()` actually decides — untested.
+    // The first version of this test made exactly that mistake and stayed green
+    // against a mutation that merged every bullet in a block into one list.
+    //
+    // The shape is real: `PLATFORM_NOTICE_HE` has three runs, and merged,
+    // «למי המידע מגיע» would announce as items of «מה אנחנו מבקשות».
+    const { main } = await renderPage({
+      privacy_notice_text: "ראשונה:\n• א\n• ב\nטקסט באמצע\nשנייה:\n• ג",
+    });
+
+    const lists = within(main).getAllByRole("list");
+    expect(lists).toHaveLength(2);
+    expect(within(lists[0]).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(lists[1]).getAllByRole("listitem")).toHaveLength(1);
+    // The prose between them is its own paragraph, in document order.
+    expect(within(main).getByText(/טקסט באמצע/).tagName).toBe("P");
   });
 
   it("leaves no empty paragraph behind a trailing or doubled blank line", async () => {

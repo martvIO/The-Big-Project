@@ -61,7 +61,12 @@ const BOUTIQUE = {
   // single home for that, and a copy here would be a second place for a legal
   // string to drift. What they do carry are the two shapes the renderer handles —
   // the `{{boutique}}` token, and a blank-line paragraph break.
-  privacy_notice_text: "הודעת פרטיות של {{boutique}}.\n\nפסקה שנייה של ההודעה.",
+  // Three SHAPES, not three sentences: the `{{boutique}}` token, a blank-line
+  // paragraph break, and a BULLET RUN. The third is what makes the WCAG 1.3.1
+  // list assertions below — and every axe scan of this page — real; the three
+  // shipped documents carry seventeen `•` lines between them.
+  privacy_notice_text:
+    "הודעת פרטיות של {{boutique}}.\n\nפסקה שנייה של ההודעה.\n\nהזכויות שלך:\n• לעיין\n• לתקן\n• למחוק",
   privacy_dpa_text: "תנאי עיבוד מידע של {{boutique}}.",
   privacy_subprocessors_text: "ספקי תשתית.",
 };
@@ -2929,9 +2934,20 @@ test("storefront privacy: the three documents render in their statutory order, e
     PRIVACY_SUBPROCESSORS_HEAD,
   ]);
 
-  // The blank line in the fixture became a second <p>, rather than one block of
-  // text with a newline in it.
-  await expect(page.getByTestId("privacy-notice").locator("p")).toHaveCount(2);
+  // The blank lines in the fixture became separate <p>, rather than one block of
+  // text with newlines in it: two prose blocks plus the third block's lead line.
+  await expect(page.getByTestId("privacy-notice").locator("p")).toHaveCount(3);
+
+  // ⚠ WCAG 1.3.1, and it shipped broken: the three documents put their bullet
+  // lines inside <p class="whitespace-pre-line"> with zero <ul>/<ol>/<li>
+  // anywhere. axe passes that and CANNOT DO OTHERWISE — it has no way to know
+  // text beginning with «•» was meant to be a list — so this is the assertion
+  // that has to be written by hand, on the page whose entire purpose is
+  // communicating an enumerated set of rights and recipients.
+  await expect(page.getByTestId("privacy-notice").getByRole("listitem")).toHaveCount(3);
+  await expect(page.getByTestId("privacy-notice").getByRole("listitem").first()).toHaveText(
+    "לעיין",
+  );
 
   // {{boutique}} was filled in, and the literal token never reaches the page.
   await expect(page.getByTestId("privacy-notice")).toContainText(BOUTIQUE.name);
@@ -2973,8 +2989,16 @@ test("storefront privacy: the details step carries the §11 notice, and it is th
   // text, so a second copy pasted into the bundle would have to match byte for
   // byte to survive — which is the point.
   const onForm = (await notice.innerText()).replace(COLLECTION_NOTICE_HEAD, "");
+  // …and on the same SEMANTICS. One renderer serves both surfaces, so the
+  // bullet run is a real list on the §11 screen too — it was a paragraph on
+  // both, which is the half D13 could not see.
+  const itemsOnForm = await notice.getByRole("listitem").allInnerTexts();
+  expect(itemsOnForm).toEqual(["לעיין", "לתקן", "למחוק"]);
   await gotoSettled(page, "/privacy");
   const onPage = await page.getByTestId("privacy-notice").innerText();
+  expect(await page.getByTestId("privacy-notice").getByRole("listitem").allInnerTexts()).toEqual(
+    itemsOnForm,
+  );
   for (const block of [NOTICE_BLOCK_1, NOTICE_BLOCK_2]) {
     expect(onForm, `the booking form dropped: ${block}`).toContain(block);
     expect(onPage, `/privacy dropped: ${block}`).toContain(block);

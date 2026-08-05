@@ -1116,6 +1116,30 @@ describe("BookPage details step — the collection notice", () => {
     expect(within(block).getAllByText(/פסקה/)).toHaveLength(3);
   });
 
+  // The other half of the walkthrough's WCAG 1.3.1 finding. D13 makes this block
+  // and `/privacy` render the SAME string off the SAME fetch, so the list
+  // semantics have to be the same too — a bulleted set of rights that is a real
+  // list on one screen and one undifferentiated paragraph on the other is the
+  // drift D13 exists to prevent, and the §11 moment-of-collection screen is the
+  // one that matters more.
+  it("renders the notice's bullet run as a real list, one <li> per bullet line", async () => {
+    loadBoutique.mockResolvedValue(
+      boutique({
+        privacy_notice_text: "מה אנחנו מבקשות:\n• שם מלא\n• מספר טלפון\n\nולמה: כדי לקבוע תור.",
+      }),
+    );
+    await walkToDetails();
+
+    const block = screen.getByTestId("collection-notice");
+    const items = within(block).getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items.map((item) => item.textContent)).toEqual(["שם מלא", "מספר טלפון"]);
+    expect(within(block).getAllByRole("list")).toHaveLength(1);
+    // The prose either side is untouched — the run is bounded.
+    expect(within(block).getByText("מה אנחנו מבקשות:").tagName).toBe("P");
+    expect(within(block).getByText("ולמה: כדי לקבוע תור.").tagName).toBe("P");
+  });
+
   it("links out to the full document and carries no other chrome", async () => {
     await walkToDetails();
 

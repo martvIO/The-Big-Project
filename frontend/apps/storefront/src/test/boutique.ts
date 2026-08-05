@@ -11,10 +11,15 @@
 // approved text lives in exactly one place, `app/privacy/text.py`, and a copy of
 // it here would be a second place for a legal string to drift — and a test that
 // asserted against that copy would be asserting the fixture agrees with itself.
-// What these do carry is the two SHAPES the rendering has to handle: the
-// `{{boutique}}` token, and a blank-line paragraph break.
+// What these do carry is the three SHAPES the rendering has to handle: the
+// `{{boutique}}` token, a blank-line paragraph break, and a BULLET RUN — a lead
+// line followed by consecutive `•` lines inside one block, which is how all
+// three real documents write their lists and which has to come out as a real
+// <ul>/<li>. The bullet shape is here rather than only in the two tests that
+// name it so every axe pass in the suite scans a document with a list in it.
 export const PRIVACY_FIXTURE = {
-  privacy_notice_text: "הודעת ברירת מחדל של {{boutique}}.\n\nפסקה שנייה.",
+  privacy_notice_text:
+    "הודעת ברירת מחדל של {{boutique}}.\n\nפסקה שנייה.\n\nמה אנחנו מבקשות:\n• שם מלא\n• מספר טלפון\n• סוג הפגישה",
   privacy_dpa_text: "סעיף עיבוד מידע של {{boutique}}.",
   privacy_subprocessors_text: "ספקי תשתית.",
 } as const;

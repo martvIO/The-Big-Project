@@ -28,7 +28,8 @@ import type {
 } from "../api";
 import { ContactCard } from "../components/ContactCard";
 import { SizeChips } from "../components/booking/SizeChips";
-import { paragraphs, substituteBoutique } from "../lib/privacyText";
+import { substituteBoutique } from "../lib/privacyText";
+import { PrivacyProse } from "../components/PrivacyProse";
 import { TypePicker } from "../components/booking/TypePicker";
 import { useBoutique } from "../components/StorefrontLayout";
 import { Link, handOff, navigate, shouldIntercept } from "../router";
@@ -1311,16 +1312,15 @@ export function BookPage({ step, dressId }: BookPageProps) {
               <h2 className="font-display text-lg text-ink">
                 {t("booking.collectionNoticeHeading")}
               </h2>
-              {paragraphs(substituteBoutique(boutique.privacy_notice_text, boutique.name)).map(
-                (block, index) => (
-                  <p
-                    key={index}
-                    className="whitespace-pre-line text-sm text-ink-muted [overflow-wrap:anywhere]"
-                  >
-                    {block}
-                  </p>
-                ),
-              )}
+              {/* ⚠ THE SAME RENDERER `/privacy` USES. D13 makes the two
+                  surfaces serve one string; `PrivacyProse` is what makes them
+                  serve one set of SEMANTICS too — before it, both mapped
+                  `paragraphs()` to their own <p> and the documents' seventeen
+                  bullet lines had no list markup on either. */}
+              <PrivacyProse
+                text={substituteBoutique(boutique.privacy_notice_text, boutique.name)}
+                className="whitespace-pre-line text-sm text-ink-muted [overflow-wrap:anywhere]"
+              />
               <Link to="/privacy" className={cn("rounded-sm text-gold-text underline", focusRing)}>
                 {t("booking.collectionNoticeLink")}
               </Link>
