@@ -56,6 +56,27 @@ function exportHref(payload: SubjectExportResponse): string {
   )}`;
 }
 
+// Two spellings of ONE number, reduced to one key. NOT a validator: it never
+// decides whether a number is well-formed, only whether the operator re-typed
+// the number already on her screen.
+//
+// ⚠ The exact compare it replaces refused `0501234599` against a stored
+// `+972501234599` — the very format the lookup field's own help text asks for,
+// and the format she just used to FIND this customer, because `exportSubject`
+// sends the typed string straight to the API and the server normalises it. On an
+// IRREVERSIBLE action «המספר שהוקלד אינו תואם» then reads as "wrong woman".
+//
+// ⚠ Deliberately not in `validation.ts`: that file is what
+// `test_frontend_constant_parity.py` scrapes for MIRRORED BOUNDS, and this is an
+// algorithm — the same reason `AtelierSection.tsx`'s `parsesAsMobile` sits
+// outside it.
+function phoneKey(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  // The one rewrite that is not merely dropping noise: a local `05…` is the same
+  // number as `+9725…`, which is the whole defect.
+  return digits.startsWith("0") ? `972${digits.slice(1)}` : digits;
+}
+
 export function PrivacySection() {
   const { t } = useTranslation();
   const toast = useToast();
@@ -210,7 +231,12 @@ export function PrivacySection() {
     // bidi ambiguity in an RTL field, already on screen so it is a transcription
     // rather than a memory test, and different for every subject so it cannot be
     // satisfied by the muscle memory one fixed word builds after three uses.
-    if (typedPhone.trim() !== subject.subject.phone) {
+    //
+    // Compared as digits, never as strings — see `phoneKey`. The empty guard is
+    // the one way a looser compare could go wrong: an empty field must never
+    // match an empty normalisation.
+    const typed = phoneKey(typedPhone);
+    if (typed === "" || typed !== phoneKey(subject.subject.phone)) {
       setMismatch(true);
       return;
     }

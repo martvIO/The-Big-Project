@@ -342,6 +342,60 @@ describe("PrivacySection subject requests", () => {
     expect(eraseSubject).not.toHaveBeenCalled();
   });
 
+  // The walkthrough's finding: the confirm compared the typed string to the
+  // stored E.164 EXACTLY, so `0501234599` — the format the lookup field's own
+  // help text tells her to use, and the format she just used to FIND this
+  // customer — was refused with «המספר שהוקלד אינו תואם». On an irreversible
+  // privacy action, "the number you typed doesn't match" invites the operator to
+  // conclude she has the wrong woman, and the next move after that conclusion is
+  // to go looking for a different customer to erase.
+  it("accepts the LOCAL format its own lookup accepted, not only the stored E.164", async () => {
+    eraseSubject.mockResolvedValue({
+      customer_id: CUSTOMER_ID,
+      already_erased: false,
+      bookings_scrubbed: 0,
+      messages_scrubbed: 0,
+      queue_tickets_scrubbed: 0,
+      otp_codes_purged: 0,
+      scheduled_messages_purged: 0,
+    });
+    await open();
+    await lookup();
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("privacy.erase") }));
+    // PHONE is "+972501234567"; this is the same number as she would dial it.
+    fireEvent.change(screen.getByLabelText(i18n.t("privacy.eraseConfirmLabel")), {
+      target: { value: "050-123-4567" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("privacy.eraseConfirmCta") }));
+
+    await waitFor(() => {
+      expect(eraseSubject).toHaveBeenCalledWith({ customer_id: CUSTOMER_ID, reason: null });
+    });
+    expect(screen.queryByText(i18n.t("privacy.eraseConfirmMismatch"))).toBeNull();
+  });
+
+  it("refuses a BLANK confirmation even against a subject whose phone carries no digits", async () => {
+    // The one way a looser comparison could go wrong, and the reason `erase()`
+    // guards `typed === ""` separately: two empty normalisations are equal.
+    //
+    // ⚠ The digitless phone is what makes this test able to FAIL. Against an
+    // ordinary `+9725…` subject a blank field is refused by the comparison alone,
+    // so removing the guard reds nothing and the guard would be a line no
+    // mutation could reach. `by_phone` is exact equality on normalised E.164, so
+    // the server cannot produce this row today — the guard is defence for an
+    // irreversible action, and this is the assertion that keeps it honest.
+    exportSubject.mockResolvedValue(exported({ phone: "" }));
+    await open();
+    await lookup();
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("privacy.erase") }));
+
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("privacy.eraseConfirmCta") }));
+
+    expect(await screen.findByText(i18n.t("privacy.eraseConfirmMismatch"))).toBeInTheDocument();
+    expect(eraseSubject).not.toHaveBeenCalled();
+  });
+
   it("erases on the matching phone, keyed on the id the lookup returned", async () => {
     eraseSubject.mockResolvedValue({
       customer_id: CUSTOMER_ID,
