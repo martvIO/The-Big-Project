@@ -305,6 +305,38 @@ def test_the_send_route_hands_the_service_the_forwarded_ip_when_a_proxy_is_trust
     assert stub.send_ips == ["203.0.113.9"]
 
 
+def test_a_trusted_proxy_with_no_forwarded_header_yields_no_ip_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ THE THIRD ARM, ADDED BY THE 2026-08-05 REVIEW, AND THE ONE THAT WAS A
+    LIVE DEFECT RATHER THAN A GAP.
+
+    `client_ip` used to fall back to `request.client.host` here — the socket
+    peer, which on the deployment `TRUST_FORWARDED_FOR=true` describes is the
+    PROXY. Every request that reached the app without going through the proxy
+    would then have shared one `otp:ip:<proxy>` bucket: 20 sends an hour for the
+    entire platform, spent silently, with the victims seeing "code sent" and no
+    SMS. `auth/client_ip.py`'s own docstring names that exact failure — "a single
+    global bucket that reads as working" — as the reason the module exists, so
+    the file contradicted itself on its last line.
+
+    `None` means the caller skips the per-IP key entirely (`ip_key` in
+    `notifications/service.py`), which is one budget not metering rather than
+    every customer of every boutique metered against one another.
+    """
+    monkeypatch.setattr("app.notifications.router.get_settings", lambda: _TrustingSettings())
+    client, stub = _client()
+    with client:
+        # TestClient always supplies a peer address ("testclient"), so the old
+        # fallback had something to return and this is not a vacuous assertion.
+        resp = client.post(SEND_PATH, json={"phone": PHONE})
+    assert resp.status_code == 204
+    assert stub.send_ips == [None], (
+        "a trusted-proxy deployment derived an address from a request that never "
+        "passed the proxy — the per-IP budget is one global bucket again"
+    )
+
+
 def test_the_shipped_app_gives_every_otp_budget_its_own_limiter_instance() -> None:
     """⚠ WRITTEN BECAUSE A MUTATION CAME BACK GREEN. Reusing one
     `FixedWindowRateLimiter` for the IP budget and the phone budget in `main.py`

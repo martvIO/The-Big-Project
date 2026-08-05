@@ -45,6 +45,7 @@ both are emitted BESIDE the dict by the same middleware and carry their own
 tests in `tests/test_security_headers.py`.
 """
 
+import re
 from urllib.parse import urlsplit
 
 from fastapi import Request
@@ -61,6 +62,28 @@ HSTS_HEADER = "Strict-Transport-Security"
 # irreversible and is a decision for a domain that resolves, not for
 # *.up.railway.app.
 HSTS_VALUE = "max-age=31536000; includeSubDomains"
+
+# An allowlist, not a denylist of the characters that happen to be dangerous
+# today: a netloc is `host[:port]` (or a bracketed IPv6 literal), and anything
+# outside that set cannot be part of one. This is what refuses `;`, whitespace,
+# `,`, `*`, quotes and `/` in one line without having to enumerate them.
+_SAFE_NETLOC = re.compile(r"[A-Za-z0-9._~%:\[\]-]+")
+
+# D3's ten, in order. `build_csp` re-reads its OWN output against this, so a
+# directive spliced in from settings — or one dropped by an edit — is a failure
+# at `create_app()` rather than a policy nobody re-read.
+CSP_DIRECTIVES = (
+    "default-src",
+    "script-src",
+    "style-src",
+    "img-src",
+    "font-src",
+    "connect-src",
+    "form-action",
+    "frame-ancestors",
+    "base-uri",
+    "object-src",
+)
 
 SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
@@ -89,11 +112,36 @@ def media_csp_origin(settings: Settings) -> str | None:
     `None` when no bucket is configured. No bucket is a supported deployment
     (config.py:265-269), and it gets a strictly TIGHTER policy — never a broken
     one.
+
+    ⚠ THE ORIGIN IS VALIDATED, NOT JUST REDUCED, SINCE THE 2026-08-05 REVIEW.
+    Both inputs were spliced into the policy raw. A CSP is a `;`-delimited list
+    and **the browser honours the FIRST occurrence of a directive**, so
+    `MEDIA_REGION="x; frame-ancestors *"` emitted `frame-ancestors *` ahead of
+    this module's own `frame-ancestors 'none'` and turned clickjacking back on;
+    `https://*` wildcarded `connect-src`. `MEDIA_ENDPOINT_URL` was already
+    boot-blocked in production and forced `https://` outside dev, and
+    `"https://x.test; frame-ancestors *"` satisfies both of those — while
+    `MEDIA_REGION` had no check beyond non-empty. (`\\r\\n` was never a header
+    injection: `urlsplit` drops it. This is directive injection inside one
+    header's value.)
+
+    It needs env write access, so it is config integrity rather than an
+    internet-facing hole — and a wrong media setting is already a boot failure in
+    this product (`config.py`'s `_require_usable_media_config`: a MISSING bucket
+    is supported, a WRONG one is not), so this raises rather than quietly
+    dropping the origin. A silently-dropped origin would break every dress photo
+    with no explanation.
     """
     if not settings.media_bucket:
         return None
     raw = settings.media_endpoint_url or f"https://s3.{settings.media_region}.amazonaws.com"
     parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not _SAFE_NETLOC.fullmatch(parts.netloc):
+        raise ValueError(
+            "the media origin does not reduce to a bare http(s) host — refusing to "
+            f"splice {raw!r} into the Content-Security-Policy. Check MEDIA_REGION "
+            "and MEDIA_ENDPOINT_URL."
+        )
     return f"{parts.scheme}://{parts.netloc}"
 
 
@@ -122,7 +170,7 @@ def build_csp(settings: Settings) -> str:
     media = media_csp_origin(settings)
     img = f"'self' data: {media}" if media else "'self' data:"
     external = f"'self' {media}" if media else "'self'"
-    return "; ".join(
+    policy = "; ".join(
         (
             "default-src 'self'",
             "script-src 'self'",
@@ -136,6 +184,17 @@ def build_csp(settings: Settings) -> str:
             "object-src 'none'",
         )
     )
+    # The invariant R28's evidence implicitly claims, asserted on the string that
+    # is actually emitted rather than on the tuple above: exactly these ten
+    # directives, exactly once each, in this order. `media_csp_origin` now
+    # refuses a netloc that could carry a `;`, so this is the second line of
+    # defence and not the first — but it is the one that survives someone
+    # widening the policy from a new settings field later, and it is what makes
+    # "ten directives" a runtime fact rather than a sentence in a checklist.
+    emitted = tuple(part.split(" ", 1)[0] for part in policy.split("; "))
+    if emitted != CSP_DIRECTIVES:
+        raise ValueError(f"the emitted CSP is not D3's ten directives in order: {emitted}")
+    return policy
 
 
 def _effective_scheme(request: Request) -> str:

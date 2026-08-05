@@ -127,7 +127,16 @@ jobs:
     # green tick. This lengthens the merge path and that cost is accepted
     # deliberately (spec Risk 4); if the suite flakes, fix the flake rather than
     # adding a retry count.
-    needs: [backend, frontend, e2e]
+    #
+    # `audit` joins it on the 2026-08-05 review, and the argument above is the
+    # SAME argument: F21 took that job off `continue-on-error`, and a blocking
+    # job that is not a deploy gate is still only a report. `main` is unprotected
+    # in this repo, so on a push a red `audit` reds the workflow while
+    # deploy-staging runs anyway — the exact hole `e2e` was added to close, left
+    # open one job over. The rule is now mechanical rather than remembered:
+    # test_ci_gates.py asserts that EVERY blocking job is listed here, so the
+    # next job to lose `continue-on-error` cannot quietly skip this line.
+    needs: [backend, frontend, e2e, audit]
     runs-on: ubuntu-latest
     concurrency:
       group: staging-deploy

@@ -15,6 +15,20 @@ sites disagreeing about how the real client address is derived is precisely the
 bug class the comment below warns about: one of them would eventually start
 trusting `request.client.host` unconditionally, and the budget keyed on it would
 collapse to a single global bucket that reads as working.
+
+⚠ AND THIS FILE DID THAT ITSELF, ON ITS LAST LINE, until the 2026-08-05 review.
+With `trust_forwarded_for` on and no `X-Forwarded-For` present it fell back to
+`request.client.host` — the socket peer, which on the deployment this setting
+describes is the proxy. That is precisely "a single global bucket that reads as
+working", in the file whose stated purpose is to prevent it, reachable on any
+request that skips the proxy. The fallback is now `None`.
+
+`None` and not the peer address, deliberately: the premise of
+`TRUST_FORWARDED_FOR=true` is that exactly one trusted proxy appends the header,
+so a request arriving without it is one that BYPASSED the proxy, and its peer
+address is not a fact this module can vouch for. Callers already treat `None` as
+"skip the per-IP budget" (`notifications/service.py`'s `ip_key`), so the failure
+mode is one budget not metering rather than every customer sharing one.
 """
 
 from fastapi import Request
@@ -28,6 +42,6 @@ def client_ip(request: Request, trust_forwarded_for: bool) -> str | None:
     if not trust_forwarded_for:
         return None
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[-1].strip()
-    return request.client.host if request.client else None
+    if not forwarded:
+        return None
+    return forwarded.split(",")[-1].strip()

@@ -725,11 +725,19 @@ the rows gated by DNS from the two that are not.
           not a formality.
       R9  (nothing owed — recorded so it is not re-litigated) CLOSED at F21.
           test_cross_tenant_walker.py: 105 tenant-scoped routes, 56 driven with
-          tenant B's ids, 6 UNWALKABLE with reasons, 43 carrying no tenant-owned id.
-          NO CROSS-TENANT HOLE WAS FOUND. Four assertions: 404, no 5xx, no body
-          echoes tenant B's ids at any status, and walked ∪ exempt == the route
-          table both ways. auth, dashboard, notifications and payments are asserted
-          to walk EXACTLY ZERO routes because none carries a tenant-owned id.
+          tenant B's ids OF WHICH 54 DISCRIMINATE, 6 UNWALKABLE with reasons, 43
+          carrying no tenant-owned id. NO CROSS-TENANT HOLE WAS FOUND. Four
+          assertions: 404, no 5xx, no body echoes tenant B's ids at any status,
+          and walked ∪ exempt == the route table both ways. auth, dashboard,
+          notifications and payments are asserted to walk EXACTLY ZERO routes
+          because none carries a tenant-owned id.
+          ⚠ 54, not 56 (2026-08-05 review). A 404 is evidence only if the route
+          answers something else for the caller's OWN ids, and two refuse
+          everyone: dresses/{id}/restore (catalog/service.py:476 refuses a
+          non-archived dress) and floor/sos/{id}/accept (floor/service.py:1650
+          refuses the raiser her own page). Both 404s are a STATE GUARD, not the
+          tenant check. Hand-probed with the preconditions satisfied — both still
+          refused. No hole; a miscount, now named in STATE_GUARDED and asserted.
       R12 (access-restriction clause) — "access-restricted" means SSH/console access
           to the host. The audit clause CLOSED at F21 (list_tenants writes a
           platform_audit_log row, with the --operator name it used to discard).
@@ -741,6 +749,27 @@ the rows gated by DNS from the two that are not.
           asserts the budget does NOT meter with the shipped default — which is why
           the row is amber rather than green. Separately, auth/rate_limit.py:5-6
           names Redis: per-process buckets mean N instances -> N × the budget.
+          ⚠⚠ PRECONDITION — DO NOT SET TRUST_FORWARDED_FOR=true UNTIL THIS IS
+          ANSWERED. 2026-08-05 review, reasoned rather than reproduced (the budget
+          is inert, so nothing ships broken — which is exactly why it must be
+          written down before someone arms it). The key is `otp:ip:{ip}`, NOT
+          tenant-scoped, at 20 sends/hour, and a tripped budget returns the same
+          silent 204 as a success. Armed, one actor behind a carrier CGNAT or an
+          office NAT spends 20 sends and EVERY OTHER CUSTOMER BEHIND THAT EGRESS
+          STOPS RECEIVING OTPs AT EVERY BOUTIQUE ON THE PLATFORM. The victim sees
+          "code sent" and no SMS; the operator sees no 429, no error and no
+          distinguishable log. The silence is correct for the PHONE budget — it
+          denies an oracle about one number — and wrong for an ADDRESS budget,
+          where it only hides an outage. DO NOT make the IP budget answer
+          distinguishably: that manufactures the oracle the silence exists to
+          deny. The real work is a cross-tenant key, a ceiling sized for shared
+          egress, and an operator-visible signal that is not a response body.
+          config.py:82-85 reasons about the ceiling and not at all about the
+          silence. HALF OF IT IS ALREADY CLOSED: client_ip.py fell back to
+          request.client.host — the proxy — whenever the header was absent, which
+          is "a global bucket that reads as working", the exact failure that
+          module's docstring says it exists to prevent. F21 now returns None
+          there (test_a_trusted_proxy_with_no_forwarded_header_yields_no_ip_at_all).
       R26 — per-tenant gateway credentials KMS-encrypted. Only FakeSecretBox ships
           ("THIS IS NOT ENCRYPTION", payments/secretbox.py:61-62). Production is
           boot-blocked (config.py:315-316) and 0012's provider IN ('fake') CHECK

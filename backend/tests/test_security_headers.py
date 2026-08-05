@@ -17,10 +17,12 @@ assertions into assertions about a value that varies per request.
 
 import uuid
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app import security_headers
 from app.core.config import Settings
 from app.main import create_app
 from app.security_headers import (
@@ -250,6 +252,60 @@ def test_the_media_origin_is_normalised_to_scheme_host_port(
     settings = _settings(media_bucket="b", media_endpoint_url=endpoint_url)
     assert media_csp_origin(settings) == expected
     assert _parse(build_csp(settings))["img-src"] == ["'self'", "data:", expected]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        # A CSP is a `;`-delimited list and the browser honours the FIRST
+        # occurrence of a directive — so this lands `frame-ancestors *` AHEAD of
+        # this module's own `frame-ancestors 'none'` and turns clickjacking back
+        # on. MEDIA_REGION had no check at all beyond non-empty.
+        ("media_region", "x; frame-ancestors *"),
+        ("media_region", "il-central-1 https://evil.test"),
+        # Satisfies BOTH of config.py's existing endpoint checks — https, and not
+        # production — and still injects.
+        ("media_endpoint_url", "https://x.test; frame-ancestors *"),
+        # Wildcards the directive it lands in without needing a separator.
+        ("media_endpoint_url", "https://*"),
+        ("media_endpoint_url", "https://*.amazonaws.com"),
+        # Not a fetch scheme. `urlsplit` gives it an empty netloc.
+        ("media_endpoint_url", "javascript:alert(1)"),
+    ],
+)
+def test_a_media_setting_cannot_inject_a_csp_directive(field: str, value: str) -> None:
+    """⚠ FOUND BY THE 2026-08-05 REVIEW. Both media settings were spliced into
+    the policy raw, and the emitted string was the proof.
+
+    This is config integrity rather than an internet-facing hole — it needs env
+    write access — but a wrong media setting is already a boot failure in this
+    product (`config.py`'s `_require_usable_media_config`), and `build_csp` runs
+    at `create_app()` time, so refusing here fails at boot in the same way. A
+    silently-dropped origin would instead break every dress photo with no
+    explanation attached.
+    """
+    settings = _settings(media_bucket="b", **{field: value})
+    with pytest.raises(ValueError, match="media origin"):
+        media_csp_origin(settings)
+    with pytest.raises(ValueError, match="media origin"):
+        build_csp(settings)
+
+
+def test_the_emitted_policy_is_checked_against_its_own_directive_set() -> None:
+    """The runtime invariant R28's evidence implicitly claims, and the second
+    line of defence behind `media_csp_origin`'s validation: whatever the settings
+    are, the string that leaves `build_csp` is D3's ten directives, once each, in
+    order. Driven here by mutating the tuple the builder checks against, because
+    the settings route to a bad policy is now closed — which is exactly why this
+    leg needs its own proof that it is wired at all."""
+    settings = _settings(media_bucket="b", media_region="il-central-1")
+    assert build_csp(settings)  # the real policy passes its own check
+
+    with (
+        mock.patch.object(security_headers, "CSP_DIRECTIVES", ("default-src", "script-src")),
+        pytest.raises(ValueError, match="ten directives in order"),
+    ):
+        build_csp(settings)
 
 
 def test_the_csp_is_emitted_on_every_surface(

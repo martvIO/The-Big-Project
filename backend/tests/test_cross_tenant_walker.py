@@ -44,6 +44,24 @@ one deviation, and it exists so that Risk 4's slope is visible: the list that
 could quietly become the interesting half is the small one with a reason on every
 line.
 
+⚠ TWO OF THE WALKED ROUTES REFUSE FOR A REASON THAT IS NOT THE TENANT CHECK, AND
+THEIR 404 IS THEREFORE NOT EVIDENCE. A 404 proves isolation only if the route
+answers something ELSE for the caller's own ids; tenant A is never populated, so
+this module never checks that, and for two routes it is false. Both are named in
+`STATE_GUARDED` below with the guard that actually produces the refusal. The
+honest count is **56 driven, 54 discriminating** — R9 says so too.
+
+Recorded rather than fixed, deliberately. The 2026-08-05 review built the sound
+control (a freshly seeded tenant PER ROUTE — reusing one tenant produced sixteen
+false positives from walk ordering, e.g. `DELETE /manage/staff/{id}` sorting
+before `PATCH`) and hand-probed both of these with their preconditions satisfied:
+tenant B's dress archived first, and a second B staffer raising the alert.
+**Both still refused with 404. There is no hole.** A per-route-tenant harness
+would be 56 HTTP tenant seeds to re-prove two routes whose tenant predicate is
+the same `by_id(session, tenant_id, ...)` their twenty-one walked siblings in
+`catalog` and `floor` already exercise — so what is owed here was a claim, not a
+control, and the claim is now correct.
+
 ⚠ PLAN CORRECTION, and it changes `test_no_module_is_wholly_exempt`. The plan
 spells the per-module floor over fourteen modules including `platform` and
 `storage`. Neither exposes a single HTTP route — `platform` is the provisioning
@@ -314,10 +332,13 @@ EXPECTED_STATUS: dict[tuple[str, str], tuple[int, str]] = {
 }
 
 
-# Has a tenant-owned id and still cannot be driven as a tenant principal. FOUR
+# Has a tenant-owned id and still cannot be driven as a tenant principal. SIX
 # entries, each with its own reason — this is the list Risk 4 says can quietly
 # become the interesting half, which is why it is small, commented per line, and
-# fenced by the per-module floor below.
+# fenced by the per-module floor below. (It said FOUR until the 2026-08-05
+# review, in a module whose stated purpose is that this list not grow unnoticed;
+# `test_the_exemptions_each_carry_a_reason` now asserts the count so the fence
+# cannot drift from the thing it fences again.)
 UNWALKABLE: dict[tuple[str, str], str] = {
     ("POST", "/storefront/payments/webhook"): (
         "raw bytes verified by HMAC-SHA256 over the exact body; the caller is the "
@@ -345,6 +366,33 @@ UNWALKABLE: dict[tuple[str, str], str] = {
         "keyed on a provider-issued opaque session string on a payments row, not "
         "a UUID we can mint; having one at all means driving a real deposit "
         "against the gateway. test_payments_isolation.py."
+    ),
+}
+
+
+# WALKED, refuses with 404, and the 404 is NOT evidence of a tenant check. These
+# two routes answer 404 to the CALLER'S OWN ids as well, because a state guard
+# fires before anything tenant-scoped is decided — so their refusal here is
+# consistent with isolation but does not demonstrate it. Found by the 2026-08-05
+# review, which then hand-probed both with the preconditions satisfied and found
+# both still refusing: no hole, a miscount. Subtracted from the discriminating
+# count so R9's evidence says what is true.
+#
+# Each reason names the guard's own file:line, so a reader checks the reasoning
+# rather than taking this file's word for it — and so that closing one of these
+# (by seeding the precondition into `_populate`) shows up as a reason that no
+# longer matches the code.
+STATE_GUARDED: dict[tuple[str, str], str] = {
+    ("POST", "/manage/dresses/{dress_id}/restore"): (
+        "catalog/service.py:476 refuses any dress whose deleted_at is None, and "
+        "the walk never archives one — so tenant A's own dress would 404 here too. "
+        "Probed by hand with tenant B's dress archived first: still 404."
+    ),
+    ("POST", "/manage/floor/sos/{alert_id}/accept"): (
+        "floor/service.py:1650 refuses the raiser her own page, and the walk's only "
+        "alert is raised by the owner who then probes it — so tenant A's own alert "
+        "would 404 here too. Probed by hand with a second B staffer raising a "
+        "targeted alert: still 404."
     ),
 }
 
@@ -916,3 +964,44 @@ def test_the_exemptions_each_carry_a_reason() -> None:
     assert EXPECTED_STATUS
     for route, (_, reason) in EXPECTED_STATUS.items():
         assert len(reason) > 40, f"{route} needs a real reason, not {reason!r}"
+    # The count the module docstring fences this list with. It read FOUR against
+    # six entries until the 2026-08-05 review — in the module whose whole point is
+    # that this list not grow unnoticed — so the fence is now an assertion.
+    assert len(UNWALKABLE) == 6, (
+        f"UNWALKABLE is now {len(UNWALKABLE)} entries. Update the count in its own "
+        "comment and in the checklist's R9 row before changing this number."
+    )
+
+
+def test_the_state_guarded_routes_are_walked_and_named(
+    walk: Walk,
+) -> None:
+    """R9's evidence must not count these two 404s as isolation.
+
+    A 404 discriminates only if the route answers something else for the caller's
+    OWN ids, and for these two a state guard refuses first — so they are walked
+    (they must be: dropping them would hide the route entirely) and subtracted
+    from the discriminating count. If someone seeds the precondition into
+    `_populate` and closes one of these, the entry is what tells them to delete
+    the note rather than leave it lying, exactly as
+    `PARTIALLY_AUDITED_BY_DECISION` does in test_audit_coverage.py.
+    """
+    responses = walk.responses
+    assert STATE_GUARDED
+    for route, reason in STATE_GUARDED.items():
+        assert route in responses, f"{route} is no longer walked — prune this note"
+        assert responses[route].status_code == 404, (
+            f"{route} no longer answers 404; re-judge whether its state guard still "
+            "fires before the tenant check"
+        )
+        assert len(reason) > 40, f"{route} needs a real reason, not {reason!r}"
+        assert re.search(r"\w+/\w+\.py:\d+", reason), (
+            f"{route}'s reason must name the guard's file:line so it can be checked"
+        )
+
+    discriminating = len(responses) - len(STATE_GUARDED)
+    assert (len(responses), discriminating) == (56, 54), (
+        f"the walk drove {len(responses)} routes, {discriminating} of them "
+        "discriminating. Both numbers are quoted as evidence in "
+        ".planning/security-checklist-v1.md's R9 row — update it in the same commit."
+    )

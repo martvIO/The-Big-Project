@@ -186,7 +186,10 @@ UNAUDITED_BY_DECISION: dict[tuple[str, str], str] = {
     ),
     ("POST", "/manage/terms"): (
         "terms versions are append-only and immutable: the VERSION ROW is the audit "
-        "trail, which is why it is throttled rather than logged twice"
+        "trail — it carries the actor (boutique/router.py:233 passes created_by) and "
+        "its own created_at, which is also why the path is throttled rather than "
+        "logged twice (boutique/service.py:389-390). Sits under F42's standing rule "
+        "for the boutique configuring itself (boutique/service.py:143-144)"
     ),
     # floor — D13's rule, stated in each method's own docstring: where a durable
     # row already answers who/when, a second row in audit_log is noise that would
@@ -205,7 +208,9 @@ UNAUDITED_BY_DECISION: dict[tuple[str, str], str] = {
     ),
     ("PATCH", "/manage/floor/rooms/{room_id}"): (
         "room label/order/active are floor furniture, not tenant data about a person; "
-        "the room row and its updated_at are the record (D13, as for create_room)"
+        "the room row and its updated_at are the record — D13's rule, stated for this "
+        "surface in create_room's own docstring (floor/service.py:1218-1219) and "
+        "unchanged by the update path"
     ),
     # privacy — the one gap this walker FOUND rather than confirmed.
     ("PUT", "/manage/privacy"): (
@@ -216,6 +221,10 @@ UNAUDITED_BY_DECISION: dict[tuple[str, str], str] = {
         "widening its own charter. Owner: F62, alongside the audit READ surface."
     ),
 }
+
+# The one exemption whose decision is recorded HERE and nowhere else, because
+# nowhere else had it. See test_the_exemption_list_is_exactly_the_recorded_decisions.
+RECORDED_ONLY_HERE: frozenset[tuple[str, str]] = frozenset({("PUT", "/manage/privacy")})
 
 # Audited, but only in part, and the part that is not audited is a recorded
 # decision that a per-route walker structurally cannot express.
@@ -254,9 +263,36 @@ def test_every_mutating_manage_route_writes_an_audit_row_or_is_exempt() -> None:
 def test_the_exemption_list_is_exactly_the_recorded_decisions() -> None:
     """D6's rule: F21 converts an invisible coverage gap into a REVIEWED one. A
     reason that is blank, or that does not say where the decision lives, is the
-    gap wearing a list's clothing."""
+    gap wearing a list's clothing.
+
+    ⚠ THIS TEST USED TO CHECK ONLY `len(reason) > 40`, which is not the rule this
+    module's docstring states, and two entries had drifted past it with a
+    rationale but no citation (found by the 2026-08-05 review). It now enforces
+    what the docstring claims: a `file.py:line` a reviewer can open.
+
+    `PUT /manage/privacy` is the one exemption with nothing to cite, and that is
+    the finding rather than a lapse — the walker FOUND it, no decision to that
+    effect existed anywhere in the tree, and this file is now where it is
+    recorded. It is named rather than waved through, so a citation appearing
+    there later means someone recorded the decision properly and this exception
+    should go.
+    """
+    citation = re.compile(r"\w+/\w+\.py:\d+")
+    assert set(UNAUDITED_BY_DECISION) >= RECORDED_ONLY_HERE, (
+        f"prune the citation exception: {sorted(RECORDED_ONLY_HERE - set(UNAUDITED_BY_DECISION))}"
+    )
     for route, reason in UNAUDITED_BY_DECISION.items():
         assert len(reason) > 40, f"{route} carries no real reason"
+        if route in RECORDED_ONLY_HERE:
+            assert "not previously recorded anywhere" in reason, (
+                f"{route} is exempt from the citation rule and must say why in its reason"
+            )
+            continue
+        assert citation.search(reason), (
+            f"{route}'s reason names no file:line. This module's rule is that an "
+            "exemption cites where the decision was recorded in the shipped code — "
+            "a rationale a reviewer cannot open is prose, not a record."
+        )
     modules = {path.split("/")[2] for _, path in UNAUDITED_BY_DECISION}
     assert modules == {"appointment-types", "availability", "terms", "floor", "privacy"}, (
         "the exemption set changed shape — a new module went quiet, or one was closed "
