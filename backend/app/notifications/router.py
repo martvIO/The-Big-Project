@@ -23,6 +23,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
 
+from app.auth.client_ip import client_ip
+from app.core.config import get_settings
 from app.notifications.schemas import OtpSendRequest, OtpVerifyRequest, OtpVerifyResponse
 from app.notifications.service import OtpService
 from app.tenancy.middleware import get_current_tenant
@@ -49,8 +51,14 @@ Otp = Annotated[OtpService, Depends(get_otp_service)]
 
 @router.post("/otp/send", status_code=204)
 async def send_otp(request: Request, service: Otp, body: OtpSendRequest) -> None:
+    """⚠ `ip` IS `None` ON EVERY DEPLOYMENT WE CURRENTLY HAVE. `client_ip` returns
+    `None` unless `trust_forwarded_for`, which ships `False` (`config.py:37`), so
+    the per-IP send budget below is code-complete and INERT — row R16 is amber
+    for that reason, and arming it (`TRUST_FORWARDED_FOR=true`, correct only
+    behind exactly one trusted proxy that appends XFF) is `F62`'s."""
     tenant = get_current_tenant(request)
-    await service.send(tenant.id, body.phone)
+    ip = client_ip(request, get_settings().trust_forwarded_for)
+    await service.send(tenant.id, body.phone, ip=ip)
 
 
 @router.post("/otp/verify")

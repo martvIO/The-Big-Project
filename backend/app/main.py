@@ -813,6 +813,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             window_seconds=settings.otp_verify_phone_window_seconds,
             clock=time.monotonic,
         ),
+        # ⚠ ITS OWN INSTANCE, beside phone_limiter and tenant_limiter and never a
+        # third key on either: max_attempts lives on the LIMITER, so two keys
+        # sharing one instance share one ceiling
+        # (.memory/limiter-max-is-per-instance).
+        ip_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.otp_send_max_per_ip_window,
+            window_seconds=settings.otp_send_ip_window_seconds,
+            clock=time.monotonic,
+        ),
         dev_code=settings.otp_dev_code,
     )
     app.state.booking_service = BookingService(

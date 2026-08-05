@@ -129,7 +129,7 @@ def _effective_scheme(request: Request) -> str:
     is spoken to over plain HTTP.
 
     `x-forwarded-proto` is read here WITHOUT a `trust_forwarded_for` guard, and
-    the asymmetry with `_client_ip` (auth/router.py) is deliberate rather than an
+    the asymmetry with `client_ip` (auth/client_ip.py) is deliberate rather than an
     oversight. A spoofed `x-forwarded-for` poisons a rate-limit bucket keyed by
     IP — a real attack with a real budget to spend. A spoofed
     `x-forwarded-proto: https` over plain HTTP makes the app emit an HSTS header

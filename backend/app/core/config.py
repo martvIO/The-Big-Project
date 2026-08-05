@@ -77,6 +77,17 @@ class Settings(BaseSettings):
     otp_send_phone_window_seconds: int = 3600
     otp_send_max_per_tenant_window: int = 100
     otp_send_tenant_window_seconds: int = 3600
+    # F21 row R16. Sized against otp_send_max_per_phone_window = 5: one address
+    # legitimately sends for a household's or a bridal party's few phones inside
+    # an hour, not fifty — and a shared office NAT or a carrier CGNAT is the case
+    # this ceiling must not punish, which is why it is a multiple of the phone
+    # budget rather than close to it.
+    #
+    # ⚠ INERT ON EVERY DEPLOYMENT WE CURRENTLY HAVE. `client_ip` returns None
+    # unless `trust_forwarded_for` (:37), which ships False, so the key is never
+    # built and this ceiling is never reached. Arming it is a host fact and F62's.
+    otp_send_max_per_ip_window: int = 20
+    otp_send_ip_window_seconds: int = 3600
     # Verify is throttled SEPARATELY from send. The per-code attempt cap
     # (5, column-tracked) burns one code; without a budget here an attacker
     # simply requests a fresh code and keeps guessing, and each call is an
