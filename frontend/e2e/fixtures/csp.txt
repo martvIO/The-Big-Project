@@ -16,4 +16,11 @@
 # SETTINGS THIS POLICY IS BUILT FROM (pinned in that test as FIXTURE_BUCKET /
 # FIXTURE_REGION): media_bucket=boutique-media, media_region=il-central-1,
 # media_endpoint_url unset -> the media origin is the regional S3 host.
-default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://s3.il-central-1.amazonaws.com; font-src 'self'; connect-src 'self' https://s3.il-central-1.amazonaws.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'
+#
+# WHY `img-src` CARRIES `data:`. csp.spec.ts red on its very first run and the
+# finding was real: apps/manage/src/assets/modryn-mark.svg is 973 bytes, under
+# Vite's assetsInlineLimit of 4096, so the build inlines it as a
+# data:image/svg+xml URI and the console login screen's MODRYN lockup — its own
+# h1 — was refused. That is spec D3's named tripwire firing, and one source on
+# one directive is the prescribed widening. It stays off every other directive.
+default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://s3.il-central-1.amazonaws.com; font-src 'self'; connect-src 'self' https://s3.il-central-1.amazonaws.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'

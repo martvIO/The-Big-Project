@@ -104,15 +104,25 @@ def build_csp(settings: Settings) -> str:
     now that FastAPI serves them; `X-Frame-Options: DENY` stays as the
     defence-in-depth it was always described as. `form-action` and `base-uri`
     close the two injection shapes a `default-src` does not.
+
+    **`img-src` carries `data:` and no other directive does.** D3 named
+    `assetsInlineLimit` (Vite's default, 4096) as a live tripwire, and it was
+    already tripped when the browser test first ran: `modryn-mark.svg` is 973
+    bytes, so the build inlines it as a `data:image/svg+xml` URI and the console
+    login screen's MODRYN lockup — its own h1 — is refused by an `img-src` of
+    `'self'` alone. One source on one directive is the prescribed widening. It
+    must never spread: a data URI cannot execute, which is the whole reason it is
+    tolerable here and intolerable on `script-src` or `connect-src`.
     """
     media = media_csp_origin(settings)
+    img = f"'self' data: {media}" if media else "'self' data:"
     external = f"'self' {media}" if media else "'self'"
     return "; ".join(
         (
             "default-src 'self'",
             "script-src 'self'",
             "style-src 'self'",
-            f"img-src {external}",
+            f"img-src {img}",
             "font-src 'self'",
             f"connect-src {external}",
             "form-action 'self'",

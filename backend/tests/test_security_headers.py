@@ -176,6 +176,29 @@ def test_the_csp_pins_the_directive_set() -> None:
     assert directives["form-action"] == ["'self'"]
 
 
+def test_the_csp_admits_data_uris_on_img_src_and_nowhere_else() -> None:
+    """**Found by the browser, not by a header string.** Spec D3 named
+    `assetsInlineLimit` (default 4096) as a live tripwire, and it was already
+    tripped when `csp.spec.ts` first ran: `apps/manage/src/assets/modryn-mark.svg`
+    is 973 bytes, so Rolldown emits it as a `data:image/svg+xml` URI inside the
+    console bundle, and `<img src={markUrl}>` on the login screen
+    (`LoginForm.tsx:37`) is refused by an `img-src` of `'self'` alone. The MODRYN
+    lockup — the console's own h1 — would have gone blank in production.
+
+    Widened by exactly ONE source on exactly ONE directive, which is what D3's
+    tripwire prescribes. `data:` is a real weakening and it is bounded: a data
+    URI cannot execute, cannot be a script and cannot exfiltrate, so on `img-src`
+    it costs the ability to distinguish an inlined build asset from an attacker's
+    inlined pixel — and nothing else. It must stay off every other directive,
+    because `script-src data:` or `connect-src data:` would be a different
+    property entirely. That negative half is the assertion below."""
+    directives = _parse(build_csp(_settings(media_bucket="b", media_region="il-central-1")))
+    assert "data:" in directives["img-src"]
+    for name, sources in directives.items():
+        if name != "img-src":
+            assert "data:" not in sources, f"{name} must not admit data: URIs"
+
+
 def test_the_csp_names_the_media_origin_when_a_bucket_is_configured() -> None:
     """Path-style addressing (storage/s3.py:73-78) is why the bucket never
     appears in the host: an explicit endpoint_url forces path style, and the
@@ -185,7 +208,7 @@ def test_the_csp_names_the_media_origin_when_a_bucket_is_configured() -> None:
         build_csp(_settings(media_bucket="boutique-prod", media_region="il-central-1"))
     )
     origin = "https://s3.il-central-1.amazonaws.com"
-    assert directives["img-src"] == ["'self'", origin]
+    assert directives["img-src"] == ["'self'", "data:", origin]
     assert directives["connect-src"] == ["'self'", origin]
     # The bucket name is not a host component and must never leak into a header
     # every response carries.
@@ -199,7 +222,10 @@ def test_the_csp_omits_the_media_origin_when_no_bucket_is_configured() -> None:
     one. No bucket is a supported deployment (config.py:265-269), so the policy
     must degrade in the safe direction."""
     directives = _parse(build_csp(_settings(media_bucket=None)))
-    assert directives["img-src"] == ["'self'"]
+    # `data:` survives the bucket-less case because it is about the BUNDLE, not
+    # about the deployment: the inlined mark ships in every build regardless of
+    # whether media is configured.
+    assert directives["img-src"] == ["'self'", "data:"]
     assert directives["connect-src"] == ["'self'"]
     assert media_csp_origin(_settings(media_bucket=None)) is None
 
@@ -223,7 +249,7 @@ def test_the_media_origin_is_normalised_to_scheme_host_port(
     one — there is no error to observe."""
     settings = _settings(media_bucket="b", media_endpoint_url=endpoint_url)
     assert media_csp_origin(settings) == expected
-    assert _parse(build_csp(settings))["img-src"] == ["'self'", expected]
+    assert _parse(build_csp(settings))["img-src"] == ["'self'", "data:", expected]
 
 
 def test_the_csp_is_emitted_on_every_surface(
