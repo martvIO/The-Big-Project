@@ -329,21 +329,42 @@ class FakeCatalogService:
         self._record("update_dress", tenant_id=tenant_id, dress_id=dress_id, **kwargs)
         return self.view
 
-    async def archive_dress(self, tenant_id: uuid.UUID, dress_id: uuid.UUID) -> None:
-        self._record("archive_dress", tenant_id=tenant_id, dress_id=dress_id)
+    async def archive_dress(
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, actor_id: uuid.UUID
+    ) -> None:
+        self._record("archive_dress", tenant_id=tenant_id, dress_id=dress_id, actor_id=actor_id)
 
-    async def restore_dress(self, tenant_id: uuid.UUID, dress_id: uuid.UUID) -> DressView:
-        self._record("restore_dress", tenant_id=tenant_id, dress_id=dress_id)
+    async def restore_dress(
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, actor_id: uuid.UUID
+    ) -> DressView:
+        self._record("restore_dress", tenant_id=tenant_id, dress_id=dress_id, actor_id=actor_id)
         return self.view
 
     async def replace_variants(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, variants: list[VariantInput]
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        variants: list[VariantInput],
+        *,
+        actor_id: uuid.UUID,
     ) -> DressView:
-        self._record("replace_variants", tenant_id=tenant_id, dress_id=dress_id, variants=variants)
+        self._record(
+            "replace_variants",
+            tenant_id=tenant_id,
+            dress_id=dress_id,
+            variants=variants,
+            actor_id=actor_id,
+        )
         return self.view
 
     async def presign_media(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, content_type: str, byte_size: int
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        *,
+        content_type: str,
+        byte_size: int,
+        actor_id: uuid.UUID,
     ) -> PresignResult:
         self._record(
             "presign_media",
@@ -351,6 +372,7 @@ class FakeCatalogService:
             dress_id=dress_id,
             content_type=content_type,
             byte_size=byte_size,
+            actor_id=actor_id,
         )
         key = build_media_key(
             tenant_id=tenant_id, dress_id=dress_id, media_id=MEDIA_ID, content_type=content_type
@@ -371,21 +393,54 @@ class FakeCatalogService:
         )
 
     async def confirm_media(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, media_id: uuid.UUID
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        media_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID,
     ) -> DressView:
-        self._record("confirm_media", tenant_id=tenant_id, dress_id=dress_id, media_id=media_id)
+        self._record(
+            "confirm_media",
+            tenant_id=tenant_id,
+            dress_id=dress_id,
+            media_id=media_id,
+            actor_id=actor_id,
+        )
         return self.view
 
     async def delete_media(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, media_id: uuid.UUID
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        media_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID,
     ) -> DressView:
-        self._record("delete_media", tenant_id=tenant_id, dress_id=dress_id, media_id=media_id)
+        self._record(
+            "delete_media",
+            tenant_id=tenant_id,
+            dress_id=dress_id,
+            media_id=media_id,
+            actor_id=actor_id,
+        )
         return self.view
 
     async def reorder_media(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, media_ids: list[uuid.UUID]
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        media_ids: list[uuid.UUID],
+        *,
+        actor_id: uuid.UUID,
     ) -> DressView:
-        self._record("reorder_media", tenant_id=tenant_id, dress_id=dress_id, media_ids=media_ids)
+        self._record(
+            "reorder_media",
+            tenant_id=tenant_id,
+            dress_id=dress_id,
+            media_ids=media_ids,
+            actor_id=actor_id,
+        )
         return self.view
 
 
@@ -525,6 +580,9 @@ def test_create_dress_applies_defaults() -> None:
         "price_visible": True,
         "reserved": False,
         "sort_order": 0,
+        # F21 D6: the actor is the AUTHENTICATED session's staff id and never a
+        # body field, so an audit row cannot be attributed to someone else.
+        "actor_id": STAFF_ID,
     }
     assert resp.json() == DRESS_JSON
 
@@ -587,7 +645,11 @@ def test_archive_dress_returns_ok() -> None:
         resp = client.delete(DETAIL_PATH)
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
-    assert fake.call("archive_dress") == {"tenant_id": TENANT.id, "dress_id": DRESS_ID}
+    assert fake.call("archive_dress") == {
+        "tenant_id": TENANT.id,
+        "dress_id": DRESS_ID,
+        "actor_id": STAFF_ID,
+    }
 
 
 def test_restore_dress_returns_the_detail_view() -> None:
@@ -711,6 +773,7 @@ def test_delete_media_returns_the_detail_view() -> None:
         "tenant_id": TENANT.id,
         "dress_id": DRESS_ID,
         "media_id": MEDIA_ID,
+        "actor_id": STAFF_ID,
     }
 
 

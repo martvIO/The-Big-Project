@@ -28,6 +28,13 @@ from app.storage.s3 import S3MediaStorage
 
 pytestmark = [pytest.mark.db, pytest.mark.s3]
 
+# F21 D6: every catalog mutation now takes the acting staffer's id and writes
+# one audit_log row. These suites drive the SERVICE directly, below the router
+# that would supply it from the session, so one module-level id is enough — what
+# the row carries is `test_catalog_audit_db.py`'s subject, not theirs.
+ACTOR_ID = uuid.uuid4()
+
+
 # MinIO accepts any region; us-east-1 is what an unconfigured S3 client assumes.
 MINIO_REGION = "us-east-1"
 
@@ -196,6 +203,7 @@ async def _dress(service: CatalogService, tenant_id: uuid.UUID) -> uuid.UUID:
         price_visible=True,
         reserved=False,
         sort_order=0,
+        actor_id=ACTOR_ID,
     )
     return created.row.id
 
@@ -213,7 +221,7 @@ async def test_presign_upload_confirm_round_trips_against_real_storage(
     try:
         dress_id = await _dress(service, tenant_id)
         presigned = await service.presign_media(
-            tenant_id, dress_id, content_type=JPEG, byte_size=len(payload)
+            tenant_id, dress_id, content_type=JPEG, byte_size=len(payload), actor_id=ACTOR_ID
         )
         assert presigned.fields["key"].startswith(f"tenants/{tenant_id}/dresses/{dress_id}/media/")
 
@@ -221,7 +229,9 @@ async def test_presign_upload_confirm_round_trips_against_real_storage(
         assert posted.status_code == 204, posted.text
         assert await storage.head_object(key=presigned.fields["key"]) is not None
 
-        detail = await service.confirm_media(tenant_id, dress_id, presigned.media_id)
+        detail = await service.confirm_media(
+            tenant_id, dress_id, presigned.media_id, actor_id=ACTOR_ID
+        )
         assert [item.row.id for item in detail.media] == [presigned.media_id]
         assert detail.media[0].row.status == DressMediaStatus.READY
         assert detail.media[0].url is not None
@@ -242,13 +252,13 @@ async def test_confirm_deletes_an_honest_size_polyglot(
     try:
         dress_id = await _dress(service, tenant_id)
         presigned = await service.presign_media(
-            tenant_id, dress_id, content_type=JPEG, byte_size=len(payload)
+            tenant_id, dress_id, content_type=JPEG, byte_size=len(payload), actor_id=ACTOR_ID
         )
         posted = _post(PresignedPost(url=presigned.url, fields=presigned.fields), payload)
         assert posted.status_code == 204, posted.text
 
         with pytest.raises(MediaMismatchError):
-            await service.confirm_media(tenant_id, dress_id, presigned.media_id)
+            await service.confirm_media(tenant_id, dress_id, presigned.media_id, actor_id=ACTOR_ID)
         assert await storage.head_object(key=presigned.fields["key"]) is None
     finally:
         await engine.dispose()

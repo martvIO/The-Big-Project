@@ -257,7 +257,7 @@ def test_suspend_flips_status_and_list_reflects_it(app_role_url: str) -> None:
         )
         assert asyncio.run(provisioning.suspend(slug=slug, operator="t")).ok
 
-        rows = asyncio.run(provisioning.list_tenants())
+        rows = asyncio.run(provisioning.list_tenants(operator="t"))
         match = [r for r in rows if r.slug == slug]
         assert match and match[0].status == "suspended"
 
@@ -352,6 +352,48 @@ def test_each_state_change_writes_platform_audit(app_role_url: str, migrated_db:
         assert "tenant_provisioned" in actions
         assert "tenant_suspended" in actions
         assert all(op == "opsy" for _, op in rows)
+    finally:
+        asyncio.run(engine.dispose())
+        asyncio.run(reader_engine.dispose())
+
+
+def test_listing_tenants_writes_a_platform_audit_row(app_role_url: str, migrated_db: str) -> None:
+    """F21 D6 / row R38. `list` is a FULL cross-tenant read — every boutique's
+    slug, trading name and status in one output — and before F21 it was the one
+    privileged CLI operation that left no trail at all. `--operator` was already
+    parsed (`cli.py:68-69`) and thrown away.
+
+    The row's `target_tenant_id` is NULL because no single tenant is the subject,
+    and `details` carries the COUNT and never the slugs: reproducing the
+    enumeration inside the audit table would be the leak twice over.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    # app_user has INSERT-only on platform_audit_log; the read is privileged.
+    reader_engine = _engine(migrated_db)
+    reader_factory = _factory(reader_engine)
+    operator = f"lister-{uuid.uuid4().hex[:8]}"
+    try:
+        rows = asyncio.run(provisioning.list_tenants(operator=operator))
+
+        async def audit_rows() -> list[tuple[str, object, object]]:
+            async with reader_factory() as session:
+                res = await session.execute(
+                    text(
+                        "SELECT action, target_tenant_id, details FROM platform_audit_log "
+                        "WHERE operator = :op ORDER BY created_at"
+                    ),
+                    {"op": operator},
+                )
+                return [(r[0], r[1], r[2]) for r in res.all()]
+
+        written = asyncio.run(audit_rows())
+        assert len(written) == 1, f"expected exactly one row, got {len(written)}"
+        action, target, details = written[0]
+        assert action == "tenants_listed"
+        assert target is None
+        assert details == {"tenants": len(rows)}
     finally:
         asyncio.run(engine.dispose())
         asyncio.run(reader_engine.dispose())

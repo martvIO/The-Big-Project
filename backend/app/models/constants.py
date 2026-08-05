@@ -642,6 +642,63 @@ class AuditAction(StrEnum):
     RETENTION_BOOKINGS = "retention_bookings"
     RETENTION_CUSTOMERS = "retention_customers"
 
+    # F21's catalog (D6), and it is the TENTH block to rely on the same fact:
+    # audit_log.action is plain TEXT with no CHECK (0003_auth.py:71-79), so these
+    # nine need no migration. F21 ships none at all.
+    #
+    # WHY NINE AND NOT FOUR. Every other block in this file has had to argue a
+    # value DOWN — D13 declined FITTING_ROOM_CREATED/_UPDATED because a row and
+    # its created_at already answered the question. That argument does not reach
+    # here, and the difference is the audience: a fitting room is furniture only
+    # the floor sees, while `dresses` and `dress_media` are the boutique's PUBLIC
+    # STOREFRONT. A price that changed, a gown that vanished from the catalogue
+    # and a photo that was replaced are all things a customer saw, and "who did
+    # that, and when" is the question this table exists to answer for exactly the
+    # surface the customer can reach. Before F21 catalog had zero rows of any
+    # kind, which is checklist row 38's whole finding.
+    #
+    # `details` NEVER carries personal data — it cannot: nothing in this module
+    # is about a person. Dress name, size label, content type, byte size and
+    # storage key are boutique inventory, and the same rule that lets
+    # ATELIER_SETTINGS_UPDATED carry its numbers applies unchanged.
+    DRESS_CREATED = "dress_created"
+    DRESS_UPDATED = "dress_updated"
+    # Soft delete and its inverse. Two values rather than one with a flag, for
+    # the BOOKING_CHECKED_IN / _CHECK_IN_UNDONE reason: "what did we take off the
+    # website" and "what did we put back" are two questions, each one WHERE.
+    # ARCHIVED carries the dress NAME as well as its id — FITTING_ROOM_DELETED's
+    # argument, and it binds harder here, because the row it names is the one the
+    # console stops listing by default.
+    DRESS_ARCHIVED = "dress_archived"
+    DRESS_RESTORED = "dress_restored"
+    # ONE value for the whole matrix, with the resulting size labels in `details`.
+    # `replace_variants` is a full replacement inside one transaction — there is
+    # no per-size event to record — and the question asked here is "what was in
+    # stock when she was told it was", which the resulting set answers and a
+    # per-row split would not.
+    DRESS_VARIANTS_REPLACED = "dress_variants_replaced"
+    # ⚠ MEDIA_PRESIGNED IS AUDITED AND IT IS THE LEAST OBVIOUS OF THE NINE.
+    # A successful presign authorises a 10 MiB write into OUR bucket under a
+    # policy that CANNOT BE REVOKED for PRESIGN_TTL_SECONDS (service.py:658-660
+    # states it). The row that lands afterwards may never be confirmed and may
+    # never be visible anywhere, so this is the only record that the credential
+    # was ever issued — which is exactly the shape of thing an incident review
+    # asks for. It rides the same transaction as `insert_pending`, so a presign
+    # refused by the limit or by a missing dress writes nothing.
+    DRESS_MEDIA_PRESIGNED = "dress_media_presigned"
+    # A RE-CONFIRM WRITES NO ROW. Confirm is idempotent by design (the
+    # `already_ready` short-circuit and the `status == PENDING` guard), and a
+    # retried confirm after a lost response performed no act. The write is inside
+    # the promote branch for that reason, not beside it.
+    DRESS_MEDIA_CONFIRMED = "dress_media_confirmed"
+    # Carries `storage_key`, and that is the one field here doing real work: the
+    # object delete is best-effort by design (`_best_effort_delete` swallows a
+    # storage outage), so on the failure path this row is the only durable record
+    # of which object was orphaned. `logger.warning` is the other, and a log line
+    # is not evidence.
+    DRESS_MEDIA_DELETED = "dress_media_deleted"
+    DRESS_MEDIA_REORDERED = "dress_media_reordered"
+
 
 class PlatformAuditAction(StrEnum):
     TENANT_PROVISIONED = "tenant_provisioned"
@@ -662,3 +719,14 @@ class PlatformAuditAction(StrEnum):
     # worth recording whether or not it wrote anything. A rehearsal that leaves
     # no trace is the one an incident review most wants to find.
     RETENTION_RUN = "retention_run"
+    # F21's cross-tenant read (D6). platform_audit_log.action is plain TEXT with
+    # no CHECK (0004), so this needs no migration.
+    #
+    # A READ with a row, and the only one in this enum. `list` returns every
+    # boutique's slug, trading name and status in one output — a full
+    # cross-tenant read whose `--operator` was already parsed and thrown away.
+    # `target_tenant_id` is NULL because no single tenant is the subject; the
+    # subject is all of them. `details` carries the COUNT and never the slugs:
+    # the row records that someone enumerated the platform, and reproducing the
+    # enumeration inside the audit table would be the leak twice over.
+    TENANTS_LISTED = "tenants_listed"

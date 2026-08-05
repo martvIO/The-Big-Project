@@ -53,6 +53,13 @@ from app.tenancy.middleware import TenantContext
 
 pytestmark = pytest.mark.db
 
+# F21 D6: every catalog mutation now takes the acting staffer's id and writes
+# one audit_log row. These suites drive the SERVICE directly, below the router
+# that would supply it from the session, so one module-level id is enough — what
+# the row carries is `test_catalog_audit_db.py`'s subject, not theirs.
+ACTOR_ID = uuid.uuid4()
+
+
 JPEG = "image/jpeg"
 JPEG_BODY = b"\xff\xd8\xff" + b"\x00" * 1021
 
@@ -92,15 +99,19 @@ async def _dress_with_photo(
         price_visible=True,
         reserved=False,
         sort_order=0,
+        actor_id=ACTOR_ID,
     )
     await service.replace_variants(
-        tenant_id, dress.row.id, [VariantInput(size_label="38", quantity=2, sort_order=0)]
+        tenant_id,
+        dress.row.id,
+        [VariantInput(size_label="38", quantity=2, sort_order=0)],
+        actor_id=ACTOR_ID,
     )
     presigned = await service.presign_media(
-        tenant_id, dress.row.id, content_type=JPEG, byte_size=len(JPEG_BODY)
+        tenant_id, dress.row.id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
     )
     storage.put(key=presigned.fields["key"], content_type=JPEG, body=JPEG_BODY)
-    await service.confirm_media(tenant_id, dress.row.id, presigned.media_id)
+    await service.confirm_media(tenant_id, dress.row.id, presigned.media_id, actor_id=ACTOR_ID)
     return dress.row.id, presigned.media_id
 
 
@@ -206,25 +217,29 @@ async def test_service_methods_are_404_for_another_tenants_dress(app_role_url: s
                 price_visible=False,
                 reserved=True,
                 sort_order=0,
+                actor_id=ACTOR_ID,
             )
         with pytest.raises(CatalogNotFoundError):
-            await service.archive_dress(tenant_b, dress_id)
+            await service.archive_dress(tenant_b, dress_id, actor_id=ACTOR_ID)
         with pytest.raises(CatalogNotFoundError):
-            await service.restore_dress(tenant_b, dress_id)
+            await service.restore_dress(tenant_b, dress_id, actor_id=ACTOR_ID)
         with pytest.raises(CatalogNotFoundError):
             await service.replace_variants(
-                tenant_b, dress_id, [VariantInput(size_label="52", quantity=9, sort_order=0)]
+                tenant_b,
+                dress_id,
+                [VariantInput(size_label="52", quantity=9, sort_order=0)],
+                actor_id=ACTOR_ID,
             )
         with pytest.raises(CatalogNotFoundError):
             await service.presign_media(
-                tenant_b, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY)
+                tenant_b, dress_id, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
             )
         with pytest.raises(CatalogNotFoundError):
-            await service.confirm_media(tenant_b, dress_id, media_id)
+            await service.confirm_media(tenant_b, dress_id, media_id, actor_id=ACTOR_ID)
         with pytest.raises(CatalogNotFoundError):
-            await service.delete_media(tenant_b, dress_id, media_id)
+            await service.delete_media(tenant_b, dress_id, media_id, actor_id=ACTOR_ID)
         with pytest.raises(CatalogNotFoundError):
-            await service.reorder_media(tenant_b, dress_id, [media_id])
+            await service.reorder_media(tenant_b, dress_id, [media_id], actor_id=ACTOR_ID)
 
         # B's own list never sees A's dress, and A's dress is unchanged.
         assert (await service.list_dresses(tenant_b)).total == 0
@@ -256,14 +271,14 @@ async def test_media_addressed_through_the_wrong_dress_of_the_same_tenant_is_a_m
             assert await media_repo.by_id(session, tenant, dress_b, media_a) is None
 
         with pytest.raises(CatalogNotFoundError):
-            await service.confirm_media(tenant, dress_b, media_a)
+            await service.confirm_media(tenant, dress_b, media_a, actor_id=ACTOR_ID)
         with pytest.raises(CatalogNotFoundError):
-            await service.delete_media(tenant, dress_b, media_a)
+            await service.delete_media(tenant, dress_b, media_a, actor_id=ACTOR_ID)
         # Reorder answers the conflict code rather than 404 — the spec's own rule
         # is that an unknown id in the payload is a MEDIA_ORDER_MISMATCH. Either
         # way the refusal is total: dress B never adopts dress A's photo.
         with pytest.raises(MediaOrderMismatchError):
-            await service.reorder_media(tenant, dress_b, [media_a])
+            await service.reorder_media(tenant, dress_b, [media_a], actor_id=ACTOR_ID)
 
         for dress_id, media_id in ((dress_a, media_a), (dress_b, media_b)):
             intact = await service.get_dress(tenant, dress_id)
@@ -289,7 +304,7 @@ async def test_a_key_minted_for_one_tenant_never_carries_another_tenants_ids(
         dress_b, _ = await _dress_with_photo(service, storage, tenant_b, "Belle")
 
         presigned = await service.presign_media(
-            tenant_a, dress_a, content_type=JPEG, byte_size=len(JPEG_BODY)
+            tenant_a, dress_a, content_type=JPEG, byte_size=len(JPEG_BODY), actor_id=ACTOR_ID
         )
         key = presigned.fields["key"]
         assert key.startswith(f"tenants/{tenant_a}/dresses/{dress_a}/media/")

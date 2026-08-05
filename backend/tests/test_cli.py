@@ -23,8 +23,8 @@ class FakeService:
         self.calls.append(("reset_owner_password", kwargs))
         return self._result
 
-    async def list_tenants(self) -> list[TenantSummary]:
-        self.calls.append(("list_tenants", {}))
+    async def list_tenants(self, **kwargs: object) -> list[TenantSummary]:
+        self.calls.append(("list_tenants", kwargs))
         return []
 
     async def backfill_booking_links(self, **kwargs: object) -> CommandResult:
@@ -117,6 +117,10 @@ def test_list_does_not_read_password() -> None:
     args = build_parser().parse_args(["list"])
     assert run(args, service, reader) == 0
     assert service.calls[-1][0] == "list_tenants"
+    # F21 D6: `list` is a full cross-tenant read and now carries the operator
+    # through to a platform_audit_log row. `--operator` was parsed and discarded
+    # before F21, which is the whole finding.
+    assert service.calls[-1][1] == {"operator": args.operator}
     assert called["read"] is False
 
 

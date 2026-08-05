@@ -173,6 +173,7 @@ async def create_dress(
         price_visible=body.price_visible,
         reserved=body.reserved,
         sort_order=body.sort_order,
+        actor_id=staff.id,
     )
     return _dress_response(view)
 
@@ -203,6 +204,7 @@ async def update_dress(
         price_visible=body.price_visible,
         reserved=body.reserved,
         sort_order=body.sort_order,
+        actor_id=staff.id,
     )
     return _dress_response(view)
 
@@ -212,7 +214,7 @@ async def archive_dress(
     request: Request, staff: Staff, service: Service, dress_id: UUID
 ) -> OkResponse:
     tenant = get_current_tenant(request)
-    await service.archive_dress(tenant.id, dress_id)
+    await service.archive_dress(tenant.id, dress_id, actor_id=staff.id)
     return OkResponse()
 
 
@@ -221,7 +223,9 @@ async def restore_dress(
     request: Request, staff: Staff, service: Service, dress_id: UUID
 ) -> DressDetailResponse:
     tenant = get_current_tenant(request)
-    return _dress_detail_response(await service.restore_dress(tenant.id, dress_id))
+    return _dress_detail_response(
+        await service.restore_dress(tenant.id, dress_id, actor_id=staff.id)
+    )
 
 
 # --- variants ---
@@ -244,7 +248,9 @@ async def replace_variants(
         )
         for variant in body.variants
     ]
-    return _dress_detail_response(await service.replace_variants(tenant.id, dress_id, inputs))
+    return _dress_detail_response(
+        await service.replace_variants(tenant.id, dress_id, inputs, actor_id=staff.id)
+    )
 
 
 # --- media ---
@@ -262,7 +268,11 @@ async def presign_media(
     tenant = get_current_tenant(request)
     _require_media_storage(storage)
     result = await service.presign_media(
-        tenant.id, dress_id, content_type=body.content_type, byte_size=body.byte_size
+        tenant.id,
+        dress_id,
+        content_type=body.content_type,
+        byte_size=body.byte_size,
+        actor_id=staff.id,
     )
     return PresignResponse(
         media_id=result.media_id,
@@ -284,7 +294,9 @@ async def confirm_media(
 ) -> DressDetailResponse:
     tenant = get_current_tenant(request)
     _require_media_storage(storage)
-    return _dress_detail_response(await service.confirm_media(tenant.id, dress_id, media_id))
+    return _dress_detail_response(
+        await service.confirm_media(tenant.id, dress_id, media_id, actor_id=staff.id)
+    )
 
 
 @router.delete("/dresses/{dress_id}/media/{media_id}")
@@ -298,7 +310,9 @@ async def delete_media(
 ) -> DressDetailResponse:
     tenant = get_current_tenant(request)
     _require_media_storage(storage)
-    return _dress_detail_response(await service.delete_media(tenant.id, dress_id, media_id))
+    return _dress_detail_response(
+        await service.delete_media(tenant.id, dress_id, media_id, actor_id=staff.id)
+    )
 
 
 @router.put("/dresses/{dress_id}/media/order")
@@ -311,4 +325,6 @@ async def reorder_media(
 ) -> DressDetailResponse:
     # Reorder is a pure database operation: it keeps working with no bucket.
     tenant = get_current_tenant(request)
-    return _dress_detail_response(await service.reorder_media(tenant.id, dress_id, body.media_ids))
+    return _dress_detail_response(
+        await service.reorder_media(tenant.id, dress_id, body.media_ids, actor_id=staff.id)
+    )

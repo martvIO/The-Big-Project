@@ -21,6 +21,21 @@ can reach an S3 key.
 **Two lock prefixes.** Photo work takes `dress-media:<id>` and stock work takes
 `dress-variants:<id>`, so the two never serialise against each other, and both
 stay clear of Feature 7's un-prefixed `hashtext(:tenant_id)` lock space.
+
+**Every mutation writes one audit row, inside its own transaction** (F21, D6).
+Before F21 this was the one owner-facing mutation module with no audit rows at
+all, and it is the module whose writes the public storefront renders. Each
+`_audit.record(...)` sits inside the same `tenant_session` as the write it
+describes, so a rolled-back mutation cannot leave a row claiming it happened —
+F15's rule, and the reason `_record_atelier_settings`' documented compromise is
+not needed here (`DressesRepository` takes a session rather than a factory).
+
+⚠ `actor_id: uuid.UUID` and not `actor: StaffContext`. `audit_log.actor_id` is
+the only thing any of these rows reads off the caller, and taking the whole
+context would point a new import arrow from `catalog` at `auth.service` to carry
+four unused fields. It is REQUIRED and not defaulted, for `boutique/service.py`
+:137-141's reason: `actor_id` is nullable, so an actor-less row inserts silently
+and green while the row's entire justification is «who, and when».
 """
 
 import dataclasses
@@ -52,12 +67,13 @@ from app.catalog.validation import (
     validate_search,
     validate_variants,
 )
+from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.dress_media import DressMediaRepository
 from app.db.repositories.dress_variants import DressVariantsRepository, VariantAggregate
 from app.db.repositories.dresses import DressesRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
-from app.models.constants import DressMediaStatus
+from app.models.constants import AuditAction, DressMediaStatus
 from app.models.dress import Dress
 from app.models.dress_media import DressMedia
 from app.models.dress_variant import DressVariant
@@ -267,6 +283,7 @@ class CatalogService:
         self._dresses = DressesRepository()
         self._variants = DressVariantsRepository()
         self._media = DressMediaRepository()
+        self._audit = AuditLogRepository()
 
     # --- dresses ---
 
@@ -325,6 +342,7 @@ class CatalogService:
         price_visible: bool,
         reserved: bool,
         sort_order: int,
+        actor_id: uuid.UUID,
     ) -> DressView:
         validate_dress(
             name=name,
@@ -342,6 +360,14 @@ class CatalogService:
                 price_visible=price_visible,
                 reserved=reserved,
                 sort_order=sort_order,
+            )
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.DRESS_CREATED,
+                actor_id=actor_id,
+                entity=str(row.id),
+                details={"name": row.name, "price_visible": row.price_visible},
             )
         # A brand-new dress has no variants and no media, so the view is exact
         # without buying a second read transaction.
@@ -376,6 +402,7 @@ class CatalogService:
         price_visible: bool,
         reserved: bool,
         sort_order: int,
+        actor_id: uuid.UUID,
     ) -> DressView:
         validate_dress(
             name=name,
@@ -397,21 +424,51 @@ class CatalogService:
             )
             if updated is None:
                 raise CatalogNotFoundError
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.DRESS_UPDATED,
+                actor_id=actor_id,
+                entity=str(dress_id),
+                details={"name": name, "price_visible": price_visible, "reserved": reserved},
+            )
         return await self._detail_view(tenant_id, dress_id)
 
-    async def archive_dress(self, tenant_id: uuid.UUID, dress_id: uuid.UUID) -> None:
+    async def archive_dress(
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, actor_id: uuid.UUID
+    ) -> None:
         """One transaction, children first. now() is transaction_timestamp(), so
         all three stamps are byte-identical — which is what restore matches on.
-        S3 objects are retained."""
+        S3 objects are retained.
+
+        The audit row carries the NAME as well as the id: this is the write that
+        takes a gown off the public storefront, and an id alone records that
+        something was withdrawn without saying what (FITTING_ROOM_DELETED's
+        argument, and the same one).
+        """
         async with tenant_session(self._session_factory, tenant_id) as session:
             dress = await self._dresses.by_id(session, tenant_id, dress_id)
             if dress is None:
                 raise CatalogNotFoundError
+            # Read before the writers run: `soft_delete` is ORM-enabled DML whose
+            # `evaluate` synchronization stamps the instance this name is read
+            # off. The fifth appearance of that trap in this repo.
+            name = dress.name
             await self._media.soft_delete_all(session, tenant_id, dress_id)
             await self._variants.soft_delete_all(session, tenant_id, dress_id)
             await self._dresses.soft_delete(session, tenant_id, dress_id)
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.DRESS_ARCHIVED,
+                actor_id=actor_id,
+                entity=str(dress_id),
+                details={"name": name},
+            )
 
-    async def restore_dress(self, tenant_id: uuid.UUID, dress_id: uuid.UUID) -> DressView:
+    async def restore_dress(
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, actor_id: uuid.UUID
+    ) -> DressView:
         async with tenant_session(self._session_factory, tenant_id) as session:
             dress = await self._dresses.by_id_any_state(session, tenant_id, dress_id)
             # Read the dress's own stamp FIRST: it is both the already-restored
@@ -419,15 +476,29 @@ class CatalogService:
             if dress is None or dress.deleted_at is None:
                 raise CatalogNotFoundError
             archived_at = dress.deleted_at
+            name = dress.name
             await self._variants.restore_archived_with(session, tenant_id, dress_id, archived_at)
             await self._media.restore_archived_with(session, tenant_id, dress_id, archived_at)
             await self._dresses.restore(session, tenant_id, dress_id)
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.DRESS_RESTORED,
+                actor_id=actor_id,
+                entity=str(dress_id),
+                details={"name": name},
+            )
         return await self._detail_view(tenant_id, dress_id)
 
     # --- variants ---
 
     async def replace_variants(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, variants: Sequence[VariantInput]
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        variants: Sequence[VariantInput],
+        *,
+        actor_id: uuid.UUID,
     ) -> DressView:
         # Validate FIRST — a rejected replacement must leave the matrix untouched.
         normalized = [
@@ -454,6 +525,17 @@ class CatalogService:
                         quantity=variant.quantity,
                         sort_order=variant.sort_order,
                     )
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.DRESS_VARIANTS_REPLACED,
+                    actor_id=actor_id,
+                    entity=str(dress_id),
+                    details={
+                        "sizes": [variant.size_label for variant in normalized],
+                        "total_quantity": sum(variant.quantity for variant in normalized),
+                    },
+                )
         except IntegrityError:
             # Validation already covered the CHECK bounds, so an IntegrityError
             # here is the lower(size_label) partial unique index.
@@ -475,7 +557,13 @@ class CatalogService:
     # --- media ---
 
     async def presign_media(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, *, content_type: str, byte_size: int
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        *,
+        content_type: str,
+        byte_size: int,
+        actor_id: uuid.UUID,
     ) -> PresignResult:
         # Step 1, before any work: the throttle is the OUTERMOST guard, so a
         # blocked tenant cannot spend a transaction discovering it is blocked.
@@ -521,6 +609,22 @@ class CatalogService:
                     storage_key=storage_key,
                     content_type=content_type,
                     byte_size=byte_size,
+                )
+                # Inside the same transaction as the pending row, so a presign
+                # refused by the limit or by an unknown dress leaves no trace of
+                # a credential that was never issued.
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.DRESS_MEDIA_PRESIGNED,
+                    actor_id=actor_id,
+                    entity=str(media_id),
+                    details={
+                        "dress_id": str(dress_id),
+                        "storage_key": storage_key,
+                        "content_type": content_type,
+                        "byte_size": byte_size,
+                    },
                 )
         except (CatalogNotFoundError, MediaLimitReachedError):
             # A REJECTED presign is not free: it has already opened a
@@ -571,7 +675,7 @@ class CatalogService:
         )
 
     async def confirm_media(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, media_id: uuid.UUID
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, media_id: uuid.UUID, *, actor_id: uuid.UUID
     ) -> DressView:
         if not self._storage.is_configured:
             raise MediaNotConfiguredError
@@ -634,10 +738,21 @@ class CatalogService:
                 await self._media.promote_to_ready(
                     session, tenant_id, dress_id, media_id, sort_order=next_sort
                 )
+                # INSIDE the promote branch, not beside it: a retried confirm
+                # after a lost response promoted nothing, and a row asserting
+                # otherwise would name an act nobody performed.
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.DRESS_MEDIA_CONFIRMED,
+                    actor_id=actor_id,
+                    entity=str(media_id),
+                    details={"dress_id": str(dress_id), "sort_order": next_sort},
+                )
         return await self._detail_view(tenant_id, dress_id)
 
     async def delete_media(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, media_id: uuid.UUID
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, media_id: uuid.UUID, *, actor_id: uuid.UUID
     ) -> DressView:
         if not self._storage.is_configured:
             raise MediaNotConfiguredError
@@ -653,6 +768,21 @@ class CatalogService:
             storage_key = row.storage_key
             was_pending = row.status == DressMediaStatus.PENDING
             await self._media.soft_delete(session, tenant_id, dress_id, media_id)
+            # `storage_key` is the load-bearing field: `_best_effort_delete`
+            # below swallows a storage outage, so on that path this row is the
+            # only durable record of which object was orphaned.
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.DRESS_MEDIA_DELETED,
+                actor_id=actor_id,
+                entity=str(media_id),
+                details={
+                    "dress_id": str(dress_id),
+                    "storage_key": storage_key,
+                    "was_pending": was_pending,
+                },
+            )
 
         if was_pending:
             # A pending row's POST policy is still redeemable for the rest of
@@ -677,7 +807,12 @@ class CatalogService:
         return await self._detail_view(tenant_id, dress_id)
 
     async def reorder_media(
-        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, media_ids: Sequence[uuid.UUID]
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        media_ids: Sequence[uuid.UUID],
+        *,
+        actor_id: uuid.UUID,
     ) -> DressView:
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(_MEDIA_LOCK, {"dress_id": str(dress_id)})
@@ -692,6 +827,17 @@ class CatalogService:
                 raise MediaOrderMismatchError
             for position, media_id in enumerate(media_ids):
                 await self._media.set_sort_order(session, tenant_id, dress_id, media_id, position)
+            # The COVER photo is the one storefront-visible consequence of a
+            # reorder, so the resulting sequence is what the row carries — the
+            # previous one is the previous row's value.
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.DRESS_MEDIA_REORDERED,
+                actor_id=actor_id,
+                entity=str(dress_id),
+                details={"media_ids": [str(media_id) for media_id in media_ids]},
+            )
         return await self._detail_view(tenant_id, dress_id)
 
     # --- views ---
