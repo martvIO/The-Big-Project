@@ -27,11 +27,28 @@ Deposits are the boutique's no-show defense and a locked v1 requirement. This ep
 
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
-| 17 | Gateway credential management | todo | — | — | E1 #2, E2 #7 |
-| 18 | Grow payment sessions & webhooks | todo | — | — | #17 |
+| 17 | Gateway credential management | **done (PR #29)** | `.planning/specs/gateway-port.md` | — | E1 #2, E2 #7 |
+| 18 | ~~Grow~~ **Lemon Squeezy** payment sessions & webhooks | **done (PR #31)** | `.planning/specs/lemonsqueezy-adapter.md` | — | #17 |
 | 19 | Deposit booking flow | **done (PR #34)** | `.planning/specs/deposit-booking-flow.md` | `.planning/plans/deposit-booking-flow.md` | E2 #7, E3 #16, #18 |
-| 20 | PPL compliance build | todo | — | — | E3 #13 |
-| 21 | Hardening, audits & pilot UAT | todo | — | — | all v1 |
+| 20 | PPL compliance build | **done (PR #45)** — migration `0024` | `.planning/specs/ppl-compliance.md` | `.planning/plans/ppl-compliance.md` | E3 #13 |
+| 21 | Hardening, audits & pilot UAT | todo — **now unblocked**, F20 merged | — | — | all v1 |
+
+**#18's provider changed and the row above says so deliberately.** The 2026-07-31 ruling
+made **Lemon Squeezy test mode** E4's engine behind F17's provider-agnostic port. LS is
+merchant-of-record while the deposit is legally the *boutique's* money, so it can never
+carry live deposits — the production Israeli PSP is deferred to before-live-money and is
+one adapter file behind the same port. Grow is not cancelled, only demoted to one
+candidate for that decision.
+
+**#20 shipped with two amber checklist rows, on purpose.** `retention_enabled` ships
+`False` (Gate 1 Q2) because there is no backup and no tested restore — that is **#21's**
+row 44, and flipping it is what turns row 42 green. Row 40 waits on F46's send-time
+opt-out. Marking either green before then would hand #21 a lie to audit.
+
+**What #21 inherits from the 2026-08-04 walkthrough:** nine logged defects in
+`LOOP-STATE.md → known_product_bugs` (six a11y — a legal requirement here), and
+`walkthrough_coverage_gaps` **G2**: the deposit/payment leg has **zero** browser
+coverage. It is the only leg with money semantics and the one nobody has walked.
 
 ---
 

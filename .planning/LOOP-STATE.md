@@ -2435,6 +2435,44 @@ known_product_bugs:             # real defects found but deliberately not fixed 
       the settings text — PLATFORM_NOTICE_HE is byte-capped, no-HTML by invariant, and
       boutique-overridable, so the parsing belongs in the renderer.
 
+remaining_work_estimate:        # synced 2026-08-05. Anchored on THIS session's measured wall-clock, not on feel.
+  remaining_features: 20
+  critical_path_depth: 3        # waves, not features — eleven of twenty have no unmet dep
+  waves:
+    wave_1_buildable_now: [F21, F22, F24, F25, F27, F28, F35, F38, F44, F47, F49]
+    wave_2: [F23, F26, F29, F39, F43, F46]
+    wave_3: [F40, F45, F48]
+  measured_this_session: >-
+    These are wall-clock numbers from the 2026-08-04/05 run, which is the only honest
+    basis available. Each figure is spec/plan + build + gates + review + fix + CI + merge.
+      QA foundation (PR #44, 8 agents)      ~46 min
+      F20 plan (5 agents)                   ~55 min
+      F20 build (10 agents)                 ~3.1 h   -> F20 total ~4.5 h  (Effort L)
+      F50 spec+plan (3 agents)              ~37 min
+      F50 build (7 agents)                  ~1.7 h   -> F50 total ~2.6 h  (medium)
+      real-world walkthrough (8 agents)     ~2.2 h
+    So: a MEDIUM feature is ~2.5-3 h end to end. A LARGE one is ~4.5-5 h.
+  sizing:
+    large_4_5h: [F21, F24, F25, F38, F40, F43, F45, F46, F48]      # 9 — new surfaces, external integrations, or money
+    medium_2_5_3h: [F22, F23, F26, F27, F28, F29, F35, F39, F44, F47, F49]  # 11
+  estimate:
+    features_only: "~71 h  (9 x 4.5 + 11 x 2.75)"
+    plus_epic_boundary_qa: "~12 h  (E4 E5 E6 E8 E9 E10, ~2 h each — the walkthrough is the template and it now exists)"
+    plus_ci_fix_rounds: "~2 h  (historically ~1 feature in 5 needs one round)"
+    total_sequential: "~85 h  ≈ 11 working days, one feature at a time"
+    with_parallel_sessions: >-
+      ~4-5 DAYS. The empirical anchor is the floor program: TEN features in TWO days
+      across 3-4 concurrent sessions. Wave 1 has ELEVEN independent features, so that
+      parallelism is available immediately rather than theoretically.
+  what_would_blow_the_estimate:
+    - "F45 (Arabic + comms templates, go-live) needs a HUMAN ARABIC REVIEWER for legal/policy copy — a user_action, not a build task. It is wave 3, so it does not block anything."
+    - "F46 (WhatsApp) waits on META BUSINESS VERIFICATION, which the user ruled is the LAST step. Multi-week clock, deliberately not overlapped. F48 deps on F46, so both slip together."
+    - "F29 and F48 each stop at a Gate 1 money question. Budget a round trip."
+    - "G2 (the payment leg has no browser coverage) is not in the 85 h. Closing it needs console setup plus fake gateway credentials — call it half a day, and do it before the pilot rather than after."
+  not_in_the_estimate:
+    - "The nine known_product_bugs. F61 (this session) is taking them as one batch."
+    - "brain-sync: .brain reports ~70 stale pages and ~640 missing. Reconcile with /brain-sync at an epic boundary, never mid-feature."
+
 walkthrough_coverage_gaps:      # what the 2026-08-04 run did NOT prove. Silence here reads as coverage.
   - id: G1
     what: "RLS WAS NEVER EXERCISED. By anyone. THE MOST CONSEQUENTIAL ITEM IN THE RUN."

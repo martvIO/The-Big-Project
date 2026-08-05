@@ -1,8 +1,35 @@
 # Epic Roadmap — Bridal Boutique Multi-Tenant SaaS
 
 **Created**: 2026-07-21 (rev 2 — post three-critic verification pass)
-**Status**: **building** — v1 confirmed and in flight. 12 features merged, 1 in flight, 31 queued, 2 parked (last synced 2026-07-31).
+**Status**: **building** — **25 merged · 20 queued · 1 parked forever** (synced 2026-08-05).
 **Source**: 11-section PRD + approved pressure-test plan (ported to `.planning/architecture.md`)
+
+---
+
+## ⏱ WHERE THIS STANDS — synced 2026-08-05
+
+**20 features remain. Nothing is user-blocked.** The dependency graph is only **three
+waves deep**, so the critical path is 3 features, not 20.
+
+| Wave | Count | Features |
+|---|---|---|
+| **1 — buildable right now** | **11** | F21 · F22 · F24 · F25 · F27 · F28 · F35 · F38 · F44 · F47 · F49 |
+| 2 — unlocked by wave 1 | 6 | F23←F22 · F26←F25 · F29←F21 · F39←F38 · F43←F24 · F46←F27 |
+| 3 — last | 3 | F40←F39 · F45←F44,F46,F49 · F48←F25,F46 |
+
+Eleven of twenty have **no unmet dependency**, which is what makes parallel sessions
+worth it here — see the estimate in `LOOP-STATE.md → remaining_work_estimate`.
+
+**Two Gate 1 stops are scheduled, not open**: F29 and F48 are money surfaces and will
+pause for the user when E5/E10 reach them. Everything else self-approves.
+
+**Two user actions remain and both are deploy-time**: the 3 DNS records at DomainTheNet,
+and the 2 Twilio values (Account SID + E.164 number). Neither blocks a build.
+
+**Owed before pilot, and not a feature:** nine defects from the first real-world
+walkthrough (`LOOP-STATE.md → known_product_bugs`, six of them a11y — legally required
+here), and coverage gap **G2** — the deposit/payment leg has zero browser coverage,
+the only leg with money semantics.
 
 > **This file is the dependency map and the v1 contract. It is NOT the build queue.**
 > `.planning/LOOP-STATE.md` is the single source of truth for what is built, what is next, and in what order — it is written by the loop at every checkpoint, this file is not. Where the two disagree, LOOP-STATE governs. The progress table below is a hand-synced snapshot; regenerate it from LOOP-STATE rather than editing it in place.
@@ -59,8 +86,14 @@ Ten epics, dependency-ordered. **E1–E4 = the proposed v1 slice** (pilot boutiq
 
 | Feature | Why |
 |---|---|
-| F20 `ppl-compliance` | Gate 1 awaiting USER approval — legal surface (Interview Q1), 5 questions at the spec's head. **This is the roadmap's widest blocker**: F21, F29, F38, F39, F40 and F45 are all unreachable behind it. |
+| ~~F20 `ppl-compliance`~~ | ✅ **CLEARED AND SHIPPED 2026-08-04 (PR #45).** The user answered all five Gate 1 questions; one (Q4) overruled the spec, and `marketing-withdraw` ships `(OWNER, SHIFT_MANAGER)` rather than owner-only. **The roadmap's widest blocker is gone** — F21, F29, F38, F39, F40 and F45 are all reachable. |
 | F32 | Subsumed into F34 (SMC ruling 3) — never build. Kept for the record. |
+
+**NOTHING IN THE QUEUE IS USER-BLOCKED AS OF 2026-08-04.** The two remaining user items
+are **deploy-time, not build-time**: the 3 DNS records at DomainTheNet, and the 2 Twilio
+values (Account SID + E.164 number). The queue can run to exhaustion without another
+answer. Two Gate 1 questions are *scheduled* rather than open — F29 and F48 are money
+surfaces and will stop for the user when E5/E10 reach them.
 
 ### The floor-management program — ✅ **COMPLETE 2026-08-04**
 
