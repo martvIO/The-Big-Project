@@ -864,7 +864,10 @@ describe("AC17 — Esc, and the keyboard route IN that MOVE A alone does not pro
 
     // ⚠ Esc-from-outside is a DELIBERATE keypress, not an involuntary arrival,
     // which is the whole of DC-1's distinction: it lands on the control.
-    expect(document.activeElement).toBe(acceptControl(ALERT_A));
+    // The route-in is a passive effect the keyDown does not flush, so this waits
+    // for the move rather than racing it — bare, it lost that race under the
+    // concurrent gate. Same fix as the sibling test below.
+    await waitFor(() => expect(document.activeElement).toBe(acceptControl(ALERT_A)));
     expect(field.value).toBe("0501234567");
   });
 

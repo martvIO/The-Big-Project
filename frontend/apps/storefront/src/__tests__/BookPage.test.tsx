@@ -1654,7 +1654,12 @@ describe("BookPage verify step — one screen that grows", () => {
     // never fires, so the unfixed code spends the whole timeout and still goes
     // red. And expectFocus re-reads strictly after settling, so a later commit
     // taking the focus away again is still caught.
-    await expectFocus(screen.getByLabelText(i18n.t("booking.otpCode")));
+    // ⚠ findBy, not getBy. The argument is evaluated BEFORE expectFocus is
+    // entered, so a synchronous get here races the field's own mount rather than
+    // its focus — and under the concurrent gate it lost, throwing «Unable to
+    // find a label» from the selector instead of failing on focus. expectFocus
+    // still does its strict re-read, so nothing is weakened.
+    await expectFocus(await screen.findByLabelText(i18n.t("booking.otpCode")));
   });
 
   it("keeps the dead end's focus when the 429 lands in the gap after a paint", async () => {
@@ -1687,7 +1692,10 @@ describe("BookPage verify step — one screen that grows", () => {
       },
     );
 
-    await expectFocus(screen.getByText(i18n.t("errors.otpSendBudget")).closest("[tabindex]"));
+    // findBy for the same reason as the send-gap test above: the dead end has to
+    // exist before its focus can be asserted, and the get raced its mount.
+    const deadEnd = await screen.findByText(i18n.t("errors.otpSendBudget"));
+    await expectFocus(deadEnd.closest("[tabindex]"));
   });
 
   // The other half of the contract above. Keeping an intent alive until its node
