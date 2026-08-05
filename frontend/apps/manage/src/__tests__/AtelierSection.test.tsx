@@ -1744,7 +1744,8 @@ describe("the five focus destinations a repaint or a mutation can strand", () =>
     const control = screen.getByRole("button", { name: "לשלב הבא — מיכל לוי" });
     control.focus();
     await clickAndSettle(control);
-    expect(document.activeElement).toBe(screen.getByRole("alert"));
+    // The focus move is a passive effect; a bare read here races it.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("alert")));
 
     await advanceTimers(POLL_INTERVAL_MS);
     expect(screen.queryByRole("alert")).toBeNull();

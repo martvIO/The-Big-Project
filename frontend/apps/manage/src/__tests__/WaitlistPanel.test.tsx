@@ -1263,7 +1263,8 @@ describe("the six focus moves", () => {
       fireEvent.click(screen.getByRole("button", { name: "קראי — מיכל אברהם" }));
     });
     const alert = await screen.findByRole("alert");
-    expect(document.activeElement).toBe(alert);
+    // The focus move is a passive effect; a bare read here races it.
+    await waitFor(() => expect(document.activeElement).toBe(alert));
     view.tick(list([entry()]));
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "קראי — מיכל אברהם" }),
@@ -1284,7 +1285,8 @@ describe("the six focus moves", () => {
       fireEvent.click(screen.getByRole("button", { name: "אישור ההסרה" }));
     });
     const alert = await screen.findByRole("alert");
-    expect(document.activeElement).toBe(alert);
+    // The focus move is a passive effect; a bare read here races it.
+    await waitFor(() => expect(document.activeElement).toBe(alert));
     // And the reveal is GONE: a refused verb answers in the alert, and leaving
     // an open question beside it would be two things asking at once.
     expect(screen.queryByText(/להסיר את/)).not.toBeInTheDocument();
