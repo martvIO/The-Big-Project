@@ -228,29 +228,35 @@ describe("CatalogPage load more", () => {
       Promise.resolve(listing(all.slice(offset, offset + PAGE_SIZE), all.length, offset)),
     );
 
+    // ⚠ SLOW, and each WAIT needs its own budget — not just the test's. Three
+    // paginated renders of a 50-dress catalogue is genuinely slow in jsdom, and
+    // the gate runs `pnpm -r test`, which puts the manage app's 1309 tests on
+    // the same cores. Raising only the test timeout did NOT fix this: every
+    // findBy/waitFor carries its OWN 1 s default, so under load the render
+    // outran the inner wait and the test failed at 19 s inside a 60 s budget
+    // with «Unable to find role=link and name /שמלה 50/» — a wait that expired,
+    // not a product fault. The page count is the subject of the test, so the
+    // budgets moved, not the fixture. No assertion changed.
+    const SLOW = { timeout: 30_000 };
+
     renderCatalog();
-    await screen.findByRole("link", { name: /שמלה 01/ });
+    await screen.findByRole("link", { name: /שמלה 01/ }, SLOW);
 
     // Dress 25 of 50 is unreachable without the button — the whole point of it.
     expect(screen.queryByRole("link", { name: /שמלה 25/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: i18n.t("catalog.more") }));
 
-    expect(await screen.findByRole("link", { name: /שמלה 25/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /שמלה 25/ }, SLOW)).toBeInTheDocument();
     // Offset is the number of items already held, not a page counter.
     expect(listDresses).toHaveBeenLastCalledWith(PAGE_SIZE);
 
-    fireEvent.click(await screen.findByRole("button", { name: i18n.t("catalog.more") }));
+    fireEvent.click(await screen.findByRole("button", { name: i18n.t("catalog.more") }, SLOW));
 
-    expect(await screen.findByRole("link", { name: /שמלה 50/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /שמלה 50/ }, SLOW)).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: i18n.t("catalog.more") })).toBeNull();
-    });
+    }, SLOW);
     expect(screen.getAllByRole("link", { name: /שמלה/ })).toHaveLength(50);
-    // ⚠ Raised from 15 s. Three paginated renders of a 50-dress catalogue is
-    // genuinely slow in jsdom, and the gate runs `pnpm -r test`, which puts the
-    // manage app's 1309 tests on the same cores: this timed out at 17.1 s there.
-    // The page count is the subject of the test, so the budget moved, not the
-    // fixture. No assertion changed.
   }, 60_000);
 
   it("keeps the dresses already on screen when the next page fails", async () => {
