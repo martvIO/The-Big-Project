@@ -1,33 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button, ButtonLink, Card, JERusalem, Skeleton, VisuallyHidden } from "@boutique/ui";
+import { Button, ButtonLink, Card, Skeleton, VisuallyHidden } from "@boutique/ui";
 import { ApiError, api } from "../api";
 import type { BoutiqueResponse, ManageBookingResponse } from "../api";
 import { ContactCard } from "../components/ContactCard";
 import { useBoutique } from "../components/StorefrontLayout";
+// ⚠ EXTRACTED, NOT FORKED (F24 F-P3). The portal detail renders the same
+// `ManageBookingResponse` through these same three components, so the two
+// surfaces cannot drift into two products. This page's own tests are the
+// extraction's contract and were not edited for it.
+import { BookingFacts, PolicyLine } from "../components/booking/BookingFacts";
+import { CancelReveal } from "../components/booking/CancelReveal";
+import { IcsDownload } from "../components/booking/IcsDownload";
 
 // The page behind the tokenized manage link that rides the confirmation and
 // reminder SMS. It is the confirmation screen's SIBLING, not a flow: she arrived
 // from a text message, possibly weeks later, so there is no stepper, no progress
 // and no back-to-step-one. Facts first, actions second, boutique contact last.
 //
-// Instants render in the BOUTIQUE's zone. A bride whose phone clock the airline
-// changed must still read the boutique's time, and the confirmation screen makes
-// the same choice with the same formatters.
-const WEEKDAY = new Intl.DateTimeFormat("he-IL", { timeZone: JERusalem, weekday: "long" });
-const DATE = new Intl.DateTimeFormat("he-IL", {
-  timeZone: JERusalem,
-  day: "numeric",
-  month: "numeric",
-  year: "numeric",
-});
-const TIME = new Intl.DateTimeFormat("en-GB", {
-  timeZone: JERusalem,
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
-
 // Identical to /book/* so the two surfaces read as one product. The column stays
 // 640 and centred at every width — a luxury reading column, not a dashboard, and
 // there is deliberately no two-column desktop layout for five facts and two
@@ -95,58 +85,6 @@ function Heading() {
           voice on an otherwise utilitarian screen. */}
       <span aria-hidden="true" className="h-px w-12 bg-gold" />
     </div>
-  );
-}
-
-// The facts, with labels REUSED from the approved confirmation screen (design
-// P2) — one label, one Hebrew, no drift between the two screens that show the
-// same appointment. Labels rather than sentences because interpolation cannot
-// carry the <bdi> a numeral needs, and a label/value pair survives being read
-// back off a screenshot at 200% zoom.
-function Facts({ booking }: { booking: ManageBookingResponse["booking"] }) {
-  const { t } = useTranslation();
-  const when = new Date(booking.starts_at);
-
-  return (
-    <Card className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-semibold text-ink-muted">{t("booking.confirmWhen")}</p>
-        <p className="text-lg text-ink">
-          {WEEKDAY.format(when)}, <bdi dir="ltr">{DATE.format(when)}</bdi>{" "}
-          <span aria-hidden="true">·</span> <bdi dir="ltr">{TIME.format(when)}</bdi>
-        </p>
-      </div>
-
-      <span aria-hidden="true" className="h-px bg-border" />
-
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-semibold text-ink-muted">{t("booking.confirmWhat")}</p>
-        {/* Owner-authored, so it may be Hebrew or Latin — a bare <bdi> isolates
-            it either way. dir="ltr" would itself be a bidi defect on Hebrew. */}
-        <p className="text-lg text-ink">
-          <bdi>{booking.appointment_type_name}</bdi>
-        </p>
-        {booking.dress_name !== null && booking.dress_size !== null && (
-          <p className="text-base text-ink">
-            <bdi>{booking.dress_name}</bdi> <span aria-hidden="true">·</span>{" "}
-            {t("booking.confirmDress")} <bdi>{booking.dress_size}</bdi>
-          </p>
-        )}
-      </div>
-    </Card>
-  );
-}
-
-// R19's split shape: the lead, the isolated numeral, the tail. i18next
-// interpolation cannot carry the <bdi> the number needs, so the seam moved
-// rather than the words.
-function PolicyLine({ hours }: { hours: number }) {
-  const { t } = useTranslation();
-  return (
-    <p className="text-sm text-ink-muted">
-      {t("manage.cancelPolicyLead")} <bdi dir="ltr">{hours}</bdi>{" "}
-      {t("manage.cancelPolicySuffix")}
-    </p>
   );
 }
 
@@ -344,7 +282,7 @@ export function ManageBookingPage({ token }: { token: string }) {
       <Heading />
 
       {/* Kept in the cancelled state too: she may need the date to rebook. */}
-      <Facts booking={booking} />
+      <BookingFacts booking={booking} />
 
       {cancelled && (
         <>
@@ -371,7 +309,14 @@ export function ManageBookingPage({ token }: { token: string }) {
         </>
       )}
 
-      {past && <p className="text-base text-ink-muted">{t("manage.past")}</p>}
+      {past && (
+        <>
+          <p className="text-base text-ink-muted">{t("manage.past")}</p>
+          {/* A past appointment that really happened is still a calendar record
+              worth keeping — design §4's P state. */}
+          <IcsDownload source={{ transport: "token", token }} />
+        </>
+      )}
 
       {actionable && (
         <>
@@ -426,73 +371,30 @@ export function ManageBookingPage({ token }: { token: string }) {
               whole decision on one surface and spares the focus-trap machinery
               for a two-button choice. */}
           {revealed && (
-            <Card className="flex flex-col gap-4 bg-surface-raised">
-              {/* The focus destination for the reveal — the QUESTION itself, so a
-                  screen reader hears what is being asked rather than an anonymous
-                  container. Card takes no ref, and adding one to a gate-passed
-                  component to focus a wrapper would buy nothing over this. */}
-              <p ref={revealRef} tabIndex={-1} className="text-lg text-ink">
-                {t("manage.cancelQuestion")}
-              </p>
-              {/* The window fact from HER accepted policy. Absent only if that
-                  version row has gone — the page then says nothing about a
-                  number it cannot justify. */}
-              {policy !== null && (
-                <PolicyLine hours={policy.refundable_until_hours_before} />
-              )}
-              {/* MD3. The shipped sentence — "no payment was charged, so
-                  cancelling carries no cost" — is FALSE for a booking that took
-                  a deposit, and false for a bride who has ALREADY READ IT. It
-                  survives only where no deposit exists, which is still every
-                  F16-era booking.
-
-                  The branch is `deposit_taken`, NOT status: a CONFIRMED booking
-                  paid weeks ago has a deposit too, so status cannot answer this
-                  — which is the entire reason that boolean is on the wire.
-
-                  The deposit sentence is INTERIM and neutral. The two
-                  window-specific variants — the deposit comes back, the boutique
-                  keeps some of it — are the one item parked for the user,
-                  because they tell a bride what she is entitled to be repaid.
-                  When they land this is a string swap and a branch on the
-                  already-computed refund number; nothing here is structural. */}
-              <p className="text-base text-ink">
-                {t(
-                  booking.deposit_taken
-                    ? "manage.cancelConsequenceDeposit"
-                    : "manage.cancelConsequenceFree",
-                )}
-              </p>
-              <div className="flex flex-col gap-3 sm:flex-row">
-                <Button
-                  variant="danger"
-                  size="md"
-                  fullWidthMobile
-                  loading={busy === "cancel"}
-                  onClick={() => {
-                    void act("cancel", api.cancelBooking, "manage.cancelled", "cancelled");
-                  }}
-                >
-                  {t("manage.cancelConfirm")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="md"
-                  fullWidthMobile
-                  onClick={() => {
-                    setRevealed(false);
-                    // Deferred to the layout effect: the trigger is UNMOUNTED
-                    // while the reveal is open, so its ref is null until the
-                    // collapse has rendered. Focusing it here would silently
-                    // drop focus to <body>.
-                    moveFocusTo.current = "trigger";
-                  }}
-                >
-                  {t("manage.cancelKeep")}
-                </Button>
-              </div>
-            </Card>
+            <CancelReveal
+              ref={revealRef}
+              policy={policy}
+              depositTaken={booking.deposit_taken}
+              busy={busy === "cancel"}
+              onConfirm={() => {
+                void act("cancel", api.cancelBooking, "manage.cancelled", "cancelled");
+              }}
+              onKeep={() => {
+                setRevealed(false);
+                // Deferred to the layout effect: the trigger is UNMOUNTED while
+                // the reveal is open, so its ref is null until the collapse has
+                // rendered. Focusing it here would silently drop focus to <body>.
+                moveFocusTo.current = "trigger";
+              }}
+            />
           )}
+
+          {/* F24 D5's control, in the design's position: under the actions and
+              above the policy line, and only on a state that CAN be added to a
+              calendar. Cancelled and awaiting-payment render nothing — the
+              server 409s regardless, and there is nothing to word on a control
+              that cannot act (the manage A-state ruling). */}
+          <IcsDownload source={{ transport: "token", token }} />
 
           {/* Outside the reveal too, so the window is readable before she opens
               the cancel step at all. */}

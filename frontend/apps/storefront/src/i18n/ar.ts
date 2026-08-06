@@ -29,6 +29,7 @@ export const ar = {
       queueBoard: "לוח התור",
       // F20.
       privacy: "הודעת פרטיות",
+      portal: "האזור האישי",
     },
     // F20. The footer link is on every route, so the notice is one tap from
     // any of them.
@@ -58,6 +59,50 @@ export const ar = {
       awaitingPayment: "התור שמור עבורך וממתין לתשלום המקדמה.",
       cancelConsequenceDeposit: "המקדמה מטופלת בהתאם למדיניות הביטולים של הבוטיק.",
     },
+    // F24. Untranslated Hebrew, pre-decided #47: every feature from F16 on
+    // ships its `ar` keys beside its Hebrew so the eventual launch is a
+    // translation job rather than a retrofit across ~28 features.
+    portal: {
+      loginTitle: "האזור האישי",
+      loginIntro: "אפשר להיכנס עם מספר הטלפון שאיתו קבעת תור.",
+      loginSubmit: "כניסה",
+      sending: "שולחות את הקוד",
+      loggingIn: "נכנסות לאזור האישי",
+      loggedIn: "נכנסת לאזור האישי.",
+      verifyExpired: "האימות פג תוקף. אפשר לבקש קוד חדש ולהיכנס.",
+      sessionExpired: "החיבור לאזור האישי הסתיים. אפשר להיכנס שוב עם קוד אימות.",
+
+      greeting: "שלום, {{name}}",
+      logout: "יציאה",
+      loggedOut: "יצאת מהאזור האישי.",
+
+      upcoming: "תורים קרובים",
+      past: "תורים קודמים",
+      upcomingEmpty: "אין תורים קרובים כרגע.",
+      pastEmpty: "עדיין אין תורים קודמים.",
+      emptyTitle: "אין תורים למספר הזה",
+      emptyBody: "כשתקבעי תור בבוטיק, הוא יופיע כאן.",
+      emptyCta: "קביעת תור",
+      loadingBookings: "טוענות את התורים שלך",
+
+      statusAwaitingPayment: "ממתין לתשלום המקדמה",
+      statusCancelled: "בוטל",
+
+      backToList: "חזרה לתורים שלי",
+      icsDownload: "הוספה ליומן",
+      icsHint: "הקובץ נפתח ביומן של הטלפון או המחשב.",
+
+      bellLabel: "הודעות מהבוטיק",
+      bellLabelUnread: "הודעות מהבוטיק, {{count}} חדשות",
+      bellTitle: "הודעות מהבוטיק",
+      bellClose: "סגירת ההודעות",
+      bellEmpty: "אין הודעות עדיין. הודעות על התורים שלך יופיעו כאן.",
+      bellKindConfirmation: "אישור קביעת התור",
+      bellKindReminder: "תזכורת לתור",
+      bellKindOwnerCancel: "התור בוטל על ידי הבוטיק",
+      bellKindOwnerReschedule: "מועד התור עודכן",
+      bellKindPaymentReceivedNoSlot: "התשלום התקבל ונחזור אלייך לגבי המועד",
+    },
     booking: {
       confirmKeepScreen: "פרטי התור נשמרו אצלנו, וכדאי בכל זאת לצלם את המסך. אנחנו נחכה לך.",
       // F19 — the deposit hand-off's five states.
@@ -86,6 +131,11 @@ export const ar = {
     // F19. The first `errors` key to reach this bundle — the block exists here
     // now so the next feature appends rather than re-deciding where it goes.
     errors: {
+      // F24's login refusal, and NOT `errors.notFound`: the login panel renders
+      // a designed screen off this code. The panel shows `portal.emptyTitle` /
+      // `portal.emptyBody` (design P2 — one screen for the empty dashboard and
+      // for this refusal); this row exists so the shared error map resolves.
+      portalNoBookings: "אין תורים למספר הזה.",
       bookingAwaitingPayment: "התור הזה ממתין לתשלום המקדמה, ולכן אי אפשר לעדכן אותו כרגע.",
     },
     // F22's booking-waitlist reveal — Hebrew values standing in, pre-decided

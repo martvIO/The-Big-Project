@@ -104,6 +104,15 @@ describe("i18n keys used by the app", () => {
 // Hebrew, left untranslated, so the eventual launch is a translation job rather
 // than a retrofit across ~28 features. Enumerated mechanically off he.ts so a
 // tenth pay string cannot be added to one bundle and forgotten in the other.
+// F24. The `portal.*` block plus its two error rows and the tab title,
+// enumerated MECHANICALLY off he.ts so a key added to one bundle and forgotten
+// in the other is a red rather than an Arabic page that renders its own key.
+const F24_KEYS = [
+  ...Object.keys(he.translation.portal).map((name) => `portal.${name}`),
+  "document.portal",
+  "errors.portalNoBookings",
+];
+
 const F19_KEYS = [
   ...Object.keys(he.translation.booking)
     .filter((name) => name.startsWith("pay"))
@@ -200,6 +209,15 @@ describe("the ar bundle", () => {
     // A scanner that matched nothing would make the assertion below vacuous.
     expect(F19_KEYS.length).toBeGreaterThanOrEqual(12);
     const missing = F19_KEYS.filter((key) => typeof resolve(key, ar.translation) !== "string");
+    expect(missing).toEqual([]);
+  });
+
+  it("carries every F24 portal key, untranslated", () => {
+    // The anti-vacuity floor is the design's §11 table: thirty rows plus the
+    // title and the error. A scanner that found nothing would make the walk
+    // below pass on an empty bundle.
+    expect(F24_KEYS.length).toBeGreaterThanOrEqual(30);
+    const missing = F24_KEYS.filter((key) => typeof resolve(key, ar.translation) !== "string");
     expect(missing).toEqual([]);
   });
 

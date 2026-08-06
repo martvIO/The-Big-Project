@@ -27,6 +27,7 @@ vi.mock("../routes/QueuePositionPage", () => ({
 }));
 vi.mock("../routes/QueueBoardPage", () => ({ QueueBoardPage: () => "לוח" }));
 vi.mock("../routes/PrivacyPage", () => ({ PrivacyPage: () => "פרטיות" }));
+vi.mock("../routes/PortalPage", () => ({ PortalPage: () => "האזור האישי" }));
 
 function go(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -313,6 +314,34 @@ describe("the walk-in queue's routes", () => {
     renderRoute("/privacy");
     expect(document.title).toBe(i18n.t("document.privacy"));
     expect(document.title).not.toBe("document.privacy");
+  });
+});
+
+// F24. The SAME trap, stated a fourth time because it has caught this codebase
+// once already: `DOC_TITLE_KEYS` is compiler-forced and the render switch is
+// not, so `/portal` with a matcher, a title and NO `case` compiles clean,
+// typechecks clean and serves the dress grid under «האזור האישי». The negative
+// half of each pair is what reddens against that.
+describe("the client portal's route", () => {
+  it("renders the portal at /portal, never the catalogue", () => {
+    renderRoute("/portal");
+    expect(screen.getByText("האזור האישי")).toBeInTheDocument();
+    expect(screen.queryByText("קטלוג")).toBeNull();
+  });
+
+  it("titles the portal from its own key", () => {
+    renderRoute("/portal");
+    expect(document.title).toBe(i18n.t("document.portal"));
+    expect(document.title).not.toBe("document.portal");
+  });
+
+  it("is an EXACT literal, so nothing below it is swallowed", () => {
+    // `/portal-anything` is not this page, and a prefix match would swallow a
+    // link whose id merely started the same way — the /privacy ruling, reused.
+    expect(matchRoute("/portal")).toEqual({ name: "portal" });
+    expect(matchRoute("/portal/")).toEqual({ name: "portal" });
+    expect(matchRoute("/portalx")).toEqual({ name: "catalog" });
+    expect(matchRoute("/portal/bookings")).toEqual({ name: "catalog" });
   });
 });
 

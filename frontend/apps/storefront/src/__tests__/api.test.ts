@@ -520,3 +520,85 @@ describe("getBoutiqueOnce", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+// --- F24's client portal ----------------------------------------------------
+
+describe("the portal endpoints", () => {
+  it("sends the session cookie on EVERY portal call and on nothing else", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { customer_name: "רותם" }));
+    await api.portalMe();
+    await api.portalBookings();
+    await api.portalBooking("b1");
+    await api.portalConfirmAttendance("b1");
+    await api.portalCancel("b1");
+    await api.portalBell();
+    await api.portalBellSeen();
+    await api.portalLogin({ phone: "+972501234567", verification_token: "vt" });
+    await api.portalLogout();
+    for (const call of fetchMock.mock.calls) {
+      // "same-origin" and never "include": the SPA and the API share the tenant
+      // host, and "include" would attach the cookie to a cross-origin request
+      // the day one is added.
+      expect((call[1] as RequestInit).credentials).toBe("same-origin");
+    }
+
+    // The booking surface stays cookie-BLIND, and a backend test asserts an
+    // owner cookie changes nothing there.
+    const blind = stubFetch(() => jsonResponse(200, {}));
+    await api.lookupBooking("mt-token");
+    expect((blind.mock.calls[0][1] as RequestInit).credentials).toBe("omit");
+  });
+
+  it("puts the booking id in the query string on the reads and in the BODY on the actions", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.portalBooking("b 1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/storefront/portal/booking?id=b%201");
+
+    await api.portalCancel("b1");
+    expect(fetchMock.mock.calls[1][0]).toBe("/storefront/portal/booking/cancel");
+    expect(JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)).toEqual({
+      id: "b1",
+    });
+  });
+
+  it("maps PORTAL_NO_BOOKINGS to its own key, never to the generic 404", () => {
+    expect(errorMessageKey(new ApiError(404, "PORTAL_NO_BOOKINGS", "No bookings."))).toBe(
+      "errors.portalNoBookings",
+    );
+    expect(errorMessageKey(new ApiError(404, "NOT_FOUND", "Resource not found."))).toBe(
+      "errors.notFound",
+    );
+  });
+
+  it("builds the ics href as a plain URL — the id is not the capability there", async () => {
+    const { portalIcsUrl } = await import("../api");
+    expect(portalIcsUrl("b 1")).toBe("/storefront/portal/booking.ics?id=b%201");
+    // The token transport is a POST and can never be a URL (F14 D7).
+    expect(portalIcsUrl("b1")).not.toContain("token");
+  });
+
+  it("posts the manage token for the tokenized ics and never puts it in a URL", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", {
+        status: 200,
+        headers: { "Content-Type": "text/calendar" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: () => "blob:stub",
+      revokeObjectURL: () => undefined,
+    });
+
+    const { manageIcsBlobUrl } = await import("../api");
+    const blob = await manageIcsBlobUrl("mt-secret");
+    expect(blob.url).toBe("blob:stub");
+    expect(fetchMock.mock.calls[0][0]).toBe("/storefront/booking/ics");
+    expect(fetchMock.mock.calls[0][0]).not.toContain("mt-secret");
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
+      token: "mt-secret",
+    });
+    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe("omit");
+  });
+});

@@ -11,6 +11,7 @@ import { CatalogPage } from "./routes/CatalogPage";
 import { CheckinPage } from "./routes/CheckinPage";
 import { DressPage } from "./routes/DressPage";
 import { ManageBookingPage } from "./routes/ManageBookingPage";
+import { PortalPage } from "./routes/PortalPage";
 import { PrivacyPage } from "./routes/PrivacyPage";
 import { QueueBoardPage } from "./routes/QueueBoardPage";
 import { QueuePositionPage } from "./routes/QueuePositionPage";
@@ -35,7 +36,11 @@ export type RouteName =
   | "queuePosition"
   | "queueBoard"
   // F20's statutory privacy notice.
-  | "privacy";
+  | "privacy"
+  // F24's client portal. `manage` is taken by /b/{token} — that page is
+  // possession-authed and this one is session-authed, and they are two surfaces
+  // over one appointment rather than two names for one page.
+  | "portal";
 
 // A closed set, which is what lets /book/{step} and /book/{step}/{dressId}
 // share a shape: no dress id can ever be read as a step. `pay` joins it in flow
@@ -63,7 +68,13 @@ export type RouteMatch =
   // query — which is why it is the only route here with nothing beside its name.
   | { name: "queueBoard" }
   // The privacy notice. Same shape and same reason: one document, no input.
-  | { name: "privacy" };
+  | { name: "privacy" }
+  // The portal takes NO input from the URL: the customer comes from an HttpOnly
+  // cookie the SPA cannot read, so there is nothing to parse and nothing a
+  // shared link could carry. Which booking she is looking at is component state,
+  // not a path — a /portal/booking/{id} URL would be a link that renders a login
+  // panel for everyone she sent it to.
+  | { name: "portal" };
 
 // The id of StorefrontLayout's <main tabindex="-1">. Focus lands here after
 // every client navigation, and the SkipLink targets it.
@@ -97,6 +108,10 @@ const DOC_TITLE_KEYS: Record<RouteName, string> = {
   // F20. A statutory document sharing the catalogue's title is one a
   // screen-reader user cannot tell she reached (WCAG 2.4.2).
   privacy: "document.privacy",
+  // F24. One title for all four surfaces on this route (login, dashboard,
+  // detail, bell) — and it never names an appointment or a person, the
+  // queuePosition rule: a tab strip is read over a shoulder.
+  portal: "document.portal",
 };
 
 const DRESS_PATH = /^\/dress\/([^/]+)$/;
@@ -140,6 +155,11 @@ export function matchRoute(pathname: string): RouteMatch {
   // match and not a prefix: /privacy-anything is not this page, and a prefix
   // would swallow a link whose id merely started the same way.
   if (path === "/privacy") return { name: "privacy" };
+  // F24, beside the other exact literals. EXACT and never a prefix, the
+  // /privacy ruling verbatim: /portal-anything is not this page, and
+  // /portal/booking/{id} must fall through rather than become a shareable link
+  // to somebody's appointment.
+  if (path === "/portal") return { name: "portal" };
 
   const dress = DRESS_PATH.exec(path);
   if (dress) return { name: "dress", dressId: decodeId(dress[1]) };
@@ -374,6 +394,8 @@ export function Router() {
       return <QueueBoardPage />;
     case "privacy":
       return <PrivacyPage />;
+    case "portal":
+      return <PortalPage />;
     // ⚠ A missing `case` compiles clean, typechecks clean and renders the dress
     // grid under the route's own title, because of the fallthrough below —
     // DOC_TITLE_KEYS is compiler-forced but this switch is not. `checkin`
