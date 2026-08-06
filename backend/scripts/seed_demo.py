@@ -11,11 +11,13 @@ Two prerequisites it deliberately cannot satisfy for itself (see WARNINGS at the
 end of a run for the full list of gaps):
 
   1. the API is up            —  make dev
-  2. the tenant and its first owner exist — there is NO provisioning endpoint,
-     only the operator CLI:
+  2. the tenant and its first owner exist — provision them in the PLATFORM
+     CONSOLE at admin.<base_domain>/platform (F25 deleted the four CLI
+     lifecycle subcommands at parity). Seed yourself an operator first, which
+     is the one part that is still shell-only because no HTTP route mints one:
 
-       cd backend && python -m app.cli provision \\
-         --slug demo --name "בוטיק מודרין" --owner-email owner@demo.example
+       cd backend && python -m app.cli create-operator \\
+         --email you@modryn.example --display-name "You" --operator you
 
 Tenancy is HOSTNAME-derived and nothing else: --base-url IS the tenant selector,
 because TenantResolutionMiddleware reads the leftmost label of the Host. The
@@ -345,9 +347,10 @@ def sign_in(api: Api, *, email: str, password: str, slug: str) -> dict[str, Any]
         raise SeedError(
             f"{exc}\n\n"
             "Login failed — do NOT re-run with a guessed password (see above).\n"
-            "  TENANT_NOT_FOUND    no active boutique at this host. Provision it:\n"
-            f"    cd backend && python -m app.cli provision --slug {slug} \\\n"
-            f'      --name "בוטיק מודרין" --owner-email {email}\n'
+            "  TENANT_NOT_FOUND    no active boutique at this host. Provision it in\n"
+            f"                      the platform console (admin.<base>/platform): slug {slug},\n"
+            f"                      owner {email}. The four CLI lifecycle subcommands were\n"
+            "                      deleted at parity in F25.\n"
             "  INVALID_CREDENTIALS wrong password, or that owner does not exist.\n"
             "  TOO_MANY_ATTEMPTS   the limiter is tripped; wait out the window."
         ) from exc
@@ -651,8 +654,10 @@ def warnings(boutique_name: str, base_url: str, slug: str, owner_email: str) -> 
         "Jerusalem clock at read time. Claim a room and check somebody in during the demo.",
         "SMS HISTORY, AUDIT LOG and SCHEDULED MESSAGES have no write endpoints at all. They "
         "populate only as a side effect of really firing sends through the fake provider.",
-        f"OWNER PASSWORD is not managed here. Reset it with: cd backend && python -m app.cli "
-        f"reset-password --slug {slug} --owner-email {owner_email}",
+        f"OWNER PASSWORD is not managed here. Reset it from the platform console at "
+        f"admin.<base_domain>/platform — the row action «איפוס סיסמת בעלים» on {slug}, with "
+        f"{owner_email} as the owner address. The `app.cli reset-password` subcommand this "
+        "line used to name was deleted at parity in F25.",
     ]
 
 
@@ -663,10 +668,10 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "PREREQUISITES (neither is something this script can create):\n"
             "  1. the API is running        —  make dev\n"
-            "  2. the tenant and its owner exist — there is no provisioning endpoint,\n"
-            "     only the operator CLI:\n"
-            "       cd backend && python -m app.cli provision \\\n"
-            '         --slug demo --name "בוטיק מודרין" --owner-email owner@demo.example\n\n'
+            "  2. the tenant and its owner exist — provision them in the platform\n"
+            "     console at admin.<base_domain>/platform (seed an operator first with\n"
+            "     `python -m app.cli create-operator`; there is no HTTP route that\n"
+            "     mints one)\n\n"
             "The owner password is read from SEED_OWNER_PASSWORD or prompted for — never\n"
             "from argv, which would leak it into the process list and shell history.\n\n"
             "TENANCY COMES FROM THE HOSTNAME AND NOTHING ELSE: --base-url selects the\n"
@@ -682,7 +687,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--owner-email",
         dest="owner_email",
         default=DEFAULT_OWNER_EMAIL,
-        help=f"the owner created by `app.cli provision` (default {DEFAULT_OWNER_EMAIL})",
+        help=f"the owner created when the boutique was provisioned (default {DEFAULT_OWNER_EMAIL})",
     )
     return parser
 

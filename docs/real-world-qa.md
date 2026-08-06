@@ -118,13 +118,15 @@ DDL and `REVOKE ALL ON alembic_version FROM app_user`.
 
 Since §2.2 writes the **app-role** URL into `.env` (so RLS actually binds — §5),
 alembic and `app.cli` need the owner URL **exported inline for that one command**.
+(Provisioning itself is no longer a CLI command — see §3 — and the API process
+reaches it as the app role, which is the point of F25's D7.)
 The env var wins over `.env`, so nothing is edited back and forth:
 
 ```bash
 OWNER_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/$DB"
 DATABASE_URL="$OWNER_URL" uv run alembic upgrade head
 DATABASE_URL="$OWNER_URL" uv run alembic heads      # expect ONE head
-DATABASE_URL="$OWNER_URL" uv run python -m app.cli provision --slug demo …
+DATABASE_URL="$OWNER_URL" uv run python -m app.cli create-operator --email … --operator …
 ```
 
 Only the **long-running app** (uvicorn, and the worker if you start it) reads the
@@ -164,7 +166,7 @@ restores from this backup (§4).
 > first (§5 has the two `psql` lines). If you knowingly substitute
 > `postgres:postgres` for a faster setup, your report MUST say
 > "RLS NOT EXERCISED"; otherwise it claims isolation it did not test.
-> Migrations and `app.cli provision` still run as the owner role — only the
+> Migrations still run as the owner role — only the
 > **app** uses this URL.
 
 Then write `"$REPO/backend/.env"` (this is the exact heredoc that was run — `$DB`
@@ -389,30 +391,42 @@ $ curl -6 -v http://demo.localtest.me:8000/health
 
 ### 2.5 Provision a tenant
 
-There is **no provisioning endpoint** — only the operator CLI. This does not need
-the server to be running:
+⚠ **F25 CHANGED THIS STEP.** Provisioning moved from the CLI to the platform
+console; `python -m app.cli provision` now answers `invalid choice`. Two steps
+now, and the first one still does not need the server running:
+
+**1. Seed an operator (shell only — no HTTP route mints one, spec D2):**
 
 ```bash
 cd "$REPO/backend"
-uv run python -m app.cli provision \
-  --slug demo --name "בוטיק מודרין" --owner-email owner@demo.example
+printf 'console-operator-pw-2026\n' | uv run python -m app.cli create-operator \
+  --email you@modryn.example --display-name "You" --operator you
 # password is read from getpass/stdin — never argv, never shell history
-# → OK: provisioned (6be11d72-…)
+# → OK: operator_created
 ```
 
 `_read_password()` uses `getpass` **only when stdin is a tty**; otherwise it
 reads one line. So in a script, pipe it — and note that an empty line is
-rejected up front (`empty_password`), not turned into an unusable owner:
+rejected up front (`empty_password`), not turned into an unusable account.
+
+**2. Provision through the console.** It is served at the RESERVED `admin`
+label, so in dev that is `http://admin.localtest.me:8000/platform` (no
+/etc/hosts entry — localtest.me resolves to 127.0.0.1). Sign in, then use the
+«בוטיק חדש» form: slug `demo`, name «בוטיק מודרין», owner email
+`owner@demo.example`, and an initial password you type and hand over yourself.
+
+The tenant table on the same screen replaces `app.cli list` — same
+`slug / status / name / created_at`, same `TENANTS_LISTED` audit row.
+
+Two host facts worth checking here, because both are one-line failures later:
 
 ```bash
-printf 'modryn-demo-owner-2026\n' | uv run python -m app.cli provision \
-  --slug demo --name "בוטיק מודרין" --owner-email owner@demo.example
-```
-
-`uv run python -m app.cli list` prints `slug  status  name  created_at`:
-
-```
-demo	active	בוטיק מודרין	2026-08-04T06:05:27.429355+00:00
+# the console is ONLY on the admin label …
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: demo.localtest.me' \
+  http://127.0.0.1:8000/platform/auth/me     # → 404 TENANT_NOT_FOUND
+# … and nothing else is on it
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: admin.localtest.me' \
+  http://127.0.0.1:8000/manage               # → 404 TENANT_NOT_FOUND
 ```
 
 ### 2.6 Seed browsable data
@@ -772,10 +786,12 @@ cd "$REPO/backend"
 dropdb "$DB"
 createdb "$DB"
 uv run alembic upgrade head
-printf '…\n' | uv run python -m app.cli provision \
-  --slug demo --name "בוטיק מודרין" --owner-email owner@demo.example
+printf '…\n' | uv run python -m app.cli create-operator \
+  --email you@modryn.example --display-name "You" --operator you
 
-# 2. start uvicorn again (§2.4), THEN seed — seed_demo drives the live API
+# 2. start uvicorn again (§2.4). Provision `demo` through the console at
+#    http://admin.localtest.me:8000/platform (§3 — there is no CLI command for
+#    it any more), THEN seed — seed_demo drives the live API
 SEED_OWNER_PASSWORD='…' uv run python scripts/seed_demo.py
 ```
 
@@ -936,7 +952,7 @@ END \$\$"
 psql -d "$DB" -c "GRANT app_user TO boutique_app"
 ```
 
-then point **only the app** at it (migrations and `app.cli provision` keep the
+then point **only the app** at it (migrations keep the
 owner URL):
 
 ```dotenv

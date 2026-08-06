@@ -251,19 +251,32 @@ container — it needs `DATABASE_URL` and the Postgres private network, neither
 of which exists on a laptop. Shell into the `api` service and invoke it as a
 module:
 
+⚠ **The four tenant-lifecycle subcommands no longer exist.** F25 moved
+`provision` / `suspend` / `list` / `reset-password` to the platform console at
+`https://admin.<BASE_DOMAIN>/platform`, and deleted them here rather than leaving
+a second door. They now answer `invalid choice` if a stale runbook still calls
+them. Sign in there with an operator account, which is seeded from this shell:
+
 ```
 railway ssh --service api
-python -m app.cli list
-python -m app.cli provision --slug <slug> --name "<Boutique Name>" --owner-email <email>
-python -m app.cli suspend --slug <slug>
-python -m app.cli reset-password --slug <slug> --owner-email <email>
+python -m app.cli create-operator --email <you>@<domain> --display-name "<Name>" --operator <you>
+# password read from stdin/getpass — never argv
+python -m app.cli deactivate-operator --email <them>@<domain> --operator <you>
 ```
 
-Every subcommand takes `--operator <name>` for the audit trail. It defaults to
-`$USER`, which inside a container is whatever the image runs as — pass it
-explicitly for staging so `platform_audit_log` records a real person.
-`provision` and `reset-password` prompt for the password on stdin rather than
-taking it as an argument, so it stays out of shell history.
+The maintenance commands that stay here:
+
+```
+python -m app.cli backfill-booking-links --operator <name>
+python -m app.cli retention --operator <name>            # rehearsal, counts only
+python -m app.cli retention --operator <name> --armed    # actually deletes
+```
+
+`--operator` is REQUIRED on `retention` and on both operator commands, and it
+must be a real person: inside a container `$USER` is whatever the image runs as,
+and `platform_audit_log` is where this ends up. `create-operator` prompts for the
+password on stdin rather than taking it as an argument, so it stays out of shell
+history.
 
 This is the path Task 5's two-tenant staging verification will use.
 
