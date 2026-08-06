@@ -133,6 +133,9 @@ from app.payments.webhook_router import DepositBookingService
 from app.payments.webhook_router import router as webhook_router
 from app.platform.auth import OperatorAuthService
 from app.platform.auth_router import router as platform_auth_router
+from app.platform.router import ConsoleCommandRefused
+from app.platform.router import router as platform_router
+from app.platform.service import ProvisioningService
 from app.portal.router import router as portal_router
 from app.portal.service import PortalNoBookingsError, PortalService, PortalThrottledError
 from app.privacy.router import router as privacy_router
@@ -784,6 +787,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # AuthService would put a tenant predicate one refactor away from the
     # platform's front door.
     app.state.platform_auth_service = OperatorAuthService(get_session_factory(), settings)
+    # THE SAME CLASS THE CLI HAS ALWAYS CALLED, unchanged (pre-decided #20). It
+    # owns its own audit rows — the failure ones included — which is why the
+    # console's router validates nothing the service already validates.
+    app.state.provisioning_service = ProvisioningService(get_session_factory())
     # ⚠ ITS OWN LIMITER INSTANCE, and this is the SIXTH time this file states the
     # rule: max_attempts lives on the LIMITER, so a key on `login_rate_limiter`
     # above would give the console the staff ceiling — one tenant's brute-force
@@ -1102,6 +1109,26 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _invalid_credentials(request: Request, exc: InvalidCredentialsError) -> JSONResponse:
         # One body for wrong-password AND unknown-email — no account enumeration.
         return JSONResponse(INVALID_CREDENTIALS_BODY, status_code=401)
+
+    # F25 D5. ONE handler for all five console refusals: the console branches on
+    # the CODE STRING, so five exception classes would be five places to forget
+    # the next one. The code is the service's own message verbatim — an unmapped
+    # message arrives as itself at 400 rather than as a 500 or as somebody else's
+    # refusal.
+    @app.exception_handler(ConsoleCommandRefused)
+    async def _console_refused(request: Request, exc: ConsoleCommandRefused) -> JSONResponse:
+        return JSONResponse(
+            {
+                "error": {
+                    "code": exc.code,
+                    # English, and it is never what an operator reads: the console
+                    # owns the Hebrew per code (design deck §6) and falls through
+                    # to its own generic sentence for anything unlisted.
+                    "message": "The platform refused that command.",
+                }
+            },
+            status_code=exc.status,
+        )
 
     @app.exception_handler(RateLimitedError)
     async def _rate_limited(request: Request, exc: RateLimitedError) -> JSONResponse:
@@ -1525,6 +1552,8 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # together and neither can silently shadow the other — different prefixes, so
     # there is nothing to shadow, which is the point.
     app.include_router(platform_auth_router)
+    # The console's four lifecycle routes, on the same fenced prefix.
+    app.include_router(platform_router)
     app.include_router(boutique_router)
     # After the boutique router: both mount prefix="/manage", so a duplicated
     # path would silently shadow. The ROUTES table in test_catalog_api.py is

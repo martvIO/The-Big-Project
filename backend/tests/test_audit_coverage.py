@@ -77,8 +77,15 @@ from citations import assert_citations_open
 from app.main import create_app
 from app.tenancy.middleware import TenantContext
 
-# Only these two write history in this product. `platform_audit_log` is the CLI's
-# cross-tenant table and has no HTTP route at all, so it is out of this walk.
+# ⚠ THE SENTENCE THAT USED TO BE HERE — "`platform_audit_log` is the CLI's
+# cross-tenant table and has no HTTP route at all, so it is out of this walk" —
+# WAS TRUE UNTIL F25 AND IS NOW FALSE. The platform console put the audited
+# provisioning command layer behind HTTP, so /platform's mutating routes reach
+# `self._audit.record(...)` through `ProvisioningService` and
+# `OperatorAuthService`, and the delegation-following below already detects them.
+# They are IN this walk (see `_mutating_audited_routes`) rather than quietly
+# outside it, which is the whole point: the console must not keep a thinner book
+# than the shell it replaced.
 _AUDIT_WRITE = re.compile(r"\b_?audit\.record\(")
 
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -145,13 +152,20 @@ def _route_writes_audit(endpoint: Any) -> bool:
     return False
 
 
-def _mutating_manage_routes() -> dict[tuple[str, str], Any]:
+# The two prefixes whose mutations must leave a trail: the tenant console writes
+# to its own `audit_log`, the platform console to `platform_audit_log`. The
+# storefront is deliberately absent — an anonymous bride booking is not an
+# operator action, and F13's own rows are the record of it.
+_AUDITED_PREFIXES = ("/manage", "/platform")
+
+
+def _mutating_audited_routes() -> dict[tuple[str, str], Any]:
     app = create_app(resolver=_null_resolver)
     found: dict[tuple[str, str], Any] = {}
     for route in _leaf_routes(app):
         path = getattr(route, "path", None)
         endpoint = getattr(route, "endpoint", None)
-        if path is None or endpoint is None or not path.startswith("/manage"):
+        if path is None or endpoint is None or not path.startswith(_AUDITED_PREFIXES):
             continue
         for method in (getattr(route, "methods", None) or set()) - _READ_METHODS:
             found[(method, path)] = endpoint
@@ -164,6 +178,19 @@ def _mutating_manage_routes() -> dict[tuple[str, str], Any]:
 # audit row. The reason names where the decision lives in the shipped code, so a
 # reviewer can check the reasoning rather than take this file's word for it.
 UNAUDITED_BY_DECISION: dict[tuple[str, str], str] = {
+    # F25's console logout, and it is the ONE console mutation with no row. The
+    # staff twin DOES write LOGOUT into its tenant's audit_log; this one
+    # deliberately does not, because spec D4 enumerates the platform book's new
+    # actions as login and login-failed only. What that book answers is "who
+    # touched the platform, and when did somebody try" — a session ending is
+    # neither, and the login row already bounds the window it closes. Recorded
+    # here rather than closed, so a later reader who wants OPERATOR_LOGOUT finds
+    # the argument instead of a silence (platform/auth_router.py:95-105).
+    ("POST", "/platform/auth/logout"): (
+        "spec D4 names only OPERATOR_LOGIN and OPERATOR_LOGIN_FAILED for the "
+        "platform book; a session ending is bounded by the login row that opened "
+        "it (platform/auth_router.py:95-105)"
+    ),
     # boutique — F42 audited the key it owned (`atelier`) and refused to widen a
     # pre-existing gap it did not create (`boutique/service.py:163-165`). These
     # six carry that same decision: they are the boutique's own configuration of
@@ -248,14 +275,14 @@ PARTIALLY_AUDITED_BY_DECISION: dict[tuple[str, str], str] = {
 
 
 def test_every_mutating_manage_route_writes_an_audit_row_or_is_exempt() -> None:
-    routes = _mutating_manage_routes()
+    routes = _mutating_audited_routes()
     audited = {key for key, endpoint in routes.items() if _route_writes_audit(endpoint)}
     unaudited = set(routes) - audited
 
     # Three anti-vacuity legs. An empty walk, a walk that resolved nothing as
     # audited, or an exemption naming a route that no longer exists would each
     # make the real assertion below pass while proving nothing.
-    assert routes, "no mutating /manage route was discovered — the walker is broken"
+    assert routes, "no mutating audited route was discovered — the walker is broken"
     assert audited, "no route resolved as audited — the source detector is broken"
     assert set(routes) >= set(UNAUDITED_BY_DECISION), (
         "the exemption list names a route that no longer exists — prune it: "
@@ -314,7 +341,10 @@ def test_the_exemption_list_is_exactly_the_recorded_decisions() -> None:
             "a rationale a reviewer cannot open is prose, not a record."
         )
     modules = {path.split("/")[2] for _, path in UNAUDITED_BY_DECISION}
-    assert modules == {"appointment-types", "availability", "terms", "floor", "privacy"}, (
+    # "auth" joined them in F25 and it is the PLATFORM's auth, not the tenant's —
+    # /manage/auth/logout still writes its row. The shape assertion is what makes
+    # a new silent module a review rather than a diff nobody read.
+    assert modules == {"appointment-types", "availability", "terms", "floor", "privacy", "auth"}, (
         "the exemption set changed shape — a new module went quiet, or one was closed "
         f"and not removed: {sorted(modules)}"
     )
@@ -324,7 +354,7 @@ def test_the_partially_audited_route_is_audited_and_named() -> None:
     """`PUT /manage/settings` must stay on the audited side of the walk while its
     unaudited half stays written down. If someone audits profile/toggles, this
     entry is what tells them to delete the note rather than leave it lying."""
-    routes = _mutating_manage_routes()
+    routes = _mutating_audited_routes()
     for route, reason in PARTIALLY_AUDITED_BY_DECISION.items():
         assert route in routes, f"{route} no longer exists — prune the note"
         assert _route_writes_audit(routes[route]), f"{route} lost its audit write entirely"
@@ -335,7 +365,7 @@ def test_catalog_is_no_longer_the_module_with_zero_audit_rows() -> None:
     """The R38 finding in one assertion. Before F21 every one of catalog's nine
     mutating routes was unaudited and unrecorded; `grep -n audit
     catalog/service.py` returned nothing at all."""
-    routes = _mutating_manage_routes()
+    routes = _mutating_audited_routes()
     catalog = {key for key in routes if key[1].startswith("/manage/dresses")}
     assert len(catalog) == 9, f"catalog's mutating route count moved: {sorted(catalog)}"
     unaudited = {key for key in catalog if not _route_writes_audit(routes[key])}

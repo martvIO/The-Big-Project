@@ -91,6 +91,15 @@ async def logout(
     # No `get_current_operator` dependency and no 401 without a cookie: signing
     # out of a session you do not hold is not an error, and answering one would
     # make logout an oracle for "was that token live".
+    #
+    # AND NO AUDIT ROW, deliberately — the one console mutation without one. Spec
+    # D4 enumerates the platform book's new actions as OPERATOR_LOGIN and
+    # OPERATOR_LOGIN_FAILED only. That book answers "who touched the platform,
+    # and when did somebody try"; a session ending is neither, and the login row
+    # already bounds the window this closes. The staff twin DOES write LOGOUT,
+    # into its own tenant's audit_log, which is a different book answering a
+    # different question. Recorded in test_audit_coverage.py's exemption list so
+    # the decision is reviewable rather than silent.
     token = request.cookies.get(PLATFORM_SESSION_COOKIE)
     if token:
         await service.logout(token)
