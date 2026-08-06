@@ -466,6 +466,15 @@ NO_TENANT_OWNED_ID = frozenset(
         # F22's console list: collection route, no id anywhere; scoping is the
         # host-derived tenant, proved by the same two suites as its siblings.
         ("GET", "/manage/waitlist"),
+        # F24's portal session surface. The mint is keyed on a PHONE plus a
+        # single-use verification token — no id to substitute, and the phone is
+        # resolved inside the caller's own tenant. `me` and `logout` read the
+        # customer COOKIE and nothing else. All three are scoped by the
+        # host-derived tenant exactly like their siblings above; the portal
+        # routes that DO carry a tenant-owned id are walked (see PROBES).
+        ("POST", "/storefront/portal/session"),
+        ("GET", "/storefront/portal/me"),
+        ("POST", "/storefront/portal/logout"),
     }
 )
 
@@ -500,6 +509,13 @@ MODULES_WITH_NO_ID_ROUTES = {
         "storefront payment routes are in UNWALKABLE for their own reasons"
     ),
     "notifications": "OTP send/verify are keyed on a phone number, never an id",
+    # ⚠ F24 SPLIT: this entry is correct only while the portal exposes nothing
+    # but session/me/logout. The booking-detail, action and `.ics` routes DO
+    # carry a tenant-owned id, and when they land this module moves into
+    # MODULE_WALK_FLOOR with a customer session seeded for tenant A — the
+    # populate-don't-exempt path. `test_no_module_is_wholly_exempt` is what
+    # forces that move to be deliberate.
+    "portal": "session/me/logout take a phone, a verification token and a cookie — never an id",
 }
 
 # platform/ and storage/ appear in the plan's floor list and are absent here
@@ -531,6 +547,7 @@ _MODULE_BY_PREFIX = (
     ("/manage/atelier", "atelier"),
     ("/manage/waitlist", "waitlist"),
     ("/storefront/waitlist", "waitlist"),
+    ("/storefront/portal", "portal"),
     ("/storefront/otp", "notifications"),
     ("/storefront/payments", "payments"),
     ("/storefront/bookings", "booking"),

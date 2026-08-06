@@ -125,6 +125,24 @@ class Settings(BaseSettings):
     waitlist_join_phone_window_seconds: int = 3600
     waitlist_join_max_per_tenant_window: int = 300
     waitlist_join_tenant_window_seconds: int = 3600
+    # F24's portal session. THIRTY DAYS, deliberately far longer than the staff
+    # `session_ttl_seconds` above (12h) and its own setting rather than a reuse:
+    # every customer re-login costs the tenant a real SMS, so a short TTL here is
+    # a recurring bill and a worse product, while a staff console on a shared
+    # shop tablet wants the opposite. Fixed expiry, no sliding renewal — renewal
+    # is a write on every read, and the remedy is one OTP. Recorded tension with
+    # pre-decided #10 ("sessions at existing TTL"): this is a NEW retention class
+    # with its own tunable, flagged for the counsel pass alongside #10's numbers.
+    portal_session_ttl_seconds: int = 30 * 24 * 3600
+    # The mint brake (spec D3), and its OWN limiter instance — never a key on
+    # the OTP or booking budgets, because max_attempts lives on the limiter.
+    # Sized and keyed like `booking_lookup_*` below because it is the same kind
+    # of surface: an anonymous route that opens a transaction and issues a
+    # guarded UPDATE on every attempt, hit or miss. 60 per 5 minutes is far past
+    # a boutique's real login volume — a bride mints one session per login —
+    # and far below a useful flood rate.
+    portal_login_max_per_tenant_window: int = 60
+    portal_login_window_seconds: int = 300
     # An anti-scrape ceiling on the public manage lookup — the one endpoint that
     # answers a secret, so unlike the storefront reads this really is a defence
     # and not only a runaway brake. Per tenant, not per IP, for the same reason
