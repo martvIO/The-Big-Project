@@ -330,14 +330,16 @@ class ManageBookingService:
         self._transitions = ManageBookingTransitions(clock)
         self._bookings = BookingsRepository()
 
-    async def lookup(self, tenant: ManageTenant, *, token: str) -> ManageBookingResponse:
-        """Read-only, and the only metered call of the three.
+    def _meter(self, tenant: ManageTenant) -> None:
+        """The anti-scrape ceiling on the public surfaces that answer a secret:
+        without it an attacker could walk the token space at full speed. Per
+        tenant rather than per IP, same posture and same reason as the OTP
+        surface — `trust_forwarded_for` is unresolved until F21, and behind an
+        untrusted proxy an IP key collapses to one bucket anyway.
 
-        The budget is an anti-scrape ceiling on the one public surface that
-        answers a secret: without it an attacker could walk the token space at
-        full speed. Per tenant rather than per IP, same posture and same reason
-        as the OTP surface — `trust_forwarded_for` is unresolved until F21, and
-        behind an untrusted proxy an IP key collapses to one bucket anyway.
+        ONE key on one budget, deliberately shared by the two reads: they answer
+        the same secret about the same booking, so metering them apart would just
+        hand a scraper twice the ceiling.
         """
         key = f"booking:lookup:{tenant.id}"
         if self._lookup_limiter.is_blocked(key):
@@ -347,6 +349,11 @@ class ManageBookingService:
         # limiter would otherwise be inert).
         self._lookup_limiter.record_failure(key)
 
+    async def lookup(self, tenant: ManageTenant, *, token: str) -> ManageBookingResponse:
+        """Read-only and metered — the mutations are not, because a guess that
+        reaches them still has to pass the same token check and they are the
+        pair that was already unmetered on main."""
+        self._meter(tenant)
         async with tenant_session(self._session_factory, tenant.id) as session:
             booking = await self._resolve(session, tenant.id, token)
             return await self._transitions.render(session, tenant, booking)
@@ -364,6 +371,13 @@ class ManageBookingService:
             return await self._transitions.cancel(session, tenant, booking)
 
     async def ics(self, tenant: ManageTenant, *, token: str, slug: str, base_domain: str) -> str:
+        """Metered on `lookup`'s budget, because it is `lookup`'s risk: a READ
+        that answers a token, with the same 200-vs-404 validity oracle and the
+        same disclosure inside it (SUMMARY names the appointment type and the
+        boutique, DTSTART/DTEND the time, LOCATION the address). Leaving it
+        unmetered would make `lookup`'s ceiling decorative — a scraper would
+        simply walk the token space through this route instead."""
+        self._meter(tenant)
         async with tenant_session(self._session_factory, tenant.id) as session:
             booking = await self._resolve(session, tenant.id, token)
             return await self._transitions.ics(

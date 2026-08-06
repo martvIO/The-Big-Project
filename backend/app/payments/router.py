@@ -19,8 +19,9 @@ from app.tenancy.middleware import get_current_tenant
 # PUT/DELETE rather than POST sub-paths, matching app/boutique/router.py's
 # existing PUT /manage/settings and DELETE /manage/appointment-types/{id}.
 #
-# CSRF is covered, not argued away: CsrfOriginMiddleware.PROTECTED_PREFIX is
-# /manage and these are cookie-authenticated state-changing routes.
+# CSRF is covered, not argued away: `/manage` is in
+# CsrfOriginMiddleware.PROTECTED_PREFIXES and these are cookie-authenticated
+# state-changing routes.
 #
 # No Cache-Control: no-store (D17). The OTP router carries it because its verify
 # response holds a bearer token; nothing here carries bearer material or a

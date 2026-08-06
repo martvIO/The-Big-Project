@@ -21,12 +21,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.auth.dependencies import get_auth_service
+from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.booking.manage import (
     BookingAlreadyStartedError,
     BookingCancelledError,
     BookingLinkInvalidError,
     BookingLookupThrottledError,
+    ManageBookingService,
+    ManageTenant,
 )
 from app.booking.schemas import (
     MAX_TOKEN_INPUT_LENGTH,
@@ -430,3 +433,27 @@ def test_the_token_ics_carries_the_security_headers() -> None:
     with client:
         resp = client.post(ICS, json={"token": MANAGE_TOKEN})
     assert {header: resp.headers.get(header) for header in SECURITY_HEADERS} == SECURITY_HEADERS
+
+
+async def test_the_token_ics_spends_lookups_anti_scrape_budget() -> None:
+    """It is a READ that answers a manage token, which is exactly the class
+    `lookup`'s ceiling exists to cover: the same 200-vs-404 validity oracle, and
+    the same booking inside the file (SUMMARY names the appointment type and the
+    boutique, DTSTART/DTEND the time, LOCATION the address). One key on one
+    instance, shared — a second budget would just double a scraper's ceiling.
+
+    The real service and no database, because the ordering is half the point:
+    the brake is checked BEFORE a session is opened, so a flood of garbage
+    tokens costs no connection. The unusable factory is the assertion, not a
+    shortcut — if the check ever moves below `tenant_session`, this dies on the
+    None instead of raising. (The spending direction needs real rows and lives
+    in test_booking_comms_db.py.)
+    """
+    tenant = ManageTenant(id=TENANT.id, name=TENANT.name, settings=TENANT.settings)
+    tight = FixedWindowRateLimiter(max_attempts=1, window_seconds=300, clock=lambda: 0.0)
+    # Spent by a `lookup`, and read here by `ics`: one key, one instance.
+    tight.record_failure(f"booking:lookup:{TENANT.id}")
+    service = ManageBookingService(None, lookup_limiter=tight)  # type: ignore[arg-type]
+
+    with pytest.raises(BookingLookupThrottledError):
+        await service.ics(tenant, token=MANAGE_TOKEN, slug="bella", base_domain="x.test")

@@ -5,7 +5,7 @@ the F11 precedent for the F11 reason: that router is contractually GET-only,
 and mutations go to a sibling. F11 honoured it, F13, F33, F59 — F22 honours it.
 
 **Anonymous, and CSRF is structurally N/A** on the sibling routers' two
-grounds: CsrfOriginMiddleware only inspects paths under /manage, and this route
+grounds: this path is under no `CsrfOriginMiddleware.PROTECTED_PREFIXES`, and this route
 reads no cookie and carries no ambient credential — the controls are
 tenant-from-Host, the two join budgets, and OTP possession itself (the
 verification token in the body). The cookie-blindness test keeps the second

@@ -10,11 +10,13 @@ third `_RESERVED_SEGMENTS` member and its own CSRF review — for nothing. The S
 route `/portal` is served by the existing catch-all; these are its API calls.
 
 **CSRF**: the mint reads no cookie at all (its credential is the verification
-token in the body). The cookie-authed routes DO carry an ambient credential, and
-they are covered exactly as every shipped cookie POST is — `SameSite=Lax` on the
-cookie plus `CsrfOriginMiddleware`, which inspects any request that carries an
-`Origin`. This is the FIRST anonymous-prefix router in the tree that reads a
-cookie, so that pairing is stated here rather than assumed.
+token in the body). The cookie-authed routes DO carry an ambient credential, so
+they get `SameSite=Lax` on the cookie plus `CsrfOriginMiddleware` — and because
+this is the FIRST cookie reader outside `/manage`, the middleware's prefix list
+had to grow for that second half to be true at all: `"/storefront/portal"` is in
+`csrf.PROTECTED_PREFIXES` beside `"/manage"`. Lax alone would not do, since
+tenants share one registrable domain and a sibling subdomain is same-SITE.
+`test_portal_api.py` measures the fence per POST rather than restating it here.
 """
 
 import uuid

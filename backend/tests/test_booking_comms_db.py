@@ -940,6 +940,23 @@ async def test_the_lookup_budget_is_its_own_instance_and_really_trips(
         with pytest.raises(BookingLookupThrottledError):
             await service.lookup(_manage_tenant(tenant_id), token=claim.manage_token)
 
+        # F24's `POST /storefront/booking/ics` is the SECOND read that answers a
+        # manage token, so it SPENDS the same budget rather than offering a
+        # scraper an unmetered door to the same 200-vs-404 oracle. A fresh
+        # ceiling walked down by ics alone must leave `lookup` blocked.
+        ics_only = _manage(
+            factory,
+            limiter=FixedWindowRateLimiter(max_attempts=1, window_seconds=300, clock=lambda: 0.0),
+        )
+        await ics_only.ics(
+            _manage_tenant(tenant_id),
+            token=claim.manage_token,
+            slug="bella",
+            base_domain=BASE_DOMAIN,
+        )
+        with pytest.raises(BookingLookupThrottledError):
+            await ics_only.lookup(_manage_tenant(tenant_id), token=claim.manage_token)
+
         # The actions are NOT metered by this budget: a bride who reloaded a few
         # times must still be able to cancel.
         await service.cancel(_manage_tenant(tenant_id), token=claim.manage_token)

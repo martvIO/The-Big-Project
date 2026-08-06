@@ -241,6 +241,9 @@ test("portal - phone, code, כניסה: one gesture reaches the dashboard, axe c
 
   await expect(page.getByRole("heading", { name: UPCOMING })).toBeVisible();
   await expect(page.getByText("מדידה ראשונה").first()).toBeVisible();
+  // design §10: "login→dashboard focuses #content". The כניסה button she just
+  // pressed is unmounted, so focus has to be moved or it lands on <body>.
+  await expect(page.locator(MAIN_ID)).toBeFocused();
   expect(await axeViolations(page)).toEqual([]);
 });
 
@@ -303,7 +306,15 @@ test("portal - a row opens the detail and focus lands on #content (router contra
   await page.getByRole("button", { name: /מדידה ראשונה/ }).first().click();
   await expect(page.getByText(BACK)).toBeVisible();
   await expect(page.getByRole("link", { name: ICS })).toBeVisible();
+  // The ROW is what mounted the detail, and the row is now gone: without this
+  // move focus sits on a removed node and the browser drops it to <body>.
+  await expect(page.locator(MAIN_ID)).toBeFocused();
   expect(await axeViolations(page)).toEqual([]);
+
+  // …and the same in reverse (design §10: "list→detail and back → #content").
+  await page.getByText(BACK).click();
+  await expect(page.getByRole("heading", { name: UPCOMING })).toBeVisible();
+  await expect(page.locator(MAIN_ID)).toBeFocused();
 });
 
 test("portal - the cancel two-step: danger only on the final confirm, axe clean", async ({
@@ -412,6 +423,8 @@ test("portal - logout returns to the login panel with no expiry line", async ({ 
   await page.getByRole("button", { name: LOGOUT }).click();
   await expect(page.getByText(LOGIN_INTRO)).toBeVisible();
   await expect(page.getByText(SESSION_EXPIRED)).toHaveCount(0);
+  // design §10: "logout/expiry → #content with the status line announced".
+  await expect(page.locator(MAIN_ID)).toBeFocused();
 });
 
 test("portal - a mid-session 401 remounts the login panel with the expiry line, axe clean", async ({
@@ -426,6 +439,9 @@ test("portal - a mid-session 401 remounts the login panel with the expiry line, 
 
   await expect(page.getByText(SESSION_EXPIRED).first()).toBeVisible();
   await expect(page.getByText(LOGIN_INTRO)).toBeVisible();
+  // Same rule as logout: the surface she was on is gone, so focus moves rather
+  // than dropping to <body> mid-session.
+  await expect(page.locator(MAIN_ID)).toBeFocused();
   expect(await axeViolations(page)).toEqual([]);
 });
 

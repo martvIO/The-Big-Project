@@ -443,6 +443,61 @@ def test_the_portal_lives_under_the_storefront_prefix() -> None:
         assert path.startswith("/storefront/portal/")
 
 
+@pytest.mark.parametrize(
+    ("path", "body"), [(path, body) for method, path, body in COOKIE_ROUTES if method == "POST"]
+)
+def test_every_mutating_cookie_route_is_fenced_by_the_origin_check(
+    path: str, body: dict[str, Any] | None
+) -> None:
+    """The claim the router docstring makes, actually measured — it was FALSE
+    when this feature was reviewed, because `PROTECTED_PREFIXES` held `/manage`
+    alone and every route here lives under `/storefront/portal`.
+
+    It is not academic: tenants share one registrable domain (`extract_slug`
+    reads the leftmost label), so `evil.<base_domain>` is same-SITE with
+    `victim.<base_domain>` and `SameSite=Lax` attaches the customer cookie to a
+    cross-origin form POST. `logout` and `bell/seen` carry no body at all, which
+    makes them CORS-simple: no preflight stands between a forged `<form>` and a
+    revoked session or a silently cleared unread badge.
+
+    Parametrised over COOKIE_ROUTES so the next body-less portal POST inherits
+    the fence instead of inheriting the gap.
+    """
+    client, stub = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.post(path, json=body, headers={"origin": "https://evil.localtest.me"})
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["error"]["code"] == "CSRF_ORIGIN_MISMATCH"
+    # Refused BEFORE the route: the stub logs every handler it reaches, and
+    # `resolve_session` deliberately does not log, so an empty list is proof.
+    assert stub.calls == []
+
+
+def test_the_mint_is_fenced_too_and_the_boutiques_own_origin_passes() -> None:
+    """The mint reads no cookie, so it is not the CSRF case — but it sits under
+    the same prefix and must not have become collateral damage of fencing it."""
+    client, stub = _client()
+    with client:
+        resp = client.post(
+            SESSION,
+            json={"phone": PHONE, "verification_token": VERIFICATION_TOKEN},
+            headers={"origin": "http://bella.localtest.me"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert [name for name, _ in stub.calls] == ["create_session"]
+
+    forged, blocked = _client()
+    with forged:
+        resp = forged.post(
+            SESSION,
+            json={"phone": PHONE, "verification_token": VERIFICATION_TOKEN},
+            headers={"origin": "https://evil.localtest.me"},
+        )
+    assert resp.status_code == 403
+    assert blocked.calls == []
+
+
 # --- bookings, detail and the mirrored actions ------------------------------
 
 
