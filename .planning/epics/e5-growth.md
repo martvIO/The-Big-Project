@@ -28,7 +28,7 @@ v1 (E1–E4) proves one boutique end-to-end with an operator holding its hand; E
 
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
-| 22 | Waitlist join + entries model | todo | — | — | E3 #12, #13, #14 |
+| 22 | Waitlist join + entries model | done (PR #49) | [spec](../specs/waitlist-join.md) | [plan](../plans/waitlist-join.md) | E3 #12, #13, #14 |
 | 23 | Auto-reallocation loop | todo | — | — | #22, E3 #16, E4 #19 |
 | 24 | Client portal: OTP login, "My Bookings", `.ics`, bell | todo | — | — | E3 #11, #13, #16 |
 | 25 | Web platform console (replaces v1 CLI) | todo | — | — | E1 #6 |

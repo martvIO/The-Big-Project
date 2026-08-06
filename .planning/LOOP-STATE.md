@@ -25,7 +25,7 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F22                    # ==================================================================
+current: F24                    # ==================================================================
                                 # ==== RUN, 2026-08-06 — E5+E6+E8 TO COMPLETION (user directive) ===
                                 # Scope: F22 F24 F25 F27 F23 F26 F28 F29 (E5) · F35 (E6) ·
                                 # F38 F39 F40 (E8). E9/E10 stay queued for later. F29's Gate 1
@@ -2299,8 +2299,9 @@ queue:
     slug: waitlist-join
     epic: E5
     title: Waitlist join + entries model
-    status: pr-open               # 2026-08-06: PR #49. Build 6 commits + 1 review-minors fix; 82 tests;
-                                  # dual review ZERO serious findings; all 5 local gates green. Migration 0026.
+    status: merged                # 2026-08-06: PR #49, first-CI-run green on all four gating jobs.
+                                  # 82 tests; dual review zero serious; erase now cancels active entries.
+                                  # Migration 0026. F23 is unblocked.
     pr: 49
     deps: [F12, F13, F14]
     note: "Pre-decided #14: one entry = (tenant, day, appointment type) + OTP-verified phone, FIFO."
@@ -2308,8 +2309,8 @@ queue:
     slug: client-portal
     epic: E5
     title: "Client portal: OTP login, My Bookings, .ics, bell"
-    status: queued                # 2026-08-06: spec+design(gate ACCEPTED r3: sm→md 44px fix)+plan
-                                  # (18 tasks) READY — build slot pending behind F22's merge
+    status: building              # 2026-08-06: builder dispatched after F22's merge; spec+design(gate
+                                  # ACCEPTED r3)+plan (18 tasks); migration head+1 at build
     deps: [F11, F13, F16]
     note: >-
       Pre-decided #17: OTP-only login, per-booking .ics download, no two-way
