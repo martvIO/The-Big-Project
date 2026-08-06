@@ -15,7 +15,8 @@ above describes: `evil.<base_domain>` is same-site with `victim.<base_domain>`,
 so a body-less `<form method=post>` at `/storefront/portal/logout` or
 `/storefront/portal/bell/seen` is a CORS-simple request that Lax happily signs.
 The rest of `/storefront` stays out — those routers read no cookie, which their
-cookie-blindness tests hold true."""
+cookie-blindness tests hold true. `/platform` is F25's operator console, whose
+`boutique_platform_session` cookie the browser attaches the same way."""
 
 from urllib.parse import urlsplit
 
@@ -25,7 +26,10 @@ from starlette.responses import JSONResponse, Response
 
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # A tuple because `str.startswith` takes one directly — no loop, no join.
-PROTECTED_PREFIXES = ("/manage", "/storefront/portal")
+# `/platform` is ADDED, never substituted: the manage and portal surfaces' own
+# protection is untouched, and their shipped CSRF suites staying green unedited
+# is the tripwire for that.
+PROTECTED_PREFIXES = ("/manage", "/storefront/portal", "/platform")
 
 CSRF_ORIGIN_MISMATCH_BODY = {
     "error": {

@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     login_window_seconds: int = 900
     session_ttl_seconds: int = 60 * 60 * 12
 
+    # F25 D3/D4 — the console's own budget and its own TTL, never the staff
+    # numbers reused. FOUR HOURS and not the staff twelve: highest privilege,
+    # lowest login frequency, and re-login costs one password entry (no SMS bill,
+    # unlike the customer portal's 30d rationale). Fixed expiry, no sliding
+    # renewal — nothing writes expires_at after the insert.
+    platform_session_ttl_seconds: int = 60 * 60 * 4
+    # Sized like the staff login's, and spelled separately for the reason
+    # main.py repeats about limiter instances: these are two budgets, and one
+    # tenant's brute-force must not be able to spend the platform's.
+    platform_login_max_attempts: int = 5
+    platform_login_window_seconds: int = 900
+
     # Modest per-tenant throttle on terms-version creation: the table is
     # append-only by DB grant, so spam on this path is permanent bloat.
     terms_creation_max_per_window: int = 10

@@ -8,11 +8,21 @@ SESSION_COOKIE = "boutique_session"
 # console's. Two names, two dependencies, two lookup tables.
 CUSTOMER_SESSION_COOKIE = "boutique_customer_session"
 
+# F25 D3. Its OWN name beside the staff one rather than a shared cookie with a
+# wider Domain: host-only scoping to admin.{base} already isolates it from every
+# tenant host, but a distinct name means a leaked or misconfigured Domain
+# attribute STILL cannot be resolved by the staff or customer lookups. Two
+# independent reasons a stolen cookie fails, and neither is trusted alone.
+PLATFORM_SESSION_COOKIE = "boutique_platform_session"
+
 
 def _set(response: Response, name: str, token: str, *, secure: bool, max_age: int) -> None:
     # No Domain attribute → host-only cookie: a session minted at boutique A is
     # never sent to boutique B's subdomain. HttpOnly blocks JS theft; SameSite=Lax
     # blocks cross-site CSRF on the login/session cookie.
+    #
+    # ONE place for the attributes, shared by all three populations: three copies
+    # of five security-relevant flags is how one of them quietly loses HttpOnly.
     response.set_cookie(
         name,
         token,
@@ -44,3 +54,13 @@ def set_customer_session_cookie(
 
 def clear_customer_session_cookie(response: Response, *, secure: bool) -> None:
     _clear(response, CUSTOMER_SESSION_COOKIE, secure=secure)
+
+
+def set_platform_session_cookie(
+    response: Response, token: str, *, secure: bool, max_age: int
+) -> None:
+    _set(response, PLATFORM_SESSION_COOKIE, token, secure=secure, max_age=max_age)
+
+
+def clear_platform_session_cookie(response: Response, *, secure: bool) -> None:
+    _clear(response, PLATFORM_SESSION_COOKIE, secure=secure)

@@ -131,6 +131,8 @@ from app.payments.service import (
 from app.payments.unconfigured import UnconfiguredGateway
 from app.payments.webhook_router import DepositBookingService
 from app.payments.webhook_router import router as webhook_router
+from app.platform.auth import OperatorAuthService
+from app.platform.auth_router import router as platform_auth_router
 from app.portal.router import router as portal_router
 from app.portal.service import PortalNoBookingsError, PortalService, PortalThrottledError
 from app.privacy.router import router as privacy_router
@@ -775,6 +777,22 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     app.state.login_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.login_max_attempts,
         window_seconds=settings.login_window_seconds,
+        clock=time.monotonic,
+    )
+    # F25's console. Its OWN service beside the staff one — the two auth
+    # populations never share a lookup path (spec D3), and folding operators into
+    # AuthService would put a tenant predicate one refactor away from the
+    # platform's front door.
+    app.state.platform_auth_service = OperatorAuthService(get_session_factory(), settings)
+    # ⚠ ITS OWN LIMITER INSTANCE, and this is the SIXTH time this file states the
+    # rule: max_attempts lives on the LIMITER, so a key on `login_rate_limiter`
+    # above would give the console the staff ceiling — one tenant's brute-force
+    # could then close the platform's front door, and a console lockout could
+    # close a boutique's. Two budgets, two instances
+    # (`.memory/limiter-max-is-per-instance`).
+    app.state.platform_login_rate_limiter = FixedWindowRateLimiter(
+        max_attempts=settings.platform_login_max_attempts,
+        window_seconds=settings.platform_login_window_seconds,
         clock=time.monotonic,
     )
     app.state.boutique_service = BoutiqueSettingsService(
@@ -1500,6 +1518,13 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(auth_router)
+    # F25's console auth, and it is deliberately NOT under /manage: the tenancy
+    # middleware fences /platform* to the console host in both directions, and a
+    # /manage prefix would put the platform's front door behind a tenant's
+    # hostname. Registered beside the staff auth router so the two doors sit
+    # together and neither can silently shadow the other — different prefixes, so
+    # there is nothing to shadow, which is the point.
+    app.include_router(platform_auth_router)
     app.include_router(boutique_router)
     # After the boutique router: both mount prefix="/manage", so a duplicated
     # path would silently shadow. The ROUTES table in test_catalog_api.py is
