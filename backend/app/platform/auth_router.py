@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from app.auth.client_ip import client_ip
 from app.auth.cookies import (
-    PLATFORM_SESSION_COOKIE,
     clear_platform_session_cookie,
+    platform_session_cookie_name,
     set_platform_session_cookie,
 )
 from app.auth.rate_limit import FixedWindowRateLimiter
@@ -26,6 +26,10 @@ from app.platform.schemas import OperatorResponse
 # is also in csrf.py's PROTECTED_PREFIXES tuple, so the two mutating routes below
 # carry the Origin-vs-Host check.
 router = APIRouter(prefix="/platform/auth")
+
+# One bucket for the whole route. Not an email, not an address — the point is
+# that nothing about it is caller-controlled.
+_GLOBAL_KEY = "platform-login"
 
 
 def _response(operator: OperatorContext) -> OperatorResponse:
@@ -56,7 +60,27 @@ async def login(
     if ip is not None:
         keys.append(f"ip:{ip}")
 
-    if any(limiter.is_blocked(key) for key in keys):
+    # ⚠ AND ONE ARM THE CALLER CANNOT ROTATE OUT OF. Both keys above are chosen
+    # by whoever is calling — a script sending a fresh address each time never
+    # trips the per-email budget, and with `trust_forwarded_for` False there is
+    # no second arm at all. Unmetered, each such attempt buys a full argon2id
+    # verify (64 MiB, m=64MiB/t=3/p=4, `verify_password_dummy` on the
+    # unknown-address path) and one permanent `platform_audit_log` row that 0004
+    # makes INSERT-only and no RetentionPolicy prunes. On the single-instance
+    # pilot that is host memory and the platform's sole access-evidence book,
+    # both spent by an anonymous caller.
+    #
+    # Its own instance because `max_attempts` lives on the LIMITER
+    # (`.memory/limiter-max-is-per-instance`, the rule main.py states six times).
+    #
+    # ponytail: a spent global budget refuses the console login for the rest of
+    # the window, including the real operator's — a real cost, and strictly the
+    # smaller one: without it the host serving every boutique OOMs instead. The
+    # upgrade that removes the trade is the distributed limiter plus a real
+    # per-IP arm, both parked in F62.
+    global_limiter: FixedWindowRateLimiter = request.app.state.platform_login_global_rate_limiter
+
+    if global_limiter.is_blocked(_GLOBAL_KEY) or any(limiter.is_blocked(key) for key in keys):
         raise RateLimitedError
 
     try:
@@ -67,6 +91,7 @@ async def login(
         # anything is a denial of service rather than a control.
         for key in keys:
             limiter.record_failure(key)
+        global_limiter.record_failure(_GLOBAL_KEY)
         raise
 
     limiter.reset(keys[0])
@@ -100,10 +125,11 @@ async def logout(
     # into its own tenant's audit_log, which is a different book answering a
     # different question. Recorded in test_audit_coverage.py's exemption list so
     # the decision is reviewable rather than silent.
-    token = request.cookies.get(PLATFORM_SESSION_COOKIE)
+    secure = get_settings().secure_cookies
+    token = request.cookies.get(platform_session_cookie_name(secure))
     if token:
         await service.logout(token)
-    clear_platform_session_cookie(response, secure=get_settings().secure_cookies)
+    clear_platform_session_cookie(response, secure=secure)
     return {"ok": True}
 
 

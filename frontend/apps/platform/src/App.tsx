@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ApiError, api } from "./api";
+import { api, onSessionExpired } from "./api";
 import type { Operator } from "./api";
 import { Console } from "./components/Console";
 import { LoginPanel } from "./components/LoginPanel";
@@ -47,15 +47,15 @@ export function App() {
     [t],
   );
 
+  // Subscribed at the FETCH layer and not to `unhandledrejection`: every call
+  // site in Console.tsx catches its own ApiError to render a refusal sentence, so
+  // no 401 ever surfaces as an unhandled rejection and the listener this replaces
+  // fired for none of the paths above. Registered only while signed in, so the
+  // bootstrap 401 and a refused login stay on the login screen's own copy.
   useEffect(() => {
     if (operator === null) return;
-    const onRejection = (event: PromiseRejectionEvent) => {
-      if (event.reason instanceof ApiError && event.reason.status === 401) {
-        signOut(true);
-      }
-    };
-    window.addEventListener("unhandledrejection", onRejection);
-    return () => window.removeEventListener("unhandledrejection", onRejection);
+    onSessionExpired(() => signOut(true));
+    return () => onSessionExpired(null);
   }, [operator, signOut]);
 
   if (!ready) return null;

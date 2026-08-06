@@ -77,6 +77,11 @@ export const he = {
     "platform.error.slug_taken": "הכתובת הזו כבר תפוסה.",
     "platform.error.invalid_or_reserved_slug": "הכתובת אינה תקינה או שמורה למערכת.",
     "platform.error.empty_password": "יש להזין סיסמה.",
+    // One key beyond the deck's §6, and it is the server's own new refusal code:
+    // the same 10-character floor the staff screen enforces now covers the
+    // owner's initial password and its reset. The number is in the sentence
+    // because "too short" without it sends the operator guessing.
+    "platform.error.password_too_short": "הסיסמה חייבת להכיל לפחות 10 תווים.",
     "platform.error.tenant_not_found": "הבוטיק לא נמצא. כדאי לרענן את הרשימה.",
     "platform.error.owner_not_found": "האימייל אינו תואם את בעלת הבוטיק הרשומה.",
 

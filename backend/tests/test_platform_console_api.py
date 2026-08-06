@@ -18,13 +18,19 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.auth.cookies import PLATFORM_SESSION_COOKIE
+from app.auth.cookies import platform_session_cookie_name
 from app.main import create_app
 from app.platform.auth import OperatorContext
 from app.platform.service import CommandResult, TenantSummary
 
 CONSOLE = "http://admin.localtest.me"
 TOKEN = "a-live-session-token"
+
+# The suite runs with `app_env="dev"`, so `secure_cookies` is False and the name
+# has no `__Host-` prefix. The prefixed form is asserted in its own test, driven
+# off a non-dev Settings — the prefix is browser-enforced and the browser also
+# refuses it without Secure, which dev does not set.
+PLATFORM_SESSION_COOKIE = platform_session_cookie_name(secure=False)
 OPERATOR = OperatorContext(id=uuid.uuid4(), email="dana@modryn.example", display_name="Dana")
 
 

@@ -265,7 +265,7 @@ def test_create_operator_writes_its_row_and_a_duplicate_email_writes_a_failure_r
     # service normalises, so this is the SAME operator and must be refused.
     second = asyncio.run(
         _service(factory).create_operator(
-            email=email.upper(), display_name="Impostor", password="other-pw", operator=who
+            email=email.upper(), display_name="Impostor", password="other-console-pw", operator=who
         )
     )
     assert second.ok is False
@@ -313,12 +313,12 @@ def test_deactivation_soft_deletes_revokes_live_sessions_and_audits(
     # A second live operator, so the last-operator refusal does not fire.
     assert asyncio.run(
         service.create_operator(
-            email=keeper, display_name="Keeper", password="keeper-pw", operator=who
+            email=keeper, display_name="Keeper", password="keeper-console-pw", operator=who
         )
     ).ok
     assert asyncio.run(
         service.create_operator(
-            email=doomed, display_name="Doomed", password="doomed-pw", operator=who
+            email=doomed, display_name="Doomed", password="doomed-console-pw", operator=who
         )
     ).ok
 
@@ -392,7 +392,7 @@ def test_the_last_active_operator_cannot_be_deactivated(
     survivor = _email()
     assert asyncio.run(
         service.create_operator(
-            email=survivor, display_name="Last", password="last-pw", operator=who
+            email=survivor, display_name="Last", password="last-console-pw", operator=who
         )
     ).ok
     parked = asyncio.run(deactivate_all_but(survivor))

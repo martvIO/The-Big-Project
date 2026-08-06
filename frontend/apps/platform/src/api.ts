@@ -27,6 +27,22 @@ export function errorMessage(error: unknown): string {
   return error instanceof ApiError ? error.message : FALLBACK_ERROR_MESSAGE;
 }
 
+// ⚠ THE MID-SESSION 401 IS SIGNALLED FROM HERE, and it has to be. A 401 is not a
+// per-call refusal — it is the whole session ending — but every call site in the
+// console catches its own ApiError to render a refusal sentence, so the rejection
+// never reaches the window and a listener on `unhandledrejection` (which is what
+// this was) fires for none of the documented trigger paths. The fetch that
+// produced the status is the one place all four call sites route through.
+//
+// The subscriber (App) registers only while an operator is signed in, so the
+// bootstrap `me()` 401 and a refused login — both 401s on the login screen — are
+// not session expiries.
+let sessionExpiredHandler: (() => void) | null = null;
+
+export function onSessionExpired(handler: (() => void) | null): void {
+  sessionExpiredHandler = handler;
+}
+
 function extractError(body: unknown): { code: string; message: string } | null {
   if (typeof body !== "object" || body === null) return null;
   const envelope = (body as { error?: unknown }).error;
@@ -48,6 +64,7 @@ export async function apiFetch<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
+    if (response.status === 401) sessionExpiredHandler?.();
     let extracted: ReturnType<typeof extractError> = null;
     try {
       extracted = extractError(await response.json());

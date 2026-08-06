@@ -47,6 +47,7 @@ router = APIRouter(prefix="/platform/tenants", dependencies=[Depends(get_current
 _REFUSAL_STATUS = {
     "invalid_or_reserved_slug": 400,
     "empty_password": 400,
+    "password_too_short": 400,
     "slug_taken": 409,
     "tenant_not_found": 404,
     "owner_not_found": 404,

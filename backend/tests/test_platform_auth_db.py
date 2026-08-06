@@ -23,7 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.auth.cookies import PLATFORM_SESSION_COOKIE, SESSION_COOKIE
+from app.auth.cookies import SESSION_COOKIE, platform_session_cookie_name
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.core.config import Settings
 from app.db.repositories.platform_operators import PlatformOperatorsRepository
@@ -36,6 +36,12 @@ pytestmark = pytest.mark.db
 
 CONSOLE = "http://admin.localtest.me"
 PASSWORD = "op-console-pw-2026"
+
+# The suite runs with `app_env="dev"`, so `secure_cookies` is False and the name
+# has no `__Host-` prefix. The prefixed form is asserted in its own test, driven
+# off a non-dev Settings — the prefix is browser-enforced and the browser also
+# refuses it without Secure, which dev does not set.
+PLATFORM_SESSION_COOKIE = platform_session_cookie_name(secure=False)
 
 OPERATORS = PlatformOperatorsRepository()
 SESSIONS = PlatformSessionsRepository()

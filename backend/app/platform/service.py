@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.passwords import hash_password
+from app.auth.schemas import MIN_STAFF_PASSWORD_LENGTH
 from app.booking.backfill import ManageLinkBackfill
 from app.core.config import get_settings
 from app.db.repositories.platform_operators import PlatformOperatorsRepository
@@ -21,6 +22,38 @@ from app.models.tenant import Tenant
 from app.platform.repository import PlatformAuditLogRepository
 from app.privacy.retention import RetentionRunner
 from app.tenancy.slugs import is_valid_slug
+
+
+def _password_problem(password: str) -> str | None:
+    """⚠ THE SAME FLOOR `/manage/staff` ENFORCES, on the three passwords that were
+    exempt from it.
+
+    `MIN_STAFF_PASSWORD_LENGTH` argues (auth/schemas.py) that length is the only
+    control surviving a password one person chooses and speaks to another — which
+    is exactly the trip every password below makes: an operator types it, then
+    hands it to a boutique owner or keeps it as the credential that controls every
+    tenant on the platform. `a` passed all three until this check, while the
+    boutique's own staff screen refused it.
+
+    It matters more than usual here because spec D6 declines TOTP on the strength
+    of the operator credential being "argon2-hashed, un-enumerable, rate-limited"
+    — a floor is the leg of that argument the code did not implement.
+
+    HERE and not in `schemas.py`: the service owns the failure audit rows
+    (router.py's opening note), so a schema-level refusal would answer with a
+    422→400 the console has no sentence for AND skip the `*_FAILED` row the CLI
+    writes for the same refusal. This also covers `create-operator`, which no
+    schema sees at all.
+
+    Length is measured on the RAW value, matching `CreateStaffRequest`'s
+    `min_length`; blank keeps its own code so the console's existing sentence and
+    the CLI's own tests are unchanged.
+    """
+    if not password.strip():
+        return "empty_password"
+    if len(password) < MIN_STAFF_PASSWORD_LENGTH:
+        return "password_too_short"
+    return None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -65,10 +98,12 @@ class ProvisioningService:
     ) -> CommandResult:
         if not is_valid_slug(slug):
             return await self._fail_provision(operator, slug, "invalid_or_reserved_slug")
-        if not owner_password.strip():
+        password_problem = _password_problem(owner_password)
+        if password_problem is not None:
             # A blank password (e.g. `echo -n | … provision`) would create a
-            # loginable owner with a hashed empty string — reject it.
-            return await self._fail_provision(operator, slug, "empty_password")
+            # loginable owner with a hashed empty string; a one-character one is
+            # loginable in five guesses. Both refused, with their own codes.
+            return await self._fail_provision(operator, slug, password_problem)
         if await self._tenants.by_slug(slug) is not None:
             return await self._fail_provision(operator, slug, "slug_taken")
 
@@ -244,8 +279,9 @@ class ProvisioningService:
     async def reset_owner_password(
         self, *, slug: str, owner_email: str, new_password: str, operator: str
     ) -> CommandResult:
-        if not new_password.strip():
-            return CommandResult(ok=False, message="empty_password")
+        password_problem = _password_problem(new_password)
+        if password_problem is not None:
+            return CommandResult(ok=False, message=password_problem)
         tenant = await self._tenants.by_slug(slug)
         if tenant is None:
             return CommandResult(ok=False, message="tenant_not_found")
@@ -284,10 +320,12 @@ class ProvisioningService:
         nowhere else.
         """
         normalized = email.strip().lower()
-        if not password.strip():
-            # The `provision` argument one table over: a blank password would
-            # hash the empty string into a loginable console credential.
-            return await self._fail_operator(operator, normalized, "empty_password", created=True)
+        password_problem = _password_problem(password)
+        if password_problem is not None:
+            # The `provision` argument one table over, at higher stakes: this
+            # credential controls every tenant on the platform, and 5 guesses per
+            # 15 min is ample for a one-character secret.
+            return await self._fail_operator(operator, normalized, password_problem, created=True)
         if not display_name.strip():
             return await self._fail_operator(
                 operator, normalized, "empty_display_name", created=True

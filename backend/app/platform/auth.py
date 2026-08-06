@@ -16,12 +16,12 @@ from uuid import UUID
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.auth.cookies import PLATFORM_SESSION_COOKIE
+from app.auth.cookies import platform_session_cookie_name
 from app.auth.dependencies import NotAuthenticatedError
 from app.auth.passwords import verify_password, verify_password_dummy
 from app.auth.service import InvalidCredentialsError
 from app.auth.tokens import generate_session_token, hash_token
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.db.repositories.platform_operators import PlatformOperatorsRepository
 from app.db.repositories.platform_sessions import PlatformSessionsRepository
 from app.models.constants import PlatformAuditAction
@@ -146,7 +146,7 @@ async def get_current_operator(request: Request) -> OperatorContext:
     """
     if not getattr(request.state, "platform_host", False):
         raise NotAuthenticatedError
-    token = request.cookies.get(PLATFORM_SESSION_COOKIE)
+    token = request.cookies.get(platform_session_cookie_name(get_settings().secure_cookies))
     if not token:
         raise NotAuthenticatedError
     operator = await get_operator_auth_service(request).resolve_session(token)

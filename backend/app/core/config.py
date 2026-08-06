@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     # tenant's brute-force must not be able to spend the platform's.
     platform_login_max_attempts: int = 5
     platform_login_window_seconds: int = 900
+    # ⚠ THE ARM THAT AN ATTACKER CANNOT ROTATE OUT OF. The per-email budget is
+    # keyed on a value the CALLER chooses, so a script POSTing a fresh address
+    # every time never trips it, and the per-IP arm is inert while
+    # `trust_forwarded_for` is False (which is every deployment we have). Each
+    # such attempt costs a full argon2id verify (64 MiB) and writes a permanent
+    # `platform_audit_log` row the app can neither read nor prune. Sized far above
+    # any plausible operator activity — a handful of operators, 5 failures each —
+    # so it binds only on a flood.
+    platform_login_global_max_attempts: int = 60
 
     # Modest per-tenant throttle on terms-version creation: the table is
     # append-only by DB grant, so spam on this path is permanent bloat.

@@ -31,10 +31,12 @@ class ProvisionRequest(ForbidExtraModel):
     slug: str = Field(min_length=1, max_length=MAX_SLUG_LENGTH)
     name: DisplayName
     owner_email: EmailStr = Field(max_length=320)
-    # No MIN length here even though staff creation has one: this password is
-    # typed by the operator, handed to the boutique owner out of band, and the
-    # service already refuses a blank. A schema-level minimum would answer with a
-    # length error where the console has its own sentence ready.
+    # No MIN length HERE, but the floor itself is real: `_password_problem` in
+    # ProvisioningService enforces `MIN_STAFF_PASSWORD_LENGTH` on this field, on
+    # `new_password` below, and on the CLI's operator password — one guard where
+    # all three callers route through. It lives there and not here because the
+    # service owns the failure audit rows, and because a schema-level refusal
+    # would answer with a length error the console has no sentence for.
     owner_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
 
 

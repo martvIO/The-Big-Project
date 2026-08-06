@@ -823,6 +823,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         window_seconds=settings.platform_login_window_seconds,
         clock=time.monotonic,
     )
+    # …and a THIRD instance for the same reason, not a key on the one above: the
+    # global arm's ceiling has to be an order of magnitude wider than the
+    # per-email one, and `max_attempts` lives on the LIMITER. Sharing would give
+    # every email address the flood ceiling.
+    app.state.platform_login_global_rate_limiter = FixedWindowRateLimiter(
+        max_attempts=settings.platform_login_global_max_attempts,
+        window_seconds=settings.platform_login_window_seconds,
+        clock=time.monotonic,
+    )
     app.state.boutique_service = BoutiqueSettingsService(
         get_session_factory(),
         terms_rate_limiter=FixedWindowRateLimiter(
