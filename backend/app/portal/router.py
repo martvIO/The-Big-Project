@@ -32,6 +32,7 @@ from app.booking.schemas import ManageBookingResponse
 from app.core.config import get_settings
 from app.portal.dependencies import get_current_customer, get_portal_service
 from app.portal.schemas import (
+    PortalBellResponse,
     PortalBookingIdRequest,
     PortalBookingsResponse,
     PortalSessionRequest,
@@ -186,3 +187,19 @@ async def portal_cancel_booking(
     """The tokenized `/b/{token}` page and its endpoints are UNTOUCHED — this is
     a second door onto the same transition, not a replacement."""
     return await service.cancel(_manage_tenant(get_current_tenant(request)), customer, body.id)
+
+
+@router.get("/bell")
+async def portal_bell(request: Request, service: Portal, customer: Customer) -> PortalBellResponse:
+    """What the boutique has told her, projected off `message_log` — fetched
+    once on portal mount and never polled (pre-decided #18)."""
+    return await service.bell(get_current_tenant(request).id, customer)
+
+
+@router.post("/bell/seen")
+async def portal_bell_seen(request: Request, service: Portal, customer: Customer) -> OkResponse:
+    """Stamps `bell_seen_at = now()`. The SPA fires it when the panel OPENS and
+    clears the badge only after this answers — the stamp is the truth, not the
+    click (design F-P2)."""
+    await service.mark_bell_seen(get_current_tenant(request).id, customer)
+    return OkResponse()

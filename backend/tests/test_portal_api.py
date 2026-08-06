@@ -32,8 +32,14 @@ from app.booking.schemas import (
     ManagePolicy,
 )
 from app.main import create_app
-from app.models.constants import BookingStatus
-from app.portal.schemas import PortalBookingRow, PortalBookingsResponse, PortalSessionResponse
+from app.models.constants import BookingStatus, MessageKind
+from app.portal.schemas import (
+    PortalBellItem,
+    PortalBellResponse,
+    PortalBookingRow,
+    PortalBookingsResponse,
+    PortalSessionResponse,
+)
 from app.portal.service import CustomerContext, PortalNoBookingsError, PortalThrottledError
 from app.security_headers import SECURITY_HEADERS
 from app.tenancy.middleware import TenantContext
@@ -54,7 +60,10 @@ BOOKING = "/storefront/portal/booking"
 CONFIRM = "/storefront/portal/booking/confirm-attendance"
 CANCEL = "/storefront/portal/booking/cancel"
 ICS = "/storefront/portal/booking.ics"
+BELL = "/storefront/portal/bell"
+BELL_SEEN = "/storefront/portal/bell/seen"
 BOOKING_ID = uuid.uuid4()
+MESSAGE_ID = uuid.uuid4()
 # Every route that reads the customer cookie. Grows with each phase; the auth
 # matrix below is parametrised over it so a route added without a cookie gate is
 # a red rather than a gap.
@@ -66,6 +75,8 @@ COOKIE_ROUTES: tuple[tuple[str, str, dict[str, Any] | None], ...] = (
     ("POST", CONFIRM, {"id": str(BOOKING_ID)}),
     ("POST", CANCEL, {"id": str(BOOKING_ID)}),
     ("GET", f"{ICS}?id={BOOKING_ID}", None),
+    ("GET", BELL, None),
+    ("POST", BELL_SEEN, None),
 )
 
 CUSTOMER = CustomerContext(id=CUSTOMER_ID, tenant_id=TENANT.id, name="רותם", phone="+972501234567")
@@ -147,6 +158,27 @@ class StubPortalService:
         self, tenant: ManageTenant, customer: CustomerContext, booking_id: uuid.UUID
     ) -> ManageBookingResponse:
         return self._detail("cancel", tenant, customer, booking_id)
+
+    async def bell(self, tenant_id: uuid.UUID, customer: CustomerContext) -> PortalBellResponse:
+        if self.error is not None:
+            raise self.error
+        self.calls.append(("bell", (tenant_id, customer.id)))
+        return PortalBellResponse(
+            unread_count=1,
+            items=[
+                PortalBellItem(
+                    id=MESSAGE_ID,
+                    kind=MessageKind.REMINDER.value,
+                    created_at=STARTS_AT,
+                    booking_id=BOOKING_ID,
+                    starts_at=STARTS_AT,
+                    appointment_type_name="מדידה ראשונה",
+                )
+            ],
+        )
+
+    async def mark_bell_seen(self, tenant_id: uuid.UUID, customer: CustomerContext) -> None:
+        self.calls.append(("mark_bell_seen", (tenant_id, customer.id)))
 
     async def get_booking_ics(
         self,
@@ -566,3 +598,46 @@ def test_another_customers_booking_serves_no_calendar_file() -> None:
         resp = client.get(f"{ICS}?id={BOOKING_ID}")
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+
+# --- the bell ---------------------------------------------------------------
+
+
+def test_the_bell_never_puts_a_message_body_on_the_wire() -> None:
+    """The D6 rule, as a SET EQUALITY on the item keys rather than an absence
+    check: `message_log.body` stores masked OTP codes and send-time Hebrew, and
+    the client renders every row from `kind` plus these booking facts."""
+    client, stub = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.get(BELL)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {"unread_count", "items"}
+    assert set(body["items"][0]) == {
+        "id",
+        "kind",
+        "created_at",
+        "booking_id",
+        "starts_at",
+        "appointment_type_name",
+    }
+    assert "body" not in resp.text
+    assert stub.calls == [("bell", (TENANT.id, CUSTOMER_ID))]
+
+
+def test_marking_the_bell_seen_is_a_post_with_no_body() -> None:
+    client, stub = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.post(BELL_SEEN)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert stub.calls == [("mark_bell_seen", (TENANT.id, CUSTOMER_ID))]
+
+
+def test_the_bell_is_never_cached() -> None:
+    client, _ = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        assert client.get(BELL).headers["cache-control"] == "no-store"

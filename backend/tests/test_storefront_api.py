@@ -678,6 +678,9 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         # because the manage token is the credential and tokens never ride URLs.
         "/storefront/portal/booking.ics",
         "/storefront/booking/ics",
+        # F24's bell — a page-open projection over message_log, never polled.
+        "/storefront/portal/bell",
+        "/storefront/portal/bell/seen",
     }
     # Singular /booking/* must never collide with the plural /bookings create.
     # Restricted to the tokenized surface deliberately: F24 adds

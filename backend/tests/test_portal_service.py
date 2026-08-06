@@ -53,11 +53,14 @@ from app.booking.service import BookingNotFoundError, PhoneNotVerifiedError
 from app.booking.tokens import manage_token_hash
 from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.customer_sessions import CustomerSessionsRepository
+from app.db.repositories.message_log import BELL_LIMIT, MessageLogRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.models.constants import (
     BookingCancelledBy,
     BookingStatus,
+    MessageKind,
+    MessageStatus,
     ScheduledMessageStatus,
 )
 from app.models.scheduled_message import ScheduledMessage
@@ -73,6 +76,7 @@ from app.portal.service import (
 pytestmark = pytest.mark.db
 
 SESSIONS = CustomerSessionsRepository()
+MESSAGES = MessageLogRepository()
 
 
 def _portal(
@@ -728,5 +732,154 @@ async def test_a_cancelled_booking_serves_no_ics_on_either_transport(app_role_ur
                 slug="bella",
                 base_domain="modryn.co.il",
             )
+    finally:
+        await engine.dispose()
+
+
+# --- the bell (spec D6) -----------------------------------------------------
+
+
+async def _log(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    *,
+    phone: str,
+    booking_id: uuid.UUID | None,
+    kind: str,
+    status: str = MessageStatus.SENT.value,
+    body: str = "גוף ההודעה",
+) -> uuid.UUID:
+    async with tenant_session(factory, tenant_id) as session:
+        row = await MESSAGES.insert(
+            session,
+            tenant_id=tenant_id,
+            phone=phone,
+            kind=kind,
+            body=body,
+            booking_id=booking_id,
+        )
+        if status != MessageStatus.QUEUED.value:
+            await MESSAGES.update_status(session, tenant_id, row.id, status=status)
+        return row.id
+
+
+async def test_the_bell_shows_only_sent_non_otp_rows_for_her_own_bookings(
+    app_role_url: str,
+) -> None:
+    """Four exclusions in one seed, because a bell that leaks any of them is the
+    same bug: an OTP row (masked body, not news), a FAILED row (never reached
+    her — the bell mirrors her inbox, not our attempts), another customer's row,
+    and a row with no booking at all."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    hers, neighbours = _phone(), _phone()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=2)
+        mine = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A, phone=hers)
+        theirs = await _claim(factory, tenant_id, type_id, starts_at=SLOT_B, phone=neighbours)
+
+        wanted = await _log(
+            factory,
+            tenant_id,
+            phone=hers,
+            booking_id=mine.booking.id,
+            kind=MessageKind.CONFIRMATION.value,
+        )
+        await _log(
+            factory,
+            tenant_id,
+            phone=hers,
+            booking_id=mine.booking.id,
+            kind=MessageKind.OTP.value,
+            body="הקוד שלך ●●●",
+        )
+        await _log(
+            factory,
+            tenant_id,
+            phone=hers,
+            booking_id=mine.booking.id,
+            kind=MessageKind.REMINDER.value,
+            status=MessageStatus.FAILED.value,
+        )
+        await _log(
+            factory,
+            tenant_id,
+            phone=neighbours,
+            booking_id=theirs.booking.id,
+            kind=MessageKind.CONFIRMATION.value,
+        )
+        await _log(
+            factory, tenant_id, phone=hers, booking_id=None, kind=MessageKind.CONFIRMATION.value
+        )
+
+        portal, customer = await _sign_in(factory, tenant_id, hers)
+        view = await portal.bell(tenant_id, customer)
+        assert [item.id for item in view.items] == [wanted]
+        assert view.items[0].starts_at == mine.booking.starts_at
+        assert view.items[0].appointment_type_name == mine.booking.appointment_type_name
+        # The shape carries no `body`, asserted against the model rather than
+        # against a rendered string.
+        assert set(view.items[0].model_dump()) == {
+            "id",
+            "kind",
+            "created_at",
+            "booking_id",
+            "starts_at",
+            "appointment_type_name",
+        }
+    finally:
+        await engine.dispose()
+
+
+async def test_the_bell_is_newest_first_and_capped(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        for _ in range(BELL_LIMIT + 5):
+            await _log(
+                factory,
+                tenant_id,
+                phone=phone,
+                booking_id=claim.booking.id,
+                kind=MessageKind.REMINDER.value,
+            )
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        view = await portal.bell(tenant_id, customer)
+        assert len(view.items) == BELL_LIMIT
+        created = [item.created_at for item in view.items]
+        assert created == sorted(created, reverse=True)
+    finally:
+        await engine.dispose()
+
+
+async def test_a_never_opened_bell_counts_everything_and_the_stamp_clears_it(
+    app_role_url: str,
+) -> None:
+    """NULL `bell_seen_at` is "never opened", so every message is unread — which
+    is why the column ships with no default."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        for kind in (MessageKind.CONFIRMATION.value, MessageKind.REMINDER.value):
+            await _log(factory, tenant_id, phone=phone, booking_id=claim.booking.id, kind=kind)
+
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        assert (await portal.bell(tenant_id, customer)).unread_count == 2
+
+        # The stamp is taken from the service's clock, which the seeded rows
+        # predate (they carry the DB's real `now()`), so a LATER instant is what
+        # marks them read.
+        future = _portal(factory, now=datetime.datetime.now(datetime.UTC) + datetime.timedelta(1))
+        await future.mark_bell_seen(tenant_id, customer)
+        after = await portal.bell(tenant_id, customer)
+        assert after.unread_count == 0
+        # The items are still there — seen is not deleted.
+        assert len(after.items) == 2
     finally:
         await engine.dispose()

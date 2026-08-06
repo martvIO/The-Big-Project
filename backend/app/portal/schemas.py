@@ -75,3 +75,32 @@ class PortalBookingIdRequest(ForbidExtraModel):
     token from being smuggled in beside it."""
 
     id: uuid.UUID
+
+
+class PortalBellItem(BaseModel):
+    """One line of the bell (spec D6).
+
+    ⚠ THERE IS NO `body` FIELD AND THERE MUST NEVER BE ONE. `message_log.body`
+    stores OTP bodies MASKED (`●●●`) by design — it is Spam-Law evidence of what
+    was sent, not UI copy — and the client renders each item from `kind` plus
+    these booking facts through i18n. A `body` here would put masked
+    placeholders and un-localised send-time Hebrew on her screen, and would put
+    the evidence trail on the wire.
+    """
+
+    id: uuid.UUID
+    kind: str
+    created_at: datetime.datetime
+    booking_id: uuid.UUID
+    starts_at: datetime.datetime
+    appointment_type_name: str
+
+
+class PortalBellResponse(BaseModel):
+    """`created_at` DESC, capped. `unread_count` is counted over the RETURNED
+    items rather than over the whole history: the badge caps at «9+» either way,
+    and a number larger than the list she can actually open would be a count of
+    things this screen refuses to show her."""
+
+    unread_count: int
+    items: list[PortalBellItem]

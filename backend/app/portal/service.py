@@ -34,11 +34,14 @@ from app.booking.service import BookingNotFoundError, PhoneNotVerifiedError
 from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.customer_sessions import CustomerSessionsRepository
 from app.db.repositories.customers import CustomersRepository
+from app.db.repositories.message_log import MessageLogRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.notifications.service import OtpService
 from app.notifications.validation import normalize_israeli_mobile
 from app.portal.schemas import (
+    PortalBellItem,
+    PortalBellResponse,
     PortalBookingRow,
     PortalBookingsResponse,
     PortalSessionResponse,
@@ -107,6 +110,7 @@ class PortalService:
         self._customers = CustomersRepository()
         self._sessions = CustomerSessionsRepository()
         self._bookings = BookingsRepository()
+        self._messages = MessageLogRepository()
         # The SHARED guard set, not a copy (spec D4). Its clock is this
         # service's, so a frozen-clock test moves both halves together.
         self._transitions = ManageBookingTransitions(clock)
@@ -236,6 +240,56 @@ class PortalService:
         async with tenant_session(self._session_factory, tenant.id) as session:
             booking = await self._hers(session, tenant.id, customer, booking_id)
             return await self._transitions.cancel(session, tenant, booking)
+
+    # --- the bell (spec D6) --------------------------------------------------
+
+    async def bell(self, tenant_id: uuid.UUID, customer: CustomerContext) -> PortalBellResponse:
+        """A READ-SIDE PROJECTION over `message_log` — no new table, no queue and
+        no delivery substrate. `message_log` already IS "what the boutique told
+        her", with `booking_id` populated since F16.
+
+        Fetched once when the portal mounts (pre-decided #18): no interval, no
+        focus-refetch, no websocket. Every event it lists already sent an SMS the
+        same second — the bell is a history list, not the alert channel.
+
+        `bell_seen_at` is re-read HERE rather than carried on `CustomerContext`:
+        the context is minted per request from the session lookup, and the count
+        must reflect the stamp as of this read, not as of whenever the
+        dependency happened to resolve.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rows = await self._messages.list_bell_for_customer(session, tenant_id, customer.id)
+            row = await self._customers.by_id(session, tenant_id, customer.id)
+        seen_at = row.bell_seen_at if row is not None else None
+        items = [
+            PortalBellItem(
+                id=message_id,
+                kind=kind,
+                created_at=created_at,
+                # NOT NULL in practice — the repository's join is on
+                # `booking_id`, so a null could not have matched a booking.
+                booking_id=booking_id,
+                starts_at=starts_at,
+                appointment_type_name=type_name,
+            )
+            for message_id, kind, created_at, booking_id, starts_at, type_name in rows
+            if booking_id is not None
+        ]
+        # Counted over the RETURNED items, not the whole history. The badge caps
+        # at «9+» either way, and a number larger than the list she can open
+        # would be a count of things this screen refuses to show her. NULL
+        # `bell_seen_at` means never opened, so everything is unread.
+        unread = (
+            len(items) if seen_at is None else sum(1 for item in items if item.created_at > seen_at)
+        )
+        return PortalBellResponse(unread_count=unread, items=items)
+
+    async def mark_bell_seen(self, tenant_id: uuid.UUID, customer: CustomerContext) -> None:
+        """One timestamp is the whole read model (spec D6) — no per-item rows.
+        Unconditional: re-opening the bell moves the stamp forward, which is
+        what the column means."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._customers.set_bell_seen(session, tenant_id, customer.id, at=self._now())
 
     async def get_booking_ics(
         self,

@@ -501,6 +501,8 @@ NO_TENANT_OWNED_ID = frozenset(
         ("GET", "/storefront/portal/me"),
         ("POST", "/storefront/portal/logout"),
         ("GET", "/storefront/portal/bookings"),
+        ("GET", "/storefront/portal/bell"),
+        ("POST", "/storefront/portal/bell/seen"),
     }
 )
 
