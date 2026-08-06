@@ -327,8 +327,21 @@ async def list_slots(
 
 @router.get("/appointment-types")
 async def list_appointment_types(request: Request, service: Storefront) -> list[AppointmentTypeRow]:
+    """⚠ `settings=` WAS MISSING HERE AND THAT WAS A LIVE DEFECT, FIXED AT F27.
+
+    The service has taken `settings` since F17's D10 gateway read, and this route
+    never passed it — so it arrived None on every request and `deposit_due`
+    answered False unconditionally, silently disabling the deposit disclosure D10
+    shipped. `get_boutique` above passes `settings=tenant.settings` and always
+    did, which is what makes this an omission rather than a decision.
+
+    F27 needed the same argument for D5's `brides_only` disclosure and found it
+    absent. Free of charge: the TenantContext already carries the resolved blob,
+    so this buys no statement.
+    """
     tenant = get_current_tenant(request)
-    return [public_appointment_type(row) for row in await service.list_appointment_types(tenant.id)]
+    rows = await service.list_appointment_types(tenant.id, settings=tenant.settings)
+    return [public_appointment_type(row) for row in rows]
 
 
 @router.get("/terms")

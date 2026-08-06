@@ -120,14 +120,17 @@ def _stored(
 
 
 def _appointment_type(
-    *, deposit_required: bool = True, deposit_amount_agorot: int | None = 15_000
+    *,
+    deposit_required: bool = True,
+    deposit_amount_agorot: int | None = 15_000,
+    audience: str = "brides_only",
 ) -> AppointmentType:
     return AppointmentType(
         id=uuid.uuid4(),
         tenant_id=TENANT_ID,
         name="מדידת כלה",
         duration_minutes=60,
-        audience="brides_only",
+        audience=audience,
         deposit_required=deposit_required,
         deposit_amount_agorot=deposit_amount_agorot,
         sort_order=0,
@@ -294,3 +297,76 @@ async def test_storefront_hides_the_deposit_with_no_gateway_service_wired(
     _types(monkeypatch, [_appointment_type()])
     rows = await _storefront(None).list_appointment_types(TENANT_ID, settings=DEPOSITS_ON)
     assert [(row.deposit_required, row.deposit_amount_agorot) for row in rows] == [(False, None)]
+
+
+# --- F27 D5: the brides_only DISCLOSURE consumer F7 promised ---
+#
+# ⚠ DISCLOSURE, NOT ENFORCEMENT, AND THE DISTINCTION IS THE WHOLE RULING. The
+# shipped position stands (`storefront/schemas.py`): `audience` is DISCLOSED
+# because an anonymous visitor cannot be classified as a bride, so a server-side
+# FILTER here would be theatre. What F7 shipped instead was worse than theatre —
+# a switch the owner could flip, with Hebrew hint copy promising that «כל סוגי
+# התורים יוצגו לכלות בלבד», wired to nothing at all. D5 makes that sentence true.
+#
+# Booking-create still does not check `audience`. Nothing in flight is touched;
+# the label changes on the next storefront load.
+
+BRIDES_ONLY_ON: dict[str, object] = {"toggles": {"brides_only": True}}
+BRIDES_ONLY_OFF: dict[str, object] = {"toggles": {"brides_only": False}}
+
+
+async def test_brides_only_on_discloses_every_type_as_brides_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The master switch WINS over the per-type value, `deposit_due`'s shape one
+    field over — a boutique that says it serves brides only means it about the
+    whole menu, not about the rows she remembered to mark."""
+    _types(
+        monkeypatch,
+        [
+            _appointment_type(audience="all"),
+            _appointment_type(audience="brides_only"),
+        ],
+    )
+    rows = await _storefront(None).list_appointment_types(TENANT_ID, settings=BRIDES_ONLY_ON)
+    assert [row.audience for row in rows] == ["brides_only", "brides_only"]
+
+
+async def test_brides_only_off_leaves_every_per_type_audience_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _types(
+        monkeypatch,
+        [
+            _appointment_type(audience="all"),
+            _appointment_type(audience="brides_only"),
+        ],
+    )
+    rows = await _storefront(None).list_appointment_types(TENANT_ID, settings=BRIDES_ONLY_OFF)
+    assert [row.audience for row in rows] == ["all", "brides_only"]
+
+
+@pytest.mark.parametrize("settings", [{}, {"toggles": {}}, None])
+async def test_an_absent_brides_only_toggle_reads_as_off(
+    monkeypatch: pytest.MonkeyPatch, settings: dict[str, object] | None
+) -> None:
+    """Absent = OFF, the registry default, and `deposit_due`'s rule for the same
+    reason: `tenants.settings` starts `{}` and consumers read the RAW stored
+    JSONB. D3's default-complete block is the /manage WIRE, not this read."""
+    _types(monkeypatch, [_appointment_type(audience="all")])
+    rows = await _storefront(None).list_appointment_types(TENANT_ID, settings=settings)
+    assert [row.audience for row in rows] == ["all"]
+
+
+async def test_the_audience_disclosure_does_not_disturb_the_deposit_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both projections land on the same detached row and must compose. Flipping
+    brides_only must not resurrect a deposit the gateway rule just hid."""
+    _types(monkeypatch, [_appointment_type(audience="all")])
+    rows = await _storefront(None).list_appointment_types(
+        TENANT_ID, settings={"toggles": {"brides_only": True, "deposits_enabled": True}}
+    )
+    assert [(row.audience, row.deposit_required, row.deposit_amount_agorot) for row in rows] == [
+        ("brides_only", False, None)
+    ]

@@ -30,7 +30,7 @@ import dataclasses
 import datetime
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -48,6 +48,7 @@ from app.core.config import Settings
 from app.main import create_app
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
+from app.models.constants import AppointmentAudience
 from app.models.dress import Dress
 from app.models.dress_media import DressMedia
 from app.models.terms_version import TermsVersion
@@ -80,6 +81,7 @@ from app.storefront.service import (
     StorefrontDressView,
     StorefrontService,
     StorefrontSizeView,
+    disclose_brides_only,
     upcoming_exceptions,
 )
 from app.storefront.validation import (
@@ -346,13 +348,13 @@ def _slot(hour: int, minute: int, *, remaining: int) -> Slot:
     )
 
 
-def _appointment_type() -> AppointmentType:
+def _appointment_type(audience: str = "brides_only") -> AppointmentType:
     return AppointmentType(
         id=APPOINTMENT_TYPE_ID,
         tenant_id=TENANT.id,
         name="מדידת כלה",
         duration_minutes=60,
-        audience="brides_only",
+        audience=audience,
         deposit_required=True,
         deposit_amount_agorot=15_000,
         sort_order=0,
@@ -463,8 +465,18 @@ class FakeStorefrontService:
         self._record("list_slots", tenant_id=tenant_id, from_date=from_date, to_date=to_date)
         return self.slots
 
-    async def list_appointment_types(self, tenant_id: uuid.UUID) -> list[AppointmentType]:
-        self._record("list_appointment_types", tenant_id=tenant_id)
+    async def list_appointment_types(
+        self, tenant_id: uuid.UUID, *, settings: Mapping[str, object] | None = None
+    ) -> list[AppointmentType]:
+        self._record("list_appointment_types", tenant_id=tenant_id, settings=settings)
+        # F27 D5. The real projection helper, on `test_boutique_api.py`'s
+        # precedent of running the real validators inside its fake: the router
+        # only copies fields, so a fake that ignored `settings` would make the
+        # on/off pair below assert nothing but its own canned rows.
+        if not disclose_brides_only(settings):
+            return self.appointment_types
+        for row in self.appointment_types:
+            row.audience = AppointmentAudience.BRIDES_ONLY.value
         return self.appointment_types
 
     async def get_terms(self, tenant_id: uuid.UUID) -> TermsVersion:
@@ -1603,6 +1615,55 @@ def test_appointment_types_ship_the_booking_facts() -> None:
             "deposit_amount_agorot": 15_000,
         }
     ]
+
+
+# --- F27 D5: brides_only disclosure, through the HTTP surface ---
+
+
+def test_the_appointment_types_route_hands_the_service_the_tenants_settings() -> None:
+    """⚠ THE WIRING TEST, AND IT CAUGHT A LIVE DEFECT F27 DID NOT SET OUT TO FIX.
+
+    `StorefrontService.list_appointment_types` has taken `settings=` since F17's
+    D10 gateway read, and this route NEVER PASSED IT — so `settings` was None on
+    every request, `deposit_due` answered False unconditionally, and the deposit
+    disclosure D10 shipped has been dead on the live storefront ever since. Its
+    sibling route two functions up (`get_boutique`) passes `settings=tenant.settings`,
+    which is what makes this an omission rather than a design.
+
+    F27 fixes it because D5 needs the same argument: a `brides_only` consumer on
+    a route that is never told the toggles would be the second dead switch this
+    feature exists to abolish.
+    """
+    fake = FakeStorefrontService()
+    with _client(fake) as client:
+        assert client.get("/storefront/appointment-types").status_code == 200
+    assert fake.call("list_appointment_types")["settings"] == TENANT.settings
+
+
+def _tenant_with(toggles: dict[str, Any]) -> dict[str, TenantContext]:
+    return {
+        "bella": TenantContext(
+            id=TENANT.id, slug=TENANT.slug, name=TENANT.name, settings={"toggles": toggles}
+        )
+    }
+
+
+def test_brides_only_on_discloses_every_type_as_brides_only_on_the_wire() -> None:
+    fake = FakeStorefrontService()
+    fake.appointment_types = [_appointment_type(audience="all")]
+    with _client(fake, tenants=_tenant_with({"brides_only": True})) as client:
+        resp = client.get("/storefront/appointment-types")
+    assert resp.status_code == 200
+    assert [row["audience"] for row in resp.json()] == ["brides_only"]
+
+
+def test_brides_only_off_leaves_the_per_type_audience_on_the_wire() -> None:
+    fake = FakeStorefrontService()
+    fake.appointment_types = [_appointment_type(audience="all")]
+    with _client(fake, tenants=_tenant_with({"brides_only": False})) as client:
+        resp = client.get("/storefront/appointment-types")
+    assert resp.status_code == 200
+    assert [row["audience"] for row in resp.json()] == ["all"]
 
 
 # --- F14: the public terms read ---
