@@ -2299,7 +2299,9 @@ queue:
     slug: waitlist-join
     epic: E5
     title: Waitlist join + entries model
-    status: building              # 2026-08-06: spec+design(gate ACCEPTED r1)+plan done; 14 TDD tasks; migration 0026
+    status: pr-open               # 2026-08-06: PR #49. Build 6 commits + 1 review-minors fix; 82 tests;
+                                  # dual review ZERO serious findings; all 5 local gates green. Migration 0026.
+    pr: 49
     deps: [F12, F13, F14]
     note: "Pre-decided #14: one entry = (tenant, day, appointment type) + OTP-verified phone, FIFO."
   - id: F24
