@@ -483,7 +483,10 @@ TICKET_ALREADY_ASSIGNED_BODY = {
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 
 # The API owns these first path segments; the SPA fallback must never claim them.
-_RESERVED_SEGMENTS = frozenset({"manage", "storefront"})
+# "platform" joined them in F25: the storefront catch-all must DECLINE the
+# console's shell and API alike, or a GET /platform on a tenant host would be
+# answered with the boutique's own HTML instead of reaching the tenancy fence.
+_RESERVED_SEGMENTS = frozenset({"manage", "storefront", "platform"})
 
 # Nothing here is content-hashed, so nothing here may be cached without asking.
 # ETag + Last-Modified alone make a response heuristically cacheable (RFC 9111
@@ -708,6 +711,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         TenantResolutionMiddleware,
         resolver=resolver,
         base_domain=settings.base_domain,
+        # F25's console-host fence. Settings validates the label is in
+        # RESERVED_SLUGS at boot, so it can never collide with a boutique.
+        platform_host_label=settings.platform_host_label,
     )
     # Added after (= runs before) tenant resolution: a cross-origin forgery is
     # rejected without touching the database.

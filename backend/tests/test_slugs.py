@@ -83,3 +83,29 @@ class TestExtractSlug:
 
     def test_base_domain_case_insensitive(self) -> None:
         assert extract_slug("bella.localtest.me", "LOCALTEST.ME") == "bella"
+
+
+class TestPlatformHostLabel:
+    """F25 D1: the console lives at a RESERVED label, and that is a boot-time
+    invariant rather than a convention.
+
+    `admin` is already in RESERVED_SLUGS, so `is_valid_slug("admin")` is False and
+    the label can never be provisioned as a boutique — request-time AND
+    provision-time, both already shipped. The assert below is what stops a
+    deployment from pointing the console at a label a tenant could then take: the
+    two would collide on one hostname, and the tenant would be the one shadowed.
+    """
+
+    def test_the_default_label_is_reserved(self) -> None:
+        from app.core.config import Settings
+
+        assert Settings().platform_host_label in RESERVED_SLUGS
+        assert not is_valid_slug(Settings().platform_host_label)
+
+    def test_an_unreserved_label_is_a_boot_failure(self) -> None:
+        from pydantic import ValidationError
+
+        from app.core.config import Settings
+
+        with pytest.raises(ValidationError, match="RESERVED_SLUGS"):
+            Settings(platform_host_label="bella")
