@@ -38,11 +38,14 @@ export const he = {
       instagram: "אינסטגרם",
       instagramHint: "שם המשתמש בלבד, ללא @",
       description: "תיאור",
-      settingsHeading: "הגדרות",
-      depositsEnabled: "גביית מקדמות מופעלת",
-      bridesOnly: "בוטיק לכלות בלבד",
-      bridesOnlyHint: "כל סוגי התורים יוצגו לכלות בלבד",
-      save: "שמירת פרופיל והגדרות",
+      // F27 D7: the four toggle keys that lived here left WITH their renderer.
+      // `settingsHeading` became `togglesMatrix.heading`; the three switch
+      // strings became `togglesMatrix.{key}.label`/`.hint`, verbatim, so the
+      // approved Hebrew did not drift on the move. F-T4's grep first: all four
+      // had exactly one reader, `ProfileSection`, so nothing else broke.
+      // «והגדרות» goes too — this form no longer saves the toggles, the matrix
+      // does, per row.
+      save: "שמירת פרופיל",
     },
 
     // --- F15 owner bookings ---

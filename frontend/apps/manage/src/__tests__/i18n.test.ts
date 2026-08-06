@@ -1576,6 +1576,20 @@ describe("F27 toggle-matrix keys resolve", () => {
     expect(orphans).toEqual([]);
   });
 
+  it("drops the four profile keys whose renderer is gone", () => {
+    // F-T4's grep, as an assertion. `profile.settingsHeading` and the three
+    // toggle strings had exactly one reader — ProfileSection — and leaving them
+    // behind would be a second place for this copy to drift from togglesMatrix.
+    for (const key of ["settingsHeading", "depositsEnabled", "bridesOnly", "bridesOnlyHint"]) {
+      expect(key in (he.translation.profile as Record<string, string>)).toBe(false);
+    }
+  });
+
+  it("drops «והגדרות» from the profile save button", () => {
+    // The profile form no longer saves the toggles — the matrix does, per row.
+    expect(i18n.t("profile.save")).toBe("שמירת פרופיל");
+  });
+
   it("reuses common.saved for the row cue rather than minting a second Hebrew", () => {
     // Design P3: one string, one meaning, and it doubles as the announced text.
     expect(i18n.t("common.saved")).toBe("נשמר לפני רגע");

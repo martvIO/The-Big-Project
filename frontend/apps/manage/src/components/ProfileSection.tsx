@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { Button, Card, Input, SectionHeading, Skeleton, TextArea, Toggle, useToast } from "@boutique/ui";
+import { Button, Card, Input, SectionHeading, Skeleton, TextArea, useToast } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { Settings } from "../api";
+import { TogglesMatrix } from "./TogglesMatrix";
 
 interface ProfileForm {
   phone: string;
@@ -14,25 +15,17 @@ interface ProfileForm {
   instagram: string;
 }
 
-interface TogglesForm {
-  deposits_enabled: boolean;
-  brides_only: boolean;
-}
-
-function fromSettings(settings: Settings): { profile: ProfileForm; toggles: TogglesForm } {
+// F27 D7: the toggles half is gone. `TogglesMatrix` owns every switch, renders
+// them from the registry and saves each one on flip — so this function is back
+// to what its name says.
+function fromSettings(settings: Settings): ProfileForm {
   return {
-    profile: {
-      phone: settings.profile.phone ?? "",
-      address: settings.profile.address ?? "",
-      description: settings.profile.description ?? "",
-      maps_url: settings.profile.maps_url ?? "",
-      essence: settings.profile.essence ?? "",
-      instagram: settings.profile.instagram ?? "",
-    },
-    toggles: {
-      deposits_enabled: settings.toggles.deposits_enabled ?? false,
-      brides_only: settings.toggles.brides_only ?? false,
-    },
+    phone: settings.profile.phone ?? "",
+    address: settings.profile.address ?? "",
+    description: settings.profile.description ?? "",
+    maps_url: settings.profile.maps_url ?? "",
+    essence: settings.profile.essence ?? "",
+    instagram: settings.profile.instagram ?? "",
   };
 }
 
@@ -40,7 +33,10 @@ export function ProfileSection() {
   const { t } = useTranslation();
   const toast = useToast();
   const [profile, setProfile] = useState<ProfileForm | null>(null);
-  const [toggles, setToggles] = useState<TogglesForm>({ deposits_enabled: false, brides_only: false });
+  // The matrix's initial rows, straight off this section's ONE fetch — no second
+  // GET (design §2). Held rather than passed through, because the section
+  // renders a Skeleton until the fetch lands.
+  const [toggles, setToggles] = useState<Record<string, boolean> | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -51,9 +47,8 @@ export function ProfileSection() {
       .getSettings()
       .then((settings) => {
         if (!cancelled) {
-          const loaded = fromSettings(settings);
-          setProfile(loaded.profile);
-          setToggles(loaded.toggles);
+          setProfile(fromSettings(settings));
+          setToggles(settings.toggles);
         }
       })
       .catch((error: unknown) => {
@@ -64,7 +59,7 @@ export function ProfileSection() {
     };
   }, []);
 
-  if (profile === null) {
+  if (profile === null || toggles === null) {
     if (loadError !== null) {
       return (
         <p role="alert" className="text-base text-ink-muted">
@@ -85,10 +80,12 @@ export function ProfileSection() {
     setSaving(true);
     setSaved(false);
     try {
-      const updated = await api.updateSettings({ profile, toggles });
-      const synced = fromSettings(updated);
-      setProfile(synced.profile);
-      setToggles(synced.toggles);
+      // ⚠ PROFILE ONLY. The toggles used to ride this payload, and the whole
+      // point of D7 is that they no longer do: each switch saves itself, and a
+      // profile save that also sent the toggles would race the matrix's own
+      // writes with a stale copy of them.
+      const updated = await api.updateSettings({ profile });
+      setProfile(fromSettings(updated));
       setSaved(true);
     } catch (saveError) {
       toast({ message: errorMessage(saveError), variant: "error" });
@@ -97,7 +94,7 @@ export function ProfileSection() {
     }
   };
 
-  return (
+  const form = (
     <Card>
       <form onSubmit={(event) => void handleSubmit(event)} className="flex flex-col gap-4">
         <SectionHeading as="h2">{t("profile.heading")}</SectionHeading>
@@ -145,25 +142,6 @@ export function ProfileSection() {
           onChange={(event) => setField("description", event.target.value)}
         />
 
-        <SectionHeading as="h2">{t("profile.settingsHeading")}</SectionHeading>
-        <Toggle
-          label={t("profile.depositsEnabled")}
-          checked={toggles.deposits_enabled}
-          onCheckedChange={(value) => {
-            setToggles({ ...toggles, deposits_enabled: value });
-            setSaved(false);
-          }}
-        />
-        <Toggle
-          label={t("profile.bridesOnly")}
-          description={t("profile.bridesOnlyHint")}
-          checked={toggles.brides_only}
-          onCheckedChange={(value) => {
-            setToggles({ ...toggles, brides_only: value });
-            setSaved(false);
-          }}
-        />
-
         <div className="flex items-center gap-3">
           <Button type="submit" loading={saving}>
             {t("profile.save")}
@@ -172,5 +150,15 @@ export function ProfileSection() {
         </div>
       </form>
     </Card>
+  );
+
+  // The matrix is a sibling CARD under the form, not a section of its own — no
+  // sixteenth `SectionKey`, no nav row, no guide-steps entry (D7). Its saved cue
+  // is its own state, so a row flip never lights the profile form's (F-T1).
+  return (
+    <div className="flex flex-col gap-6">
+      {form}
+      <TogglesMatrix toggles={toggles} />
+    </div>
   );
 }
