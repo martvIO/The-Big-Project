@@ -552,6 +552,7 @@ def _register_spas(app: FastAPI) -> None:
     """Called LAST, after every include_router, so every API route wins first."""
     manage = STATIC_ROOT / "manage"
     storefront = STATIC_ROOT / "storefront"
+    platform = STATIC_ROOT / "platform"
     if not (manage / "index.html").is_file() or not (storefront / "index.html").is_file():
         # Absence is a supported state, never a boot failure: no dev machine has
         # run `pnpm -r build`, and neither has the test suite. A deploy whose
@@ -561,7 +562,13 @@ def _register_spas(app: FastAPI) -> None:
         logger.info("SPA bundles not found under %s — serving the API only", STATIC_ROOT)
         return
 
-    for prefix, app_dir in (("/manage/assets", manage), ("/assets", storefront)):
+    for prefix, app_dir in (
+        ("/manage/assets", manage),
+        ("/assets", storefront),
+        # F25's console, built with `base: "/platform/"` — same shape as manage,
+        # so the three static trees are disjoint on one origin.
+        ("/platform/assets", platform),
+    ):
         assets = app_dir / "assets"
         if assets.is_dir():
             app.mount(prefix, StaticFiles(directory=assets), name=f"{app_dir.name}-assets")
@@ -573,7 +580,16 @@ def _register_spas(app: FastAPI) -> None:
     # with a 200, which nosniff then makes the browser refuse. Silently dead.
     # `base: "/manage/"` puts the console's copies under /manage/, which is what
     # keeps the two trees disjoint.
-    for prefix, app_dir in (("/manage", manage), ("", storefront)):
+    for prefix, app_dir in (("/manage", manage), ("", storefront), ("/platform", platform)):
+        if not app_dir.is_dir():
+            # ⚠ THE THIRD APP IS ALLOWED TO BE ABSENT ON ITS OWN, and the two
+            # above are not. The guard at the top of this function still boot-
+            # fails to API-only when manage or storefront is missing, because
+            # `railway up` shipping a deploy without a storefront is a dead
+            # origin. A missing console is not: it costs the operator a screen
+            # while every boutique keeps trading, so a partial copy degrades to
+            # exactly what it copied instead of taking the other two down.
+            continue
         for entry in sorted(app_dir.iterdir()):
             if entry.is_file() and entry.name != "index.html":
                 _serve_file(app, f"{prefix}/{entry.name}", entry)
@@ -582,6 +598,11 @@ def _register_spas(app: FastAPI) -> None:
     # drives its sections from useState), so exactly one URL is the console and
     # a subtree fallback would invent deep links the app cannot restore.
     _serve_file(app, "/manage", manage / "index.html")
+    # Same exact-path rule, same reason: apps/platform has one screen driven from
+    # useState and no client router, so a subtree fallback would invent deep links
+    # it cannot restore. `_serve_file` no-ops when the file is absent, which is
+    # what makes the missing-console case degrade rather than raise.
+    _serve_file(app, "/platform", platform / "index.html")
 
     storefront_index = storefront / "index.html"
 
