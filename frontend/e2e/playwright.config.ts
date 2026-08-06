@@ -26,5 +26,14 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
     },
+    {
+      // F25's platform console. Same base-path rule as manage, one app over:
+      // apps/platform builds with base: "/platform/", so the shell — and the
+      // readiness probe — live under that prefix and not at the root.
+      command: "pnpm --filter platform preview --port 4175 --strictPort",
+      url: "http://localhost:4175/platform/",
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
   ],
 });
