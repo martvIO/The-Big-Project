@@ -1,7 +1,7 @@
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import cast, func, select, update
+from sqlalchemy import Text, cast, func, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -94,15 +94,29 @@ class TenantsRepository:
         deep-merge answer and silently returns `settings` UNCHANGED when the
         `atelier` key is absent — `create_missing` creates the leaf, not the
         intermediate object. That is every tenant on day one, and it fails with
-        no error. If a third key under `atelier` ever forces a genuine deep
-        merge, the correct expression is `settings || jsonb_build_object(
-        'atelier', coalesce(settings->'atelier','{}'::jsonb) || :patch)`.
+        no error.
+
+        ⚠ THE DAY ARRIVED, FOR `toggles` AND FOR `toggles` ONLY (F27 D2). The
+        expression this docstring prescribed above is now built below, with the
+        mandatory `coalesce`. What forced it: the toggle matrix saves PER ROW —
+        one key per PUT — so "one writer always sends the whole block" stopped
+        being true by construction, and it had a silent failure mode the moment
+        the registry grew anyway (a browser on a STALE CACHED BUNDLE saves the
+        keys it knows and wipes a newer feature's toggle back to absent).
+
+        Still ONE atomic statement and still no Python read-modify-write: the
+        `settings` on the right-hand side of a SET is the row's OLD value, so
+        `coalesce(settings->'toggles','{}'::jsonb) || :toggles` merges against
+        what is really in the column at UPDATE time. Concurrent single-key
+        writers of two different toggles both survive.
+
+        `profile`/`atelier`/`privacy` KEEP whole-block-replace, deliberately:
+        their "one writer sends the whole block" models make an omitted field a
+        CLEAR, and deepening them would silently turn every clear into a no-op.
         """
         patch: dict[str, Any] = {}
         if profile is not None:
             patch["profile"] = profile
-        if toggles is not None:
-            patch["toggles"] = toggles
         if atelier is not None:
             patch["atelier"] = atelier
         # F20's fourth key, and it obeys the ⚠ above rather than escaping it:
@@ -111,11 +125,32 @@ class TenantsRepository:
         # sends the whole block. That is what makes the shallow `||` safe here.
         if privacy is not None:
             patch["privacy"] = privacy
+        merged_settings = Tenant.settings.op("||", return_type=JSONB)(cast(patch, JSONB))
+        if toggles is not None:
+            # Appended LAST so it wins the `||` chain for the `toggles` key.
+            # ⚠ BOTH `'toggles'` OPERANDS ARE `cast(..., Text)` AND NEITHER IS
+            # DECORATION. `jsonb_build_object` is `variadic "any"`, which gives
+            # Postgres nothing to resolve an untyped parameter against — a bare
+            # bind there fails outright with «could not determine data type of
+            # parameter $1». The `->` operand is cast for the neighbouring
+            # reason: `jsonb -> $1` has `-> text` and `-> integer` candidates in
+            # different type categories. The key is a compile-time constant, so
+            # the cast costs nothing and removes both inference questions.
+            key = cast("toggles", Text)
+            merged_settings = merged_settings.op("||", return_type=JSONB)(
+                func.jsonb_build_object(
+                    key,
+                    func.coalesce(
+                        Tenant.settings.op("->", return_type=JSONB)(key),
+                        cast({}, JSONB),
+                    ).op("||", return_type=JSONB)(cast(toggles, JSONB)),
+                )
+            )
         async with self._session_factory() as session, session.begin():
             stmt = (
                 update(Tenant)
                 .where(Tenant.id == tenant_id, Tenant.deleted_at.is_(None))
-                .values(settings=Tenant.settings.op("||", return_type=JSONB)(cast(patch, JSONB)))
+                .values(settings=merged_settings)
                 .returning(Tenant.settings)
             )
             result = await session.execute(stmt)

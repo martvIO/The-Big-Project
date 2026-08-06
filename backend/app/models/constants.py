@@ -557,6 +557,26 @@ class AuditAction(StrEnum):
     # numbers are the whole point, because the question this row answers is
     # "what was «חצי יום» worth when that ticket was estimated".
     ATELIER_SETTINGS_UPDATED = "atelier_settings_updated"
+    # F27's, and the TENTH block to rely on the same fact: audit_log.action is
+    # plain TEXT with no CHECK (0003), so this needs no migration.
+    #
+    # F42 left `profile` and `toggles` unaudited on the recorded principle that a
+    # feature audits the key it OWNS and does not widen a gap it did not create.
+    # F27 owns `toggles` now — it is the feature that made the matrix, the deep
+    # merge and the registry — so the same «nobody can say who or when» argument
+    # that justified ATELIER_SETTINGS_UPDATED binds one key over, and harder:
+    # `deposits_enabled` decides whether the boutique collects money at all.
+    # `profile` STAYS unaudited; F27 does not widen past its own key either, and
+    # `test_audit_coverage.py`'s partial-audit note records exactly that split.
+    #
+    # `details` is THE PATCH — the changed keys only, with `entity` = the
+    # tenant's id. Same rule and same reason as its neighbour above: the trail IS
+    # the history, so the previous value is the previous row's, and computing a
+    # diff would need precisely the read-modify-write `merge_settings`' single
+    # atomic statement exists to avoid. Storing the MERGED block instead would
+    # also make every row read as a full rewrite of a matrix on which the owner
+    # moved one switch.
+    TOGGLES_UPDATED = "toggles_updated"
 
     # F37's SOS paging (D13). The EIGHTH block to rely on the same fact:
     # audit_log.action is plain TEXT with no CHECK (0003), so these four need no

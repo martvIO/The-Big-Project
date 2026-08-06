@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
+from app.boutique.toggles import TOGGLE_DEFAULTS
 from app.boutique.validation import (
     WeeklyRuleInput,
     validate_appointment_type,
@@ -87,9 +88,28 @@ class TermsHistoryResult:
 
 
 def _settings_result(settings: dict[str, Any]) -> SettingsResult:
+    """⚠ `toggles` IS THE ONE BLOCK THAT DOES NOT SHIP RAW (F27 D3). It is the
+    registry's defaults overlaid by whatever is stored, so the wire always
+    carries every registry key with a concrete bool and the matrix renders wire
+    truth rather than guessing with `?? false`.
+
+    Both directions are deliberate. A registry key absent from the JSONB — which
+    is every boutique on day one, since provisioning seeds no toggles — arrives
+    as its default. A key STILL STORED but no longer in the registry does NOT
+    arrive at all: a retired toggle must stop being renderable the moment its
+    consumer is gone, or F27 has re-created the dead switch it exists to abolish.
+
+    Consumers are untouched by this. `deposit_due` keeps reading the RAW stored
+    JSONB off the TenantContext with absent=OFF, which is the same answer this
+    overlay gives — so D3 buys the UI one truth and costs the read paths nothing.
+    """
+    stored = settings.get("toggles") or {}
     return SettingsResult(
         profile=dict(settings.get("profile") or {}),
-        toggles=dict(settings.get("toggles") or {}),
+        toggles={
+            key: bool(stored[key]) if key in stored else default
+            for key, default in TOGGLE_DEFAULTS.items()
+        },
         # The shipped `or {}` idiom, and here it is the brand-new-boutique case
         # rather than a defensive habit: no writer could reach `settings["atelier"]`
         # before this feature, so an absent key is NORMAL.
@@ -140,8 +160,9 @@ class BoutiqueSettingsService:
         of every capacity number in the boutique changed and nobody can say who
         or when».
 
-        `profile` and `toggles` stay UNAUDITED. F42 audits the key it owns and
-        does not widen a pre-existing gap it did not create.
+        `profile` stays UNAUDITED. F42 audited the key it owned and did not widen
+        a pre-existing gap it did not create; F27 audits `toggles`, the key IT
+        owns (D6), on exactly the same principle and stops there.
         """
         if profile is not None:
             validate_profile(profile)
@@ -155,11 +176,27 @@ class BoutiqueSettingsService:
         if merged is None:
             raise NotFoundError
         if atelier is not None:
-            await self._record_atelier_settings(tenant_id, actor=actor, atelier=atelier)
+            await self._record_settings_audit(
+                tenant_id,
+                actor=actor,
+                action=AuditAction.ATELIER_SETTINGS_UPDATED,
+                details=atelier,
+            )
+        if toggles is not None:
+            # F27 D6. The PATCH, not `merged["toggles"]` — see the action's own
+            # comment in `models/constants.py`.
+            await self._record_settings_audit(
+                tenant_id, actor=actor, action=AuditAction.TOGGLES_UPDATED, details=toggles
+            )
         return _settings_result(merged)
 
-    async def _record_atelier_settings(
-        self, tenant_id: UUID, *, actor: StaffContext, atelier: dict[str, Any]
+    async def _record_settings_audit(
+        self,
+        tenant_id: UUID,
+        *,
+        actor: StaffContext,
+        action: AuditAction,
+        details: dict[str, Any],
     ) -> None:
         """⚠ ITS OWN TRANSACTION, AFTER THE MERGE SUCCEEDS, AND THAT IS A KNOWN
         AND BOUNDED COMPROMISE. F15's rule is that an audit row rides the same
@@ -174,11 +211,19 @@ class BoutiqueSettingsService:
         one, and «nobody can say who or when» is the worse state. Ordering is the
         assertion — a merge that answers None writes nothing.
 
-        The row carries the whole NEW value and no `from`: the trail IS the
-        history, so the previous mapping is the previous row's value, and
-        computing a diff would need exactly the read-modify-write the atomic
-        `||` exists to avoid. That is what makes the designed last-write-wins on
-        this block recoverable.
+        The row carries the NEW value and no `from`: the trail IS the history, so
+        the previous value is the previous row's, and computing a diff would need
+        exactly the read-modify-write the atomic `||` exists to avoid. That is
+        what makes the designed last-write-wins on these blocks recoverable.
+
+        ⚠ SHARED BY TWO ACTIONS SINCE F27, WHICH IS WHY `action` AND `details`
+        ARE PARAMETERS. It was `_record_atelier_settings`; F27's D6 needs the
+        identical post-merge, own-transaction, one-directional shape for
+        `TOGGLES_UPDATED`, and a second copy of this docstring would be a second
+        place for the compromise to drift. What each row CARRIES still differs
+        and each action's comment in `models/constants.py` owns that: atelier
+        sends the whole new block (it is always written whole), toggles sends the
+        PATCH (a per-row save names one key).
 
         *Upgrade path: give `merge_settings` an optional `session` parameter the
         day a second caller needs atomicity. Not bought here — it is a shipped
@@ -188,10 +233,10 @@ class BoutiqueSettingsService:
             await self._audit.record(
                 session,
                 tenant_id=tenant_id,
-                action=AuditAction.ATELIER_SETTINGS_UPDATED,
+                action=action,
                 actor_id=actor.id,
                 entity=str(tenant_id),
-                details=atelier,
+                details=details,
             )
 
     # --- appointment types ---

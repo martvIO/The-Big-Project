@@ -30,6 +30,7 @@ from app.boutique.service import (
     TermsThrottledError,
     TermsVersionConflictError,
 )
+from app.boutique.toggles import TOGGLE_DEFAULTS, TOGGLE_KEYS
 from app.boutique.validation import BoutiqueValidationError, WeeklyRuleInput
 from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.tenants import TenantsRepository
@@ -104,6 +105,20 @@ async def _create_terms(
 
 
 async def test_settings_roundtrip_and_partial_merge(app_role_url: str) -> None:
+    """⚠ THIS TEST'S TOGGLES CONTRACT CHANGED AT F27, DELIBERATELY, AND IT IS THE
+    ONE `merge_settings` TEST THAT DID.
+
+    It shipped asserting `again.toggles == {"deposits_enabled": False}` after a
+    single-key save — i.e. it PINNED the clobber: `brides_only`, saved a moment
+    earlier, was gone. That was correct against `||`'s shallow merge and it is
+    what D2 abolishes. It now asserts the invariant the matrix needs — the
+    sibling toggle survives a single-key write — and the empty-block assertion
+    becomes the registry defaults (D3: the wire is default-complete).
+
+    Every OTHER shipped `merge_settings` assertion in this file stands unedited.
+    That was the tripwire: a second one wanting a rewrite would have meant the
+    merge expression was wrong, not the test.
+    """
     engine = _engine(app_role_url)
     factory = _factory(engine)
     service = _service(factory)
@@ -112,7 +127,10 @@ async def test_settings_roundtrip_and_partial_merge(app_role_url: str) -> None:
         tenant = await tenants.insert(slug=f"settings-{uuid.uuid4().hex[:8]}", name="Bella")
 
         initial = await service.get_settings(tenant.id)
-        assert initial.profile == {} and initial.toggles == {}
+        # D3: a brand-new boutique has NO toggles key at all, and the wire still
+        # carries every registry key with a concrete bool.
+        assert initial.profile == {}
+        assert initial.toggles == TOGGLE_DEFAULTS
 
         updated = await service.update_settings(
             tenant.id,
@@ -124,13 +142,16 @@ async def test_settings_roundtrip_and_partial_merge(app_role_url: str) -> None:
         assert updated.toggles == {"deposits_enabled": True, "brides_only": False}
 
         # Toggles-only update: the profile key must be left untouched (only the
-        # provided keys enter the patch).
+        # provided keys enter the patch)...
         await service.update_settings(
-            tenant.id, actor=_actor(tenant.id), toggles={"deposits_enabled": False}
+            tenant.id, actor=_actor(tenant.id), toggles={"brides_only": True}
         )
         again = await service.get_settings(tenant.id)
         assert again.profile["phone"] == "+972-3-555-0100"
-        assert again.toggles == {"deposits_enabled": False}
+        # ...and so must the SIBLING TOGGLE. `deposits_enabled: True` was never
+        # named by the second patch and is still True — that is D2, and before it
+        # this line read `== {"brides_only": True}`.
+        assert again.toggles == {"deposits_enabled": True, "brides_only": True}
     finally:
         await engine.dispose()
 
@@ -219,7 +240,11 @@ async def test_an_atelier_save_lands_whole_leaves_its_siblings_and_writes_its_au
         }
         # The top level is safe by the atomic `||` and NOT by anything F42 added.
         assert saved.profile == {"phone": "+972-3-555-0100"}
-        assert saved.toggles == {"deposits_enabled": True}
+        # ⚠ `brides_only: False` is F27 D3 and NOT a merge change: the STORED
+        # block is still the one key this test wrote, and `_settings_result`
+        # overlays the registry defaults on the way out. The merge assertion —
+        # that an atelier-only save leaves `deposits_enabled` True — is untouched.
+        assert saved.toggles == {"deposits_enabled": True, "brides_only": False}
 
         # And it is really in the column, not merely in the answer.
         again = await service.get_settings(tenant.id)
@@ -373,6 +398,260 @@ async def test_merge_settings_preserves_concurrently_written_sibling_key(
         assert refreshed is not None
         assert refreshed.settings["marketing"] == {"consent_default": True}
         assert refreshed.settings["profile"] == {"phone": "03-555-0100"}
+    finally:
+        await engine.dispose()
+
+
+# --- F27 D2: the `toggles` key merges DEEP, and only that key ---
+
+
+async def test_two_concurrent_single_key_toggle_writes_both_survive(
+    app_role_url: str,
+) -> None:
+    """⚠ THE TEST F27 EXISTS FOR, one level down from its neighbour above.
+
+    That test proves the TOP level is safe under `||`. This one proves the level
+    BELOW `toggles` is, which `||` alone does NOT give: a shallow merge replaces
+    the whole `toggles` object, so two writers each saving their own switch would
+    have the loser's key deleted. The matrix saves per row — one key per PUT — so
+    that is not a hypothetical interleave, it is two clicks a second apart.
+
+    `asyncio.gather` is legitimate here for the same reason it is above: the
+    mechanism is one atomic UPDATE each, so whichever runs second blocks on the
+    row lock, re-reads and merges, and the ORDER is irrelevant to the outcome.
+    Replace the SET expression with a Python read-modify-write and this reds.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"toggles-{uuid.uuid4().hex[:8]}", name="Toggles")
+
+        await asyncio.gather(
+            tenants.merge_settings(tenant.id, toggles={"deposits_enabled": True}),
+            tenants.merge_settings(tenant.id, toggles={"brides_only": True}),
+        )
+
+        refreshed = await tenants.by_id(tenant.id)
+        assert refreshed is not None
+        assert refreshed.settings["toggles"] == {"deposits_enabled": True, "brides_only": True}
+    finally:
+        await engine.dispose()
+
+
+async def test_a_single_key_toggle_patch_lands_on_a_tenant_with_no_toggles_key(
+    app_role_url: str,
+) -> None:
+    """⚠ `coalesce(settings->'toggles','{}'::jsonb)` IS MANDATORY AND THIS IS THE
+    TEST THAT SAYS SO. Provisioning seeds no toggles at all, so an absent key is
+    EVERY tenant on day one — and the obvious `jsonb_set` reach silently returns
+    `settings` UNCHANGED when the intermediate object is missing (`create_missing`
+    creates the leaf, not the object). It fails with no error, on every boutique.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"absent-{uuid.uuid4().hex[:8]}", name="Absent")
+        assert "toggles" not in (tenant.settings or {})
+
+        merged = await tenants.merge_settings(tenant.id, toggles={"brides_only": True})
+
+        assert merged is not None
+        assert merged["toggles"] == {"brides_only": True}
+    finally:
+        await engine.dispose()
+
+
+async def test_a_toggles_patch_leaves_profile_atelier_and_privacy_untouched(
+    app_role_url: str,
+) -> None:
+    """The deep merge is scoped to ONE key. `profile`/`atelier`/`privacy` keep
+    whole-block-replace semantics — their "one writer always sends the whole
+    block" models are load-bearing and F27 does not touch them — so the top-level
+    `||` must still carry them through unchanged."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"siblings-{uuid.uuid4().hex[:8]}", name="Siblings")
+        atelier = {"effort_bands": ATELIER_BANDS, "default_weekly_capacity_hours": 36}
+        privacy = {"controller_name": "Bella", "retention_months": 24}
+        await tenants.merge_settings(
+            tenant.id,
+            profile={"phone": "03-555-0100"},
+            toggles={"deposits_enabled": True},
+            atelier=atelier,
+            privacy=privacy,
+        )
+
+        merged = await tenants.merge_settings(tenant.id, toggles={"brides_only": True})
+
+        assert merged is not None
+        assert merged["profile"] == {"phone": "03-555-0100"}
+        assert merged["atelier"] == atelier
+        assert merged["privacy"] == privacy
+        # And the sibling TOGGLE — the one the shallow merge used to delete.
+        assert merged["toggles"] == {"deposits_enabled": True, "brides_only": True}
+    finally:
+        await engine.dispose()
+
+
+async def test_a_profile_patch_alongside_toggles_still_replaces_its_whole_block(
+    app_role_url: str,
+) -> None:
+    """The scoping, asserted from the other side: `profile` did NOT quietly
+    become a deep merge too. Its one-writer-sends-the-whole-block model is what
+    makes an omitted field a CLEAR there, and a deep merge would silently turn
+    every clear into a no-op."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"scope-{uuid.uuid4().hex[:8]}", name="Scope")
+        await tenants.merge_settings(
+            tenant.id, profile={"phone": "03-555-0100", "address": "דיזנגוף 100"}
+        )
+
+        merged = await tenants.merge_settings(
+            tenant.id, profile={"phone": "03-555-0199"}, toggles={"brides_only": True}
+        )
+
+        assert merged is not None
+        assert merged["profile"] == {"phone": "03-555-0199"}
+        assert merged["toggles"] == {"brides_only": True}
+    finally:
+        await engine.dispose()
+
+
+async def test_a_get_after_a_partial_toggle_write_returns_the_whole_block(
+    app_role_url: str,
+) -> None:
+    """D2 and D3 together, through the real service and a real column — the pair
+    the matrix depends on and which no fast test can prove jointly. The fast
+    `_settings_result` units cannot see the merge; the merge tests above read raw
+    JSONB and never touch the overlay."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"wire-{uuid.uuid4().hex[:8]}", name="Wire")
+
+        saved = await service.update_settings(
+            tenant.id, actor=_actor(tenant.id), toggles={"brides_only": True}
+        )
+        assert saved.toggles == {"deposits_enabled": False, "brides_only": True}
+
+        again = await service.get_settings(tenant.id)
+        assert again.toggles == {"deposits_enabled": False, "brides_only": True}
+
+        # Every registry key, always — the FE matrix renders one row per wire key.
+        assert set(again.toggles) == set(TOGGLE_KEYS)
+    finally:
+        await engine.dispose()
+
+
+# --- F27 D6: TOGGLES_UPDATED ---
+
+
+async def test_a_toggles_write_records_its_actor_and_its_patch(app_role_url: str) -> None:
+    """D6, on `_record_atelier_settings`' pattern verbatim: post-merge, own
+    transaction, one-directional loss. Same justification, one key over —
+    `deposits_enabled` changes whether the boutique collects money, and «nobody
+    can say who or when» is the worse state.
+
+    `details` is THE PATCH — the changed keys only, never the merged block. The
+    trail IS the history, so the previous value is the previous row's, and
+    computing a diff would need the read-modify-write the atomic statement exists
+    to avoid. A merged block here would also make every row look like a full
+    rewrite of a matrix the owner touched one switch on.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"audit-{uuid.uuid4().hex[:8]}", name="Audit")
+        actor = _actor(tenant.id)
+
+        await service.update_settings(
+            tenant.id, actor=actor, toggles={"deposits_enabled": True, "brides_only": True}
+        )
+        await service.update_settings(tenant.id, actor=actor, toggles={"brides_only": False})
+
+        async with tenant_session(factory, tenant.id) as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(AuditLog)
+                        .where(AuditLog.action == AuditAction.TOGGLES_UPDATED.value)
+                        .order_by(AuditLog.created_at)
+                    )
+                ).all()
+            )
+        assert len(rows) == 2
+        assert all(row.actor_id == actor.id for row in rows)
+        assert all(row.entity == str(tenant.id) for row in rows)
+        assert rows[0].details == {"deposits_enabled": True, "brides_only": True}
+        # The PATCH, not the merged block — `deposits_enabled` is still True in
+        # the column and deliberately absent from this row.
+        assert rows[1].details == {"brides_only": False}
+    finally:
+        await engine.dispose()
+
+
+async def test_a_profile_only_write_records_no_toggles_row(app_role_url: str) -> None:
+    """F42's boundary, held from the other side. F27 audits the key it now OWNS
+    and does not widen the gap it did not create: `profile` stays unaudited, and
+    `test_audit_coverage.py`'s partial-audit note says so in writing."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"noaudit-{uuid.uuid4().hex[:8]}", name="NoAudit")
+        await service.update_settings(
+            tenant.id, actor=_actor(tenant.id), profile={"phone": "03-555-0100"}
+        )
+        async with tenant_session(factory, tenant.id) as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(AuditLog).where(AuditLog.action == AuditAction.TOGGLES_UPDATED.value)
+                    )
+                ).all()
+            )
+        assert rows == []
+    finally:
+        await engine.dispose()
+
+
+async def test_the_toggles_audit_row_is_written_only_after_a_successful_merge(
+    app_role_url: str,
+) -> None:
+    """D12's ordering, on F27's key. A save against a missing or soft-deleted
+    tenant must leave no row claiming the boutique flipped a switch — the
+    compromise is bounded only because a crash between merge and audit LOSES a
+    row and can never INVENT one."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    missing = uuid.uuid4()
+    try:
+        with pytest.raises(NotFoundError):
+            await service.update_settings(
+                missing, actor=_actor(missing), toggles={"deposits_enabled": True}
+            )
+        async with tenant_session(factory, missing) as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(AuditLog).where(AuditLog.action == AuditAction.TOGGLES_UPDATED.value)
+                    )
+                ).all()
+            )
+        assert rows == [], "an audit row was written for a merge that never happened"
     finally:
         await engine.dispose()
 
