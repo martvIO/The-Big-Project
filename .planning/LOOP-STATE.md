@@ -2306,7 +2306,8 @@ queue:
     slug: client-portal
     epic: E5
     title: "Client portal: OTP login, My Bookings, .ics, bell"
-    status: queued
+    status: queued                # 2026-08-06: spec+design(gate ACCEPTED r3: sm→md 44px fix)+plan
+                                  # (18 tasks) READY — build slot pending behind F22's merge
     deps: [F11, F13, F16]
     note: >-
       Pre-decided #17: OTP-only login, per-booking .ics download, no two-way
@@ -2315,7 +2316,10 @@ queue:
     slug: platform-console
     epic: E5
     title: Web platform console (replaces v1 CLI)
-    status: queued
+    status: queued                # 2026-08-06: spec+design(gate ACCEPTED r2)+plan (13 tasks) READY.
+                                  # Console at admin.{base_domain}; ProvisioningService reused unchanged;
+                                  # third workspace app apps/platform; CLI keeps backfill/retention/
+                                  # create-operator (recorded conflict with #20's "deleted at parity")
     deps: [F6]
     note: "Pre-decided #20: reuses the v1 CLI's audited command layer as its service layer."
   - id: F27
