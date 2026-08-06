@@ -166,6 +166,10 @@ from app.tenancy.middleware import (
     TenantResolver,
 )
 from app.tenancy.resolver import RepositoryTenantResolver
+from app.waitlist.manage_router import router as waitlist_manage_router
+from app.waitlist.router import router as waitlist_router
+from app.waitlist.service import WaitlistService
+from app.waitlist.validation import WaitlistThrottledError
 
 logger = logging.getLogger("app")
 
@@ -841,6 +845,27 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             clock=time.monotonic,
         ),
     )
+    # F22's join. The OTP service is the SAME instance the booking flow spends
+    # — correct, not accidental (D3): one phone proving itself is one proof,
+    # whichever flow consumes it, and a second send budget would double the
+    # SMS-cost exposure per phone. The join's own budgets are TWO OWN limiter
+    # instances, the rule this file has now stated five times: max_attempts
+    # lives on the LIMITER, so a key on booking-create's budget would let a
+    # waitlist rush close the booking flow — and vice versa.
+    app.state.waitlist_service = WaitlistService(
+        get_session_factory(),
+        otp=app.state.otp_service,
+        phone_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.waitlist_join_max_per_phone_window,
+            window_seconds=settings.waitlist_join_phone_window_seconds,
+            clock=time.monotonic,
+        ),
+        tenant_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.waitlist_join_max_per_tenant_window,
+            window_seconds=settings.waitlist_join_tenant_window_seconds,
+            clock=time.monotonic,
+        ),
+    )
     # base_domain, not a hardcoded host: the manage link the SMS carries has to
     # resolve to the tenant's own storefront in dev, staging and production
     # alike, and Settings is where deployment identity lives.
@@ -1171,6 +1196,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _booking_throttled(request: Request, exc: BookingThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
 
+    # F22's join budgets — its own class for the reason the four above are four.
+    @app.exception_handler(WaitlistThrottledError)
+    async def _waitlist_throttled(request: Request, exc: WaitlistThrottledError) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
     # 404, and NOT the shared NOT_FOUND body: the page renders its own
     # invalid-link state off this code, and reusing NOT_FOUND would make it
     # indistinguishable from an archived dress on the same origin.
@@ -1469,6 +1499,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # (marketing-withdraw, Gate 1 Q4), which is why
     # test_staff_role_gating.py grew a positive absence assertion for it.
     app.include_router(privacy_router)
+    # F22's console waitlist — the next /manage router, after the privacy one,
+    # still contiguous with its siblings and ahead of every anonymous surface.
+    # Same shadowing hazard; the manage walk in test_waitlist_api.py keeps its
+    # two routes honest.
+    app.include_router(waitlist_manage_router)
     # The NINTH /manage router, after the customers one and deliberately BEFORE
     # storefront_router: every /manage router stays contiguous and ahead of the
     # anonymous surfaces. Same shadowing hazard as the eight above, now with
@@ -1496,6 +1531,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # tokenized manage routes. Same anonymous posture as the OTP pair; asserted
     # in test_booking_api.py and test_booking_manage_api.py.
     app.include_router(booking_router)
+    # F22's join — the SIXTH /storefront sibling, after the booking router it is
+    # F13's create shape minus the booking of. Same anonymous posture; asserted
+    # in test_waitlist_api.py. Same shadowing hazard as every router above.
+    app.include_router(waitlist_router)
     # The FOURTH /storefront sibling (F19 D9): the provider webhook and the
     # payment-status poll. Deliberately NOT routes on storefront_router — that
     # router carries a per-tenant _throttle, and 429-ing a provider's retry

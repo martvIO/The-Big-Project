@@ -93,7 +93,7 @@ def test_every_policy_can_name_itself_in_the_audit_trail() -> None:
         assert audit_action(policy) in set(AuditAction)
 
 
-def test_the_registry_covers_the_six_classes_with_the_specified_actions() -> None:
+def test_the_registry_covers_the_seven_classes_with_the_specified_actions() -> None:
     assert {policy.name: policy.action for policy in POLICIES} == {
         "otp_codes": RetentionAction.PURGE,
         "sessions": RetentionAction.PURGE,
@@ -103,6 +103,10 @@ def test_the_registry_covers_the_six_classes_with_the_specified_actions() -> Non
         # and a purge leaves danglers with no way to tell "aged out" from "never
         # existed".
         "queue_tickets": RetentionAction.SCRUB,
+        # F22 (spec D4): the row IS the personal data — a phone bound to a day
+        # and a type — and nothing points at it, so PURGE, `queue_tickets`'
+        # class without its dangler argument.
+        "waitlist_entries": RetentionAction.PURGE,
         "message_log": RetentionAction.PURGE,
         "bookings": RetentionAction.PURGE,
         "customers": RetentionAction.SCRUB,

@@ -27,7 +27,7 @@ import datetime
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_booking_owner_db import (
     NOW,
@@ -56,6 +56,7 @@ from app.booking.tokens import manage_token_hash
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.message_log import MessageLogRepository
 from app.db.repositories.queue_tickets import QueueTicketsRepository
+from app.db.repositories.waitlist_entries import WaitlistEntriesRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.models.constants import (
@@ -65,12 +66,14 @@ from app.models.constants import (
     MarketingConsentSource,
     MessageKind,
     VisitType,
+    WaitlistEntryStatus,
 )
 from app.models.customer import Customer
 from app.models.message_log import MessageLog
 from app.models.otp_code import OtpCode
 from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
+from app.models.waitlist_entry import WaitlistEntry
 from app.privacy.service import (
     PrivacyService,
     SubjectHasActiveBookingError,
@@ -92,6 +95,7 @@ PAST_SLOT_B = _slot(11, date=PAST_DATE)
 CUSTOMERS = CustomersRepository()
 MESSAGES = MessageLogRepository()
 QUEUE_TICKETS = QueueTicketsRepository()
+WAITLIST = WaitlistEntriesRepository()
 
 
 def _privacy(factory: async_sessionmaker[AsyncSession]) -> PrivacyService:
@@ -1307,5 +1311,133 @@ async def test_a_withdrawal_that_changed_something_writes_exactly_one_audit_row(
         assert phone not in written
         assert walk_in_phone not in written
         assert "נועה לוי" not in written
+    finally:
+        await engine.dispose()
+
+
+# --- F22: the booking-waitlist ripples (spec D4 — same PR as the migration) ---
+
+
+async def _join_waitlist(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    *,
+    phone: str,
+    day: datetime.date,
+    appointment_type_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    async with tenant_session(factory, tenant_id) as session:
+        row = await WAITLIST.insert(
+            session,
+            tenant_id=tenant_id,
+            day=day,
+            appointment_type_id=appointment_type_id or uuid.uuid4(),
+            phone=phone,
+        )
+        return row.id
+
+
+async def test_the_export_carries_her_waitlist_entries(app_role_url: str) -> None:
+    """§13's completeness question, fifth collection point: a phone-bearing
+    table absent from the export is a silently incomplete legal answer. Delete
+    the `select(WaitlistEntry)` from `export_subject` and this is an empty
+    list."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        await _claim(factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone)
+        await _join_waitlist(
+            factory, tenant_id, phone=phone, day=TARGET_DATE, appointment_type_id=type_id
+        )
+        await _join_waitlist(factory, tenant_id, phone="+972529998877", day=TARGET_DATE)
+
+        payload = await _privacy(factory).export_subject(
+            tenant_id, raw_phone=phone, actor=_staff(tenant_id), reason=None
+        )
+
+        assert len(payload.waitlist_entries) == 1
+        entry = payload.waitlist_entries[0]
+        assert entry.day == TARGET_DATE
+        # The type NAME, resolved app-side — the id is boutique bookkeeping and
+        # says nothing to the subject or to the regulator reading her file.
+        assert entry.appointment_type_name == "מדידה ראשונה"
+        assert entry.status == "waiting"
+        # D4's enumerated field set, exactly: day, type name, status, created_at.
+        # No phone (it is the lookup key), no id, no tenant column.
+        assert set(entry.model_dump()) == {
+            "day",
+            "appointment_type_name",
+            "status",
+            "created_at",
+        }
+    finally:
+        await engine.dispose()
+
+
+async def test_the_erase_scrubs_her_waitlist_phone_and_cancels_her_active_entries(
+    app_role_url: str,
+) -> None:
+    """The erase's spelling on this table: `phone -> erased:{customer_id}`, the
+    row retained as evidence she was on the list — and her ACTIVE entries
+    ('waiting'/'offered') become 'cancelled' in the same statement, the manage
+    cancel's value. A scrub that stopped at the phone would leave the erased
+    subject LIVE on the manage list, inside
+    `idx_waitlist_entries_active_unique`, and first in line for an F23 offer
+    nobody can send her. Terminal entries keep their status — history, not
+    state. An erased phone can rejoin later — new OTP, new entry, new consent
+    context. The entry on another number proves the predicate is keyed on HER
+    phone rather than draining the tenant's waitlist."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    other_phone = "+972529998877"
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(
+            factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone
+        )
+        customer_id = claim.booking.customer_id
+        waiting = await _join_waitlist(
+            factory, tenant_id, phone=phone, day=TARGET_DATE, appointment_type_id=type_id
+        )
+        # Two more joins on fresh type ids — distinct active-unique tuples —
+        # pushed below the repository to 'offered' (F23's active mid-state) and
+        # 'claimed' (terminal), transitions F22 ships no writer for.
+        offered = await _join_waitlist(factory, tenant_id, phone=phone, day=TARGET_DATE)
+        claimed = await _join_waitlist(factory, tenant_id, phone=phone, day=TARGET_DATE)
+        async with tenant_session(factory, tenant_id) as session:
+            for entry_id, status in (
+                (offered, WaitlistEntryStatus.OFFERED.value),
+                (claimed, WaitlistEntryStatus.CLAIMED.value),
+            ):
+                await session.execute(
+                    update(WaitlistEntry)
+                    .where(WaitlistEntry.tenant_id == tenant_id, WaitlistEntry.id == entry_id)
+                    .values(status=status)
+                )
+        other = await _join_waitlist(factory, tenant_id, phone=other_phone, day=TARGET_DATE)
+
+        summary = await _privacy(factory).erase_subject(
+            tenant_id, customer_id=customer_id, actor=_staff(tenant_id), reason=None
+        )
+
+        assert summary.waitlist_entries_scrubbed == 3
+        async with tenant_session(factory, tenant_id) as session:
+            was_waiting = await session.get(WaitlistEntry, waiting)
+            was_offered = await session.get(WaitlistEntry, offered)
+            was_claimed = await session.get(WaitlistEntry, claimed)
+            untouched = await session.get(WaitlistEntry, other)
+            assert was_waiting is not None and was_offered is not None
+            assert was_claimed is not None and untouched is not None
+            for hers in (was_waiting, was_offered, was_claimed):
+                assert hers.phone == ERASED_PHONE_PREFIX + str(customer_id)
+                assert hers.deleted_at is None
+            assert was_waiting.status == WaitlistEntryStatus.CANCELLED.value
+            assert was_offered.status == WaitlistEntryStatus.CANCELLED.value
+            assert was_claimed.status == WaitlistEntryStatus.CLAIMED.value
+            assert untouched.phone == other_phone
+            assert untouched.status == WaitlistEntryStatus.WAITING.value
     finally:
         await engine.dispose()

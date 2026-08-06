@@ -49,7 +49,7 @@ THEIR 404 IS THEREFORE NOT EVIDENCE. A 404 proves isolation only if the route
 answers something ELSE for the caller's own ids; tenant A is never populated, so
 this module never checks that, and for two routes it is false. Both are named in
 `STATE_GUARDED` below with the guard that actually produces the refusal. The
-honest count is **56 driven, 54 discriminating** — R9 says so too.
+honest count is **57 driven, 55 discriminating** — R9 says so too.
 
 Recorded rather than fixed, deliberately. The 2026-08-05 review built the sound
 control (a freshly seeded tenant PER ROUTE — reusing one tenant produced sixteen
@@ -152,6 +152,7 @@ class Kind(StrEnum):
     QUEUE_TICKET = "queue_ticket"
     ATELIER_TICKET = "atelier_ticket"
     SOS_ALERT = "sos_alert"
+    WAITLIST_ENTRY = "waitlist_entry"
 
 
 # Path-parameter name -> entity kind. An unknown name is a hard failure in
@@ -170,6 +171,7 @@ PATH_PARAM_KIND = {
     "assignment_id": Kind.ASSIGNMENT,
     "binding_id": Kind.BINDING,
     "alert_id": Kind.SOS_ALERT,
+    "entry_id": Kind.WAITLIST_ENTRY,
 }
 
 
@@ -352,6 +354,12 @@ UNWALKABLE: dict[tuple[str, str], str] = {
         "appointment_type_id/dress_id cross-tenant refusal is "
         "test_booking_isolation.py's."
     ),
+    ("POST", "/storefront/waitlist"): (
+        "the bookings route's reason one sibling over: a single-use, phone-bound "
+        "verification_token gates the join, and the generic walk cannot mint one "
+        "per drive. The appointment_type_id cross-tenant refusal is "
+        "test_waitlist_service.py's (foreign type answers the same 404)."
+    ),
     ("POST", "/storefront/booking/lookup"): (
         "the manage token proves POSSESSION, not tenancy — the server stores only "
         "its sha256 and there is no id to substitute. test_manage_token.py owns "
@@ -455,6 +463,9 @@ NO_TENANT_OWNED_ID = frozenset(
         ("POST", "/storefront/otp/verify"),
         ("POST", "/storefront/checkin"),
         ("POST", "/storefront/queue"),
+        # F22's console list: collection route, no id anywhere; scoping is the
+        # host-derived tenant, proved by the same two suites as its siblings.
+        ("GET", "/manage/waitlist"),
     }
 )
 
@@ -473,6 +484,8 @@ MODULE_WALK_FLOOR = {
     "queue": 4,
     "atelier": 6,
     "storefront": 1,
+    # F22: one id-carrying route — the cancel, driven with tenant B's entry id.
+    "waitlist": 1,
 }
 
 # Modules that expose no route carrying a tenant-owned id, with the reason. A
@@ -516,6 +529,8 @@ _MODULE_BY_PREFIX = (
     ("/manage/privacy", "privacy"),
     ("/manage/checkin-qr", "queue"),
     ("/manage/atelier", "atelier"),
+    ("/manage/waitlist", "waitlist"),
+    ("/storefront/waitlist", "waitlist"),
     ("/storefront/otp", "notifications"),
     ("/storefront/payments", "payments"),
     ("/storefront/bookings", "booking"),
@@ -582,7 +597,14 @@ def _settings() -> Settings:
     # dev, so the boot guard's `app_env != "dev"` exemption applies: this suite
     # connects as boutique_app, which the guard would pass anyway, but the
     # lifespan must not reach for the process-global engine.
-    return Settings(app_env="dev", session_ttl_seconds=3600)
+    #
+    # The fake sender and the dev code exist for ONE seed: `_populate`'s
+    # waitlist join runs the real OTP send + verify so the WAITLIST_ENTRY kind
+    # is populated through the product's own API. Dev-only wiring — the config
+    # validator forbids `otp_dev_code` in production.
+    return Settings(
+        app_env="dev", session_ttl_seconds=3600, sms_provider="fake", otp_dev_code="000000"
+    )
 
 
 def _generous_limiter(*_args: object, **_kwargs: object) -> FixedWindowRateLimiter:
@@ -707,6 +729,33 @@ def _populate(client: TestClient, storage: InMemoryMediaStorage) -> dict[Kind, u
         "availability exception",
     )
     ids[Kind.AVAILABILITY_EXCEPTION] = uuid.UUID(exception["id"])
+
+    # F22's waitlist entry, populated THROUGH THE PRODUCT — the real OTP send
+    # (fake sender), the real verify (the dev code `_settings` wires), the real
+    # join. The join deliberately answers no id (D2), so the id comes off the
+    # console's own list, read as this tenant's signed-in owner.
+    waitlist_phone = "+972500000444"
+    sent = client.post("/storefront/otp/send", json={"phone": waitlist_phone})
+    assert sent.status_code == 204, f"seeding waitlist otp send failed: {sent.status_code}"
+    verified = _ok(
+        client.post("/storefront/otp/verify", json={"phone": waitlist_phone, "code": "000000"}),
+        "waitlist otp verify",
+    )
+    _ok(
+        client.post(
+            "/storefront/waitlist",
+            json={
+                "phone": waitlist_phone,
+                "verification_token": verified["verification_token"],
+                "day": _FUTURE_DATE,
+                "appointment_type_id": str(ids[Kind.APPOINTMENT_TYPE]),
+            },
+        ),
+        "waitlist join",
+    )
+    listed = _ok(client.get("/manage/waitlist"), "waitlist list")
+    assert listed["entries"], "the waitlist join left no entry to probe with"
+    ids[Kind.WAITLIST_ENTRY] = uuid.UUID(listed["entries"][0]["id"])
 
     ticket = _ok(
         client.post(
@@ -972,7 +1021,9 @@ def test_the_exemptions_each_carry_a_reason() -> None:
     # The count the module docstring fences this list with. It read FOUR against
     # six entries until the 2026-08-05 review — in the module whose whole point is
     # that this list not grow unnoticed — so the fence is now an assertion.
-    assert len(UNWALKABLE) == 6, (
+    # SEVEN since F22: the storefront join shares the bookings route's
+    # token-gated shape, and its type check is proved in test_waitlist_service.
+    assert len(UNWALKABLE) == 7, (
         f"UNWALKABLE is now {len(UNWALKABLE)} entries. Update the count in its own "
         "comment and in the checklist's R9 row before changing this number."
     )
@@ -1008,7 +1059,9 @@ def test_the_state_guarded_routes_are_walked_and_named(
         )
 
     discriminating = len(responses) - len(STATE_GUARDED)
-    assert (len(responses), discriminating) == (56, 54), (
+    # 57/55 since F22: the manage cancel joined the walk, driven with tenant
+    # B's entry id populated through the product's own join.
+    assert (len(responses), discriminating) == (57, 55), (
         f"the walk drove {len(responses)} routes, {discriminating} of them "
         "discriminating. Both numbers are quoted as evidence in "
         ".planning/security-checklist-v1.md's R9 row — update it in the same commit."

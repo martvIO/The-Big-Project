@@ -31,7 +31,12 @@ export type SectionKey =
   | "atelier"
   // F20's privacy documents and subject requests — the FIFTEENTH, and the third
   // owner-only row.
-  | "privacy";
+  | "privacy"
+  // F22's booking waitlist — the SIXTEENTH. `bookingWaitlist`, not the design
+  // sketch's `waitlist`: GuideOverlay derives its dialog title as
+  // `t(`nav.${section}`)`, so the key and the labelKey are one spelling by
+  // mechanism — and `waitlist` is F58's namespace in this app besides (F-W2).
+  | "bookingWaitlist";
 
 // One NON-EMPTY tuple of i18n keys per section, listed in `NAV` order
 // (`App.tsx:83-152`), which is deliberately not the union's declaration order
@@ -59,6 +64,7 @@ export const GUIDE_STEPS = {
   catalog: ["guide.catalog.1", "guide.catalog.2", "guide.catalog.3"],
   bookings: ["guide.bookings.1", "guide.bookings.2", "guide.bookings.3"],
   customers: ["guide.customers.1", "guide.customers.2"],
+  bookingWaitlist: ["guide.bookingWaitlist.1"],
   board: ["guide.board.1", "guide.board.2", "guide.board.3"],
   floor: ["guide.floor.1", "guide.floor.2", "guide.floor.3"],
   atelier: ["guide.atelier.1", "guide.atelier.2", "guide.atelier.3"],

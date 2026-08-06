@@ -31,6 +31,7 @@ import { SizeChips } from "../components/booking/SizeChips";
 import { substituteBoutique } from "../lib/privacyText";
 import { PrivacyProse } from "../components/PrivacyProse";
 import { TypePicker } from "../components/booking/TypePicker";
+import { WaitlistJoin } from "../components/booking/WaitlistJoin";
 import { useBoutique } from "../components/StorefrontLayout";
 import { Link, handOff, navigate, shouldIntercept } from "../router";
 import type { BookStep } from "../router";
@@ -1231,53 +1232,70 @@ export function BookPage({ step, dressId }: BookPageProps) {
             <Skeleton variant="text" lines={2} className="h-11" />
           </Card>
         ) : (
-          <ForwardForm onForward={forward}>
-            <Card className="flex flex-col gap-6">
-              <TypePicker
-                types={entry.types}
-                value={flow.typeId}
+          <>
+            <ForwardForm onForward={forward}>
+              <Card className="flex flex-col gap-6">
+                <TypePicker
+                  types={entry.types}
+                  value={flow.typeId}
+                  boutique={boutique}
+                  error={missing.type ? t("booking.typeRequired") : undefined}
+                  notice={returnReason === "type" ? t("booking.typeGoneRepick") : undefined}
+                  onChange={(typeId) => {
+                    setFlow((current) => ({ ...current, typeId }));
+                    setMissing((current) => ({ ...current, type: false }));
+                    clearReturn("type");
+                  }}
+                  ref={typeRef}
+                />
+                <SlotPicker
+                  labels={{
+                    pickDate: t("booking.pickDate"),
+                    pickTime: t("booking.pickTime"),
+                    noSlots: t("booking.noSlots"),
+                  }}
+                  date={date}
+                  min={min}
+                  max={max}
+                  times={times}
+                  value={flow.startsAt}
+                  error={
+                    missing.time
+                      ? t("booking.timeRequired")
+                      : returnReason === "slot"
+                        ? t("errors.slotUnavailable")
+                        : undefined
+                  }
+                  onDateChange={(next) => {
+                    setPickedDate(next);
+                    // A time picked on another date is not a time on this one.
+                    setFlow((current) => ({ ...current, startsAt: null }));
+                  }}
+                  onChange={(startsAt) => {
+                    setFlow((current) => ({ ...current, startsAt }));
+                    setMissing((current) => ({ ...current, time: false }));
+                    clearReturn("slot");
+                  }}
+                  ref={timeRef}
+                />
+              </Card>
+            </ForwardForm>
+            {/* F22's CTA + reveal, UNDER the empty state and only when the
+                entry has a type to bind to (D6) — without one, the empty state
+                stands alone. AFTER the ForwardForm, never inside it: the
+                reveal is its own <form> and nested forms are invalid HTML.
+                The key is F-W3's whole mechanism: a date or type change
+                remounts the component, collapsing the reveal and clearing its
+                codeSent/token state by construction. */}
+            {times.length === 0 && date !== "" && flow.typeId !== null && (
+              <WaitlistJoin
+                key={`${date}:${flow.typeId}`}
+                day={date}
+                typeId={flow.typeId}
                 boutique={boutique}
-                error={missing.type ? t("booking.typeRequired") : undefined}
-                notice={returnReason === "type" ? t("booking.typeGoneRepick") : undefined}
-                onChange={(typeId) => {
-                  setFlow((current) => ({ ...current, typeId }));
-                  setMissing((current) => ({ ...current, type: false }));
-                  clearReturn("type");
-                }}
-                ref={typeRef}
               />
-              <SlotPicker
-                labels={{
-                  pickDate: t("booking.pickDate"),
-                  pickTime: t("booking.pickTime"),
-                  noSlots: t("booking.noSlots"),
-                }}
-                date={date}
-                min={min}
-                max={max}
-                times={times}
-                value={flow.startsAt}
-                error={
-                  missing.time
-                    ? t("booking.timeRequired")
-                    : returnReason === "slot"
-                      ? t("errors.slotUnavailable")
-                      : undefined
-                }
-                onDateChange={(next) => {
-                  setPickedDate(next);
-                  // A time picked on another date is not a time on this one.
-                  setFlow((current) => ({ ...current, startsAt: null }));
-                }}
-                onChange={(startsAt) => {
-                  setFlow((current) => ({ ...current, startsAt }));
-                  setMissing((current) => ({ ...current, time: false }));
-                  clearReturn("slot");
-                }}
-                ref={timeRef}
-              />
-            </Card>
-          </ForwardForm>
+            )}
+          </>
         ))}
 
       {step === "details" && (

@@ -179,6 +179,24 @@ class QueueTicketStatus(StrEnum):
     REMOVED = "removed"
 
 
+class WaitlistEntryStatus(StrEnum):
+    # The DB pins this exact set (F22's migration, `waitlist_entries_status_check`)
+    # and test_the_waitlist_definitions_are_pinned holds the deparsed literal so
+    # the next widening collides with a review.
+    #
+    # F22 writes exactly two — WAITING (the join's DB default) and CANCELLED
+    # (the owner cancel). The other three are F23's lifecycle, shipped in the
+    # CHECK now so the cascade inherits a contract it cannot re-litigate:
+    # waiting -> offered -> claimed | expired | cancelled. Whether EXPIRED is
+    # terminal or re-queues is F23's decision; every state it could need is
+    # representable today.
+    WAITING = "waiting"
+    OFFERED = "offered"
+    CLAIMED = "claimed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
 class VisitType(StrEnum):
     # The DB pins this exact set (F33's migration). Bride-priority ordering is
     # explicitly NOT built (e6-instore-realtime.md:74): this column records what
@@ -635,12 +653,22 @@ class AuditAction(StrEnum):
     # `details` carries `phone_last4` and never the number.
     PRIVACY_MARKETING_WITHDRAWN = "privacy_marketing_withdrawn"
 
+    # F22's owner cancel (D5). Same fact as every block here: audit_log.action
+    # is plain TEXT with no CHECK (0003), so this needs no migration. ONE
+    # member — the join is anonymous and writes no audit row, and `details`
+    # carries {entry_id, day, appointment_type_id} and NO phone (F20's
+    # phone_last4 rule made moot by carrying no phone at all).
+    WAITLIST_ENTRY_CANCELLED = "waitlist_entry_cancelled"
+
     RETENTION_OTP_CODES = "retention_otp_codes"
     RETENTION_SESSIONS = "retention_sessions"
     RETENTION_QUEUE_TICKETS = "retention_queue_tickets"
     RETENTION_MESSAGE_LOG = "retention_message_log"
     RETENTION_BOOKINGS = "retention_bookings"
     RETENTION_CUSTOMERS = "retention_customers"
+    # F22's waitlist purge — `audit_action()` resolves `retention_{policy.name}`
+    # through this enum, so the member lands in the same commit as the policy.
+    RETENTION_WAITLIST_ENTRIES = "retention_waitlist_entries"
 
     # F21's catalog (D6), and it is the TENTH block to rely on the same fact:
     # audit_log.action is plain TEXT with no CHECK (0003_auth.py:71-79), so these

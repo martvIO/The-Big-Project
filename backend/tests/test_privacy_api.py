@@ -41,6 +41,7 @@ from app.privacy.schemas import (
     ExportedQueueTicket,
     ExportedSubject,
     ExportedTerms,
+    ExportedWaitlistEntry,
     MarketingWithdrawResponse,
     PrivacyResponse,
     SubjectEraseResponse,
@@ -203,6 +204,16 @@ def _export() -> SubjectExportResponse:
                 marketing_opt_in_at=CREATED_AT,
             )
         ],
+        # F22, populated for the disclosure walk's reason above: an empty list
+        # would let the no-secret-fields assertions pass on nothing at all.
+        waitlist_entries=[
+            ExportedWaitlistEntry(
+                day=CREATED_AT.date(),
+                appointment_type_name="מדידה ראשונה",
+                status="waiting",
+                created_at=CREATED_AT,
+            )
+        ],
         accepted_terms=[
             ExportedTerms(
                 version=3,
@@ -328,6 +339,7 @@ class FakePrivacyService:
             bookings_scrubbed=2,
             messages_scrubbed=4,
             queue_tickets_scrubbed=1,
+            waitlist_entries_scrubbed=1,
             otp_codes_purged=1,
             scheduled_messages_purged=2,
         )

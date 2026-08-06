@@ -639,6 +639,11 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         # are worse: a second key on the catalog's read brake, or a weakened
         # guard over six shipped public reads.
         "/storefront/queue",
+        # F22's waitlist join — the SIXTH sibling, F13's create shape minus the
+        # booking. Anonymous, cookie-blind, no-store, POST-only; posture and the
+        # zero-new-error-codes table asserted in test_waitlist_api.py. No new
+        # GET, so the five ROUTES-parametrized guards needed no edit.
+        "/storefront/waitlist",
     }
     # Singular /booking/* must never collide with the plural /bookings create.
     assert "/storefront/bookings" not in {
