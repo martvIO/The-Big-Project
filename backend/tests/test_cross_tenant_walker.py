@@ -319,6 +319,7 @@ PROBES: dict[tuple[str, str], dict[str, Any]] = {
 # `text/calendar` response is what opens the add-to-calendar sheet on iOS.
 QUERY_PROBES: dict[tuple[str, str], dict[str, Kind]] = {
     ("GET", "/storefront/portal/booking"): {"id": Kind.BOOKING},
+    ("GET", "/storefront/portal/booking.ics"): {"id": Kind.BOOKING},
 }
 
 
@@ -385,6 +386,13 @@ UNWALKABLE: dict[tuple[str, str], str] = {
     ),
     ("POST", "/storefront/booking/cancel"): (
         "same manage token as lookup; possession, not tenancy. test_manage_token.py."
+    ),
+    ("POST", "/storefront/booking/ics"): (
+        "F24's tokenized calendar download — the same manage token as its three "
+        "siblings above, and the same reason: possession, not tenancy, with no "
+        "id to substitute. Its cookie-authed twin GET /storefront/portal/"
+        "booking.ics IS walked, so the shared builder's ownership predicate is "
+        "probed either way."
     ),
     ("POST", "/storefront/booking/payment-status"): (
         "keyed on a provider-issued opaque session string on a payments row, not "
@@ -513,11 +521,11 @@ MODULE_WALK_FLOOR = {
     "storefront": 1,
     # F22: one id-carrying route — the cancel, driven with tenant B's entry id.
     "waitlist": 1,
-    # F24. Three id-carrying routes, all driven with a REAL customer cookie for
+    # F24. Four id-carrying routes, all driven with a REAL customer cookie for
     # tenant A — populate, don't exempt. The remaining portal routes (session,
     # me, logout, bookings, bell) carry no tenant-owned id and sit in
     # NO_TENANT_OWNED_ID with their siblings.
-    "portal": 3,
+    "portal": 4,
 }
 
 # Modules that expose no route carrying a tenant-owned id, with the reason. A

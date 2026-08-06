@@ -237,6 +237,21 @@ class PortalService:
             booking = await self._hers(session, tenant.id, customer, booking_id)
             return await self._transitions.cancel(session, tenant, booking)
 
+    async def get_booking_ics(
+        self,
+        tenant: ManageTenant,
+        customer: CustomerContext,
+        booking_id: uuid.UUID,
+        *,
+        slug: str,
+        base_domain: str,
+    ) -> str:
+        async with tenant_session(self._session_factory, tenant.id) as session:
+            booking = await self._hers(session, tenant.id, customer, booking_id)
+            return await self._transitions.ics(
+                session, tenant, booking, slug=slug, base_domain=base_domain
+            )
+
     async def _hers(
         self,
         session: AsyncSession,

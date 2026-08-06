@@ -40,9 +40,14 @@ from app.booking.schemas import (
     ManageTokenRequest,
 )
 from app.booking.service import BookingService
+from app.core.config import get_settings
 from app.tenancy.middleware import TenantContext, get_current_tenant
 
 NO_STORE = "no-store"
+# Spelled here and imported by nothing: the portal router carries its own copy,
+# the same three-line-copy convention `_no_store` follows across these routers.
+ICS_MEDIA_TYPE = "text/calendar; charset=utf-8"
+ICS_DISPOSITION = 'attachment; filename="appointment.ics"'
 
 
 def get_booking_service(request: Request) -> BookingService:
@@ -169,3 +174,34 @@ async def cancel_booking(
     request: Request, service: Manage, body: ManageTokenRequest
 ) -> ManageBookingResponse:
     return await service.cancel(_manage_tenant(get_current_tenant(request)), token=body.token)
+
+
+@router.post("/booking/ics")
+async def booking_ics(request: Request, service: Manage, body: ManageTokenRequest) -> Response:
+    """The tokenized page's calendar download — the SAME builder the portal's
+    GET serves, one rendering over two transports (F24 D5).
+
+    POST rather than the portal's GET, and the asymmetry is the point: here the
+    manage TOKEN is the credential, and tokens never ride URLs (F14 D7) or they
+    land in every access log, proxy trace and Referer header on the path. The
+    SPA turns the response into a blob download. On the portal the credential is
+    a cookie, so a native GET link is safe there and is what opens the
+    add-to-calendar sheet on iOS.
+
+    Headers are set on this Response explicitly: FastAPI discards the
+    dependency-owned Response — and with it the router's `no-store` — whenever a
+    handler returns its own.
+    """
+    settings = get_settings()
+    tenant = get_current_tenant(request)
+    text = await service.ics(
+        _manage_tenant(tenant),
+        token=body.token,
+        slug=tenant.slug,
+        base_domain=settings.base_domain,
+    )
+    return Response(
+        content=text,
+        media_type=ICS_MEDIA_TYPE,
+        headers={"content-disposition": ICS_DISPOSITION, "cache-control": NO_STORE},
+    )

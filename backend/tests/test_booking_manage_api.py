@@ -60,6 +60,7 @@ MANAGE_TOKEN = "mt-" + "a" * 40
 LOOKUP = "/storefront/booking/lookup"
 CONFIRM = "/storefront/booking/confirm-attendance"
 CANCEL = "/storefront/booking/cancel"
+ICS = "/storefront/booking/ics"
 ALL_PATHS = (LOOKUP, CONFIRM, CANCEL)
 
 STARTS_AT = datetime.datetime(2099, 8, 2, 7, 0, tzinfo=datetime.UTC)
@@ -108,6 +109,12 @@ class StubManageService:
 
     async def cancel(self, tenant: Any, *, token: str) -> ManageBookingResponse:
         return self._answer("cancel", tenant, token, status=BookingStatus.CANCELLED.value)
+
+    async def ics(self, tenant: Any, *, token: str, slug: str, base_domain: str) -> str:
+        if self.error is not None:
+            raise self.error
+        self.calls.append(("ics", tenant.id, token))
+        return "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
 
     def _answer(
         self,
@@ -368,3 +375,58 @@ def test_malformed_bodies_are_schema_400s(path: str, broken: dict[str, Any]) -> 
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
     assert stub.calls == []
+
+
+# --- F24's tokenized calendar download --------------------------------------
+
+
+def test_the_token_ics_is_a_calendar_attachment_and_never_cached() -> None:
+    """One builder, two transports (F24 D5). POST because the manage token is
+    the credential and tokens never ride URLs (D7) — the SPA turns the body into
+    a blob download.
+
+    `no-store` is asserted rather than assumed: the handler returns its OWN
+    Response, and FastAPI discards the dependency-owned one that carries the
+    router's header."""
+    client, stub = _client()
+    with client:
+        assert client.cookies == {}
+        resp = client.post(ICS, json={"token": MANAGE_TOKEN})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "text/calendar; charset=utf-8"
+    assert resp.headers["content-disposition"] == 'attachment; filename="appointment.ics"'
+    assert resp.headers["cache-control"] == "no-store"
+    assert resp.text.startswith("BEGIN:VCALENDAR")
+    assert [call[0] for call in stub.calls] == ["ics"]
+    assert "set-cookie" not in resp.headers
+
+
+def test_the_token_ics_rejects_a_get() -> None:
+    """A GET would put the manage token in the query string and from there into
+    every access log on the path."""
+    client, _ = _client()
+    with client:
+        assert client.get(ICS).status_code == 405
+
+
+def test_a_rotated_token_gets_the_invalid_link_body_not_a_file() -> None:
+    client, _ = _client(StubManageService(error=BookingLinkInvalidError()))
+    with client:
+        resp = client.post(ICS, json={"token": MANAGE_TOKEN})
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "BOOKING_LINK_INVALID"
+
+
+def test_a_cancelled_booking_serves_no_file_on_the_token_transport_either() -> None:
+    client, _ = _client(StubManageService(error=BookingCancelledError()))
+    with client:
+        resp = client.post(ICS, json={"token": MANAGE_TOKEN})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "BOOKING_CANCELLED"
+
+
+def test_the_token_ics_carries_the_security_headers() -> None:
+    client, _ = _client()
+    with client:
+        resp = client.post(ICS, json={"token": MANAGE_TOKEN})
+    assert {header: resp.headers.get(header) for header in SECURITY_HEADERS} == SECURITY_HEADERS

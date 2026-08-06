@@ -42,6 +42,8 @@ from app.schemas import OkResponse
 from app.tenancy.middleware import TenantContext, get_current_tenant
 
 NO_STORE = "no-store"
+ICS_MEDIA_TYPE = "text/calendar; charset=utf-8"
+ICS_DISPOSITION = 'attachment; filename="appointment.ics"'
 
 
 def _no_store(response: Response) -> None:
@@ -56,6 +58,19 @@ router = APIRouter(prefix="/storefront/portal", dependencies=[Depends(_no_store)
 
 Portal = Annotated[PortalService, Depends(get_portal_service)]
 Customer = Annotated[CustomerContext, Depends(get_current_customer)]
+
+
+def _ics_response(body: str) -> Response:
+    """`text/calendar` with an attachment disposition, and `no-store` spelled
+    out — see `portal_booking_ics` for why the dependency cannot carry it."""
+    return Response(
+        content=body,
+        media_type=ICS_MEDIA_TYPE,
+        headers={
+            "content-disposition": ICS_DISPOSITION,
+            "cache-control": NO_STORE,
+        },
+    )
 
 
 def _manage_tenant(tenant: TenantContext) -> ManageTenant:
@@ -127,6 +142,32 @@ async def portal_booking(
     a booking id is not a capability here — the cookie is — so there is nothing
     an access log must not see."""
     return await service.get_booking(_manage_tenant(get_current_tenant(request)), customer, id)
+
+
+@router.get("/booking.ics")
+async def portal_booking_ics(
+    request: Request, service: Portal, customer: Customer, id: uuid.UUID
+) -> Response:
+    """A plain GET download link, unlike every other capability-bearing read in
+    this product — and the exception is earned: the booking id is not a
+    capability here (the cookie is), and on iOS a DIRECT `text/calendar`
+    response is what opens the add-to-calendar sheet. A fetch-and-blob dance
+    downloads a file she then has to find.
+
+    ASCII filename deliberately: a Hebrew filename in `Content-Disposition` is
+    an RFC 6266 encoding tarpit that ends in mojibake on at least one mobile
+    client.
+
+    The headers are set HERE rather than left to the router's `_no_store`
+    dependency: FastAPI discards the dependency-owned Response when a handler
+    returns its own.
+    """
+    settings = get_settings()
+    tenant = get_current_tenant(request)
+    body = await service.get_booking_ics(
+        _manage_tenant(tenant), customer, id, slug=tenant.slug, base_domain=settings.base_domain
+    )
+    return _ics_response(body)
 
 
 @router.post("/booking/confirm-attendance")

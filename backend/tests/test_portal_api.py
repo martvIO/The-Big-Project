@@ -53,6 +53,7 @@ BOOKINGS = "/storefront/portal/bookings"
 BOOKING = "/storefront/portal/booking"
 CONFIRM = "/storefront/portal/booking/confirm-attendance"
 CANCEL = "/storefront/portal/booking/cancel"
+ICS = "/storefront/portal/booking.ics"
 BOOKING_ID = uuid.uuid4()
 # Every route that reads the customer cookie. Grows with each phase; the auth
 # matrix below is parametrised over it so a route added without a cookie gate is
@@ -64,6 +65,7 @@ COOKIE_ROUTES: tuple[tuple[str, str, dict[str, Any] | None], ...] = (
     ("GET", f"{BOOKING}?id={BOOKING_ID}", None),
     ("POST", CONFIRM, {"id": str(BOOKING_ID)}),
     ("POST", CANCEL, {"id": str(BOOKING_ID)}),
+    ("GET", f"{ICS}?id={BOOKING_ID}", None),
 )
 
 CUSTOMER = CustomerContext(id=CUSTOMER_ID, tenant_id=TENANT.id, name="רותם", phone="+972501234567")
@@ -145,6 +147,20 @@ class StubPortalService:
         self, tenant: ManageTenant, customer: CustomerContext, booking_id: uuid.UUID
     ) -> ManageBookingResponse:
         return self._detail("cancel", tenant, customer, booking_id)
+
+    async def get_booking_ics(
+        self,
+        tenant: ManageTenant,
+        customer: CustomerContext,
+        booking_id: uuid.UUID,
+        *,
+        slug: str,
+        base_domain: str,
+    ) -> str:
+        if self.error is not None:
+            raise self.error
+        self.calls.append(("get_booking_ics", (tenant.id, customer.id, booking_id)))
+        return f"BEGIN:VCALENDAR\r\nUID:{booking_id}@{slug}.{base_domain}\r\nEND:VCALENDAR\r\n"
 
     def _detail(
         self,
@@ -497,3 +513,56 @@ def test_a_booking_that_is_not_hers_is_the_house_404() -> None:
     assert detail.status_code == cancelled.status_code == 404
     assert detail.json() == cancelled.json()
     assert detail.json()["error"]["code"] == "NOT_FOUND"
+
+
+# --- the `.ics` download ----------------------------------------------------
+
+
+def test_the_portal_ics_is_a_calendar_attachment_and_never_cached() -> None:
+    """The three headers a download depends on. `no-store` is asserted because
+    the handler returns its OWN Response, which discards the router
+    dependency's — the exact way this header silently goes missing."""
+    client, stub = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.get(f"{ICS}?id={BOOKING_ID}")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "text/calendar; charset=utf-8"
+    assert resp.headers["content-disposition"] == 'attachment; filename="appointment.ics"'
+    assert resp.headers["cache-control"] == "no-store"
+    assert resp.text.startswith("BEGIN:VCALENDAR")
+    assert stub.calls == [("get_booking_ics", (TENANT.id, CUSTOMER_ID, BOOKING_ID))]
+
+
+def test_the_portal_ics_is_a_get_because_the_id_is_not_a_capability() -> None:
+    """The one download link in this product that may sit in a URL — the cookie
+    is the credential, and on iOS a direct `text/calendar` response is what
+    opens the add-to-calendar sheet."""
+    client, _ = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        assert client.post(ICS, json={"id": str(BOOKING_ID)}).status_code == 405
+
+
+def test_a_cancelled_booking_serves_no_calendar_file() -> None:
+    """The transition-appropriate 409, not an empty file: an entry for an
+    appointment she does not have is worse than a refusal."""
+    from app.booking.manage import BookingCancelledError
+
+    client, _ = _client(StubPortalService(error=BookingCancelledError()))
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.get(f"{ICS}?id={BOOKING_ID}")
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "BOOKING_CANCELLED"
+
+
+def test_another_customers_booking_serves_no_calendar_file() -> None:
+    from app.booking.service import BookingNotFoundError
+
+    client, _ = _client(StubPortalService(error=BookingNotFoundError()))
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.get(f"{ICS}?id={BOOKING_ID}")
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND"

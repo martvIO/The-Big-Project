@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
+from app.booking.ics import build_ics
 from app.booking.schemas import (
     ManageBookingFacts,
     ManageBookingResponse,
@@ -31,11 +32,13 @@ from app.booking.schemas import (
     ManagePolicy,
 )
 from app.booking.tokens import manage_token_hash, manage_token_matches
+from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.payments import PaymentsRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
+from app.errors import DomainNotFoundError
 from app.models.booking import Booking
 from app.models.constants import (
     BookingCancelledBy,
@@ -97,6 +100,13 @@ class ManageTenant:
     settings: dict[str, Any]
 
 
+class BookingNotFoundError(DomainNotFoundError):
+    """The row a transition needs is gone in a way the caller cannot act on —
+    today only a booking whose appointment type has been hard-deleted, which the
+    schema does not permit. The house 404, deliberately: there is nothing here
+    for a page to render a state off."""
+
+
 class ManageBookingTransitions:
     """The guard set and the three state writes, with NO notion of how the
     booking was found.
@@ -121,6 +131,7 @@ class ManageBookingTransitions:
         self._terms = TermsVersionsRepository()
         self._scheduled = ScheduledMessagesRepository()
         self._payments = PaymentsRepository()
+        self._types = AppointmentTypesRepository()
 
     def now(self) -> datetime.datetime:
         now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
@@ -193,6 +204,50 @@ class ManageBookingTransitions:
             kind=ScheduledMessageKind.REMINDER.value,
         )
         return await self.render(session, tenant, updated if updated is not None else booking)
+
+    async def ics(
+        self,
+        session: AsyncSession,
+        tenant: ManageTenant,
+        booking: Booking,
+        *,
+        slug: str,
+        base_domain: str,
+    ) -> str:
+        """The calendar file for one booking (F24 D5), guarded here so both
+        transports share one refusal table.
+
+        WHAT REFUSES, and why the list is short: `cancelled` answers
+        BOOKING_CANCELLED and `pending_payment` answers BOOKING_AWAITING_PAYMENT,
+        because in both cases the entry the file would create is a lie about an
+        appointment she does not have.
+
+        ⚠ `no_show` SERVES, and that is a deliberate departure from the spec's
+        parenthetical "only confirmed (and completed)". It is a past instant, so
+        the file is inert; the design never renders a control on that state; and
+        the two ways to refuse it were a new wire code for a state no UI reaches
+        or reusing BOOKING_CANCELLED, which would tell her the boutique
+        cancelled an appointment it did not cancel. Serving an accurate record
+        of an appointment that really was scheduled beats both.
+        """
+        if booking.status == BookingStatus.CANCELLED.value:
+            raise BookingCancelledError
+        if booking.status == BookingStatus.PENDING_PAYMENT.value:
+            raise BookingAwaitingPaymentError
+        duration = await self._types.duration_by_id(session, tenant.id, booking.appointment_type_id)
+        if duration is None:  # pragma: no cover — the type row outlives the booking
+            raise BookingNotFoundError
+        profile = tenant.settings.get("profile")
+        profile = profile if isinstance(profile, dict) else {}
+        return build_ics(
+            booking,
+            duration_minutes=duration,
+            boutique_name=tenant.name,
+            address=profile_text(profile, "address"),
+            slug=slug,
+            base_domain=base_domain,
+            now=self.now(),
+        )
 
     async def render(
         self, session: AsyncSession, tenant: ManageTenant, booking: Booking
@@ -307,6 +362,13 @@ class ManageBookingService:
         async with tenant_session(self._session_factory, tenant.id) as session:
             booking = await self._resolve(session, tenant.id, token)
             return await self._transitions.cancel(session, tenant, booking)
+
+    async def ics(self, tenant: ManageTenant, *, token: str, slug: str, base_domain: str) -> str:
+        async with tenant_session(self._session_factory, tenant.id) as session:
+            booking = await self._resolve(session, tenant.id, token)
+            return await self._transitions.ics(
+                session, tenant, booking, slug=slug, base_domain=base_domain
+            )
 
     async def _resolve(self, session: AsyncSession, tenant_id: uuid.UUID, token: str) -> Booking:
         booking = await self._bookings.by_manage_token_hash(

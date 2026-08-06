@@ -51,6 +51,7 @@ from app.booking.manage import (
 )
 from app.booking.service import BookingNotFoundError, PhoneNotVerifiedError
 from app.booking.tokens import manage_token_hash
+from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.customer_sessions import CustomerSessionsRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
@@ -628,5 +629,104 @@ async def test_the_portal_actions_answer_the_same_409_matrix(app_role_url: str) 
             await portal.confirm_attendance(tenant, customer, claim.booking.id)
         repeat = await portal.cancel(tenant, customer, claim.booking.id)
         assert repeat.booking.status == BookingStatus.CANCELLED.value
+    finally:
+        await engine.dispose()
+
+
+# --- the `.ics` (spec D5) ---------------------------------------------------
+
+
+async def test_both_ics_transports_answer_the_same_bytes_for_one_booking(
+    app_role_url: str,
+) -> None:
+    """ONE builder, two doors — asserted as byte equality rather than as two
+    plausible files. If these ever diverge, one of her calendars is wrong and
+    nothing else in the product would notice."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        token = claim.manage_token
+        assert token is not None
+        async with tenant_session(factory, tenant_id) as session:
+            booking = await session.get(Booking, claim.booking.id)
+            assert booking is not None
+            booking.manage_token_hash = manage_token_hash(token)
+
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        through_session = await portal.get_booking_ics(
+            _manage_tenant(tenant_id),
+            customer,
+            claim.booking.id,
+            slug="bella",
+            base_domain="modryn.co.il",
+        )
+        through_token = await ManageBookingService(
+            factory, lookup_limiter=_loose(), clock=lambda: NOW
+        ).ics(
+            _manage_tenant(tenant_id),
+            token=token,
+            slug="bella",
+            base_domain="modryn.co.il",
+        )
+        assert through_session == through_token
+        assert f"UID:{claim.booking.id}@bella.modryn.co.il" in through_session
+        # The whole D5 rule, on a booking whose row carries a live link.
+        assert token not in through_session
+    finally:
+        await engine.dispose()
+
+
+async def test_the_ics_reads_the_duration_from_an_archived_appointment_type(
+    app_role_url: str,
+) -> None:
+    """A booking snapshots the type's NAME but never its length, so DTEND has to
+    come from the live row — and archiving a type is how a boutique retires an
+    offering, not how it shortens a fitting somebody already booked."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        async with tenant_session(factory, tenant_id) as session:
+            assert await AppointmentTypesRepository().soft_delete(session, tenant_id, type_id)
+
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        text = await portal.get_booking_ics(
+            _manage_tenant(tenant_id),
+            customer,
+            claim.booking.id,
+            slug="bella",
+            base_domain="modryn.co.il",
+        )
+        # 60 minutes from the seeded type, not a fallback constant.
+        starts = claim.booking.starts_at.astimezone(datetime.UTC)
+        ends = starts + datetime.timedelta(minutes=60)
+        assert f"DTSTART:{starts.strftime('%Y%m%dT%H%M%SZ')}" in text
+        assert f"DTEND:{ends.strftime('%Y%m%dT%H%M%SZ')}" in text
+    finally:
+        await engine.dispose()
+
+
+async def test_a_cancelled_booking_serves_no_ics_on_either_transport(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        await portal.cancel(_manage_tenant(tenant_id), customer, claim.booking.id)
+        with pytest.raises(BookingCancelledError):
+            await portal.get_booking_ics(
+                _manage_tenant(tenant_id),
+                customer,
+                claim.booking.id,
+                slug="bella",
+                base_domain="modryn.co.il",
+            )
     finally:
         await engine.dispose()

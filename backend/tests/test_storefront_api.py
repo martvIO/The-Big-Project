@@ -672,6 +672,12 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         "/storefront/portal/booking",
         "/storefront/portal/booking/confirm-attendance",
         "/storefront/portal/booking/cancel",
+        # F24's `.ics` pair — ONE builder, two transports. The portal's is a
+        # native GET (cookie-authed, and a direct text/calendar response is what
+        # opens the add-to-calendar sheet on iOS); the tokenized page's is a POST
+        # because the manage token is the credential and tokens never ride URLs.
+        "/storefront/portal/booking.ics",
+        "/storefront/booking/ics",
     }
     # Singular /booking/* must never collide with the plural /bookings create.
     # Restricted to the tokenized surface deliberately: F24 adds
