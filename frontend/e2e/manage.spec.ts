@@ -20,6 +20,7 @@ import {
   refuse,
   room,
   roomPath,
+  settingsAfterToggle,
   settingsPayload,
   staff,
   staffCard,
@@ -726,6 +727,18 @@ test("manage floor: an empty queue is a quiet designed state and removes every d
 // changes.
 
 const NAV_DASHBOARD = "סקירה";
+// --- F27's toggle matrix, verbatim from apps/manage/src/i18n/he.ts -----------
+const NAV_PROFILE = "פרופיל והגדרות";
+const MATRIX_HEADING = "הפעלת תכונות";
+const BRIDES_ONLY_LABEL = "בוטיק לכלות בלבד";
+const DEPOSITS_LABEL = "גביית מקדמות מופעלת";
+const AREA_STOREFRONT = "האתר הפומבי";
+const AREA_BOOKING = "תורים ותשלומים";
+const PROFILE_SAVE = "שמירת פרופיל";
+const SAVED_CUE = "נשמר לפני רגע";
+// F-W1's floor. `Button size="sm"` is 36px and fails it — the matrix rows are
+// measured against this number rather than eyeballed (F-T2).
+const TOUCH_TARGET_MIN = 44;
 
 // The three owner-only rows — `staff`, `gateway`, `privacy` — are unreachable
 // as anyone else, and the other eight are `roles: ALL`, so one identity drives
@@ -751,7 +764,12 @@ const AXE_SECTIONS: [
     "profile",
     "פרופיל והגדרות",
     { "/manage/settings": [ok(settingsPayload())] },
-    (page) => page.getByRole("textbox", { name: "משפט פתיחה" }),
+    // ⚠ A SWITCH IN THE MATRIX CARD, NOT THE PROFILE FORM'S «משפט פתיחה» TEXTBOX
+    // — which is what this settled on before F27, and which renders BEFORE the
+    // matrix. The axe sweep is the IS 5568 / WCAG 2.0 AA legal floor for this
+    // section, so a settle that fires while the card is still absent makes the
+    // zero-violation claim vacuous for every control F27 added (plan R-D).
+    (page) => page.getByRole("switch", { name: BRIDES_ONLY_LABEL }),
   ],
   [
     "hours",
@@ -838,3 +856,210 @@ for (const [label, nav, replies, settled] of AXE_SECTIONS) {
     expect(await axeViolations(page)).toEqual([]);
   });
 }
+
+
+// --- F27: the feature-toggle matrix ------------------------------------------
+//
+// ⚠ THESE ARE HERE RATHER THAN IN VITEST BECAUSE jsdom IS NOT A BROWSER, and
+// this feature has two claims that only a real one can settle: where focus LANDS
+// after a flip (design P1's whole argument — jsdom never blurs anything, which
+// is how F57 shipped a focus test that asserted nothing), and the RENDERED hit
+// box of a row (F-T2 — the checkbox is 20px and the label is the target).
+
+async function openProfile(page: Page): Promise<void> {
+  await page.goto(MANAGE);
+  await expect(page.getByRole("heading", { level: 2, name: NAV_DASHBOARD })).toBeVisible();
+  await page.getByRole("navigation").getByRole("button", { name: NAV_PROFILE, exact: true }).click();
+  await expect(page.getByRole("heading", { name: MATRIX_HEADING })).toBeVisible();
+}
+
+test("manage profile: the matrix renders one grouped row per wire toggle", async ({ page }) => {
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: { "/manage/settings": [ok(settingsPayload())] },
+  });
+  await openProfile(page);
+
+  // One row per key in `settingsPayload().toggles` — the fixture IS the backend
+  // registry, so this count is the cross-tree drift assertion.
+  await expect(page.getByRole("switch")).toHaveCount(2);
+  await expect(page.getByRole("heading", { level: 3, name: AREA_STOREFRONT })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: AREA_BOOKING })).toBeVisible();
+  // Wire truth, not defaults: the fixture ships deposits ON and brides OFF.
+  await expect(page.getByRole("switch", { name: DEPOSITS_LABEL })).toBeChecked();
+  await expect(page.getByRole("switch", { name: BRIDES_ONLY_LABEL })).not.toBeChecked();
+});
+
+test("manage profile: a row flip PUTs exactly one key and reflects the response", async ({
+  page,
+}) => {
+  const recorder = await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "GET /manage/settings": [ok(settingsPayload())],
+      "PUT /manage/settings": [ok(settingsAfterToggle("brides_only", true))],
+    },
+  });
+  await openProfile(page);
+
+  const brides = page.getByRole("switch", { name: BRIDES_ONLY_LABEL });
+  await brides.click();
+
+  await expect(brides).toBeChecked();
+  const puts = recorder.of("/manage/settings").filter((entry) => entry.method === "PUT");
+  expect(puts).toHaveLength(1);
+  // ⚠ EXACTLY ONE KEY. Sending the sibling too would pass today and would
+  // re-create the stale-bundle clobber D2 exists to abolish the moment the
+  // registry grows.
+  expect(puts[0].body).toEqual({ toggles: { brides_only: true } });
+});
+
+test("manage profile: a failed flip reverts the switch and shows the house toast", async ({
+  page,
+}) => {
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "GET /manage/settings": [ok(settingsPayload())],
+      "PUT /manage/settings": [refuse(500, "INTERNAL_ERROR")],
+    },
+  });
+  await openProfile(page);
+
+  const deposits = page.getByRole("switch", { name: DEPOSITS_LABEL });
+  await expect(deposits).toBeChecked();
+  await deposits.click();
+
+  // The fixture's message is ENGLISH by its own design (every backend message
+  // is), and the matrix has no per-code Hebrew — so `errorMessage()` paints the
+  // server's sentence. What this pins is that the toast FIRED, in the house
+  // alert role, and that the revert below happened alongside it.
+  await expect(page.getByRole("alert")).toContainText("INTERNAL_ERROR");
+  // Back to its PRE-FLIP state, not to false — no optimistic UI survives a
+  // failure (design §4 state E).
+  await expect(deposits).toBeChecked();
+});
+
+test("manage profile: focus stays on the flipped switch through in-flight and saved", async ({
+  page,
+}) => {
+  // ⚠ DESIGN P1, MEASURED IN CHROMIUM. This is the assertion the whole
+  // handler-guard-instead-of-`disabled` decision exists for: disabling a focused
+  // native checkbox drops focus to <body>, an SC 2.4.3 regression. jsdom cannot
+  // see it (it never blurs), so this test is the claim's only real proof.
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "GET /manage/settings": [ok(settingsPayload())],
+      "PUT /manage/settings": [ok(settingsAfterToggle("brides_only", true))],
+    },
+  });
+  await openProfile(page);
+
+  const brides = page.getByRole("switch", { name: BRIDES_ONLY_LABEL });
+  await brides.focus();
+  await page.keyboard.press("Space");
+
+  await expect(brides).toBeFocused();
+  await expect(brides).toBeChecked();
+  await expect(brides).toBeFocused();
+  await expect(brides).toBeEnabled();
+});
+
+test("manage profile: a row flip does NOT light the profile form's saved cue", async ({ page }) => {
+  // F-T1. Two save models on one screen share one Hebrew string, so the only
+  // thing keeping them apart is that they are separate state. A row cue that
+  // also lit the form's would tell the owner her unsaved profile edits were
+  // saved.
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "GET /manage/settings": [ok(settingsPayload())],
+      "PUT /manage/settings": [ok(settingsAfterToggle("brides_only", true))],
+    },
+  });
+  await openProfile(page);
+
+  await page.getByRole("switch", { name: BRIDES_ONLY_LABEL }).click();
+  await expect(page.getByRole("switch", { name: BRIDES_ONLY_LABEL })).toBeChecked();
+
+  // The cue that DID appear belongs to the matrix card; the form's save button
+  // has none beside it.
+  const form = page.locator("form").filter({ has: page.getByRole("button", { name: PROFILE_SAVE }) });
+  await expect(form.getByText(SAVED_CUE)).toHaveCount(0);
+});
+
+test("manage profile: every matrix row meets the 44px touch floor", async ({ page }) => {
+  // F-T2, MEASURED not eyeballed: the `Toggle`'s checkbox box is `size-5` (20px)
+  // and is NOT the hit target — the wrapping <label> is, which is why `Toggle`
+  // takes a className that lands there.
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: { "/manage/settings": [ok(settingsPayload())] },
+  });
+  await openProfile(page);
+
+  for (const label of [BRIDES_ONLY_LABEL, DEPOSITS_LABEL]) {
+    const row = page.getByRole("switch", { name: label }).locator("xpath=ancestor::label[1]");
+    const box = await row.boundingBox();
+    expect(box, `${label} row has no box`).not.toBeNull();
+    expect(box!.height, `${label} row is under the touch floor`).toBeGreaterThanOrEqual(
+      TOUCH_TARGET_MIN,
+    );
+  }
+});
+
+test("manage profile: switching deposits on with no gateway adds no new warning", async ({
+  page,
+}) => {
+  // F-T3. Preparing before connecting a gateway is legal and useful. The row's
+  // own hint plus the shipped GatewaySection banner already cover it; the matrix
+  // must not block, confirm, or nag beyond the hint.
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "GET /manage/settings": [ok(settingsAfterToggle("deposits_enabled", false))],
+      "PUT /manage/settings": [ok(settingsAfterToggle("deposits_enabled", true))],
+    },
+  });
+  await openProfile(page);
+
+  const deposits = page.getByRole("switch", { name: DEPOSITS_LABEL });
+  await expect(deposits).not.toBeChecked();
+  await deposits.click();
+  await expect(deposits).toBeChecked();
+
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("manage profile: the matrix lays out RTL — switch inline-start, cue inline-end", async ({
+  page,
+}) => {
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "GET /manage/settings": [ok(settingsPayload())],
+      "PUT /manage/settings": [ok(settingsAfterToggle("brides_only", true))],
+    },
+  });
+  await openProfile(page);
+
+  const brides = page.getByRole("switch", { name: BRIDES_ONLY_LABEL });
+  await brides.click();
+
+  // ⚠ `.first()` WOULD BE A COIN FLIP HERE: «נשמר לפני רגע» appears TWICE by
+  // design — the visible row cue and the card's sr-only status region (design
+  // P3 reuses one string for both). `:visible` picks the painted one, which is
+  // the only one with a meaningful box.
+  const cue = page.getByText(SAVED_CUE).locator("visible=true");
+  await expect(cue).toBeVisible();
+  const switchBox = await brides.boundingBox();
+  const cueBox = await cue.boundingBox();
+  expect(switchBox).not.toBeNull();
+  expect(cueBox).not.toBeNull();
+  // RTL: inline-start is the RIGHT edge, so the switch sits to the RIGHT of the
+  // cue. Asserting the pair rather than a class keeps this true if the layout
+  // changes but the reading order does not.
+  expect(switchBox!.x).toBeGreaterThan(cueBox!.x);
+});
