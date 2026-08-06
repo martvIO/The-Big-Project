@@ -7,7 +7,7 @@ import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from app.atelier.stages import MAX_WEEKLY_CAPACITY_HOURS
 from app.boutique.validation import (
@@ -47,11 +47,6 @@ class ProfileUpdate(ForbidExtraModel):
     instagram: str | None = Field(default=None, max_length=MAX_PROFILE_INSTAGRAM_LENGTH)
 
 
-class TogglesUpdate(ForbidExtraModel):
-    deposits_enabled: bool | None = None
-    brides_only: bool | None = None
-
-
 class AtelierSettingsUpdate(ForbidExtraModel):
     """⚠ A FULL REPLACE OF THE WHOLE `atelier` BLOCK — every field REQUIRED, no
     default anywhere. `UpdateAppointmentTypeRequest`'s shipped rule, and here it
@@ -83,7 +78,19 @@ class AtelierSettingsUpdate(ForbidExtraModel):
 
 class UpdateSettingsRequest(ForbidExtraModel):
     profile: ProfileUpdate | None = None
-    toggles: TogglesUpdate | None = None
+    # F27 D4 — THE REGISTRY IS THE SCHEMA. This was a `TogglesUpdate` class with
+    # one optional field per toggle; the wire shape is identical, but a field per
+    # toggle meant every feature adding a switch edited this file. Unknown keys
+    # now pass pydantic and are refused by the registry-derived
+    # `validate_toggles` (`app/boutique/toggles.py` is the one declaration point),
+    # which is what makes D8's "no schema edit" true.
+    #
+    # ⚠ `StrictBool`, NOT `bool`, AND `validate_toggles`' isinstance CHECK IS
+    # UNREACHABLE WITHOUT IT — `AtelierSettingsUpdate`'s `StrictInt` argument
+    # directly below, one type over. `ForbidExtraModel` is `extra="forbid"` and
+    # nothing else, so a plain `bool` COERCES `1` and `"true"` to `True` before
+    # any validator runs and a typo becomes a legitimate deposit-gate flip.
+    toggles: dict[str, StrictBool] | None = None
     atelier: AtelierSettingsUpdate | None = None
 
 

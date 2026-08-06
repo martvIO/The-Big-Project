@@ -61,7 +61,10 @@ async def update_settings(
     # exclude_unset: the JSONB merge replaces whole top-level keys, so only
     # fields the client actually sent may enter the patch.
     profile = body.profile.model_dump(exclude_unset=True) if body.profile is not None else None
-    toggles = body.toggles.model_dump(exclude_unset=True) if body.toggles is not None else None
+    # F27 D4: already a plain `dict[str, StrictBool]`, so there is nothing to
+    # dump and no `exclude_unset` to apply — a toggles patch carries exactly the
+    # keys the client sent, which is what D2's deep merge is built to receive.
+    toggles = dict(body.toggles) if body.toggles is not None else None
     # ⚠ NO `exclude_unset` ON THIS ONE, AND `mode="json"`. Every field of
     # `AtelierSettingsUpdate` is required — a partial `atelier` object would
     # replace the whole key and delete what it did not name — so there is nothing

@@ -28,6 +28,7 @@ from app.boutique.validation import (
     WeeklyRuleInput,
     validate_atelier_settings,
     validate_profile,
+    validate_toggles,
 )
 from app.main import create_app
 from app.models.appointment_type import AppointmentType
@@ -181,6 +182,12 @@ class FakeBoutiqueService:
         # them, so a "three bands is a 400" test needs the real one here.
         if profile is not None:
             validate_profile(profile)
+        # F27 D4: the UNKNOWN toggle key is the validator's now, not the request
+        # model's — `dict[str, StrictBool]` accepts any key so the registry stays
+        # the one declaration point. Running the real validator here is what makes
+        # "an unknown toggle is a 400" a test that can fail.
+        if toggles is not None:
+            validate_toggles(toggles)
         if atelier is not None:
             validate_atelier_settings(atelier)
         self._record(
@@ -317,6 +324,52 @@ def test_put_settings_toggles_only_leaves_profile_none() -> None:
     call = fake.call("update_settings")
     assert call["profile"] is None
     assert call["toggles"] == {"deposits_enabled": False}
+
+
+# --- F27 D4: the registry is the schema ---
+
+
+def test_put_settings_accepts_a_single_key_toggles_dict() -> None:
+    """The matrix's per-row save (D7): one key per PUT, and it must reach the
+    service as exactly that one key. `TogglesUpdate`'s two named fields are gone
+    — the wire shape did not change, but the model no longer has to grow a field
+    per toggle, which is what makes D8's "no schema edit" true."""
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"toggles": {"brides_only": True}})
+    assert resp.status_code == 200
+    assert fake.call("update_settings")["toggles"] == {"brides_only": True}
+
+
+@pytest.mark.parametrize("value", [1, "true", 0, "false", 1.0])
+def test_put_settings_refuses_a_coercible_non_bool_toggle(value: object) -> None:
+    """⚠ `StrictBool`, NOT `bool`, AND `validate_toggles`' isinstance CHECK IS
+    UNREACHABLE WITHOUT IT. `ForbidExtraModel` is `extra="forbid"` and NOTHING
+    else, so a plain `dict[str, bool]` COERCES before any validator runs: `1` and
+    `"true"` both become `True` and land in the JSONB as a legitimate save. That
+    is the exact vacuity `AtelierSettingsUpdate`'s `StrictInt` docstring
+    documents, one type over.
+
+    A 422 or a 400 — the house handler maps pydantic's own refusal; what matters
+    is that the value never reaches the service.
+    """
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"toggles": {"deposits_enabled": value}})
+    assert resp.status_code in (400, 422)
+    assert fake.calls == []
+
+
+def test_put_settings_rejects_an_unknown_toggle_key_in_the_house_shape() -> None:
+    """Unknown keys pass pydantic (the model is `dict[str, StrictBool]`) and are
+    refused by the REGISTRY-derived validator — so F46 adding a toggle needs no
+    schema edit, and a typo still 400s rather than writing a key nothing reads."""
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"toggles": {"marketing_enabled": True}})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert fake.calls == []
 
 
 def test_put_settings_round_trips_essence_and_instagram() -> None:
