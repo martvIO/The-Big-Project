@@ -40,3 +40,7 @@ class Customer(StandardColumns, Base):
         TIMESTAMP(timezone=True), nullable=True
     )
     erased_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    # F24's bell (0027). The WHOLE read-state model: one timestamp, no per-item
+    # rows. NULL is not "unknown" — it is "never opened the bell", which is why
+    # the column carries no default: every message is unread until she looks.
+    bell_seen_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)

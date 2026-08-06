@@ -53,6 +53,7 @@ from test_booking_owner_db import (
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.booking.manage import ManageBookingService
 from app.booking.tokens import manage_token_hash
+from app.db.repositories.customer_sessions import CustomerSessionsRepository
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.message_log import MessageLogRepository
 from app.db.repositories.queue_tickets import QueueTicketsRepository
@@ -96,6 +97,7 @@ CUSTOMERS = CustomersRepository()
 MESSAGES = MessageLogRepository()
 QUEUE_TICKETS = QueueTicketsRepository()
 WAITLIST = WaitlistEntriesRepository()
+CUSTOMER_SESSIONS = CustomerSessionsRepository()
 
 
 def _privacy(factory: async_sessionmaker[AsyncSession]) -> PrivacyService:
@@ -1439,5 +1441,55 @@ async def test_the_erase_scrubs_her_waitlist_phone_and_cancels_her_active_entrie
             assert was_claimed.status == WaitlistEntryStatus.CLAIMED.value
             assert untouched.phone == other_phone
             assert untouched.status == WaitlistEntryStatus.WAITING.value
+    finally:
+        await engine.dispose()
+
+
+async def test_the_erase_revokes_her_portal_sessions(app_role_url: str) -> None:
+    """F24 D2's one integration with this route, and the reason it is HERE
+    rather than in the portal suite: an erased subject holding a live cookie
+    would keep reading her own «gone» record for up to thirty days, and the
+    thing that must be true is that the revocation rides THIS transaction.
+
+    A neighbour's session is seeded alongside hers so a `customer_id` predicate
+    dropped from `revoke_all_for_customer` reds here as well as in
+    test_portal_sessions_db — this is the caller that would ship it.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    neighbour_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW)
+        customer_id = claim.booking.customer_id
+        now = datetime.datetime.now(datetime.UTC)
+        async with tenant_session(factory, tenant_id) as session:
+            for token_hash, owner in (
+                ("erase-hers", customer_id),
+                ("erase-neighbour", neighbour_id),
+            ):
+                await CUSTOMER_SESSIONS.insert(
+                    session,
+                    tenant_id=tenant_id,
+                    customer_id=owner,
+                    token_hash=token_hash,
+                    expires_at=now + datetime.timedelta(days=30),
+                )
+
+        await _privacy(factory).erase_subject(
+            tenant_id, customer_id=customer_id, actor=_staff(tenant_id), reason=None
+        )
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await CUSTOMER_SESSIONS.active_by_token_hash(session, tenant_id, "erase-hers", now)
+                is None
+            )
+            assert (
+                await CUSTOMER_SESSIONS.active_by_token_hash(
+                    session, tenant_id, "erase-neighbour", now
+                )
+                is not None
+            )
     finally:
         await engine.dispose()

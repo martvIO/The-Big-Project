@@ -3528,3 +3528,152 @@ def test_migration_0026_round_trips(migrated_db: str) -> None:
         assert _waitlist_columns(migrated_db)["day"] == ("date", "NO")
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F24: the client portal's customer_sessions table + customers.bell_seen_at -
+#
+# ⚠ db-marked: these run on CI only (no local Docker). Written against 0018's
+# template, which is what the migration itself copies. `test_every_tenant_id_
+# table_has_forced_rls` needs no edit alongside them — it walks the live schema,
+# so a new tenant_id table is picked up for free (and reds if the policy is
+# missing).
+
+_PORTAL_SESSION_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'customer_sessions'"
+)
+_PORTAL_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE tablename = 'customer_sessions' AND indexname = :name"
+)
+_BELL_SEEN_COLUMN = (
+    "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+    "WHERE table_name = 'customers' AND column_name = 'bell_seen_at'"
+)
+_PORTAL_TOKEN_INDEX = "idx_customer_sessions_token"
+_PORTAL_CUSTOMER_INDEX = "idx_customer_sessions_customer"
+# Spelled as POSTGRES deparses them (schema-qualified, USING btree,
+# parenthesised predicate) — 0018's pinning technique, so dropping the partial
+# predicate or reordering the leading tenant_id collides with a review here.
+_PORTAL_TOKEN_INDEX_DEF = (
+    "CREATE INDEX idx_customer_sessions_token ON public.customer_sessions "
+    "USING btree (tenant_id, token_hash) WHERE (deleted_at IS NULL)"
+)
+_PORTAL_CUSTOMER_INDEX_DEF = (
+    "CREATE INDEX idx_customer_sessions_customer ON public.customer_sessions "
+    "USING btree (tenant_id, customer_id) WHERE (deleted_at IS NULL)"
+)
+
+
+def _portal_session_columns(url: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_PORTAL_SESSION_COLUMNS))).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _portal_pinned_definitions(url: str) -> tuple[str, str]:
+    async def read() -> tuple[str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                token = await conn.execute(text(_PORTAL_INDEX_DEF), {"name": _PORTAL_TOKEN_INDEX})
+                customer = await conn.execute(
+                    text(_PORTAL_INDEX_DEF), {"name": _PORTAL_CUSTOMER_INDEX}
+                )
+                return (str(token.scalar_one()), str(customer.scalar_one()))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _bell_seen_column(url: str) -> tuple[str, str, str | None] | None:
+    """None when the column is absent — `_privacy_columns` above cannot answer
+    this one: its SELECT names the four 0024 columns explicitly, so asking it
+    about `bell_seen_at` is a vacuous assertion whatever the schema says."""
+
+    async def read() -> tuple[str, str, str | None] | None:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                row = (await conn.execute(text(_BELL_SEEN_COLUMN))).one_or_none()
+                if row is None:
+                    return None
+                return (str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_migration_0027_creates_customer_sessions(migrated_db: str) -> None:
+    """The DDL spec D2/D7 pins: the no-FK customer pointer, the sha256 token
+    column, and the fixed expiry. A SEPARATE table from `sessions` and never a
+    widening of it — `sessions.staff_user_id` is NOT NULL, and staff and
+    customer auth must not share a lookup path."""
+    columns = _portal_session_columns(migrated_db)
+    assert columns["tenant_id"] == ("uuid", "NO")
+    assert columns["customer_id"] == ("uuid", "NO")
+    assert columns["token_hash"] == ("text", "NO")
+    assert columns["expires_at"] == ("timestamp with time zone", "NO")
+    assert columns["deleted_at"] == ("timestamp with time zone", "YES")
+
+
+@pytest.mark.db
+def test_migration_0027_adds_bell_seen_at_nullable_with_no_default(migrated_db: str) -> None:
+    """NULL is the ONLY spelling of "never opened the bell" (spec D6), so a
+    default here would make the unread-everything state unreachable — the
+    `marketing_consent_at` ruling in 0024, applied to the same table."""
+    assert _bell_seen_column(migrated_db) == ("timestamp with time zone", "YES", None)
+
+
+@pytest.mark.db
+def test_the_customer_session_definitions_are_pinned(migrated_db: str) -> None:
+    """BOTH partial indexes, deparsed. The token one is every authenticated
+    portal request's lookup; the customer one is the erase-revocation path
+    (spec D2) — dropping either `WHERE deleted_at IS NULL` turns a revoked
+    session into an index-visible row and a full scan into the fallback."""
+    token, customer = _portal_pinned_definitions(migrated_db)
+    assert token == _PORTAL_TOKEN_INDEX_DEF
+    assert customer == _PORTAL_CUSTOMER_INDEX_DEF
+
+
+@pytest.mark.db
+def test_migration_0027_round_trips(migrated_db: str) -> None:
+    """upgrade() creates the table and the column; downgrade() drops both and
+    touches nothing else. The downgrade target comes from `_parent_of` so a
+    renumber-at-rebase cannot silently stop this one revision short."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+
+    def exists() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text(_TABLE_EXISTS), {"name": "customer_sessions"})
+                    return bool(result.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists()
+        command.downgrade(cfg, _parent_of("client portal"))
+        assert not exists()
+        assert _bell_seen_column(migrated_db) is None
+        command.upgrade(cfg, "head")
+        assert exists()
+        assert _portal_session_columns(migrated_db)["token_hash"] == ("text", "NO")
+        restored = _bell_seen_column(migrated_db)
+        assert restored is not None and restored[1] == "YES"
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
