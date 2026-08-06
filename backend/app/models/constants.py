@@ -778,3 +778,19 @@ class PlatformAuditAction(StrEnum):
     # the row records that someone enumerated the platform, and reproducing the
     # enumeration inside the audit table would be the leak twice over.
     TENANTS_LISTED = "tenants_listed"
+    # F25's four. platform_audit_log.action is plain TEXT with no CHECK (0004),
+    # so these need no migration — the third feature in a row to rely on it.
+    #
+    # The bootstrap pair. Creating or deactivating the credential that controls
+    # every boutique on the platform is the highest-privilege act this system
+    # has, and it is reachable ONLY from a shell (spec D2: no HTTP route mints an
+    # operator, so the console's own compromise cannot).
+    OPERATOR_CREATED = "operator_created"
+    OPERATOR_DEACTIVATED = "operator_deactivated"
+    # The login pair, and they are STRICTER than their staff twins on purpose:
+    # staff logins write to the tenant's own `audit_log`, which is that
+    # boutique's evidence about its own people. The platform's front door has no
+    # tenant, so it logs to the platform's book. `details` carries the attempted
+    # email on the failure and NEVER a password or hash.
+    OPERATOR_LOGIN = "operator_login"
+    OPERATOR_LOGIN_FAILED = "operator_login_failed"
