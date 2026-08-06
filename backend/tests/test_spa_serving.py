@@ -165,9 +165,7 @@ def _app(monkeypatch: pytest.MonkeyPatch, static_root: Path) -> FastAPI:
     return create_app(resolver=_resolver)
 
 
-def _client(
-    monkeypatch: pytest.MonkeyPatch, static_root: Path, host: str = HOST
-) -> TestClient:
+def _client(monkeypatch: pytest.MonkeyPatch, static_root: Path, host: str = HOST) -> TestClient:
     app = _app(monkeypatch, static_root)
     app.state.storefront_service = _EmptyStorefrontService()
     return TestClient(app, base_url=f"http://{host}")
