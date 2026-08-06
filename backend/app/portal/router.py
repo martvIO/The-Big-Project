@@ -17,6 +17,7 @@ cookie plus `CsrfOriginMiddleware`, which inspects any request that carries an
 cookie, so that pairing is stated here rather than assumed.
 """
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -26,12 +27,19 @@ from app.auth.cookies import (
     clear_customer_session_cookie,
     set_customer_session_cookie,
 )
+from app.booking.manage import ManageTenant
+from app.booking.schemas import ManageBookingResponse
 from app.core.config import get_settings
 from app.portal.dependencies import get_current_customer, get_portal_service
-from app.portal.schemas import PortalSessionRequest, PortalSessionResponse
+from app.portal.schemas import (
+    PortalBookingIdRequest,
+    PortalBookingsResponse,
+    PortalSessionRequest,
+    PortalSessionResponse,
+)
 from app.portal.service import CustomerContext, PortalService
 from app.schemas import OkResponse
-from app.tenancy.middleware import get_current_tenant
+from app.tenancy.middleware import TenantContext, get_current_tenant
 
 NO_STORE = "no-store"
 
@@ -48,6 +56,12 @@ router = APIRouter(prefix="/storefront/portal", dependencies=[Depends(_no_store)
 
 Portal = Annotated[PortalService, Depends(get_portal_service)]
 Customer = Annotated[CustomerContext, Depends(get_current_customer)]
+
+
+def _manage_tenant(tenant: TenantContext) -> ManageTenant:
+    """The booking router's own helper, spelled again rather than imported: it
+    is three lines and importing it would make the portal depend on a router."""
+    return ManageTenant(id=tenant.id, name=tenant.name, settings=tenant.settings)
 
 
 @router.post("/session")
@@ -94,3 +108,40 @@ async def portal_logout(
         await service.logout(tenant.id, token)
     clear_customer_session_cookie(response, secure=get_settings().secure_cookies)
     return OkResponse()
+
+
+@router.get("/bookings")
+async def portal_bookings(
+    request: Request, service: Portal, customer: Customer
+) -> PortalBookingsResponse:
+    """No query parameters at all: the customer comes from the session and the
+    split comes from the server's clock."""
+    return await service.list_bookings(get_current_tenant(request).id, customer)
+
+
+@router.get("/booking")
+async def portal_booking(
+    request: Request, service: Portal, customer: Customer, id: uuid.UUID
+) -> ManageBookingResponse:
+    """A GET with the id in the query string, unlike the tokenized page's POST:
+    a booking id is not a capability here — the cookie is — so there is nothing
+    an access log must not see."""
+    return await service.get_booking(_manage_tenant(get_current_tenant(request)), customer, id)
+
+
+@router.post("/booking/confirm-attendance")
+async def portal_confirm_attendance(
+    request: Request, service: Portal, customer: Customer, body: PortalBookingIdRequest
+) -> ManageBookingResponse:
+    return await service.confirm_attendance(
+        _manage_tenant(get_current_tenant(request)), customer, body.id
+    )
+
+
+@router.post("/booking/cancel")
+async def portal_cancel_booking(
+    request: Request, service: Portal, customer: Customer, body: PortalBookingIdRequest
+) -> ManageBookingResponse:
+    """The tokenized `/b/{token}` page and its endpoints are UNTOUCHED — this is
+    a second door onto the same transition, not a replacement."""
+    return await service.cancel(_manage_tenant(get_current_tenant(request)), customer, body.id)

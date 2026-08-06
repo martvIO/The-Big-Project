@@ -18,13 +18,22 @@ import datetime
 import uuid
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_booking_owner_db import (
     NOW,
+    SLOT_A,
+    SLOT_B,
+    SLOT_C,
     _claim,
+    _comms,
+    _comms_tenant,
     _factory,
     _loose,
     _phone,
+    _row,
     _seed,
+    _slot,
     _spent,
     _staff,
     _sweep_walk_in_bookings,  # noqa: F401
@@ -33,12 +42,32 @@ from test_booking_owner_db import (
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.tokens import hash_token
-from app.booking.service import PhoneNotVerifiedError
+from app.booking.manage import (
+    BookingAlreadyStartedError,
+    BookingAwaitingPaymentError,
+    BookingCancelledError,
+    ManageBookingService,
+    ManageTenant,
+)
+from app.booking.service import BookingNotFoundError, PhoneNotVerifiedError
+from app.booking.tokens import manage_token_hash
 from app.db.repositories.customer_sessions import CustomerSessionsRepository
 from app.db.tenant import tenant_session
+from app.models.booking import Booking
+from app.models.constants import (
+    BookingCancelledBy,
+    BookingStatus,
+    ScheduledMessageStatus,
+)
+from app.models.scheduled_message import ScheduledMessage
 from app.notifications.service import NotificationService, OtpService
 from app.notifications.unconfigured import UnconfiguredSmsSender
-from app.portal.service import PortalNoBookingsError, PortalService, PortalThrottledError
+from app.portal.service import (
+    CustomerContext,
+    PortalNoBookingsError,
+    PortalService,
+    PortalThrottledError,
+)
 
 pytestmark = pytest.mark.db
 
@@ -46,15 +75,15 @@ SESSIONS = CustomerSessionsRepository()
 
 
 def _portal(
-    factory: object,
+    factory: async_sessionmaker[AsyncSession],
     *,
     mint_limiter: FixedWindowRateLimiter | None = None,
     now: datetime.datetime = NOW,
     ttl_seconds: int = 30 * 24 * 3600,
 ) -> PortalService:
     otp = OtpService(
-        factory,  # type: ignore[arg-type]
-        notifications=NotificationService(factory, sender=UnconfiguredSmsSender()),  # type: ignore[arg-type]
+        factory,
+        notifications=NotificationService(factory, sender=UnconfiguredSmsSender()),
         phone_limiter=_loose(),
         tenant_limiter=_loose(),
         verify_limiter=_loose(),
@@ -62,7 +91,7 @@ def _portal(
         clock=lambda: now,
     )
     return PortalService(
-        factory,  # type: ignore[arg-type]
+        factory,
         otp=otp,
         mint_limiter=mint_limiter or _loose(),
         session_ttl_seconds=ttl_seconds,
@@ -334,5 +363,270 @@ async def test_a_session_never_resolves_under_another_tenant(app_role_url: str) 
             verification_token=await _token(factory, tenant_a, phone),
         )
         assert await portal.resolve_session(tenant_b, token) is None
+    finally:
+        await engine.dispose()
+
+
+# --- "My Bookings" and the mirrored actions ---------------------------------
+
+
+def _manage_tenant(tenant_id: uuid.UUID) -> ManageTenant:
+    return ManageTenant(id=tenant_id, name="בלה כלות", settings={})
+
+
+async def _sign_in(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID, phone: str
+) -> tuple[PortalService, CustomerContext]:
+    portal = _portal(factory)
+    _, token = await portal.create_session(
+        tenant_id,
+        raw_phone=phone,
+        verification_token=await _token(factory, tenant_id, phone),
+    )
+    customer = await portal.resolve_session(tenant_id, token)
+    assert customer is not None
+    return portal, customer
+
+
+async def test_the_list_is_split_ordered_and_scoped_to_her_alone(app_role_url: str) -> None:
+    """Three claims in one seed, because they share it: the split is on the
+    SERVER's clock, upcoming reads ASC and past DESC, and another customer's
+    bookings are not on the wire at all."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    hers, neighbours = _phone(), _phone()
+    past_date = (NOW - datetime.timedelta(days=10)).date()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=3)
+        past_type_id = await _seed(factory, tenant_id, capacity=3, date=past_date)
+        near = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A, phone=hers)
+        far = await _claim(factory, tenant_id, type_id, starts_at=SLOT_B, phone=hers)
+        old = await _claim(
+            factory,
+            tenant_id,
+            past_type_id,
+            starts_at=_slot(10, date=past_date),
+            now=NOW - datetime.timedelta(days=20),
+            phone=hers,
+        )
+        stranger = await _claim(factory, tenant_id, type_id, starts_at=SLOT_C, phone=neighbours)
+
+        portal, customer = await _sign_in(factory, tenant_id, hers)
+        view = await portal.list_bookings(tenant_id, customer)
+
+        assert [row.id for row in view.upcoming] == [near.booking.id, far.booking.id]
+        assert [row.id for row in view.past] == [old.booking.id]
+        assert stranger.booking.id not in {row.id for row in view.upcoming + view.past}
+        # The row is the design's seven facts and carries NO manage token — a
+        # capability on a list row is a capability in a scroll.
+        assert set(view.upcoming[0].model_dump()) == {
+            "id",
+            "starts_at",
+            "status",
+            "attendance_confirmed_at",
+            "appointment_type_name",
+            "dress_name",
+            "dress_size",
+        }
+    finally:
+        await engine.dispose()
+
+
+async def test_a_pending_payment_hold_appears_in_upcoming_with_its_status(
+    app_role_url: str,
+) -> None:
+    """The seat is hers and the money is not in. Hiding the row would make an
+    appointment she can still lose invisible (spec D4)."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        async with tenant_session(factory, tenant_id) as session:
+            booking = await session.get(Booking, claim.booking.id)
+            assert booking is not None
+            booking.status = BookingStatus.PENDING_PAYMENT.value
+
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        view = await portal.list_bookings(tenant_id, customer)
+        assert [row.status for row in view.upcoming] == [BookingStatus.PENDING_PAYMENT.value]
+        assert view.past == []
+    finally:
+        await engine.dispose()
+
+
+async def test_the_portal_detail_is_field_for_field_the_token_pages_detail(
+    app_role_url: str,
+) -> None:
+    """The mirror guarantee, asserted as an EQUALITY between the two transports
+    for one booking rather than as two similar shapes (spec D4)."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        token = claim.manage_token
+        assert token is not None
+        async with tenant_session(factory, tenant_id) as session:
+            booking = await session.get(Booking, claim.booking.id)
+            assert booking is not None
+            booking.manage_token_hash = manage_token_hash(token)
+
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        through_session = await portal.get_booking(
+            _manage_tenant(tenant_id), customer, claim.booking.id
+        )
+        through_token = await ManageBookingService(
+            factory,
+            lookup_limiter=_loose(),
+            clock=lambda: NOW,
+        ).lookup(_manage_tenant(tenant_id), token=token)
+        assert through_session == through_token
+    finally:
+        await engine.dispose()
+
+
+async def test_another_customers_booking_is_the_same_404_as_an_unknown_id(
+    app_role_url: str,
+) -> None:
+    """No cross-customer existence oracle: a probe cannot learn that a booking
+    id belongs to somebody else at this boutique."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    hers, neighbours = _phone(), _phone()
+    try:
+        type_id = await _seed(factory, tenant_id, capacity=2)
+        await _claim(factory, tenant_id, type_id, starts_at=SLOT_A, phone=hers)
+        stranger = await _claim(factory, tenant_id, type_id, starts_at=SLOT_B, phone=neighbours)
+        portal, customer = await _sign_in(factory, tenant_id, hers)
+        tenant = _manage_tenant(tenant_id)
+        for booking_id in (stranger.booking.id, uuid.uuid4()):
+            with pytest.raises(BookingNotFoundError):
+                await portal.get_booking(tenant, customer, booking_id)
+            with pytest.raises(BookingNotFoundError):
+                await portal.cancel(tenant, customer, booking_id)
+            with pytest.raises(BookingNotFoundError):
+                await portal.confirm_attendance(tenant, customer, booking_id)
+    finally:
+        await engine.dispose()
+
+
+async def test_the_portal_confirm_writes_attendance_confirmed_at(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        view = await portal.confirm_attendance(
+            _manage_tenant(tenant_id), customer, claim.booking.id
+        )
+        assert view.booking.attendance_confirmed_at == NOW
+        row = await _row(factory, tenant_id, claim.booking.id)
+        assert row is not None and row.attendance_confirmed_at == NOW
+    finally:
+        await engine.dispose()
+
+
+async def test_the_portal_cancel_frees_the_seat_stamps_customer_and_kills_the_reminder(
+    app_role_url: str,
+) -> None:
+    """THE SAME ASSERTIONS AS THE TOKEN-PAGE CANCEL SUITE, on purpose: the
+    mirror is only real if the portal's cancel does all three things the
+    tokenized one does — and it does them because it IS the same code."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        comms, _ = _comms(factory)
+        # The reminder row the confirmation flow would have written. Through the
+        # product's own writer, so a pending row exists to be cancelled.
+        assert (
+            await comms.reschedule_reminder(
+                _comms_tenant(tenant_id),
+                booking_id=claim.booking.id,
+                starts_at=claim.booking.starts_at,
+            )
+            is not None
+        )
+
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        view = await portal.cancel(_manage_tenant(tenant_id), customer, claim.booking.id)
+        assert view.booking.status == BookingStatus.CANCELLED.value
+
+        row = await _row(factory, tenant_id, claim.booking.id)
+        assert row is not None
+        assert row.status == BookingStatus.CANCELLED.value
+        assert row.cancelled_by == BookingCancelledBy.CUSTOMER.value
+        assert row.cancelled_at is not None
+
+        async with tenant_session(factory, tenant_id) as session:
+            scheduled = list(
+                (
+                    await session.execute(
+                        select(ScheduledMessage).where(
+                            ScheduledMessage.tenant_id == tenant_id,
+                            ScheduledMessage.booking_id == claim.booking.id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert scheduled and all(
+            row.status == ScheduledMessageStatus.CANCELLED.value for row in scheduled
+        )
+
+        # The seat is free STRUCTURALLY — both partial unique indexes exclude
+        # `cancelled` — so she can rebook the same instant immediately.
+        rebooked = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A, phone=phone)
+        assert rebooked.booking.id != claim.booking.id
+    finally:
+        await engine.dispose()
+
+
+async def test_the_portal_actions_answer_the_same_409_matrix(app_role_url: str) -> None:
+    """Started, cancelled and awaiting-payment, through the SHARED transitions.
+    A second guard set would be a second product."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, phone=phone)
+        portal, customer = await _sign_in(factory, tenant_id, phone)
+        tenant = _manage_tenant(tenant_id)
+
+        # started: the clock has passed starts_at.
+        after = _portal(factory, now=SLOT_A + datetime.timedelta(minutes=1))
+        with pytest.raises(BookingAlreadyStartedError):
+            await after.confirm_attendance(tenant, customer, claim.booking.id)
+        with pytest.raises(BookingAlreadyStartedError):
+            await after.cancel(tenant, customer, claim.booking.id)
+
+        # awaiting payment.
+        async with tenant_session(factory, tenant_id) as session:
+            booking = await session.get(Booking, claim.booking.id)
+            assert booking is not None
+            booking.status = BookingStatus.PENDING_PAYMENT.value
+        with pytest.raises(BookingAwaitingPaymentError):
+            await portal.confirm_attendance(tenant, customer, claim.booking.id)
+        with pytest.raises(BookingAwaitingPaymentError):
+            await portal.cancel(tenant, customer, claim.booking.id)
+
+        # cancelled: confirm refuses, cancel is the idempotent 200.
+        async with tenant_session(factory, tenant_id) as session:
+            booking = await session.get(Booking, claim.booking.id)
+            assert booking is not None
+            booking.status = BookingStatus.CANCELLED.value
+        with pytest.raises(BookingCancelledError):
+            await portal.confirm_attendance(tenant, customer, claim.booking.id)
+        repeat = await portal.cancel(tenant, customer, claim.booking.id)
+        assert repeat.booking.status == BookingStatus.CANCELLED.value
     finally:
         await engine.dispose()

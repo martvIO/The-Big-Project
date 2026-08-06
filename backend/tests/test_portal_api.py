@@ -14,6 +14,7 @@ bride would hold a console session. Two names, two dependencies, and two tests.
 """
 
 import dataclasses
+import datetime
 import uuid
 from typing import Any
 
@@ -23,8 +24,16 @@ from fastapi.testclient import TestClient
 from app.auth.cookies import CUSTOMER_SESSION_COOKIE, SESSION_COOKIE
 from app.auth.dependencies import get_auth_service
 from app.auth.service import StaffContext
+from app.booking.manage import ManageTenant
+from app.booking.schemas import (
+    ManageBookingFacts,
+    ManageBookingResponse,
+    ManageBoutique,
+    ManagePolicy,
+)
 from app.main import create_app
-from app.portal.schemas import PortalSessionResponse
+from app.models.constants import BookingStatus
+from app.portal.schemas import PortalBookingRow, PortalBookingsResponse, PortalSessionResponse
 from app.portal.service import CustomerContext, PortalNoBookingsError, PortalThrottledError
 from app.security_headers import SECURITY_HEADERS
 from app.tenancy.middleware import TenantContext
@@ -40,15 +49,56 @@ PHONE = "0501234567"
 SESSION = "/storefront/portal/session"
 ME = "/storefront/portal/me"
 LOGOUT = "/storefront/portal/logout"
+BOOKINGS = "/storefront/portal/bookings"
+BOOKING = "/storefront/portal/booking"
+CONFIRM = "/storefront/portal/booking/confirm-attendance"
+CANCEL = "/storefront/portal/booking/cancel"
+BOOKING_ID = uuid.uuid4()
 # Every route that reads the customer cookie. Grows with each phase; the auth
 # matrix below is parametrised over it so a route added without a cookie gate is
 # a red rather than a gap.
 COOKIE_ROUTES: tuple[tuple[str, str, dict[str, Any] | None], ...] = (
     ("GET", ME, None),
     ("POST", LOGOUT, None),
+    ("GET", BOOKINGS, None),
+    ("GET", f"{BOOKING}?id={BOOKING_ID}", None),
+    ("POST", CONFIRM, {"id": str(BOOKING_ID)}),
+    ("POST", CANCEL, {"id": str(BOOKING_ID)}),
 )
 
 CUSTOMER = CustomerContext(id=CUSTOMER_ID, tenant_id=TENANT.id, name="רותם", phone="+972501234567")
+STARTS_AT = datetime.datetime(2099, 8, 2, 7, 0, tzinfo=datetime.UTC)
+
+
+def _row() -> PortalBookingRow:
+    return PortalBookingRow(
+        id=BOOKING_ID,
+        starts_at=STARTS_AT,
+        status=BookingStatus.CONFIRMED.value,
+        attendance_confirmed_at=None,
+        appointment_type_name="מדידה ראשונה",
+        dress_name="שמלת אלמה",
+        dress_size="36",
+    )
+
+
+def _detail_response() -> ManageBookingResponse:
+    """The TOKENIZED page's shape, verbatim — reusing it is the mirror guarantee
+    (spec D4), so this helper deliberately builds `ManageBookingResponse` and not
+    a portal type."""
+    return ManageBookingResponse(
+        booking=ManageBookingFacts(
+            starts_at=STARTS_AT,
+            status=BookingStatus.CONFIRMED.value,
+            attendance_confirmed_at=None,
+            appointment_type_name="מדידה ראשונה",
+            dress_name="שמלת אלמה",
+            dress_size="36",
+            deposit_taken=False,
+        ),
+        policy=ManagePolicy(refundable_until_hours_before=48, forfeit_percent=50),
+        boutique=ManageBoutique(name=TENANT.name, phone=None, address=None, maps_url=None),
+    )
 
 
 @dataclasses.dataclass
@@ -72,6 +122,41 @@ class StubPortalService:
 
     async def logout(self, tenant_id: uuid.UUID, token: str) -> None:
         self.calls.append(("logout", (tenant_id, token)))
+
+    async def list_bookings(
+        self, tenant_id: uuid.UUID, customer: CustomerContext
+    ) -> PortalBookingsResponse:
+        if self.error is not None:
+            raise self.error
+        self.calls.append(("list_bookings", (tenant_id, customer.id)))
+        return PortalBookingsResponse(upcoming=[_row()], past=[])
+
+    async def get_booking(
+        self, tenant: ManageTenant, customer: CustomerContext, booking_id: uuid.UUID
+    ) -> ManageBookingResponse:
+        return self._detail("get_booking", tenant, customer, booking_id)
+
+    async def confirm_attendance(
+        self, tenant: ManageTenant, customer: CustomerContext, booking_id: uuid.UUID
+    ) -> ManageBookingResponse:
+        return self._detail("confirm_attendance", tenant, customer, booking_id)
+
+    async def cancel(
+        self, tenant: ManageTenant, customer: CustomerContext, booking_id: uuid.UUID
+    ) -> ManageBookingResponse:
+        return self._detail("cancel", tenant, customer, booking_id)
+
+    def _detail(
+        self,
+        name: str,
+        tenant: ManageTenant,
+        customer: CustomerContext,
+        booking_id: uuid.UUID,
+    ) -> ManageBookingResponse:
+        if self.error is not None:
+            raise self.error
+        self.calls.append((name, (tenant.id, customer.id, booking_id)))
+        return _detail_response()
 
 
 class FakeAuthService:
@@ -308,3 +393,107 @@ def test_the_portal_lives_under_the_storefront_prefix() -> None:
     assert frozenset({"manage", "storefront"}) == _RESERVED_SEGMENTS
     for path in (SESSION, ME, LOGOUT):
         assert path.startswith("/storefront/portal/")
+
+
+# --- bookings, detail and the mirrored actions ------------------------------
+
+
+def test_the_bookings_list_is_split_and_scoped_to_the_session_customer() -> None:
+    client, stub = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.get(BOOKINGS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {"upcoming", "past"}
+    assert set(body["upcoming"][0]) == {
+        "id",
+        "starts_at",
+        "status",
+        "attendance_confirmed_at",
+        "appointment_type_name",
+        "dress_name",
+        "dress_size",
+    }
+    # The customer id comes from the SESSION and never from the request — there
+    # is no parameter a caller could substitute.
+    assert stub.calls == [("list_bookings", (TENANT.id, CUSTOMER_ID))]
+
+
+def test_the_detail_answers_the_tokenized_pages_shape_verbatim() -> None:
+    """The mirror guarantee (spec D4): one contract renders both surfaces, so
+    they cannot drift into two products."""
+    client, stub = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.get(f"{BOOKING}?id={BOOKING_ID}")
+    assert resp.status_code == 200
+    assert set(resp.json()) == {"booking", "policy", "boutique"}
+    assert stub.calls == [("get_booking", (TENANT.id, CUSTOMER_ID, BOOKING_ID))]
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"), [(CONFIRM, "confirm_attendance"), (CANCEL, "cancel")]
+)
+def test_the_mirrored_actions_delegate_with_the_session_customer(path: str, expected: str) -> None:
+    client, stub = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.post(path, json={"id": str(BOOKING_ID)})
+    assert resp.status_code == 200
+    assert set(resp.json()) == {"booking", "policy", "boutique"}
+    assert stub.calls == [(expected, (TENANT.id, CUSTOMER_ID, BOOKING_ID))]
+
+
+@pytest.mark.parametrize("path", [CONFIRM, CANCEL])
+def test_the_mirrored_actions_refuse_an_unknown_field(path: str) -> None:
+    client, _ = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.post(path, json={"id": str(BOOKING_ID), "token": "mt-abc"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("path", [CONFIRM, CANCEL])
+def test_the_mirrored_actions_reject_a_get(path: str) -> None:
+    client, _ = _client()
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        assert client.get(path).status_code == 405
+
+
+@pytest.mark.parametrize(
+    "error_name",
+    ["BookingAlreadyStartedError", "BookingCancelledError", "BookingAwaitingPaymentError"],
+)
+def test_the_portal_actions_answer_the_same_409_matrix_as_the_token_page(error_name: str) -> None:
+    """Same transitions, same guards, same codes — the mirror is a shared code
+    path and not a copied table."""
+    import app.booking.manage as manage
+
+    error = getattr(manage, error_name)
+    client, _ = _client(StubPortalService(error=error()))
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        resp = client.post(CANCEL, json={"id": str(BOOKING_ID)})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] in {
+        "BOOKING_ALREADY_STARTED",
+        "BOOKING_CANCELLED",
+        "BOOKING_AWAITING_PAYMENT",
+    }
+
+
+def test_a_booking_that_is_not_hers_is_the_house_404() -> None:
+    """No cross-customer existence oracle: unknown and not-hers are the same
+    body, so a probe learns nothing about another bride's appointments."""
+    from app.booking.service import BookingNotFoundError
+
+    client, _ = _client(StubPortalService(error=BookingNotFoundError()))
+    with client:
+        client.cookies.set(CUSTOMER_SESSION_COOKIE, PORTAL_TOKEN)
+        detail = client.get(f"{BOOKING}?id={BOOKING_ID}")
+        cancelled = client.post(CANCEL, json={"id": str(BOOKING_ID)})
+    assert detail.status_code == cancelled.status_code == 404
+    assert detail.json() == cancelled.json()
+    assert detail.json()["error"]["code"] == "NOT_FOUND"

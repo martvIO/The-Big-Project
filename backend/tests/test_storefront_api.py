@@ -668,10 +668,19 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         "/storefront/portal/session",
         "/storefront/portal/me",
         "/storefront/portal/logout",
+        "/storefront/portal/bookings",
+        "/storefront/portal/booking",
+        "/storefront/portal/booking/confirm-attendance",
+        "/storefront/portal/booking/cancel",
     }
     # Singular /booking/* must never collide with the plural /bookings create.
+    # Restricted to the tokenized surface deliberately: F24 adds
+    # /storefront/portal/booking* one level down, and those are the PORTAL's
+    # singular routes, not this collision's subject.
     assert "/storefront/bookings" not in {
-        path for _, path in registered if path.startswith("/storefront/booking/")
+        path
+        for _, path in registered
+        if path.startswith("/storefront/booking/") and not path.startswith("/storefront/portal")
     }
     # And no storefront path is reachable under the CSRF-protected prefix.
     assert not any(path.startswith("/manage/storefront") for _, path in registered)

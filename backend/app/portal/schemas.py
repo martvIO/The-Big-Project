@@ -7,6 +7,9 @@ guarantee — the portal detail and the tokenized page render from one contract,
 so they cannot drift into two products.
 """
 
+import datetime
+import uuid
+
 from pydantic import BaseModel, Field
 
 from app.booking.schemas import MAX_TOKEN_INPUT_LENGTH
@@ -33,3 +36,42 @@ class PortalSessionResponse(BaseModel):
     """
 
     customer_name: str
+
+
+class PortalBookingRow(BaseModel):
+    """One line of "My Bookings". The SAME seven facts the design's §3 row
+    renders and nothing else — no manage token (the portal authenticates by
+    cookie and a capability on a list row would be a capability in a scroll),
+    no customer name (she knows it), no notes (the boutique's free text about
+    her is not this screen's).
+
+    `pending_payment` rows appear in `upcoming` with their status: the seat is
+    hers, the money is not in, and hiding the row would make an appointment she
+    can still lose invisible."""
+
+    id: uuid.UUID
+    starts_at: datetime.datetime
+    status: str
+    attendance_confirmed_at: datetime.datetime | None
+    appointment_type_name: str
+    dress_name: str | None
+    dress_size: str | None
+
+
+class PortalBookingsResponse(BaseModel):
+    """Split on `starts_at` vs now, upcoming ASC and past DESC — the ORDER IS
+    THE CONTRACT, and the client re-sorts nothing. Two lists rather than one
+    with a flag: the page renders two sections with two empty states, and a
+    client-side split would put the boundary clock in the browser."""
+
+    upcoming: list[PortalBookingRow]
+    past: list[PortalBookingRow]
+
+
+class PortalBookingIdRequest(ForbidExtraModel):
+    """The body of both mirrored actions. A booking id is not a secret — the
+    cookie is the capability — but it rides a POST body rather than a query
+    string because these are mutations, and ForbidExtra is what keeps a manage
+    token from being smuggled in beside it."""
+
+    id: uuid.UUID

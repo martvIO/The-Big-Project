@@ -28,14 +28,30 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.tokens import generate_session_token, hash_token
-from app.booking.service import PhoneNotVerifiedError
+from app.booking.manage import ManageBookingTransitions, ManageTenant
+from app.booking.schemas import ManageBookingResponse
+from app.booking.service import BookingNotFoundError, PhoneNotVerifiedError
+from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.customer_sessions import CustomerSessionsRepository
 from app.db.repositories.customers import CustomersRepository
 from app.db.tenant import tenant_session
+from app.models.booking import Booking
 from app.notifications.service import OtpService
 from app.notifications.validation import normalize_israeli_mobile
-from app.portal.schemas import PortalSessionResponse
+from app.portal.schemas import (
+    PortalBookingRow,
+    PortalBookingsResponse,
+    PortalSessionResponse,
+)
 from app.storefront.validation import Clock
+
+# The dashboard's ceiling. No pagination and no filter, so this is a HARD cap —
+# and the read it rides (`list_recent_for_customer`) orders `starts_at DESC`, so
+# what a bride past a hundred appointments at one boutique loses is her OLDEST
+# history and never her next fitting. A hundred is roughly a decade of monthly
+# visits; the upgrade path if a real tenant ever passes it is a `before` cursor
+# on the past section alone.
+PORTAL_BOOKING_LIMIT = 100
 
 
 class PortalNoBookingsError(Exception):
@@ -90,6 +106,10 @@ class PortalService:
         self._clock = clock
         self._customers = CustomersRepository()
         self._sessions = CustomerSessionsRepository()
+        self._bookings = BookingsRepository()
+        # The SHARED guard set, not a copy (spec D4). Its clock is this
+        # service's, so a frozen-clock test moves both halves together.
+        self._transitions = ManageBookingTransitions(clock)
 
     def _now(self) -> datetime.datetime:
         now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
@@ -164,3 +184,87 @@ class PortalService:
     async def logout(self, tenant_id: uuid.UUID, token: str) -> None:
         async with tenant_session(self._session_factory, tenant_id) as session:
             await self._sessions.revoke_by_token_hash(session, tenant_id, hash_token(token))
+
+    # --- "My Bookings" (spec D4) --------------------------------------------
+
+    async def list_bookings(
+        self, tenant_id: uuid.UUID, customer: CustomerContext
+    ) -> PortalBookingsResponse:
+        """HER bookings, and the scope comes from the SESSION — there is no
+        customer parameter on the wire for a caller to substitute.
+
+        Reuses F53's `list_recent_for_customer` rather than adding a read: it
+        already answers every status with no lower bound on `starts_at`, ordered
+        `starts_at DESC, id DESC`. The split happens here because the boundary
+        is a clock, and a clock in the browser is a boundary that moves per
+        device.
+        """
+        now = self._now()
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rows = await self._bookings.list_recent_for_customer(
+                session, tenant_id, customer_id=customer.id, limit=PORTAL_BOOKING_LIMIT
+            )
+        upcoming = [row for row in rows if row.starts_at > now]
+        past = [row for row in rows if row.starts_at <= now]
+        return PortalBookingsResponse(
+            # The repository hands back DESC; upcoming reads ASC (her next
+            # appointment first, which is the one she opened the page for) and
+            # past stays DESC (most recent first).
+            upcoming=[_to_row(row) for row in reversed(upcoming)],
+            past=[_to_row(row) for row in past],
+        )
+
+    async def get_booking(
+        self, tenant: ManageTenant, customer: CustomerContext, booking_id: uuid.UUID
+    ) -> ManageBookingResponse:
+        """`ManageBookingResponse` VERBATIM (spec D4) — the mirror guarantee is
+        a shared contract, not a second shape that happens to match today."""
+        async with tenant_session(self._session_factory, tenant.id) as session:
+            booking = await self._hers(session, tenant.id, customer, booking_id)
+            return await self._transitions.render(session, tenant, booking)
+
+    async def confirm_attendance(
+        self, tenant: ManageTenant, customer: CustomerContext, booking_id: uuid.UUID
+    ) -> ManageBookingResponse:
+        async with tenant_session(self._session_factory, tenant.id) as session:
+            booking = await self._hers(session, tenant.id, customer, booking_id)
+            return await self._transitions.confirm_attendance(session, tenant, booking)
+
+    async def cancel(
+        self, tenant: ManageTenant, customer: CustomerContext, booking_id: uuid.UUID
+    ) -> ManageBookingResponse:
+        async with tenant_session(self._session_factory, tenant.id) as session:
+            booking = await self._hers(session, tenant.id, customer, booking_id)
+            return await self._transitions.cancel(session, tenant, booking)
+
+    async def _hers(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        customer: CustomerContext,
+        booking_id: uuid.UUID,
+    ) -> Booking:
+        """`_resolve`'s counterpart on the session side: the ONE place the
+        ownership predicate lives, so no route can forget it.
+
+        Unknown and not-hers raise the SAME error and answer the same body —
+        distinguishing them would make this endpoint an existence oracle for
+        another bride's appointments, which is `BookingLinkInvalidError`'s
+        reasoning one identity model over.
+        """
+        booking = await self._bookings.by_id(session, tenant_id, booking_id)
+        if booking is None or booking.customer_id != customer.id:
+            raise BookingNotFoundError
+        return booking
+
+
+def _to_row(booking: Booking) -> PortalBookingRow:
+    return PortalBookingRow(
+        id=booking.id,
+        starts_at=booking.starts_at,
+        status=booking.status,
+        attendance_confirmed_at=booking.attendance_confirmed_at,
+        appointment_type_name=booking.appointment_type_name,
+        dress_name=booking.dress_name,
+        dress_size=booking.dress_size,
+    )
