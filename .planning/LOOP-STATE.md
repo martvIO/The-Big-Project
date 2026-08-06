@@ -2340,7 +2340,20 @@ queue:
     slug: waitlist-auto-reallocation
     epic: E5
     title: Auto-reallocation loop
-    status: queued
+    status: queued                # 2026-08-06: spec+design(gate ACCEPTED)+plan (20 tasks, 7 commits) READY.
+                                  # ⚠ SPEC OVERTURNED THE BRIEF'S PREMISE: there is NO single "slot freed"
+                                  # seam — SIX paths free capacity (BookingsRepository.cancel covers 3;
+                                  # DepositSweeper._cancel_orphans is a bulk UPDATE; reschedule frees the
+                                  # source instant in place with no cancel; widening an availability rule
+                                  # frees capacity with NO booking write at all). So the cascade is a
+                                  # POLLER keyed off `waiting` entries — a 4th job in worker.poll_once,
+                                  # existing 60s tick, no new process — which also dissolves the epic's
+                                  # "expired claim-hold re-fires the cascade" coupling: nothing re-fires,
+                                  # the sweeper frees the seat and the next tick finds it.
+                                  # Also: pre-decided #16's "just widen the kind CHECK" is INSUFFICIENT —
+                                  # scheduled_messages.booking_id is NOT NULL and drain_due re-reads a
+                                  # booking per row, so the offer ride costs a nullable booking_id +
+                                  # waitlist_entry_id + XOR CHECK + a kind branch in the drain.
     deps: [F22, F16, F19]
     note: >-
       Pre-decided #12/#13/#15/#16: sequential offers with a 2-hour claim window,
