@@ -5,6 +5,7 @@ import { he } from "../i18n/he";
 import { GUIDE_STEPS } from "../lib/guide";
 import { ROLE_LABEL_KEY } from "../lib/roles";
 import { STAGE_LABEL_KEY } from "../lib/stages";
+import { TOGGLES } from "../lib/toggles";
 
 // Console copy is transcribed into he.ts as DOTTED LITERAL keys, one per row of
 // the feature's copy.md. i18next resolves those through `ignoreJSONStructure`
@@ -131,6 +132,12 @@ const HE_F22 = entries(
   he.translation,
   (key) => key === "nav.bookingWaitlist" || key.startsWith("bookingWaitlist."),
 );
+// F27's toggle matrix. NO `nav.` term in this selector, and that is an assertion
+// rather than an omission: the matrix is a CARD inside the profile section, not a
+// sixteenth console section (spec D7) — `SectionKey` stays as it is, the guide's
+// `satisfies Record<SectionKey, steps>` gate needs no entry, and the e2e nav
+// walker needs no row.
+const HE_F27 = entries(he.translation, (key) => key.startsWith("togglesMatrix."));
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -148,6 +155,7 @@ const HE = [
   ...HE_F20,
   ...HE_F50,
   ...HE_F22,
+  ...HE_F27,
 ];
 
 describe("F15 keys resolve", () => {
@@ -1519,6 +1527,62 @@ describe("F22 booking-waitlist keys resolve", () => {
   });
 });
 
+describe("F27 toggle-matrix keys resolve", () => {
+  it("is FOLDED into HE, not merely declared", () => {
+    // Declare the constant and forget the spread, and the resolve check, both
+    // register guards and the `ar` guards silently skip the whole block — the
+    // file's own warning, on every block above.
+    expect(HE.map(([key]) => key)).toContain("togglesMatrix.heading");
+  });
+
+  it("gives EVERY registry key both a label and a hint", () => {
+    // ⚠ SPEC D1's CONTRACT, MECHANISED: a row in the FE registry with no copy is
+    // a RED TEST, not a raw-key render in the owner's console. This is the guard
+    // that makes D8's growth protocol enforceable rather than aspirational —
+    // F23 and F46 add a registry key and this reds until the Hebrew lands.
+    const missing = TOGGLES.flatMap(({ key }) =>
+      [`togglesMatrix.${key}.label`, `togglesMatrix.${key}.hint`].filter(
+        (copyKey) => !(copyKey in he.translation),
+      ),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("gives every registry AREA a group heading", () => {
+    // Same rule one level up: a row whose area has no heading renders under a
+    // raw key (design §2 — groups are the D8 skeleton future rows land into).
+    const areas = [...new Set(TOGGLES.map(({ area }) => area))];
+    const missing = areas.filter((area) => !(`togglesMatrix.area.${area}` in he.translation));
+    expect(missing).toEqual([]);
+  });
+
+  it("carries no copy for a key that is NOT in the registry", () => {
+    // The other direction, and it is the dead-switch guard: copy for a toggle
+    // nobody declares is a row the matrix cannot render and a promise to the
+    // owner nothing keeps — which is exactly what `brides_only` was before F27.
+    const declared = new Set(
+      TOGGLES.flatMap(({ key }) => [`togglesMatrix.${key}.label`, `togglesMatrix.${key}.hint`]),
+    );
+    const areaKeys = new Set(
+      TOGGLES.map(({ area }) => `togglesMatrix.area.${area}`),
+    );
+    const orphans = HE_F27.map(([key]) => key).filter(
+      (key) =>
+        key !== "togglesMatrix.heading" &&
+        key !== "togglesMatrix.hint" &&
+        !declared.has(key) &&
+        !areaKeys.has(key),
+    );
+    expect(orphans).toEqual([]);
+  });
+
+  it("reuses common.saved for the row cue rather than minting a second Hebrew", () => {
+    // Design P3: one string, one meaning, and it doubles as the announced text.
+    expect(i18n.t("common.saved")).toBe("נשמר לפני רגע");
+  });
+
+});
+
 describe("the ar bundle", () => {
   it("carries no empty string", () => {
     // i18next's returnEmptyString default renders "" rather than falling back,
@@ -1594,6 +1658,21 @@ describe("the ar bundle", () => {
     // or a different Hebrew wording.
     const arTranslation = ar.translation as Record<string, string>;
     const drifted = HE_F22.filter(([key, value]) => arTranslation[key] !== value).map(
+      ([key]) => key,
+    );
+    expect(drifted).toEqual([]);
+  });
+
+  it("carries the approved Hebrew VALUE for every toggle-matrix key, not merely the key", () => {
+    // F27's twin, scoped by name like every block above: `ar[key] === he[key]`,
+    // NOT "non-empty" — presence alone passes on an English string, a `TODO`, or
+    // a different Hebrew wording. On this namespace a different wording is not
+    // cosmetic: `deposits_enabled`'s hint is the only place the owner is told a
+    // deposit needs a connected gateway and that a flip leaves in-flight
+    // payments alone, and `brides_only`'s hint is the sentence F7 promised and
+    // D5 finally made true.
+    const arTranslation = ar.translation as Record<string, string>;
+    const drifted = HE_F27.filter(([key, value]) => arTranslation[key] !== value).map(
       ([key]) => key,
     );
     expect(drifted).toEqual([]);

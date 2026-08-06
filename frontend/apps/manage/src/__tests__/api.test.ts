@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, apiFetch, FALLBACK_ERROR_MESSAGE, uploadToStorage } from "../api";
 import type { PresignResponse } from "../api";
+import { TOGGLE_KEYS } from "../lib/toggles";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -1074,5 +1075,47 @@ describe("atelier capacity and settings", () => {
         default_weekly_capacity_hours: 30,
       },
     });
+  });
+
+  // --- F27 D2/D4: a toggles patch is a PARTIAL, and that is now correct ---
+
+  it("sends a SINGLE-KEY toggles patch — the exact inverse of the atelier rule above", () => {
+    // ⚠ THE TWO BLOCKS DIFFER ON PURPOSE AND THIS TEST SITS BESIDE ITS OPPOSITE
+    // SO NOBODY "FIXES" ONE INTO THE OTHER. `atelier` must arrive WHOLE because
+    // `||` merges at the top level only. `toggles` may arrive PARTIAL because
+    // F27 D2 gave that one key a genuine deep merge in SQL — which is what makes
+    // the matrix's per-row save safe, and what makes a stale cached bundle
+    // unable to wipe a newer feature's toggle back to absent.
+    const fetchMock = stubFetch(() => jsonResponse(200, { profile: {}, toggles: {} }));
+    return api.updateSettings({ toggles: { brides_only: true } }).then(() => {
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+        toggles: { brides_only: true },
+      });
+    });
+  });
+
+  it("types a toggles patch against the registry — one key at a time compiles", async () => {
+    stubFetch(() => jsonResponse(200, { profile: {}, toggles: {} }));
+    // The compile is the assertion: `Partial<Record<ToggleKey, boolean>>` accepts
+    // any subset of the registry and nothing outside it. A key that left the
+    // registry stops compiling here, which is the point of deriving the type.
+    for (const key of TOGGLE_KEYS) {
+      await api.updateSettings({ toggles: { [key]: true } });
+    }
+    expect(TOGGLE_KEYS.length).toBeGreaterThan(0);
+  });
+
+  it("reads the wire's default-complete toggles block as a plain record", async () => {
+    // D3: every registry key arrives with a concrete bool, so `ToggleSettings`
+    // is `Record<string, boolean>` and the console needs no `?? false`.
+    stubFetch(() =>
+      jsonResponse(200, {
+        profile: {},
+        toggles: { deposits_enabled: true, brides_only: false },
+      }),
+    );
+    const settings = await api.getSettings();
+    expect(settings.toggles).toEqual({ deposits_enabled: true, brides_only: false });
+    expect(Object.keys(settings.toggles).sort()).toEqual([...TOGGLE_KEYS].sort());
   });
 });

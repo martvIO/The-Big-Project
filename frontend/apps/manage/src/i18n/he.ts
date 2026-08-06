@@ -2490,5 +2490,39 @@ export const he = {
     // The guide's one step (SectionKey is guide-typed — lib/guide.ts).
     "guide.bookingWaitlist.1":
       "כאן רואים מי מחכה לתור ביום מלא. אם מתפנה מקום, אפשר להתקשר אליה — ובעתיד המערכת תציע לה אותו לבד.",
+    // --- F27's feature-toggle matrix (design §7) -----------------------------
+    //
+    // NO `nav.` key, and that is an assertion rather than an omission: the matrix
+    // is a CARD inside the profile section, not a sixteenth console section
+    // (spec D7). `SectionKey` stays as it is and the guide's
+    // `satisfies Record<SectionKey, steps>` gate needs no entry.
+    //
+    // The label/hint keys are DERIVED per registry row in `lib/toggles.ts` —
+    // `togglesMatrix.{key}.label` / `.hint` — and `i18n.test.ts` reds when a
+    // registry row is missing either. That is D8's growth protocol made
+    // mechanical: F23 and F46 add a key here or their PR does not go green.
+    //
+    // Reused, not minted: `common.saved` («נשמר לפני רגע») is the row cue and
+    // its announced text (design P3).
+    "togglesMatrix.heading": "הפעלת תכונות",
+    // The per-row-save disclosure — the one line that tells the owner this card
+    // and the profile form above it save differently.
+    "togglesMatrix.hint": "כל מתג נשמר מיד עם השינוי.",
+    "togglesMatrix.area.storefront": "האתר הפומבי",
+    "togglesMatrix.area.booking": "תורים ותשלומים",
+    // Shipped verbatim from `profile.bridesOnly` — no drift on the move.
+    "togglesMatrix.brides_only.label": "בוטיק לכלות בלבד",
+    // ⚠ ALSO SHIPPED VERBATIM, AND F27 IS WHAT MAKES IT TRUE. F7 shipped this
+    // exact sentence against a switch NOTHING read; D5's storefront disclosure
+    // consumer is the reader that keeps the promise.
+    "togglesMatrix.brides_only.hint": "כל סוגי התורים יוצגו לכלות בלבד",
+    "togglesMatrix.deposits_enabled.label": "גביית מקדמות מופעלת",
+    // Two sentences, both load-bearing (design §3): the gateway precondition
+    // (guide.profile.3's shipped phrasing) and the in-flight guarantee. The
+    // second is TRUE because `booking/service.py` reads this toggle at
+    // booking-CREATE only — the webhook and the sweeper never read it, so a
+    // booking already mid-payment resolves unchanged after a flip.
+    "togglesMatrix.deposits_enabled.hint":
+      "מקדמה תיגבה בפועל רק אחרי שחשבון הסליקה של הבוטיק יחובר. כיבוי המתג אינו משפיע על תורים שנמצאים כבר בתהליך תשלום.",
   },
 } as const;
