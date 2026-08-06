@@ -2464,7 +2464,16 @@ queue:
     slug: f35-placeholder
     epic: E6
     title: "Staff in-app notification bell"
-    status: queued
+    status: queued                # 2026-08-06: spec+design(gate ACCEPTED)+plan (13 tasks) READY.
+                                  # Delivery resolved against SHIPPED code: the unread count piggybacks
+                                  # on GET /manage/floor/sos (SosProvider wraps ConsoleShell — the only
+                                  # app-wide poll that exists). Zero new timers/requests. Routes mount on
+                                  # the floor router so no vite/proxy/e2e-family/walker edits. Module is
+                                  # app/floor/notifications.py — app/notifications/ is the SMS module.
+                                  # BOTH producers are already on main (dispatch shipped in F58 not F34;
+                                  # F37 shipped 2026-08-03). Role-routed SOS writes NO row (declines the
+                                  # fanout F37 itself declined) — under-reporting stated, survivable only
+                                  # while the overlay stays the emergency channel.
     deps: [F31, F34]
     note: >-
       Pre-decided #32: in-app only. No browser push, no APNs/FCM.
@@ -2482,7 +2491,19 @@ queue:
     slug: f38-placeholder
     epic: E8
     title: "HR directory full: photos, eligibility, offboarding"
-    status: queued
+    status: queued                # 2026-08-06: spec+design(gate ACCEPTED)+plan (20 tasks) READY.
+                                  # FOUR brief conflicts resolved: (1) phone-as-login is DEAD (Q11
+                                  # overridden by F31) — phone is an optional non-unique contact field;
+                                  # (2) the email/password_hash nullability question INVERTS — no
+                                  # migration needed, staff really do log in with them; (3) F20 shipped,
+                                  # registry holds SEVEN policies (F22's waitlist merged), F38 appends the
+                                  # eighth; (4) NEW — the brief's "7 years as a TENANT SETTING"
+                                  # contradicts F20's shipped written ruling (config.py:246-248, "per-tenant
+                                  # overrides are deliberately absent"); spec follows the SHIPPED ruling.
+                                  # Photo object deleted at OFFBOARDING, not at the 7-year scrub, so the
+                                  # retention policy stays pure SQL (PolicyRun hands a session and nothing
+                                  # else). Migration backfills last_day for pre-F38 soft-deleted staff —
+                                  # without it they are permanently unscrubbable.
     deps: [F8, F9, F20, F31]
     note: >-
       Pre-decided #34/#35: soft-delete, retain operational history, scrub PII 7 years
