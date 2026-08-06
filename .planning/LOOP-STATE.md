@@ -2299,7 +2299,7 @@ queue:
     slug: waitlist-join
     epic: E5
     title: Waitlist join + entries model
-    status: specing
+    status: building              # 2026-08-06: spec+design(gate ACCEPTED r1)+plan done; 14 TDD tasks; migration 0026
     deps: [F12, F13, F14]
     note: "Pre-decided #14: one entry = (tenant, day, appointment type) + OTP-verified phone, FIFO."
   - id: F24
@@ -2360,7 +2360,13 @@ queue:
     slug: pre-scale-gate
     epic: E5
     title: "Pre-scale gate: refund automation, k6, Redis caching"
-    status: queued
+    status: specing               # 2026-08-06: SPEC WRITTEN (.planning/specs/pre-scale-gate.md) — Gate 1
+                                  # STOPS FOR THE USER, four questions at the spec's tail (trigger
+                                  # surface, refundable amounts, k6 defaults, Redis spend). Surfaced in
+                                  # the session report. Build resumes the moment they are answered.
+                                  # Spec finding: the "wrapped-but-never-invoked refund call" in the
+                                  # epic brief is STALE — no refund() exists anywhere in app/payments;
+                                  # F29 ADDS the port method + LS adapter impl + execute_refund.
     deps: [F18, F21]
     spec_gate: user
     note: >-
