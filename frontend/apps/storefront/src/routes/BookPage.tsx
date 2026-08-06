@@ -1236,49 +1236,49 @@ export function BookPage({ step, dressId }: BookPageProps) {
             <ForwardForm onForward={forward}>
               <Card className="flex flex-col gap-6">
                 <TypePicker
-                types={entry.types}
-                value={flow.typeId}
-                boutique={boutique}
-                error={missing.type ? t("booking.typeRequired") : undefined}
-                notice={returnReason === "type" ? t("booking.typeGoneRepick") : undefined}
-                onChange={(typeId) => {
-                  setFlow((current) => ({ ...current, typeId }));
-                  setMissing((current) => ({ ...current, type: false }));
-                  clearReturn("type");
-                }}
-                ref={typeRef}
-              />
-              <SlotPicker
-                labels={{
-                  pickDate: t("booking.pickDate"),
-                  pickTime: t("booking.pickTime"),
-                  noSlots: t("booking.noSlots"),
-                }}
-                date={date}
-                min={min}
-                max={max}
-                times={times}
-                value={flow.startsAt}
-                error={
-                  missing.time
-                    ? t("booking.timeRequired")
-                    : returnReason === "slot"
-                      ? t("errors.slotUnavailable")
-                      : undefined
-                }
-                onDateChange={(next) => {
-                  setPickedDate(next);
-                  // A time picked on another date is not a time on this one.
-                  setFlow((current) => ({ ...current, startsAt: null }));
-                }}
-                onChange={(startsAt) => {
-                  setFlow((current) => ({ ...current, startsAt }));
-                  setMissing((current) => ({ ...current, time: false }));
-                  clearReturn("slot");
-                }}
-                ref={timeRef}
-              />
-            </Card>
+                  types={entry.types}
+                  value={flow.typeId}
+                  boutique={boutique}
+                  error={missing.type ? t("booking.typeRequired") : undefined}
+                  notice={returnReason === "type" ? t("booking.typeGoneRepick") : undefined}
+                  onChange={(typeId) => {
+                    setFlow((current) => ({ ...current, typeId }));
+                    setMissing((current) => ({ ...current, type: false }));
+                    clearReturn("type");
+                  }}
+                  ref={typeRef}
+                />
+                <SlotPicker
+                  labels={{
+                    pickDate: t("booking.pickDate"),
+                    pickTime: t("booking.pickTime"),
+                    noSlots: t("booking.noSlots"),
+                  }}
+                  date={date}
+                  min={min}
+                  max={max}
+                  times={times}
+                  value={flow.startsAt}
+                  error={
+                    missing.time
+                      ? t("booking.timeRequired")
+                      : returnReason === "slot"
+                        ? t("errors.slotUnavailable")
+                        : undefined
+                  }
+                  onDateChange={(next) => {
+                    setPickedDate(next);
+                    // A time picked on another date is not a time on this one.
+                    setFlow((current) => ({ ...current, startsAt: null }));
+                  }}
+                  onChange={(startsAt) => {
+                    setFlow((current) => ({ ...current, startsAt }));
+                    setMissing((current) => ({ ...current, time: false }));
+                    clearReturn("slot");
+                  }}
+                  ref={timeRef}
+                />
+              </Card>
             </ForwardForm>
             {/* F22's CTA + reveal, UNDER the empty state and only when the
                 entry has a type to bind to (D6) — without one, the empty state

@@ -37,7 +37,7 @@ from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError, DomainValidationError
 from app.models.appointment_type import AppointmentType
 from app.models.booking import Booking
-from app.models.constants import AuditAction, BookingStatus
+from app.models.constants import AuditAction, BookingStatus, WaitlistEntryStatus
 from app.models.customer import Customer
 from app.models.message_log import MessageLog
 from app.models.otp_code import OtpCode
@@ -577,6 +577,15 @@ class PrivacyService:
             #     the placeholder is per erasure so the row survives as evidence
             #     she was on the list while naming nobody. An erased phone can
             #     rejoin later — new OTP, new entry, new consent context.
+            #
+            #     The status CASE is load-bearing too: a scrub that stopped at
+            #     the phone would leave her ACTIVE — on the manage list, inside
+            #     `idx_waitlist_entries_active_unique`, first in line for an F23
+            #     offer nobody can send her. Active rows ('waiting'/'offered')
+            #     take the manage cancel's exact value; terminal rows keep their
+            #     status — history, not state. No WAITLIST_ENTRY_CANCELLED row:
+            #     like every surface above, the change rides the single
+            #     PRIVACY_SUBJECT_ERASED record in step 6.
             waitlist_scrubbed = len(
                 (
                     await session.execute(
@@ -585,7 +594,21 @@ class PrivacyService:
                             WaitlistEntry.tenant_id == tenant_id,
                             WaitlistEntry.phone == phone,
                         )
-                        .values(phone=ERASED_PHONE_PREFIX + str(customer_id))
+                        .values(
+                            phone=ERASED_PHONE_PREFIX + str(customer_id),
+                            status=case(
+                                (
+                                    WaitlistEntry.status.in_(
+                                        (
+                                            WaitlistEntryStatus.WAITING.value,
+                                            WaitlistEntryStatus.OFFERED.value,
+                                        )
+                                    ),
+                                    WaitlistEntryStatus.CANCELLED.value,
+                                ),
+                                else_=WaitlistEntry.status,
+                            ),
+                        )
                         .returning(WaitlistEntry.id)
                         .execution_options(synchronize_session=False)
                     )

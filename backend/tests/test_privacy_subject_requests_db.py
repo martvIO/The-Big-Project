@@ -27,7 +27,7 @@ import datetime
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_booking_owner_db import (
     NOW,
@@ -66,6 +66,7 @@ from app.models.constants import (
     MarketingConsentSource,
     MessageKind,
     VisitType,
+    WaitlistEntryStatus,
 )
 from app.models.customer import Customer
 from app.models.message_log import MessageLog
@@ -1375,14 +1376,19 @@ async def test_the_export_carries_her_waitlist_entries(app_role_url: str) -> Non
         await engine.dispose()
 
 
-async def test_the_erase_scrubs_her_waitlist_phone_and_the_row_survives(
+async def test_the_erase_scrubs_her_waitlist_phone_and_cancels_her_active_entries(
     app_role_url: str,
 ) -> None:
     """The erase's spelling on this table: `phone -> erased:{customer_id}`, the
-    row retained as evidence she was on the list. An erased phone can rejoin
-    later — new OTP, new entry, new consent context — which is why the scrub
-    frees nothing else. The second entry on another number proves the predicate
-    is keyed on HER phone rather than draining the tenant's waitlist."""
+    row retained as evidence she was on the list — and her ACTIVE entries
+    ('waiting'/'offered') become 'cancelled' in the same statement, the manage
+    cancel's value. A scrub that stopped at the phone would leave the erased
+    subject LIVE on the manage list, inside
+    `idx_waitlist_entries_active_unique`, and first in line for an F23 offer
+    nobody can send her. Terminal entries keep their status — history, not
+    state. An erased phone can rejoin later — new OTP, new entry, new consent
+    context. The entry on another number proves the predicate is keyed on HER
+    phone rather than draining the tenant's waitlist."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     phone = _phone()
@@ -1393,23 +1399,45 @@ async def test_the_erase_scrubs_her_waitlist_phone_and_the_row_survives(
             factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone
         )
         customer_id = claim.booking.customer_id
-        hers = await _join_waitlist(
+        waiting = await _join_waitlist(
             factory, tenant_id, phone=phone, day=TARGET_DATE, appointment_type_id=type_id
         )
+        # Two more joins on fresh type ids — distinct active-unique tuples —
+        # pushed below the repository to 'offered' (F23's active mid-state) and
+        # 'claimed' (terminal), transitions F22 ships no writer for.
+        offered = await _join_waitlist(factory, tenant_id, phone=phone, day=TARGET_DATE)
+        claimed = await _join_waitlist(factory, tenant_id, phone=phone, day=TARGET_DATE)
+        async with tenant_session(factory, tenant_id) as session:
+            for entry_id, status in (
+                (offered, WaitlistEntryStatus.OFFERED.value),
+                (claimed, WaitlistEntryStatus.CLAIMED.value),
+            ):
+                await session.execute(
+                    update(WaitlistEntry)
+                    .where(WaitlistEntry.tenant_id == tenant_id, WaitlistEntry.id == entry_id)
+                    .values(status=status)
+                )
         other = await _join_waitlist(factory, tenant_id, phone=other_phone, day=TARGET_DATE)
 
         summary = await _privacy(factory).erase_subject(
             tenant_id, customer_id=customer_id, actor=_staff(tenant_id), reason=None
         )
 
-        assert summary.waitlist_entries_scrubbed == 1
+        assert summary.waitlist_entries_scrubbed == 3
         async with tenant_session(factory, tenant_id) as session:
-            scrubbed = await session.get(WaitlistEntry, hers)
+            was_waiting = await session.get(WaitlistEntry, waiting)
+            was_offered = await session.get(WaitlistEntry, offered)
+            was_claimed = await session.get(WaitlistEntry, claimed)
             untouched = await session.get(WaitlistEntry, other)
-            assert scrubbed is not None and untouched is not None
-            assert scrubbed.phone == ERASED_PHONE_PREFIX + str(customer_id)
-            assert scrubbed.status == "waiting"
-            assert scrubbed.deleted_at is None
+            assert was_waiting is not None and was_offered is not None
+            assert was_claimed is not None and untouched is not None
+            for hers in (was_waiting, was_offered, was_claimed):
+                assert hers.phone == ERASED_PHONE_PREFIX + str(customer_id)
+                assert hers.deleted_at is None
+            assert was_waiting.status == WaitlistEntryStatus.CANCELLED.value
+            assert was_offered.status == WaitlistEntryStatus.CANCELLED.value
+            assert was_claimed.status == WaitlistEntryStatus.CLAIMED.value
             assert untouched.phone == other_phone
+            assert untouched.status == WaitlistEntryStatus.WAITING.value
     finally:
         await engine.dispose()
