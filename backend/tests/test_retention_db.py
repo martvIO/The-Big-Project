@@ -39,9 +39,11 @@ from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.models.session import Session as SessionRow
 from app.models.terms_version import TermsVersion
+from app.models.waitlist_entry import WaitlistEntry
 from app.platform.service import ProvisioningService
 from app.privacy.retention import CHUNK_SIZE, POLICIES, RetentionResult, RetentionRunner, _purge
 from app.privacy.validation import ERASED_NAME, ERASED_PHONE_PREFIX
+from app.storefront.validation import BOUTIQUE_TIMEZONE
 
 pytestmark = pytest.mark.db
 
@@ -290,6 +292,49 @@ async def test_an_opted_in_queue_ticket_is_scrubbed_like_any_other(app_role_url:
         assert row.name == ERASED_NAME
         assert row.phone.startswith(ERASED_PHONE_PREFIX)
         assert row.marketing_opt_in_at is not None
+    finally:
+        await engine.dispose()
+
+
+# --- 3b. waitlist_entries (F22) ----------------------------------------------
+
+
+def _waitlist_entry(tenant_id: uuid.UUID, *, age_days: int) -> WaitlistEntry:
+    return WaitlistEntry(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        day=(NOW - datetime.timedelta(days=age_days)).astimezone(BOUTIQUE_TIMEZONE).date(),
+        appointment_type_id=uuid.uuid4(),
+        phone="+972501234567",
+    )
+
+
+async def test_a_waitlist_entry_past_the_window_is_purged_and_a_recent_one_is_not(
+    app_role_url: str,
+) -> None:
+    """Spec D4: PURGE, the queue_tickets class — the row IS the personal data
+    (a phone bound to a day and a type), and unlike queue_tickets nothing
+    points at it, so there is no dangler argument for a scrub. The clock is
+    `day`, Jerusalem-calendar, strictly MORE than `waitlist_retention_days`
+    (default 30) behind today: the boundary day survives, day 31 goes.
+
+    Registration is asserted by count: an unregistered policy is silently green
+    (R-B), and `POLICY_FIXTURES`' key-set equality is the other half of that
+    fence."""
+    assert len(POLICIES) == 7
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        upcoming = _waitlist_entry(tenant_id, age_days=-3)
+        recent = _waitlist_entry(tenant_id, age_days=2)
+        boundary = _waitlist_entry(tenant_id, age_days=30)
+        old = _waitlist_entry(tenant_id, age_days=31)
+        await _add(factory, tenant_id, upcoming, recent, boundary, old)
+
+        assert await _apply(factory, tenant_id, "waitlist_entries") == 1
+
+        survivors = await _ids(factory, tenant_id, WaitlistEntry)
+        assert survivors == {upcoming.id, recent.id, boundary.id}
     finally:
         await engine.dispose()
 
@@ -645,6 +690,10 @@ async def _fixture_queue_tickets(factory: Any, tenant_id: uuid.UUID) -> None:
     await _add(factory, tenant_id, _ticket(tenant_id, age_days=30))
 
 
+async def _fixture_waitlist_entries(factory: Any, tenant_id: uuid.UUID) -> None:
+    await _add(factory, tenant_id, _waitlist_entry(tenant_id, age_days=45))
+
+
 async def _fixture_message_log(factory: Any, tenant_id: uuid.UUID) -> None:
     await _add(
         factory,
@@ -677,6 +726,7 @@ POLICY_FIXTURES = {
     "otp_codes": _fixture_otp_codes,
     "sessions": _fixture_sessions,
     "queue_tickets": _fixture_queue_tickets,
+    "waitlist_entries": _fixture_waitlist_entries,
     "message_log": _fixture_message_log,
     "bookings": _fixture_bookings,
     "customers": _fixture_customers,

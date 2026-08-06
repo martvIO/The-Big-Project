@@ -174,6 +174,23 @@ class ExportedQueueTicket(BaseModel):
     marketing_opt_in_at: datetime.datetime | None
 
 
+class ExportedWaitlistEntry(BaseModel):
+    """Her booking-waitlist joins (F22, spec D4's enumerated set): the day she
+    asked about, the appointment type's NAME (the id is boutique bookkeeping and
+    says nothing to the subject), the entry's status and when she joined.
+
+    No `phone` — it is the lookup key the whole export is answered by — and no
+    `id`: there is no customer-side management surface for it to address.
+    """
+
+    day: datetime.date
+    # None if the type row is gone entirely; an ARCHIVED type still names what
+    # she asked for, so the resolution below does not filter on deleted_at.
+    appointment_type_name: str | None
+    status: str
+    created_at: datetime.datetime
+
+
 class ExportedTerms(BaseModel):
     """What she actually agreed to, at the version she agreed to it. The
     boutique's terms are hers to have a copy of — she accepted them."""
@@ -189,6 +206,7 @@ class SubjectExportResponse(BaseModel):
     bookings: list[ExportedBooking]
     messages: list[ExportedMessage]
     queue_tickets: list[ExportedQueueTicket]
+    waitlist_entries: list[ExportedWaitlistEntry]
     accepted_terms: list[ExportedTerms]
 
 
@@ -220,6 +238,7 @@ class SubjectEraseResponse(BaseModel):
     bookings_scrubbed: int
     messages_scrubbed: int
     queue_tickets_scrubbed: int
+    waitlist_entries_scrubbed: int
     otp_codes_purged: int
     scheduled_messages_purged: int
 

@@ -16,7 +16,7 @@ from sqlalchemy.pool import NullPool
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.models.alteration_ticket import AlterationTicket
-from app.models.constants import QueueTicketStatus, StaffRole, VisitType
+from app.models.constants import QueueTicketStatus, StaffRole, VisitType, WaitlistEntryStatus
 from app.models.queue_ticket import QueueTicket
 from app.models.staff_user import StaffUser
 
@@ -3361,4 +3361,170 @@ def test_the_downgrade_refuses_to_narrow_past_a_walk_in_row(migrated_db: str) ->
         )
     finally:
         run(f"DELETE FROM bookings WHERE appointment_type_name = '{marker}'")
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F22: the booking-waitlist entries table ---------------------------------
+#
+# ⚠ db-marked: these run on CI only (no local Docker). Written against 0018's
+# template, which is what the migration itself copies.
+
+_WAITLIST_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'waitlist_entries'"
+)
+_WAITLIST_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'waitlist_entries'::regclass AND conname = :name"
+)
+_WAITLIST_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE tablename = 'waitlist_entries' AND indexname = :name"
+)
+_WAITLIST_STATUS_CHECK = "waitlist_entries_status_check"
+_WAITLIST_UNIQUE_INDEX = "idx_waitlist_entries_active_unique"
+_WAITLIST_DAY_INDEX = "idx_waitlist_entries_tenant_day"
+# Spelled as POSTGRES deparses them (IN becomes = ANY(ARRAY[...]), ::text casts,
+# parenthesised predicates, schema-qualified) — the 0018 pinning technique, so
+# the next author who widens the status set or drops half the partial predicate
+# collides with a review here rather than shipping it silently.
+_WAITLIST_STATUS_CHECK_DEF = (
+    "CHECK ((status = ANY (ARRAY['waiting'::text, 'offered'::text, 'claimed'::text, "
+    "'expired'::text, 'cancelled'::text])))"
+)
+_WAITLIST_UNIQUE_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_waitlist_entries_active_unique ON public.waitlist_entries "
+    "USING btree (tenant_id, phone, day, appointment_type_id) "
+    "WHERE ((deleted_at IS NULL) AND (status = ANY (ARRAY['waiting'::text, 'offered'::text])))"
+)
+_WAITLIST_DAY_INDEX_DEF = (
+    "CREATE INDEX idx_waitlist_entries_tenant_day ON public.waitlist_entries "
+    "USING btree (tenant_id, day) WHERE (deleted_at IS NULL)"
+)
+
+_WAITLIST_INSERT = (
+    "INSERT INTO waitlist_entries (tenant_id, day, appointment_type_id, phone, status) "
+    "VALUES (uuid_generate_v4(), DATE '2026-08-20', uuid_generate_v4(), "
+    "'+972501234567', :status)"
+)
+
+
+def _waitlist_pinned_definitions(url: str) -> tuple[str, str, str]:
+    async def read() -> tuple[str, str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                check = await conn.execute(
+                    text(_WAITLIST_CONSTRAINT_DEF), {"name": _WAITLIST_STATUS_CHECK}
+                )
+                unique = await conn.execute(
+                    text(_WAITLIST_INDEX_DEF), {"name": _WAITLIST_UNIQUE_INDEX}
+                )
+                day = await conn.execute(text(_WAITLIST_INDEX_DEF), {"name": _WAITLIST_DAY_INDEX})
+                return (
+                    str(check.scalar_one()),
+                    str(unique.scalar_one()),
+                    str(day.scalar_one()),
+                )
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _waitlist_insert_admitted(url: str, status: str) -> bool:
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(text(_WAITLIST_INSERT), {"status": status})
+                except IntegrityError:
+                    return False
+                finally:
+                    await trans.rollback()
+                return True
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+@pytest.mark.db
+def test_migration_0026_creates_waitlist_entries(migrated_db: str) -> None:
+    """The DDL spec D1 pins: the Jerusalem DATE (0018's stored-not-expression
+    ruling, inherited), the no-FK type pointer, the normalised phone, and the
+    five-state status CHECK — F22 writes two states, the CHECK ships all five so
+    F23 cannot re-litigate the lifecycle."""
+    columns = _waitlist_columns(migrated_db)
+    assert columns["day"] == ("date", "NO")
+    assert columns["appointment_type_id"] == ("uuid", "NO")
+    assert columns["phone"] == ("text", "NO")
+    assert columns["status"] == ("text", "NO")
+
+
+def _waitlist_columns(url: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_WAITLIST_COLUMNS))).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_the_waitlist_definitions_are_pinned(migrated_db: str) -> None:
+    """The named CHECK and BOTH partial indexes, deparsed. The unique one is the
+    D1 decision F33's 0018 deleted for queue_tickets — its two objections are
+    answered at the index in the migration source, and this literal is what makes
+    weakening either half of the predicate a visible act."""
+    check, unique, day = _waitlist_pinned_definitions(migrated_db)
+    assert check == _WAITLIST_STATUS_CHECK_DEF
+    assert unique == _WAITLIST_UNIQUE_INDEX_DEF
+    assert day == _WAITLIST_DAY_INDEX_DEF
+
+
+@pytest.mark.db
+def test_the_waitlist_status_check_admits_exactly_the_enum(migrated_db: str) -> None:
+    """Iterated from the live enum, 0018's rule: the day a sixth state is added,
+    either the migration widened the CHECK with it and this covers it for free,
+    or it did not and this is the red."""
+    for status in WaitlistEntryStatus:
+        assert _waitlist_insert_admitted(migrated_db, status.value), status
+    assert not _waitlist_insert_admitted(migrated_db, "no-such-status")
+
+
+@pytest.mark.db
+def test_migration_0026_round_trips(migrated_db: str) -> None:
+    """upgrade() creates the table; downgrade() drops it and touches nothing
+    else. The downgrade target comes from `_parent_of` so a renumber-at-rebase
+    cannot silently stop this one revision short (the deposit block's recorded
+    failure)."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+
+    def exists() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text(_TABLE_EXISTS), {"name": "waitlist_entries"})
+                    return bool(result.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists()
+        command.downgrade(cfg, _parent_of("booking waitlist"))
+        assert not exists()
+        command.upgrade(cfg, "head")
+        assert exists()
+        assert _waitlist_columns(migrated_db)["day"] == ("date", "NO")
+    finally:
         command.upgrade(cfg, "head")  # idempotent when already at head

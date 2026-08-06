@@ -56,6 +56,7 @@ from app.booking.tokens import manage_token_hash
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.message_log import MessageLogRepository
 from app.db.repositories.queue_tickets import QueueTicketsRepository
+from app.db.repositories.waitlist_entries import WaitlistEntriesRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.models.constants import (
@@ -71,6 +72,7 @@ from app.models.message_log import MessageLog
 from app.models.otp_code import OtpCode
 from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
+from app.models.waitlist_entry import WaitlistEntry
 from app.privacy.service import (
     PrivacyService,
     SubjectHasActiveBookingError,
@@ -92,6 +94,7 @@ PAST_SLOT_B = _slot(11, date=PAST_DATE)
 CUSTOMERS = CustomersRepository()
 MESSAGES = MessageLogRepository()
 QUEUE_TICKETS = QueueTicketsRepository()
+WAITLIST = WaitlistEntriesRepository()
 
 
 def _privacy(factory: async_sessionmaker[AsyncSession]) -> PrivacyService:
@@ -1307,5 +1310,106 @@ async def test_a_withdrawal_that_changed_something_writes_exactly_one_audit_row(
         assert phone not in written
         assert walk_in_phone not in written
         assert "נועה לוי" not in written
+    finally:
+        await engine.dispose()
+
+
+# --- F22: the booking-waitlist ripples (spec D4 — same PR as the migration) ---
+
+
+async def _join_waitlist(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    *,
+    phone: str,
+    day: datetime.date,
+    appointment_type_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    async with tenant_session(factory, tenant_id) as session:
+        row = await WAITLIST.insert(
+            session,
+            tenant_id=tenant_id,
+            day=day,
+            appointment_type_id=appointment_type_id or uuid.uuid4(),
+            phone=phone,
+        )
+        return row.id
+
+
+async def test_the_export_carries_her_waitlist_entries(app_role_url: str) -> None:
+    """§13's completeness question, fifth collection point: a phone-bearing
+    table absent from the export is a silently incomplete legal answer. Delete
+    the `select(WaitlistEntry)` from `export_subject` and this is an empty
+    list."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        await _claim(factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone)
+        await _join_waitlist(
+            factory, tenant_id, phone=phone, day=TARGET_DATE, appointment_type_id=type_id
+        )
+        await _join_waitlist(factory, tenant_id, phone="+972529998877", day=TARGET_DATE)
+
+        payload = await _privacy(factory).export_subject(
+            tenant_id, raw_phone=phone, actor=_staff(tenant_id), reason=None
+        )
+
+        assert len(payload.waitlist_entries) == 1
+        entry = payload.waitlist_entries[0]
+        assert entry.day == TARGET_DATE
+        # The type NAME, resolved app-side — the id is boutique bookkeeping and
+        # says nothing to the subject or to the regulator reading her file.
+        assert entry.appointment_type_name == "מדידה ראשונה"
+        assert entry.status == "waiting"
+        # D4's enumerated field set, exactly: day, type name, status, created_at.
+        # No phone (it is the lookup key), no id, no tenant column.
+        assert set(entry.model_dump()) == {
+            "day",
+            "appointment_type_name",
+            "status",
+            "created_at",
+        }
+    finally:
+        await engine.dispose()
+
+
+async def test_the_erase_scrubs_her_waitlist_phone_and_the_row_survives(
+    app_role_url: str,
+) -> None:
+    """The erase's spelling on this table: `phone -> erased:{customer_id}`, the
+    row retained as evidence she was on the list. An erased phone can rejoin
+    later — new OTP, new entry, new consent context — which is why the scrub
+    frees nothing else. The second entry on another number proves the predicate
+    is keyed on HER phone rather than draining the tenant's waitlist."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    other_phone = "+972529998877"
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(
+            factory, tenant_id, type_id, starts_at=PAST_SLOT, now=PAST_NOW, phone=phone
+        )
+        customer_id = claim.booking.customer_id
+        hers = await _join_waitlist(
+            factory, tenant_id, phone=phone, day=TARGET_DATE, appointment_type_id=type_id
+        )
+        other = await _join_waitlist(factory, tenant_id, phone=other_phone, day=TARGET_DATE)
+
+        summary = await _privacy(factory).erase_subject(
+            tenant_id, customer_id=customer_id, actor=_staff(tenant_id), reason=None
+        )
+
+        assert summary.waitlist_entries_scrubbed == 1
+        async with tenant_session(factory, tenant_id) as session:
+            scrubbed = await session.get(WaitlistEntry, hers)
+            untouched = await session.get(WaitlistEntry, other)
+            assert scrubbed is not None and untouched is not None
+            assert scrubbed.phone == ERASED_PHONE_PREFIX + str(customer_id)
+            assert scrubbed.status == "waiting"
+            assert scrubbed.deleted_at is None
+            assert untouched.phone == other_phone
     finally:
         await engine.dispose()

@@ -51,6 +51,7 @@ from app.models.otp_code import OtpCode
 from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.models.session import Session as SessionRow
+from app.models.waitlist_entry import WaitlistEntry
 from app.privacy.validation import ERASED_NAME, ERASED_PHONE_PREFIX
 from app.storefront.validation import BOUTIQUE_TIMEZONE
 
@@ -265,6 +266,39 @@ async def _scrub_queue_tickets(
     return await _scrub(session, QueueTicket, where, values, limit=limit, dry_run=dry_run)
 
 
+async def _purge_waitlist_entries(
+    session: AsyncSession,
+    tenant_id: UUID,
+    *,
+    now: datetime.datetime,
+    settings: Settings,
+    limit: int,
+    dry_run: bool,
+) -> int:
+    """F22 (spec D4): PURGE, `queue_tickets`' class — the row IS the personal
+    data (a phone bound to a day and a type), and unlike `queue_tickets` no
+    other table points at it, so there is no dangler argument for a scrub.
+
+    The clock is `day` itself — the day she asked about, not the row's birthday
+    — strictly MORE than `waitlist_retention_days` behind today: an entry whose
+    day just passed is still the owner's short-term evidence of unmet demand,
+    and after the window there is nothing left for it to evidence.
+
+    ⚠ `.astimezone(BOUTIQUE_TIMEZONE)` before `.date()`, the queue scrub's own
+    warning applied: `day` is a Jerusalem calendar date and `now` is UTC — a
+    bare `.date()` is off by a day for the hours before Israeli midnight.
+    A DELETE falsifies its own predicate by construction (D22).
+    """
+    cutoff_day = now.astimezone(BOUTIQUE_TIMEZONE).date() - datetime.timedelta(
+        days=settings.waitlist_retention_days
+    )
+    where = [
+        WaitlistEntry.tenant_id == tenant_id,
+        WaitlistEntry.day < cutoff_day,
+    ]
+    return await _purge(session, WaitlistEntry, where, limit=limit, dry_run=dry_run)
+
+
 async def _purge_message_log(
     session: AsyncSession,
     tenant_id: UUID,
@@ -381,6 +415,9 @@ POLICIES: tuple[RetentionPolicy, ...] = (
     RetentionPolicy("sessions", RetentionAction.PURGE, ("sessions",), _purge_sessions),
     RetentionPolicy(
         "queue_tickets", RetentionAction.SCRUB, ("queue_tickets",), _scrub_queue_tickets
+    ),
+    RetentionPolicy(
+        "waitlist_entries", RetentionAction.PURGE, ("waitlist_entries",), _purge_waitlist_entries
     ),
     RetentionPolicy("message_log", RetentionAction.PURGE, ("message_log",), _purge_message_log),
     RetentionPolicy(

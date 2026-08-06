@@ -35,6 +35,7 @@ from app.db.repositories.queue_tickets import QueueTicketsRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError, DomainValidationError
+from app.models.appointment_type import AppointmentType
 from app.models.booking import Booking
 from app.models.constants import AuditAction, BookingStatus
 from app.models.customer import Customer
@@ -43,6 +44,7 @@ from app.models.otp_code import OtpCode
 from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.models.terms_version import TermsVersion
+from app.models.waitlist_entry import WaitlistEntry
 from app.notifications.validation import normalize_israeli_mobile
 from app.privacy.schemas import (
     ExportedBooking,
@@ -50,6 +52,7 @@ from app.privacy.schemas import (
     ExportedQueueTicket,
     ExportedSubject,
     ExportedTerms,
+    ExportedWaitlistEntry,
     MarketingWithdrawResponse,
     PrivacyResponse,
     SubjectEraseResponse,
@@ -234,6 +237,42 @@ class PrivacyService:
                 .scalars()
                 .all()
             )
+            # F22's fifth collection point. `waitlist_entries.phone` is stored
+            # normalised E.164 like the queue's, so the same equality reaches
+            # it. The type NAME is resolved app-side (no FK, house rule) and
+            # deliberately NOT filtered on deleted_at: an archived type still
+            # names what she asked for.
+            waitlist_rows = list(
+                (
+                    await session.execute(
+                        select(WaitlistEntry)
+                        .where(
+                            WaitlistEntry.tenant_id == tenant_id,
+                            WaitlistEntry.phone == phone,
+                            WaitlistEntry.deleted_at.is_(None),
+                        )
+                        .order_by(WaitlistEntry.day, WaitlistEntry.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            waitlist_type_ids = {row.appointment_type_id for row in waitlist_rows}
+            type_names: dict[uuid.UUID, str] = (
+                {}
+                if not waitlist_type_ids
+                else {
+                    type_id: name
+                    for type_id, name in (
+                        await session.execute(
+                            select(AppointmentType.id, AppointmentType.name).where(
+                                AppointmentType.tenant_id == tenant_id,
+                                AppointmentType.id.in_(waitlist_type_ids),
+                            )
+                        )
+                    ).all()
+                }
+            )
             # The `is not None` is F50's, and it is the difference between this
             # route answering and 500-ing: a walk-in booking carries NO terms
             # evidence (0025 made the two columns nullable, bounded to
@@ -327,6 +366,15 @@ class PrivacyService:
                         marketing_opt_in_at=row.marketing_opt_in_at,
                     )
                     for row in tickets
+                ],
+                waitlist_entries=[
+                    ExportedWaitlistEntry(
+                        day=row.day,
+                        appointment_type_name=type_names.get(row.appointment_type_id),
+                        status=row.status,
+                        created_at=row.created_at,
+                    )
+                    for row in waitlist_rows
                 ],
                 accepted_terms=[
                     ExportedTerms(
@@ -523,6 +571,29 @@ class PrivacyService:
                 .all()
             )
 
+            # 4c. Her booking-waitlist joins (F22, spec D4). Same spelling as
+            #     the queue scrub above: matched on the phone HELD IN PYTHON —
+            #     step 2 destroyed the column — not filtered on deleted_at, and
+            #     the placeholder is per erasure so the row survives as evidence
+            #     she was on the list while naming nobody. An erased phone can
+            #     rejoin later — new OTP, new entry, new consent context.
+            waitlist_scrubbed = len(
+                (
+                    await session.execute(
+                        update(WaitlistEntry)
+                        .where(
+                            WaitlistEntry.tenant_id == tenant_id,
+                            WaitlistEntry.phone == phone,
+                        )
+                        .values(phone=ERASED_PHONE_PREFIX + str(customer_id))
+                        .returning(WaitlistEntry.id)
+                        .execution_options(synchronize_session=False)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
             # 5. PURGED, not scrubbed: the whole row is her data in both cases.
             otp_purged = len(
                 (
@@ -560,6 +631,7 @@ class PrivacyService:
                 "bookings_scrubbed": bookings_scrubbed,
                 "messages_scrubbed": messages_scrubbed,
                 "queue_tickets_scrubbed": tickets_scrubbed,
+                "waitlist_entries_scrubbed": waitlist_scrubbed,
                 "otp_codes_purged": otp_purged,
                 "scheduled_messages_purged": scheduled_purged,
             }
@@ -678,6 +750,7 @@ _ZERO_COUNTS = {
     "bookings_scrubbed": 0,
     "messages_scrubbed": 0,
     "queue_tickets_scrubbed": 0,
+    "waitlist_entries_scrubbed": 0,
     "otp_codes_purged": 0,
     "scheduled_messages_purged": 0,
 }

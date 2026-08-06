@@ -250,6 +250,11 @@ class Settings(BaseSettings):
     retention_message_log_seconds: int = 730 * 24 * 3600
     retention_bookings_seconds: int = 365 * 7 * 24 * 3600
     retention_orphan_customer_seconds: int = 30 * 24 * 3600
+    # F22's waitlist PURGE clock, in DAYS not seconds: the predicate compares
+    # Jerusalem calendar DATES (`waitlist_entries.day`), and a seconds knob on a
+    # date column would be converted back to days at the one place it is read.
+    # Flagged for counsel at F21 with the rest of pre-decided #10 (spec D4).
+    waitlist_retention_days: int = 30
 
     @property
     def secure_cookies(self) -> bool:
