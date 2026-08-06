@@ -25,7 +25,15 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: null                   # ==================================================================
+current: F22                    # ==================================================================
+                                # ==== RUN, 2026-08-06 — E5+E6+E8 TO COMPLETION (user directive) ===
+                                # Scope: F22 F24 F25 F27 F23 F26 F28 F29 (E5) · F35 (E6) ·
+                                # F38 F39 F40 (E8). E9/E10 stay queued for later. F29's Gate 1
+                                # stops for the user (money surface) — its spec is written EARLY so
+                                # the questions reach the user with lead time; only F29 pauses.
+                                # Pipelined: one merge at a time, next spec while current builds.
+                                # Plan: ~/.claude/plans/plan-on-writing-the-stateless-hummingbird.md
+                                # ==================================================================
                                 # ==== HANDOFF, 2026-08-05 (late) — NOTHING IN FLIGHT =============
                                 # ==================================================================
                                 # 27 MERGED · 19 QUEUED · 2 PARKED (F32 subsumed forever; F62 NEW,
@@ -2291,7 +2299,7 @@ queue:
     slug: waitlist-join
     epic: E5
     title: Waitlist join + entries model
-    status: queued
+    status: specing
     deps: [F12, F13, F14]
     note: "Pre-decided #14: one entry = (tenant, day, appointment type) + OTP-verified phone, FIFO."
   - id: F24
