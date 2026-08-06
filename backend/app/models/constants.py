@@ -653,6 +653,13 @@ class AuditAction(StrEnum):
     # `details` carries `phone_last4` and never the number.
     PRIVACY_MARKETING_WITHDRAWN = "privacy_marketing_withdrawn"
 
+    # F22's owner cancel (D5). Same fact as every block here: audit_log.action
+    # is plain TEXT with no CHECK (0003), so this needs no migration. ONE
+    # member — the join is anonymous and writes no audit row, and `details`
+    # carries {entry_id, day, appointment_type_id} and NO phone (F20's
+    # phone_last4 rule made moot by carrying no phone at all).
+    WAITLIST_ENTRY_CANCELLED = "waitlist_entry_cancelled"
+
     RETENTION_OTP_CODES = "retention_otp_codes"
     RETENTION_SESSIONS = "retention_sessions"
     RETENTION_QUEUE_TICKETS = "retention_queue_tickets"

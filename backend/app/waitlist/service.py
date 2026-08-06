@@ -23,19 +23,31 @@ creates no customer until F23's claim runs the real booking path.
 
 import datetime
 import uuid
+from collections.abc import Iterable
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.rate_limit import FixedWindowRateLimiter
+from app.auth.service import StaffContext
 from app.booking.service import BookingNotFoundError, PhoneNotVerifiedError
 from app.db.repositories.appointment_types import AppointmentTypesRepository
+from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.waitlist_entries import WaitlistEntriesRepository
 from app.db.tenant import tenant_session
+from app.models.appointment_type import AppointmentType
+from app.models.constants import AuditAction
+from app.models.customer import Customer
+from app.models.waitlist_entry import WaitlistEntry
 from app.notifications.service import OtpService
 from app.notifications.validation import normalize_israeli_mobile
-from app.storefront.validation import Clock
-from app.waitlist.schemas import WaitlistJoinResponse
+from app.storefront.validation import Clock, today_jerusalem
+from app.waitlist.schemas import (
+    ManageWaitlistResponse,
+    ManageWaitlistRow,
+    WaitlistJoinResponse,
+)
 from app.waitlist.validation import WaitlistThrottledError, validate_waitlist_day
 
 
@@ -61,6 +73,7 @@ class WaitlistService:
         self._clock = clock
         self._entries = WaitlistEntriesRepository()
         self._types = AppointmentTypesRepository()
+        self._audit = AuditLogRepository()
 
     async def join(
         self,
@@ -133,3 +146,107 @@ class WaitlistService:
                 appointment_type_id=row.appointment_type_id,
                 status=row.status,
             )
+
+    # --- the manage half (D5) -------------------------------------------------
+
+    async def list_entries(
+        self, tenant_id: uuid.UUID, *, day: datetime.date | None = None
+    ) -> ManageWaitlistResponse:
+        """Active entries, `(day, created_at)` — the row order IS the position.
+        No `day` = all upcoming (`day >= today`, hiding the dead past-day rows
+        the retention sweep owns); a given `day` answers exactly that day, past
+        days included — an owner filtering backwards sees what was there."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rows = await self._entries.list_active(
+                session,
+                tenant_id,
+                day=day,
+                from_day=None if day is not None else today_jerusalem(self._clock),
+            )
+            decorated = await self._decorate(session, tenant_id, rows)
+            return ManageWaitlistResponse(entries=decorated)
+
+    async def cancel_entry(
+        self, tenant_id: uuid.UUID, *, entry_id: uuid.UUID, actor: StaffContext
+    ) -> ManageWaitlistRow:
+        """The guarded UPDATE (`WHERE status = 'waiting'`). Rowcount 0 with the
+        row present is the idempotent double-tap — answered with the row as-is,
+        no second audit row; rowcount 0 with no row is the shipped 404
+        (foreign-tenant indistinguishable by design).
+
+        The audit row's `details` carry {entry_id, day, appointment_type_id}
+        and NO PHONE — F20's `phone_last4` rule made moot by carrying no phone
+        at all. It rides the cancel's own transaction."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            cancelled = await self._entries.cancel(session, tenant_id, entry_id)
+            if cancelled is None:
+                existing = await self._entries.by_id(session, tenant_id, entry_id)
+                if existing is None:
+                    raise BookingNotFoundError
+                return (await self._decorate(session, tenant_id, [existing]))[0]
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.WAITLIST_ENTRY_CANCELLED,
+                actor_id=actor.id,
+                entity=str(cancelled.id),
+                details={
+                    "entry_id": str(cancelled.id),
+                    "day": cancelled.day.isoformat(),
+                    "appointment_type_id": str(cancelled.appointment_type_id),
+                },
+            )
+            return (await self._decorate(session, tenant_id, [cancelled]))[0]
+
+    async def _decorate(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        rows: Iterable[WaitlistEntry],
+    ) -> list[ManageWaitlistRow]:
+        """The two name decorations, each ONE batched statement (D5): the
+        customer name off `(tenant, phone)` — phone is unique per tenant, an
+        app-level join with no FK, null for a phone the boutique has never
+        booked — and the type name, resolved without a deleted_at filter
+        because an archived type still names what she asked for."""
+        entries = list(rows)
+        if not entries:
+            return []
+        phones = {entry.phone for entry in entries}
+        names = {
+            phone: name
+            for phone, name in (
+                await session.execute(
+                    select(Customer.phone, Customer.name).where(
+                        Customer.tenant_id == tenant_id,
+                        Customer.phone.in_(phones),
+                        Customer.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        }
+        type_ids = {entry.appointment_type_id for entry in entries}
+        type_names = {
+            type_id: name
+            for type_id, name in (
+                await session.execute(
+                    select(AppointmentType.id, AppointmentType.name).where(
+                        AppointmentType.tenant_id == tenant_id,
+                        AppointmentType.id.in_(type_ids),
+                    )
+                )
+            ).all()
+        }
+        return [
+            ManageWaitlistRow(
+                id=entry.id,
+                day=entry.day,
+                appointment_type_id=entry.appointment_type_id,
+                appointment_type_name=type_names.get(entry.appointment_type_id),
+                phone=entry.phone,
+                customer_name=names.get(entry.phone),
+                status=entry.status,
+                created_at=entry.created_at,
+            )
+            for entry in entries
+        ]

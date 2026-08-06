@@ -22,9 +22,13 @@ from app.auth.service import StaffContext
 from app.booking.service import BookingNotFoundError, PhoneNotVerifiedError
 from app.errors import DomainValidationError
 from app.main import create_app
-from app.models.constants import WaitlistEntryStatus
+from app.models.constants import StaffRole, WaitlistEntryStatus
 from app.tenancy.middleware import TenantContext
-from app.waitlist.schemas import WaitlistJoinResponse
+from app.waitlist.schemas import (
+    ManageWaitlistResponse,
+    ManageWaitlistRow,
+    WaitlistJoinResponse,
+)
 from app.waitlist.validation import WaitlistThrottledError
 
 TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="בלה כלות", settings={})
@@ -81,16 +85,16 @@ class StubWaitlistService:
 
 
 class FakeAuthService:
-    """Only here so the owner cookie in the cookie-blindness test is a genuinely
-    resolvable session rather than a random string."""
+    """The owner cookie in the cookie-blindness test and the whole of "signed
+    in" for the manage half — the test_checkin_qr_api shape."""
 
-    def __init__(self) -> None:
+    def __init__(self, role: str = StaffRole.OWNER.value) -> None:
         self.staff = StaffContext(
             id=STAFF_ID,
             tenant_id=TENANT.id,
             email="owner@bella.example",
             display_name="Owner",
-            role="owner",
+            role=role,
         )
 
     async def login(
@@ -106,7 +110,10 @@ class FakeAuthService:
 
 
 def _client(
-    stub: StubWaitlistService | None = None, *, host: str = "bella.localtest.me"
+    stub: StubWaitlistService | None = None,
+    *,
+    host: str = "bella.localtest.me",
+    role: str = StaffRole.OWNER.value,
 ) -> tuple[TestClient, StubWaitlistService]:
     async def _resolver(slug: str) -> TenantContext | None:
         return TENANT if slug == "bella" else None
@@ -114,7 +121,7 @@ def _client(
     app = create_app(resolver=_resolver)
     service = stub if stub is not None else StubWaitlistService()
     app.state.waitlist_service = service
-    auth = FakeAuthService()
+    auth = FakeAuthService(role)
     app.state.auth_service = auth
     app.dependency_overrides[get_auth_service] = lambda: auth
     return TestClient(app, base_url=f"http://{host}"), service
@@ -253,3 +260,128 @@ def test_the_join_budgets_are_their_own_limiter_instances() -> None:
     # OTP endpoints, so the service must hold the same OtpService instance —
     # one phone proving itself is one proof, whichever flow consumes it.
     assert waitlist._otp is otp
+
+
+# --- the manage half: list + cancel (D5) --------------------------------------
+
+MANAGE_LIST_PATH = "/manage/waitlist"
+ENTRY_ID = uuid.UUID("7fa85f64-5717-4562-b3fc-2c963f66afa7")
+CREATED_AT = datetime.datetime(2026, 8, 1, 9, 30, tzinfo=datetime.UTC)
+UNKNOWN_ROLE = "no-such-role"
+
+
+def _row(status: str = WaitlistEntryStatus.WAITING.value) -> ManageWaitlistRow:
+    return ManageWaitlistRow(
+        id=ENTRY_ID,
+        day=DAY,
+        appointment_type_id=TYPE_ID,
+        appointment_type_name="מדידה ראשונה",
+        phone="+972501234567",
+        customer_name=None,
+        status=status,
+        created_at=CREATED_AT,
+    )
+
+
+class StubManageWaitlistService(StubWaitlistService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.list_calls: list[tuple[uuid.UUID, datetime.date | None]] = []
+        self.cancel_calls: list[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = []
+        self.cancel_error: Exception | None = None
+
+    async def list_entries(
+        self, tenant_id: uuid.UUID, *, day: datetime.date | None = None
+    ) -> ManageWaitlistResponse:
+        self.list_calls.append((tenant_id, day))
+        return ManageWaitlistResponse(entries=[_row()])
+
+    async def cancel_entry(
+        self, tenant_id: uuid.UUID, *, entry_id: uuid.UUID, actor: StaffContext
+    ) -> ManageWaitlistRow:
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        self.cancel_calls.append((tenant_id, entry_id, actor.id))
+        return _row(status=WaitlistEntryStatus.CANCELLED.value)
+
+
+def _manage_client(
+    *, authed: bool = True, role: str = StaffRole.OWNER.value
+) -> tuple[TestClient, StubManageWaitlistService]:
+    stub = StubManageWaitlistService()
+    client, _ = _client(stub, role=role)
+    if authed:
+        client.cookies.set("boutique_session", TOKEN, domain="bella.localtest.me")
+    return client, stub
+
+
+def test_the_manage_routes_require_authentication() -> None:
+    for method, path in (
+        ("GET", MANAGE_LIST_PATH),
+        ("POST", f"{MANAGE_LIST_PATH}/{ENTRY_ID}/cancel"),
+    ):
+        client, stub = _manage_client(authed=False)
+        with client:
+            resp = client.request(method, path)
+        assert resp.status_code == 401, f"{method} {path} → {resp.status_code}"
+        assert resp.json()["error"]["code"] == "NOT_AUTHENTICATED"
+        assert stub.list_calls == [] and stub.cancel_calls == []
+
+
+@pytest.mark.parametrize("role", [StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value])
+def test_both_console_roles_reach_the_list_and_the_cancel(role: str) -> None:
+    """The exactly-two gate (D5), both halves asserted here; the walker in
+    test_staff_role_gating.py covers the routes with no new test BECAUSE they
+    must stay out of its OWNER_ONLY set — pinned below."""
+    client, stub = _manage_client(role=role)
+    with client:
+        listed = client.get(MANAGE_LIST_PATH)
+        cancelled = client.post(f"{MANAGE_LIST_PATH}/{ENTRY_ID}/cancel")
+    assert listed.status_code == 200
+    assert cancelled.status_code == 200
+    assert [entry["phone"] for entry in listed.json()["entries"]] == ["+972501234567"]
+    assert cancelled.json()["status"] == WaitlistEntryStatus.CANCELLED.value
+    assert stub.cancel_calls == [(TENANT.id, ENTRY_ID, STAFF_ID)]
+
+
+def test_the_waitlist_routes_are_absent_from_owner_only() -> None:
+    from test_staff_role_gating import OWNER_ONLY
+
+    assert ("GET", "/manage/waitlist") not in OWNER_ONLY
+    assert ("POST", "/manage/waitlist/{entry_id}/cancel") not in OWNER_ONLY
+
+
+def test_an_unknown_role_is_refused_with_the_exact_generic_body() -> None:
+    from app.main import NOT_AUTHORIZED_BODY
+
+    client, _ = _manage_client(role=UNKNOWN_ROLE)
+    with client:
+        resp = client.get(MANAGE_LIST_PATH)
+    assert resp.status_code == 403
+    assert resp.json() == NOT_AUTHORIZED_BODY
+
+
+def test_the_day_filter_reaches_the_service_parsed_and_optional() -> None:
+    client, stub = _manage_client()
+    with client:
+        client.get(MANAGE_LIST_PATH)
+        client.get(f"{MANAGE_LIST_PATH}?day=2026-08-20")
+    assert stub.list_calls == [(TENANT.id, None), (TENANT.id, DAY)]
+
+
+def test_the_manage_responses_are_never_cached() -> None:
+    client, _ = _manage_client()
+    with client:
+        listed = client.get(MANAGE_LIST_PATH)
+        cancelled = client.post(f"{MANAGE_LIST_PATH}/{ENTRY_ID}/cancel")
+    assert listed.headers["cache-control"] == "no-store"
+    assert cancelled.headers["cache-control"] == "no-store"
+
+
+def test_an_unknown_entry_cancel_is_the_shipped_404() -> None:
+    client, stub = _manage_client()
+    stub.cancel_error = BookingNotFoundError()
+    with client:
+        resp = client.post(f"{MANAGE_LIST_PATH}/{ENTRY_ID}/cancel")
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND"

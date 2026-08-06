@@ -88,6 +88,11 @@ const API_FAMILIES = new Set([
   "slots",
   "staff",
   "terms",
+  // F22's booking waitlist (`/manage/waitlist`). Same rule as `atelier` and
+  // `privacy` above: `MANAGE_API` in `apps/manage/vite.config.ts` gains the
+  // segment in the same commit, and test_spa_serving.py is what keeps the two
+  // sets agreeing with the live route table.
+  "waitlist",
 ]);
 
 function isManageApi(pathname: string): boolean {

@@ -166,6 +166,7 @@ from app.tenancy.middleware import (
     TenantResolver,
 )
 from app.tenancy.resolver import RepositoryTenantResolver
+from app.waitlist.manage_router import router as waitlist_manage_router
 from app.waitlist.router import router as waitlist_router
 from app.waitlist.service import WaitlistService
 from app.waitlist.validation import WaitlistThrottledError
@@ -1498,6 +1499,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # (marketing-withdraw, Gate 1 Q4), which is why
     # test_staff_role_gating.py grew a positive absence assertion for it.
     app.include_router(privacy_router)
+    # F22's console waitlist — the TWELFTH /manage router, still contiguous with
+    # its siblings and ahead of every anonymous surface. Same shadowing hazard;
+    # the manage walk in test_waitlist_api.py keeps its two routes honest.
+    app.include_router(waitlist_manage_router)
     # The NINTH /manage router, after the customers one and deliberately BEFORE
     # storefront_router: every /manage router stays contiguous and ahead of the
     # anonymous surfaces. Same shadowing hazard as the eight above, now with

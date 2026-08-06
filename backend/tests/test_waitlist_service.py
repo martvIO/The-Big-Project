@@ -24,10 +24,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_booking_owner_db import (
     NOW,
     TARGET_DATE,
+    _audit,
+    _claim,
     _factory,
     _loose,
     _phone,
     _seed,
+    _staff,
     _sweep_walk_in_bookings,  # noqa: F401
     _token,
 )
@@ -36,7 +39,8 @@ from app.auth.rate_limit import FixedWindowRateLimiter
 from app.booking.service import PhoneNotVerifiedError
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError, DomainValidationError
-from app.models.constants import WaitlistEntryStatus
+from app.models.audit_log import AuditLog
+from app.models.constants import AuditAction, WaitlistEntryStatus
 from app.models.otp_code import OtpCode
 from app.models.waitlist_entry import WaitlistEntry
 from app.notifications.service import NotificationService, OtpService
@@ -343,5 +347,137 @@ async def test_the_join_budgets_trip_on_their_own_instances(app_role_url: str) -
             )
         # Checked BEFORE the proof, so the throttle spent nothing of hers.
         assert await _live_verifications(factory, tenant_id, phone) == 1
+    finally:
+        await engine.dispose()
+
+
+# --- the manage list and cancel (C1) -----------------------------------------
+
+
+async def _join(
+    factory: async_sessionmaker[AsyncSession],
+    service: WaitlistService,
+    tenant_id: uuid.UUID,
+    type_id: uuid.UUID,
+    *,
+    phone: str,
+    day: datetime.date = TARGET_DATE,
+) -> None:
+    await service.join(
+        tenant_id,
+        raw_phone=phone,
+        verification_token=await _token(factory, tenant_id, phone),
+        day=day,
+        appointment_type_id=type_id,
+    )
+
+
+async def test_the_manage_list_is_fifo_decorated_and_day_filterable(app_role_url: str) -> None:
+    """List order IS the position; `customer_name` decorates a phone the
+    boutique has booked before and stays null for one it has not; the day
+    filter narrows to one day."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    known_phone = _phone()
+    stranger_phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        # A real booking mints the customer row the decoration reads.
+        await _claim(factory, tenant_id, type_id, phone=known_phone)
+        service = _service(factory)
+        await _join(factory, service, tenant_id, type_id, phone=stranger_phone)
+        await _join(factory, service, tenant_id, type_id, phone=known_phone)
+        await _join(
+            factory,
+            service,
+            tenant_id,
+            type_id,
+            phone=stranger_phone,
+            day=TARGET_DATE + datetime.timedelta(days=1),
+        )
+
+        listed = await service.list_entries(tenant_id)
+        assert [row.phone for row in listed.entries] == [
+            stranger_phone,
+            known_phone,
+            stranger_phone,
+        ]
+        assert [row.customer_name for row in listed.entries] == [None, "נועה לוי", None]
+        assert listed.entries[0].appointment_type_name == "מדידה ראשונה"
+        assert listed.entries[0].status == WaitlistEntryStatus.WAITING.value
+
+        one_day = await service.list_entries(tenant_id, day=TARGET_DATE)
+        assert [row.phone for row in one_day.entries] == [stranger_phone, known_phone]
+    finally:
+        await engine.dispose()
+
+
+async def test_cancel_is_idempotent_and_audited_without_the_phone(app_role_url: str) -> None:
+    """The guarded UPDATE (D5): first tap cancels and writes ONE audit row whose
+    `details` key set is exactly {entry_id, day, appointment_type_id} — a later
+    phone added there is a key-set failure, not a quiet leak. The double-tap
+    returns the row as-is and writes nothing."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        service = _service(factory)
+        await _join(factory, service, tenant_id, type_id, phone=phone)
+        entry = (await _rows(factory, tenant_id))[0]
+        actor = _staff(tenant_id)
+
+        first = await service.cancel_entry(tenant_id, entry_id=entry.id, actor=actor)
+        assert first.status == WaitlistEntryStatus.CANCELLED.value
+
+        second = await service.cancel_entry(tenant_id, entry_id=entry.id, actor=actor)
+        assert second.status == WaitlistEntryStatus.CANCELLED.value
+
+        rows = [
+            row
+            for row in await _audit(factory, tenant_id)
+            if row.action == AuditAction.WAITLIST_ENTRY_CANCELLED.value
+        ]
+        assert len(rows) == 1
+        assert isinstance(rows[0], AuditLog)
+        assert set(rows[0].details) == {"entry_id", "day", "appointment_type_id"}
+        assert rows[0].details["entry_id"] == str(entry.id)
+        assert rows[0].actor_id == actor.id
+        assert phone not in str(rows[0].details)
+    finally:
+        await engine.dispose()
+
+
+async def test_cancel_of_an_unknown_or_foreign_entry_is_404(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_a = uuid.uuid4()
+    tenant_b = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_a)
+        service = _service(factory)
+        await _join(factory, service, tenant_a, type_id, phone=phone)
+        entry = (await _rows(factory, tenant_a))[0]
+
+        with pytest.raises(DomainNotFoundError):
+            await service.cancel_entry(tenant_a, entry_id=uuid.uuid4(), actor=_staff(tenant_a))
+        with pytest.raises(DomainNotFoundError):
+            await service.cancel_entry(tenant_b, entry_id=entry.id, actor=_staff(tenant_b))
+    finally:
+        await engine.dispose()
+
+
+async def test_a_cancelled_entry_leaves_the_manage_list(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        service = _service(factory)
+        await _join(factory, service, tenant_id, type_id, phone=phone)
+        entry = (await _rows(factory, tenant_id))[0]
+        await service.cancel_entry(tenant_id, entry_id=entry.id, actor=_staff(tenant_id))
+        listed = await service.list_entries(tenant_id)
+        assert listed.entries == []
     finally:
         await engine.dispose()
