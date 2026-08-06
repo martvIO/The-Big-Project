@@ -2319,7 +2319,8 @@ queue:
     slug: platform-console
     epic: E5
     title: Web platform console (replaces v1 CLI)
-    status: queued                # 2026-08-06: spec+design(gate ACCEPTED r2)+plan (13 tasks) READY.
+    status: building              # 2026-08-06: builder dispatched (parallel with F24's).
+                                  # spec+design(gate ACCEPTED r2)+plan (13 tasks).
                                   # Console at admin.{base_domain}; ProvisioningService reused unchanged;
                                   # third workspace app apps/platform; CLI keeps backfill/retention/
                                   # create-operator (recorded conflict with #20's "deleted at parity")
@@ -2329,7 +2330,10 @@ queue:
     slug: toggle-matrix-ui
     epic: E5
     title: Full feature-toggle matrix UI
-    status: queued
+    status: queued                # 2026-08-06: spec+design(gate ACCEPTED)+plan (10 tasks) READY.
+                                  # Spec finding: only deposits_enabled has a shipped consumer today;
+                                  # brides_only shipped as a DEAD switch (F7) and F27 wires its promised
+                                  # disclosure consumer + fixes merge_settings' latent clobber.
     deps: [F7]
     note: "Pre-decided #19: tenants.settings JSONB under a toggles key, via F7's atomic merge."
   - id: F23
@@ -2347,7 +2351,10 @@ queue:
     slug: dress-reservation
     epic: E5
     title: Date-bound dress reservation semantics
-    status: queued
+    status: queued                # 2026-08-06: spec+design(gate ACCEPTED r3)+plan (12 tasks) READY —
+                                  # build slot pending. RENTAL per Q9: dress_reservations, inclusive
+                                  # DATE range, overlap under the F13 advisory lock, DRESS_UNAVAILABLE
+                                  # 409 on item-based claims; BookPage uses stepAlert NOT recoverSlot.
     deps: [F8, F13]
     note: >-
       Q9 settled it: RENTAL. A real date range (wedding date + cleaning/return
