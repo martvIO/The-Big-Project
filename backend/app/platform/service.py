@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.auth.passwords import hash_password
 from app.booking.backfill import ManageLinkBackfill
 from app.core.config import get_settings
+from app.db.repositories.platform_operators import PlatformOperatorsRepository
+from app.db.repositories.platform_sessions import PlatformSessionsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
@@ -46,6 +48,11 @@ class ProvisioningService:
         self._tenants = TenantsRepository(session_factory)
         self._staff = StaffUsersRepository()
         self._audit = PlatformAuditLogRepository()
+        # F25's bootstrap pair. ON THIS CLASS rather than in a second service,
+        # because pre-decided #20 says there is ONE audited command layer and a
+        # fork of it is how the audit posture drifts between two files.
+        self._operators = PlatformOperatorsRepository()
+        self._operator_sessions = PlatformSessionsRepository()
 
     async def provision(
         self,
@@ -265,6 +272,116 @@ class ProvisioningService:
                 details={"slug": slug, "email": owner_email.lower()},
             )
         return CommandResult(ok=True, message="password_reset", tenant_id=tenant.id)
+
+    async def create_operator(
+        self, *, email: str, display_name: str, password: str, operator: str
+    ) -> CommandResult:
+        """The ONLY way a platform operator comes into existence (spec D2).
+
+        No HTTP route calls this and none ever should: the console's own
+        compromise must not be able to mint a second operator, which is why the
+        credential that controls every boutique is seeded from a shell and
+        nowhere else.
+        """
+        normalized = email.strip().lower()
+        if not password.strip():
+            # The `provision` argument one table over: a blank password would
+            # hash the empty string into a loginable console credential.
+            return await self._fail_operator(operator, normalized, "empty_password", created=True)
+        if not display_name.strip():
+            return await self._fail_operator(
+                operator, normalized, "empty_display_name", created=True
+            )
+
+        async with self._session_factory() as session:
+            existing = await self._operators.by_active_email(session, normalized)
+        if existing is not None:
+            return await self._fail_operator(
+                operator, normalized, "operator_email_taken", created=True
+            )
+
+        try:
+            async with self._session_factory() as session, session.begin():
+                await self._operators.insert(
+                    session,
+                    email=normalized,
+                    password_hash=hash_password(password),
+                    display_name=display_name.strip(),
+                )
+                await self._audit.record(
+                    session,
+                    operator=operator,
+                    action=PlatformAuditAction.OPERATOR_CREATED,
+                    details={"email": normalized},
+                )
+        except IntegrityError:
+            # The partial unique index is the real control; the read above is
+            # the ergonomic one. `provision`'s shape exactly.
+            return await self._fail_operator(
+                operator, normalized, "operator_email_taken", created=True
+            )
+        return CommandResult(ok=True, message="operator_created")
+
+    async def deactivate_operator(self, *, email: str, operator: str) -> CommandResult:
+        """Soft delete + revoke every live session, in ONE transaction.
+
+        Both halves matter and neither is enough alone: the soft delete is what
+        `get_current_operator`'s re-read notices on the next request, and the
+        revoke is what closes the window between now and that request on a
+        console tab already open.
+
+        REFUSES THE LAST ACTIVE OPERATOR. There is no HTTP route that creates
+        one, so an empty `platform_operators` is a platform whose console can
+        only be reopened from a shell — recoverable, but not by anyone looking
+        at the login screen.
+        """
+        normalized = email.strip().lower()
+        # Compute the outcome INSIDE the transaction, raise nothing, and write
+        # the failure audit outside it — the F5 lesson: a refusal reported by an
+        # exception rolls back the row that reports it.
+        async with self._session_factory() as session, session.begin():
+            found = await self._operators.by_active_email(session, normalized)
+            if found is None:
+                reason: str | None = "operator_not_found"
+            elif await self._operators.count_active(session) <= 1:
+                reason = "last_operator"
+            else:
+                await self._operators.soft_delete(session, found.id)
+                await self._operator_sessions.revoke_all_for_operator(session, found.id)
+                await self._audit.record(
+                    session,
+                    operator=operator,
+                    action=PlatformAuditAction.OPERATOR_DEACTIVATED,
+                    details={"email": normalized},
+                )
+                reason = None
+
+        if reason is not None:
+            return await self._fail_operator(operator, normalized, reason, created=False)
+        return CommandResult(ok=True, message="operator_deactivated")
+
+    async def _fail_operator(
+        self, operator: str, email: str, reason: str, *, created: bool
+    ) -> CommandResult:
+        """`_fail_provision` for the operator pair, and it writes its OWN action
+        rather than reusing the success one. `TENANT_PROVISION_FAILED` exists for
+        this reason: a row reading `operator_created` when no operator was created
+        is not a weaker record, it is a false one — and this book is the only
+        evidence anybody has about who touched the platform's credentials.
+
+        `details` carries the address and the reason. NEVER the password or its
+        hash — the whole point of reading the password from stdin is that it does
+        not get written down.
+        """
+        details: dict[str, Any] = {"email": email, "reason": reason}
+        action = (
+            PlatformAuditAction.OPERATOR_CREATE_FAILED
+            if created
+            else PlatformAuditAction.OPERATOR_DEACTIVATE_FAILED
+        )
+        async with self._session_factory() as session, session.begin():
+            await self._audit.record(session, operator=operator, action=action, details=details)
+        return CommandResult(ok=False, message=reason)
 
     async def _fail_provision(self, operator: str, slug: str, reason: str) -> CommandResult:
         details: dict[str, Any] = {"slug": slug, "reason": reason}

@@ -22,6 +22,7 @@ from sqlalchemy.pool import NullPool
 
 from app.db.repositories.platform_operators import PlatformOperatorsRepository
 from app.db.repositories.platform_sessions import PlatformSessionsRepository
+from app.platform.service import ProvisioningService
 
 pytestmark = pytest.mark.db
 
@@ -209,3 +210,213 @@ def test_neither_table_is_reachable_through_a_tenant_context(factory: async_sess
             return await OPERATORS.count_active(session)
 
     assert asyncio.run(check()) >= 1
+
+
+# --- the CLI bootstrap, through the audited command layer --------------------
+#
+# The audit assertions read `platform_audit_log` through an OWNER-role
+# connection, because the app role these commands run as is INSERT-only on that
+# table (0004) and genuinely cannot SELECT what it just wrote. That is
+# test_provisioning.py's technique and it is the whole reason the assertion is
+# worth making: it proves the row landed under the grant the CLI actually holds.
+
+
+def _audit_rows(owner_url: str, operator: str) -> list[tuple[str, dict]]:
+    async def read() -> list[tuple[str, dict]]:
+        engine = create_async_engine(owner_url)
+        try:
+            async with engine.connect() as conn:
+                rows = (
+                    await conn.execute(
+                        text(
+                            "SELECT action, details FROM platform_audit_log "
+                            "WHERE operator = :operator ORDER BY created_at"
+                        ),
+                        {"operator": operator},
+                    )
+                ).all()
+                return [(str(r[0]), dict(r[1])) for r in rows]
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _service(factory: async_sessionmaker) -> ProvisioningService:
+    return ProvisioningService(factory)
+
+
+def test_create_operator_writes_its_row_and_a_duplicate_email_writes_a_failure_row(
+    factory: async_sessionmaker, migrated_db: str
+) -> None:
+    """The F5 lesson at the platform's own front door: the refusal must COMMIT
+    its audit, not roll it back with the transaction that reports it."""
+    who = f"cli-{uuid.uuid4().hex[:8]}"
+    email = _email()
+
+    first = asyncio.run(
+        _service(factory).create_operator(
+            email=email, display_name="Dana", password="op-console-pw", operator=who
+        )
+    )
+    assert first.ok
+
+    # Same address, different case — the index is on lower(email) and the
+    # service normalises, so this is the SAME operator and must be refused.
+    second = asyncio.run(
+        _service(factory).create_operator(
+            email=email.upper(), display_name="Impostor", password="other-pw", operator=who
+        )
+    )
+    assert second.ok is False
+    assert second.message == "operator_email_taken"
+
+    rows = _audit_rows(migrated_db, who)
+    assert [action for action, _ in rows] == ["operator_created", "operator_create_failed"]
+    # ⚠ The password never reaches the book. Reading the password from stdin
+    # instead of argv is pointless if the audit row writes it down.
+    for _, details in rows:
+        assert details.get("email") == email.lower()
+        assert "op-console-pw" not in str(details)
+        assert "password" not in details
+
+
+def test_a_blank_password_is_refused_before_any_operator_row_exists(
+    factory: async_sessionmaker,
+) -> None:
+    """`provision`'s blank-password guard, one table over: hashing the empty
+    string would mint a loginable console credential."""
+    email = _email()
+    result = asyncio.run(
+        _service(factory).create_operator(
+            email=email, display_name="Blank", password="   ", operator="cli"
+        )
+    )
+    assert result.ok is False and result.message == "empty_password"
+
+    async def read() -> object:
+        async with factory() as session:
+            return await OPERATORS.by_active_email(session, email)
+
+    assert asyncio.run(read()) is None
+
+
+def test_deactivation_soft_deletes_revokes_live_sessions_and_audits(
+    factory: async_sessionmaker, migrated_db: str
+) -> None:
+    """All three halves in one transaction. The revoke is not decoration: the
+    soft delete alone leaves a console tab already open working until its next
+    request, and «immediately» is what the design copy promises."""
+    who = f"cli-{uuid.uuid4().hex[:8]}"
+    service = _service(factory)
+    keeper, doomed = _email(), _email()
+    # A second live operator, so the last-operator refusal does not fire.
+    assert asyncio.run(
+        service.create_operator(
+            email=keeper, display_name="Keeper", password="keeper-pw", operator=who
+        )
+    ).ok
+    assert asyncio.run(
+        service.create_operator(
+            email=doomed, display_name="Doomed", password="doomed-pw", operator=who
+        )
+    ).ok
+
+    token_hash = uuid.uuid4().hex
+
+    async def seed_session() -> None:
+        async with factory() as session, session.begin():
+            operator = await OPERATORS.by_active_email(session, doomed)
+            assert operator is not None
+            await SESSIONS.insert(
+                session,
+                operator_id=operator.id,
+                token_hash=token_hash,
+                expires_at=datetime.now(UTC) + timedelta(hours=4),
+            )
+
+    asyncio.run(seed_session())
+    assert _live(factory, token_hash) is True
+
+    result = asyncio.run(service.deactivate_operator(email=doomed, operator=who))
+    assert result.ok
+
+    async def gone() -> bool:
+        async with factory() as session:
+            return await OPERATORS.by_active_email(session, doomed) is None
+
+    assert asyncio.run(gone()) is True
+    assert _live(factory, token_hash) is False
+    assert "operator_deactivated" in [action for action, _ in _audit_rows(migrated_db, who)]
+
+
+def test_the_last_active_operator_cannot_be_deactivated(
+    factory: async_sessionmaker, migrated_db: str
+) -> None:
+    """⚠ THIS TEST DEACTIVATES EVERY OPERATOR IN THE SHARED CONTAINER to reach a
+    count of one, and then puts the survivor back — the session-scoped
+    `migrated_db` is the same database every other db module runs against, and a
+    leftover global lockout would be a state no other test expects.
+
+    The refusal itself is what matters: there is no HTTP route that creates an
+    operator (spec D2), so an empty `platform_operators` is a console nobody can
+    open from the login screen."""
+    who = f"cli-{uuid.uuid4().hex[:8]}"
+    service = _service(factory)
+
+    async def deactivate_all_but(survivor_email: str) -> list[uuid.UUID]:
+        async with factory() as session, session.begin():
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, email FROM platform_operators WHERE deleted_at IS NULL "
+                        "AND email <> :survivor"
+                    ),
+                    {"survivor": survivor_email},
+                )
+            ).all()
+            ids = [r[0] for r in rows]
+            for operator_id in ids:
+                await OPERATORS.soft_delete(session, operator_id)
+            return ids
+
+    async def restore(ids: list[uuid.UUID]) -> None:
+        if not ids:
+            return
+        async with factory() as session, session.begin():
+            await session.execute(
+                text("UPDATE platform_operators SET deleted_at = NULL WHERE id = ANY(:ids)"),
+                {"ids": ids},
+            )
+
+    survivor = _email()
+    assert asyncio.run(
+        service.create_operator(
+            email=survivor, display_name="Last", password="last-pw", operator=who
+        )
+    ).ok
+    parked = asyncio.run(deactivate_all_but(survivor))
+    try:
+        result = asyncio.run(service.deactivate_operator(email=survivor, operator=who))
+        assert result.ok is False and result.message == "last_operator"
+
+        # …and it is still there, so the refusal changed nothing.
+        async def still_there() -> bool:
+            async with factory() as session:
+                return await OPERATORS.by_active_email(session, survivor) is not None
+
+        assert asyncio.run(still_there()) is True
+        assert "operator_deactivate_failed" in [
+            action for action, _ in _audit_rows(migrated_db, who)
+        ]
+    finally:
+        asyncio.run(restore(parked))
+
+
+def test_deactivating_an_unknown_address_is_refused_and_audited(
+    factory: async_sessionmaker, migrated_db: str
+) -> None:
+    who = f"cli-{uuid.uuid4().hex[:8]}"
+    result = asyncio.run(_service(factory).deactivate_operator(email=_email(), operator=who))
+    assert result.ok is False and result.message == "operator_not_found"
+    assert [action for action, _ in _audit_rows(migrated_db, who)] == ["operator_deactivate_failed"]

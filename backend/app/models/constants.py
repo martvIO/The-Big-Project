@@ -787,6 +787,17 @@ class PlatformAuditAction(StrEnum):
     # operator, so the console's own compromise cannot).
     OPERATOR_CREATED = "operator_created"
     OPERATOR_DEACTIVATED = "operator_deactivated"
+    # ⚠ TWO MEMBERS THE SPEC'S AUDIT CONTRACT DOES NOT LIST, and the deviation is
+    # deliberate. The plan requires the create/deactivate refusals to COMMIT a
+    # failure audit (duplicate active email; the last-operator refusal), and the
+    # spec names only the four success/login actions — so the refusal would have
+    # had to ride `OPERATOR_CREATED`. A row reading "operator_created" when no
+    # operator was created is not a weaker record, it is a false one, in the one
+    # book that is the sole evidence of who touched the platform's credentials.
+    # `TENANT_PROVISIONED` / `TENANT_PROVISION_FAILED` is the shipped precedent
+    # and this is it, unchanged. Still no migration: action is TEXT with no CHECK.
+    OPERATOR_CREATE_FAILED = "operator_create_failed"
+    OPERATOR_DEACTIVATE_FAILED = "operator_deactivate_failed"
     # The login pair, and they are STRICTER than their staff twins on purpose:
     # staff logins write to the tenant's own `audit_log`, which is that
     # boutique's evidence about its own people. The platform's front door has no

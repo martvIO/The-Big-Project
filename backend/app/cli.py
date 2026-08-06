@@ -38,6 +38,10 @@ class ProvisioningLike(Protocol):
         self, *, slug: str, owner_email: str, new_password: str, operator: str
     ) -> CommandResult: ...
     async def list_tenants(self, *, operator: str) -> list[TenantSummary]: ...
+    async def create_operator(
+        self, *, email: str, display_name: str, password: str, operator: str
+    ) -> CommandResult: ...
+    async def deactivate_operator(self, *, email: str, operator: str) -> CommandResult: ...
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,6 +112,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="actually delete. Without it the run only counts what each policy would touch",
     )
 
+    # F25's bootstrap pair, and THE CLI IS THE ONLY DOOR (spec D2). No HTTP route
+    # creates, edits or deactivates an operator — so a compromised console cannot
+    # mint a second operator, and the account list is not reachable over HTTP at
+    # all. That is also most of D6's argument for shipping without TOTP.
+    #
+    # `--operator required=True` on BOTH, the `retention` divergence rather than
+    # `_with_operator`'s `$USER` default, and for a sharper reason than
+    # retention's: the act being recorded is the creation or destruction of the
+    # credential that controls every boutique on the platform. `$USER` on a
+    # shared box is not an audit identity for that.
+    create_operator = sub.add_parser(
+        "create-operator", help="create a platform console operator (password via stdin)"
+    )
+    create_operator.add_argument("--email", required=True)
+    create_operator.add_argument("--display-name", required=True, dest="display_name")
+    create_operator.add_argument(
+        "--operator", required=True, help="operator identity for the audit trail"
+    )
+
+    deactivate_operator = sub.add_parser(
+        "deactivate-operator", help="deactivate an operator and revoke every live session"
+    )
+    deactivate_operator.add_argument("--email", required=True)
+    deactivate_operator.add_argument(
+        "--operator", required=True, help="operator identity for the audit trail"
+    )
+
     return parser
 
 
@@ -159,6 +190,22 @@ async def _dispatch(
     if args.command == "list":
         _print_tenants(await service.list_tenants(operator=args.operator))
         return 0
+    if args.command == "create-operator":
+        # Same reader as `provision`: stdin/getpass, never argv. The console
+        # credential is the one password in this file that opens every boutique.
+        return _report(
+            await service.create_operator(
+                email=args.email,
+                display_name=args.display_name,
+                password=read_password(),
+                operator=args.operator,
+            )
+        )
+    if args.command == "deactivate-operator":
+        # Reads no password — deactivation proves nothing about the operator
+        # being removed, and a prompt would hang a scripted revocation at the
+        # moment somebody most needs it to finish.
+        return _report(await service.deactivate_operator(email=args.email, operator=args.operator))
     return 2
 
 

@@ -35,6 +35,14 @@ class FakeService:
         self.calls.append(("run_retention", kwargs))
         return self._result
 
+    async def create_operator(self, **kwargs: object) -> CommandResult:
+        self.calls.append(("create_operator", kwargs))
+        return self._result
+
+    async def deactivate_operator(self, **kwargs: object) -> CommandResult:
+        self.calls.append(("deactivate_operator", kwargs))
+        return self._result
+
 
 def _dispatch(argv: list[str], service: FakeService, password: str = "pw") -> int:
     args = build_parser().parse_args(argv)
@@ -250,3 +258,95 @@ def test_retention_failure_is_a_nonzero_exit() -> None:
     `test_retention_db.test_a_run_with_a_failing_tenant_is_not_ok`."""
     service = FakeService(CommandResult(ok=False, message="boom"))
     assert _dispatch(["retention", "--operator", "ops"], service) == 1
+
+
+# --- F25's operator bootstrap ------------------------------------------------
+#
+# ⚠ THE ONLY WAY AN OPERATOR IS EVER CREATED. Spec D2: no HTTP route mints or
+# edits one, so the console's own compromise cannot make a second operator. That
+# makes this pair the highest-privilege surface in the CLI, and the tests below
+# are shaped by that rather than by symmetry with the tenant commands.
+
+
+def test_create_operator_maps_args_and_reads_the_password_from_stdin() -> None:
+    """F6's rule, inherited whole: the password never touches argv, where it
+    would land in the process list and the shell history of a shared box."""
+    service = FakeService()
+    args = build_parser().parse_args(
+        [
+            "create-operator",
+            "--email",
+            "dana@modryn.example",
+            "--display-name",
+            "Dana",
+            "--operator",
+            "ops",
+        ]
+    )
+    assert run(args, service, lambda: "op-console-pw") == 0
+    assert service.calls == [
+        (
+            "create_operator",
+            {
+                "email": "dana@modryn.example",
+                "display_name": "Dana",
+                "password": "op-console-pw",
+                "operator": "ops",
+            },
+        )
+    ]
+
+
+def test_neither_operator_command_accepts_a_password_flag() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["create-operator", "--email", "d@x.co", "--display-name", "D", "--password", "x"]
+        )
+
+
+def test_both_operator_commands_require_an_explicit_operator() -> None:
+    """The `retention` precedent (D23), and it binds harder here. `_with_operator`
+    defaults to `$USER`, which is not an audit identity on a shared box — and the
+    act being recorded is the creation or destruction of the credential that
+    controls every boutique on the platform."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["create-operator", "--email", "d@x.co", "--display-name", "D"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["deactivate-operator", "--email", "d@x.co"])
+
+
+def test_deactivate_operator_maps_through_and_reads_no_password() -> None:
+    """No password to read — deactivation proves nothing about the operator being
+    removed, and prompting for one would hang a scripted revocation."""
+    service = FakeService()
+
+    def _no_password() -> str:
+        raise AssertionError("deactivate-operator must not read a password")
+
+    args = build_parser().parse_args(
+        ["deactivate-operator", "--email", "dana@modryn.example", "--operator", "ops"]
+    )
+    assert run(args, service, _no_password) == 0
+    assert service.calls == [
+        ("deactivate_operator", {"email": "dana@modryn.example", "operator": "ops"})
+    ]
+
+
+def test_a_refused_operator_command_is_a_nonzero_exit() -> None:
+    """A duplicate active email and the last-operator refusal both arrive as
+    `CommandResult(ok=False)`. A shell that cannot see the refusal is how a
+    bootstrap script "succeeds" without creating anybody."""
+    service = FakeService(CommandResult(ok=False, message="operator_email_taken"))
+    assert (
+        _dispatch(
+            ["create-operator", "--email", "d@x.co", "--display-name", "D", "--operator", "ops"],
+            service,
+        )
+        == 1
+    )
+    service = FakeService(CommandResult(ok=False, message="last_operator"))
+    assert (
+        _dispatch(["deactivate-operator", "--email", "d@x.co", "--operator", "ops"], service) == 1
+    )
