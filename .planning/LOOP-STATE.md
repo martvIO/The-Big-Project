@@ -2330,7 +2330,9 @@ queue:
     slug: toggle-matrix-ui
     epic: E5
     title: Full feature-toggle matrix UI
-    status: queued                # 2026-08-06: spec+design(gate ACCEPTED)+plan (10 tasks) READY.
+    status: building              # 2026-08-06: builder dispatched (THIRD concurrent — F24, F25, F27).
+                                  # Chosen as the safe third because it ships NO MIGRATION, so it cannot
+                                  # collide on alembic renumbering. spec+design(gate ACCEPTED)+plan (10 tasks).
                                   # Spec finding: only deposits_enabled has a shipped consumer today;
                                   # brides_only shipped as a DEAD switch (F7) and F27 wires its promised
                                   # disclosure consumer + fixes merge_settings' latent clobber.
@@ -2341,6 +2343,11 @@ queue:
     epic: E5
     title: Auto-reallocation loop
     status: queued                # 2026-08-06: spec+design(gate ACCEPTED)+plan (20 tasks, 7 commits) READY.
+                                  # ⚠ SERIALIZE AGAINST F28 — DO NOT BUILD THEM CONCURRENTLY. F23 EXTRACTS
+                                  # claim_seat() out of create_booking (the most race-tested function in
+                                  # the repo) while F28 ADDS a DRESS_UNAVAILABLE check inside that same
+                                  # claim path. Concurrent worktrees would conflict in the one place a
+                                  # bad merge silently creates a second oversell path.
                                   # ⚠ SPEC OVERTURNED THE BRIEF'S PREMISE: there is NO single "slot freed"
                                   # seam — SIX paths free capacity (BookingsRepository.cancel covers 3;
                                   # DepositSweeper._cancel_orphans is a bulk UPDATE; reschedule frees the
