@@ -98,6 +98,10 @@ const NAV_LABELS = [
   // both. `roles: ALL` — the server's RoleGate admits a shift manager on every
   // /manage/customers route, so hiding the door would be a lie about the API.
   "לקוחות",
+  // F22, immediately after «לקוחות»: the bookings, the people, and the people
+  // waiting for one — the three rows a front desk reads together. Both console
+  // roles, mirroring the server's exactly-two gate on /manage/waitlist.
+  "רשימת המתנה לתורים",
   // F34, after «תורים» and before the owner-only rows. A board a shift manager
   // cannot open is not a shift manager's board (spec D5) — and inserting it
   // HERE rather than at the top is what keeps Q-5 = NO true structurally: the
@@ -149,18 +153,18 @@ beforeEach(() => {
 });
 
 describe("the console nav is role-filtered", () => {
-  it("shows an owner all fourteen sections including Staff, the gateway and privacy", async () => {
+  it("shows an owner all fifteen sections including Staff, the gateway and privacy", async () => {
     me.mockResolvedValue(staff("owner"));
     render(<App />);
     await screen.findByRole("navigation");
     expect(navItems()).toEqual(NAV_LABELS);
   });
 
-  it("shows a shift manager eleven sections and none of the three owner-only ones", async () => {
+  it("shows a shift manager twelve sections and none of the three owner-only ones", async () => {
     me.mockResolvedValue(staff("shift_manager"));
     render(<App />);
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 11));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 12));
     expect(screen.queryByRole("button", { name: "צוות" })).toBeNull();
     // Cosmetics only — the control is the server's owner-only RoleGate, which
     // refuses her on all four /manage/gateway routes with a 403. The filter
@@ -232,7 +236,7 @@ describe("the console nav is role-filtered", () => {
     // as well. F53 moved four of the five and left this one behind, which is why
     // it is spelled out here: a nav row is five coordinated edits, not one.
     expect(NAV_LABELS).not.toContain("הצוות בקומה");
-    expect(NAV_LABELS).toHaveLength(14);
+    expect(NAV_LABELS).toHaveLength(15);
   });
 
   it("does not white-screen on a role the enum does not know", async () => {
@@ -280,7 +284,7 @@ describe("an unreachable section falls back to the first reachable one", () => {
     fireEvent.click(screen.getByRole("button", { name: "כניסה" }));
 
     await screen.findByRole("navigation");
-    expect(navItems()).toEqual(NAV_LABELS.slice(0, 11));
+    expect(navItems()).toEqual(NAV_LABELS.slice(0, 12));
     // reachable[0] is now the dashboard, not «פרופיל והגדרות» — the fallback
     // lands her on the console's landing section rather than a settings form.
     await waitFor(() =>

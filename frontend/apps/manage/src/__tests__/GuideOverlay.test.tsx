@@ -49,6 +49,9 @@ const SECTIONS = [
   // if this one derived too, a section added to the union with no steps could
   // never be caught by either.
   "privacy",
+  // F22, the sixteenth — the booking waitlist. `bookingWaitlist`, never
+  // `waitlist` (F58's namespace), and the same spelled-out-not-derived rule.
+  "bookingWaitlist",
 ];
 
 /**

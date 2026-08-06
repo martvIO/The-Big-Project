@@ -123,6 +123,14 @@ const HE_F20 = entries(he.translation, (key) => key === "nav.privacy" || key.sta
 // the key. That is what puts `board.newWalkIn` under F34's 2.5.3 and
 // retry-interval guards, which is where it belongs.
 const HE_F50 = entries(he.translation, (key) => key.startsWith("walkin."));
+
+// F22's booking waitlist. `bookingWaitlist.` — NEVER `waitlist.`, which is
+// F58's walk-in queue one namespace over (spec conflict 1 / design F-W2). Its
+// one guide step is `guide.`-namespaced and rides HE_F60 by prefix.
+const HE_F22 = entries(
+  he.translation,
+  (key) => key === "nav.bookingWaitlist" || key.startsWith("bookingWaitlist."),
+);
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -139,6 +147,7 @@ const HE = [
   ...HE_F60,
   ...HE_F20,
   ...HE_F50,
+  ...HE_F22,
 ];
 
 describe("F15 keys resolve", () => {
@@ -1479,6 +1488,37 @@ describe("the register, mechanically", () => {
   });
 });
 
+describe("F22 booking-waitlist keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // nav.bookingWaitlist + the design §9 deck (~18 rows). Its own floor, for
+    // the reason every block above has one: folded into an existing list
+    // without it, this feature's rows could vanish and the suite stays green.
+    expect(HE_F22.length).toBeGreaterThanOrEqual(19);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // Declare the constant and forget the spread, and every resolve and ar
+    // guard silently skips the whole deck — the file's own warning.
+    expect(HE.map(([key]) => key)).toContain("bookingWaitlist.cancel");
+  });
+
+  it("stays disjoint from F58's walk-in waitlist namespace (F-W2)", () => {
+    expect(HE_F22.filter(([key]) => key.startsWith("waitlist."))).toEqual([]);
+    expect("nav.waitlist" in he.translation).toBe(false);
+  });
+
+  it("resolves the seventeenth nav label beside the nested nav object", () => {
+    expect(i18n.t("nav.bookingWaitlist")).toBe("רשימת המתנה לתורים");
+  });
+
+  it("resolves both status badges so the table never shows a raw wire value", () => {
+    expect(i18n.t("bookingWaitlist.statusWaiting")).toBe("ממתינה");
+    // «הוצע תור», not the design table's «נשלחה הצעה» — the register guard
+    // below forbids send-claims mechanically, and the badge must survive it.
+    expect(i18n.t("bookingWaitlist.statusOffered")).toBe("הוצע תור");
+  });
+});
+
 describe("the ar bundle", () => {
   it("carries no empty string", () => {
     // i18next's returnEmptyString default renders "" rather than falling back,
@@ -1543,6 +1583,17 @@ describe("the ar bundle", () => {
     // person's record and revoke a §30A consent.
     const arTranslation = ar.translation as Record<string, string>;
     const drifted = HE_F20.filter(([key, value]) => arTranslation[key] !== value).map(
+      ([key]) => key,
+    );
+    expect(drifted).toEqual([]);
+  });
+
+  it("carries the approved Hebrew VALUE for every booking-waitlist key, not merely the key", () => {
+    // F22's twin, scoped by name like every block above: `ar[key] === he[key]`,
+    // NOT "non-empty" — presence alone passes on an English string, a `TODO`,
+    // or a different Hebrew wording.
+    const arTranslation = ar.translation as Record<string, string>;
+    const drifted = HE_F22.filter(([key, value]) => arTranslation[key] !== value).map(
       ([key]) => key,
     );
     expect(drifted).toEqual([]);

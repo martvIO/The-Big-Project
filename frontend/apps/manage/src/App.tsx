@@ -19,6 +19,7 @@ import { ProfileSection } from "./components/ProfileSection";
 import { SosOverlay } from "./components/SosOverlay";
 import { StaffSection } from "./components/StaffSection";
 import { TermsSection } from "./components/TermsSection";
+import { WaitlistSection } from "./components/WaitlistSection";
 import type { SectionKey } from "./lib/guide";
 import { SosProvider } from "./lib/sos";
 import { FloorPanel } from "./components/FloorPanel";
@@ -90,6 +91,13 @@ const NAV: readonly NavItem[] = [
   // reads together. Position is the only thing at stake; nothing behavioural
   // depends on it.
   { key: "customers", labelKey: "nav.customers", roles: ALL },
+  // F22's booking waitlist, immediately after «לקוחות»: the three rows a front
+  // desk reads together — the bookings, the people, and the people waiting for
+  // one. `roles: ALL` mirrors the server's exactly-two gate on /manage/waitlist
+  // (this array is cosmetics; the control is the RoleGate). The key spells
+  // `bookingWaitlist` because GuideOverlay derives its title from
+  // `nav.${key}` — and because `waitlist` is F58's namespace here (F-W2).
+  { key: "bookingWaitlist", labelKey: "nav.bookingWaitlist", roles: ALL },
   // The board sits AFTER «תורים» and not at the top, which is what keeps Q-5 =
   // NO true structurally: the landing section is row 0 above, and nothing
   // inserted below it can displace either the initial `section` or the
@@ -257,6 +265,7 @@ export function App() {
           {activeKey === "catalog" && <CatalogSection />}
           {activeKey === "bookings" && <BookingsSection />}
           {activeKey === "customers" && <CustomersSection />}
+          {activeKey === "bookingWaitlist" && <WaitlistSection />}
           {/* The panel goes AFTER the board, never before: above it, the panel
               grows as breaks start and pushes the board's one-shot scrollIntoView
               target — the «עכשיו» divider — back out of view. */}

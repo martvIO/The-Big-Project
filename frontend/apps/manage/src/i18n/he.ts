@@ -2452,5 +2452,43 @@ export const he = {
     // bride, because after one tap on a forty-row board a nameless confirmation
     // is useless exactly when the board is busy.
     "walkin.createdCue": "נוצר תור חדש עבור {{name}}.",
+
+    // --- F22: the booking waitlist (design §9) -------------------------------
+    //
+    // ⚠ `bookingWaitlist.*`, NEVER `waitlist.*` — that namespace is F58's
+    // walk-in queue a few hundred lines up (spec conflict 1 / design F-W2).
+    // «רשימת המתנה לתורים» is deliberately distinct from F58's plain
+    // «רשימת המתנה» heading for the same reason.
+    "nav.bookingWaitlist": "רשימת המתנה לתורים",
+    "bookingWaitlist.dayFilter": "תאריך",
+    "bookingWaitlist.dayFilterHint": "אפשר לנקות את התאריך כדי לראות את כל הימים הקרובים.",
+    "bookingWaitlist.colDay": "יום",
+    "bookingWaitlist.colType": "סוג הפגישה",
+    "bookingWaitlist.colCustomer": "לקוחה",
+    "bookingWaitlist.colStatus": "סטטוס",
+    "bookingWaitlist.colJoined": "נרשמה בשעה",
+    "bookingWaitlist.statusWaiting": "ממתינה",
+    // F23-era, shipped now so the badge never shows a raw wire value.
+    // NOT the design table's «נשלחה הצעה»: the register guard in i18n.test.ts
+    // mechanically forbids any manage copy claiming a send (/נשלח/), and an
+    // offer BADGE must not promise the SMS F23 has not sent yet. «הוצע תור»
+    // states the status itself and nothing about a message.
+    "bookingWaitlist.statusOffered": "הוצע תור",
+    "bookingWaitlist.cancel": "ביטול",
+    // The danger half of the in-place swap (design P3) — the second click.
+    "bookingWaitlist.cancelConfirm": "אישור הביטול",
+    // The status region's discrete event. No exclamation mark.
+    "bookingWaitlist.cancelled": "הרשומה בוטלה.",
+    "bookingWaitlist.loading": "טוענת את רשימת ההמתנה",
+    "bookingWaitlist.emptyTitle": "אין כרגע רשומות ברשימת ההמתנה",
+    "bookingWaitlist.emptyBody":
+      "כשלקוחה תצטרף לרשימת ההמתנה מיום מלא באתר, היא תופיע כאן.",
+    // A date filter is set, so the day may simply have no entries.
+    "bookingWaitlist.emptyFiltered": "אין רשומות בתאריך הזה.",
+    "bookingWaitlist.loadFailed": "לא הצלחנו לטעון את הרשימה כרגע.",
+    "bookingWaitlist.retry": "ניסיון נוסף",
+    // The guide's one step (SectionKey is guide-typed — lib/guide.ts).
+    "guide.bookingWaitlist.1":
+      "כאן רואים מי מחכה לתור ביום מלא. אם מתפנה מקום, אפשר להתקשר אליה — ובעתיד המערכת תציע לה אותו לבד.",
   },
 } as const;

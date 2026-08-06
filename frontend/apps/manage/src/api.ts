@@ -654,6 +654,37 @@ export interface DispatchResult {
   waitlist: Waitlist;
 }
 
+// --- F22: the booking waitlist (mirror backend/app/waitlist/schemas.py) ------
+//
+// NOT F58's `WaitlistEntry` one section up — that is the walk-in queue. The
+// `bookingWaitlist` spelling keeps the two disjoint (F-W2).
+
+export interface BookingWaitlistRow {
+  id: string;
+  // YYYY-MM-DD, the Jerusalem day she asked about.
+  day: string;
+  appointment_type_id: string;
+  // null if the type row is gone entirely; an archived type still names it.
+  appointment_type_name: string | null;
+  // Ships deliberately (D5): the disambiguator and the owner's only way to
+  // call her. Rendered through isolateLtr — a numeric run in an RTL table.
+  phone: string;
+  // A decoration off one (tenant, phone) customers lookup; null for a phone
+  // the boutique has never booked.
+  customer_name: string | null;
+  // "waiting" | "offered" (F23-era) — the two ACTIVE states; the list carries
+  // nothing else.
+  status: string;
+  created_at: string;
+}
+
+// `(day, created_at)` from the server — the row order IS the position (D1:
+// computed nowhere, returned to no one; the top row is next). No pagination
+// (D5's recorded ceiling).
+export interface BookingWaitlistList {
+  entries: BookingWaitlistRow[];
+}
+
 // --- F37: the SOS page (mirror backend/app/floor/schemas.py) ------------------
 
 // The migration's CHECK is the pinned set; the live read answers only the first
@@ -1809,5 +1840,21 @@ export const api = {
       `/manage/atelier/seamstresses/${encodeURIComponent(staffUserId)}/capacity`,
       { method: "POST", body: { weekly_capacity_hours: hours } },
     );
+  },
+
+  // F22's booking waitlist. The `bookingWaitlist` spelling is LOAD-BEARING,
+  // not stylistic: F58's walk-in queue owns `Waitlist`/`WaitlistEntry` and the
+  // `waitlist.*` i18n namespace in this app (spec conflict 1 / design F-W2).
+  getBookingWaitlist(day?: string): Promise<BookingWaitlistList> {
+    return apiFetch(
+      day === undefined
+        ? "/manage/waitlist"
+        : `/manage/waitlist?day=${encodeURIComponent(day)}`,
+    );
+  },
+  cancelBookingWaitlistEntry(entryId: string): Promise<BookingWaitlistRow> {
+    return apiFetch(`/manage/waitlist/${encodeURIComponent(entryId)}/cancel`, {
+      method: "POST",
+    });
   },
 };
