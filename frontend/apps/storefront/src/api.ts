@@ -408,6 +408,29 @@ export interface ManageBookingResponse {
   boutique: ManageBoutique;
 }
 
+// --- booking-waitlist wire types (mirror backend/app/waitlist/schemas.py) ---
+
+// EXACTLY four keys, and the join test pins the set by equality: the fields D1
+// deliberately omits (name, marketing consent, dress) must not ride in.
+export interface WaitlistJoinRequest {
+  phone: string;
+  verification_token: string;
+  // YYYY-MM-DD, the picked Jerusalem day — the same string the slot step's
+  // date control holds.
+  day: string;
+  appointment_type_id: string;
+}
+
+// The WHOLE 201 body, identical on a fresh join and on the idempotent
+// duplicate. NOTE what is absent and must stay absent: an id (a capability
+// shape with no consumer — there is no customer-side management in F22), the
+// phone, any position.
+export interface WaitlistJoinResponse {
+  day: string;
+  appointment_type_id: string;
+  status: string;
+}
+
 // --- walk-in queue wire types (mirror backend/app/queue/schemas.py) ---
 
 export interface CheckinCreateRequest {
@@ -541,6 +564,13 @@ export const api = {
   },
   cancelBooking(token: string): Promise<ManageBookingResponse> {
     return apiFetch("/storefront/booking/cancel", { method: "POST", body: { token } });
+  },
+
+  // F22's waitlist join — the booking create's posture (anonymous,
+  // cookie-blind, the verification token as the only credential), minus the
+  // booking.
+  joinWaitlist(body: WaitlistJoinRequest): Promise<WaitlistJoinResponse> {
+    return apiFetch("/storefront/waitlist", { method: "POST", body });
   },
 
   // Both check-in routes are POSTs, the read included, and both answer the same

@@ -88,6 +88,17 @@ export const ar = {
     errors: {
       bookingAwaitingPayment: "התור הזה ממתין לתשלום המקדמה, ולכן אי אפשר לעדכן אותו כרגע.",
     },
+    // F22's booking-waitlist reveal — Hebrew values standing in, pre-decided
+    // #47's file rule.
+    waitlist: {
+      cta: "הצטרפות לרשימת ההמתנה",
+      send: "שליחת קוד אימות",
+      sendWait: "אפשר לבקש קוד חדש בעוד רגע",
+      sending: "שולחות את הקוד",
+      join: "אישור והצטרפות לרשימה",
+      joining: "רושמות אותך לרשימת ההמתנה",
+      confirmed: "נרשמת לרשימת ההמתנה ליום {{date}}. אם יתפנה תור, נשלח לך הודעה.",
+    },
     // F33's walk-in queue. `notice` and `optIn` are counsel-gated in he.ts and
     // are gated here too: the swap F20 makes is a TWO-FILE, two-string edit, and
     // an Arabic launch that shipped a translated notice while Hebrew still

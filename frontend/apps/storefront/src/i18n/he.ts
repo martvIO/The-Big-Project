@@ -422,6 +422,28 @@ export const he = {
       retry: "ניסיון נוסף",
     },
 
+    // F22's booking-waitlist reveal on the /book slot step. SEVEN keys — the
+    // OTP-mechanics rows (phone label, hint, code label, otpSent, every error)
+    // are REUSED from `booking.*` (design P1: one label, one Hebrew, no drift),
+    // and the privacy-notice line is `boutique.privacy_notice_text` — owner
+    // data, never an i18n key. `send`/`sendWait` duplicate the booking resend
+    // pair's VALUES by design-table decree: one Hebrew, two keys, so a later
+    // rewording of the booking flow cannot silently reword this one.
+    //
+    // ⚠ The MANAGE app's `waitlist.*` is F58's walk-in queue — an unrelated
+    // block one app over (F-W2). Check the import app, not just the key name.
+    waitlist: {
+      cta: "הצטרפות לרשימת ההמתנה",
+      send: "שליחת קוד אימות",
+      sendWait: "אפשר לבקש קוד חדש בעוד רגע",
+      sending: "שולחות את הקוד",
+      join: "אישור והצטרפות לרשימה",
+      joining: "רושמות אותך לרשימת ההמתנה",
+      // No when-promise: the SMS claim is F23's to make true. No exclamation
+      // mark — the register rule.
+      confirmed: "נרשמת לרשימת ההמתנה ליום {{date}}. אם יתפנה תור, נשלח לך הודעה.",
+    },
+
     // The walk-in queue (F33) — /checkin and /q/{ticket_id}.
     //
     // ⚠ `notice` and `optIn` are COUNSEL-GATED (spec D13; the in-run gate on F33
