@@ -113,6 +113,18 @@ class Settings(BaseSettings):
     # that six phones could close a boutique for an hour.
     booking_create_max_per_window: int = 300
     booking_create_window_seconds: int = 3600
+    # F22's two join budgets, F13's config-name pattern. TWO limiter instances
+    # of their own — never keys on the booking or OTP budgets: max_attempts
+    # lives on the LIMITER, so a shared instance is one shared ceiling and a
+    # waitlist rush could close the booking flow. Per-PHONE is the real control
+    # (one verified number gets a bounded number of joins — 5/hour covers a
+    # bride hedging a few days and is half the booking allowance, because a
+    # join is cheaper to retry than a claim); per-TENANT is the runaway brake,
+    # booking-create's own size for booking-create's own reason.
+    waitlist_join_max_per_phone_window: int = 5
+    waitlist_join_phone_window_seconds: int = 3600
+    waitlist_join_max_per_tenant_window: int = 300
+    waitlist_join_tenant_window_seconds: int = 3600
     # An anti-scrape ceiling on the public manage lookup — the one endpoint that
     # answers a secret, so unlike the storefront reads this really is a defence
     # and not only a runaway brake. Per tenant, not per IP, for the same reason
