@@ -806,6 +806,46 @@ export function queuePath(ticketId: string): string {
   return `/manage/floor/queue/${encodeURIComponent(ticketId)}`;
 }
 
+// --- F22: the booking waitlist ------------------------------------------------
+//
+// `bookingWaitlistRow`, NOT `waitlistEntry` — that factory (above) is F58's
+// walk-in queue row, a different table on a different surface (F-W2).
+
+export interface BookingWaitlistRow {
+  id: string;
+  day: string;
+  appointment_type_id: string;
+  appointment_type_name: string | null;
+  phone: string;
+  customer_name: string | null;
+  status: string;
+  created_at: string;
+}
+
+export function bookingWaitlistRow(
+  overrides: Partial<BookingWaitlistRow> = {},
+): BookingWaitlistRow {
+  return {
+    id: "we-1",
+    day: "2099-01-20",
+    appointment_type_id: "apt-1",
+    appointment_type_name: "מדידה ראשונה",
+    phone: "+972501234567",
+    customer_name: "נועה כהן",
+    status: "waiting",
+    created_at: ARRIVED_AT,
+    ...overrides,
+  };
+}
+
+export function bookingWaitlist(entries: BookingWaitlistRow[]): unknown {
+  return { entries };
+}
+
+export function bookingWaitlistCancelPath(entryId: string): string {
+  return `/manage/waitlist/${encodeURIComponent(entryId)}/cancel`;
+}
+
 export function sosPath(alertId: string): string {
   return `/manage/floor/sos/${encodeURIComponent(alertId)}`;
 }
