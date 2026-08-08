@@ -12,6 +12,7 @@ import secrets
 import uuid
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -1359,16 +1360,36 @@ async def test_a_deleted_reservation_frees_the_claim(app_role_url: str) -> None:
         await engine.dispose()
 
 
-async def test_a_reservation_create_and_an_item_claim_never_both_succeed(
+# The one key both writers must take, spelled out here so that a prefix added
+# to either side stops matching this literal: booking/service.py step 4 and
+# catalog/service.py's _TENANT_CLAIM_LOCK.
+_TENANT_CLAIM_LOCK = text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))")
+# A floor, not a race. While the holder below has the key NEITHER writer can
+# finish, however long we wait; the wait only has to outlast the handful of
+# statements each needs to reach its lock.
+_BLOCKED_FOR_SECONDS = 1.0
+
+
+async def test_a_reservation_create_and_an_item_claim_block_on_the_same_key(
     app_role_url: str,
 ) -> None:
     """⚠ THE PROOF THAT THE TWO WRITERS SHARE A LOCK KEY, and the only test that
-    can tell `hashtext(tenant_id)` from a `dress-reservations:` prefix. Both
-    writers read, then write; if they hold different locks both reads come back
-    clear and the boutique ends up with a gown promised twice for one day.
+    can tell `hashtext(tenant_id)` from a `dress-reservations:` prefix.
+
+    A third session holds Feature 13's key and nothing else. Neither writer may
+    reach its own read while it is held; give either one a prefixed key and it
+    sails past a lock it no longer takes, finishes inside the wait, and this
+    reds. Both writers read, then write, so different keys mean both reads come
+    back clear and the boutique promises one gown twice for one day.
+
+    Racing the two without a holder proves nothing: create_reservation reaches
+    its lock in two statements and the claim only after a whole token-minting
+    transaction, so the head start decides the winner and a lock-key regression
+    ships green.
     """
     engine_a, factory_a = _factory(app_role_url)
     engine_b, factory_b = _factory(app_role_url)
+    engine_c, factory_c = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
         type_id = await _seed_boutique(factory_a, tenant_id, capacity=5)
@@ -1379,28 +1400,37 @@ async def test_a_reservation_create_and_an_item_claim_never_both_succeed(
             presign_rate_limiter=_loose_limiter(),
             pending_ttl_seconds=3600,
         )
-        results = await asyncio.gather(
-            _claim(factory_a, tenant_id, type_id, dress_id=dress_id),
-            catalog.create_reservation(
-                tenant_id,
-                dress_id,
-                starts_on=TARGET_DATE,
-                ends_on=TARGET_DATE,
-                actor_id=uuid.uuid4(),
-            ),
-            return_exceptions=True,
-        )
-        # Either ordering is legal — what is illegal is the claim landing on a
-        # day a committed reservation already covers.
-        booked = [r for r in results if isinstance(r, Booking)]
-        async with tenant_session(factory_a, tenant_id) as session:
-            blocked = await DressReservationsRepository().containing(
-                session, tenant_id, dress_id, TARGET_DATE
+        async with tenant_session(factory_c, tenant_id) as holder:
+            # Taken BEFORE either task exists — a task started first could win
+            # the key and turn this into the race it is meant to replace.
+            await holder.execute(_TENANT_CLAIM_LOCK, {"tenant_id": str(tenant_id)})
+            reservation = asyncio.create_task(
+                catalog.create_reservation(
+                    tenant_id,
+                    dress_id,
+                    starts_on=TARGET_DATE,
+                    ends_on=TARGET_DATE,
+                    actor_id=uuid.uuid4(),
+                )
             )
-        if blocked is not None:
-            assert not booked, results
-        else:
-            assert len(booked) == 1, results
+            claim = asyncio.create_task(_claim(factory_a, tenant_id, type_id, dress_id=dress_id))
+            done, _ = await asyncio.wait({reservation, claim}, timeout=_BLOCKED_FOR_SECONDS)
+            assert not done, done
+        # The holder's transaction has ended, so the key is free. Both writers
+        # were queued on it rather than broken by it, and each runs to a legal
+        # end: the reservation commits, and the claim either precedes it or is
+        # refused by it. Which one the lock queue serves first is its business.
+        reserved, claimed = await asyncio.gather(reservation, claim, return_exceptions=True)
+        assert not isinstance(reserved, BaseException), reserved
+        assert isinstance(claimed, Booking | DressUnavailableError), claimed
+        async with tenant_session(factory_a, tenant_id) as session:
+            assert (
+                await DressReservationsRepository().containing(
+                    session, tenant_id, dress_id, TARGET_DATE
+                )
+                is not None
+            )
     finally:
         await engine_a.dispose()
         await engine_b.dispose()
+        await engine_c.dispose()

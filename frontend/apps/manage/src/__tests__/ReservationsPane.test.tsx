@@ -134,6 +134,28 @@ describe("pane states", () => {
     expect(listReservations).not.toHaveBeenCalled();
   });
 
+  it("never fetches for an archived dress and says why the list is missing", async () => {
+    render(
+      <ReservationsPane
+        dressId="d1"
+        disabled={true}
+        disabledReason="השמלה בארכיון"
+        disabledHint={null}
+      />,
+    );
+    expect(
+      await screen.findByText("רשימת ההזמנות מוצגת אחרי שחזור השמלה מהארכיון."),
+    ).toBeInTheDocument();
+    // GET …/reservations 404s on an archived dress by construction, so the
+    // fetch could only ever paint a red alert with a retry that never succeeds.
+    expect(listReservations).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "ניסיון נוסף" })).toBeNull();
+    // Nor the "add one in the form below" empty state: an archived dress may
+    // well have reservations, we simply cannot read them.
+    expect(screen.queryByText("אין הזמנות לשמלה הזאת.")).toBeNull();
+  });
+
   it("shows the empty state when the dress has no reservations", async () => {
     renderPane();
     expect(await screen.findByText("אין הזמנות לשמלה הזאת.")).toBeInTheDocument();

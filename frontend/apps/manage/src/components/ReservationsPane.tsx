@@ -48,6 +48,9 @@ const DELETE_TITLE = "למחוק את ההזמנה?";
 const DELETE_BODY =
   "מחיקת ההזמנה מפנה את התאריכים באתר מיד, גם אם ההשכרה עדיין פעילה.";
 const LOAD_ERROR = "לא הצלחנו לטעון את ההזמנות כרגע.";
+// Its own state, never the load error and never the empty state: an archived
+// dress may well have reservations, they are simply unreadable until restore.
+const ARCHIVED_LIST = "רשימת ההזמנות מוצגת אחרי שחזור השמלה מהארכיון.";
 const RETRY_LABEL = "ניסיון נוסף";
 const ORDER_ERROR = "תאריך הסיום לפני תאריך ההתחלה";
 const SPAN_ERROR = "טווח ההזמנה ארוך משנה";
@@ -135,8 +138,15 @@ export function ReservationsPane({
   // unmounts with its row, so the modal's native focus return lands on <body>.
   const listRegion = useRef<HTMLParagraphElement>(null);
 
+  // Archived is the only way this pane arrives disabled WITH a dress id —
+  // create mode has no id yet — and GET …/reservations 404s on an archived
+  // dress by construction (DressesRepository.by_id pins deleted_at IS NULL).
+  // Fetching would paint a permanent red alert, over a retry that can never
+  // succeed, on a state that is not an error.
+  const archived = disabled && dressId !== null;
+
   const reload = useCallback(async () => {
-    if (dressId === null) {
+    if (dressId === null || archived) {
       return;
     }
     setLoading(true);
@@ -150,7 +160,7 @@ export function ReservationsPane({
     } finally {
       setLoading(false);
     }
-  }, [dressId]);
+  }, [dressId, archived]);
 
   useEffect(() => {
     void reload();
@@ -288,7 +298,9 @@ export function ReservationsPane({
         {cue}
       </p>
 
-      {loadFailed ? (
+      {archived ? (
+        <p className="text-sm text-ink-muted">{ARCHIVED_LIST}</p>
+      ) : loadFailed ? (
         <div className="space-y-2">
           <p role="alert" className="text-sm text-danger">
             {LOAD_ERROR}
