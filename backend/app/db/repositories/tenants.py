@@ -44,6 +44,23 @@ class TenantsRepository:
             )
             return (await session.execute(stmt)).scalar_one_or_none()
 
+    async def by_slug_any_status(self, slug: str) -> Tenant | None:
+        """Resolves a SUSPENDED tenant too — soft-deleted still never.
+
+        Deliberately NOT a relaxation of `by_slug`: that one backs slug
+        resolution for serving traffic and provision's duplicate pre-check,
+        where active-only is the correct answer. This one exists for platform
+        operations that must still work on a boutique precisely BECAUSE it is
+        suspended — `reset_owner_password` is the whole reason, since suspending
+        then resetting is the natural incident-response order and the console
+        offers reset as the only action left on a suspended row.
+
+        At most one row can come back: `idx_tenants_slug_unique` is unique on
+        `slug WHERE deleted_at IS NULL` (migration 0002)."""
+        async with self._session_factory() as session:
+            stmt = select(Tenant).where(Tenant.slug == slug, Tenant.deleted_at.is_(None))
+            return (await session.execute(stmt)).scalar_one_or_none()
+
     async def suspend(self, tenant_id: UUID) -> bool:
         async with self._session_factory() as session, session.begin():
             stmt = (

@@ -286,7 +286,13 @@ class ProvisioningService:
         password_problem = _password_problem(new_password)
         if password_problem is not None:
             return CommandResult(ok=False, message=password_problem)
-        tenant = await self._tenants.by_slug(slug)
+        # ⚠ `by_slug_any_status`, NOT `by_slug`. Suspension must not make this
+        # command unreachable: suspend-then-reset is the natural order of an
+        # account takeover response, and the console renders «איפוס סיסמת בעלים»
+        # as the ONLY action left on a suspended row (design §Screen 2). With
+        # active-only resolution the reset 404s exactly when an operator needs
+        # it. Soft-deleted tenants still resolve to nothing.
+        tenant = await self._tenants.by_slug_any_status(slug)
         if tenant is None:
             return CommandResult(ok=False, message="tenant_not_found")
         async with tenant_session(self._session_factory, tenant.id) as session:
