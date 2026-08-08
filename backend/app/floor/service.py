@@ -247,10 +247,27 @@ class SosRead:
 @dataclasses.dataclass(frozen=True)
 class SosListRead:
     """The poll's envelope. `server_now` is the instant BOTH derived booleans and
-    the console's elapsed line are computed against — see `_escalated`."""
+    the console's elapsed line are computed against — see `_escalated`.
+
+    ⚠ **`unread_notifications` is F35's bell, and it is here because this is the
+    console's ONLY app-wide tick.** `SosProvider` wraps `ConsoleShell`, so it
+    runs on all 18 sections for all five roles and never idle-stops; every other
+    poll in the console mounts on one or two screens. Piggybacking the count buys
+    the bell zero new timers and zero new requests, which is the whole delivery
+    decision — a second request on the same timer would double this tick's round
+    trips to buy independent failure domains that do not matter.
+
+    Accepted consequence, stated so nobody discovers it: when this poll reaches a
+    terminal state the count FREEZES. The console is already dead at that point —
+    `onSessionEnded` drops to the login form — so nothing new is hidden.
+    """
 
     alerts: list[SosRead]
     server_now: datetime.datetime
+    # HERS, never the tenant's. The alerts beside it ARE audience-widened for an
+    # elevated caller; a count that summed everybody's unread rows would be a
+    # number that means nothing and that she could not clear.
+    unread_notifications: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1505,9 +1522,20 @@ class FloorService:
                 tenant_id,
                 actor_id=None if actor.role in ELEVATED_ROLES else actor.id,
             )
+            # F35's bell, INSIDE this session and not beside it: zero new timers,
+            # zero new requests, one more statement on a tick that already runs
+            # about six. It is affordable only because it is an index-only scan
+            # on `idx_staff_notifications_unread`, whose predicate this count
+            # matches character for character.
+            #
+            # ⚠ Always `actor.id`, never the audience widening two lines up. The
+            # alerts answer «what is happening in the boutique»; the count
+            # answers «what is waiting for YOU».
+            unread = await self._notifications.unread_count(session, tenant_id, actor.id)
         return SosListRead(
             alerts=[_sos_read(row, actor=actor, server_now=server_now) for row in rows],
             server_now=server_now,
+            unread_notifications=unread,
         )
 
     async def raise_sos(

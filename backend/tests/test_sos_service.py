@@ -1048,7 +1048,19 @@ def _install_live(monkeypatch: pytest.MonkeyPatch, rows: list[SosAlertRow]) -> l
         return rows
 
     monkeypatch.setattr(SosAlertsRepository, "live_for", _live_for)
+    # F35's count now rides this same read, INSIDE the same session, so every
+    # caller of this helper needs it faked for the same reason `live_for` is:
+    # the fake session cannot serve a real statement. Defaults to zero — the
+    # bell of a staffer with nothing waiting, which is the ordinary case and what
+    # every assertion in this section is about.
+    monkeypatch.setattr(StaffNotificationsRepository, "unread_count", _no_unread)
     return asked
+
+
+async def _no_unread(
+    _self: object, _session: object, _tenant_id: uuid.UUID, _staff_user_id: uuid.UUID
+) -> int:
+    return 0
 
 
 @pytest.mark.parametrize("role", ELEVATED)
@@ -1346,3 +1358,67 @@ async def test_the_named_target_may_not_close_a_page_she_has_not_accepted(
         await getattr(_service(), f"{verb}_sos")(TENANT_ID, row.id, actor=named)
     assert verb not in recorder.order
     assert recorder.audit == []
+
+
+# --- F35: the unread count rides this tick ------------------------------------
+
+
+def _install_count(monkeypatch: pytest.MonkeyPatch, count: int) -> list[uuid.UUID]:
+    asked: list[uuid.UUID] = []
+
+    async def _unread_count(
+        _self: object, _session: object, _tenant_id: uuid.UUID, staff_user_id: uuid.UUID
+    ) -> int:
+        asked.append(staff_user_id)
+        return count
+
+    monkeypatch.setattr(StaffNotificationsRepository, "unread_count", _unread_count)
+    return asked
+
+
+async def test_the_poll_carries_the_callers_own_unread_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ **The count is asked for the ACTOR, never for the tenant**, and that is
+    the difference between «your bell» and «somebody's bell». The alerts on this
+    same payload ARE audience-widened for an elevated caller (`actor_id=None`);
+    the count is not, and must not be — an owner seeing the sum of everybody's
+    unread notifications would be a number that means nothing and cannot be
+    cleared."""
+    _install_live(monkeypatch, [])
+    asked = _install_count(monkeypatch, 4)
+    actor = _actor(StaffRole.OWNER)
+
+    read = await _service().sos(TENANT_ID, actor=actor)
+
+    assert read.unread_notifications == 4
+    assert asked == [actor.id]
+
+
+async def test_the_count_rides_the_alerts_read_and_opens_no_second_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ **Zero new sessions and zero new round trips is the whole delivery
+    decision** (spec §Delivery): this tick runs app-wide on all 18 sections every
+    few seconds for every signed-in device, so a second `tenant_session` here
+    would double its cost to buy independent failure domains that do not matter —
+    if a one-row count fails, the alerts read failed too.
+
+    The fake factory counts how many times it is entered. ONE.
+    """
+    entered: list[int] = []
+    original = _fake_session_factory
+
+    @asynccontextmanager
+    async def _counting() -> AsyncIterator[_FakeSession]:
+        entered.append(1)
+        async with original() as session:
+            yield session
+
+    _install_live(monkeypatch, [])
+    _install_count(monkeypatch, 1)
+    service = FloorService(cast(async_sessionmaker, _counting), clock=lambda: NOW)
+
+    await service.sos(TENANT_ID, actor=_actor(StaffRole.RECEPTION))
+
+    assert len(entered) == 1

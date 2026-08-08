@@ -90,8 +90,12 @@ def test_the_sos_payload_is_an_envelope_of_alerts_and_one_server_now() -> None:
     with _client(fake) as client:
         body = client.get(SOS_PATH).json()
 
-    assert set(body) == {"alerts", "server_now"}
+    # THREE keys since F35: the bell's count rides this payload because it is the
+    # console's only app-wide tick. It is a plain integer and carries nothing
+    # about WHICH notifications — the panel's own GET answers that.
+    assert set(body) == {"alerts", "server_now", "unread_notifications"}
     assert body["server_now"] == _iso(SERVER_NOW)
+    assert body["unread_notifications"] == 0
     assert body["alerts"] == [
         {
             "id": str(ALERT_ID),

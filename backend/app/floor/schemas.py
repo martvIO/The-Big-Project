@@ -581,12 +581,17 @@ class SosResponse(BaseModel):
 
     alerts: list[SosAlertView]
     server_now: datetime.datetime
+    # F35's bell rides this payload — the console's only app-wide tick. See
+    # `SosListRead` for why, and for the accepted consequence when the channel
+    # reaches a terminal state.
+    unread_notifications: int
 
     @classmethod
     def from_read(cls, read: "SosListRead") -> "SosResponse":
         return cls(
             alerts=[SosAlertView.from_read(one) for one in read.alerts],
             server_now=read.server_now,
+            unread_notifications=read.unread_notifications,
         )
 
 
