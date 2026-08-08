@@ -2309,8 +2309,18 @@ queue:
     slug: client-portal
     epic: E5
     title: "Client portal: OTP login, My Bookings, .ics, bell"
-    status: building              # 2026-08-06: builder dispatched after F22's merge; spec+design(gate
-                                  # ACCEPTED r3)+plan (18 tasks); migration head+1 at build
+    status: pr-open               # 2026-08-08: PR #50. 7 commits + 2 fix commits; 158 tests; migration
+                                  # 0027. Dual review r1 found 2 BLOCKERs, both fixed and verified:
+                                  # (a) the portal's cookie-authed POSTs sat OUTSIDE CsrfOriginMiddleware
+                                  # — the prefix list is now COOKIE-driven, not layout-driven, because
+                                  # evil.<domain> is same-site with victim.<domain> and Lax alone would
+                                  # sign a cross-subdomain POST to /storefront/portal/logout;
+                                  # (b) design-mandated focus management was unimplemented AND its e2e
+                                  # test asserted everything except focus. Also fixed a literal NUL byte
+                                  # that made PortalPage.tsx a binary file to git.
+                                  # ⚠ review round 2 never ran (agents died on a model limit) — r1 fixes
+                                  # were verified by hand instead; a fresh adversarial pass is owed.
+    pr: 50
     deps: [F11, F13, F16]
     note: >-
       Pre-decided #17: OTP-only login, per-booking .ics download, no two-way
@@ -2319,8 +2329,24 @@ queue:
     slug: platform-console
     epic: E5
     title: Web platform console (replaces v1 CLI)
-    status: building              # 2026-08-06: builder dispatched (parallel with F24's).
-                                  # spec+design(gate ACCEPTED r2)+plan (13 tasks).
+    status: building              # 2026-08-08: BUILD COMPLETE (10 commits, 117 tests, migration 0028
+                                  # with down_revision 0026 — MUST become 0027 once F24 merges), but
+                                  # review rounds 2-3, the r2 fix commit and local gates ALL died on a
+                                  # model limit. NOT PUSHED, NO PR. Five MAJOR findings are OUTSTANDING:
+                                  #   1. test_frontend_constant_parity.py — validation.ts cites a parity
+                                  #      guard for RESERVED_SLUGS/slug regex that does not exist
+                                  #   2. Console.tsx — suspend-confirm and provision-success drop the
+                                  #      design's <bdi> isolation for the Latin slug/URL in RTL copy
+                                  #   3. main.py — CsrfOriginMiddleware runs OUTSIDE the tenancy fence,
+                                  #      so a bogus Origin makes /platform* answer 403 instead of the
+                                  #      fence's 404 (the two security reviewers split MAJOR/MINOR on it)
+                                  #   4. migration 0028 issues no GRANT to app_user, relying on 0002's
+                                  #      ALTER DEFAULT PRIVILEGES — the one thing 0002's comment says
+                                  #      not to rely on
+                                  #   5. the global login limiter lets an anonymous caller lock the
+                                  #      platform's only administrative surface at 4 req/min, no
+                                  #      break-glass
+                                  # Resume: fix round -> fresh dual review -> gates -> PR.
                                   # Console at admin.{base_domain}; ProvisioningService reused unchanged;
                                   # third workspace app apps/platform; CLI keeps backfill/retention/
                                   # create-operator (recorded conflict with #20's "deleted at parity")
@@ -2330,9 +2356,21 @@ queue:
     slug: toggle-matrix-ui
     epic: E5
     title: Full feature-toggle matrix UI
-    status: building              # 2026-08-06: builder dispatched (THIRD concurrent — F24, F25, F27).
-                                  # Chosen as the safe third because it ships NO MIGRATION, so it cannot
-                                  # collide on alembic renumbering. spec+design(gate ACCEPTED)+plan (10 tasks).
+    status: pr-open               # 2026-08-08: PR #51. 6 commits + 3 fix commits; 45 tests; NO migration.
+                                  # ⚠⚠ THE SPEC'S CENTRAL FACTUAL CLAIM WAS FALSE and the builder caught
+                                  # it: list_appointment_types "already receives settings" — the SERVICE
+                                  # does, the ROUTE never passed it, so settings arrived None and
+                                  # F17/D10's DEPOSIT DISCLOSURE HAS BEEN DEAD ON THE LIVE STOREFRONT
+                                  # SINCE IT SHIPPED. Wiring it for D5 revives it: correct, but a change
+                                  # to what the public page says about money, disclosed in the spec's
+                                  # blast-radius note rather than merged as a side effect.
+                                  # Review r1 also found the failed-PUT revert bug: update_settings
+                                  # commits the merge THEN writes the audit row in its own transaction,
+                                  # so an audit failure 500s with deposits_enabled already persisted and
+                                  # a blind revert paints the switch ON while the column says OFF. The
+                                  # error path now re-fetches and repaints from server truth.
+                                  # ⚠ review round 2 never ran (model limit) — a fresh pass is owed.
+    pr: 51
                                   # Spec finding: only deposits_enabled has a shipped consumer today;
                                   # brides_only shipped as a DEAD switch (F7) and F27 wires its promised
                                   # disclosure consumer + fixes merge_settings' latent clobber.
