@@ -15,6 +15,7 @@ policy enforces.
 """
 
 import dataclasses
+import datetime
 from collections.abc import Sequence
 
 from app.errors import DomainValidationError
@@ -53,6 +54,16 @@ MAX_SORT_ORDER = 1_000_000
 DB_MAX_PRICE_AGOROT = 1_000_000_000
 DB_MAX_QUANTITY = 10_000
 DB_MAX_BYTE_SIZE = 20_971_520
+
+# F28's date-bound reservations. A year is already absurd for one rental window;
+# the cap exists so a mistyped year (2027 instead of 2026 in `ends_on`) is a
+# clean 400 rather than a gown blocked for a decade.
+MAX_RESERVATION_SPAN_DAYS = 365
+# bookings.notes' bound, verbatim: owner-authored operational text, bounded here,
+# rendered as text and never HTML.
+MAX_RESERVATION_NOTES_LENGTH = 500
+# 0029's span CHECK, the same 10x absurdity-ceiling rule as the block above.
+DB_MAX_RESERVATION_SPAN_DAYS = 3650
 
 # The extension map is server-side and authoritative: the key extension comes
 # from the declared type, never from the client filename. HEIC is excluded (no
@@ -160,3 +171,23 @@ def validate_presign(*, content_type: str, byte_size: int) -> None:
 def validate_search(search: str | None) -> None:
     if search is not None and len(search) > MAX_SEARCH_LENGTH:
         raise CatalogValidationError("search is too long")
+
+
+def validate_reservation(
+    *, starts_on: datetime.date, ends_on: datetime.date, notes: str | None
+) -> None:
+    """Bounds only. Whether the dress is live, the customer resolves, or the
+    window collides with another reservation are SERVICE questions (404/409, and
+    they need the database); everything here is answerable from the request
+    alone and maps to 400.
+
+    `ends_on` is INCLUSIVE, so `starts_on == ends_on` is a legal one-day hold —
+    the shortest real rental, not a degenerate range."""
+    if ends_on < starts_on:
+        raise CatalogValidationError("ends_on must not be before starts_on")
+    if (ends_on - starts_on).days > MAX_RESERVATION_SPAN_DAYS:
+        raise CatalogValidationError(
+            f"a reservation may not span more than {MAX_RESERVATION_SPAN_DAYS} days"
+        )
+    if notes is not None and len(notes) > MAX_RESERVATION_NOTES_LENGTH:
+        raise CatalogValidationError("notes is too long")
