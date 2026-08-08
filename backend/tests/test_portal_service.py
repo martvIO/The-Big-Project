@@ -173,7 +173,12 @@ async def test_an_erased_customer_can_never_mint_a_session(app_role_url: str) ->
             factory,
             tenant_id,
             type_id,
-            starts_at=past,
+            # ⚠ NOT `starts_at=past`. NOW is 12:00 UTC, which is 15:00 in
+            # Asia/Jerusalem — OUTSIDE the 09:00–13:00 local window `_seed`
+            # opens, so the raw instant is never offered and the claim dies with
+            # SlotUnavailableError no matter which weekday is seeded. `_slot`
+            # builds a LOCAL 10:00 on that date, which is what the window means.
+            starts_at=_slot(10, date=past.date()),
             now=past - datetime.timedelta(days=7),
             phone=phone,
         )
@@ -328,7 +333,12 @@ async def test_an_erase_kills_a_live_portal_session(app_role_url: str) -> None:
             factory,
             tenant_id,
             type_id,
-            starts_at=past,
+            # ⚠ NOT `starts_at=past`. NOW is 12:00 UTC, which is 15:00 in
+            # Asia/Jerusalem — OUTSIDE the 09:00–13:00 local window `_seed`
+            # opens, so the raw instant is never offered and the claim dies with
+            # SlotUnavailableError no matter which weekday is seeded. `_slot`
+            # builds a LOCAL 10:00 on that date, which is what the window means.
+            starts_at=_slot(10, date=past.date()),
             now=past - datetime.timedelta(days=7),
             phone=phone,
         )
