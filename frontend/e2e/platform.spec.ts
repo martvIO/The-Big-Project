@@ -33,6 +33,31 @@ async function signedIn(page: Page, tenants: Tenant[] = [BELLA, NOA]): Promise<R
 }
 
 async function axeClean(page: Page, label: string): Promise<void> {
+  // Settle every running animation BEFORE scanning. The shared `Modal` fades in,
+  // and `toBeVisible()` resolves the moment the dialog paints — not when the
+  // opacity transition finishes. Scanning inside that window makes axe composite
+  // the half-faded layer against the page and report a contrast it never renders
+  // at rest: the reset dialog failed with foreground #837769, which is
+  // `--color-ink-muted` (#6B5D4F) at ~84% opacity over #fdfcfb — 4.26:1. At full
+  // opacity the real pair is 6.2:1, comfortably over the 4.5 floor, so the
+  // violation was an artefact of WHEN the scan ran, not of the tokens.
+  // Same remedy the dialog suites already use (guide.spec.ts `settled`), and the
+  // same false red that was fixed in waitlist.spec.ts on main.
+  // ⚠ FILTER THE INFINITE ONES. `--animate-skeleton` and Button's `animate-spin`
+  // both loop forever, and their `.finished` promise NEVER resolves — awaiting
+  // it hangs the scan until the test times out. Only bounded animations can be
+  // waited on, and even those get a ceiling so a pathological one degrades into
+  // a slightly-early scan rather than a 30s timeout.
+  await page.evaluate(async () => {
+    const bounded = document
+      .getAnimations()
+      .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+      .map((a) => a.finished);
+    await Promise.race([
+      Promise.allSettled(bounded),
+      new Promise((resolve) => setTimeout(resolve, 1000)),
+    ]);
+  });
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   expect(results.violations, `${label} has axe violations`).toEqual([]);
 }
