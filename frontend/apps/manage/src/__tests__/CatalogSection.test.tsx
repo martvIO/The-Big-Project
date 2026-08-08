@@ -250,9 +250,12 @@ describe("CatalogSection detail hand-off", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "שמלה חדשה" })[0]);
 
     expect(await screen.findByRole("button", { name: "יצירת שמלה" })).toBeInTheDocument();
+    // THREE panes since F28 added reservations, and the count is asserted
+    // rather than loosened: each disabled pane must carry the explanation on
+    // its own Card — a shared one above them would leave two panes silent.
     expect(
-      screen.getAllByText("יש לשמור את השמלה לפני הוספת מידות ותמונות"),
-    ).toHaveLength(2);
+      screen.getAllByText("יש לשמור את השמלה לפני הוספת מידות, תמונות והזמנות"),
+    ).toHaveLength(3);
     expect(getDress).not.toHaveBeenCalled();
   });
 

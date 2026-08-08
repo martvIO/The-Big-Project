@@ -11,12 +11,13 @@ import {
   validateDress,
 } from "../validation";
 import { MediaGallery } from "./MediaGallery";
+import { ReservationsPane } from "./ReservationsPane";
 import { Badge, Button, Card, Input, Modal, Price, Skeleton, TextArea, Toggle } from "@boutique/ui";
 import { VariantMatrix } from "./VariantMatrix";
 
 // The Card-level explanation, and the short form that each disabled control
 // carries on its own visible label.
-const CREATE_HINT = "יש לשמור את השמלה לפני הוספת מידות ותמונות";
+const CREATE_HINT = "יש לשמור את השמלה לפני הוספת מידות, תמונות והזמנות";
 const CREATE_REASON = "יש לשמור את השמלה תחילה";
 const ARCHIVED_HINT = "השמלה בארכיון — לשחזור לחצי «שחזור».";
 const ARCHIVED_REASON = "השמלה בארכיון";
@@ -323,7 +324,10 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
 
           <Toggle
             label="הוזמן"
-            description="סימון ידני, ללא תאריך — יש להסיר ידנית כשהשמלה מתפנה"
+            // D5's narrowing, spelled for the owner and pointed at the pane:
+            // this boolean is the DATE-LESS hold, and a rental with known dates
+            // belongs in «הזמנות לתאריך» below.
+            description="סימון ידני ללא תאריך, למשל שמלה שנמכרה. להשכרה בתאריכים ידועים משתמשים ב«הזמנות לתאריך» למטה."
             checked={draft.reserved}
             disabled={saving || archived}
             onCheckedChange={(checked) => setDraft({ ...draft, reserved: checked })}
@@ -382,6 +386,15 @@ export function DressEditor({ dressId, onBack, onDressChanged, onArchived }: Dre
         disabledReason={creating ? CREATE_REASON : archived ? ARCHIVED_REASON : null}
         disabledHint={creating ? CREATE_HINT : null}
         onDetail={applyDetail}
+      />
+
+      {/* Third pane, after variants and gallery. No onDetail: reservations are
+          not part of the dress projection — the pane owns its own list. */}
+      <ReservationsPane
+        dressId={detail?.id ?? null}
+        disabled={creating || archived}
+        disabledReason={creating ? CREATE_REASON : archived ? ARCHIVED_REASON : null}
+        disabledHint={creating ? CREATE_HINT : null}
       />
 
       {detail !== null && (
