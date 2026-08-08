@@ -12,6 +12,9 @@
   "pnpm": {
     "auditConfig": {
       "ignoreGhsas": []
+    },
+    "overrides": {
+      "js-yaml@>=4.0.0 <4.3.1": "^4.3.1"
     }
   },
   "auditWaivers": {
