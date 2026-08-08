@@ -79,6 +79,7 @@ from app.storefront.service import (
     StorefrontDressDetailView,
     StorefrontDressListView,
     StorefrontDressView,
+    StorefrontRangeView,
     StorefrontService,
     StorefrontSizeView,
     disclose_brides_only,
@@ -315,6 +316,7 @@ def _detail_view(
     price_visible: bool = False,
     price_agorot: int | None = HIDDEN_PRICE_AGOROT,
     description: str | None = "Silk A-line",
+    unavailable_ranges: list[StorefrontRangeView] | None = None,
 ) -> StorefrontDressDetailView:
     return StorefrontDressDetailView(
         row=_dress_row(
@@ -327,6 +329,7 @@ def _detail_view(
             StorefrontSizeView(size_label="40", available=True),
         ],
         media=[_media_view(url=url)],
+        unavailable_ranges=unavailable_ranges or [],
     )
 
 
@@ -967,6 +970,9 @@ def test_detail_reports_availability_never_stock() -> None:
         "reserved",
         "sizes",
         "media",
+        # F28. On the DETAIL only — the card stays date-blind, which the
+        # row-fields assertion above is what pins.
+        "unavailable_ranges",
     }
 
 
@@ -1211,6 +1217,9 @@ def test_storefront_detail_has_exactly_these_fields() -> None:
         "reserved",
         "sizes",
         "media",
+        # F28. On the DETAIL only — the card stays date-blind, which the
+        # row-fields assertion above is what pins.
+        "unavailable_ranges",
     }
 
 
@@ -1836,3 +1845,30 @@ def test_a_boutiques_override_reaches_the_wire_and_the_subprocessor_list_never_d
     # Whitespace-only is a cleared textarea, not a document.
     assert body["privacy_dpa_text"] == PLATFORM_DPA_HE
     assert body["privacy_subprocessors_text"] == PLATFORM_SUBPROCESSORS_HE
+
+
+# --- F28: unavailable ranges (D6) ---
+
+
+def test_the_detail_projection_carries_the_windows_and_the_card_never_does() -> None:
+    """A gown rented 12-18 August is AVAILABLE to an October bride. The detail
+    states the dates; the card must not grow a date-aware badge, or a passing
+    window drives her away from a dress she can have."""
+    view = _detail_view(
+        unavailable_ranges=[
+            StorefrontRangeView(
+                starts_on=datetime.date(2026, 8, 12), ends_on=datetime.date(2026, 8, 18)
+            )
+        ]
+    )
+    detail = public_dress_detail(view)
+    assert [(row.starts_on, row.ends_on) for row in detail.unavailable_ranges] == [
+        (datetime.date(2026, 8, 12), datetime.date(2026, 8, 18))
+    ]
+    assert "unavailable_ranges" not in StorefrontDress.model_fields
+
+
+def test_a_dress_with_no_windows_projects_an_empty_list_never_null() -> None:
+    """The page renders the block only when the list is non-empty; a null would
+    make that one more branch on a surface that ships in three languages."""
+    assert public_dress_detail(_detail_view()).unavailable_ranges == []

@@ -66,6 +66,7 @@ from app.storefront.schemas import (
     StorefrontDress,
     StorefrontMedia,
     StorefrontTerms,
+    UnavailableRange,
 )
 from app.storefront.service import (
     StorefrontBoutiqueView,
@@ -175,6 +176,10 @@ def public_dress_detail(view: StorefrontDressDetailView) -> StorefrontDetail:
             SizeChip(size_label=item.size_label, available=item.available) for item in view.sizes
         ],
         media=[_media(item) for item in view.media],
+        unavailable_ranges=[
+            UnavailableRange(starts_on=item.starts_on, ends_on=item.ends_on)
+            for item in view.unavailable_ranges
+        ],
     )
 
 

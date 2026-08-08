@@ -654,3 +654,115 @@ async def test_appointment_types_exclude_archived(app_role_url: str) -> None:
         assert rows[0].audience == "brides_only"
     finally:
         await engine.dispose()
+
+
+# --- F28: the unavailable-range projection (D6) ---
+
+
+async def test_the_detail_shows_current_and_future_windows_ascending(app_role_url: str) -> None:
+    """`ends_on >= today`, and TODAY IS INCLUDED — a gown due back today is away
+    for the rest of it, so dropping it would offer a fitting for a dress that is
+    still at a wedding. The row that ended yesterday is gone: the block is what
+    the bride can still collide with, not the gown's rental history.
+
+    The clock is injected, so "today" is a fixed boutique-local date and the test
+    does not change meaning at midnight Jerusalem.
+    """
+    engine = _engine(app_role_url)
+    storage = InMemoryMediaStorage()
+    factory = _factory(engine)
+    tenant = uuid.uuid4()
+    today = datetime.date(2026, 8, 8)
+    noon = datetime.datetime.combine(
+        today, datetime.time(12, 0), tzinfo=BOUTIQUE_TIMEZONE
+    ).astimezone(datetime.UTC)
+    try:
+        catalog = _catalog(factory, storage)
+        dress_id = await _dress(catalog, tenant, "Aurora")
+        for starts_on, ends_on in (
+            (datetime.date(2026, 9, 1), datetime.date(2026, 9, 4)),
+            (datetime.date(2026, 8, 12), datetime.date(2026, 8, 18)),
+            (datetime.date(2026, 8, 1), today),
+            (datetime.date(2026, 7, 1), datetime.date(2026, 8, 7)),
+        ):
+            await catalog.create_reservation(
+                tenant, dress_id, starts_on=starts_on, ends_on=ends_on, actor_id=ACTOR_ID
+            )
+        view = await _storefront(factory, storage, now=noon).get_dress(tenant, dress_id)
+        assert [(row.starts_on, row.ends_on) for row in view.unavailable_ranges] == [
+            (datetime.date(2026, 8, 1), today),
+            (datetime.date(2026, 8, 12), datetime.date(2026, 8, 18)),
+            (datetime.date(2026, 9, 1), datetime.date(2026, 9, 4)),
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def test_a_dress_with_no_reservations_projects_an_empty_list(app_role_url: str) -> None:
+    """An empty list and never null: the dress page renders the block only when
+    the list is non-empty, and a null would make that one more branch."""
+    engine = _engine(app_role_url)
+    storage = InMemoryMediaStorage()
+    factory = _factory(engine)
+    tenant = uuid.uuid4()
+    try:
+        catalog = _catalog(factory, storage)
+        dress_id = await _dress(catalog, tenant, "Aurora")
+        view = await _storefront(factory, storage).get_dress(tenant, dress_id)
+        assert view.unavailable_ranges == []
+    finally:
+        await engine.dispose()
+
+
+async def test_a_deleted_reservation_leaves_the_dress_page(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    storage = InMemoryMediaStorage()
+    factory = _factory(engine)
+    tenant = uuid.uuid4()
+    try:
+        catalog = _catalog(factory, storage)
+        dress_id = await _dress(catalog, tenant, "Aurora")
+        created = await catalog.create_reservation(
+            tenant,
+            dress_id,
+            starts_on=datetime.date(2099, 8, 12),
+            ends_on=datetime.date(2099, 8, 18),
+            actor_id=ACTOR_ID,
+        )
+        assert (
+            len(
+                (await _storefront(factory, storage).get_dress(tenant, dress_id)).unavailable_ranges
+            )
+            == 1
+        )
+        await catalog.delete_reservation(tenant, dress_id, created.row.id, actor_id=ACTOR_ID)
+        view = await _storefront(factory, storage).get_dress(tenant, dress_id)
+        assert view.unavailable_ranges == []
+    finally:
+        await engine.dispose()
+
+
+async def test_the_card_shape_is_untouched_by_reservations(app_role_url: str) -> None:
+    """D5/D6: the CARD never becomes date-aware. A gown rented 12-18 August is
+    available to an October bride, and badging her card would drive her away from
+    a dress she can have."""
+    engine = _engine(app_role_url)
+    storage = InMemoryMediaStorage()
+    factory = _factory(engine)
+    tenant = uuid.uuid4()
+    try:
+        catalog = _catalog(factory, storage)
+        dress_id = await _dress(catalog, tenant, "Aurora")
+        await catalog.create_reservation(
+            tenant,
+            dress_id,
+            starts_on=datetime.date(2099, 8, 12),
+            ends_on=datetime.date(2099, 8, 18),
+            actor_id=ACTOR_ID,
+        )
+        listing = await _storefront(factory, storage).list_dresses(tenant)
+        [card] = listing.items
+        assert not hasattr(card, "unavailable_ranges")
+        assert card.row.reserved is False
+    finally:
+        await engine.dispose()
