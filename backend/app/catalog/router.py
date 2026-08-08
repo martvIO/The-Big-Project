@@ -14,6 +14,7 @@ from app.auth.dependencies import get_current_staff, require_role
 from app.auth.service import StaffContext
 from app.catalog.schemas import (
     CreateDressRequest,
+    CreateReservationRequest,
     DressDetailResponse,
     DressListResponse,
     DressResponse,
@@ -22,10 +23,12 @@ from app.catalog.schemas import (
     PresignResponse,
     ReorderMediaRequest,
     ReplaceVariantsRequest,
+    ReservationListResponse,
+    ReservationResponse,
     UpdateDressRequest,
     VariantResponse,
 )
-from app.catalog.service import CatalogService, DressView, MediaView
+from app.catalog.service import CatalogService, DressView, MediaView, ReservationView
 from app.catalog.validation import (
     DRESS_LIST_DEFAULT_LIMIT,
     DRESS_LIST_MAX_LIMIT,
@@ -328,3 +331,63 @@ async def reorder_media(
     return _dress_detail_response(
         await service.reorder_media(tenant.id, dress_id, body.media_ids, actor_id=staff.id)
     )
+
+
+# --- reservations (F28) ---
+
+
+def _reservation_response(view: ReservationView) -> ReservationResponse:
+    return ReservationResponse(
+        id=view.row.id,
+        starts_on=view.row.starts_on,
+        ends_on=view.row.ends_on,
+        customer_id=view.row.customer_id,
+        customer_name=view.customer_name,
+        notes=view.row.notes,
+        created_at=view.row.created_at,
+    )
+
+
+@router.get("/dresses/{dress_id}/reservations")
+async def list_reservations(
+    request: Request, staff: Staff, service: Service, dress_id: UUID
+) -> ReservationListResponse:
+    tenant = get_current_tenant(request)
+    views = await service.list_reservations(tenant.id, dress_id)
+    return ReservationListResponse(items=[_reservation_response(view) for view in views])
+
+
+@router.post("/dresses/{dress_id}/reservations", status_code=201)
+async def create_reservation(
+    request: Request,
+    staff: Staff,
+    service: Service,
+    dress_id: UUID,
+    body: CreateReservationRequest,
+) -> ReservationResponse:
+    tenant = get_current_tenant(request)
+    view = await service.create_reservation(
+        tenant.id,
+        dress_id,
+        starts_on=body.starts_on,
+        ends_on=body.ends_on,
+        customer_id=body.customer_id,
+        notes=body.notes,
+        # The SESSION's staff id, never a client value — the audit row this
+        # write leaves is only worth having if that holds.
+        actor_id=staff.id,
+    )
+    return _reservation_response(view)
+
+
+@router.delete("/dresses/{dress_id}/reservations/{reservation_id}")
+async def delete_reservation(
+    request: Request,
+    staff: Staff,
+    service: Service,
+    dress_id: UUID,
+    reservation_id: UUID,
+) -> OkResponse:
+    tenant = get_current_tenant(request)
+    await service.delete_reservation(tenant.id, dress_id, reservation_id, actor_id=staff.id)
+    return OkResponse()

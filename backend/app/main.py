@@ -70,6 +70,7 @@ from app.catalog.service import (
     MediaNotUploadedError,
     MediaOrderMismatchError,
     MediaPresignThrottledError,
+    ReservationOverlapError,
 )
 from app.catalog.validation import PENDING_MEDIA_TTL_SECONDS
 from app.core.config import Settings, get_settings
@@ -243,6 +244,17 @@ MEDIA_ORDER_MISMATCH_BODY = {
     "error": {
         "code": "MEDIA_ORDER_MISMATCH",
         "message": "The photo order is out of date. Reload and try again.",
+    }
+}
+# F28. `details` carries the CONFLICTING range — the one catalog 409 that names
+# what it collided with, because the remedy is to change those exact dates and
+# the pane can only say which without a second round trip. Built through
+# `_body_with_details` for that helper's own reason: the base is a module
+# constant shared by every request.
+RESERVATION_OVERLAP_BODY = {
+    "error": {
+        "code": "RESERVATION_OVERLAP",
+        "message": "This dress is already reserved for part of those dates.",
     }
 }
 # Fixed bodies: no bucket, region, endpoint, IAM identifier or AWS-supplied text
@@ -1240,6 +1252,12 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         # 409, not 400: the body is well-formed and passed schema validation —
         # it conflicts with server state, like every other media conflict.
         return JSONResponse(MEDIA_ORDER_MISMATCH_BODY, status_code=409)
+
+    @app.exception_handler(ReservationOverlapError)
+    async def _reservation_overlap(request: Request, exc: ReservationOverlapError) -> JSONResponse:
+        return JSONResponse(
+            _body_with_details(RESERVATION_OVERLAP_BODY, exc.details), status_code=409
+        )
 
     @app.exception_handler(MediaPresignThrottledError)
     async def _presign_throttled(request: Request, exc: MediaPresignThrottledError) -> JSONResponse:
