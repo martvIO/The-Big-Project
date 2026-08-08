@@ -36,6 +36,10 @@ export const he = {
       // client navigation, and a statutory document that shares the catalogue's
       // title is one a screen-reader user cannot tell she reached.
       privacy: "הודעת פרטיות",
+      // F24's portal. ONE title for all four surfaces on the route (login,
+      // dashboard, detail, bell) and it names no appointment and no person —
+      // the queuePosition rule: a tab strip is read over a shoulder.
+      portal: "האזור האישי",
     },
 
     catalog: {
@@ -138,6 +142,11 @@ export const he = {
       // cancelled nor standing, and the cancelled copy would tell a bride
       // mid-checkout that her appointment is gone. The manage page suppresses
       // both controls, so this is the belt for a screen that was already open.
+      // F24's login refusal, and NOT `errors.notFound`: the login panel renders
+      // a designed screen off this code. The panel shows `portal.emptyTitle` /
+      // `portal.emptyBody` (design P2 — one screen for the empty dashboard and
+      // for this refusal); this row exists so the shared error map resolves.
+      portalNoBookings: "אין תורים למספר הזה.",
       bookingAwaitingPayment: "התור הזה ממתין לתשלום המקדמה, ולכן אי אפשר לעדכן אותו כרגע.",
     },
 
@@ -420,6 +429,74 @@ export const he = {
       // errors.slotsError, whose wording is about times that did not load.
       loadFailed: "לא הצלחנו להציג את פרטי התור כרגע.",
       retry: "ניסיון נוסף",
+    },
+
+    // F24's client portal (/portal). The OTP-mechanics rows — phone label and
+    // hint, code label, otpSent, otpResend and every `errors.*` — are REUSED
+    // from `booking.*` (design §11: one label, one Hebrew, no drift), and the
+    // whole `manage.*` vocabulary is reused on the detail. Zero exclamation
+    // marks (pre-decided #5 register).
+    portal: {
+      // The h1, shared by the login panel and the dashboard.
+      loginTitle: "האזור האישי",
+      loginIntro: "אפשר להיכנס עם מספר הטלפון שאיתו קבעת תור.",
+      loginSubmit: "כניסה",
+      // Hidden status regions (R30): a nested VisuallyHidden > role="status",
+      // because aria-busy on a plain div is announced by neither VoiceOver nor
+      // NVDA.
+      sending: "שולחות את הקוד",
+      loggingIn: "נכנסות לאזור האישי",
+      loggedIn: "נכנסת לאזור האישי.",
+      // ⚠ F-P1: PHONE_NOT_VERIFIED maps HERE and never to
+      // `errors.phoneNotVerified`, whose tail ("הפרטים שמילאת נשמרו") is
+      // booking-flow-specific — there is no form here to have saved.
+      verifyExpired: "האימות פג תוקף. אפשר לבקש קוד חדש ולהיכנס.",
+      // Any portal call answering 401 mid-session. A fact, not a fault, and no
+      // countdown before it: a thirty-day TTL makes a warning theatre.
+      sessionExpired: "החיבור לאזור האישי הסתיים. אפשר להיכנס שוב עם קוד אימות.",
+
+      greeting: "שלום, {{name}}",
+      logout: "יציאה",
+      loggedOut: "יצאת מהאזור האישי.",
+
+      upcoming: "תורים קרובים",
+      past: "תורים קודמים",
+      // Shown only when the OTHER section has rows — two empty sections are the
+      // whole-screen empty state below, not two muted lines.
+      upcomingEmpty: "אין תורים קרובים כרגע.",
+      pastEmpty: "עדיין אין תורים קודמים.",
+      // ONE screen for the empty dashboard AND for the login's no-bookings
+      // refusal (design P2): enumeration-neutral, because "this phone has no
+      // bookings here" must look the same however she reached it.
+      emptyTitle: "אין תורים למספר הזה",
+      emptyBody: "כשתקבעי תור בבוטיק, הוא יופיע כאן.",
+      emptyCta: "קביעת תור",
+      loadingBookings: "טוענות את התורים שלך",
+
+      // Badges only where the status demands action or explains an absence
+      // (design P3). A confirmed upcoming row carries none — the default state
+      // needs no label — and `no_show` is never rendered back at her.
+      statusAwaitingPayment: "ממתין לתשלום המקדמה",
+      statusCancelled: "בוטל",
+
+      backToList: "חזרה לתורים שלי",
+      icsDownload: "הוספה ליומן",
+      icsHint: "הקובץ נפתח ביומן של הטלפון או המחשב.",
+
+      // The bell's accessible names. The visible badge is aria-hidden and the
+      // count lives HERE, so a screen reader hears the number rather than "9+".
+      bellLabel: "הודעות מהבוטיק",
+      bellLabelUnread: "הודעות מהבוטיק, {{count}} חדשות",
+      bellTitle: "הודעות מהבוטיק",
+      bellClose: "סגירת ההודעות",
+      bellEmpty: "אין הודעות עדיין. הודעות על התורים שלך יופיעו כאן.",
+      // ONE key per rendered kind. Rendered from `kind` + booking facts and
+      // NEVER from message_log.body — masked OTP codes live there.
+      bellKindConfirmation: "אישור קביעת התור",
+      bellKindReminder: "תזכורת לתור",
+      bellKindOwnerCancel: "התור בוטל על ידי הבוטיק",
+      bellKindOwnerReschedule: "מועד התור עודכן",
+      bellKindPaymentReceivedNoSlot: "התשלום התקבל ונחזור אלייך לגבי המועד",
     },
 
     // F22's booking-waitlist reveal on the /book slot step. SEVEN keys — the

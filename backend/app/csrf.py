@@ -1,10 +1,21 @@
-"""CSRF defense-in-depth for the cookie-authenticated /manage surface.
+"""CSRF defense-in-depth for every cookie-authenticated surface.
 
 SameSite=Lax already blocks classic cross-SITE CSRF, but once public tenant
 pages exist (F10) a sibling subdomain is same-SITE — Lax does nothing there.
-So mutating /manage requests whose Origin header names a different host than
-the request Host are rejected. Requests without an Origin header pass: they
-are not browser cross-origin submissions (curl, server-to-server, tests)."""
+So mutating requests under a protected prefix whose Origin header names a
+different host than the request Host are rejected. Requests without an Origin
+header pass: they are not browser cross-origin submissions (curl,
+server-to-server, tests).
+
+The prefix list is COOKIE-DRIVEN, not layout-driven: a prefix belongs here when
+a router under it reads an ambient credential the browser attaches by itself.
+`/manage` is the staff surface. `/storefront/portal` is F24's client portal —
+the first cookie reader outside `/manage`, and the exact case the paragraph
+above describes: `evil.<base_domain>` is same-site with `victim.<base_domain>`,
+so a body-less `<form method=post>` at `/storefront/portal/logout` or
+`/storefront/portal/bell/seen` is a CORS-simple request that Lax happily signs.
+The rest of `/storefront` stays out — those routers read no cookie, which their
+cookie-blindness tests hold true."""
 
 from urllib.parse import urlsplit
 
@@ -13,7 +24,8 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import JSONResponse, Response
 
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-PROTECTED_PREFIX = "/manage"
+# A tuple because `str.startswith` takes one directly — no loop, no join.
+PROTECTED_PREFIXES = ("/manage", "/storefront/portal")
 
 CSRF_ORIGIN_MISMATCH_BODY = {
     "error": {
@@ -45,7 +57,7 @@ def _origin_matches_host(origin: str, host: str | None) -> bool:
 
 class CsrfOriginMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if request.method in MUTATING_METHODS and request.url.path.startswith(PROTECTED_PREFIX):
+        if request.method in MUTATING_METHODS and request.url.path.startswith(PROTECTED_PREFIXES):
             origin = request.headers.get("origin")
             if origin is not None and not _origin_matches_host(origin, request.headers.get("host")):
                 return JSONResponse(CSRF_ORIGIN_MISMATCH_BODY, status_code=403)

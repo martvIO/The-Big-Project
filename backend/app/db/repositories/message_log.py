@@ -1,10 +1,12 @@
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Row, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.booking import Booking
+from app.models.constants import MessageKind, MessageStatus
 from app.models.message_log import MessageLog
 
 # The CRM screen's log window. No pagination and no `kind` filter, so this is a
@@ -63,6 +65,12 @@ def _customer_log_where(
             and_(MessageLog.phone == phone, MessageLog.booking_id.is_(None)),
         ),
     )
+
+
+# The bell's window (F24 D6). No pagination: `message_log` is retained 24 months
+# and a boutique sends a handful of lifecycle messages per booking, so twenty
+# rows is several appointments deep — and the badge caps at «9+» regardless.
+BELL_LIMIT = 20
 
 
 class MessageLogRepository:
@@ -158,6 +166,57 @@ class MessageLogRepository:
             .where(*_customer_log_where(tenant_id, customer_id, phone))
         )
         return (await session.execute(stmt)).scalar_one()
+
+    async def list_bell_for_customer(
+        self, session: AsyncSession, tenant_id: UUID, customer_id: UUID
+    ) -> list[Row[tuple[UUID, str, datetime, UUID | None, datetime, str]]]:
+        """The bell projection (F24 D6): what the boutique actually TOLD her.
+
+        **`body` is not in the SELECT, and that is the strongest available form
+        of the rule** — a later author cannot forget to strip it from a shape
+        that never carried it. Bodies store masked OTP codes and send-time
+        Hebrew; the client renders from `kind` plus these facts.
+
+        **`status = 'sent'` only.** A failed send never reached her, and the
+        bell mirrors her INBOX, not our attempts — showing a failure here would
+        have the boutique claiming to have told her something it did not.
+
+        **`kind != 'otp'`** because a login code is not news about an
+        appointment, and because those are the rows whose bodies are masked.
+
+        **Attribution is the BOOKING JOIN alone**, never the phone: this is the
+        `_customer_log_where` fence above taken to its conclusion. A row without
+        a `booking_id` cannot be attributed to a person safely (phones are
+        corrected and recycled), and every kind the bell renders carries one.
+
+        The `id` tiebreak is the `list_for_customer` sentence verbatim:
+        `created_at` is `now()` = `transaction_timestamp()`, constant for rows
+        written in one transaction, so "newest first" over a tie is otherwise a
+        coin flip — and under a LIMIT a tie decides which row is DROPPED.
+        """
+        stmt = (
+            select(
+                MessageLog.id,
+                MessageLog.kind,
+                MessageLog.created_at,
+                MessageLog.booking_id,
+                Booking.starts_at,
+                Booking.appointment_type_name,
+            )
+            .join(Booking, Booking.id == MessageLog.booking_id)
+            .where(
+                MessageLog.tenant_id == tenant_id,
+                MessageLog.deleted_at.is_(None),
+                MessageLog.kind != MessageKind.OTP.value,
+                MessageLog.status == MessageStatus.SENT.value,
+                Booking.tenant_id == tenant_id,
+                Booking.customer_id == customer_id,
+                Booking.deleted_at.is_(None),
+            )
+            .order_by(MessageLog.created_at.desc(), MessageLog.id.desc())
+            .limit(BELL_LIMIT)
+        )
+        return list((await session.execute(stmt)).all())
 
     async def _by_id(
         self, session: AsyncSession, tenant_id: UUID, log_id: UUID

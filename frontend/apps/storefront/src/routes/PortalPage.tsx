@@ -1,0 +1,263 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Button, VisuallyHidden } from "@boutique/ui";
+import { ApiError, api } from "../api";
+import type { PortalBell as PortalBellData, PortalBookings } from "../api";
+import { useBoutique } from "../components/StorefrontLayout";
+import { PortalBell } from "../components/portal/PortalBell";
+import { PortalBookingDetail } from "../components/portal/PortalBookingDetail";
+import { PortalBookingList } from "../components/portal/PortalBookingList";
+import { PortalLogin } from "../components/portal/PortalLogin";
+import { MAIN_ID } from "../router";
+
+// /portal — the client portal's one route (design §1). Four surfaces live on it:
+// the login panel, the "My Bookings" dashboard, the booking detail and the bell.
+//
+// It BOOTSTRAPS on `portalMe()` because the session cookie is HttpOnly: the SPA
+// cannot see whether it exists without asking, which is also why the bell lives
+// on this page only — a bell in the storefront-wide layout would need a session
+// probe on every catalogue view.
+//
+// A 401 is a STATE here and never an error. That is the whole reason this page
+// has the shape it does.
+
+// Identical to /book/* and /b/{token} so the three surfaces read as one product.
+// The column stays 640 and centred at every width — a reading column, not a
+// dashboard (E9's multi-fitting dashboard may revisit that). pb-16 clears the
+// fixed A11yMenu trigger.
+const pageClass = "mx-auto flex max-w-[640px] flex-col gap-6 px-4 pt-8 pb-16 md:px-6";
+
+// i18next replaces a missing {{name}} with "" (and warns), so the split rides a
+// sentinel: the interpolated NUL can never appear in Hebrew copy, and splitting
+// on it is what lets the name live inside a <bdi> island (R19) — which plain
+// interpolation cannot carry.
+const NAME_SENTINEL = "\x00";
+
+type Session =
+  | { kind: "unknown" }
+  | { kind: "out"; notice: string | null }
+  | { kind: "in"; name: string };
+
+export function PortalPage() {
+  const { t } = useTranslation();
+  const { boutique } = useBoutique();
+  const [session, setSession] = useState<Session>({ kind: "unknown" });
+  const [bookings, setBookings] = useState<PortalBookings | null>(null);
+  const [listFailed, setListFailed] = useState(false);
+  const [listLoading, setListLoading] = useState(false);
+  const [bell, setBell] = useState<PortalBellData | null>(null);
+  const [bellFailed, setBellFailed] = useState(false);
+  const [openBookingId, setOpenBookingId] = useState<string | null>(null);
+  // Written on DISCRETE events only (R16): signed in, signed out, session
+  // expired, cancelled, attendance confirmed. Never on a keystroke.
+  const [announced, setAnnounced] = useState<string | null>(null);
+
+  // Design §10, the five in-page focus rules this route owns: login→dashboard,
+  // logout→login, expiry→login, list→detail and detail→back all land on
+  // `#content`. Every one of them unmounts the control that caused it (the
+  // כניסה button, the יציאה button, the row, the back link), and a browser drops
+  // focus to <body> when the focused node is removed — the one outcome the
+  // design forbids outright. The router's focus effect cannot cover these: none
+  // of them changes the /portal pathname.
+  //
+  // A view identity rather than five call sites, because the mover is the state
+  // change and every one of these IS a state change on this component. Keyed
+  // through a ref the way router.tsx does it, so React 19 StrictMode's
+  // double-invoked effect doesn't read as a transition.
+  const view = session.kind === "in" ? (openBookingId === null ? "list" : "detail") : session.kind;
+  const focusedView = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = focusedView.current;
+    focusedView.current = view;
+    // Leaving "unknown" is the bootstrap resolving, not a transition she made:
+    // on first paint the browser owns focus and the skip link is the first stop.
+    if (previous === null || previous === "unknown" || previous === view) return;
+    document.getElementById(MAIN_ID)?.focus();
+  }, [view]);
+
+  // The ONE place a mid-session 401 is handled, so every surface reports expiry
+  // the same way: back to the login panel with a muted fact above it (state X).
+  // No countdown and no warning before it — a thirty-day TTL makes a warning
+  // theatre.
+  const expire = useCallback(() => {
+    setSession({ kind: "out", notice: "portal.sessionExpired" });
+    setOpenBookingId(null);
+    setBookings(null);
+    setBell(null);
+    setAnnounced("portal.sessionExpired");
+  }, []);
+
+  const loadBookings = useCallback(async () => {
+    setListLoading(true);
+    setListFailed(false);
+    try {
+      setBookings(await api.portalBookings());
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 401) {
+        expire();
+      } else {
+        setBookings(null);
+        setListFailed(true);
+      }
+    } finally {
+      setListLoading(false);
+    }
+  }, [expire]);
+
+  const loadBell = useCallback(async () => {
+    setBellFailed(false);
+    try {
+      setBell(await api.portalBell());
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 401) {
+        expire();
+        return;
+      }
+      // NEVER a stale or invented count — the button renders with no badge.
+      setBell(null);
+      setBellFailed(true);
+    }
+  }, [expire]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const me = await api.portalMe();
+        if (!cancelled) setSession({ kind: "in", name: me.customer_name });
+      } catch {
+        // Any failure — 401, offline, a proxy HTML page — renders the login
+        // panel. There is nothing else this page could usefully show, and a
+        // "could not reach the server" screen in front of a login form is a
+        // dead end where a form would do.
+        if (!cancelled) setSession({ kind: "out", notice: null });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (session.kind !== "in") return;
+    void loadBookings();
+    // Once, on mount of the signed-in view. Pre-decided #18 verbatim: no
+    // interval, no focus-refetch, no websocket.
+    void loadBell();
+  }, [session.kind, loadBookings, loadBell]);
+
+  const signOut = async () => {
+    try {
+      await api.portalLogout();
+    } catch {
+      // A logout that could not reach the server still ends the session HERE:
+      // leaving her looking at a dashboard she asked to leave is worse than a
+      // cookie that expires on its own.
+    }
+    setSession({ kind: "out", notice: null });
+    setOpenBookingId(null);
+    setBookings(null);
+    setBell(null);
+    setAnnounced("portal.loggedOut");
+  };
+
+  const statusRegion = (
+    // R30's nested shape everywhere: aria-busy on a plain div is announced by
+    // neither VoiceOver nor NVDA.
+    <VisuallyHidden>
+      <span role="status">{announced === null ? "" : t(announced)}</span>
+    </VisuallyHidden>
+  );
+
+  if (session.kind === "unknown") {
+    return (
+      <div className={pageClass} data-testid="portal-bootstrapping">
+        <VisuallyHidden>
+          <span role="status">{t("portal.loadingBookings")}</span>
+        </VisuallyHidden>
+      </div>
+    );
+  }
+
+  if (session.kind === "out") {
+    return (
+      <div className={pageClass}>
+        <PortalLogin
+          boutique={boutique}
+          notice={session.notice}
+          onSignedIn={(name) => {
+            setSession({ kind: "in", name });
+            setAnnounced("portal.loggedIn");
+          }}
+        />
+        {statusRegion}
+      </div>
+    );
+  }
+
+  const [greetingLead, greetingTail] = t("portal.greeting", { name: NAME_SENTINEL }).split(
+    NAME_SENTINEL,
+  );
+
+  return (
+    <div className={pageClass}>
+      <div className="flex flex-col gap-3">
+        <h1 className="font-display text-2xl text-ink">
+          {greetingLead}
+          <bdi>{session.name}</bdi>
+          {greetingTail}
+        </h1>
+        <span aria-hidden="true" className="h-px w-12 bg-gold" />
+      </div>
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <PortalBell
+          data={bell}
+          failed={bellFailed}
+          onRetry={() => {
+            void loadBell();
+          }}
+          onOpenBooking={setOpenBookingId}
+        />
+        <div className="flex">
+          <Button
+            variant="ghost"
+            size="md"
+            fullWidthMobile
+            onClick={() => {
+              void signOut();
+            }}
+          >
+            {t("portal.logout")}
+          </Button>
+        </div>
+      </div>
+
+      {openBookingId === null ? (
+        <PortalBookingList
+          data={bookings}
+          loading={listLoading}
+          failed={listFailed}
+          onRetry={() => {
+            void loadBookings();
+          }}
+          onOpen={setOpenBookingId}
+        />
+      ) : (
+        <PortalBookingDetail
+          bookingId={openBookingId}
+          onBack={() => {
+            setOpenBookingId(null);
+            // The list may have changed under a cancel — reload rather than
+            // render a row the server no longer agrees with.
+            void loadBookings();
+          }}
+          onExpired={expire}
+          onAnnounce={setAnnounced}
+        />
+      )}
+
+      {statusRegion}
+    </div>
+  );
+}

@@ -77,6 +77,12 @@ export function errorMessageKey(error: unknown): string {
     // cancelled copy would tell a bride mid-checkout her appointment is gone.
     case "BOOKING_AWAITING_PAYMENT":
       return "errors.bookingAwaitingPayment";
+    // F24's login refusal. Its own code so the login panel can render a designed
+    // «no bookings for this number» screen off it rather than a generic 404
+    // sentence — and it is not an oracle: she has just proved possession of the
+    // number, so it discloses only her own data to herself.
+    case "PORTAL_NO_BOOKINGS":
+      return "errors.portalNoBookings";
     default:
       return "errors.unknown";
   }
@@ -119,15 +125,20 @@ function extractError(body: unknown): { code: string; message: string } | null {
 
 export async function apiFetch<T>(
   path: string,
-  init: { method?: string; body?: unknown } = {},
+  init: { method?: string; body?: unknown; withSession?: boolean } = {},
 ): Promise<T> {
-  // credentials: "omit" — on the mutations too, by contract. The booking
-  // surface is cookie-blind: the credential is the verification token in the
-  // body, and a backend test asserts an owner cookie changes nothing.
-  const { method = "GET", body } = init;
+  // credentials: "omit" BY DEFAULT — on the mutations too, by contract. The
+  // booking surface is cookie-blind: the credential is the verification token
+  // in the body, and a backend test asserts an owner cookie changes nothing.
+  //
+  // `withSession` is F24's opt-in and the ONLY caller is the portal, whose
+  // credential IS the `boutique_customer_session` cookie. "same-origin" and
+  // never "include": the SPA and the API share the tenant host, and "include"
+  // would attach the cookie to a cross-origin request the day one is added.
+  const { method = "GET", body, withSession = false } = init;
   const response = await fetch(path, {
     method,
-    credentials: "omit",
+    credentials: withSession ? "same-origin" : "omit",
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -408,6 +419,59 @@ export interface ManageBookingResponse {
   boutique: ManageBoutique;
 }
 
+// --- portal wire types (mirror backend/app/portal/schemas.py) ---
+
+export interface PortalSession {
+  // The whole body of both the mint and /portal/me. NO customer id and NO
+  // phone: the cookie is the capability and she typed the number.
+  customer_name: string;
+}
+
+export interface PortalLoginRequest {
+  phone: string;
+  verification_token: string;
+}
+
+export interface PortalBookingRow {
+  id: string;
+  starts_at: string;
+  // Same five values the manage payload carries.
+  status: string;
+  attendance_confirmed_at: string | null;
+  appointment_type_name: string;
+  dress_name: string | null;
+  dress_size: string | null;
+}
+
+export interface PortalBookings {
+  // Server-ordered: upcoming ASC, past DESC, split on the SERVER's clock. The
+  // client re-sorts nothing — a clock in the browser is a boundary that moves
+  // per device.
+  upcoming: PortalBookingRow[];
+  past: PortalBookingRow[];
+}
+
+export interface PortalBellItem {
+  id: string;
+  // "confirmation" | "reminder" | "owner_cancel" | "owner_reschedule" |
+  // "payment_received_no_slot". An unknown kind renders NOTHING — a raw enum
+  // must never reach the screen.
+  kind: string;
+  created_at: string;
+  booking_id: string;
+  starts_at: string;
+  appointment_type_name: string;
+}
+
+export interface PortalBell {
+  // Displayed capped at "9+".
+  unread_count: number;
+  // ⚠ THERE IS NO `body` FIELD AND THERE MUST NEVER BE ONE. message_log bodies
+  // store masked OTP codes; each row is rendered from `kind` plus these
+  // booking facts through i18n.
+  items: PortalBellItem[];
+}
+
 // --- booking-waitlist wire types (mirror backend/app/waitlist/schemas.py) ---
 
 // EXACTLY four keys, and the join test pins the set by equality: the fields D1
@@ -588,6 +652,60 @@ export const api = {
     });
   },
 
+  // --- F24's client portal -------------------------------------------------
+  //
+  // EVERY call below passes `withSession: true`: the credential is the
+  // `boutique_customer_session` cookie, which is HttpOnly and therefore
+  // invisible to this file — the SPA cannot even ask whether it exists without
+  // making one of these requests. That is why the page bootstraps on `portalMe`
+  // and treats a 401 as a STATE rather than an error.
+
+  portalMe(): Promise<PortalSession> {
+    return apiFetch("/storefront/portal/me", { withSession: true });
+  },
+  // The mint. `phone` is the raw string she typed — the backend normalises, and
+  // it must match the number the verification token was minted for.
+  portalLogin(body: PortalLoginRequest): Promise<PortalSession> {
+    return apiFetch("/storefront/portal/session", {
+      method: "POST",
+      body,
+      withSession: true,
+    });
+  },
+  portalLogout(): Promise<{ ok: boolean }> {
+    return apiFetch("/storefront/portal/logout", { method: "POST", withSession: true });
+  },
+  portalBookings(): Promise<PortalBookings> {
+    return apiFetch("/storefront/portal/bookings", { withSession: true });
+  },
+  // Answers the SAME shape the tokenized page reads, so the detail component is
+  // one rendering over two transports (spec D4).
+  portalBooking(id: string): Promise<ManageBookingResponse> {
+    return apiFetch(`/storefront/portal/booking?id=${encodeURIComponent(id)}`, {
+      withSession: true,
+    });
+  },
+  portalConfirmAttendance(id: string): Promise<ManageBookingResponse> {
+    return apiFetch("/storefront/portal/booking/confirm-attendance", {
+      method: "POST",
+      body: { id },
+      withSession: true,
+    });
+  },
+  portalCancel(id: string): Promise<ManageBookingResponse> {
+    return apiFetch("/storefront/portal/booking/cancel", {
+      method: "POST",
+      body: { id },
+      withSession: true,
+    });
+  },
+  portalBell(): Promise<PortalBell> {
+    return apiFetch("/storefront/portal/bell", { withSession: true });
+  },
+  portalBellSeen(): Promise<{ ok: boolean }> {
+    return apiFetch("/storefront/portal/bell/seen", { method: "POST", withSession: true });
+  },
+
   // F59's wall board. A POST for a read like its two check-in siblings, but NOT
   // for their reason — this request carries no capability and no secret at all,
   // and takes no body whatsoever. It is a POST because the backend's public-read
@@ -599,6 +717,48 @@ export const api = {
     return apiFetch("/storefront/queue", { method: "POST" });
   },
 };
+
+/**
+ * The portal's `.ics` href. A PLAIN URL and not a fetch: on iOS a direct
+ * `text/calendar` response opens the add-to-calendar sheet, while a
+ * fetch-and-blob download lands a file she then has to find. Safe in a URL
+ * because the booking id is not the capability here — the cookie is.
+ */
+export function portalIcsUrl(id: string): string {
+  return `/storefront/portal/booking.ics?id=${encodeURIComponent(id)}`;
+}
+
+/**
+ * The TOKENIZED page's `.ics`, and it cannot be a link: the manage token is the
+ * credential and tokens never ride URLs (F14 D7). So this is a POST whose body
+ * becomes a blob download — one rendering, two transports.
+ *
+ * Returns the object URL and the revoke, because a blob URL leaks the whole
+ * document's memory until it is revoked and the caller owns the click.
+ */
+export async function manageIcsBlobUrl(token: string): Promise<{ url: string; revoke: () => void }> {
+  const response = await fetch("/storefront/booking/ics", {
+    method: "POST",
+    credentials: "omit",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!response.ok) {
+    let extracted: { code: string; message: string } | null = null;
+    try {
+      extracted = extractError(await response.json());
+    } catch {
+      // Non-JSON error body — fall through to the fallback.
+    }
+    throw new ApiError(
+      response.status,
+      extracted?.code ?? "UNKNOWN",
+      extracted?.message ?? FALLBACK_ERROR_MESSAGE,
+    );
+  }
+  const url = URL.createObjectURL(await response.blob());
+  return { url, revoke: () => URL.revokeObjectURL(url) };
+}
 
 // The footer needs the boutique block on every page and the body needs it again
 // on / and /about. One promise per page load covers both; unlike the dress

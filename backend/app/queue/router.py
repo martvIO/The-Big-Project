@@ -38,7 +38,7 @@ board a second key on the catalog's 6000/60s read brake (the exact failure
 main.py names verbatim) or weaken a guard protecting six shipped public reads.
 
 **Anonymous, and CSRF is structurally N/A on two independent grounds.**
-CsrfOriginMiddleware only inspects paths under /manage, and these routes read no
+these paths are under no `CsrfOriginMiddleware.PROTECTED_PREFIXES`, and they read no
 cookie and carry no ambient credential, so there is nothing a cross-site request
 could ride. The controls are tenant-from-Host and the four service-held budgets.
 The cookie-blindness tests keep the second claim true forever.

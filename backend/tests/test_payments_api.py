@@ -406,7 +406,7 @@ def test_a_malformed_body_is_the_house_400() -> None:
 
 
 def test_a_forged_origin_is_refused_before_the_route() -> None:
-    # CsrfOriginMiddleware.PROTECTED_PREFIX is /manage and these are
+    # /manage is in CsrfOriginMiddleware.PROTECTED_PREFIXES and these are
     # cookie-authenticated state-changing routes. No middleware change needed —
     # this pins that it really covers them.
     fake = FakeGatewayService()

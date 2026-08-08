@@ -131,6 +131,8 @@ from app.payments.service import (
 from app.payments.unconfigured import UnconfiguredGateway
 from app.payments.webhook_router import DepositBookingService
 from app.payments.webhook_router import router as webhook_router
+from app.portal.router import router as portal_router
+from app.portal.service import PortalNoBookingsError, PortalService, PortalThrottledError
 from app.privacy.router import router as privacy_router
 from app.privacy.service import PrivacyService, SubjectHasActiveBookingError
 from app.privacy.validation import (
@@ -275,6 +277,17 @@ TERMS_STALE_BODY = {
     "error": {
         "code": "TERMS_STALE",
         "message": "The booking terms changed. Review and accept them again.",
+    }
+}
+# F24's login refusal, and its OWN code rather than the house 404: the portal
+# login panel renders a designed «no bookings for this number» state off it, and
+# NOT_FOUND would be indistinguishable from an archived dress on the same origin.
+# Not an enumeration oracle — the caller has just proved possession of the phone,
+# so this discloses only her own data to herself (spec D1).
+PORTAL_NO_BOOKINGS_BODY = {
+    "error": {
+        "code": "PORTAL_NO_BOOKINGS",
+        "message": "There are no bookings for this phone number at this boutique.",
     }
 }
 # ONE body for unknown, rotated and malformed manage tokens — distinguishing them
@@ -866,6 +879,23 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             clock=time.monotonic,
         ),
     )
+    # F24's portal. The OTP service is the SAME instance the booking and waitlist
+    # flows use — deliberately (spec D3): the metered resource on send/verify is
+    # the SMS spend and the guess surface, which is identical whichever flow
+    # asks, and the same person logging in and booking is one actor on one phone.
+    # The MINT brake is its own instance, the rule this file has now stated six
+    # times: max_attempts lives on the LIMITER, so a key on an existing budget
+    # would hand this path somebody else's ceiling.
+    app.state.portal_service = PortalService(
+        get_session_factory(),
+        otp=app.state.otp_service,
+        mint_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.portal_login_max_per_tenant_window,
+            window_seconds=settings.portal_login_window_seconds,
+            clock=time.monotonic,
+        ),
+        session_ttl_seconds=settings.portal_session_ttl_seconds,
+    )
     # base_domain, not a hardcoded host: the manage link the SMS carries has to
     # resolve to the tenant's own storefront in dev, staging and production
     # alike, and Settings is where deployment identity lives.
@@ -1201,6 +1231,18 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _waitlist_throttled(request: Request, exc: WaitlistThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
 
+    # F24's mint brake — its own class for the reason the five above are five.
+    @app.exception_handler(PortalThrottledError)
+    async def _portal_throttled(request: Request, exc: PortalThrottledError) -> JSONResponse:
+        return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
+
+    # 404 with its own code, for BOOKING_LINK_INVALID's reason one surface over:
+    # the login panel renders a state off it and NOT_FOUND would collapse into
+    # every other 404 on the origin.
+    @app.exception_handler(PortalNoBookingsError)
+    async def _portal_no_bookings(request: Request, exc: PortalNoBookingsError) -> JSONResponse:
+        return JSONResponse(PORTAL_NO_BOOKINGS_BODY, status_code=404)
+
     # 404, and NOT the shared NOT_FOUND body: the page renders its own
     # invalid-link state off this code, and reusing NOT_FOUND would make it
     # indistinguishable from an archived dress on the same origin.
@@ -1535,6 +1577,12 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # F13's create shape minus the booking of. Same anonymous posture; asserted
     # in test_waitlist_api.py. Same shadowing hazard as every router above.
     app.include_router(waitlist_router)
+    # F24's client portal — the SEVENTH /storefront sibling, and the FIRST
+    # anonymous-prefix router in the tree that reads a cookie. It carries its own
+    # `/storefront/portal` prefix rather than new routes on the read router,
+    # which is contractually GET-only. Same shadowing hazard as every router
+    # above; test_portal_api.py's path literals keep it honest.
+    app.include_router(portal_router)
     # The FOURTH /storefront sibling (F19 D9): the provider webhook and the
     # payment-status poll. Deliberately NOT routes on storefront_router — that
     # router carries a per-tenant _throttle, and 429-ing a provider's retry

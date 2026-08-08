@@ -3,7 +3,7 @@ catalog/identity reads from F10, F12's booking grid (`/slots`,
 `/appointment-types`), and F14's cancellation-policy read (`/terms`).
 
 **Why prefix="/storefront" and not a public corner of /manage.**
-`CsrfOriginMiddleware.PROTECTED_PREFIX` is `/manage` and F10 has no mutating
+`CsrfOriginMiddleware.PROTECTED_PREFIXES` did not cover `/storefront` and F10 has no mutating
 route to protect; `app/boutique/router.py` and `app/catalog/router.py` both
 mount `/manage`, so a third router there would make path shadowing a three-way
 hazard; and the dev proxy needs one unambiguous prefix to forward. Any future

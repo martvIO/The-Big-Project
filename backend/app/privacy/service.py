@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.db.repositories.audit_log import AuditLogRepository
+from app.db.repositories.customer_sessions import CustomerSessionsRepository
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.queue_tickets import QueueTicketsRepository
 from app.db.repositories.tenants import TenantsRepository
@@ -131,6 +132,7 @@ class PrivacyService:
         self._tenants = TenantsRepository(session_factory)
         self._customers = CustomersRepository()
         self._queue_tickets = QueueTicketsRepository()
+        self._customer_sessions = CustomerSessionsRepository()
         self._audit = AuditLogRepository()
         # THREE INSTANCES, never one limiter with three keys: `max_attempts` is
         # per instance, so a shared one would give all three routes a single
@@ -616,6 +618,18 @@ class PrivacyService:
                 .scalars()
                 .all()
             )
+
+            # 4d. Her portal sessions (F24, spec D2). Keyed on the CUSTOMER ID
+            #     rather than the phone — step 2 destroyed the phone, and a
+            #     session was never keyed on one anyway.
+            #
+            #     Not a count on the response and not a line in the audit
+            #     details: those enumerate the SUBJECT DATA the erase touched,
+            #     and a session is a credential, not a record of her. What must
+            #     be true is only that no live cookie survives this transaction
+            #     — she would otherwise keep reading her own erased record for
+            #     up to the thirty-day TTL.
+            await self._customer_sessions.revoke_all_for_customer(session, tenant_id, customer_id)
 
             # 5. PURGED, not scrubbed: the whole row is her data in both cases.
             otp_purged = len(

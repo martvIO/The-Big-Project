@@ -191,11 +191,27 @@ def _iter_leaf_routes(node: Any) -> Iterator[Any]:
 # the new route. Now they all do. Adding a public route stays a DELIBERATE act
 # because test_no_route_is_registered_twice_across_routers still pins the
 # expected set explicitly; what is no longer possible is forgetting quietly.
+#
+# ⚠ ONE SUBTREE IS EXCLUDED, and the exclusion is a claim rather than a
+# convenience. F24's `/storefront/portal/*` GETs are COOKIE-AUTHED: they are the
+# only reads under this prefix that are not anonymous, so every guard below —
+# no-auth, no-cookie, owner-cookie-changes-nothing, read-throttle-not-inert —
+# asserts the opposite of what is true for them. F59 solved the same collision
+# by making its route a POST; that escape is unavailable here, because
+# `booking.ics` must be a native GET (a direct `text/calendar` response is what
+# opens the add-to-calendar sheet on iOS) and the rest of the portal reads
+# follow it for consistency. The positive control they trade for is
+# test_portal_api.py's auth matrix, which parametrises 401-without-cookie,
+# 401-with-garbage-cookie and staff-cookie-is-not-a-portal-credential over every
+# one of them — a stronger statement than the four guards here would make.
+_PORTAL_PREFIX = "/storefront/portal"
 ROUTES = sorted(
     {
         path.replace("{dress_id}", str(DRESS_ID))
         for method, path in _registered_routes(create_app(resolver=_null_resolver))
-        if method == "GET" and path.startswith("/storefront")
+        if method == "GET"
+        and path.startswith("/storefront")
+        and not path.startswith(_PORTAL_PREFIX)
     }
 )
 # An empty parametrize list is collected silently, which is the exact vacuum the
@@ -656,10 +672,36 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         # zero-new-error-codes table asserted in test_waitlist_api.py. No new
         # GET, so the five ROUTES-parametrized guards needed no edit.
         "/storefront/waitlist",
+        # F24's client portal — the SEVENTH sibling, and the FIRST router on an
+        # anonymous prefix that reads a cookie. The mint is anonymous (its
+        # credential is the verification token in the body); the other two are
+        # cookie-authed, which is why ROUTES above excludes this subtree and
+        # test_portal_api.py carries the auth matrix instead.
+        "/storefront/portal/session",
+        "/storefront/portal/me",
+        "/storefront/portal/logout",
+        "/storefront/portal/bookings",
+        "/storefront/portal/booking",
+        "/storefront/portal/booking/confirm-attendance",
+        "/storefront/portal/booking/cancel",
+        # F24's `.ics` pair — ONE builder, two transports. The portal's is a
+        # native GET (cookie-authed, and a direct text/calendar response is what
+        # opens the add-to-calendar sheet on iOS); the tokenized page's is a POST
+        # because the manage token is the credential and tokens never ride URLs.
+        "/storefront/portal/booking.ics",
+        "/storefront/booking/ics",
+        # F24's bell — a page-open projection over message_log, never polled.
+        "/storefront/portal/bell",
+        "/storefront/portal/bell/seen",
     }
     # Singular /booking/* must never collide with the plural /bookings create.
+    # Restricted to the tokenized surface deliberately: F24 adds
+    # /storefront/portal/booking* one level down, and those are the PORTAL's
+    # singular routes, not this collision's subject.
     assert "/storefront/bookings" not in {
-        path for _, path in registered if path.startswith("/storefront/booking/")
+        path
+        for _, path in registered
+        if path.startswith("/storefront/booking/") and not path.startswith("/storefront/portal")
     }
     # And no storefront path is reachable under the CSRF-protected prefix.
     assert not any(path.startswith("/manage/storefront") for _, path in registered)

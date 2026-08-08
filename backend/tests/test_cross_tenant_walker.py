@@ -49,7 +49,8 @@ THEIR 404 IS THEREFORE NOT EVIDENCE. A 404 proves isolation only if the route
 answers something ELSE for the caller's own ids; tenant A is never populated, so
 this module never checks that, and for two routes it is false. Both are named in
 `STATE_GUARDED` below with the guard that actually produces the refusal. The
-honest count is **57 driven, 55 discriminating** — R9 says so too.
+honest count is **61 driven, 59 discriminating** — R9 says so too.
+(57/55 until F24's client portal added four cookie-authed routes to the walk.)
 
 Recorded rather than fixed, deliberately. The 2026-08-05 review built the sound
 control (a freshly seeded tenant PER ROUTE — reusing one tenant produced sixteen
@@ -270,6 +271,11 @@ PROBES: dict[tuple[str, str], dict[str, Any]] = {
         "target_staff_user_id": Kind.STAFF,
         "fitting_room_assignment_id": Kind.ASSIGNMENT,
     },
+    # portal (F24) — the mirrored actions, driven with tenant A's own CUSTOMER
+    # cookie against tenant B's booking id. See `_seed_portal_session` for why
+    # this module now signs a customer in as well as an owner.
+    ("POST", "/storefront/portal/booking/confirm-attendance"): {"id": Kind.BOOKING},
+    ("POST", "/storefront/portal/booking/cancel"): {"id": Kind.BOOKING},
     # queue
     ("POST", "/manage/floor/queue/{ticket_id}/skip"): {"seen_skip_count": 0},
     ("POST", "/storefront/checkin/position"): {"ticket_id": Kind.QUEUE_TICKET},
@@ -304,6 +310,17 @@ PROBES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/manage/atelier/seamstresses/{staff_user_id}/capacity"): {
         "weekly_capacity_hours": 10
     },
+}
+
+
+# Tenant-owned ids that ride the QUERY STRING rather than a path segment or a
+# body. F24 is the first feature to need this: a booking id is not a capability
+# on the cookie-authed portal (the cookie is), so its reads are plain GETs with
+# `?id=` — and `.ics` in particular MUST be a native GET, because a direct
+# `text/calendar` response is what opens the add-to-calendar sheet on iOS.
+QUERY_PROBES: dict[tuple[str, str], dict[str, Kind]] = {
+    ("GET", "/storefront/portal/booking"): {"id": Kind.BOOKING},
+    ("GET", "/storefront/portal/booking.ics"): {"id": Kind.BOOKING},
 }
 
 
@@ -370,6 +387,13 @@ UNWALKABLE: dict[tuple[str, str], str] = {
     ),
     ("POST", "/storefront/booking/cancel"): (
         "same manage token as lookup; possession, not tenancy. test_manage_token.py."
+    ),
+    ("POST", "/storefront/booking/ics"): (
+        "F24's tokenized calendar download — the same manage token as its three "
+        "siblings above, and the same reason: possession, not tenancy, with no "
+        "id to substitute. Its cookie-authed twin GET /storefront/portal/"
+        "booking.ics IS walked, so the shared builder's ownership predicate is "
+        "probed either way."
     ),
     ("POST", "/storefront/booking/payment-status"): (
         "keyed on a provider-issued opaque session string on a payments row, not "
@@ -466,6 +490,20 @@ NO_TENANT_OWNED_ID = frozenset(
         # F22's console list: collection route, no id anywhere; scoping is the
         # host-derived tenant, proved by the same two suites as its siblings.
         ("GET", "/manage/waitlist"),
+        # F24's portal session surface. The mint is keyed on a PHONE plus a
+        # single-use verification token — no id to substitute, and the phone is
+        # resolved inside the caller's own tenant. `me`, `logout` and `bookings`
+        # read the customer COOKIE and nothing else; `bookings` in particular
+        # takes no parameter at all, which is exactly what makes the session the
+        # only possible scope. The portal routes that DO carry a tenant-owned id
+        # are WALKED, with tenant A's own customer cookie (see
+        # `_seed_portal_session`).
+        ("POST", "/storefront/portal/session"),
+        ("GET", "/storefront/portal/me"),
+        ("POST", "/storefront/portal/logout"),
+        ("GET", "/storefront/portal/bookings"),
+        ("GET", "/storefront/portal/bell"),
+        ("POST", "/storefront/portal/bell/seen"),
     }
 )
 
@@ -486,6 +524,11 @@ MODULE_WALK_FLOOR = {
     "storefront": 1,
     # F22: one id-carrying route — the cancel, driven with tenant B's entry id.
     "waitlist": 1,
+    # F24. Four id-carrying routes, all driven with a REAL customer cookie for
+    # tenant A — populate, don't exempt. The remaining portal routes (session,
+    # me, logout, bookings, bell) carry no tenant-owned id and sit in
+    # NO_TENANT_OWNED_ID with their siblings.
+    "portal": 4,
 }
 
 # Modules that expose no route carrying a tenant-owned id, with the reason. A
@@ -531,6 +574,7 @@ _MODULE_BY_PREFIX = (
     ("/manage/atelier", "atelier"),
     ("/manage/waitlist", "waitlist"),
     ("/storefront/waitlist", "waitlist"),
+    ("/storefront/portal", "portal"),
     ("/storefront/otp", "notifications"),
     ("/storefront/payments", "payments"),
     ("/storefront/bookings", "booking"),
@@ -827,6 +871,60 @@ def _populate(client: TestClient, storage: InMemoryMediaStorage) -> dict[Kind, u
     return ids
 
 
+def _seed_portal_session(client: TestClient) -> None:
+    """Sign a CUSTOMER of this tenant into the portal, on the same client that
+    already holds the owner cookie.
+
+    ⚠ POPULATE, DON'T EXEMPT. F24's id-carrying portal routes are cookie-authed,
+    so without a customer session they answer 401 and their «refusal» would
+    prove nothing about tenancy — the walk's 404 is only evidence if the caller
+    could otherwise have been served. Exempting them was the alternative and it
+    is the wrong one here: the ownership predicate they share
+    (`PortalService._hers`) is exactly the code row R9 exists to probe.
+
+    Everything below runs through the PRODUCT, `_populate`'s rule: the atelier
+    create is what mints a customer row by a (tenant, phone) upsert
+    (atelier/service.py:130, :254), then the real OTP send (fake sender), the
+    real verify (the dev code `_settings` wires) and the real mint. She has NO
+    bookings of her own, which is all this walk needs — every probe carries
+    tenant B's id and must 404 either way.
+
+    The two cookies coexist on one jar deliberately: that is the production
+    shape (both apps share the tenant host), and it is the shape that would
+    expose a dependency reading the wrong cookie name.
+    """
+    phone = "+972500000555"
+    _ok(
+        client.post(
+            "/manage/atelier/tickets",
+            json={
+                "customer_name": "Walker portal",
+                "customer_phone": phone,
+                "due_date": _FUTURE_DATE,
+                "effort_band": "one_hour",
+            },
+        ),
+        "portal customer seed",
+    )
+    sent = client.post("/storefront/otp/send", json={"phone": phone})
+    assert sent.status_code == 204, f"seeding portal otp send failed: {sent.status_code}"
+    verified = _ok(
+        client.post("/storefront/otp/verify", json={"phone": phone, "code": "000000"}),
+        "portal otp verify",
+    )
+    _ok(
+        client.post(
+            "/storefront/portal/session",
+            json={"phone": phone, "verification_token": verified["verification_token"]},
+        ),
+        "portal session mint",
+    )
+    assert client.cookies.get("boutique_customer_session"), (
+        "the portal mint set no customer cookie — every walked portal route would "
+        "401 and its 404 assertion would be vacuous"
+    )
+
+
 def _resolve(value: Any, ids: dict[Kind, uuid.UUID]) -> Any:
     if isinstance(value, Kind):
         return str(ids[value])
@@ -845,7 +943,9 @@ def _drive(
         url = url.replace("{" + param + "}", str(ids[_path_kind(path, param)]))
     body = PROBES.get((method, path))
     payload = _resolve(body, ids) if body is not None else None
-    return client.request(method, url, json=payload), url
+    query = QUERY_PROBES.get((method, path))
+    params = _resolve(query, ids) if query is not None else None
+    return client.request(method, url, json=payload, params=params), url
 
 
 @pytest.fixture(scope="module")
@@ -879,6 +979,7 @@ def walk(app_role_url: str) -> Iterator[Walk]:
                 ).status_code
                 == 200
             )
+            _seed_portal_session(client_a)
             for method, path in walkable:
                 responses[(method, path)], _ = _drive(client_a, method, path, other)
         yield Walk(responses=responses, table=table, other=other)
@@ -1023,7 +1124,7 @@ def test_the_exemptions_each_carry_a_reason() -> None:
     # that this list not grow unnoticed — so the fence is now an assertion.
     # SEVEN since F22: the storefront join shares the bookings route's
     # token-gated shape, and its type check is proved in test_waitlist_service.
-    assert len(UNWALKABLE) == 7, (
+    assert len(UNWALKABLE) == 8, (
         f"UNWALKABLE is now {len(UNWALKABLE)} entries. Update the count in its own "
         "comment and in the checklist's R9 row before changing this number."
     )
@@ -1061,7 +1162,7 @@ def test_the_state_guarded_routes_are_walked_and_named(
     discriminating = len(responses) - len(STATE_GUARDED)
     # 57/55 since F22: the manage cancel joined the walk, driven with tenant
     # B's entry id populated through the product's own join.
-    assert (len(responses), discriminating) == (57, 55), (
+    assert (len(responses), discriminating) == (61, 59), (
         f"the walk drove {len(responses)} routes, {discriminating} of them "
         "discriminating. Both numbers are quoted as evidence in "
         ".planning/security-checklist-v1.md's R9 row — update it in the same commit."

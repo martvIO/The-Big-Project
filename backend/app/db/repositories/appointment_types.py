@@ -31,6 +31,24 @@ class AppointmentTypesRepository:
         )
         return (await session.execute(stmt)).scalar_one_or_none()
 
+    async def duration_by_id(
+        self, session: AsyncSession, tenant_id: UUID, type_id: UUID
+    ) -> int | None:
+        """`duration_minutes` for a type INCLUDING an archived one — deliberately
+        NOT `by_id` above, which filters `deleted_at IS NULL` (F24 D5).
+
+        A booking snapshots the type's NAME but never its length, so the `.ics`
+        end time has to come from the live row. Archiving a type is how a
+        boutique retires an offering, and it must not silently change the
+        duration of a fitting somebody already booked — nor fall back to a
+        constant, which would mis-state her afternoon with no error anywhere.
+        """
+        stmt = select(AppointmentType.duration_minutes).where(
+            AppointmentType.tenant_id == tenant_id,
+            AppointmentType.id == type_id,
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
     async def insert(
         self,
         session: AsyncSession,

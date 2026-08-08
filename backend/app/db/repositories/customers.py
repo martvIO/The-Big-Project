@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -112,6 +113,31 @@ class CustomersRepository:
         if (await session.execute(stmt)).scalar_one_or_none() is None:
             return None
         return await self.by_id(session, tenant_id, customer_id)
+
+    async def set_bell_seen(
+        self, session: AsyncSession, tenant_id: UUID, customer_id: UUID, *, at: datetime
+    ) -> bool:
+        """F24's mark-read (spec D6). Returns whether a live row was stamped.
+
+        The instant is passed IN rather than taken as `func.now()`: the caller
+        already holds the request's clock, and the portal's fake-clock tests
+        would otherwise be unable to move the badge at all.
+
+        Unconditional — unlike `record_marketing_consent` above, a later stamp
+        is exactly what this column means, so re-opening the bell moves it
+        forward and that is the feature.
+        """
+        stmt = (
+            update(Customer)
+            .where(
+                Customer.tenant_id == tenant_id,
+                Customer.id == customer_id,
+                Customer.deleted_at.is_(None),
+            )
+            .values(bell_seen_at=at)
+            .returning(Customer.id)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none() is not None
 
     async def search(
         self, session: AsyncSession, tenant_id: UUID, *, q: str | None, offset: int, limit: int
