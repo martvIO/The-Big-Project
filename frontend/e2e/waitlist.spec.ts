@@ -103,6 +103,19 @@ async function installStorefront(page: Page): Promise<void> {
 }
 
 async function axeViolations(page: Page): Promise<string[]> {
+  // Settle every running animation BEFORE scanning. `Button` carries
+  // `transition duration-(--motion-fast)`, so the two-click cancel swap
+  // (secondary → danger) animates its background-color, and `toBeVisible()`
+  // resolves the moment the node is painted — not when the colour arrives.
+  // Scanning inside that window measures an intermediate pink against white
+  // ink and reports `color-contrast — .bg-danger > .gap-2`, which is a FALSE
+  // red: the resting pair is 7.01:1 and the hover pair 5.72:1, both over the
+  // 4.5 floor. It reproduced only under full-suite parallelism, where the
+  // render lands late enough that the scan catches the transition mid-flight.
+  // Same remedy the dialog suites already use (guide.spec.ts `settled`).
+  await page.evaluate(async () => {
+    await Promise.all(document.getAnimations().map((a) => a.finished));
+  });
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.map(
     (v) => `${v.id} — ${v.nodes.map((n) => n.target.join(" ")).join(" | ")}`,
