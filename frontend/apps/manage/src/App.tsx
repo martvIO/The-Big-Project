@@ -12,6 +12,7 @@ import { CustomersSection } from "./components/CustomersSection";
 import { DashboardSection } from "./components/DashboardSection";
 import { GatewaySection } from "./components/GatewaySection";
 import { GuideOverlay } from "./components/GuideOverlay";
+import { NotificationBell } from "./components/NotificationBell";
 import { HoursSection } from "./components/HoursSection";
 import { LoginForm } from "./components/LoginForm";
 import { PrivacySection } from "./components/PrivacySection";
@@ -256,6 +257,20 @@ export function App() {
           // only ever be offered `floor`'s three steps and F60 re-implements no
           // permission filter.
           guide={<GuideOverlay section={activeKey} />}
+          // ⚠ F-B1: «navigate to the floor» is NOT universally reachable, and
+          // the fix is one line here and none in the bell. NAV gives `floor` to
+          // FLOOR_ONLY; the owner and the shift manager reach the same panel
+          // under `board`. Both can be dispatch and handover recipients, so an
+          // unconditional setSection("floor") would land an owner on a section
+          // her own nav does not contain. `reachable` is already the truth this
+          // component owns, so the bell stays dumb.
+          bell={
+            <NotificationBell
+              onOpenFloor={() =>
+                setSection(reachable.some((item) => item.key === "floor") ? "floor" : "board")
+              }
+            />
+          }
         >
           {activeKey === "dashboard" && <DashboardSection />}
           {activeKey === "profile" && <ProfileSection />}
