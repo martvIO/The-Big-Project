@@ -251,6 +251,35 @@ async def test_mark_read_cannot_reach_another_staffers_row(app_role_url: str) ->
 
 
 @pytest.mark.anyio
+async def test_recent_shows_only_the_callers_own_rows(app_role_url: str) -> None:
+    """The LIST's person predicate, pinned by a SECOND recipient in the same
+    tenant — the only shape that can catch it. RLS carries the tenant and
+    nothing else, so with one recipient seeded every other test here stays green
+    whether or not `recent` filters by staffer at all, and the endpoint would
+    hand Rotem a notification addressed to Maya."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        mine = await _seed_staff(factory, tenant_id)
+        hers = await _seed_staff(factory, tenant_id)
+        actor = await _seed_staff(factory, tenant_id)
+        my_row = await _insert(factory, tenant_id, recipient=mine, actor=actor)
+        await _insert(
+            factory,
+            tenant_id,
+            recipient=hers,
+            actor=actor,
+            kind=StaffNotificationKind.ROOM_HANDED_OVER.value,
+        )
+
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await StaffNotificationsRepository().recent(session, tenant_id, mine)
+        assert [row.notification.id for row in rows] == [my_row]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.anyio
 async def test_unread_count_ignores_read_and_soft_deleted_rows(app_role_url: str) -> None:
     """The count's predicate is `idx_staff_notifications_unread`'s predicate
     character for character (`read_at IS NULL AND deleted_at IS NULL`, keyed by

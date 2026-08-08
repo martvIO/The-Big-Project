@@ -128,6 +128,20 @@ describe("the panel", () => {
     expect(screen.getAllByText("14:32")).toHaveLength(3);
   });
 
+  it("renders the WHOLE sentence around the name, with no marker left on screen", async () => {
+    // The row is assembled by splitting the translation on its own un-interpolated
+    // `{{name}}`. If that marker and the separator ever stop being the same token
+    // the split yields an empty tail and every row silently loses its sentence,
+    // leaving a bare name. Assert the joined text exactly, not a fragment of it.
+    vi.spyOn(api, "listNotifications").mockResolvedValue({ items: [row()] });
+    mount({ unread: 1 });
+    await openPanel();
+
+    const line = await screen.findByText(/הפנתה אליך לקוחה/);
+    expect(line.textContent).toBe("דנה כהן הפנתה אליך לקוחה");
+    expect(line.textContent).not.toContain("{{name}}");
+  });
+
   it("SKIPS an unknown kind silently rather than rendering a raw enum", async () => {
     vi.spyOn(api, "listNotifications").mockResolvedValue({
       items: [row(), row({ kind: "help_is_coming" })],

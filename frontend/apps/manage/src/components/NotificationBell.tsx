@@ -222,7 +222,7 @@ function Row({ row, onOpen }: { row: StaffNotification; onOpen: () => void }) {
         {row.actor_name === null ? (
           t(key)
         ) : (
-          <Interpolated template={t(key, { name: " " })} name={row.actor_name} />
+          <Interpolated template={t(key)} name={row.actor_name} />
         )}
       </span>
       {unread && (
@@ -256,10 +256,16 @@ function stamp(instant: string): string {
   return jerusalemIsoDate(instant) === todayJerusalem() ? time : `${jerusalemDate(instant)} ${time}`;
 }
 
-// Splits «{{name}} הפנתה אליך לקוחה» around the interpolated name so the name
-// can sit in its own <bdi> rather than being concatenated into the sentence.
+// Splits «{{name}} הפנתה אליך לקוחה» around the name slot so the name can sit in
+// its own <bdi> rather than being concatenated into the sentence.
+//
+// ⚠ **The marker is i18next's OWN placeholder, left un-interpolated.** `t(key)`
+// with no `name` passed returns `{{name}}` verbatim, so the split runs on a
+// visible token that lives in the translation file. There is no sentinel value
+// at the call site that a formatter, a re-type or a copy-paste could desync from
+// this separator, silently dropping the sentence off every row.
 function Interpolated({ template, name }: { template: string; name: string }) {
-  const [before, after] = template.split(" ");
+  const [before, after] = template.split("{{name}}");
   return (
     <>
       {before}
