@@ -1,18 +1,16 @@
 """platform operators and sessions (F25's console identity, platform-scoped)
 
 Revision ID: 0028
-Revises: 0026
+Revises: 0027
 
-⚠ NUMBERED 0028 OVER A HEAD OF 0026, ON PURPOSE, and the gap is the safer of the
-two failure modes rather than an oversight. F24 was landing `0027` in a parallel
-worktree while this branch was cut. Two files declaring the SAME `revision` id
-breaks `alembic upgrade` outright and reds every db-marked test with a message
-about nothing in the diff; two files declaring the same `down_revision` merely
-branches the history, which `test_exactly_one_migration_head` catches in the FAST
-lane with instructions. So the collision was avoided and the branch was accepted.
-
-Re-resolve immediately before the pre-push rebase: if `0027` is on main by then,
-this file's `down_revision` becomes `"0027"` in one `fix(platform):` commit
+Built as 0028 over a then-head of 0026, because F24 was landing `0027` in a
+parallel worktree while this branch was cut. Two files declaring the SAME
+`revision` id breaks `alembic upgrade` outright and reds every db-marked test
+with a message about nothing in the diff; two files declaring the same
+`down_revision` merely branches the history, which `test_exactly_one_migration_
+head` catches in the FAST lane with instructions. So the gap was taken over the
+collision, and `down_revision` was re-resolved to `0027` at the pre-push rebase
+once F24's `0027_client_portal.py` was actually on main
 (`.memory/parallel-alembic-numbering`).
 
 NEITHER TABLE CARRIES `tenant_id` (spec D7). That is 0004's `target_tenant_id`
@@ -35,7 +33,7 @@ need no migration — 0004 made `action` plain TEXT with no CHECK.
 from alembic import op
 
 revision = "0028"
-down_revision = "0026"
+down_revision = "0027"
 branch_labels = None
 depends_on = None
 

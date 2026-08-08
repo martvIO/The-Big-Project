@@ -13,6 +13,7 @@ from app.booking.backfill import ManageLinkBackfill
 from app.core.config import get_settings
 from app.db.repositories.platform_operators import PlatformOperatorsRepository
 from app.db.repositories.platform_sessions import PlatformSessionsRepository
+from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
@@ -80,6 +81,9 @@ class ProvisioningService:
         self._session_factory = session_factory
         self._tenants = TenantsRepository(session_factory)
         self._staff = StaffUsersRepository()
+        # Staff sessions, for the one command that invalidates a boutique
+        # credential from outside the boutique — see `reset_owner_password`.
+        self._sessions = SessionsRepository()
         self._audit = PlatformAuditLogRepository()
         # F25's bootstrap pair. ON THIS CLASS rather than in a second service,
         # because pre-decided #20 says there is ONE audited command layer and a
@@ -298,8 +302,18 @@ class ProvisioningService:
                 .values(password_hash=hash_password(new_password))
                 .returning(StaffUser.id)
             )
-            if result.scalar_one_or_none() is None:
+            staff_user_id = result.scalar_one_or_none()
+            if staff_user_id is None:
                 return CommandResult(ok=False, message="owner_not_found")
+            # A new hash does not end the takeover it is meant to end:
+            # `resolve_session` never reads `password_hash`, so a cookie minted
+            # under the OLD password stays good for the rest of
+            # `session_ttl_seconds`. `auth/staff.py` pays for the same claim on
+            # the tenant-side password change; this is the same operation at
+            # higher stakes. Same transaction, so the hash and the revocation
+            # commit together. No `except_token_hash`: the operator holds no
+            # session of the owner's, so every one of them goes.
+            await self._sessions.revoke_for_staff_user(session, tenant.id, staff_user_id)
             await self._audit.record(
                 session,
                 operator=operator,

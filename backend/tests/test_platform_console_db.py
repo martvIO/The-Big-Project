@@ -195,6 +195,61 @@ def test_the_whole_console_lifecycle_writes_the_same_book_the_cli_wrote(
         assert NEW_OWNER_PASSWORD not in str(row)
 
 
+def test_the_console_reset_ends_the_owners_live_sessions(
+    app: FastAPI, factory: async_sessionmaker, migrated_db: str
+) -> None:
+    """⚠ THE RESET IS THE DOOR AN OPERATOR OPENS WHEN AN OWNER IS COMPROMISED, so
+    a new hash alone does not close it.
+
+    The lifecycle test above proves the credential changed; it cannot prove the
+    takeover ended. `resolve_session` never consults `password_hash`, and
+    `settings.session_ttl_seconds` is twelve hours — so an attacker holding the
+    phished owner's cookie keeps full owner privileges for the rest of that TTL
+    while the console reports «הסיסמה אופסה». `auth/staff.py` pays for the same
+    claim with `revoke_for_staff_user` on the tenant-side password change; the
+    console's reset is the same operation at higher stakes and must do the same.
+
+    No acting-cookie exception here, unlike the staff path: the operator holds no
+    session of the owner's, so every one of them goes."""
+    operator_email = _operator_email()
+    slug = _slug()
+    owner_email = f"owner-{uuid.uuid4().hex[:8]}@bella.example"
+    auth = AuthService(factory, _settings())
+
+    client = _signed_in(app, factory, operator_email)
+    try:
+        provisioned = client.post(
+            "/platform/tenants/provision",
+            json={
+                "slug": slug,
+                "name": "Bella Bridal",
+                "owner_email": owner_email,
+                "owner_password": OWNER_PASSWORD,
+            },
+        )
+        assert provisioned.status_code == 200, provisioned.text
+        tenant = asyncio.run(TenantsRepository(factory).by_slug(slug))
+        assert tenant is not None
+
+        # The stolen cookie: minted before the reset, live and unexpired.
+        _, token = asyncio.run(auth.login(tenant.id, owner_email, OWNER_PASSWORD))
+        assert asyncio.run(auth.resolve_session(tenant.id, token)) is not None
+
+        reset = client.post(
+            "/platform/tenants/reset-owner-password",
+            json={
+                "slug": slug,
+                "owner_email": owner_email,
+                "new_password": NEW_OWNER_PASSWORD,
+            },
+        )
+        assert reset.status_code == 200, reset.text
+
+        assert asyncio.run(auth.resolve_session(tenant.id, token)) is None
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_a_reserved_slug_is_refused_with_its_code_and_its_failure_audit(
     app: FastAPI, factory: async_sessionmaker, migrated_db: str
 ) -> None:
