@@ -2527,5 +2527,41 @@ export const he = {
     // booking already mid-payment resolves unchanged after a flip.
     "togglesMatrix.deposits_enabled.hint":
       "מקדמה תיגבה בפועל רק אחרי שחשבון הסליקה של הבוטיק יחובר. כיבוי המתג אינו משפיע על תורים שנמצאים כבר בתהליך תשלום.",
+
+    // --- F35's staff notification bell (design §7) ---
+    //
+    // The control's VISIBLE WORD is its accessible name (DL20, and the console
+    // ships no icon-only control). `bell.labelUnread` is the accessible name
+    // ONLY — the badge beside it is aria-hidden and caps at «9+», while the
+    // count here stays exact, which is what makes the cap cost nothing.
+    "bell.label": "התראות",
+    "bell.labelUnread": "התראות, {{count}} חדשות",
+    "bell.title": "התראות",
+    // The SECOND, non-colour signal beside font weight. An unread row is never
+    // distinguished by colour alone.
+    "bell.unreadMarker": "חדש",
+    // ⚠ THE THREE KIND ROWS CARRY NO CUSTOMER DATUM and must never gain one:
+    // {{name}} is the COLLEAGUE who acted. Who the customer is belongs to the
+    // floor screen, under its own audience rules.
+    "bell.kindDispatch": "{{name}} הפנתה אליך לקוחה",
+    "bell.kindHandover": "{{name}} העבירה אליך חדר",
+    "bell.kindSos": "{{name}} ביקשה עזרה",
+    // Only when the actor's staff row is gone ENTIRELY. It erases the kind, and
+    // that is accepted for v1 (design F-B3): the trigger is rare and the upgrade
+    // is three nameless variants with no code change.
+    "bell.kindUnknownActor": "התקבלה התראה",
+    "bell.empty": "אין התראות",
+    // Only on a FULL page — an honest statement of the ceiling, not a permanent
+    // footnote. The number matches the server's LIMIT and the mark-read cap.
+    "bell.capNote": "מוצגות 20 ההתראות האחרונות",
+    // Sends the RENDERED PAGE's ids, never a true mark-all: a true one would
+    // silently mark rows that arrived after the list rendered and were never
+    // seen, which is the one thing an unread count must not do.
+    "bell.markAll": "סמני הכל כנקרא",
+    "bell.close": "סגירה",
+    "bell.loadFailed": "לא הצלחנו לטעון את ההתראות כרגע.",
+    // Reused VERBATIM from `booking.retry` / `checkinQr.retry`. No drift.
+    "bell.retry": "ניסיון נוסף",
+    "bell.markFailed": "לא הצלחנו לסמן כנקרא כרגע.",
   },
 } as const;

@@ -77,6 +77,10 @@ const HE_F41 = entries(
 // sharpest assertion in the file: an alert is an INTERRUPTION, not a
 // destination, so F37 adds no console section and no nav row (spec D11).
 const HE_F37 = entries(he.translation, (key) => key.startsWith("sos."));
+// F35. Its own constant and its own floor, for the reason the comment above
+// HE_F17 gives: folded into an existing list, this feature's rows could shrink
+// by this many and still pass.
+const HE_F35 = entries(he.translation, (key) => key.startsWith("bell."));
 // F42's capacity block. ⚠ IT IS DERIVED FROM HE_F41 AND IS DELIBERATELY NOT IN
 // THE UNION BELOW. Every one of these forty rows is already inside HE by
 // prefix — `atelier.` — so a second `entries(...)` spread into `HE` would
@@ -156,6 +160,7 @@ const HE = [
   ...HE_F50,
   ...HE_F22,
   ...HE_F27,
+  ...HE_F35,
 ];
 
 describe("F15 keys resolve", () => {
@@ -949,6 +954,55 @@ describe("F41 atelier keys resolve", () => {
     expect(i18n.t("atelier.idleStopped", { minutes: 10 })).not.toBe(
       i18n.t("floor.idleStopped", { minutes: 10 }),
     );
+  });
+});
+
+describe("F35 bell keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // design §7's fifteen rows.
+    expect(HE_F35.length).toBe(15);
+  });
+
+  it("is FOLDED into HE, not merely declared", () => {
+    // ⚠ Declare the constant and forget the spread and every guard below —
+    // resolve, ar-parity, the exclamation ban — silently skips all fifteen
+    // hand-transcribed strings and stays green. Nothing else in this file
+    // notices.
+    expect(HE.map(([key]) => key)).toContain("bell.markAll");
+  });
+
+  it("adds no nav row, and that is an assertion rather than an omission", () => {
+    // The bell is CHROME, reachable from all 18 sections. A nav row would make
+    // it an eighteenth destination, which is precisely what it is not.
+    expect(HE_F35.filter(([key]) => key.startsWith("nav."))).toEqual([]);
+    expect("nav.bell" in he.translation).toBe(false);
+  });
+
+  it("mirrors every key into ar with the Hebrew value (pre-decided #47)", () => {
+    for (const [key, value] of HE_F35) {
+      expect(ar.translation).toHaveProperty([key]);
+      expect((ar.translation as Record<string, string>)[key]).toBe(value);
+    }
+  });
+
+  it("carries no exclamation mark anywhere in the namespace", () => {
+    // Pre-decided #5, scoped to this block so the rule is stated where the copy
+    // is read.
+    expect(HE_F35.filter(([, value]) => value.includes("!"))).toEqual([]);
+  });
+
+  it("names a literal digit ONLY in the cap note, where the cap is the fact", () => {
+    // Every other row is a state, never a number — the console copy law. The cap
+    // note is the exception BY DESIGN: «20» is the server's LIMIT and the
+    // mark-read body's cap, and a note that said «the latest few» would be
+    // vaguer than the thing it describes. {{count}} is a placeholder, not a
+    // digit.
+    const withDigits = HE_F35.filter(([, value]) => /\d/.test(value)).map(([key]) => key);
+    expect(withDigits).toEqual(["bell.capNote"]);
+  });
+
+  it("reuses the house retry word verbatim", () => {
+    expect(i18n.t("bell.retry")).toBe(i18n.t("booking.retry"));
   });
 });
 
