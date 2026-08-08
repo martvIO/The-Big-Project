@@ -2356,7 +2356,7 @@ queue:
     slug: toggle-matrix-ui
     epic: E5
     title: Full feature-toggle matrix UI
-    status: pr-open               # 2026-08-08: PR #51. 6 commits + 3 fix commits; 45 tests; NO migration.
+    status: merged                # 2026-08-08: MERGED, PR #51. 6 commits + 3 fix commits; 45 tests; NO migration.
                                   # ⚠⚠ THE SPEC'S CENTRAL FACTUAL CLAIM WAS FALSE and the builder caught
                                   # it: list_appointment_types "already receives settings" — the SERVICE
                                   # does, the ROUTE never passed it, so settings arrived None and
