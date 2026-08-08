@@ -26,6 +26,10 @@ class Dress(StandardColumns, Base):
     price_visible: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )
-    # The manual, date-less owner flag; E5 #28's date-bound reservation supersedes it.
+    # The manual, date-less owner flag. E5 #28's `dress_reservations` NARROWS it
+    # rather than superseding it (D5): a dated rental window lives there, and
+    # this boolean keeps its exact shipped meaning — away indefinitely, no dates,
+    # badge on, booking CTA still live. The two states are orthogonal and no
+    # precedence rule exists; no data migration moved `reserved = true` rows.
     reserved: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
