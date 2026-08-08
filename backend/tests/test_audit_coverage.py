@@ -255,6 +255,13 @@ UNAUDITED_BY_DECISION: dict[tuple[str, str], str] = {
         "rows to catalog + list_tenants, so F21 records the silence rather than "
         "widening its own charter. Owner: F62, alongside the audit READ surface."
     ),
+    ("POST", "/manage/floor/notifications/read"): (
+        "a person marking her OWN notification read is not an administrative act: it "
+        "changes nothing anybody else can see, it is scoped to her own rows by the "
+        "statement's own predicate, and read_at IS the record — F35's decision, stated "
+        "at the writer (floor/notifications.py:66-69). The four acts that CAUSE these "
+        "rows are each audited already, one line beside the insert."
+    ),
 }
 
 # The one exemption whose decision is recorded HERE and nowhere else, because

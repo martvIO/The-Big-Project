@@ -39,6 +39,7 @@ from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.db.repositories.fitting_rooms import RoomRow
 from app.db.repositories.sos_alerts import SosAlertRow
+from app.db.repositories.staff_notifications import StaffNotificationRow
 from app.errors import DomainNotFoundError
 from app.floor import router as app_router
 from app.floor import schemas as app_schemas
@@ -104,6 +105,10 @@ SOS_ALERT_PATH = f"{SOS_PATH}/{ALERT_ID}"
 SOS_ACCEPT_PATH = f"{SOS_ALERT_PATH}/accept"
 SOS_RESOLVE_PATH = f"{SOS_ALERT_PATH}/resolve"
 SOS_CANCEL_PATH = f"{SOS_ALERT_PATH}/cancel"
+# F35. Second segment still `floor`, which is the whole reason the bell mounts
+# on this router — see the section comment in `app/floor/router.py`.
+BELL_PATH = "/manage/floor/notifications"
+BELL_READ_PATH = f"{BELL_PATH}/read"
 # F58. Every path's SECOND SEGMENT is `floor`, which is what keeps
 # `apps/manage/vite.config.ts` unedited — `test_spa_serving.py` asserts SET
 # EQUALITY between the live route table's second segments and the manage dev
@@ -165,6 +170,11 @@ FLOOR_OPEN_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", SOS_ACCEPT_PATH, None),
     ("POST", SOS_RESOLVE_PATH, None),
     ("POST", SOS_CANCEL_PATH, None),
+    # F35's two, open for the plainest reason on this router: the bell's audience
+    # IS every signed-in staffer, so the class gate is already exactly right and
+    # a per-route dependency could only narrow it wrongly.
+    ("GET", BELL_PATH, None),
+    ("POST", BELL_READ_PATH, {"ids": []}),
 ]
 
 FLOOR_TIGHTENED_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
@@ -375,6 +385,12 @@ class FakeFloorService:
         self.sos_read = sos_read()
         self.sos_alerts: list[SosRead] = []
         self.rerouted = False
+        # F35. This one fake fills BOTH app.state slots — `floor_service` and
+        # `notifications_service` — so the twenty-five-row wiring walk keeps one
+        # `calls` list and needs no per-route branch. The bell's rows default
+        # empty, which is every staffer's bell on the day she starts.
+        self.notification_rows: list[StaffNotificationRow] = []
+        self.unread = 0
 
     async def floor(self, tenant_id: uuid.UUID) -> FloorRead:
         self.floor_calls.append(tenant_id)
@@ -619,6 +635,28 @@ class FakeFloorService:
             raise DomainNotFoundError("queue_ticket")
         return self.waitlist
 
+    # --- F35: the bell's two, duck-typing NotificationsService ---------------
+    #
+    # `actor_id` is recorded on both, and that IS the assertion this fake exists
+    # to make: the router must hand the SESSION's staff id, never anything the
+    # request names. There is no `staff_id` parameter on either route.
+
+    async def recent(
+        self, tenant_id: uuid.UUID, *, actor_id: uuid.UUID
+    ) -> list[StaffNotificationRow]:
+        self._record("notifications", tenant_id=tenant_id, actor_id=actor_id)
+        if self.raises is not None:
+            raise self.raises
+        return self.notification_rows
+
+    async def mark_read(
+        self, tenant_id: uuid.UUID, ids: list[uuid.UUID], *, actor_id: uuid.UUID
+    ) -> int:
+        self._record("mark_read", tenant_id=tenant_id, actor_id=actor_id, ids=ids)
+        if self.raises is not None:
+            raise self.raises
+        return self.unread
+
     # --- F37: the five sos methods, in D9's order ---------------------------
 
     async def sos(self, tenant_id: uuid.UUID, *, actor: StaffContext) -> SosListRead:
@@ -732,6 +770,8 @@ def _client(
     # app.state, not dependency_overrides: get_floor_service reads app.state
     # directly, the way every other console dependency does.
     app.state.floor_service = fake
+    # F35: the same fake in both slots — see its `notification_rows` comment.
+    app.state.notifications_service = fake
     app.dependency_overrides[get_auth_service] = lambda: auth
     client = TestClient(app, base_url="http://bella.localtest.me")
     if authed:
@@ -772,7 +812,7 @@ def test_the_route_table_names_every_live_floor_route() -> None:
         for method in (getattr(route, "methods", None) or ())
         if getattr(route, "path", "").startswith("/manage/floor")
     }
-    assert len(live) == 23, sorted(live)
+    assert len(live) == 25, sorted(live)
     assert len({(method, path) for method, path, _ in FLOOR_ROUTES}) == len(FLOOR_ROUTES)
     assert len(FLOOR_ROUTES) == len(live), (
         f"the route table has {len(FLOOR_ROUTES)} rows for {len(live)} live routes: {sorted(live)}"
@@ -783,7 +823,7 @@ def test_every_route_is_wired_and_reaches_the_service() -> None:
     """SEVEN routers now mount prefix="/manage": a path collision would silently
     shadow, and a 404 here is what catches it.
 
-    TWENTY-THREE rows after F58 and F37, and the count comes from D11's and D9's
+    TWENTY-FIVE rows after F35, and the count comes from D11's and D9's
     tables rather than from prose — a table sized by counting sentences reds this walk on a 404 the
     first time it runs."""
     for method, path, body in FLOOR_ROUTES:
@@ -1103,6 +1143,12 @@ def test_every_mutation_answers_the_same_room_shape() -> None:
                 SOS_ACCEPT_PATH,
                 SOS_RESOLVE_PATH,
                 SOS_CANCEL_PATH,
+                # F35's two answer notifications, not a room. Their own one-shape
+                # assertion is test_bell_api.py's, by set equality — and there,
+                # as for the alert, that key set IS the no-customer-datum
+                # argument mechanised.
+                BELL_PATH,
+                BELL_READ_PATH,
             }:
                 continue
             answered = client.request(method, path, json=body).json()
@@ -1420,15 +1466,16 @@ def test_no_other_error_body_in_main_carries_a_details_key() -> None:
 
 
 def test_every_mutating_verb_with_a_mismatched_origin_is_refused() -> None:
-    """All NINETEEN mutating routes ARE fenced — CsrfOriginMiddleware gates on
+    """All TWENTY mutating routes ARE fenced — CsrfOriginMiddleware gates on
     `request.method in MUTATING_METHODS` (csrf.py:15,48), which is a METHOD test
-    and not a path list, so the eight F36 adds, the five F58 adds and the four
-    F37 adds are fenced by construction. That is asserted rather than assumed because
+    and not a path list, so the eight F36 adds, the five F58 adds, the four
+    F37 adds and F35's mark-read are fenced by construction. That is asserted rather
+    than assumed because
     "by construction" is the sentence that stops being true the day somebody adds
     a GET that writes."""
     fake = FakeFloorService()
     mutating = [(m, p, b) for m, p, b in FLOOR_ROUTES if m != "GET"]
-    assert len(mutating) == 19
+    assert len(mutating) == 20
     with _client(fake) as client:
         for method, path, body in mutating:
             resp = client.request(

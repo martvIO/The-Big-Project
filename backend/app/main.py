@@ -80,6 +80,7 @@ from app.dashboard.router import router as dashboard_router
 from app.dashboard.service import DashboardService
 from app.db.session import ensure_safe_database_role, get_session_factory
 from app.errors import DomainNotFoundError, DomainValidationError
+from app.floor.notifications import NotificationsService
 from app.floor.router import router as floor_router
 from app.floor.service import FloorService
 from app.floor.validation import (
@@ -763,6 +764,11 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # No clock wired, same as the dashboard: the parameter exists so the db suite
     # can freeze the break timestamp, and production reads a real one.
     app.state.floor_service = FloorService(get_session_factory())
+    # F35's bell. A SEPARATE service on the same router: its two reads share no
+    # repository with any floor verb, and the one place the features meet — the
+    # unread count — lives on `FloorService.sos` precisely so it rides that
+    # verb's existing session instead of opening a second one.
+    app.state.notifications_service = NotificationsService(get_session_factory())
     # No clock: nothing the CRM answers is time-derived — the booking history is
     # ordered by starts_at with no window and the SMS log has no band.
     app.state.customers_service = CustomersService(get_session_factory())

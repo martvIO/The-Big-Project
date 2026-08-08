@@ -136,6 +136,12 @@ FLOOR_SOS_RAISE = ("POST", "/manage/floor/sos")
 FLOOR_SOS_ACCEPT = ("POST", "/manage/floor/sos/{alert_id}/accept")
 FLOOR_SOS_RESOLVE = ("POST", "/manage/floor/sos/{alert_id}/resolve")
 FLOOR_SOS_CANCEL = ("POST", "/manage/floor/sos/{alert_id}/cancel")
+# F35's two. POPULATED here rather than exempted anywhere: the bell's audience
+# IS every signed-in staffer, so they belong in every non-elevated role's row,
+# and a route that quietly failed to appear would be a route nobody proved the
+# gate on. Neither is tightened — there is no narrower gate that would be right.
+FLOOR_BELL_READ = ("GET", "/manage/floor/notifications")
+FLOOR_BELL_MARK = ("POST", "/manage/floor/notifications/read")
 
 # ⚠ The SIX tightened routes are DELIBERATELY ABSENT — the three registry verbs
 # (`POST`/`PATCH`/`DELETE /manage/floor/rooms…`), `handover`, and F58's `skip`
@@ -173,6 +179,8 @@ FLOOR_OPEN = {
     FLOOR_SOS_ACCEPT,
     FLOOR_SOS_RESOLVE,
     FLOOR_SOS_CANCEL,
+    FLOOR_BELL_READ,
+    FLOOR_BELL_MARK,
 }
 
 # F41's seven plus F42's capacity write, same templates-not-urls rule.
@@ -704,6 +712,11 @@ def _client(
         # pass one: reaching the real (unset) app.state.floor_service blows that
         # test up instead of quietly passing.
         app.state.floor_service = floor
+        # F35: the same fake duck-types NotificationsService, so the bell's two
+        # routes answer 2xx here for the same reason the other twenty-three do.
+        # Deliberately inside this branch: the unknown-role walk must still blow
+        # up rather than quietly pass if a decoy gate lets it through.
+        app.state.notifications_service = floor
     if atelier is not None:
         # Same asymmetry as the catalog and floor fakes, for the same reason.
         # test_unknown_role_is_403_on_every_gated_route deliberately does NOT
