@@ -19,11 +19,14 @@ NEITHER TABLE CARRIES `tenant_id` (spec D7). That is 0004's `target_tenant_id`
 lesson applied again: an operator belongs to the platform, not to a boutique, and
 a `tenant_id` column would drag both tables into
 `test_every_tenant_id_table_has_forced_rls`'s metadata scan and demand an RLS
-policy over rows no tenant owns. No `enable_tenant_rls` here, therefore, and no
-GRANT either — 0002's ALTER DEFAULT PRIVILEGES already gives `app_user` the CRUD
-these two need (login SELECTs, the CLI bootstrap INSERTs, logout/deactivation
-UPDATEs). That is the OPPOSITE of 0004's posture and deliberately so: the audit
-book must not be readable by the web process, these two must.
+policy over rows no tenant owns. No `enable_tenant_rls` here, therefore.
+
+The two tables DO carry explicit GRANTs (see the end of `upgrade`): the web
+process needs login SELECTs, the CLI bootstrap INSERTs and logout/deactivation
+UPDATEs. That is the OPPOSITE of 0004's posture and deliberately so — the audit
+book must not be readable by the web process, these two must. The grants are
+written out rather than inherited from 0002's ALTER DEFAULT PRIVILEGES, because
+0002's own caveat limits those to tables created by the role that ran it.
 
 `platform_audit_log` is untouched. F25's four new `PlatformAuditAction` members
 need no migration — 0004 made `action` plain TEXT with no CHECK.
@@ -104,6 +107,18 @@ def upgrade() -> None:
         "ON platform_sessions (operator_id) WHERE deleted_at IS NULL"
     )
     op.execute(_updated_at_trigger("platform_sessions"))
+
+    # ⚠ EXPLICIT, not inherited. 0002 grants CRUD by ALTER DEFAULT PRIVILEGES,
+    # but its own CAVEAT says those attach to the ROLE THAT RAN 0002 and cover
+    # only tables later created by that same role — "a table created out-of-band
+    # (different deploy role, manual DBA DDL) needs an explicit GRANT ... or the
+    # app gets 'permission denied' at runtime". A console that cannot read its
+    # own operators fails closed at login, on a deploy that differs from staging
+    # only by which role ran the migration. Every other new-table migration
+    # states its grant (0026 waitlist_entries is the nearest sibling); this one
+    # now does too.
+    op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON platform_operators TO app_user")
+    op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON platform_sessions TO app_user")
 
 
 def downgrade() -> None:
