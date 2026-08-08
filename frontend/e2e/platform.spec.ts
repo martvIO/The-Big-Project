@@ -228,17 +228,37 @@ test("platform: the modal traps focus and restores it to the trigger", async ({ 
 
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
-  // Focus is inside the dialog after showModal(), and Tab cannot leave it. The
-  // assertion is on ANCESTRY, not on text: an element with no text content would
-  // make a `toContainText` check pass vacuously, which is the failure mode this
-  // whole test exists to rule out.
-  for (let i = 0; i < 6; i += 1) {
-    await page.keyboard.press("Tab");
-    const trapped = await page.evaluate(
-      () => document.activeElement?.closest("dialog") !== null,
-    );
-    expect(trapped, `Tab #${i + 1} escaped the dialog`).toBe(true);
-  }
+
+  // Opening moves focus INTO the dialog and off the trigger — `showModal()`'s
+  // first job, and the one the jsdom stub skips entirely.
+  await expect(dialog.locator(":focus")).toHaveCount(1);
+  await expect(trigger).not.toBeFocused();
+
+  // ⚠ TWO presses per direction, and the middle stop is CHROMIUM's, not a wart
+  // in the test: tabbing off the end of a top layer parks on the DOCUMENT before
+  // wrapping. `dialog-focus.spec.ts` — the shipped manage suite, with mutation
+  // proofs — measures every dialog in this workspace exactly this way, and the
+  // `activeElement === body` assertion in between is the load-bearing one: the
+  // screen behind is inert, so the press landed on NOTHING rather than on a
+  // control out there. An ancestry probe (`activeElement.closest("dialog")`)
+  // reads that legitimate park as an escape and reds a dialog that traps
+  // correctly, which is what this test used to do.
+  const first = dialog.getByRole("button", { name: "ביטול" });
+  const last = dialog.getByRole("button", { name: "השהיה" });
+  const onNothing = () => page.evaluate(() => document.activeElement === document.body);
+
+  await last.focus();
+  await page.keyboard.press("Tab");
+  expect(await onNothing()).toBe(true);
+  await page.keyboard.press("Tab");
+  await expect(first).toBeFocused();
+
+  await first.focus();
+  await page.keyboard.press("Shift+Tab");
+  expect(await onNothing()).toBe(true);
+  await page.keyboard.press("Shift+Tab");
+  await expect(last).toBeFocused();
+
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(trigger).toBeFocused();
