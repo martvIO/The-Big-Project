@@ -942,5 +942,15 @@ export const ar = {
     // The guide's one step (SectionKey is guide-typed — lib/guide.ts).
     "guide.bookingWaitlist.1":
       "כאן רואים מי מחכה לתור ביום מלא. אם מתפנה מקום, אפשר להתקשר אליה — ובעתיד המערכת תציע לה אותו לבד.",
+    // --- F27's feature-toggle matrix (pre-decided #47: Hebrew placeholders) ---
+    "togglesMatrix.heading": "הפעלת תכונות",
+    "togglesMatrix.hint": "כל מתג נשמר מיד עם השינוי.",
+    "togglesMatrix.area.storefront": "האתר הפומבי",
+    "togglesMatrix.area.booking": "תורים ותשלומים",
+    "togglesMatrix.brides_only.label": "בוטיק לכלות בלבד",
+    "togglesMatrix.brides_only.hint": "כל סוגי התורים יוצגו לכלות בלבד",
+    "togglesMatrix.deposits_enabled.label": "גביית מקדמות מופעלת",
+    "togglesMatrix.deposits_enabled.hint":
+      "מקדמה תיגבה בפועל רק אחרי שחשבון הסליקה של הבוטיק יחובר. כיבוי המתג אינו משפיע על תורים שנמצאים כבר בתהליך תשלום.",
   },
 } as const;

@@ -195,6 +195,11 @@ class AppointmentTypeRow(BaseModel):
     because a customer is entitled to see a deposit before choosing a time, not
     after — E4's payment step reads the same fields.
 
+    F27 D5 adds a master switch ABOVE the per-type value: with the tenant's
+    `brides_only` toggle on, every row discloses as brides-only regardless of
+    its own `audience`. Still disclosure, still not enforcement — the toggle
+    changes what the page SAYS, never who the endpoint serves.
+
     **F19 narrowed WHEN the pair carries a deposit, and that is a change to a
     live public contract.** The keys always ship, but they now carry
     `false`/`null` unless the deposit is actually collectable: the boutique's

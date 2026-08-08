@@ -357,8 +357,27 @@ export function settingsPayload(): unknown {
       essence: "השמלה שלך מתחילה כאן",
       instagram: "modryn.boutique",
     },
+    // ⚠ THE FULL, DEFAULT-COMPLETE TOGGLES BLOCK — every key the BACKEND
+    // registry declares (`Backend/app/boutique/toggles.py`), because F27 D3 puts
+    // exactly that on the wire and `TogglesMatrix` renders one row per WIRE key.
+    //
+    // This object is the cross-tree drift tripwire the two registries have
+    // instead of a shared import: a key added on one side only shows up here as
+    // an extra or missing row. D8's growth protocol makes that step ④, and it is
+    // one line — which is the proof the protocol costs what it claims.
     toggles: { deposits_enabled: true, brides_only: false },
   };
+}
+
+// The same block after a single-row flip, for the PUT's response. D2's deep
+// merge means the server answers a one-key write with EVERY key's current
+// truth, so the matrix re-syncs the whole card from it.
+export function settingsAfterToggle(
+  key: string,
+  value: boolean,
+): Record<string, unknown> {
+  const base = settingsPayload() as { profile: unknown; toggles: Record<string, boolean> };
+  return { profile: base.profile, toggles: { ...base.toggles, [key]: value } };
 }
 
 export function availabilityPayload(): unknown {

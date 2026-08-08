@@ -45,6 +45,7 @@ from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
+from app.models.constants import AppointmentAudience
 from app.models.dress import Dress
 from app.models.terms_version import TermsVersion
 from app.payments.service import GatewayCredentialService
@@ -247,10 +248,23 @@ class StorefrontService:
         `deleted_at IS NULL`, so an archived type leaves the public surface the
         same way an archived dress does.
 
-        No audience filter: `brides_only` marks a type for brides and an
-        ANONYMOUS visitor cannot be classified as one, so a server-side filter
-        here would be theatre. The field ships so the UI can label the option;
-        real enforcement waits for a client identity (E5).
+        ⚠ STILL NO AUDIENCE *FILTER*, AND F27 D5 IS NOT ONE. `brides_only` marks
+        a type for brides and an ANONYMOUS visitor cannot be classified as one,
+        so a server-side filter here would be theatre — that ruling stands, and
+        booking-create still does not check `audience` either.
+
+        What D5 adds is the DISCLOSURE the boutique-wide switch always promised:
+        with `toggles.brides_only` on, every returned type is disclosed as
+        `brides_only` regardless of its own value — the master switch winning over
+        the per-type flag, `deposit_due`'s shape one field over. F7 shipped that
+        switch declared, rendered and validated with NO reader anywhere, under
+        Hebrew hint copy telling the owner «כל סוגי התורים יוצגו לכלות בלבד».
+        This is the reader that makes her sentence true. The consumer named in
+        `app/boutique/toggles.py`'s registry entry is this line.
+
+        Flip semantics: the label changes on the next storefront load. Nothing in
+        flight is touched and no booking is blocked — there is no in-flight state
+        for an audience label to have.
 
         The second statement is D10's gateway read, asked ONCE for the page
         rather than once per type, inside the session this method already opens
@@ -266,11 +280,17 @@ class StorefrontService:
             )
         # AFTER the session has committed and closed, deliberately: these rows
         # are detached here, so clearing the pair below is a projection and can
-        # never be flushed back as a write.
-        return [
-            row if deposit_due(settings, row, gateway_connected=connected) else hide_deposit(row)
-            for row in rows
-        ]
+        # never be flushed back as a write. D5's audience overwrite rides the
+        # same guarantee, and it is why it may be an assignment at all.
+        brides_only = disclose_brides_only(settings)
+        projected = []
+        for row in rows:
+            if not deposit_due(settings, row, gateway_connected=connected):
+                row = hide_deposit(row)
+            if brides_only:
+                row.audience = AppointmentAudience.BRIDES_ONLY.value
+            projected.append(row)
+        return projected
 
     async def get_terms(self, tenant_id: uuid.UUID) -> TermsVersion:
         """One statement. A boutique that never published a policy has nothing
@@ -307,6 +327,18 @@ class StorefrontService:
             # TenantContext, and `resolve_privacy` is pure.
             privacy=resolve_privacy(dict(settings)),
         )
+
+
+def disclose_brides_only(settings: Mapping[str, object] | None) -> bool:
+    """F27 D5's read of the boutique-wide `brides_only` switch.
+
+    `deposit_due`'s shape and its rule: the RAW stored JSONB, absent = OFF. The
+    default-complete block D3 puts on `/manage/settings` is the OWNER's wire and
+    deliberately not this — a public read that depended on the manage response
+    would have two sources of truth for one column.
+    """
+    toggles = settings.get("toggles") if settings is not None else None
+    return bool(toggles.get("brides_only")) if isinstance(toggles, Mapping) else False
 
 
 def hide_deposit(row: AppointmentType) -> AppointmentType:

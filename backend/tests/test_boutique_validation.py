@@ -4,10 +4,13 @@ weekly-grid invariants the slot engine (E3) will rely on."""
 
 import datetime
 from typing import Any
+from unittest import mock
 
 import pytest
 
 from app.atelier.stages import MAX_BAND_MINUTES, MAX_WEEKLY_CAPACITY_HOURS
+from app.boutique import validation
+from app.boutique.toggles import TOGGLE_DEFAULTS, TOGGLE_KEYS, TOGGLES, ToggleDef
 from app.boutique.validation import (
     MAX_DEPOSIT_AMOUNT_AGOROT,
     MAX_PROFILE_DESCRIPTION_LENGTH,
@@ -211,6 +214,36 @@ def test_toggles_non_bool_value_rejected() -> None:
     # isinstance(1, bool) is False — truthy ints must not sneak through.
     with pytest.raises(BoutiqueValidationError):
         validate_toggles({"deposits_enabled": 1})
+
+
+# --- F27 D1: the registry is the single declaration point ---
+
+
+def test_the_registry_declares_exactly_the_shipped_toggles() -> None:
+    """Every entry is a toggle with a SHIPPED CONSUMER and nothing else (spec
+    conflict 1). A row for an unshipped feature belongs in that feature's own PR
+    — F23's `waitlist_enabled`, F46's `whatsapp_enabled` — so this list growing
+    without a consumer landing beside it is the failure this pins."""
+    assert TOGGLE_KEYS == ("deposits_enabled", "brides_only")
+    assert all(toggle.default is False for toggle in TOGGLES)
+    assert TOGGLE_DEFAULTS == {"deposits_enabled": False, "brides_only": False}
+
+
+def test_validate_toggles_derives_its_key_set_from_the_registry() -> None:
+    """⚠ DERIVATION, NOT A DUPLICATED LITERAL, AND THIS IS THE ASSERTION THAT
+    PROVES IT. `_TOGGLE_FIELDS = frozenset({...})` beside `TOGGLES` would pass
+    every other test in this file while making D8's growth protocol a lie — the
+    feature adding a row would get a 400 from a validator that never heard of it.
+
+    Monkeypatching the registry is the only way to tell the two apart: a derived
+    validator accepts the patched key, a duplicated literal rejects it.
+    """
+    extra = ToggleDef(key="waitlist_enabled", default=False)
+    with mock.patch.object(validation, "TOGGLES", (*TOGGLES, extra)):
+        validate_toggles({"waitlist_enabled": True})
+    # And it is gone again once the registry is — no module-level cache.
+    with pytest.raises(BoutiqueValidationError):
+        validate_toggles({"waitlist_enabled": True})
 
 
 # --- appointment type: duration + agorot bounds + deposit interplay ---

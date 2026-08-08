@@ -22,7 +22,7 @@ Every task is one TDD cycle: the named failing test first, then the code that ma
 | `_settings_result`, `update_settings`, `_record_atelier_settings` (post-merge own-transaction audit pattern) | `Backend/app/boutique/service.py:89,128,161` |
 | `AuditAction` StrEnum (atelier actions as naming precedent) | `Backend/app/models/constants.py:281,516-532` |
 | Sole toggles reader: booking-create deposit gate (webhook/sweeper never read toggles) | `Backend/app/booking/service.py:113` |
-| `list_appointment_types` already receives settings (D10 gateway read — the D5 seam); "no audience filter" comment to overwrite | `Backend/app/storefront/service.py:243,250` |
+| ⚠ **FALSE — CORRECTED AT REVIEW ROUND 1.** The *service* takes `settings` (D10 gateway read); the ROUTE never passed it, so it arrived `None` on every request and the deposit disclosure was dead. Wiring it for D5 revives that disclosure on the public page — a money-surface behavior change, disclosed in the spec's "Blast radius" note and owed to the PR body / E5 gate. | `Backend/app/storefront/service.py:243,250`, `Backend/app/storefront/router.py:329` |
 | F7 sibling-key concurrency test (db) — the model for the toggles-key version | `Backend/tests/test_boutique_service.py:343` |
 | "THE WHOLE BLOCK, ALWAYS" clobber test — documents the OLD trap, changes deliberately under D2 | `Backend/tests/test_boutique_api.py:393` |
 | Test homes exist: `test_boutique_validation.py`, `test_boutique_api.py` (fake-service style), `test_boutique_service.py` (db), `test_storefront_service.py`, `test_storefront_api.py` | `Backend/tests/` |

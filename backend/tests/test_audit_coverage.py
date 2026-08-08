@@ -16,7 +16,8 @@ the endpoint (FastAPI's `Annotated[XService, Depends(...)]` idiom) is paired wit
 the method names the endpoint's own source calls on it, and that method's source
 — plus, transitively, the `self.<name>(...)` methods it delegates to — is
 searched for `_audit.record(`. That is why `BoutiqueSettingsService.update_settings`
-resolves as audited through `_record_atelier_settings`, one hop down.
+resolves as audited through `_record_settings_audit`, one hop down (that helper
+was `_record_atelier_settings` until F27 D6 gave it a second action to serve).
 
 WHAT IT PROVES, AND WHAT IT DOES NOT. It proves a *call exists on the path*. It
 does not prove a row lands, that the row carries the right action, or that the
@@ -52,12 +53,17 @@ live route table:
    naming who owns closing it.
 
 `PUT /manage/settings` is a fourth shape and gets its own set. It resolves as
-audited, truthfully — but only for the `atelier` key. `profile` and `toggles`
-stay unaudited by F42's recorded decision (`boutique/service.py:143-144`), and a
-per-route walker structurally cannot see a per-key gap. Dropping the fact would
-lose the exact item D6's opening sentence names, so it is asserted as a subset of
-the audited set rather than smuggled into the exemption list, where it would be a
-lie in the other direction.
+audited, truthfully — but not for every key. `atelier` writes its row (F42) and
+`toggles` writes one since F27 D6; `profile` alone stays unaudited by F42's
+recorded decision (`boutique/service.py:163-165`), and a per-route walker
+structurally cannot see a per-key gap. Dropping the fact would lose the exact
+item D6's opening sentence names, so it is asserted as a subset of the audited
+set rather than smuggled into the exemption list, where it would be a lie in the
+other direction.
+
+⚠ THE GAP NARROWED AT F27 AND THE NOTE WAS EDITED RATHER THAN LEFT LYING —
+which is precisely what `test_the_partially_audited_route_is_audited_and_named`'s
+docstring says should happen when someone audits one of the two keys it named.
 """
 
 import inspect
@@ -159,39 +165,39 @@ def _mutating_manage_routes() -> dict[tuple[str, str], Any]:
 # reviewer can check the reasoning rather than take this file's word for it.
 UNAUDITED_BY_DECISION: dict[tuple[str, str], str] = {
     # boutique — F42 audited the key it owned (`atelier`) and refused to widen a
-    # pre-existing gap it did not create (`boutique/service.py:143-144`). These
+    # pre-existing gap it did not create (`boutique/service.py:163-165`). These
     # six carry that same decision: they are the boutique's own configuration of
     # itself, visible on the screen that changed them, and every row is timed.
     ("POST", "/manage/appointment-types"): (
         "boutique configures its own service menu; the row's created_at is the record "
-        "(boutique/service.py:143-144's rule, unwidened by F21 per D6)"
+        "(boutique/service.py:163-165's rule, unwidened by F21 per D6)"
     ),
     ("PATCH", "/manage/appointment-types/{type_id}"): (
         "boutique configures its own service menu; updated_at is the record "
-        "(boutique/service.py:143-144's rule, unwidened by F21 per D6)"
+        "(boutique/service.py:163-165's rule, unwidened by F21 per D6)"
     ),
     ("DELETE", "/manage/appointment-types/{type_id}"): (
         "soft delete: deleted_at IS the record, and the type stays readable "
-        "(boutique/service.py:143-144's rule, unwidened by F21 per D6)"
+        "(boutique/service.py:163-165's rule, unwidened by F21 per D6)"
     ),
     ("POST", "/manage/availability/exceptions"): (
         "boutique configures its own opening hours; the exception row is the record "
-        "(boutique/service.py:143-144's rule, unwidened by F21 per D6)"
+        "(boutique/service.py:163-165's rule, unwidened by F21 per D6)"
     ),
     ("DELETE", "/manage/availability/exceptions/{exception_id}"): (
         "boutique configures its own opening hours; the removed exception is the record "
-        "(boutique/service.py:143-144's rule, unwidened by F21 per D6)"
+        "(boutique/service.py:163-165's rule, unwidened by F21 per D6)"
     ),
     ("PUT", "/manage/availability/rules"): (
         "boutique configures its own opening hours; the replaced rule set is the record "
-        "(boutique/service.py:143-144's rule, unwidened by F21 per D6)"
+        "(boutique/service.py:163-165's rule, unwidened by F21 per D6)"
     ),
     ("POST", "/manage/terms"): (
         "terms versions are append-only and immutable: the VERSION ROW is the audit "
         "trail — it carries the actor (boutique/router.py:233 passes created_by) and "
         "its own created_at, which is also why the path is throttled rather than "
-        "logged twice (boutique/service.py:389-390). Sits under F42's standing rule "
-        "for the boutique configuring itself (boutique/service.py:143-144)"
+        "logged twice (boutique/service.py:434-436). Sits under F42's standing rule "
+        "for the boutique configuring itself (boutique/service.py:163-165)"
     ),
     # floor — D13's rule, stated in each method's own docstring: where a durable
     # row already answers who/when, a second row in audit_log is noise that would
@@ -232,9 +238,11 @@ RECORDED_ONLY_HERE: frozenset[tuple[str, str]] = frozenset({("PUT", "/manage/pri
 # decision that a per-route walker structurally cannot express.
 PARTIALLY_AUDITED_BY_DECISION: dict[tuple[str, str], str] = {
     ("PUT", "/manage/settings"): (
-        "the `atelier` key writes ATELIER_SETTINGS_UPDATED (boutique/service.py:187); "
-        "`profile` and `toggles` stay UNAUDITED by F42's recorded decision "
-        "(boutique/service.py:143-144)"
+        "the `atelier` key writes ATELIER_SETTINGS_UPDATED (boutique/service.py:182) and "
+        "the `toggles` key writes TOGGLES_UPDATED since F27 D6 (boutique/service.py:189); "
+        "`profile` alone stays UNAUDITED by F42's recorded decision, which F27 narrowed "
+        "rather than widened when it took ownership of the toggles key "
+        "(boutique/service.py:163-165)"
     ),
 }
 

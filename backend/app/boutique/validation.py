@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.atelier.stages import MAX_BAND_MINUTES, MAX_WEEKLY_CAPACITY_HOURS
+from app.boutique.toggles import TOGGLES
 from app.errors import DomainValidationError
 from app.models.constants import AppointmentAudience, EffortBand
 
@@ -56,7 +57,6 @@ _PROFILE_FIELDS = frozenset({"phone", "address", "description", "maps_url", "ess
 # handle with a slash or an @ is rejected outright rather than stored as a dead
 # link — ContactPanel builds https://instagram.com/{handle} from this verbatim.
 _INSTAGRAM_HANDLE = re.compile(r"^[A-Za-z0-9._]{1,30}\Z")
-_TOGGLE_FIELDS = frozenset({"deposits_enabled", "brides_only"})
 _ATELIER_FIELDS = frozenset({"effort_bands", "default_weekly_capacity_hours"})
 _BAND_KEYS = frozenset(band.value for band in EffortBand)
 _AUDIENCE_VALUES = frozenset(member.value for member in AppointmentAudience)
@@ -132,7 +132,18 @@ def validate_profile(profile: dict[str, Any]) -> None:
 
 
 def validate_toggles(toggles: dict[str, Any]) -> None:
-    unknown = set(toggles) - _TOGGLE_FIELDS
+    """⚠ THE KEY SET IS DERIVED FROM `app/boutique/toggles.py` AT CALL TIME, NOT
+    COPIED. F27 D1: the registry is the single declaration point, so a feature
+    adding a toggle touches the registry and its consumer and this validator
+    follows. A frozenset literal here — which is what F7 shipped — would make
+    D8's growth protocol quietly false, and the feature adding a row would get a
+    400 from a validator that had never heard of its key.
+
+    Reading the module global rather than a precomputed set is what makes the
+    derivation *provable*: `test_validate_toggles_derives_its_key_set_from_the_
+    registry` patches `TOGGLES` and this function must follow it.
+    """
+    unknown = set(toggles) - {toggle.key for toggle in TOGGLES}
     if unknown:
         raise BoutiqueValidationError(f"unknown toggles: {', '.join(sorted(unknown))}")
     for field, value in toggles.items():

@@ -4,6 +4,8 @@
 // sends credentials: "include"; errors arrive in the house shape
 // {"error": {"code", "message"}} and are surfaced as ApiError.
 
+import type { ToggleKey } from "./lib/toggles";
+
 export const FALLBACK_ERROR_MESSAGE = "אירעה שגיאה בלתי צפויה. נסי שוב.";
 
 export class ApiError extends Error {
@@ -108,10 +110,12 @@ export interface ProfileSettings {
   instagram?: string;
 }
 
-export interface ToggleSettings {
-  deposits_enabled?: boolean;
-  brides_only?: boolean;
-}
+// F27 D3 — the wire is DEFAULT-COMPLETE. `_settings_result` overlays the backend
+// registry's defaults on the stored JSONB, so every registry key arrives with a
+// concrete bool and the console needs no `?? false` anywhere. A plain record
+// rather than a field per toggle: the matrix renders from `lib/toggles.ts`, and
+// a shipped key this type had never heard of would be a row that cannot render.
+export type ToggleSettings = Record<string, boolean>;
 
 // ⚠ The server's `SettingsResponse` also carries an `atelier` block since F42
 // and it is DELIBERATELY not mirrored here: nothing in this console reads it.
@@ -139,7 +143,16 @@ export interface AtelierSettingsUpdate {
 
 export interface UpdateSettingsRequest {
   profile?: ProfileSettings;
-  toggles?: ToggleSettings;
+  // ⚠ A PARTIAL, AND THAT IS THE EXACT INVERSE OF `atelier` DIRECTLY ABOVE —
+  // read both together. `atelier` must arrive WHOLE because `merge_settings`
+  // merges at the top level only. `toggles` may arrive with ONE key because F27
+  // D2 gave that single key a real deep merge in SQL
+  // (`coalesce(settings->'toggles','{}'::jsonb) || :patch`), which is what makes
+  // the matrix's per-row save structurally unable to clobber a sibling — and
+  // what stops a browser on a stale cached bundle from wiping a newer feature's
+  // toggle back to absent. Keyed on `ToggleKey` so a key that left the registry
+  // stops compiling at its call sites.
+  toggles?: Partial<Record<ToggleKey, boolean>>;
   atelier?: AtelierSettingsUpdate;
 }
 
