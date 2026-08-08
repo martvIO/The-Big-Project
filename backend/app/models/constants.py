@@ -71,6 +71,31 @@ class SosStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class StaffNotificationKind(StrEnum):
+    # F35. The DB PINS this exact set (0030's staff_notifications_kind_check,
+    # held byte-identical in test_migrations.py), so a fourth kind is a migration
+    # and therefore a review.
+    #
+    # THREE values, and every one of them is «somebody else made you responsible
+    # for a person». That is the whole membership rule: `handover` is in because
+    # it is `assign` with the customer already in the room, and a bell that rang
+    # for one and not the other would be a bug nobody could state. `accept_sos`,
+    # `resolve_sos`, `claim`, `release`, `call`, `skip` and `remove` are all OUT
+    # because none of them hands a person to somebody else.
+    #
+    # `dispatch_assigned` covers BOTH `take_next` and `assign`: the recipient's
+    # sentence is identical («somebody sent you a customer») and the two verbs
+    # differ only in which ticket the manager picked, which is her business and
+    # not the recipient's.
+    #
+    # ⚠ The console SKIPS a kind it does not know rather than rendering the raw
+    # enum, so a fourth value shipped server-first degrades to a missing row and
+    # never to «sos_targeted» on a staffer's screen.
+    DISPATCH_ASSIGNED = "dispatch_assigned"
+    ROOM_HANDED_OVER = "room_handed_over"
+    SOS_TARGETED = "sos_targeted"
+
+
 class TicketStage(StrEnum):
     # F41's atelier board. NOT pinned by the DB and deliberately not: there is no
     # stored value for a CHECK to constrain. The state is DERIVED from five
