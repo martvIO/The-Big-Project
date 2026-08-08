@@ -113,8 +113,21 @@ async function axeViolations(page: Page): Promise<string[]> {
   // 4.5 floor. It reproduced only under full-suite parallelism, where the
   // render lands late enough that the scan catches the transition mid-flight.
   // Same remedy the dialog suites already use (guide.spec.ts `settled`).
+  // ⚠ FILTER THE INFINITE ONES. `--animate-skeleton` and Button's `animate-spin`
+  // loop forever, and their `.finished` promise NEVER resolves — awaiting one
+  // hangs the scan until the 30s test timeout. Neither is on this page today,
+  // which is why the unfiltered version passed; that is a fact about the current
+  // markup, not a property of the helper. Bounded animations only, under a
+  // ceiling, so a pathological one degrades into a slightly-early scan.
   await page.evaluate(async () => {
-    await Promise.all(document.getAnimations().map((a) => a.finished));
+    const bounded = document
+      .getAnimations()
+      .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+      .map((a) => a.finished);
+    await Promise.race([
+      Promise.allSettled(bounded),
+      new Promise((resolve) => setTimeout(resolve, 1000)),
+    ]);
   });
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.map(
