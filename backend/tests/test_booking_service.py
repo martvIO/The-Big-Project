@@ -1352,7 +1352,7 @@ async def test_a_deleted_reservation_frees_the_claim(app_role_url: str) -> None:
             await _claim(factory, tenant_id, type_id, dress_id=dress_id)
         async with tenant_session(factory, tenant_id) as session:
             assert await DressReservationsRepository().soft_delete(
-                session, tenant_id, reservation_id
+                session, tenant_id, dress_id, reservation_id
             )
         assert (await _claim(factory, tenant_id, type_id, dress_id=dress_id)).dress_id == dress_id
     finally:

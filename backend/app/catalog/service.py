@@ -1096,7 +1096,9 @@ class CatalogService:
             dress = await self._dresses.by_id(session, tenant_id, dress_id)
             if dress is None:
                 raise CatalogNotFoundError
-            if not await self._reservations.soft_delete(session, tenant_id, reservation_id):
+            if not await self._reservations.soft_delete(
+                session, tenant_id, dress_id, reservation_id
+            ):
                 raise CatalogNotFoundError
             await self._audit.record(
                 session,

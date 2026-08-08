@@ -199,7 +199,7 @@ async def test_soft_deleted_rows_are_invisible_to_both_readers(app_role_url: str
     try:
         reservation_id = await _insert(engine, tenant_id, dress_id, AUG_12, AUG_18)
         async with tenant_session(factory, tenant_id) as session:
-            assert await REPO.soft_delete(session, tenant_id, reservation_id) is True
+            assert await REPO.soft_delete(session, tenant_id, dress_id, reservation_id) is True
         assert await _overlapping(engine, tenant_id, dress_id, AUG_12, AUG_18) == []
         async with tenant_session(factory, tenant_id) as session:
             assert await REPO.live_by_dress(session, tenant_id, dress_id) == []
@@ -216,10 +216,10 @@ async def test_soft_delete_of_an_already_deleted_row_is_false(app_role_url: str)
     try:
         reservation_id = await _insert(engine, tenant_id, dress_id, AUG_12, AUG_18)
         async with tenant_session(factory, tenant_id) as session:
-            assert await REPO.soft_delete(session, tenant_id, reservation_id) is True
+            assert await REPO.soft_delete(session, tenant_id, dress_id, reservation_id) is True
         async with tenant_session(factory, tenant_id) as session:
-            assert await REPO.soft_delete(session, tenant_id, reservation_id) is False
-            assert await REPO.soft_delete(session, tenant_id, uuid.uuid4()) is False
+            assert await REPO.soft_delete(session, tenant_id, dress_id, reservation_id) is False
+            assert await REPO.soft_delete(session, tenant_id, dress_id, uuid.uuid4()) is False
     finally:
         await engine.dispose()
 
@@ -347,7 +347,7 @@ async def test_rls_hides_another_tenants_reservations(app_role_url: str) -> None
             ]
             assert await REPO.containing(session, tenant_a, dress_id, AUG_12) is not None
             # B's row is invisible even when A asks for it by its own id.
-            assert await REPO.soft_delete(session, tenant_a, theirs) is False
+            assert await REPO.soft_delete(session, tenant_a, dress_id, theirs) is False
         assert await _overlapping(engine, tenant_b, dress_id, AUG_12, AUG_18) == [theirs]
     finally:
         await engine.dispose()
@@ -528,6 +528,35 @@ async def test_unknown_and_archived_dress_are_404_on_every_verb(app_role_url: st
                 await service.delete_reservation(
                     tenant_id, target, reservation.row.id, actor_id=ACTOR_ID
                 )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_reservation_of_another_dress_is_404_not_a_delete(app_role_url: str) -> None:
+    """The dress id in the URL is a PREDICATE, not decoration. Routing B's window
+    through live dress A must miss — otherwise any live reservation of the tenant
+    is deletable through any other live dress, it silently frees a gown nobody
+    asked to free, and DRESS_RESERVATION_DELETED — the feature's ONLY record of
+    the deletion, since D8 ships no edit verb — names the wrong gown."""
+    engine = _engine(app_role_url)
+    service = _service(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        dress_a = await _dress(service, tenant_id)
+        dress_b = await _dress(service, tenant_id)
+        theirs = await service.create_reservation(
+            tenant_id, dress_b, starts_on=AUG_12, ends_on=AUG_18, actor_id=ACTOR_ID
+        )
+        with pytest.raises(CatalogNotFoundError):
+            await service.delete_reservation(tenant_id, dress_a, theirs.row.id, actor_id=ACTOR_ID)
+        # Still live, so the storefront still reads the gown as away.
+        assert [view.row.id for view in await service.list_reservations(tenant_id, dress_b)] == [
+            theirs.row.id
+        ]
+        # And no audit row claims otherwise — least of all one naming dress A.
+        actions = {row.action for row in await _audit_rows(engine, tenant_id)}
+        assert AuditAction.DRESS_RESERVATION_DELETED not in actions
     finally:
         await engine.dispose()
 

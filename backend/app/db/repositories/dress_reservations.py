@@ -128,14 +128,24 @@ class DressReservationsRepository:
         return list((await session.execute(stmt)).scalars())
 
     async def soft_delete(
-        self, session: AsyncSession, tenant_id: UUID, reservation_id: UUID
+        self, session: AsyncSession, tenant_id: UUID, dress_id: UUID, reservation_id: UUID
     ) -> bool:
-        """False means no live row by that id — unknown, already deleted, or
-        another tenant's. One indistinguishable miss, as everywhere else."""
+        """False means no live row by that id UNDER THAT DRESS — unknown, already
+        deleted, another dress's, or another tenant's. One indistinguishable miss,
+        as everywhere else.
+
+        ⚠ `dress_id` is a PREDICATE, not decoration, and it is the same shape
+        DressMediaRepository.soft_delete carries. The id in the URL path is the
+        caller's claim about which gown this window belongs to; without it any
+        live reservation of the tenant is deletable through any other live dress,
+        which frees a gown nobody asked to free and writes the feature's only
+        record of the deletion — DRESS_RESERVATION_DELETED — against the wrong
+        gown. There is no edit verb, so that audit pair is the whole history."""
         stmt = (
             update(DressReservation)
             .where(
                 DressReservation.tenant_id == tenant_id,
+                DressReservation.dress_id == dress_id,
                 DressReservation.id == reservation_id,
                 DressReservation.deleted_at.is_(None),
             )

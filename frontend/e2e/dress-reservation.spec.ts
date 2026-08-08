@@ -13,7 +13,12 @@ import {
 } from "./fixtures/manage";
 
 // F28's two surfaces in a real browser: the catalog editor's reservations pane
-// and the public dress page's booked-out block, plus the BookPage 409.
+// and the public dress page's booked-out block.
+//
+// The third surface, BookPage's DRESS_UNAVAILABLE 409 and its axe pass, is in
+// storefront.spec.ts — the /book/* flow's six-endpoint harness and five-step
+// walk live there, beside the two sibling create-time 409s (SLOT_UNAVAILABLE,
+// TERMS_STALE). Search «booked out on that date».
 //
 // ⚠ **THE MODAL AND THE FOCUS MOVE LIVE HERE BECAUSE THE UNIT SUITE CANNOT FAIL
 // THEM.** `apps/manage/src/test/setup.ts` stubs `HTMLDialogElement.showModal()`
