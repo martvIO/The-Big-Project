@@ -76,6 +76,11 @@ export const he = {
       backToCatalog: "חזרה לקולקציה",
       error: "לא הצלחנו לטעון את השמלה כרגע.",
       reserved: "הוזמן",
+      // F28. A STATEMENT, not a warning: the ranges say where the gown is and
+      // the note says what stays possible, which is what keeps the booking CTA
+      // honest instead of scary.
+      reservedDatesHeading: "מוזמנת בתאריכים",
+      reservedDatesNote: "בשאר התאריכים אפשר לקבוע מדידה.",
     },
 
     about: {
@@ -113,6 +118,9 @@ export const he = {
       // Booking mid-flow conflicts and dead ends — copy.md §3.7, all APPROVED.
       slotUnavailable:
         "המועד הזה נתפס בינתיים. אלה המועדים הפנויים המעודכנים — אפשר לבחור מועד אחר.",
+      // F28. Names the remedy — another DATE — because every time on this day is
+      // equally refused for this dress.
+      dressUnavailable: "השמלה אינה זמינה בתאריך שנבחר. אפשר לבחור תאריך אחר.",
       termsStale:
         "מדיניות הביטולים התעדכנה בזמן שמילאת את הפרטים. זו הגרסה המעודכנת — נשמח שתקראי ותאשרי אותה שוב.",
       otpInvalid: "הקוד שהוזן אינו נכון. אפשר להקליד אותו שוב, או לבקש קוד חדש.",

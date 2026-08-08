@@ -51,6 +51,7 @@ function dress(overrides: Partial<StorefrontDetail> = {}): StorefrontDetail {
     reserved: false,
     sizes: [],
     media: [],
+    unavailable_ranges: [],
     ...overrides,
   };
 }
@@ -261,6 +262,59 @@ describe("DressPage — the facts column", () => {
       "href",
       "/book/slot/d1",
     );
+  });
+
+  // --- F28: the booked-out dates block ---
+
+  it("renders no heading at all when the dress has no reservations", async () => {
+    await renderLoaded(dress());
+
+    expect(screen.queryByText(i18n.t("dress.reservedDatesHeading"))).not.toBeInTheDocument();
+    expect(screen.queryByText(i18n.t("dress.reservedDatesNote"))).not.toBeInTheDocument();
+  });
+
+  it("states the ranges and the fittings note, and keeps the CTA usable", async () => {
+    await renderLoaded(
+      dress({
+        unavailable_ranges: [
+          { starts_on: "2026-08-12", ends_on: "2026-08-18" },
+          { starts_on: "2026-12-28", ends_on: "2027-01-02" },
+        ],
+      }),
+    );
+
+    expect(screen.getByText(i18n.t("dress.reservedDatesHeading"))).toBeInTheDocument();
+    // Same-month collapses to one numeral island; cross-year splits into two.
+    expect(screen.getByText("12–18")).toBeInTheDocument();
+    expect(screen.getByText("28 בדצמבר")).toBeInTheDocument();
+    expect(screen.getByText("2 בינואר 2027")).toBeInTheDocument();
+    // Q9 spelled as copy — the line that keeps the CTA honest.
+    expect(screen.getByText(i18n.t("dress.reservedDatesNote"))).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: i18n.t("booking.cta") })).toHaveAttribute(
+      "href",
+      "/book/slot/d1",
+    );
+  });
+
+  it("wraps every numeral run in a bdi island", async () => {
+    await renderLoaded(
+      dress({ unavailable_ranges: [{ starts_on: "2026-08-12", ends_on: "2026-08-18" }] }),
+    );
+
+    // R19: an unisolated numeral run reorders around neighbouring RTL text.
+    expect(screen.getByText("12–18").tagName).toBe("BDI");
+  });
+
+  it("states the dates without announcing them — nothing happened", async () => {
+    await renderLoaded(
+      dress({ unavailable_ranges: [{ starts_on: "2026-08-12", ends_on: "2026-08-18" }] }),
+    );
+
+    const heading = screen.getByText(i18n.t("dress.reservedDatesHeading"));
+    const block = heading.closest("div");
+    expect(block).not.toBeNull();
+    expect(block?.querySelector("[role='alert']")).toBeNull();
+    expect(block?.querySelector("[role='status']")).toBeNull();
   });
 });
 

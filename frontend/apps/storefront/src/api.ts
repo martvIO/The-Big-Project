@@ -58,6 +58,13 @@ export function errorMessageKey(error: unknown): string {
       return "errors.validation";
     case "SLOT_UNAVAILABLE":
       return "errors.slotUnavailable";
+    // F28. Its OWN key beside slotUnavailable, and the difference is the whole
+    // point: the gown is away for the entire DAY, so the slot copy would send
+    // her to another time on a date she cannot have — and BookPage must render
+    // this one WITHOUT recoverSlot(), which refetches a slot list that has no
+    // idea reservations exist.
+    case "DRESS_UNAVAILABLE":
+      return "errors.dressUnavailable";
     case "TERMS_STALE":
       return "errors.termsStale";
     case "OTP_INVALID":
@@ -211,6 +218,14 @@ export interface SizeChip {
   available: boolean;
 }
 
+// F28. Date-only strings, INCLUSIVE at both ends, current and future only,
+// ascending. ⚠ `new Date("2026-08-12")` is UTC midnight — format through
+// `formatDateRange` (packages/ui), never the Jerusalem datetime formatters.
+export interface UnavailableRange {
+  starts_on: string;
+  ends_on: string;
+}
+
 export interface StorefrontDetail {
   id: string;
   name: string;
@@ -220,6 +235,9 @@ export interface StorefrontDetail {
   sizes: SizeChip[];
   // Ready photos in gallery order; media[0] is the cover.
   media: StorefrontMedia[];
+  // DETAIL ONLY — the card never becomes date-aware (D5/D6): a gown rented in
+  // August is available to an October bride. Empty, never absent.
+  unavailable_ranges: UnavailableRange[];
 }
 
 export interface HoursRow {

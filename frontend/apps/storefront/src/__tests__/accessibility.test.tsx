@@ -164,6 +164,7 @@ describe("Accessibility statement — the required parts", () => {
         { url: "/2.jpg", url_expires_at: null },
         { url: "/3.jpg", url_expires_at: null },
       ],
+      unavailable_ranges: [],
     };
     vi.mocked(api.getDress).mockResolvedValue(dress);
     render(

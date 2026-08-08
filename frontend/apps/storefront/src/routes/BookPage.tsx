@@ -1096,6 +1096,18 @@ export function BookPage({ step, dressId }: BookPageProps) {
         setToken(null);
         setStepAlert({ key, contact: false });
         pendingFocus.current = "phone";
+      } else if (key === "errors.dressUnavailable") {
+        // ⚠ DELIBERATELY NOT recoverSlot(), AND THAT IS THE WHOLE BRANCH.
+        // recoverSlot navigates back to /book/slot and re-reads the grid — and
+        // the slot engine has ZERO awareness of reservation windows (spec D4),
+        // so the same blocked day returns with the same times and every pick
+        // fails identically. A 409 loop she cannot escape.
+        //
+        // The remedy is a different DATE for this dress, which she reaches
+        // through the picker she already filled in. So: stay on the step, say
+        // so, touch nothing. The tooManyAttempts shape, without the phone —
+        // this is recoverable by her alone.
+        setStepAlert({ key, contact: false });
       } else if (key === "errors.slotUnavailable") {
         await recoverSlot();
       } else if (key === "errors.termsStale") {

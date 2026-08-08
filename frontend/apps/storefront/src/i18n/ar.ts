@@ -137,6 +137,14 @@ export const ar = {
       // for this refusal); this row exists so the shared error map resolves.
       portalNoBookings: "אין תורים למספר הזה.",
       bookingAwaitingPayment: "התור הזה ממתין לתשלום המקדמה, ולכן אי אפשר לעדכן אותו כרגע.",
+      // F28.
+      dressUnavailable: "השמלה אינה זמינה בתאריך שנבחר. אפשר לבחור תאריך אחר.",
+    },
+    // F28's date-bound reservation block on the dress page — Hebrew values
+    // standing in, pre-decided #47's file rule.
+    dress: {
+      reservedDatesHeading: "מוזמנת בתאריכים",
+      reservedDatesNote: "בשאר התאריכים אפשר לקבוע מדידה.",
     },
     // F22's booking-waitlist reveal — Hebrew values standing in, pre-decided
     // #47's file rule.

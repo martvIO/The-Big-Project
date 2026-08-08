@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Badge, Button, Gallery, Price, Skeleton, cn, focusRing } from "@boutique/ui";
+import {
+  Badge,
+  Button,
+  Gallery,
+  Price,
+  Skeleton,
+  cn,
+  focusRing,
+  formatDateRange,
+} from "@boutique/ui";
 import type { GalleryImage } from "@boutique/ui";
 import { api, errorMessageOr, isNotFound } from "../api";
 import type { StorefrontDetail } from "../api";
@@ -223,6 +232,44 @@ export function DressPage({ dressId }: DressPageProps) {
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {/* F28 D6. A STATEMENT between the sizes and the CTA, rendered only
+              when there is something to state — no live region and no alert
+              tone, because nothing happened: this is a fact about the dress, in
+              the same register as the sizes block above it. The `reserved`
+              badge is orthogonal and may render at the same time (D5). */}
+          {dress.unavailable_ranges.length > 0 && (
+            <div className="flex flex-col items-start gap-2">
+              <h2 className="text-sm text-ink-muted">{t("dress.reservedDatesHeading")}</h2>
+              <ul className="flex flex-col items-start gap-1">
+                {dress.unavailable_ranges.map((range) => {
+                  const formatted = formatDateRange(range.starts_on, range.ends_on);
+                  return (
+                    <li key={`${range.starts_on}-${range.ends_on}`} className="text-base text-ink">
+                      {/* R19: every numeral run is its own island. A same-month
+                          range is ONE run («12–18») inside the month name; a
+                          split range is two whole dates with the dash between
+                          them in RTL flow. */}
+                      {formatted.kind === "same-month" ? (
+                        <>
+                          <bdi dir="ltr">{formatted.days}</bdi> {formatted.month}
+                        </>
+                      ) : (
+                        <>
+                          <bdi dir="ltr">{formatted.start}</bdi> –{" "}
+                          <bdi dir="ltr">{formatted.end}</bdi>
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              {/* Q9 spelled as copy: the ranges say where the gown is, this says
+                  what stays possible, and the CTA below stays exactly as the
+                  shipped reserved-dress test pins it. */}
+              <p className="text-sm text-ink-muted">{t("dress.reservedDatesNote")}</p>
             </div>
           )}
 
