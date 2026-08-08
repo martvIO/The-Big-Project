@@ -1048,11 +1048,16 @@ test("manage profile: the matrix lays out RTL — switch inline-start, cue inlin
   const brides = page.getByRole("switch", { name: BRIDES_ONLY_LABEL });
   await brides.click();
 
-  // ⚠ `.first()` WOULD BE A COIN FLIP HERE: «נשמר לפני רגע» appears TWICE by
-  // design — the visible row cue and the card's sr-only status region (design
-  // P3 reuses one string for both). `:visible` picks the painted one, which is
-  // the only one with a meaningful box.
-  const cue = page.getByText(SAVED_CUE).locator("visible=true");
+  // ⚠ «נשמר לפני רגע» appears TWICE by design — the row cue and the card's
+  // VisuallyHidden role="status" region (design P3 reuses one string for both).
+  // NEITHER `.first()` NOR `visible=true` disambiguates them: `.first()` is a
+  // coin flip on DOM order, and Playwright counts sr-only content as VISIBLE
+  // because clip-based hiding still leaves a bounding box — which is why
+  // `visible=true` resolved to both and tripped strict mode.
+  // Scoping to the row that owns this switch is what actually separates them,
+  // and it is also the box this test means to measure.
+  const row = page.locator("section").filter({ has: brides });
+  const cue = row.getByText(SAVED_CUE);
   await expect(cue).toBeVisible();
   const switchBox = await brides.boundingBox();
   const cueBox = await cue.boundingBox();
