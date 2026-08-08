@@ -28,6 +28,7 @@ from app.auth.service import StaffContext
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.sos_alerts import SosAlertRow, SosAlertsRepository
+from app.db.repositories.staff_notifications import StaffNotificationsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.errors import DomainNotFoundError
 from app.floor.service import (
@@ -157,6 +158,8 @@ class _Recorder:
         # can hand the same one back instead of inventing a second.
         self.rows: list[SosAlert] = []
         self.accepted: list[dict[str, Any]] = []
+        # F35's bell rows, written by the raise for a REACHABLE named target.
+        self.notifications: list[dict[str, Any]] = []
 
 
 def _install_raise(
@@ -229,6 +232,32 @@ def _install_raise(
         recorder.order.append("view_of")
         return _view(next(row for row in recorder.rows if row.id == alert_id))
 
+    async def _notify(
+        _s: Any,
+        _sess: Any,
+        _t: Any,
+        *,
+        staff_user_id: uuid.UUID,
+        actor_staff_user_id: uuid.UUID,
+        kind: str,
+        entity_id: uuid.UUID,
+    ) -> None:
+        # F35's producers fire inside three of the verbs this rig drives. Faked
+        # here for the same reason every other repository is: the fake session
+        # cannot serve a real INSERT. Recorded in its OWN list, never in `calls`
+        # — the shipped `calls[-1] == {"call": "claim", ...}` assertions are
+        # about the WRITES this file is actually about.
+        recorder.notifications.append(
+            {
+                "staff_user_id": staff_user_id,
+                "actor_staff_user_id": actor_staff_user_id,
+                "kind": kind,
+                "entity_id": entity_id,
+            }
+        )
+        return None
+
+    monkeypatch.setattr(StaffNotificationsRepository, "insert", _notify)
     monkeypatch.setattr(SosAlertsRepository, "assignment_of", _assignment_of)
     monkeypatch.setattr(SosAlertsRepository, "insert", _insert)
     monkeypatch.setattr(SosAlertsRepository, "view_of", _view_of)

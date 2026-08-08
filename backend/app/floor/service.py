@@ -62,6 +62,7 @@ from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
 from app.db.repositories.queue_tickets import WAITLIST_LIMIT, QueueTicketsRepository
 from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.sos_alerts import SosAlertRow, SosAlertsRepository
+from app.db.repositories.staff_notifications import StaffNotificationsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
@@ -84,6 +85,7 @@ from app.models.constants import (
     QueueTicketStatus,
     SosStatus,
     StaffCardStatus,
+    StaffNotificationKind,
     StaffRole,
 )
 from app.models.dress import Dress
@@ -341,6 +343,10 @@ class FloorService:
         self._customers = CustomersRepository()
         self._tickets = QueueTicketsRepository()
         self._sos = SosAlertsRepository()
+        # F35's bell. Four writers in this class and no reader — the list and the
+        # count live in `app/floor/notifications.py`, because nothing in the
+        # dispatch or SOS paths ever reads a notification back.
+        self._notifications = StaffNotificationsRepository()
         # F37's reachability probe, and the ONLY reader of it. Named
         # `_session_rows` because `self._sessions` is already the session
         # FACTORY on this class — two very different things one letter apart.
@@ -730,6 +736,20 @@ class FloorService:
                         "mode": "take_next",
                     },
                 )
+                # F35. Inside THIS transaction, so the bell row commits with the
+                # dispatch or not at all — and guarded, because a manager taking
+                # the next walk-in for herself is the ordinary case and a
+                # notification about her own act is noise on a surface whose
+                # whole value is that its count means something.
+                if target_staff_id != actor.id:
+                    await self._notifications.insert(
+                        session,
+                        tenant_id,
+                        staff_user_id=target_staff_id,
+                        actor_staff_user_id=actor.id,
+                        kind=StaffNotificationKind.DISPATCH_ASSIGNED.value,
+                        entity_id=assignment.id,
+                    )
                 return await self._dispatch_read(session, tenant_id, room_id)
         except IntegrityError as error:
             # ⚠ THE TRANSACTION IS ALREADY GONE — the exception left the
@@ -872,6 +892,18 @@ class FloorService:
                         "mode": "assign",
                     },
                 )
+                # F35, and the SAME `kind` as take-next: the recipient's sentence
+                # is «somebody sent you a customer» either way, and which ticket
+                # the manager picked is her business and not the recipient's.
+                if target_staff_id != actor.id:
+                    await self._notifications.insert(
+                        session,
+                        tenant_id,
+                        staff_user_id=target_staff_id,
+                        actor_staff_user_id=actor.id,
+                        kind=StaffNotificationKind.DISPATCH_ASSIGNED.value,
+                        entity_id=assignment.id,
+                    )
                 return await self._dispatch_read(session, tenant_id, room_id)
         except IntegrityError as error:
             raise await self._occupied_error(tenant_id, room_id, target_staff_id, error) from error
@@ -1143,6 +1175,19 @@ class FloorService:
                     "to": str(new_staff_id),
                 },
             )
+            # F35. `handover` is a producer for the same reason it is an audited
+            # act: it is `assign` with the customer already in the room. A
+            # handover to the current holder rewrites the same value and is a
+            # no-op, and a no-op writes no row.
+            if new_staff_id != actor.id:
+                await self._notifications.insert(
+                    session,
+                    tenant_id,
+                    staff_user_id=new_staff_id,
+                    actor_staff_user_id=actor.id,
+                    kind=StaffNotificationKind.ROOM_HANDED_OVER.value,
+                    entity_id=assignment_id,
+                )
             return await self._room_read(session, tenant_id, row.fitting_room_id)
 
     # --- F36: the dress bindings (D4) -----------------------------------------
@@ -1585,6 +1630,33 @@ class FloorService:
                     "assignment": _str_or_none(assignment_id),
                 },
             )
+            # F35, and the guard reads the RESOLVED target rather than the
+            # requested one, which is what makes the two NULL cases behave alike:
+            #
+            # ⚠ **A ROLE-ROUTED PAGE WRITES NO NOTIFICATION, AND THE BELL
+            # THEREFORE UNDER-REPORTS THOSE BY DECISION.** NULL is the
+            # shift-manager ROLE — an audience, not a row — and one insert per
+            # audience member would re-introduce the exact fan-out F37 declined
+            # when it did not build `sos_alert_targets`, inside the most
+            # latency-sensitive transaction in the product, to duplicate what
+            # `FloorService.sos` already computes at read time for every elevated
+            # caller from t=0. The durable record of a role page is the
+            # SOS_RAISED audit row two lines up. This is survivable ONLY because
+            # the bell is not the emergency channel — the overlay is.
+            #
+            # A REROUTE lands here too: she named a colleague who turned out to
+            # be logged out, so `target_id` is NULL, and a notification for a
+            # staffer with no live session would be the one row on this table
+            # guaranteed never to be seen.
+            if target_id is not None:
+                await self._notifications.insert(
+                    session,
+                    tenant_id,
+                    staff_user_id=target_id,
+                    actor_staff_user_id=actor.id,
+                    kind=StaffNotificationKind.SOS_TARGETED.value,
+                    entity_id=alert.id,
+                )
             return RaisedSos(
                 sos=await self._sos_view(session, tenant_id, alert.id, actor=actor, at=at),
                 rerouted=rerouted,

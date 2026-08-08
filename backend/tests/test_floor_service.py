@@ -40,6 +40,7 @@ from app.db.repositories.fitting_room_assignments import (
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
 from app.db.repositories.queue_tickets import WAITLIST_LIMIT, QueueTicketsRepository
+from app.db.repositories.staff_notifications import StaffNotificationsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.errors import DomainNotFoundError
 from app.floor.service import (
@@ -607,9 +608,36 @@ class _Rig:
         self.waitlist_days: list[Any] = []
         self.dress_added = True
         self.dress_removed = True
+        # F35's bell rows, kept out of `calls` and `order` on purpose.
+        self.notifications: list[dict[str, Any]] = []
 
 
 def _install_rooms(monkeypatch: pytest.MonkeyPatch, rig: _Rig) -> _Rig:
+    async def _notify(
+        _s: Any,
+        _sess: Any,
+        _t: Any,
+        *,
+        staff_user_id: uuid.UUID,
+        actor_staff_user_id: uuid.UUID,
+        kind: str,
+        entity_id: uuid.UUID,
+    ) -> None:
+        # F35's producers fire inside three of the verbs this rig drives. Faked
+        # here for the same reason every other repository is: the fake session
+        # cannot serve a real INSERT. Recorded in its OWN list, never in `calls`
+        # — the shipped `calls[-1] == {"call": "claim", ...}` assertions are
+        # about the WRITES this file is actually about.
+        rig.notifications.append(
+            {
+                "staff_user_id": staff_user_id,
+                "actor_staff_user_id": actor_staff_user_id,
+                "kind": kind,
+                "entity_id": entity_id,
+            }
+        )
+        return None
+
     def _record(name: str, **payload: Any) -> None:
         rig.order.append(name)
         if payload:
@@ -737,6 +765,7 @@ def _install_rooms(monkeypatch: pytest.MonkeyPatch, rig: _Rig) -> _Rig:
     monkeypatch.setattr(FittingRoomAssignmentsRepository, "active_by_id", _assignment_active_by_id)
     monkeypatch.setattr(FittingRoomAssignmentsRepository, "release", _release)
     monkeypatch.setattr(FittingRoomAssignmentsRepository, "handover", _handover)
+    monkeypatch.setattr(StaffNotificationsRepository, "insert", _notify)
     monkeypatch.setattr(FittingAssignmentDressesRepository, "add", _add)
     monkeypatch.setattr(FittingAssignmentDressesRepository, "remove", _remove)
     monkeypatch.setattr(FittingAssignmentDressesRepository, "by_assignment_ids", _by_assignment_ids)
