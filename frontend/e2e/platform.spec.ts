@@ -109,7 +109,19 @@ test("platform: logout returns to the login panel", async ({ page }) => {
   await page.goto(PLATFORM);
   await page.getByRole("button", { name: "יציאה" }).click();
   await expect(page.getByRole("button", { name: "כניסה" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "ניהול הפלטפורמה", level: 1 })).toBeHidden();
+  // ⚠ SCOPED TO THE BANNER, and that is the whole assertion. Both screens carry
+  // an h1 whose accessible name contains «ניהול הפלטפורמה» — the console's is
+  // exactly that, the login lockup's sr-only span is «MODRYN — ניהול
+  // הפלטפורמה» — and Playwright matches `name` as a SUBSTRING, so an unscoped
+  // heading locator finds the LOGIN heading and reports the console as still
+  // mounted. It never was: App.tsx renders LoginPanel or Console, never both.
+  //
+  // The console's h1 lives in the only <header> in the app (banner) and the
+  // login's in the only <main>, so the landmark is what actually separates the
+  // two screens. `.first()` would have "fixed" this by coin flip.
+  await expect(
+    page.getByRole("banner").getByRole("heading", { name: "ניהול הפלטפורמה", level: 1 }),
+  ).toBeHidden();
 });
 
 // --- provision ---------------------------------------------------------------
