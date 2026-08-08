@@ -13,10 +13,13 @@ Every test takes its own engine and its own random tenant id, so counts are exac
 rather than "at least one".
 """
 
+import asyncio
 import datetime
+import time
 import uuid
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -24,11 +27,24 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from app.auth.rate_limit import FixedWindowRateLimiter
+from app.catalog.service import (
+    CatalogNotFoundError,
+    CatalogService,
+    ReservationOverlapError,
+    ReservationView,
+)
+from app.catalog.validation import CatalogValidationError
 from app.db.repositories.dress_reservations import DressReservationsRepository
 from app.db.tenant import tenant_session
+from app.models.audit_log import AuditLog
+from app.models.constants import AuditAction
+from app.models.customer import Customer
+from app.storage.memory import InMemoryMediaStorage
 
 pytestmark = pytest.mark.db
 
+ACTOR_ID = uuid.uuid4()
 REPO = DressReservationsRepository()
 
 # One arbitrary August window. 12-18 is the spec's own example, so the numbers in
@@ -335,3 +351,300 @@ async def test_rls_hides_another_tenants_reservations(app_role_url: str) -> None
         assert await _overlapping(engine, tenant_b, dress_id, AUG_12, AUG_18) == [theirs]
     finally:
         await engine.dispose()
+
+
+# --- the service: the lock, the audit rows, the 409 ---
+
+
+def _service(engine: AsyncEngine) -> CatalogService:
+    return CatalogService(
+        async_sessionmaker(engine, expire_on_commit=False),
+        media_storage=InMemoryMediaStorage(),
+        presign_rate_limiter=FixedWindowRateLimiter(
+            max_attempts=10_000, window_seconds=3600, clock=time.monotonic
+        ),
+        pending_ttl_seconds=3600,
+    )
+
+
+async def _dress(service: CatalogService, tenant_id: uuid.UUID) -> uuid.UUID:
+    created = await service.create_dress(
+        tenant_id,
+        name="Aurora",
+        description=None,
+        price_agorot=None,
+        price_visible=True,
+        reserved=False,
+        sort_order=0,
+        actor_id=ACTOR_ID,
+    )
+    return created.row.id
+
+
+async def _customer(
+    engine: AsyncEngine, tenant_id: uuid.UUID, *, erased: bool = False
+) -> uuid.UUID:
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with tenant_session(factory, tenant_id) as session:
+        row = Customer(
+            tenant_id=tenant_id,
+            phone=f"+9725{uuid.uuid4().int % 10**8:08d}",
+            name="נועה",
+            erased_at=datetime.datetime.now(datetime.UTC) if erased else None,
+        )
+        session.add(row)
+        await session.flush()
+        return row.id
+
+
+async def _audit_rows(engine: AsyncEngine, tenant_id: uuid.UUID) -> list[AuditLog]:
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with tenant_session(factory, tenant_id) as session:
+        result = await session.execute(select(AuditLog).order_by(AuditLog.created_at))
+        return list(result.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_create_list_delete_lifecycle(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    service = _service(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant_id)
+        customer_id = await _customer(engine, tenant_id)
+        created = await service.create_reservation(
+            tenant_id,
+            dress_id,
+            starts_on=AUG_12,
+            ends_on=AUG_18,
+            customer_id=customer_id,
+            notes="חתונה בקיסריה",
+            actor_id=ACTOR_ID,
+        )
+        assert created.row.starts_on == AUG_12
+        assert created.customer_name == "נועה"
+
+        listed = await service.list_reservations(tenant_id, dress_id)
+        assert [view.row.id for view in listed] == [created.row.id]
+        assert listed[0].customer_name == "נועה"
+
+        await service.delete_reservation(tenant_id, dress_id, created.row.id, actor_id=ACTOR_ID)
+        assert await service.list_reservations(tenant_id, dress_id) == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_delete_frees_the_window_for_an_identical_re_create(app_role_url: str) -> None:
+    """Delete + re-add IS the edit path (the spec ships no PATCH), so a freed
+    window that still collides would make a postponed wedding unrecordable."""
+    engine = _engine(app_role_url)
+    service = _service(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant_id)
+        first = await service.create_reservation(
+            tenant_id, dress_id, starts_on=AUG_12, ends_on=AUG_18, actor_id=ACTOR_ID
+        )
+        with pytest.raises(ReservationOverlapError):
+            await service.create_reservation(
+                tenant_id, dress_id, starts_on=AUG_12, ends_on=AUG_18, actor_id=ACTOR_ID
+            )
+        await service.delete_reservation(tenant_id, dress_id, first.row.id, actor_id=ACTOR_ID)
+        again = await service.create_reservation(
+            tenant_id, dress_id, starts_on=AUG_12, ends_on=AUG_18, actor_id=ACTOR_ID
+        )
+        assert again.row.id != first.row.id
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_overlap_409_carries_the_conflicting_range(app_role_url: str) -> None:
+    """The manage pane says WHICH dates collide, so the owner can fix the form
+    without leaving it. `details` carries the range and nothing else."""
+    engine = _engine(app_role_url)
+    service = _service(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant_id)
+        await service.create_reservation(
+            tenant_id, dress_id, starts_on=AUG_12, ends_on=AUG_18, actor_id=ACTOR_ID
+        )
+        with pytest.raises(ReservationOverlapError) as caught:
+            await service.create_reservation(
+                tenant_id,
+                dress_id,
+                starts_on=AUG_18,
+                ends_on=AUG_19,
+                actor_id=ACTOR_ID,
+            )
+        assert caught.value.details == {"starts_on": "2026-08-12", "ends_on": "2026-08-18"}
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_adjacent_create_is_accepted_by_the_service(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    service = _service(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant_id)
+        await service.create_reservation(
+            tenant_id, dress_id, starts_on=AUG_12, ends_on=AUG_18, actor_id=ACTOR_ID
+        )
+        await service.create_reservation(
+            tenant_id,
+            dress_id,
+            starts_on=AUG_19,
+            ends_on=datetime.date(2026, 8, 25),
+            actor_id=ACTOR_ID,
+        )
+        assert len(await service.list_reservations(tenant_id, dress_id)) == 2
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unknown_and_archived_dress_are_404_on_every_verb(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    service = _service(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant_id)
+        reservation = await service.create_reservation(
+            tenant_id, dress_id, starts_on=AUG_12, ends_on=AUG_18, actor_id=ACTOR_ID
+        )
+        await service.archive_dress(tenant_id, dress_id, actor_id=ACTOR_ID)
+        for target in (dress_id, uuid.uuid4()):
+            with pytest.raises(CatalogNotFoundError):
+                await service.list_reservations(tenant_id, target)
+            with pytest.raises(CatalogNotFoundError):
+                await service.create_reservation(
+                    tenant_id, target, starts_on=AUG_12, ends_on=AUG_18, actor_id=ACTOR_ID
+                )
+            with pytest.raises(CatalogNotFoundError):
+                await service.delete_reservation(
+                    tenant_id, target, reservation.row.id, actor_id=ACTOR_ID
+                )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_erased_or_unknown_customer_is_404(app_role_url: str) -> None:
+    """The walk-in's D3d rule: after a §14 erase there is no data subject here,
+    and pointing a new reservation at her would resurrect a processing
+    relationship the erasure record says ended. Indistinguishable from unknown."""
+    engine = _engine(app_role_url)
+    service = _service(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant_id)
+        erased = await _customer(engine, tenant_id, erased=True)
+        for customer_id in (erased, uuid.uuid4()):
+            with pytest.raises(CatalogNotFoundError):
+                await service.create_reservation(
+                    tenant_id,
+                    dress_id,
+                    starts_on=AUG_12,
+                    ends_on=AUG_18,
+                    customer_id=customer_id,
+                    actor_id=ACTOR_ID,
+                )
+        assert await service.list_reservations(tenant_id, dress_id) == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_validation_rejects_before_any_row_is_written(app_role_url: str) -> None:
+    engine = _engine(app_role_url)
+    service = _service(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant_id)
+        with pytest.raises(CatalogValidationError):
+            await service.create_reservation(
+                tenant_id, dress_id, starts_on=AUG_18, ends_on=AUG_12, actor_id=ACTOR_ID
+            )
+        assert await service.list_reservations(tenant_id, dress_id) == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_audit_rows_carry_the_range_and_no_name_or_phone(app_role_url: str) -> None:
+    """The walk-in audit rule, verbatim: `customer_id` resolves both, and a name
+    copied into an audit row survives the erase that scrubs the customer."""
+    engine = _engine(app_role_url)
+    service = _service(engine)
+    tenant_id = uuid.uuid4()
+    try:
+        dress_id = await _dress(service, tenant_id)
+        customer_id = await _customer(engine, tenant_id)
+        created = await service.create_reservation(
+            tenant_id,
+            dress_id,
+            starts_on=AUG_12,
+            ends_on=AUG_18,
+            customer_id=customer_id,
+            notes="נועה 0501234567",
+            actor_id=ACTOR_ID,
+        )
+        await service.delete_reservation(tenant_id, dress_id, created.row.id, actor_id=ACTOR_ID)
+
+        rows = await _audit_rows(engine, tenant_id)
+        by_action = {row.action: row for row in rows}
+        assert AuditAction.DRESS_RESERVATION_CREATED in by_action
+        assert AuditAction.DRESS_RESERVATION_DELETED in by_action
+        create_row = by_action[AuditAction.DRESS_RESERVATION_CREATED]
+        assert create_row.actor_id == ACTOR_ID
+        assert create_row.details["starts_on"] == "2026-08-12"
+        assert create_row.details["ends_on"] == "2026-08-18"
+        assert create_row.details["customer_id"] == str(customer_id)
+        for row in rows:
+            serialised = str(row.details)
+            assert "נועה" not in serialised
+            assert "0501234567" not in serialised
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_overlapping_creates_leave_exactly_one(app_role_url: str) -> None:
+    """The lock's proof. Both requests pass validation and both run the overlap
+    SELECT; without `pg_advisory_xact_lock(hashtext(tenant_id))` — the SAME key
+    the booking claim takes — both see an empty result under READ COMMITTED and
+    the gown goes to two weddings.
+
+    ⚠ NullPool and separate engines: a pooled connection would serialise these
+    by accident and the test would pass against an unlocked service.
+    """
+    engine_a, engine_b = _engine(app_role_url), _engine(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        service_a, service_b = _service(engine_a), _service(engine_b)
+        dress_id = await _dress(service_a, tenant_id)
+        results = await asyncio.gather(
+            service_a.create_reservation(
+                tenant_id, dress_id, starts_on=AUG_12, ends_on=AUG_18, actor_id=ACTOR_ID
+            ),
+            service_b.create_reservation(
+                tenant_id,
+                dress_id,
+                starts_on=datetime.date(2026, 8, 14),
+                ends_on=datetime.date(2026, 8, 20),
+                actor_id=ACTOR_ID,
+            ),
+            return_exceptions=True,
+        )
+        overlaps = [r for r in results if isinstance(r, ReservationOverlapError)]
+        created = [r for r in results if isinstance(r, ReservationView)]
+        assert len(created) == 1, results
+        assert len(overlaps) == 1, results
+        assert len(await service_a.list_reservations(tenant_id, dress_id)) == 1
+    finally:
+        await engine_a.dispose()
+        await engine_b.dispose()

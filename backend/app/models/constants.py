@@ -771,6 +771,18 @@ class AuditAction(StrEnum):
     # is not evidence.
     DRESS_MEDIA_DELETED = "dress_media_deleted"
     DRESS_MEDIA_REORDERED = "dress_media_reordered"
+    # F28's date-bound reservations (D8). Same fact as every block above:
+    # audit_log.action is plain TEXT with no CHECK (0003), so these need no
+    # migration.
+    #
+    # These two rows are the ONLY record of who took a gown off the floor for a
+    # week and who put it back — there is no edit verb, so a corrected window is
+    # a delete followed by a create and the pair must be separately readable.
+    # Their `details` carry the range and the two ids and NEITHER a name NOR a
+    # phone: `customer_id` resolves both, and a name copied in here would outlive
+    # the erase that scrubs the customer row.
+    DRESS_RESERVATION_CREATED = "dress_reservation_created"
+    DRESS_RESERVATION_DELETED = "dress_reservation_deleted"
 
 
 class PlatformAuditAction(StrEnum):
