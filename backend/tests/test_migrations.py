@@ -4024,3 +4024,168 @@ def test_the_staff_notifications_migration_round_trips(migrated_db: str) -> None
         assert set(_bell_columns(migrated_db)) == _BELL_ALL_COLUMNS
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F28: the date-bound dress reservations table ----------------------------
+#
+# ⚠ db-marked: these run on CI only (no local Docker). Written against 0020's
+# template, which is what the migration itself copies.
+
+_RESERVATION_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'dress_reservations'"
+)
+_RESERVATION_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'dress_reservations'::regclass AND conname = :name"
+)
+_RESERVATION_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE tablename = 'dress_reservations' AND indexname = :name"
+)
+_RESERVATION_ORDER_CHECK = "dress_reservations_order_check"
+_RESERVATION_SPAN_CHECK = "dress_reservations_span_check"
+_RESERVATION_DRESS_INDEX = "idx_dress_reservations_dress"
+# Spelled as POSTGRES deparses them (parenthesised, schema-qualified) — 0018's
+# pinning technique. Weakening either CHECK or dropping half the partial
+# predicate then collides with a review here instead of shipping silently.
+_RESERVATION_ORDER_CHECK_DEF = "CHECK ((ends_on >= starts_on))"
+_RESERVATION_SPAN_CHECK_DEF = "CHECK (((ends_on - starts_on) <= 3650))"
+_RESERVATION_DRESS_INDEX_DEF = (
+    "CREATE INDEX idx_dress_reservations_dress ON public.dress_reservations "
+    "USING btree (tenant_id, dress_id, ends_on) WHERE (deleted_at IS NULL)"
+)
+
+_RESERVATION_INSERT = (
+    "INSERT INTO dress_reservations (tenant_id, dress_id, starts_on, ends_on) "
+    "VALUES (uuid_generate_v4(), uuid_generate_v4(), :starts_on, :ends_on)"
+)
+
+
+def _reservation_columns(url: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_RESERVATION_COLUMNS))).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _reservation_pinned_definitions(url: str) -> tuple[str, str, str]:
+    async def read() -> tuple[str, str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                order = await conn.execute(
+                    text(_RESERVATION_CONSTRAINT_DEF), {"name": _RESERVATION_ORDER_CHECK}
+                )
+                span = await conn.execute(
+                    text(_RESERVATION_CONSTRAINT_DEF), {"name": _RESERVATION_SPAN_CHECK}
+                )
+                index = await conn.execute(
+                    text(_RESERVATION_INDEX_DEF), {"name": _RESERVATION_DRESS_INDEX}
+                )
+                return (
+                    str(order.scalar_one()),
+                    str(span.scalar_one()),
+                    str(index.scalar_one()),
+                )
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _reservation_insert_admitted(url: str, starts_on: str, ends_on: str) -> bool:
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(
+                        text(_RESERVATION_INSERT), {"starts_on": starts_on, "ends_on": ends_on}
+                    )
+                except IntegrityError:
+                    return False
+                finally:
+                    await trans.rollback()
+                return True
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+@pytest.mark.db
+def test_migration_0029_creates_dress_reservations(migrated_db: str) -> None:
+    """Spec D2's DDL: DATE and not TIMESTAMPTZ on both ends (a rental leaves and
+    returns on days, and the boutique is one timezone), the no-FK dress pointer,
+    the OPTIONAL customer pointer (D7 — never a PII snapshot) and bounded notes.
+    """
+    columns = _reservation_columns(migrated_db)
+    assert columns["dress_id"] == ("uuid", "NO")
+    assert columns["starts_on"] == ("date", "NO")
+    assert columns["ends_on"] == ("date", "NO")
+    assert columns["customer_id"] == ("uuid", "YES")
+    assert columns["notes"] == ("text", "YES")
+
+
+@pytest.mark.db
+def test_the_reservation_definitions_are_pinned(migrated_db: str) -> None:
+    """Both named CHECKs and the one partial index, deparsed. The span ceiling is
+    10x MAX_RESERVATION_SPAN_DAYS (0005's convention) so tightening product
+    policy never needs a migration — and widening the DB ceiling is a visible
+    act, here."""
+    order, span, index = _reservation_pinned_definitions(migrated_db)
+    assert order == _RESERVATION_ORDER_CHECK_DEF
+    assert span == _RESERVATION_SPAN_CHECK_DEF
+    assert index == _RESERVATION_DRESS_INDEX_DEF
+
+
+@pytest.mark.db
+def test_the_reservation_checks_admit_a_legal_range_and_refuse_both_absurdities(
+    migrated_db: str,
+) -> None:
+    """A single-day rental is legal (starts_on == ends_on — D2's inclusive
+    ends_on makes that a one-day window, not an empty one); an inverted range and
+    a span past the ceiling are not."""
+    assert _reservation_insert_admitted(migrated_db, "2026-08-12", "2026-08-17")
+    assert _reservation_insert_admitted(migrated_db, "2026-08-12", "2026-08-12")
+    assert not _reservation_insert_admitted(migrated_db, "2026-08-17", "2026-08-12")
+    assert not _reservation_insert_admitted(migrated_db, "2026-08-12", "2046-08-12")
+
+
+@pytest.mark.db
+def test_migration_0029_round_trips(migrated_db: str) -> None:
+    """upgrade() creates the table; downgrade() drops it and touches nothing
+    else — F28 adds no column to any existing table, so there is nothing to
+    un-touch. The downgrade target comes from `_parent_of` so a
+    renumber-at-rebase cannot silently stop this one revision short."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+
+    def exists() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text(_TABLE_EXISTS), {"name": "dress_reservations"})
+                    return bool(result.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists()
+        command.downgrade(cfg, _parent_of("date-bound dress reservation"))
+        assert not exists()
+        command.upgrade(cfg, "head")
+        assert exists()
+        assert _reservation_columns(migrated_db)["starts_on"] == ("date", "NO")
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
