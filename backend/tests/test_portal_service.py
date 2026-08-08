@@ -51,7 +51,9 @@ from app.booking.manage import (
 )
 from app.booking.service import BookingNotFoundError, PhoneNotVerifiedError
 from app.booking.tokens import manage_token_hash
+from app.booking.validation import jerusalem_day_index
 from app.db.repositories.appointment_types import AppointmentTypesRepository
+from app.db.repositories.availability import AvailabilityRulesRepository
 from app.db.repositories.customer_sessions import CustomerSessionsRepository
 from app.db.repositories.message_log import BELL_LIMIT, MessageLogRepository
 from app.db.tenant import tenant_session
@@ -166,7 +168,7 @@ async def test_an_erased_customer_can_never_mint_a_session(app_role_url: str) ->
     phone = _phone()
     past = NOW - datetime.timedelta(days=30)
     try:
-        type_id = await _seed(factory, tenant_id, date=(past - datetime.timedelta(days=2)).date())
+        type_id = await _seed(factory, tenant_id, date=past.date())
         claim = await _claim(
             factory,
             tenant_id,
@@ -321,7 +323,7 @@ async def test_an_erase_kills_a_live_portal_session(app_role_url: str) -> None:
     phone = _phone()
     past = NOW - datetime.timedelta(days=30)
     try:
-        type_id = await _seed(factory, tenant_id, date=(past - datetime.timedelta(days=2)).date())
+        type_id = await _seed(factory, tenant_id, date=past.date())
         claim = await _claim(
             factory,
             tenant_id,
@@ -393,6 +395,32 @@ async def _sign_in(
     return portal, customer
 
 
+async def _open_day(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    date: datetime.date,
+    *,
+    capacity: int = 1,
+) -> None:
+    """One opening rule for `date`'s weekday, and nothing else.
+
+    `_seed` is the shared fixture and it seeds a WHOLE boutique — appointment
+    type, terms version, opening hours. A test that needs a second bookable DAY
+    inside one tenant must not call it twice: the type name and the terms
+    version are both unique per tenant, so the second call dies on
+    idx_appointment_types_tenant_name_unique before any assertion runs.
+    """
+    async with tenant_session(factory, tenant_id) as session:
+        await AvailabilityRulesRepository().insert(
+            session,
+            tenant_id=tenant_id,
+            day_of_week=jerusalem_day_index(date),
+            open_time=datetime.time(9, 0),
+            close_time=datetime.time(13, 0),
+            capacity=capacity,
+        )
+
+
 async def test_the_list_is_split_ordered_and_scoped_to_her_alone(app_role_url: str) -> None:
     """Three claims in one seed, because they share it: the split is on the
     SERVER's clock, upcoming reads ASC and past DESC, and another customer's
@@ -403,13 +431,19 @@ async def test_the_list_is_split_ordered_and_scoped_to_her_alone(app_role_url: s
     past_date = (NOW - datetime.timedelta(days=10)).date()
     try:
         type_id = await _seed(factory, tenant_id, capacity=3)
-        past_type_id = await _seed(factory, tenant_id, capacity=3, date=past_date)
+        # ⚠ NOT a second `_seed`. That helper is shared (test_booking_owner_db)
+        # and inserts an appointment type named «מדידה ראשונה» plus terms
+        # version 1 every time, so calling it twice for ONE tenant violates
+        # idx_appointment_types_tenant_name_unique before the test can start.
+        # The past day needs nothing but an opening rule for ITS weekday; the
+        # booking reuses the type the first seed already made.
+        await _open_day(factory, tenant_id, past_date, capacity=3)
         near = await _claim(factory, tenant_id, type_id, starts_at=SLOT_A, phone=hers)
         far = await _claim(factory, tenant_id, type_id, starts_at=SLOT_B, phone=hers)
         old = await _claim(
             factory,
             tenant_id,
-            past_type_id,
+            type_id,
             starts_at=_slot(10, date=past_date),
             now=NOW - datetime.timedelta(days=20),
             phone=hers,

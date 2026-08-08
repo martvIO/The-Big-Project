@@ -151,19 +151,32 @@ class PortalService:
 
             customer = await self._customers.by_phone(session, tenant_id, phone=phone)
             if customer is None:
+                # ⚠ RECORDED, NOT RAISED — AND THAT IS THE WHOLE POINT OF THE
+                # BURN ABOVE. `tenant_session` wraps this block in ONE
+                # `session.begin()`, so an exception raised HERE unwinds the
+                # transaction and takes `consume_verification`'s burn with it:
+                # the token would survive its own refusal and the mint would be
+                # retryable for free, which is exactly the property
+                # `test_an_unknown_phone_still_burns_its_token` denies. The
+                # refusal is carried out of the block instead, so the burn
+                # commits and the caller is told nothing extra.
                 # Includes the erased subject by construction — her phone is
                 # `erased:{id}` and can never equal a normalised mobile.
-                raise PortalNoBookingsError
+                minted = None
+            else:
+                token = generate_session_token()
+                await self._sessions.insert(
+                    session,
+                    tenant_id=tenant_id,
+                    customer_id=customer.id,
+                    token_hash=hash_token(token),
+                    expires_at=now + datetime.timedelta(seconds=self._session_ttl_seconds),
+                )
+                minted = (PortalSessionResponse(customer_name=customer.name), token)
 
-            token = generate_session_token()
-            await self._sessions.insert(
-                session,
-                tenant_id=tenant_id,
-                customer_id=customer.id,
-                token_hash=hash_token(token),
-                expires_at=now + datetime.timedelta(seconds=self._session_ttl_seconds),
-            )
-            return PortalSessionResponse(customer_name=customer.name), token
+        if minted is None:
+            raise PortalNoBookingsError
+        return minted
 
     async def resolve_session(self, tenant_id: uuid.UUID, token: str) -> CustomerContext | None:
         """`AuthService.resolve_session`'s shape for the customer side: the
