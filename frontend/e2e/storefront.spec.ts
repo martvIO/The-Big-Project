@@ -152,6 +152,9 @@ const DETAILS: Record<string, unknown> = {
       { size_label: "40", available: false },
     ],
     media: PHOTOS.map((url) => ({ url, url_expires_at: EXPIRES_AT })),
+    // F28. Empty on four of the five; the fifth (RESERVED) carries a real
+    // window, so this file's own scan renders the block at least once.
+    unavailable_ranges: [],
   },
   [HIDDEN.id]: {
     id: HIDDEN.id,
@@ -161,6 +164,7 @@ const DETAILS: Record<string, unknown> = {
     reserved: false,
     sizes: [{ size_label: "38", available: true }],
     media: [{ url: PHOTOS[1], url_expires_at: EXPIRES_AT }],
+    unavailable_ranges: [],
   },
   [RESERVED.id]: {
     id: RESERVED.id,
@@ -170,6 +174,9 @@ const DETAILS: Record<string, unknown> = {
     reserved: true,
     sizes: [{ size_label: "36", available: false }],
     media: [{ url: PHOTOS[2], url_expires_at: EXPIRES_AT }],
+    // The manual `reserved` badge AND a dated window on one dress: D5's two
+    // states are orthogonal and both render.
+    unavailable_ranges: [{ starts_on: "2099-08-12", ends_on: "2099-08-18" }],
   },
   [BARE.id]: {
     id: BARE.id,
@@ -179,6 +186,7 @@ const DETAILS: Record<string, unknown> = {
     reserved: false,
     sizes: [],
     media: [],
+    unavailable_ranges: [],
   },
   [LONG.id]: {
     id: LONG.id,
@@ -188,6 +196,7 @@ const DETAILS: Record<string, unknown> = {
     reserved: false,
     sizes: [{ size_label: "38", available: true }],
     media: [{ url: PHOTOS[0], url_expires_at: EXPIRES_AT }],
+    unavailable_ranges: [],
   },
 };
 
