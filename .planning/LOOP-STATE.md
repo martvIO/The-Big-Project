@@ -25,7 +25,24 @@ config:
   interview: .planning/epics/interview-2026-07-30.md
   merge_gate: .claude/scripts/merge-gate.sh
 
-current: F24                    # ==================================================================
+current: F25                    # =================================================================
+                                # ⚠⚠ OPERATIONAL LESSON, 2026-08-08 — BUILDERS MUST COMMIT PER TASK.
+                                # FIVE builder subagents died on infrastructure in one afternoon
+                                # ("API Error: Connection closed mid-response", or a 6-attempt stall).
+                                # A DYING AGENT'S UNCOMMITTED EDITS ARE REVERTED, so two near-complete
+                                # builds evaporated: F28 lost 107 tool calls / 45 min and F35 lost 115
+                                # tool calls / 70 min, each leaving ZERO new commits and a CLEAN tree —
+                                # because both were honouring the plan's "a handful of logical commits"
+                                # boundary and had not reached one yet.
+                                # That default is right for a human and is a DATA-LOSS POLICY for an
+                                # agent that may vanish. Every builder prompt now carries an explicit
+                                # override: finish a task, git add (LOWERCASE pathspecs), commit, verify
+                                # with git show --stat, then start the next — target one commit per
+                                # ~10 minutes, and each commit must leave the tree importing and
+                                # collecting so the next agent can resume from it. Build calls are also
+                                # wrapped in one retry, and every builder opens by reading
+                                # git log --oneline origin/main..HEAD to resume rather than redo.
+                                # ==================================================================
                                 # ==== RUN, 2026-08-06 — E5+E6+E8 TO COMPLETION (user directive) ===
                                 # Scope: F22 F24 F25 F27 F23 F26 F28 F29 (E5) · F35 (E6) ·
                                 # F38 F39 F40 (E8). E9/E10 stay queued for later. F29's Gate 1
