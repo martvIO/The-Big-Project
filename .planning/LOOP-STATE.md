@@ -2309,7 +2309,7 @@ queue:
     slug: client-portal
     epic: E5
     title: "Client portal: OTP login, My Bookings, .ics, bell"
-    status: pr-open               # 2026-08-08: PR #50. 7 commits + 2 fix commits; 158 tests; migration
+    status: merged                # 2026-08-08: MERGED, PR #50. 7 commits + 2 fix commits; 158 tests; migration
                                   # 0027. Dual review r1 found 2 BLOCKERs, both fixed and verified:
                                   # (a) the portal's cookie-authed POSTs sat OUTSIDE CsrfOriginMiddleware
                                   # — the prefix list is now COOKIE-driven, not layout-driven, because
@@ -2320,6 +2320,24 @@ queue:
                                   # that made PortalPage.tsx a binary file to git.
                                   # ⚠ review round 2 never ran (agents died on a model limit) — r1 fixes
                                   # were verified by hand instead; a fresh adversarial pass is owed.
+                                  # ⚠⚠ CI FOUND A REAL PRODUCT BUG THE LOCAL SUITE COULD NOT: tenant_session
+                                  # wraps create_session in ONE session.begin(), so raising
+                                  # PortalNoBookingsError after consume_verification UNWOUND THE OTP BURN —
+                                  # the verification token survived its own refusal and the mint was
+                                  # retryable for free, which is exactly what
+                                  # test_an_unknown_phone_still_burns_its_token asserts. The refusal is now
+                                  # carried out of the block as a value and raised after the commit.
+                                  # THREE fixture bugs rode with it, all in test_portal_service.py, and all
+                                  # invisible locally because db-marked tests need Docker: (a) the shared
+                                  # _seed called TWICE for one tenant dies on
+                                  # idx_appointment_types_tenant_name_unique (it seeds a whole boutique,
+                                  # type name + terms version included) — use an availability-only helper
+                                  # for a second bookable day; (b)+(c) starts_at=past is 15:00 Jerusalem
+                                  # because NOW is 12:00 UTC, OUTSIDE the seeded 09:00-13:00 LOCAL window,
+                                  # so the grid never offers it — claim _slot(10, date=...) instead.
+                                  # LESSON FOR EVERY LATER FEATURE: a db-test fixture error costs a full
+                                  # ~7min CI round trip each time. Read the clock and window constants in
+                                  # test_booking_owner_db.py BEFORE writing a seeded claim.
     pr: 50
     deps: [F11, F13, F16]
     note: >-
