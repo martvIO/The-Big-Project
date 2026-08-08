@@ -750,6 +750,34 @@ export interface SosAlert {
 export interface SosResponse {
   alerts: SosAlert[];
   server_now: string;
+  // F35's bell rides this payload because it is the console's ONLY app-wide
+  // tick. The bell adds no timer and no request of its own.
+  unread_notifications: number;
+}
+
+// F35. `entity_id` is deliberately NOT on the wire: it is stored server-side
+// because it makes the row a record, and nothing renders it.
+export type NotificationKind = "dispatch_assigned" | "room_handed_over" | "sos_targeted";
+
+export interface StaffNotification {
+  id: string;
+  // Widened to `string` on purpose: an unknown kind is a row the console SKIPS
+  // rather than a parse failure, so a server shipped ahead of a client degrades
+  // to a missing row instead of a raw enum on a staffer's screen.
+  kind: NotificationKind | string;
+  // Null only when the actor's staff row is gone entirely — the join carries no
+  // `deleted_at` filter, so a colleague removed after the fact still has a name.
+  actor_name: string | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export interface NotificationListResponse {
+  items: StaffNotification[];
+}
+
+export interface MarkReadResponse {
+  unread: number;
 }
 
 // ⚠ `rerouted` is a fact about THIS REQUEST and not about the row, which is why
@@ -1649,6 +1677,16 @@ export const api = {
   // does, so a card patches in place from the server's own row.
   getSos(): Promise<SosResponse> {
     return apiFetch("/manage/floor/sos");
+  },
+  // F35. Fetched when the PANEL opens — the count is what rides the tick, and
+  // the twenty rows behind it are not worth an app-wide read every five seconds.
+  listNotifications(): Promise<NotificationListResponse> {
+    return apiFetch("/manage/floor/notifications");
+  },
+  // ONE verb: `[one]` is «she tapped it», the page's ids are «mark all». Answers
+  // her own unread count so the bell updates without waiting a tick.
+  markNotificationsRead(ids: string[]): Promise<MarkReadResponse> {
+    return apiFetch("/manage/floor/notifications/read", { method: "POST", body: { ids } });
   },
   raiseSos(body: RaiseSosRequest): Promise<RaisedAlert> {
     return apiFetch("/manage/floor/sos", { method: "POST", body });

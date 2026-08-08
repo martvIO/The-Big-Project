@@ -178,7 +178,7 @@ beforeEach(() => {
   getSos.mockReset();
   raiseSos.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
-  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW , unread_notifications: 0 });
   getFloor.mockResolvedValue(floor());
 });
 
@@ -492,6 +492,7 @@ describe("AC14's sibling case", () => {
         }),
       ],
       server_now: NOW,
+      unread_notifications: 0,
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);

@@ -74,12 +74,19 @@ async function mount(options: { onSessionEnded?: () => void; strict?: boolean } 
   return view;
 }
 
-function stubRead(...pages: { alerts: SosAlert[]; server_now: string }[]) {
+// `unread_notifications` is OPTIONAL here and defaults to 0 — F35's count rides
+// this payload, and every shipped assertion in this file is about a staffer with
+// nothing waiting. Spelling it at each of the ~20 call sites would have been
+// twenty chances to typo the field that carries a bell.
+function stubRead(
+  ...pages: { alerts: SosAlert[]; server_now: string; unread_notifications?: number }[]
+) {
   const read = vi.spyOn(api, "getSos");
-  for (const page of pages.slice(0, -1)) {
+  const full = pages.map((page) => ({ unread_notifications: 0, ...page }));
+  for (const page of full.slice(0, -1)) {
     read.mockResolvedValueOnce(page);
   }
-  const last = pages[pages.length - 1];
+  const last = full[full.length - 1];
   if (last !== undefined) {
     read.mockResolvedValue(last);
   }
@@ -98,7 +105,7 @@ afterEach(() => {
 
 describe("the two tick rates", () => {
   it("beats every five seconds while there is no alert", async () => {
-    const read = stubRead({ alerts: [], server_now: NOW });
+    const read = stubRead({ alerts: [], server_now: NOW , unread_notifications: 0 });
     await mount();
     expect(read).toHaveBeenCalledTimes(1);
 
@@ -114,7 +121,7 @@ describe("the two tick rates", () => {
     // raised it) so `for_me` is false — and she is precisely the person waiting
     // to learn who is coming. Keyed on `for_me` she would wait five seconds for
     // «דנה כהן מגיעה.» while the acceptor's own screen updated in two.
-    const read = stubRead({ alerts: [alertRow({ for_me: false })], server_now: NOW });
+    const read = stubRead({ alerts: [alertRow({ for_me: false })], server_now: NOW , unread_notifications: 0 });
     await mount();
     expect(read).toHaveBeenCalledTimes(1);
 
@@ -143,7 +150,7 @@ describe("the two tick rates", () => {
     // chain, i.e. before React commits anything. Derive it from React state and
     // this tick re-arms at 5 000 and the 2-second cadence starts one tick late,
     // exactly when the raiser is waiting.
-    const read = stubRead({ alerts: [], server_now: NOW }, { alerts: [alertRow()], server_now: NOW });
+    const read = stubRead({ alerts: [], server_now: NOW , unread_notifications: 0 }, { alerts: [alertRow()], server_now: NOW , unread_notifications: 0 });
     await mount();
     expect(read).toHaveBeenCalledTimes(1);
 
@@ -157,7 +164,7 @@ describe("the two tick rates", () => {
   });
 
   it("goes back to five seconds once the last alert closes", async () => {
-    const read = stubRead({ alerts: [alertRow()], server_now: NOW }, { alerts: [], server_now: NOW });
+    const read = stubRead({ alerts: [alertRow()], server_now: NOW , unread_notifications: 0 }, { alerts: [], server_now: NOW , unread_notifications: 0 });
     await mount();
     await advance(2_000);
     expect(read).toHaveBeenCalledTimes(2); // the tick that observes the empty list
@@ -175,7 +182,7 @@ describe("the idle stop, disabled", () => {
     // minutes is right for a wall board and lethal for an emergency receiver:
     // a phone in an apron pocket would silently stop receiving pages, and
     // silence is the worst property an emergency channel can have.
-    const read = stubRead({ alerts: [], server_now: NOW });
+    const read = stubRead({ alerts: [], server_now: NOW , unread_notifications: 0 });
     await mount();
     await advance(IDLE_STOP_MS + 60_000);
 
@@ -240,7 +247,7 @@ describe("the terminal rule, and a channel that never dies quietly", () => {
     // as long as the network is bad, which is the silent loss this whole
     // feature exists to prevent — and it would do it while the strip below
     // says the channel is down, so nobody would look for the missing card.
-    const read = stubRead({ alerts: [alertRow()], server_now: NOW });
+    const read = stubRead({ alerts: [alertRow()], server_now: NOW , unread_notifications: 0 });
     await mount();
     expect(sos.alerts).toHaveLength(1);
 
@@ -257,7 +264,7 @@ describe("the terminal rule, and a channel that never dies quietly", () => {
     await advance(10_000);
     expect(sos.channelDown).toBe(true);
 
-    read.mockResolvedValue({ alerts: [], server_now: NOW });
+    read.mockResolvedValue({ alerts: [], server_now: NOW , unread_notifications: 0 });
     await advance(20_000);
     expect(sos.channelDown).toBe(false);
   });
@@ -265,7 +272,7 @@ describe("the terminal rule, and a channel that never dies quietly", () => {
 
 describe("the four actions", () => {
   it("patches the row from the ACCEPT's own response, before any tick", async () => {
-    stubRead({ alerts: [alertRow()], server_now: NOW });
+    stubRead({ alerts: [alertRow()], server_now: NOW , unread_notifications: 0 });
     await mount();
     expect(sos.alerts[0].status).toBe("open");
 
@@ -280,7 +287,7 @@ describe("the four actions", () => {
   });
 
   it("drops the row when a RESOLVE or a CANCEL closes it", async () => {
-    stubRead({ alerts: [alertRow()], server_now: NOW });
+    stubRead({ alerts: [alertRow()], server_now: NOW , unread_notifications: 0 });
     await mount();
 
     vi.spyOn(api, "resolveSos").mockResolvedValue(alertRow({ status: "resolved" }));
@@ -296,7 +303,7 @@ describe("the four actions", () => {
     // raised would see her own alert NOWHERE, with a transient cue as her only
     // feedback. `rerouted` is a fact about the REQUEST and cannot come from any
     // later read.
-    stubRead({ alerts: [], server_now: NOW });
+    stubRead({ alerts: [], server_now: NOW , unread_notifications: 0 });
     await mount();
 
     vi.spyOn(api, "raiseSos").mockResolvedValue({ alert: alertRow(), rerouted: true });
@@ -315,7 +322,7 @@ describe("the four actions", () => {
     // action is a round trip that worked, so it resets the backoff — and the
     // reset re-resolves the gap against the list the action just changed.
     // Without it her own raise keeps the five-second beat for one more tick.
-    const read = stubRead({ alerts: [], server_now: NOW });
+    const read = stubRead({ alerts: [], server_now: NOW , unread_notifications: 0 });
     await mount();
     expect(read).toHaveBeenCalledTimes(1);
 
@@ -331,7 +338,7 @@ describe("the four actions", () => {
   });
 
   it("issues no tick while an action is in flight and re-arms ONE when it settles", async () => {
-    const read = stubRead({ alerts: [alertRow()], server_now: NOW });
+    const read = stubRead({ alerts: [alertRow()], server_now: NOW , unread_notifications: 0 });
     await mount();
     expect(read).toHaveBeenCalledTimes(1);
 
@@ -363,7 +370,7 @@ describe("the four actions", () => {
     // is the ordinary outcome of two responders tapping «אני מגיעה» at once, so
     // parking the loop on it would stop the emergency channel of the person who
     // lost a race she did not lose anything by losing.
-    const read = stubRead({ alerts: [alertRow()], server_now: NOW });
+    const read = stubRead({ alerts: [alertRow()], server_now: NOW , unread_notifications: 0 });
     await mount();
 
     vi.spyOn(api, "acceptSos").mockRejectedValue(
@@ -382,7 +389,7 @@ describe("the four actions", () => {
 
   it("classifies an action's 401 through the same rule the ticks use", async () => {
     const onSessionEnded = vi.fn();
-    stubRead({ alerts: [alertRow()], server_now: NOW });
+    stubRead({ alerts: [alertRow()], server_now: NOW , unread_notifications: 0 });
     await mount({ onSessionEnded });
 
     vi.spyOn(api, "cancelSos").mockRejectedValue(new ApiError(401, "NOT_AUTHENTICATED", "no"));
@@ -400,5 +407,85 @@ describe("the four actions", () => {
 describe("the provider contract", () => {
   it("refuses to be consumed outside the provider", () => {
     expect(() => render(<Consumer />)).toThrow();
+  });
+});
+
+/**
+ * F35's bell. The count rides THIS tick and adds no timer of its own — which is
+ * the feature's whole delivery decision, so it is pinned here by counting the
+ * loops rather than described in a comment nobody runs.
+ */
+describe("the unread notification count", () => {
+  it("arrives off the tick payload and updates with it", async () => {
+    stubRead(
+      { alerts: [], server_now: NOW, unread_notifications: 2 },
+      { alerts: [], server_now: NOW, unread_notifications: 5 },
+    );
+    await mount();
+    expect(sos.unreadNotifications).toBe(2);
+
+    await advance(5_000);
+    expect(sos.unreadNotifications).toBe(5);
+  });
+
+  it("adds no second request and no second loop", async () => {
+    // ⚠ ZERO NEW TIMERS is the requirement, and this is what enforces it: the
+    // count comes off the SAME response as the alerts, so the tick count and the
+    // request count stay equal. A fetch-on-open or a second interval shows up
+    // here immediately.
+    const read = stubRead({ alerts: [], server_now: NOW, unread_notifications: 1 });
+    await mount();
+    expect(read).toHaveBeenCalledTimes(1);
+
+    await advance(15_000);
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(sos.unreadNotifications).toBe(1);
+  });
+
+  it("KEEPS its last value when a tick fails and never zeroes it", async () => {
+    // Design §4 state K: never invent a count, never zero one. The app-wide
+    // `sos.channelDown` strip already says the channel is dead; a bell that
+    // silently dropped to 0 would say the opposite of what is true.
+    const read = stubRead({ alerts: [], server_now: NOW, unread_notifications: 3 });
+    await mount();
+    expect(sos.unreadNotifications).toBe(3);
+
+    read.mockRejectedValue(new ApiError(500, "INTERNAL", "boom"));
+    await advance(5_000);
+    expect(sos.unreadNotifications).toBe(3);
+
+    await advance(60_000);
+    expect(sos.unreadNotifications).toBe(3);
+    expect(sos.channelDown).toBe(true);
+  });
+
+  it("takes the count from the mark-read response without waiting for a tick", async () => {
+    stubRead({ alerts: [], server_now: NOW, unread_notifications: 4 });
+    await mount();
+    const mark = vi.spyOn(api, "markNotificationsRead").mockResolvedValue({ unread: 1 });
+
+    await act(async () => {
+      await sos.markRead(["a", "b"]);
+    });
+
+    expect(mark).toHaveBeenCalledWith(["a", "b"]);
+    expect(sos.unreadNotifications).toBe(1);
+  });
+
+  it("leaves the count alone when the mark-read fails", async () => {
+    // The BELL owns the optimistic zero and its rollback (it is the thing on
+    // screen); the provider only ever publishes a number the server gave it, so
+    // a failed write must not move it.
+    stubRead({ alerts: [], server_now: NOW, unread_notifications: 4 });
+    await mount();
+    vi.spyOn(api, "markNotificationsRead").mockRejectedValue(new ApiError(500, "INTERNAL", "boom"));
+
+    let failure: unknown = "unset";
+    await act(async () => {
+      failure = await sos.markRead(["a"]);
+    });
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(sos.unreadNotifications).toBe(4);
   });
 });

@@ -897,6 +897,28 @@ describe("sos endpoints", () => {
     expect(result.server_now).toBe("2026-08-04T08:20:00Z");
   });
 
+  // F35's two, HERE rather than in a describe of their own: they live on the
+  // floor family because their second path segment is `floor`, and that is the
+  // fact the vite proxy and the e2e fixture both key on.
+  it("reads the notification list from the floor family", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { items: [] }));
+    const result = await api.listNotifications();
+    expect(fetchMock.mock.calls[0][0]).toBe("/manage/floor/notifications");
+    expect(result.items).toEqual([]);
+  });
+
+  it("posts mark-read as one verb taking a list of ids", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { unread: 2 }));
+    const result = await api.markNotificationsRead(["a", "b"]);
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/manage/floor/notifications/read");
+    expect(init.method).toBe("POST");
+    // `{ids: [...]}`, never a bare array and never a `staff_user_id`: the actor
+    // comes from the session cookie and a body carrying one is a 400.
+    expect(JSON.parse(init.body as string)).toEqual({ ids: ["a", "b"] });
+    expect(result.unread).toBe(2);
+  });
+
   it("sends the raise body VERBATIM — this app speaks the backend's snake_case", () => {
     // There is no case-conversion layer in this console (api.ts's own header
     // says so), so a camelCase key here would arrive at a ForbidExtraModel and

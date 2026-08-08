@@ -108,7 +108,8 @@ function alert(overrides: Partial<SosAlert> = {}): SosAlert {
 }
 
 function sosPayload(alerts: SosAlert[]) {
-  return { alerts, server_now: NOW };
+  // F35's count rides this payload; this suite is about the guide, so zero.
+  return { alerts, server_now: NOW, unread_notifications: 0 };
 }
 
 function mount(section: SectionKey = "floor") {

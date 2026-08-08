@@ -131,7 +131,7 @@ beforeEach(() => {
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
   callQueueTicket.mockReset();
   getSos.mockReset();
-  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW , unread_notifications: 0 });
 });
 
 afterEach(() => {

@@ -78,7 +78,8 @@ function alertRow(overrides: Partial<SosAlert> = {}): SosAlert {
 }
 
 function page(alerts: SosAlert[]) {
-  return { alerts, server_now: NOW };
+  // F35's count rides this payload; these suites are about the alerts, so zero.
+  return { alerts, server_now: NOW, unread_notifications: 0 };
 }
 
 // The overlay is mounted the way `App` mounts it: BEFORE the console's <main>,

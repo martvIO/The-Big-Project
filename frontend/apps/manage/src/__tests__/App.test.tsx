@@ -80,7 +80,7 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.clearAllMocks();
   me.mockResolvedValue(STAFF);
-  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW , unread_notifications: 0 });
 });
 
 afterEach(() => {
@@ -92,7 +92,7 @@ describe("the overlay is mounted app-level, before the shell", () => {
     // So its controls precede every other focusable in the document — which is
     // what makes «first in DOM is first reached by Tab» true once focus is in
     // the overlay, and what the Esc route-in exists to reach when it is not.
-    getSos.mockResolvedValue({ alerts: [alertRow()], server_now: NOW });
+    getSos.mockResolvedValue({ alerts: [alertRow()], server_now: NOW , unread_notifications: 0 });
     render(<App />);
     await screen.findByText("דנה כהן");
 
