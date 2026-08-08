@@ -49,7 +49,8 @@ THEIR 404 IS THEREFORE NOT EVIDENCE. A 404 proves isolation only if the route
 answers something ELSE for the caller's own ids; tenant A is never populated, so
 this module never checks that, and for two routes it is false. Both are named in
 `STATE_GUARDED` below with the guard that actually produces the refusal. The
-honest count is **57 driven, 55 discriminating** — R9 says so too.
+honest count is **61 driven, 59 discriminating** — R9 says so too.
+(57/55 until F24's client portal added four cookie-authed routes to the walk.)
 
 Recorded rather than fixed, deliberately. The 2026-08-05 review built the sound
 control (a freshly seeded tenant PER ROUTE — reusing one tenant produced sixteen
@@ -1123,7 +1124,7 @@ def test_the_exemptions_each_carry_a_reason() -> None:
     # that this list not grow unnoticed — so the fence is now an assertion.
     # SEVEN since F22: the storefront join shares the bookings route's
     # token-gated shape, and its type check is proved in test_waitlist_service.
-    assert len(UNWALKABLE) == 7, (
+    assert len(UNWALKABLE) == 8, (
         f"UNWALKABLE is now {len(UNWALKABLE)} entries. Update the count in its own "
         "comment and in the checklist's R9 row before changing this number."
     )
@@ -1161,7 +1162,7 @@ def test_the_state_guarded_routes_are_walked_and_named(
     discriminating = len(responses) - len(STATE_GUARDED)
     # 57/55 since F22: the manage cancel joined the walk, driven with tenant
     # B's entry id populated through the product's own join.
-    assert (len(responses), discriminating) == (57, 55), (
+    assert (len(responses), discriminating) == (61, 59), (
         f"the walk drove {len(responses)} routes, {discriminating} of them "
         "discriminating. Both numbers are quoted as evidence in "
         ".planning/security-checklist-v1.md's R9 row — update it in the same commit."
