@@ -28,8 +28,8 @@ from app.booking.service import (
     BookingService,
     BookingThrottledError,
     DepositOutcome,
-    PhoneNotVerifiedError,
     DressUnavailableError,
+    PhoneNotVerifiedError,
     SlotUnavailableError,
     TermsStaleError,
 )
