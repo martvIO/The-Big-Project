@@ -13,7 +13,7 @@ vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
     ...actual,
-    api: { updateSettings: vi.fn() },
+    api: { updateSettings: vi.fn(), getSettings: vi.fn() },
   };
 });
 
@@ -24,6 +24,7 @@ vi.mock("@boutique/ui", async () => {
 
 const { api } = await import("../api");
 const updateSettings = vi.mocked(api.updateSettings);
+const getSettings = vi.mocked(api.getSettings);
 
 // The wire is DEFAULT-COMPLETE (D3), so a fixture that omitted a key would not
 // be testing what the parent actually hands this card.
@@ -175,20 +176,42 @@ describe("TogglesMatrix in-flight lock", () => {
 });
 
 describe("TogglesMatrix failure", () => {
-  it("reverts the switch to its pre-flip state and raises the house toast", async () => {
+  it("repaints from SERVER TRUTH, not the pre-flip value, when the PUT fails", async () => {
+    // ⚠ THE POST-COMMIT WINDOW, AND IT IS THE MONEY ROW. `update_settings`
+    // commits the merge and THEN writes the audit row in its own transaction
+    // (boutique/service.py `_record_settings_audit`) — a failure there 500s
+    // AFTER deposits_enabled is already persisted, and so does a connection
+    // dropped on the response. A blind revert paints the switch back ON while
+    // the column says OFF, and the owner closes the tab believing deposits are
+    // still collected. Design §4 state E assumed a failure means nothing was
+    // written; here it does not, so we ask.
+    updateSettings.mockRejectedValue(new Error("audit insert failed"));
+    getSettings.mockResolvedValue(settings(wire({ deposits_enabled: false })));
+    renderMatrix(wire({ deposits_enabled: true }));
+
+    fireEvent.click(switchFor("deposits_enabled"));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ variant: "error" }));
+    await waitFor(() => expect(switchFor("deposits_enabled")).not.toBeChecked());
+  });
+
+  it("falls back to the pre-flip state when the re-fetch fails too", async () => {
+    // Nothing can be learned — the persisted value is genuinely unknown — so the
+    // pre-flip paint plus the toast is the honest answer.
     updateSettings.mockRejectedValue(new Error("network down"));
+    getSettings.mockRejectedValue(new Error("network down"));
     renderMatrix(wire({ brides_only: true }));
 
     fireEvent.click(switchFor("brides_only"));
 
     await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
-    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ variant: "error" }));
-    // Back to ON — the value it had before the failed flip.
     expect(switchFor("brides_only")).toBeChecked();
   });
 
   it("renders no inline row error — the toast is the whole error surface", async () => {
     updateSettings.mockRejectedValue(new Error("network down"));
+    getSettings.mockRejectedValue(new Error("network down"));
     renderMatrix();
 
     fireEvent.click(switchFor("brides_only"));

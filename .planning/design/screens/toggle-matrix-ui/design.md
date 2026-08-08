@@ -62,7 +62,9 @@ Every registry row's `.hint` must state, in one calm line, what a flip does and 
 | D | loaded | settings arrived | §2 card, every registry row, wire truth (D3) | one row per registry key |
 | F | row in flight | flip → PUT pending | that row locked (flips ignored, `data-busy` dimming — P1, NOT the `disabled` attribute); other rows stay live | double-flip guarded |
 | K | row saved | 200 | row re-syncs from response; «נשמר לפני רגע» (`common.saved`, reused) at the row's inline-end; card's one status region announces it; cue clears on the next flip anywhere | `role="status"` once |
-| E | row save failed | non-200 / network | switch **reverts to its pre-flip state**; house error `Toast` (`errorMessage(error)`); no inline row error | revert asserted |
+| E | row save failed | non-200 / network | house error `Toast` (`errorMessage(error)`); the card then **re-fetches `getSettings` and repaints from server truth**; pre-flip revert ONLY if that re-fetch also fails; no inline row error | both paths asserted |
+
+> ⚠ State E was «revert to the pre-flip state», on the premise that a failed PUT means nothing was written. **That premise is false in one window and it is the money row**: `update_settings` commits the merge and only then writes the audit row in its own transaction (`_record_settings_audit`), so an audit failure — or a connection dropped on the response — answers 500 with `deposits_enabled` already persisted. A blind revert paints the switch back ON while the column says OFF and the owner stops collecting without knowing. Corrected at review round 1.
 
 ## 5. Keyboard, focus, aria (IS 5568 / WCAG 2.0 AA — legal floor)
 
@@ -96,7 +98,7 @@ Reused, not minted: `common.saved` («נשמר לפני רגע») for the row cu
 
 ## 8. What this card deliberately does not have
 
-No new nav section (D7) · no waitlist/WhatsApp rows (D8 — F23/F46 add their own) · no page-level save for toggles (D2 makes per-row safe; two save models on one screen is the point, disclosed by the hint line) · no optimistic UI (FloorPanel discipline — revert on failure) · no confirm dialog on any flip (every shipped row's flip is reversible and touches nothing in flight — §3; a future dangerous row argues for its own confirm in its own PR) · no per-row spinner (the busy dim + re-sync is enough; a poll-less settings card resolves in one round trip) · no second GET (parent's fetch feeds it) · no `<bdi>` islands (all-Hebrew card).
+No new nav section (D7) · no waitlist/WhatsApp rows (D8 — F23/F46 add their own) · no page-level save for toggles (D2 makes per-row safe; two save models on one screen is the point, disclosed by the hint line) · no optimistic UI (FloorPanel discipline — revert on failure) · no confirm dialog on any flip (every shipped row's flip is reversible and touches nothing in flight — §3; a future dangerous row argues for its own confirm in its own PR) · no per-row spinner (the busy dim + re-sync is enough; a poll-less settings card resolves in one round trip) · no second GET on the happy path (parent's fetch feeds it; the FAILURE path re-fetches once — §4 state E) · no `<bdi>` islands (all-Hebrew card).
 
 ## 9. PROPOSED (user confirms at the gate)
 

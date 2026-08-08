@@ -54,11 +54,26 @@ export function TogglesMatrix({ toggles }: TogglesMatrixProps) {
       setValues(updated.toggles);
       setCue({ nonce: Date.now(), key });
     } catch (error) {
-      // Revert to the pre-flip state and let the house toast carry the message.
-      // No inline row error: two error surfaces for one failure is design §8's
-      // named non-feature.
-      setValues((current) => ({ ...current, [key]: previous }));
+      // The house toast carries the message. No inline row error: two error
+      // surfaces for one failure is design §8's named non-feature.
       toast({ message: errorMessage(error), variant: "error" });
+      // ⚠ ASK THE SERVER — DO NOT REVERT BLIND. A failed PUT does NOT mean
+      // nothing was written: `update_settings` commits the merge and only THEN
+      // writes the audit row, in its own transaction (`_record_settings_audit`),
+      // so an audit failure 500s with `deposits_enabled` already persisted — and
+      // a connection dropped on the response does the same. Reverting there
+      // paints the switch back ON while the column says OFF, and the owner
+      // closes the tab believing money is still being collected. One GET on the
+      // error path only, and the row stays locked through it (`finally` runs
+      // after this await).
+      try {
+        const truth = await api.getSettings();
+        setValues(truth.toggles);
+      } catch {
+        // The re-fetch failed too — the persisted value is genuinely unknown, so
+        // the pre-flip paint plus the toast is the honest answer.
+        setValues((current) => ({ ...current, [key]: previous }));
+      }
     } finally {
       setPending((current) => current.filter((busy) => busy !== key));
     }
