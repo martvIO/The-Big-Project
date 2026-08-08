@@ -2554,7 +2554,13 @@ queue:
     slug: f38-placeholder
     epic: E8
     title: "HR directory full: photos, eligibility, offboarding"
-    status: queued                # 2026-08-06: spec+design(gate ACCEPTED)+plan (20 tasks) READY.
+    status: queued                # 2026-08-08: spec+design(gate ACCEPTED)+plan (20 tasks) READY.
+                                  # Build ATTEMPTED and died on "API Error: Connection closed mid-response"
+                                  # mid-task-1 (270 lines of migration-pinning test, no migration file yet —
+                                  # correct TDD order, caught mid-flight). Partial edit DISCARDED, worktree
+                                  # .worktrees/hr-directory is clean and ready for a fresh start from task 1.
+                                  # Held deliberately: three builders died within an hour while FOUR heavy
+                                  # workflows ran concurrently, so this one waits for a free slot.
                                   # FOUR brief conflicts resolved: (1) phone-as-login is DEAD (Q11
                                   # overridden by F31) — phone is an optional non-unique contact field;
                                   # (2) the email/password_hash nullability question INVERTS — no
