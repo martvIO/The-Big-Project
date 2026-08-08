@@ -341,6 +341,19 @@ def test_put_settings_accepts_a_single_key_toggles_dict() -> None:
     assert fake.call("update_settings")["toggles"] == {"brides_only": True}
 
 
+def test_put_settings_treats_an_empty_toggles_object_as_not_sent() -> None:
+    """`{"toggles": {}}` names no key, so it is not a toggles write. Passing the
+    empty dict through would merge a bare `toggles` object onto a tenant that
+    never had one AND write a TOGGLES_UPDATED audit row for a change that never
+    happened — a false entry in the one book that answers who flipped the money
+    switch and when. `None` is what "the client sent no toggles" means here."""
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"toggles": {}})
+    assert resp.status_code == 200
+    assert fake.call("update_settings")["toggles"] is None
+
+
 @pytest.mark.parametrize("value", [1, "true", 0, "false", 1.0])
 def test_put_settings_refuses_a_coercible_non_bool_toggle(value: object) -> None:
     """⚠ `StrictBool`, NOT `bool`, AND `validate_toggles`' isinstance CHECK IS

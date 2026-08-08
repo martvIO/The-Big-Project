@@ -64,7 +64,11 @@ async def update_settings(
     # F27 D4: already a plain `dict[str, StrictBool]`, so there is nothing to
     # dump and no `exclude_unset` to apply — a toggles patch carries exactly the
     # keys the client sent, which is what D2's deep merge is built to receive.
-    toggles = dict(body.toggles) if body.toggles is not None else None
+    # An EMPTY dict is treated as "not sent": `{"toggles": {}}` names no key, so
+    # merging it would create a bare `toggles` object on a tenant that never had
+    # one and write a TOGGLES_UPDATED audit row for a change that did not happen
+    # — a false entry in the book that answers "who flipped the money switch".
+    toggles = dict(body.toggles) if body.toggles else None
     # ⚠ NO `exclude_unset` ON THIS ONE, AND `mode="json"`. Every field of
     # `AtelierSettingsUpdate` is required — a partial `atelier` object would
     # replace the whole key and delete what it did not name — so there is nothing
