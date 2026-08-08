@@ -40,6 +40,7 @@ from app.db.repositories.availability import (
 )
 from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.customers import CustomersRepository
+from app.db.repositories.dress_reservations import DressReservationsRepository
 from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
 from app.db.repositories.payments import PaymentsRepository
@@ -55,7 +56,7 @@ from app.notifications.validation import normalize_israeli_mobile
 from app.payments.base import GatewayNotConnectedError, GatewayUnavailableError
 from app.payments.secretbox import SecretBoxNotConfiguredError, SecretDecryptError
 from app.payments.service import GatewayCredentialService, PaymentService
-from app.storefront.validation import Clock
+from app.storefront.validation import BOUTIQUE_TIMEZONE, Clock
 
 logger = logging.getLogger("app")
 
@@ -135,6 +136,23 @@ class SlotUnavailableError(Exception):
     closed day. Deliberately ONE error: distinguishing "taken" from "never
     offered" would tell a prober the shape of the boutique's grid. Maps to 409
     SLOT_UNAVAILABLE."""
+
+
+class DressUnavailableError(Exception):
+    """This gown is out on a date-bound reservation covering the requested
+    boutique-LOCAL day. Maps to 409 DRESS_UNAVAILABLE.
+
+    ⚠ DELIBERATELY NOT `SlotUnavailableError`, and the reason is the remedy, not
+    taxonomy. `SlotUnavailableError` says "pick another TIME"; this says "pick
+    another DATE for this dress", and every time on the blocked day is equally
+    refused — so collapsing the two would walk her through the same day's slot
+    list until she gave up. The distinction opens no oracle either: the windows
+    are published on the public dress page (D6).
+
+    Item path only (D4). A generic booking carries no dress, and the slot engine,
+    the grid, the `booked` counts, walk-ins and every owner path never see
+    reservations.
+    """
 
 
 class TermsStaleError(Exception):
@@ -242,6 +260,7 @@ class BookingService:
         self._terms = TermsVersionsRepository()
         self._dresses = DressesRepository()
         self._variants = DressVariantsRepository()
+        self._reservations = DressReservationsRepository()
         self._rules = AvailabilityRulesRepository()
         self._exceptions = AvailabilityExceptionsRepository()
         self._scheduled = ScheduledMessagesRepository()
@@ -441,6 +460,30 @@ class BookingService:
                         deposit_due=due,
                         deposit_amount_agorot=type_row.deposit_amount_agorot or 0,
                     )
+
+            # 4c. Is the gown itself away on this day (F28 D4)? INSIDE the lock
+            #     and on the item path only, so an owner recording a rental and a
+            #     bride claiming a fitting for the same gown-day serialise —
+            #     `CatalogService.create_reservation` takes the SAME key.
+            #
+            #     ⚠ THE BOUTIQUE-LOCAL DATE, never `starts_at.date()`. The column
+            #     is a DATE in Asia/Jerusalem terms; a UTC date is the previous
+            #     day for every instant from 22:00 UTC onward, which is inside the
+            #     boutique's own evening.
+            #
+            #     AFTER the replay in 4b: a reservation recorded after she booked
+            #     must not turn her retry into an error about an appointment she
+            #     already holds. BEFORE the grid in 5, because the remedy differs
+            #     — no time on this day is claimable for this gown, so answering
+            #     "that time was just taken" would walk her through the same day's
+            #     slot list.
+            if dress_id is not None:
+                local_day = starts_at.astimezone(BOUTIQUE_TIMEZONE).date()
+                if (
+                    await self._reservations.containing(session, tenant_id, dress_id, local_day)
+                    is not None
+                ):
+                    raise DressUnavailableError
 
             # 5. Re-materialize the grid and assert the instant is offered —
             #    fed the REAL booked counts, so this also enforces capacity.

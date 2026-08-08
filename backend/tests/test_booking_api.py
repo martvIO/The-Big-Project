@@ -29,6 +29,7 @@ from app.booking.service import (
     BookingThrottledError,
     DepositOutcome,
     PhoneNotVerifiedError,
+    DressUnavailableError,
     SlotUnavailableError,
     TermsStaleError,
 )
@@ -277,6 +278,10 @@ def test_owner_cookie_changes_nothing() -> None:
     [
         (PhoneNotVerifiedError(), 403, "PHONE_NOT_VERIFIED"),
         (SlotUnavailableError(), 409, "SLOT_UNAVAILABLE"),
+        # F28. A SEPARATE code from SLOT_UNAVAILABLE and that is the decision:
+        # the remedy is another DATE for this dress, not another time, and every
+        # time on the blocked day is equally refused.
+        (DressUnavailableError(), 409, "DRESS_UNAVAILABLE"),
         (TermsStaleError(), 409, "TERMS_STALE"),
         (BookingNotFoundError(), 404, "NOT_FOUND"),
         (BookingThrottledError(), 429, "TOO_MANY_ATTEMPTS"),
