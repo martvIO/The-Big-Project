@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -73,6 +73,12 @@ class StaffUsersRepository:
         # says. The one consequence is that the INSERT now emits role='owner'
         # explicitly instead of letting the default fill it.
         role: str = StaffRole.OWNER.value,
+        # F38's three, each defaulted so ProvisioningService.provision — a
+        # shipped file on the tenant-creation path — needs no edit to say what
+        # the founding owner's absent phone and unset eligibility already are.
+        phone: str | None = None,
+        start_date: date | None = None,
+        shift_manager_eligible: bool = False,
     ) -> StaffUser:
         staff = StaffUser(
             tenant_id=tenant_id,
@@ -80,6 +86,9 @@ class StaffUsersRepository:
             password_hash=password_hash,
             display_name=display_name,
             role=role,
+            phone=phone,
+            start_date=start_date,
+            shift_manager_eligible=shift_manager_eligible,
         )
         session.add(staff)
         await session.flush()
@@ -95,10 +104,20 @@ class StaffUsersRepository:
         display_name: str | None = None,
         role: str | None = None,
         password_hash: str | None = None,
+        phone: str | None = None,
+        start_date: date | None = None,
+        shift_manager_eligible: bool | None = None,
     ) -> StaffUser | None:
         """Every argument omitted is a legal no-op, not an error: the service's
         no-op PATCH path calls straight through here, and an empty `.values()`
         would be a SQLAlchemy error rather than a 200.
+
+        ⚠ `phone` carries ONE extra convention, and it is the same one the HTTP
+        boundary already uses: `None` is "not sent", `""` is "clear it". On this
+        signature `None` universally means "leave it alone", so without that
+        second spelling a number could be set and changed but never REMOVED —
+        and an emptied `<input>` posts `""` natively, so it costs no sentinel
+        type and no tri-state anywhere in the stack.
 
         updated_at is never assigned — the DB trigger owns it, and `refresh` is
         what picks the trigger's value back up (the dresses/platform rule).
@@ -106,7 +125,14 @@ class StaffUsersRepository:
         row = await self.by_id(session, tenant_id, staff_id)
         if row is None:
             return None
-        if display_name is None and role is None and password_hash is None:
+        if (
+            display_name is None
+            and role is None
+            and password_hash is None
+            and phone is None
+            and start_date is None
+            and shift_manager_eligible is None
+        ):
             return row
         if display_name is not None:
             row.display_name = display_name
@@ -114,6 +140,12 @@ class StaffUsersRepository:
             row.role = role
         if password_hash is not None:
             row.password_hash = password_hash
+        if phone is not None:
+            row.phone = phone or None
+        if start_date is not None:
+            row.start_date = start_date
+        if shift_manager_eligible is not None:
+            row.shift_manager_eligible = shift_manager_eligible
         await session.flush()
         await session.refresh(row)
         return row

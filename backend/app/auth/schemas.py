@@ -1,9 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints
 
+from app.boutique.validation import MAX_PROFILE_PHONE_LENGTH
 from app.models.constants import StaffRole
 from app.schemas import ForbidExtraModel
 
@@ -57,6 +58,26 @@ class StaffMember(BaseModel):
     display_name: str
     role: str
     created_at: datetime
+    # F38. `phone` is a CONTACT field and never a login identifier (spec C1) —
+    # Interview Q11 was overridden by F31, staff sign in with email + password,
+    # and no auth path reads this.
+    phone: str | None
+    # `date`, never an instant: "her start date" and "her last day" are Jerusalem
+    # CALENDAR days, and an instant would make the retention boundary depend on
+    # what o'clock somebody pressed the button.
+    start_date: date | None
+    # Present on the wire but NOT writable — it is set by DELETE (offboarding),
+    # so the console can render it on a row it is showing rather than guessing
+    # from `deleted_at`, which the list never carries.
+    last_day: date | None
+    shift_manager_eligible: bool
+    # Signed per read with the degrade-to-null posture: a storage outage
+    # serialises `null` here and never fails the list (app/auth/photo.py).
+    photo_url: str | None
+    # The console's cache key. It changes exactly when the image behind the URL
+    # changes, which is what lets the floor board pin a signed URL across its
+    # five-second poll instead of re-downloading every face on every tick.
+    photo_confirmed_at: datetime | None
 
 
 class CreateStaffRequest(ForbidExtraModel):
@@ -66,6 +87,16 @@ class CreateStaffRequest(ForbidExtraModel):
     # and can never reach 0011's CHECK.
     role: StaffRole
     password: str = Field(min_length=MIN_STAFF_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+    # Length only. The CHARSET rule is `validate_phone`'s, applied in the
+    # service, so the console gets one domain 400 with its own Hebrew rather than
+    # a schema error about a regex — and so the boutique profile's number and a
+    # staffer's number keep agreeing through exactly one gate.
+    phone: str | None = Field(default=None, max_length=MAX_PROFILE_PHONE_LENGTH)
+    start_date: date | None = None
+    # Defaults to False rather than None: an unanswered "may she be slotted as
+    # shift manager" is a no, not a third state. F38 stores it and enforces
+    # nothing — F40 is its only consumer (spec O4).
+    shift_manager_eligible: bool = False
 
 
 class UpdateStaffRequest(ForbidExtraModel):
@@ -83,3 +114,19 @@ class UpdateStaffRequest(ForbidExtraModel):
     # No min_length: a wrong value must be a domain 400 with the console's own
     # Hebrew, not a schema error about its length.
     current_password: str | None = Field(default=None, max_length=MAX_PASSWORD_LENGTH)
+    # ⚠ `""` IS MEANINGFUL HERE and is the one way to REMOVE a number: `None` is
+    # already spoken for by this API's send-only-what-moved rule, so without it a
+    # staffer who asks for her number to come off the system could not be obliged
+    # until the seven-year scrub. An emptied `<input>` posts `""` natively, so
+    # this needs no sentinel type anywhere in the stack. NO `min_length`, for
+    # that reason.
+    phone: str | None = Field(default=None, max_length=MAX_PROFILE_PHONE_LENGTH)
+    # `start_date` has NO such clear arm, and the asymmetry is deliberate rather
+    # than an oversight: a blank date input is indistinguishable from an absent
+    # one in JSON, and nothing in the product needs to un-record a start date.
+    # ponytail: add a clear when somebody actually needs one.
+    start_date: date | None = None
+    # `bool | None` and not `bool`: on a PATCH, absent must mean "leave it
+    # alone", and a `False` default would silently un-tick eligibility on every
+    # save of any other field.
+    shift_manager_eligible: bool | None = None

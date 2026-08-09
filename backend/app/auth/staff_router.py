@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from app.auth.cookies import SESSION_COOKIE
 from app.auth.dependencies import get_current_staff, require_role
+from app.auth.photo import sign_staff_photo
 from app.auth.schemas import CreateStaffRequest, StaffMember, UpdateStaffRequest
 from app.auth.service import StaffContext
 from app.auth.staff import StaffService
@@ -44,6 +45,7 @@ from app.auth.tokens import hash_token
 from app.models.constants import StaffRole
 from app.models.staff_user import StaffUser
 from app.schemas import OkResponse
+from app.storage.base import MediaStorage
 from app.tenancy.middleware import get_current_tenant
 
 NO_STORE = "no-store"
@@ -58,6 +60,16 @@ def get_staff_service(request: Request) -> StaffService:
     return service
 
 
+def get_media_storage(request: Request) -> MediaStorage:
+    """The same `app.state.media_storage` the catalog signs through — one bucket,
+    one port, one place it is built. Read off app.state rather than injected into
+    StaffService because signing is a READ concern of this router and the board's
+    schema module; the WRITE side (presign/confirm/delete) is where the service
+    needs it."""
+    storage: MediaStorage = request.app.state.media_storage
+    return storage
+
+
 router = APIRouter(
     prefix="/manage",
     dependencies=[Depends(_no_store), Depends(require_role(StaffRole.OWNER))],
@@ -65,29 +77,46 @@ router = APIRouter(
 
 Staff = Annotated[StaffContext, Depends(get_current_staff)]
 Service = Annotated[StaffService, Depends(get_staff_service)]
+Storage = Annotated[MediaStorage, Depends(get_media_storage)]
 
 
-def _member(row: StaffUser) -> StaffMember:
+def _member(row: StaffUser, storage: MediaStorage) -> StaffMember:
+    """The ONE wire builder for this router, and it stays the one: a second
+    builder is how `photo_url` would end up signed on the list and null on the
+    PATCH response for a week before anybody noticed.
+
+    `sign_staff_photo` is a plain call, not an await — signing is local HMAC with
+    zero I/O — and it degrades to None rather than raising, so a rotated bucket
+    credential answers a 200 with `photo_url: null` instead of 503-ing a read
+    that has nothing to do with storage."""
     return StaffMember(
         id=row.id,
         email=row.email,
         display_name=row.display_name,
         role=row.role,
         created_at=row.created_at,
+        phone=row.phone,
+        start_date=row.start_date,
+        last_day=row.last_day,
+        shift_manager_eligible=row.shift_manager_eligible,
+        photo_url=sign_staff_photo(storage, row),
+        photo_confirmed_at=row.photo_confirmed_at,
     )
 
 
 @router.get("/staff")
-async def list_staff(request: Request, staff: Staff, service: Service) -> list[StaffMember]:
+async def list_staff(
+    request: Request, staff: Staff, service: Service, storage: Storage
+) -> list[StaffMember]:
     """A bare array, no envelope and no pagination — the
     GET /manage/appointment-types precedent for a small list (spec D6)."""
     tenant = get_current_tenant(request)
-    return [_member(row) for row in await service.list_staff(tenant.id)]
+    return [_member(row, storage) for row in await service.list_staff(tenant.id)]
 
 
 @router.post("/staff")
 async def create_staff(
-    request: Request, staff: Staff, service: Service, body: CreateStaffRequest
+    request: Request, staff: Staff, service: Service, storage: Storage, body: CreateStaffRequest
 ) -> StaffMember:
     tenant = get_current_tenant(request)
     created = await service.create(
@@ -96,9 +125,12 @@ async def create_staff(
         display_name=body.display_name,
         role=body.role.value,
         password=body.password,
+        phone=body.phone,
+        start_date=body.start_date,
+        shift_manager_eligible=body.shift_manager_eligible,
         actor=staff,
     )
-    return _member(created)
+    return _member(created, storage)
 
 
 @router.patch("/staff/{staff_id}")
@@ -106,6 +138,7 @@ async def update_staff(
     request: Request,
     staff: Staff,
     service: Service,
+    storage: Storage,
     staff_id: UUID,
     body: UpdateStaffRequest,
 ) -> StaffMember:
@@ -121,10 +154,13 @@ async def update_staff(
         role=body.role.value if body.role is not None else None,
         password=body.password,
         current_password=body.current_password,
+        phone=body.phone,
+        start_date=body.start_date,
+        shift_manager_eligible=body.shift_manager_eligible,
         acting_token_hash=hash_token(token) if token else None,
         actor=staff,
     )
-    return _member(updated)
+    return _member(updated, storage)
 
 
 @router.delete("/staff/{staff_id}")

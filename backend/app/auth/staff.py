@@ -35,6 +35,7 @@ decision another transaction already made under the lock.
 """
 
 import uuid
+from datetime import date
 from typing import NoReturn
 
 from sqlalchemy import text
@@ -43,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.passwords import hash_password, verify_password
 from app.auth.service import StaffContext
+from app.boutique.validation import validate_phone
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
@@ -95,6 +97,30 @@ def _refuse_current_password() -> NoReturn:
     raise DomainValidationError(_CURRENT_PASSWORD_REQUIRED)
 
 
+def _normalize_phone(phone: str | None) -> str | None:
+    """`None` means NOT SENT and is the caller's problem; "" (or any blank) means
+    CLEAR IT and resolves to NULL here.
+
+    That second arm has to exist. `None` is already spoken for by this API's
+    send-only-what-moved rule, so without an explicit clear a staffer who asks
+    for her number to come off the system could not be obliged until the
+    seven-year scrub. An emptied `<input>` posts "" natively, so it costs no
+    sentinel and no tri-state — and the branch sits ABOVE `validate_phone`
+    because that function refuses "" anyway (it requires a digit).
+
+    Validation is the IMPORTED `validate_phone`, never a second regex: the
+    boutique profile's number and a staffer's number are the same kind of
+    string, and one gate is what keeps them agreeing.
+    """
+    if phone is None:
+        return None
+    stripped = phone.strip()
+    if not stripped:
+        return None
+    validate_phone(stripped)
+    return stripped
+
+
 class StaffService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -116,6 +142,9 @@ class StaffService:
         display_name: str,
         role: str,
         password: str,
+        phone: str | None = None,
+        start_date: date | None = None,
+        shift_manager_eligible: bool = False,
         actor: StaffContext,
     ) -> StaffUser:
         # Lowercased HERE, before anything else (spec D5). login lowercases before
@@ -124,6 +153,10 @@ class StaffService:
         # total failure with no error anywhere. ProvisioningService already knows
         # this; so does this.
         address = email.lower()
+        # Before the hash and before the session, for the same reason the
+        # duplicate pre-check is early: a refusal must cost neither an argon2 nor
+        # a pooled connection.
+        stored_phone = _normalize_phone(phone)
         # Outside the session: argon2 is deliberately expensive, and there is no
         # reason to hold a pooled connection across it.
         password_hash = hash_password(password)
@@ -141,6 +174,9 @@ class StaffService:
                     password_hash=password_hash,
                     display_name=display_name,
                     role=role,
+                    phone=stored_phone,
+                    start_date=start_date,
+                    shift_manager_eligible=shift_manager_eligible,
                 )
                 await self._audit.record(
                     session,
@@ -166,9 +202,18 @@ class StaffService:
         role: str | None = None,
         password: str | None = None,
         current_password: str | None = None,
+        phone: str | None = None,
+        start_date: date | None = None,
+        shift_manager_eligible: bool | None = None,
         acting_token_hash: str | None = None,
         actor: StaffContext,
     ) -> StaffUser:
+        # Above the lock and above the read: a malformed number must cost no
+        # transaction, no advisory lock and no row. `phone_sent` is captured here
+        # because _normalize_phone collapses "not sent" and "clear it" to the
+        # same None, and only the caller's original can tell them apart.
+        phone_sent = phone is not None
+        stored_phone = _normalize_phone(phone)
         # Hoisted for create's reason: argon2 is deliberately expensive and
         # nothing about it needs the advisory lock or a pooled connection. The
         # wasted hash on a refusal path is the trade create already makes.
@@ -212,7 +257,27 @@ class StaffService:
                 else None
             )
             new_role = role if role_moves else None
-            if new_name is None and new_role is None and password_hash is None:
+            # F38's three, each on the SAME moved-not-present rule as the name
+            # above: the inline edit form posts every field on every save, so a
+            # presence test would write three audit rows every time the owner
+            # pressed save without changing anything.
+            #
+            # `phone_sent` rather than `stored_phone is not None`, because
+            # clearing a number IS a move and its stored value is None.
+            phone_moves = phone_sent and stored_phone != target.phone
+            start_date_moves = start_date is not None and start_date != target.start_date
+            eligibility_moves = (
+                shift_manager_eligible is not None
+                and shift_manager_eligible != target.shift_manager_eligible
+            )
+            if (
+                new_name is None
+                and new_role is None
+                and password_hash is None
+                and not phone_moves
+                and not start_date_moves
+                and not eligibility_moves
+            ):
                 # F15's D3 no-op rule: nothing changed, so nothing is written and
                 # nothing is audited. `password` is never compared — an argon2
                 # verify against the new value to detect "same password" would be
@@ -220,6 +285,11 @@ class StaffService:
                 return target
 
             previous_name, previous_role = target.display_name, target.role
+            previous_phone_present = target.phone is not None
+            previous_start_date, previous_eligibility = (
+                target.start_date,
+                target.shift_manager_eligible,
+            )
             updated = await self._staff.update(
                 session,
                 tenant_id,
@@ -227,6 +297,12 @@ class StaffService:
                 display_name=new_name,
                 role=new_role,
                 password_hash=password_hash,
+                # `""` and not None on the clear path: None is "not sent"
+                # all the way down this signature, so a cleared number has to
+                # keep the HTTP boundary's own spelling one layer further in.
+                phone=(stored_phone or "") if phone_moves else None,
+                start_date=start_date if start_date_moves else None,
+                shift_manager_eligible=shift_manager_eligible if eligibility_moves else None,
             )
             if updated is None:  # pragma: no cover — read under the same lock
                 raise StaffNotFoundError
@@ -240,6 +316,65 @@ class StaffService:
                     actor_id=actor.id,
                     entity=str(staff_id),
                     details={"display_name": {"from": previous_name, "to": new_name}},
+                )
+            if phone_moves:
+                # PRESENCE, never the number — and that is STRICTER than the
+                # shipped `phone_last4` convention, deliberately. `audit_log` has
+                # no retention class at all, by ruling, because a clock on the
+                # evidence would erase the proof of the erasures it records. So
+                # any digits written here outlive the seven-year scrub that
+                # exists to destroy exactly this identifier, permanently.
+                # Presence is the whole fact an audit reader needs; the number
+                # itself is on the row until the clock takes it.
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.STAFF_UPDATED,
+                    actor_id=actor.id,
+                    entity=str(staff_id),
+                    details={
+                        "phone": {
+                            "from": previous_phone_present,
+                            "to": stored_phone is not None,
+                        }
+                    },
+                )
+            if start_date_moves and start_date is not None:
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.STAFF_UPDATED,
+                    actor_id=actor.id,
+                    entity=str(staff_id),
+                    # `isoformat()` because audit `details` is JSONB and a
+                    # `date` is not JSON — it would raise at flush, inside the
+                    # transaction that was writing the change it describes.
+                    details={
+                        "start_date": {
+                            "from": None
+                            if previous_start_date is None
+                            else previous_start_date.isoformat(),
+                            "to": start_date.isoformat(),
+                        }
+                    },
+                )
+            if eligibility_moves:
+                # Its OWN row and never a STAFF_ROLE_CHANGED: "may be assigned as
+                # shift manager" is not "her job is shift manager", and folding
+                # them would make the one query a security audit actually asks —
+                # "who was made an owner" — return rows about rota eligibility.
+                await self._audit.record(
+                    session,
+                    tenant_id=tenant_id,
+                    action=AuditAction.STAFF_UPDATED,
+                    actor_id=actor.id,
+                    entity=str(staff_id),
+                    details={
+                        "shift_manager_eligible": {
+                            "from": previous_eligibility,
+                            "to": shift_manager_eligible,
+                        }
+                    },
                 )
             if new_role is not None:
                 await self._audit.record(

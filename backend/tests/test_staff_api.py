@@ -14,7 +14,7 @@ that catches it.
 import dataclasses
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
@@ -90,6 +90,26 @@ SPEC_ERROR_CODES = {
 # imports the API modules, so the dependency cannot run the other way.
 UNKNOWN_ROLE = "no-such-role"
 
+# The wire shape of a staff row, asserted by SET EQUALITY on every path that
+# emits one. Set equality and not a subset check, deliberately: this payload
+# carries an employee's phone number and a signed URL to her face, so a twelfth
+# key arriving unreviewed is the failure worth catching — in EITHER direction. A
+# field removed silently breaks the console; a field added silently widens what
+# the platform discloses about a member of staff.
+STAFF_MEMBER_KEYS = {
+    "id",
+    "email",
+    "display_name",
+    "role",
+    "created_at",
+    "phone",
+    "start_date",
+    "last_day",
+    "shift_manager_eligible",
+    "photo_url",
+    "photo_confirmed_at",
+}
+
 
 def _row(
     *,
@@ -106,7 +126,11 @@ def _row(
         display_name=display_name,
         role=role,
         # Set explicitly: created_at rides a server_default, so an unflushed ORM
-        # instance carries None and StaffMember would refuse it.
+        # instance carries None and StaffMember would refuse it. F38's
+        # shift_manager_eligible is here for exactly the same reason — NOT NULL
+        # DEFAULT false in the database, None on an instance that never went
+        # through it.
+        shift_manager_eligible=False,
         created_at=CREATED_AT,
     )
 
@@ -323,7 +347,7 @@ def test_list_answers_a_bare_array_not_an_envelope() -> None:
         StaffRole.OWNER.value,
         StaffRole.SHIFT_MANAGER.value,
     }
-    assert set(body[0]) == {"id", "email", "display_name", "role", "created_at"}
+    assert set(body[0]) == STAFF_MEMBER_KEYS
 
 
 def test_patch_forwards_every_optional_field_including_current_password() -> None:
@@ -607,3 +631,95 @@ def test_the_staff_list_read_with_a_mismatched_origin_is_allowed() -> None:
     with _client(fake) as client:
         resp = client.get(LIST_PATH, headers={"origin": "http://evil.localtest.me"})
     assert resp.status_code == 200
+
+
+# --- F38: the profile fields on the wire ---
+
+
+def test_every_path_that_emits_a_staff_row_emits_the_same_eleven_keys() -> None:
+    """One `_member` builder, asserted on all three paths that reach it.
+
+    Without this, `photo_url` signed on the list and absent from the PATCH
+    response is a defect that renders correctly until the moment the owner
+    changes a photo and the row goes blank — and no single-path test would
+    notice, because each path is individually consistent with itself."""
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        assert set(client.get(LIST_PATH).json()[0]) == STAFF_MEMBER_KEYS
+        assert set(client.post(LIST_PATH, json=CREATE_BODY).json()) == STAFF_MEMBER_KEYS
+        assert set(client.patch(DETAIL_PATH, json=PATCH_BODY).json()) == STAFF_MEMBER_KEYS
+
+
+def test_create_forwards_the_three_profile_fields() -> None:
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        resp = client.post(
+            LIST_PATH,
+            json={
+                **CREATE_BODY,
+                "phone": "+972-52-123-4567",
+                "start_date": "2026-08-01",
+                "shift_manager_eligible": True,
+            },
+        )
+    assert resp.status_code == 200
+    call = fake.call("create")
+    assert call["phone"] == "+972-52-123-4567"
+    assert call["start_date"] == date(2026, 8, 1)
+    assert call["shift_manager_eligible"] is True
+
+
+def test_create_defaults_eligibility_to_false_and_the_rest_to_none() -> None:
+    """An unanswered "may she be slotted as shift manager" is a no, not a third
+    state — so this one field defaults to a value while phone and start date
+    default to the absent state they genuinely have."""
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        client.post(LIST_PATH, json=CREATE_BODY)
+    call = fake.call("create")
+    assert call["phone"] is None
+    assert call["start_date"] is None
+    assert call["shift_manager_eligible"] is False
+
+
+def test_an_omitted_eligibility_on_patch_reaches_the_service_as_none() -> None:
+    """`bool | None` and not `bool` on the PATCH body, and this is why: a `False`
+    default would silently un-tick eligibility every time the owner saved any
+    OTHER field on the row."""
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        client.patch(DETAIL_PATH, json={"display_name": "דנה"})
+    assert fake.call("update")["shift_manager_eligible"] is None
+
+
+def test_an_empty_phone_on_patch_reaches_the_service_as_an_empty_string() -> None:
+    """The clear signal survives the schema. `min_length` on this field would
+    turn "remove my number" into a 422 about string length — which is why the
+    field deliberately carries a max and no min."""
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        resp = client.patch(DETAIL_PATH, json={"phone": ""})
+    assert resp.status_code == 200
+    assert fake.call("update")["phone"] == ""
+
+
+def test_a_start_date_that_is_not_a_date_is_a_house_shaped_400() -> None:
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        resp = client.patch(DETAIL_PATH, json={"start_date": "last tuesday"})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert fake.calls == []
+
+
+def test_an_over_long_phone_is_refused_at_the_schema_not_the_service() -> None:
+    """The LENGTH bound is the schema's and the CHARSET bound is
+    `validate_phone`'s. Split that way because a 4 KB phone number should never
+    reach a domain function, while a malformed one should get the console's own
+    Hebrew rather than a schema error about a regex."""
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        resp = client.patch(DETAIL_PATH, json={"phone": "+" + "5" * 200})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert fake.calls == []

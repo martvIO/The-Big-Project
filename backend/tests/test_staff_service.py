@@ -9,7 +9,7 @@ is proven on real Postgres in test_staff_management_db.py, which is CI-only.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Self
 
 import pytest
@@ -49,6 +49,11 @@ def _row(
         password_hash=hash_password(password),
         display_name=display_name,
         role=role,
+        # Set explicitly for the reason created_at is: both ride a
+        # server_default, so an UNFLUSHED ORM instance carries None where the
+        # database guarantees False — and the no-op and audit comparisons below
+        # are against exactly that value.
+        shift_manager_eligible=False,
         created_at=CREATED_AT,
     )
 
@@ -660,3 +665,145 @@ async def test_list_staff_takes_no_lock_and_reads_the_live_rows() -> None:
     service, _, _, trace = _service(rows)
     assert await service.list_staff(TENANT_ID) == rows
     assert trace == ["list_live"]
+
+
+# --- F38: phone, dates and shift-manager eligibility ------------------------
+
+
+async def test_create_persists_the_three_profile_fields() -> None:
+    service, staff, _, _ = _service()
+    await service.create(
+        TENANT_ID,
+        email="new@bella.example",
+        display_name="Dana",
+        role=StaffRole.SEAMSTRESS.value,
+        password=PASSWORD,
+        phone="+972-52-123-4567",
+        start_date=date(2026, 8, 1),
+        shift_manager_eligible=True,
+        actor=_actor(),
+    )
+    assert staff.inserted[0]["phone"] == "+972-52-123-4567"
+    assert staff.inserted[0]["start_date"] == date(2026, 8, 1)
+    assert staff.inserted[0]["shift_manager_eligible"] is True
+
+
+async def test_create_without_the_three_writes_the_absent_states() -> None:
+    """NULL phone and NULL start_date are real states — "no number recorded",
+    "no start date recorded" — and eligibility defaults to False because an
+    unanswered "may she be slotted as shift manager" is a no, not a third
+    state."""
+    service, staff, _, _ = _service()
+    await service.create(
+        TENANT_ID,
+        email="new@bella.example",
+        display_name="Dana",
+        role=StaffRole.RECEPTION.value,
+        password=PASSWORD,
+        actor=_actor(),
+    )
+    assert staff.inserted[0]["phone"] is None
+    assert staff.inserted[0]["start_date"] is None
+    assert staff.inserted[0]["shift_manager_eligible"] is False
+
+
+async def test_a_malformed_phone_is_refused_before_the_row_is_touched() -> None:
+    """Through the IMPORTED `validate_phone` (app/boutique/validation.py), never
+    a second regex: the boutique profile's number and a staffer's number are the
+    same kind of string and one gate is what keeps them agreeing.
+
+    Refused BEFORE any write, so a bad number costs no row and no audit line."""
+    target = _row()
+    service, staff, audit, _ = _service([target])
+    with pytest.raises(DomainValidationError):
+        await service.update(TENANT_ID, target.id, phone="not a phone", actor=_actor())
+    assert staff.updates == []
+    assert audit.rows == []
+
+
+async def test_an_empty_phone_clears_the_number_rather_than_failing_validation() -> None:
+    """The one way to REMOVE a number, and it has to exist: `None` already means
+    "not sent" on this API, so without an explicit clear a staffer who asks for
+    her number to come off the system could not be obliged until the seven-year
+    scrub.
+
+    An emptied `<input>` posts "" natively, so this needs no sentinel value and
+    no tri-state — and `validate_phone` would refuse "" anyway (no digit), which
+    is why the branch sits above it rather than inside it."""
+    target = _row()
+    target.phone = "+972-52-123-4567"
+    service, staff, audit, _ = _service([target])
+    await service.update(TENANT_ID, target.id, phone="   ", actor=_actor())
+    assert staff.updates[0]["phone"] == ""
+    assert audit.rows[0]["details"] == {"phone": {"from": True, "to": False}}
+
+
+async def test_the_phone_audit_row_records_presence_and_never_the_number() -> None:
+    """STRICTER than the shipped `phone_last4` convention, deliberately.
+
+    `audit_log` has no retention class at all — by ruling, because a clock on the
+    evidence would erase the proof of the erasures it records. So ANY digits of a
+    staffer's number written here outlive the scrub that exists to destroy it,
+    permanently. Presence is the whole fact an audit reader needs ("somebody put
+    a number on Dana's row on the 3rd"); the number itself is on the row until
+    the clock takes it."""
+    target = _row()
+    service, _, audit, _ = _service([target])
+    await service.update(TENANT_ID, target.id, phone="+972-52-999-8888", actor=_actor())
+    assert audit.rows[0]["details"] == {"phone": {"from": False, "to": True}}
+    assert "999" not in str(audit.rows[0])
+
+
+async def test_each_moved_profile_field_writes_exactly_one_audit_row() -> None:
+    """F51's D8 rule extending to the new fields unchanged: one row per thing
+    that ACTUALLY changed, so a PATCH carrying three fields of which one moved
+    writes one row and not three."""
+    target = _row()
+    target.start_date = date(2026, 1, 1)
+    target.shift_manager_eligible = False
+    service, _, audit, _ = _service([target])
+    await service.update(
+        TENANT_ID,
+        target.id,
+        display_name=target.display_name,
+        start_date=date(2026, 2, 2),
+        shift_manager_eligible=False,
+        actor=_actor(),
+    )
+    assert audit.actions() == [AuditAction.STAFF_UPDATED]
+    assert audit.rows[0]["details"] == {"start_date": {"from": "2026-01-01", "to": "2026-02-02"}}
+
+
+async def test_toggling_eligibility_audits_both_values() -> None:
+    """`shift_manager_eligible` is a boolean SEPARATE from `role`, and the audit
+    row keeps them separate too: this is not a STAFF_ROLE_CHANGED, because "may
+    be assigned as shift manager" is not "her job is shift manager"."""
+    target = _row(role=StaffRole.SALES_ASSISTANT.value)
+    service, _, audit, _ = _service([target])
+    await service.update(TENANT_ID, target.id, shift_manager_eligible=True, actor=_actor())
+    assert audit.actions() == [AuditAction.STAFF_UPDATED]
+    assert audit.rows[0]["details"] == {"shift_manager_eligible": {"from": False, "to": True}}
+
+
+async def test_a_patch_resending_the_three_unchanged_is_still_a_no_op() -> None:
+    """F51's D3 no-op rule reaches the new fields, and the inline edit form is
+    why it must: that form posts every field on every save, so the stricter
+    reading would write three audit rows every time the owner pressed save
+    without changing anything."""
+    target = _row()
+    target.phone = "+972-52-123-4567"
+    target.start_date = date(2026, 1, 1)
+    target.shift_manager_eligible = True
+    service, staff, audit, _ = _service([target])
+    returned = await service.update(
+        TENANT_ID,
+        target.id,
+        display_name=target.display_name,
+        phone="+972-52-123-4567",
+        start_date=date(2026, 1, 1),
+        shift_manager_eligible=True,
+        actor=_actor(),
+    )
+    assert returned is target
+    assert staff.updates == []
+    assert audit.rows == []
