@@ -314,6 +314,18 @@ class Settings(BaseSettings):
     # date column would be converted back to days at the one place it is read.
     # Flagged for counsel at F21 with the rest of pre-decided #10 (spec D4).
     waitlist_retention_days: int = 30
+    # F38's ex-staff SCRUB clock, in DAYS for waitlist_retention_days' exact
+    # reason: `staff_users.last_day` is a Jerusalem calendar DATE.
+    #
+    # An APP setting and deliberately NOT a tenant one, following F20's shipped
+    # ruling above verbatim — "a boutique may not choose its own retention for a
+    # duty the platform enforces on its behalf". The brief and pre-decided #34
+    # both say "tenant setting"; they predate F20. This is still "one row to
+    # change for counsel at F21", which is what #34 actually asked for.
+    #
+    # Flagged for counsel at F21 with the rest (spec O2): whether seven years is
+    # the right period is a legal question this platform does not answer.
+    staff_retention_days: int = 365 * 7
 
     @property
     def secure_cookies(self) -> bool:
@@ -451,6 +463,21 @@ class Settings(BaseSettings):
         for field, floor in floors.items():
             if getattr(self, field) < floor:
                 raise ValueError(f"{field.upper()} must be at least {floor} seconds")
+
+        # ⚠ SEPARATE from the loop above, and this is the whole point of the two
+        # extra lines. That loop's message is hardcoded "… must be at least
+        # {floor} SECONDS". A days-denominated field riding it would pass every
+        # test that only checks THAT it raises, and would ship an operator-facing
+        # error naming the wrong unit by a factor of 86,400 — telling whoever
+        # mistyped the clock to set it to 1,095 seconds.
+        #
+        # Three years, the same shape the bookings clock already carries: it
+        # makes a fat-fingered `STAFF_RETENTION_DAYS=7` fail at BOOT rather than
+        # at 03:00, after it has blanked the name and email of every staffer who
+        # left last week.
+        staff_floor_days = 365 * 3
+        if self.staff_retention_days < staff_floor_days:
+            raise ValueError(f"STAFF_RETENTION_DAYS must be at least {staff_floor_days} days")
         return self
 
     @property

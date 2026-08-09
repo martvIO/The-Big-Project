@@ -93,7 +93,10 @@ def test_every_policy_can_name_itself_in_the_audit_trail() -> None:
         assert audit_action(policy) in set(AuditAction)
 
 
-def test_the_registry_covers_the_seven_classes_with_the_specified_actions() -> None:
+def test_the_registry_covers_the_eight_classes_with_the_specified_actions() -> None:
+    """Renamed from `…_seven_classes_…` by F38, and the rename is the point: this
+    assertion is by SET EQUALITY on the whole registry, so appending a policy is
+    an edit somebody had to make here on purpose."""
     assert {policy.name: policy.action for policy in POLICIES} == {
         "otp_codes": RetentionAction.PURGE,
         "sessions": RetentionAction.PURGE,
@@ -110,6 +113,14 @@ def test_the_registry_covers_the_seven_classes_with_the_specified_actions() -> N
         "message_log": RetentionAction.PURGE,
         "bookings": RetentionAction.PURGE,
         "customers": RetentionAction.SCRUB,
+        # F38: SCRUB and not PURGE because FIVE tables hold no-FK pointers at a
+        # staff id — fitting_room_assignments, sos_alerts, alteration_tickets,
+        # audit_log.actor_id and F40's future roster — and every one of them is
+        # operational history the boutique keeps. A purged staffer would leave
+        # all five dangling with no way to tell "erased" from "never existed".
+        # Appended LAST: it depends on no other policy, and only the
+        # bookings → customers pair has an order that matters.
+        "staff_users": RetentionAction.SCRUB,
     }
 
 
@@ -315,3 +326,31 @@ async def test_the_runner_enumerates_every_tenant_not_only_the_active_ones() -> 
     await _runner(factory, tenants, (policy,)).run()
 
     assert tenants.list_all_calls == 1
+
+
+# --- F38's eighth class -----------------------------------------------------
+
+
+def test_staff_users_is_not_a_forbidden_table() -> None:
+    """The five exempt tables are exempt for reasons that do not apply here:
+    `staff_users` is neither evidence of an erasure nor a financial record, and
+    the app role holds the grants a SCRUB needs."""
+    assert "staff_users" not in FORBIDDEN_TABLES
+
+
+def test_the_staff_policy_is_last_and_depends_on_no_other() -> None:
+    """Position asserted, not assumed. Only `bookings → customers` has an order
+    that matters, and appending rather than inserting is what keeps that pair
+    adjacent — an insertion in the middle would still pass the ordering test
+    while making the registry harder to reason about."""
+    assert POLICIES[-1].name == "staff_users"
+    assert POLICIES[-1].tables == ("staff_users",)
+
+
+def test_the_staff_policy_can_name_itself_in_the_audit_trail() -> None:
+    """Covered by the loop above too, but stated separately because a MISSING
+    enum member is the specific failure mode: `audit_action()` raises
+    `ValueError` on one, and without this the discovery happens at 03:00, inside
+    a tenant loop, three tables into an irreversible run."""
+    policy = next(p for p in POLICIES if p.name == "staff_users")
+    assert audit_action(policy) is AuditAction.RETENTION_STAFF_USERS

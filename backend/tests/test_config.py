@@ -282,3 +282,60 @@ def test_a_retention_period_exactly_at_its_floor_boots(field: str, value: int) -
     """The boundary in the other direction: a floor that rejected its own value
     would make the documented minimum unusable."""
     assert getattr(Settings.model_validate({"app_env": "dev", field: value}), field) == value
+
+
+# --- F38's staff retention clock --------------------------------------------
+
+
+def test_the_staff_retention_default_is_seven_years_in_days() -> None:
+    """In DAYS and not seconds, and that is not cosmetic: `last_day` is a
+    Jerusalem CALENDAR date, so the policy compares dates and a seconds value
+    would have to be divided back into one at every use.
+    `waitlist_retention_days` is the in-repo precedent for the unit.
+
+    Flagged for counsel at F21 like every other clock here (spec O2): whether
+    seven years is right is a legal question, and this is the one value that
+    changes for every tenant at once when it is answered."""
+    assert Settings(app_env="dev").staff_retention_days == 365 * 7
+
+
+def test_a_staff_retention_below_its_three_year_floor_is_a_boot_failure() -> None:
+    """`STAFF_RETENTION_DAYS=7` is the fat-finger this exists for: it boots clean
+    without a floor and then, at 03:00, blanks the name and email of every
+    staffer who left a week ago."""
+    with pytest.raises(ValidationError, match="STAFF_RETENTION_DAYS"):
+        Settings.model_validate({"app_env": "dev", "staff_retention_days": 7})
+    with pytest.raises(ValidationError, match="STAFF_RETENTION_DAYS"):
+        Settings.model_validate({"app_env": "dev", "staff_retention_days": 0})
+
+
+def test_a_staff_retention_exactly_at_its_floor_boots() -> None:
+    at_floor = 365 * 3
+    assert (
+        Settings.model_validate(
+            {"app_env": "dev", "staff_retention_days": at_floor}
+        ).staff_retention_days
+        == at_floor
+    )
+
+
+def test_the_staff_retention_failure_names_days_and_not_seconds() -> None:
+    """⚠ THE assertion this task exists for. The shipped floors loop hardcodes
+    "… must be at least {floor} seconds" in its message, so riding a DAYS field
+    on that dict passes every test that only checks THAT it raises — and ships an
+    operator-facing error naming the wrong unit by a factor of 86,400.
+
+    Asserted on the message text, never on the raise alone."""
+    with pytest.raises(ValidationError) as refused:
+        Settings.model_validate({"app_env": "dev", "staff_retention_days": 1})
+    message = str(refused.value)
+    assert "days" in message
+    assert "seconds" not in message
+
+
+def test_the_seconds_worded_messages_are_unchanged() -> None:
+    """The other half of the pair: adding a days-worded branch must not have
+    re-worded the five clocks that really are in seconds."""
+    with pytest.raises(ValidationError) as refused:
+        Settings.model_validate({"app_env": "dev", "retention_bookings_seconds": 0})
+    assert "seconds" in str(refused.value)

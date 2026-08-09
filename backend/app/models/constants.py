@@ -714,6 +714,13 @@ class AuditAction(StrEnum):
     # F22's waitlist purge — `audit_action()` resolves `retention_{policy.name}`
     # through this enum, so the member lands in the same commit as the policy.
     RETENTION_WAITLIST_ENTRIES = "retention_waitlist_entries"
+    # F38's ex-staff scrub, the EIGHTH class. `audit_action()` resolves
+    # `retention_{policy.name}` through this enum and RAISES on a missing member,
+    # so this line lands in the same commit as the policy or the registry test
+    # goes red — which is the point: without the member the failure would be a
+    # ValueError at 03:00, inside a tenant loop, three tables into an
+    # irreversible run.
+    RETENTION_STAFF_USERS = "retention_staff_users"
 
     # F21's catalog (D6), and it is the TENTH block to rely on the same fact:
     # audit_log.action is plain TEXT with no CHECK (0003_auth.py:71-79), so these
