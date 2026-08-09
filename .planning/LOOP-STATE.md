@@ -2551,7 +2551,17 @@ queue:
     slug: f35-placeholder
     epic: E6
     title: "Staff in-app notification bell"
-    status: queued                # 2026-08-06: spec+design(gate ACCEPTED)+plan (13 tasks) READY.
+    status: merged                # 2026-08-09: MERGED, PR #54, FIRST-CI-RUN GREEN. 13 commits, 63 tests,
+                                  # migration 0030. Dual review: zero BLOCKER/MAJOR.
+                                  # The e2e failure was worth the record: closePanel() only sets React
+                                  # state — Modal calls dlg.close() in its OWN effect one commit later —
+                                  # so a synchronous focus() ran while the <dialog> was still modal and
+                                  # the document INERT, which makes focus() a silent no-op; close() then
+                                  # returned focus to the bell. Fixed by consuming a ref in
+                                  # NotificationBell's effect, which React flushes AFTER the child
+                                  # Modal's. Established with a recorded focus trace, not by guessing.
+                                  # E6 IS NOW COMPLETE (F34 + F35) — the epic-boundary QA is owed.
+                                  # (spec+design gate ACCEPTED, plan 13 tasks)
                                   # Delivery resolved against SHIPPED code: the unread count piggybacks
                                   # on GET /manage/floor/sos (SosProvider wraps ConsoleShell — the only
                                   # app-wide poll that exists). Zero new timers/requests. Routes mount on
