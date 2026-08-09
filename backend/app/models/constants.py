@@ -281,10 +281,17 @@ class MarketingConsentSource(StrEnum):
 
 
 class ScheduledMessageKind(StrEnum):
-    # The DB pins this exact set (0010). E4's hold-expiry sweep and E5's offer
-    # cascade widen the CHECK when they arrive — pre-adding speculative kinds is
-    # exactly the un-lazy thing (D9).
+    # The DB pins this exact set (0010, widened by 0032). The rule 0010 wrote —
+    # a kind lands with its producer, never speculatively — is MET here rather
+    # than waived: F23's cascade writes WAITLIST_OFFER rows and `drain_due`
+    # branches on it in the same change.
+    #
+    # ⚠ A WAITLIST_OFFER row's subject is a waitlist ENTRY, not a booking
+    # (`ck_scheduled_messages_subject` is an XOR). Anything reading a
+    # `scheduled_messages` row must branch on this field before dereferencing
+    # `booking_id`, which is nullable from 0032 onward.
     REMINDER = "reminder"
+    WAITLIST_OFFER = "waitlist_offer"
 
 
 class ScheduledMessageStatus(StrEnum):

@@ -18,7 +18,13 @@ from app.catalog.validation import ACCEPTED_CONTENT_TYPES
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.models.alteration_ticket import AlterationTicket
-from app.models.constants import QueueTicketStatus, StaffRole, VisitType, WaitlistEntryStatus
+from app.models.constants import (
+    QueueTicketStatus,
+    ScheduledMessageKind,
+    StaffRole,
+    VisitType,
+    WaitlistEntryStatus,
+)
 from app.models.queue_ticket import QueueTicket
 from app.models.staff_user import StaffUser
 
@@ -4472,5 +4478,217 @@ def test_the_hr_directory_migration_round_trips(migrated_db: str) -> None:
         command.upgrade(cfg, "head")
         assert set(_hr_columns(migrated_db)) == set(_HR_COLUMNS)
         assert constraint_count() == 2
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F23: the offer columns and the scheduled-message subject XOR -------------
+#
+# ⚠ db-marked: these run on CI only (no local Docker). 0032 is ADDITIVE on two
+# shipped tables, so unlike every block above there is no table to prove exists —
+# what has to be pinned is that nothing already there was weakened.
+
+_SCHEDULED_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'scheduled_messages'"
+)
+_SCHEDULED_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'scheduled_messages'::regclass AND conname = :name"
+)
+_SCHEDULED_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE tablename = 'scheduled_messages' AND indexname = :name"
+)
+
+# Spelled as POSTGRES deparses them (schema-qualified, USING btree, every
+# conjunct parenthesised, IN -> = ANY(ARRAY[...]) once there are two members,
+# ::text casts) — the 0018 pinning technique the blocks above all inherit.
+_OFFER_TOKEN_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_waitlist_entries_offer_token ON public.waitlist_entries "
+    "USING btree (offer_token_hash) "
+    "WHERE ((offer_token_hash IS NOT NULL) AND (deleted_at IS NULL))"
+)
+_OFFER_EXPIRY_INDEX_DEF = (
+    "CREATE INDEX idx_waitlist_entries_offer_expiry ON public.waitlist_entries "
+    "USING btree (tenant_id, offer_expires_at) "
+    "WHERE ((status = 'offered'::text) AND (deleted_at IS NULL))"
+)
+_OFFER_PENDING_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_scheduled_messages_offer_pending_unique "
+    "ON public.scheduled_messages USING btree (tenant_id, waitlist_entry_id, kind) "
+    "WHERE ((deleted_at IS NULL) AND (status = 'pending'::text) "
+    "AND (waitlist_entry_id IS NOT NULL))"
+)
+_SUBJECT_CHECK_DEF = "CHECK (((booking_id IS NULL) <> (waitlist_entry_id IS NULL)))"
+_KIND_CHECK_DEF = "CHECK ((kind = ANY (ARRAY['reminder'::text, 'waitlist_offer'::text])))"
+
+# The one index 0032 must NOT have disturbed. NULLs are distinct in a unique
+# index, so an offer row (booking_id NULL) is invisible to it — but only while
+# its definition still reads exactly this, which is why it is pinned HERE rather
+# than argued for in a comment.
+_REMINDER_PENDING_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_scheduled_messages_pending_unique "
+    "ON public.scheduled_messages USING btree (tenant_id, booking_id, kind) "
+    "WHERE ((deleted_at IS NULL) AND (status = 'pending'::text))"
+)
+
+_SUBJECT_INSERT = (
+    "INSERT INTO scheduled_messages "
+    "(tenant_id, booking_id, waitlist_entry_id, kind, send_after, status) "
+    "VALUES (uuid_generate_v4(), :booking_id, :entry_id, :kind, now(), 'pending')"
+)
+
+
+def _scheduled_columns(url: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_SCHEDULED_COLUMNS))).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _offer_pinned_definitions(url: str) -> dict[str, str]:
+    async def read() -> dict[str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                token = await conn.execute(
+                    text(_WAITLIST_INDEX_DEF), {"name": "idx_waitlist_entries_offer_token"}
+                )
+                expiry = await conn.execute(
+                    text(_WAITLIST_INDEX_DEF), {"name": "idx_waitlist_entries_offer_expiry"}
+                )
+                offer_pending = await conn.execute(
+                    text(_SCHEDULED_INDEX_DEF),
+                    {"name": "idx_scheduled_messages_offer_pending_unique"},
+                )
+                reminder_pending = await conn.execute(
+                    text(_SCHEDULED_INDEX_DEF), {"name": "idx_scheduled_messages_pending_unique"}
+                )
+                subject = await conn.execute(
+                    text(_SCHEDULED_CONSTRAINT_DEF), {"name": "ck_scheduled_messages_subject"}
+                )
+                kind = await conn.execute(
+                    text(_SCHEDULED_CONSTRAINT_DEF), {"name": "scheduled_messages_kind_check"}
+                )
+                return {
+                    "token": str(token.scalar_one()),
+                    "expiry": str(expiry.scalar_one()),
+                    "offer_pending": str(offer_pending.scalar_one()),
+                    "reminder_pending": str(reminder_pending.scalar_one()),
+                    "subject": str(subject.scalar_one()),
+                    "kind": str(kind.scalar_one()),
+                }
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _subject_insert_admitted(url: str, *, booking: bool, entry: bool, kind: str) -> bool:
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(
+                        text(_SUBJECT_INSERT),
+                        {
+                            "booking_id": uuid.uuid4() if booking else None,
+                            "entry_id": uuid.uuid4() if entry else None,
+                            "kind": kind,
+                        },
+                    )
+                except IntegrityError:
+                    return False
+                finally:
+                    await trans.rollback()
+                return True
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+@pytest.mark.db
+def test_migration_0032_adds_the_offer_columns(migrated_db: str) -> None:
+    """Four nullable offer columns on waitlist_entries, and the second possible
+    subject on scheduled_messages. `booking_id` going nullable is the whole price
+    of pre-decided #16 (offers ride the shipped table rather than growing a
+    second poller) and it is pinned here so a later NOT NULL cannot creep back."""
+    entries = _waitlist_columns(migrated_db)
+    assert entries["offered_at"] == ("timestamp with time zone", "YES")
+    assert entries["offer_expires_at"] == ("timestamp with time zone", "YES")
+    assert entries["offer_starts_at"] == ("timestamp with time zone", "YES")
+    assert entries["offer_token_hash"] == ("text", "YES")
+
+    scheduled = _scheduled_columns(migrated_db)
+    assert scheduled["booking_id"] == ("uuid", "YES")
+    assert scheduled["waitlist_entry_id"] == ("uuid", "YES")
+
+
+@pytest.mark.db
+def test_the_offer_definitions_are_pinned(migrated_db: str) -> None:
+    """Both new waitlist indexes, the offer-side pending-unique index, both named
+    CHECKs — and the SHIPPED reminder-side pending-unique index, unchanged.
+
+    That last one is the load-bearing assertion. The argument that the two
+    idempotency keys cannot interfere rests entirely on the reminder index still
+    keying on `booking_id` (NULL for every offer row, and NULLs are distinct);
+    an edit that added a COALESCE or widened its predicate would break the offer
+    half silently, in a way no offer test would notice."""
+    pinned = _offer_pinned_definitions(migrated_db)
+    assert pinned["token"] == _OFFER_TOKEN_INDEX_DEF
+    assert pinned["expiry"] == _OFFER_EXPIRY_INDEX_DEF
+    assert pinned["offer_pending"] == _OFFER_PENDING_INDEX_DEF
+    assert pinned["reminder_pending"] == _REMINDER_PENDING_INDEX_DEF
+    assert pinned["subject"] == _SUBJECT_CHECK_DEF
+    assert pinned["kind"] == _KIND_CHECK_DEF
+
+
+@pytest.mark.db
+def test_the_subject_check_rejects_both_null_and_both_set(migrated_db: str) -> None:
+    """XOR, not "at least one". Both-null is a message addressed to nobody; both-set
+    is a message the drain would have to guess the subject of, and `drain_due`
+    branches on `kind` — so the pair could disagree and the row would still send."""
+    assert _subject_insert_admitted(migrated_db, booking=True, entry=False, kind="reminder")
+    assert _subject_insert_admitted(migrated_db, booking=False, entry=True, kind="waitlist_offer")
+    assert not _subject_insert_admitted(migrated_db, booking=False, entry=False, kind="reminder")
+    assert not _subject_insert_admitted(migrated_db, booking=True, entry=True, kind="reminder")
+
+
+@pytest.mark.db
+def test_the_kind_check_admits_exactly_the_enum(migrated_db: str) -> None:
+    """Iterated from the live enum, 0018's rule — the day a third kind is added,
+    either the migration widened the CHECK with it or this is the red."""
+    for kind in ScheduledMessageKind:
+        assert _subject_insert_admitted(migrated_db, booking=True, entry=False, kind=kind.value), (
+            kind
+        )
+    assert not _subject_insert_admitted(migrated_db, booking=True, entry=False, kind="no-such-kind")
+
+
+@pytest.mark.db
+def test_migration_0032_round_trips(migrated_db: str) -> None:
+    """downgrade() removes every column, index and CHECK 0032 added and restores
+    `booking_id NOT NULL`, which is only safe because it deletes the offer rows
+    first — they are the only rows that can carry a NULL booking_id."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    try:
+        assert "offer_token_hash" in _waitlist_columns(migrated_db)
+        command.downgrade(cfg, _parent_of("waitlist offers"))
+        assert "offer_token_hash" not in _waitlist_columns(migrated_db)
+        assert _scheduled_columns(migrated_db)["booking_id"] == ("uuid", "NO")
+        assert "waitlist_entry_id" not in _scheduled_columns(migrated_db)
+        command.upgrade(cfg, "head")
+        assert "offer_token_hash" in _waitlist_columns(migrated_db)
+        assert _scheduled_columns(migrated_db)["booking_id"] == ("uuid", "YES")
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
