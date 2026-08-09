@@ -177,6 +177,8 @@ from app.tenancy.middleware import (
 )
 from app.tenancy.resolver import RepositoryTenantResolver
 from app.waitlist.manage_router import router as waitlist_manage_router
+from app.waitlist.offer_router import router as waitlist_offer_router
+from app.waitlist.offer_service import OfferNotClaimableError, WaitlistOfferService
 from app.waitlist.router import router as waitlist_router
 from app.waitlist.service import WaitlistService
 from app.waitlist.validation import WaitlistThrottledError
@@ -1158,6 +1160,25 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         get_session_factory(), credentials=app.state.gateway_credential_service
     )
 
+    # F23's offer claim, built HERE rather than beside its waitlist siblings
+    # because it needs `gateway_credential_service`, which the payments block
+    # above constructs.
+    #
+    # F23's offer claim. NO otp service at all: possession of a token texted to
+    # her phone is the proof, the same posture as `/b/{token}`. Its anti-scrape
+    # budget is a SEVENTH own instance, the rule this file keeps restating —
+    # max_attempts lives on the LIMITER, so a key on the join's budget would let
+    # a waitlist rush close the offer surface and vice versa.
+    app.state.waitlist_offer_service = WaitlistOfferService(
+        get_session_factory(),
+        lookup_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.waitlist_offer_lookup_max_per_window,
+            window_seconds=settings.waitlist_offer_lookup_window_seconds,
+            clock=time.monotonic,
+        ),
+        gateway_credentials=app.state.gateway_credential_service,
+    )
+
     @app.exception_handler(TenantNotResolvedError)
     async def _tenant_not_resolved(request: Request, exc: TenantNotResolvedError) -> JSONResponse:
         # Same body as every other resolution failure — no distinguishable 404s.
@@ -1366,7 +1387,17 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _booking_throttled(request: Request, exc: BookingThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
 
+    # F23's offer claim losing a race, or reaching a row that has already moved.
+    # The SAME body a direct booker gets — she is owed the outcome, not a report
+    # on which internal transition beat her, and a new code here would be an
+    # oracle over the waitlist's internals on an anonymous route.
+    @app.exception_handler(OfferNotClaimableError)
+    async def _offer_not_claimable(request: Request, exc: OfferNotClaimableError) -> JSONResponse:
+        return JSONResponse(SLOT_UNAVAILABLE_BODY, status_code=409)
+
     # F22's join budgets — its own class for the reason the four above are four.
+    # F23's offer surface shares the CLASS (one 429 body, no new code) while
+    # keeping its own limiter INSTANCE, which is the part that matters.
     @app.exception_handler(WaitlistThrottledError)
     async def _waitlist_throttled(request: Request, exc: WaitlistThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
@@ -1726,6 +1757,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # F13's create shape minus the booking of. Same anonymous posture; asserted
     # in test_waitlist_api.py. Same shadowing hazard as every router above.
     app.include_router(waitlist_router)
+    # F23's three tokenized offer routes — same /storefront prefix, registered
+    # after the join for the same shadowing reason, and covered by the same
+    # cross-router shadowing guard.
+    app.include_router(waitlist_offer_router)
     # F24's client portal — the SEVENTH /storefront sibling, and the FIRST
     # anonymous-prefix router in the tree that reads a cookie. It carries its own
     # `/storefront/portal` prefix rather than new routes on the read router,

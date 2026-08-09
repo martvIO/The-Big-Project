@@ -675,6 +675,15 @@ def test_no_route_is_registered_twice_across_routers() -> None:
         # zero-new-error-codes table asserted in test_waitlist_api.py. No new
         # GET, so the five ROUTES-parametrized guards needed no edit.
         "/storefront/waitlist",
+        # F23's offer surface — an EIGHTH sibling router on the same prefix,
+        # registered after the join. Token-in-body on all three INCLUDING the
+        # read, for the manage surface's reason (D7): a GET would put a live
+        # claim credential in the query string and from there into every access
+        # log on the path. Anonymous, cookie-blind, no-store; posture and the
+        # zero-new-error-codes table asserted in test_waitlist_offer_api.py.
+        "/storefront/waitlist/offer",
+        "/storefront/waitlist/claim",
+        "/storefront/waitlist/decline",
         # F24's client portal — the SEVENTH sibling, and the FIRST router on an
         # anonymous prefix that reads a cookie. The mint is anonymous (its
         # credential is the verification token in the body); the other two are

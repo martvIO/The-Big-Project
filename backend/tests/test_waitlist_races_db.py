@@ -251,7 +251,10 @@ class _Rig:
 
     def offers_at(self, now: datetime.datetime) -> WaitlistOfferService:
         return WaitlistOfferService(
-            self.factory, gateway_credentials=self.credentials, clock=lambda: now
+            self.factory,
+            lookup_limiter=_loose(),
+            gateway_credentials=self.credentials,
+            clock=lambda: now,
         )
 
     async def settle(self, *, session_id: str, transaction_id: str) -> None:

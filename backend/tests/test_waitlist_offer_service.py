@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from app.auth.rate_limit import FixedWindowRateLimiter
 from app.booking.service import TermsStaleError
 from app.booking.validation import jerusalem_day_index
 from app.db.repositories.appointment_types import AppointmentTypesRepository
@@ -72,6 +73,12 @@ def _at(hour: int, minute: int = 0) -> datetime.datetime:
     ).astimezone(datetime.UTC)
 
 
+def _loose() -> FixedWindowRateLimiter:
+    """A budget nothing in this file is testing. The 429 belongs to the API
+    suite, where a route can actually be called sixty-one times."""
+    return FixedWindowRateLimiter(max_attempts=10_000, window_seconds=3600, clock=lambda: 0.0)
+
+
 def _factory(url: str) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     engine = create_async_engine(url, poolclass=NullPool)
     return engine, async_sessionmaker(engine, expire_on_commit=False)
@@ -98,7 +105,7 @@ def _offers(
     """No gateway wired, which reads as NOT connected — so `deposit_due` is False
     and every claim below lands `confirmed`. The deposit branch is race 5's,
     where the whole hold-expiry chain is asserted end to end."""
-    return WaitlistOfferService(factory, clock=lambda: now)
+    return WaitlistOfferService(factory, lookup_limiter=_loose(), clock=lambda: now)
 
 
 async def _seed(factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID) -> uuid.UUID:

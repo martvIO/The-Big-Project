@@ -451,6 +451,22 @@ UNWALKABLE: dict[tuple[str, str], str] = {
         "booking.ics IS walked, so the shared builder's ownership predicate is "
         "probed either way."
     ),
+    ("POST", "/storefront/waitlist/offer"): (
+        "F23's offer token proves POSSESSION, not tenancy — the server stores only "
+        "its sha256, the unique index behind the lookup is deliberately GLOBAL "
+        "(the token IS the tenant resolution), and there is no id to substitute. "
+        "The foreign-token 404 is test_waitlist_offer_service.py's, which drives a "
+        "token minted for tenant A against tenant B and gets the same "
+        "indistinguishable answer an invented one gets."
+    ),
+    ("POST", "/storefront/waitlist/claim"): (
+        "same offer token as the lookup; possession, not tenancy, and the same "
+        "global-index argument. test_waitlist_offer_service.py drives the claim "
+        "cross-tenant too, so both verbs are covered by the same assertion."
+    ),
+    ("POST", "/storefront/waitlist/decline"): (
+        "same offer token as the lookup; possession, not tenancy. test_waitlist_offer_service.py."
+    ),
     ("POST", "/storefront/booking/payment-status"): (
         "keyed on a provider-issued opaque session string on a payments row, not "
         "a UUID we can mint; having one at all means driving a real deposit "
@@ -1224,7 +1240,12 @@ def test_the_exemptions_each_carry_a_reason() -> None:
     # that this list not grow unnoticed — so the fence is now an assertion.
     # SEVEN since F22: the storefront join shares the bookings route's
     # token-gated shape, and its type check is proved in test_waitlist_service.
-    assert len(UNWALKABLE) == 9, (
+    # TWELVE since F23: the three tokenized offer routes join their four
+    # /storefront/booking/* siblings on the identical ground — the token proves
+    # possession, not tenancy, and the index behind the lookup is GLOBAL by
+    # design because the token is what resolves the tenant. Their foreign-token
+    # 404 is proved in test_waitlist_offer_service.py rather than here.
+    assert len(UNWALKABLE) == 12, (
         f"UNWALKABLE is now {len(UNWALKABLE)} entries. Update the count in its own "
         "comment and in the checklist's R9 row before changing this number."
     )

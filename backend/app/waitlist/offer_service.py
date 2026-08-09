@@ -26,6 +26,7 @@ from collections.abc import Mapping
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.rate_limit import FixedWindowRateLimiter
 from app.booking.service import (
     BookingClaim,
     TermsStaleError,
@@ -51,6 +52,7 @@ from app.models.waitlist_entry import WaitlistEntry
 from app.payments.service import GatewayCredentialService
 from app.storefront.validation import Clock
 from app.waitlist.schemas import WaitlistOfferResponse
+from app.waitlist.validation import WaitlistThrottledError
 
 logger = logging.getLogger("app")
 
@@ -81,10 +83,17 @@ class WaitlistOfferService:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         *,
+        lookup_limiter: FixedWindowRateLimiter,
         gateway_credentials: GatewayCredentialService | None = None,
         clock: Clock | None = None,
     ) -> None:
         self._session_factory = session_factory
+        # Its OWN instance, never a second key on the booking-lookup limiter:
+        # `max_attempts` lives on the LIMITER, not per key, so two keys on one
+        # instance share one ceiling and neither budget can trip first. It would
+        # be decoration. Required rather than defaulted, because an unmetered
+        # anti-scrape surface is the failure this exists to prevent.
+        self._lookup_limiter = lookup_limiter
         # None = this deployment wired no gateway, which reads as NOT connected.
         # `create_booking` takes the identical posture: every branch that could
         # take money is opt-in.
@@ -102,6 +111,21 @@ class WaitlistOfferService:
     def _now(self) -> datetime.datetime:
         now = self._clock() if self._clock is not None else datetime.datetime.now(datetime.UTC)
         return now.astimezone(datetime.UTC)
+
+    def _meter(self, tenant_id: uuid.UUID) -> None:
+        """Per TENANT, and all three verbs share the budget.
+
+        The token is 32 random bytes, so this is not guess protection — it is
+        scrape and cost protection: a token-shaped body is a free database read
+        on an anonymous route, and metering the lookup alone would leave `claim`
+        and `decline` as the same read behind a different path. Keyed on the
+        tenant rather than the token because a per-token key is a budget an
+        attacker mints for free.
+        """
+        key = f"waitlist:offer:{tenant_id}"
+        if self._lookup_limiter.is_blocked(key):
+            raise WaitlistThrottledError
+        self._lookup_limiter.record_failure(key)
 
     async def _resolve(
         self, session: AsyncSession, token: str, *, tenant_id: uuid.UUID
@@ -155,6 +179,7 @@ class WaitlistOfferService:
         terminal ones, because every one of them has designed copy — expired,
         already claimed, declined — and a 409 would collapse them into the error
         branch."""
+        self._meter(tenant_id)
         now = self._now()
         async with tenant_session(self._session_factory, tenant_id) as session:
             entry = await self._resolve(session, token, tenant_id=tenant_id)
@@ -175,6 +200,7 @@ class WaitlistOfferService:
         column and F22 deliberately gave it none — one field, one ask, no prefill
         from `customers`.
         """
+        self._meter(tenant_id)
         validate_booking_request(name=name, notes=None, dress_id=None, dress_size=None)
         now = self._now()
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -257,6 +283,7 @@ class WaitlistOfferService:
         the active-unique predicate so she can rejoin later if she changes her
         mind. The cascade advances to the next bride on its next tick.
         """
+        self._meter(tenant_id)
         now = self._now()
         async with tenant_session(self._session_factory, tenant_id) as session:
             entry = await self._resolve(session, token, tenant_id=tenant_id)
