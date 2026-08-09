@@ -259,8 +259,8 @@ export const he = {
     "staff.roleShiftManager": "אחראית משמרת",
     "staff.selfMarker": "זו את",
     "staff.editCta": "עריכה",
-    // «השבתה», never «מחיקה»: the row is soft-deleted and its audit trail lives.
-    "staff.deactivateCta": "השבתה",
+    // Never «מחיקה»: the row is soft-deleted and its audit trail lives.
+    "staff.deactivateCta": "סיום העסקה",
     // ⚠ ADDED LATE, and their absence was the defect: both row controls had a
     // null aria-label, so seven staff rendered seven identical «עריכה» and six
     // identical «השבתה» in one list — one of which ends a colleague's access.
@@ -272,7 +272,9 @@ export const he = {
     // No bidi treatment — an aria-label takes no markup, the same exemption the
     // atelier and floor arias record.
     "staff.editAria": "עריכה — {{name}}",
-    "staff.deactivateAria": "השבתה — {{name}}",
+    // F38 changes the VALUE of five F51 keys and none of their names: «השבתה»
+    // understated an act that now sets a last working day and deletes her photo.
+    "staff.deactivateAria": "סיום העסקה — {{name}}",
     "staff.displayNameLabel": "שם לתצוגה",
     "staff.emailLabel": "אימייל",
     "staff.roleLabel": "תפקיד",
@@ -290,23 +292,92 @@ export const he = {
     "staff.passwordLabel": "סיסמה",
     "staff.passwordNotice": "יש למסור את הסיסמה לעובדת בעצמך. המערכת אינה מעבירה אותה לאיש.",
     "staff.createCta": "הוספה לצוות",
-    "staff.deactivateTitle": "להשבית את הגישה?",
+    "staff.deactivateTitle": "לסיים את ההעסקה?",
     // The <bdi> is load-bearing, not markup for its own sake: the name is a
     // Latin run inside an RTL sentence and reorders without an isolate.
     // Rendered through <Trans components={{ bdi: <bdi /> }}>.
+    //
+    // F38 states the two IMMEDIATE facts and nothing about the future: access
+    // stops on her next action, and the photo is deleted now. What is kept and
+    // what is erased later is `staff.offboardRetentionNote`'s job, below.
     "staff.deactivateBody":
-      "הגישה של <bdi>{{name}}</bdi> לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת.",
-    "staff.deactivateConfirm": "השבתה",
+      "הגישה של <bdi>{{name}}</bdi> לניהול הבוטיק תיפסק בפעולה הבאה שלה, והתמונה שלה תימחק מיד.",
+    "staff.deactivateConfirm": "סיום העסקה",
 
-    // The four error codes F51 owns — a code→string map kept by hand, NOT
-    // pinned by anything (see MAPPED_CODES in StaffSection.tsx). Everything
-    // else, VALIDATION_ERROR included, falls through to errorMessage(error).
+    // --- F38, the HR directory ---
+    //
+    // Transcribed row-for-row from
+    // .planning/design/screens/hr-directory/design.md §copy as DOTTED LITERAL
+    // keys. Client-side validation messages are deliberately NOT here —
+    // validation.ts returns hardcoded Hebrew (F51's rule, validateUploadFile's
+    // precedent), so a bounds message cannot drift from the bound it mirrors.
+    //
+    // ⚠ THE PURPOSE LINE IS ITS OWN KEY, and that is the point of it. It is the
+    // platform's stated operational mitigation for PPL Amendment 13 (spec open
+    // question O1) and the ONLY place the purpose limitation is ever shown to
+    // anyone. Concatenated with `staff.photoFormats` into one `help` slot so it
+    // is announced AT CAPTURE through aria-describedby, before a file is chosen
+    // — not parked in a footnote nobody reads.
+    "staff.photoUploadLabel": "תמונת פרופיל",
+    "staff.photoReplaceLabel": "החלפת תמונת פרופיל",
+    "staff.photoPurpose": "התמונה משמשת לזיהוי בלוח המשמרת ובכרטיסי הצוות בלבד.",
+    "staff.photoFormats": "JPG, PNG או WebP · עד 2MB",
+    // The SAME role="status" region carries the running and the terminal states,
+    // so a failure is never left silent after a progress message.
+    "staff.photoUploading": "מעלה…",
+    "staff.photoVerifying": "מאמת…",
+    "staff.photoAdded": "התמונה נוספה.",
+    "staff.photoReplaced": "התמונה הוחלפה.",
+    "staff.photoRemoved": "התמונה הוסרה.",
+    "staff.photoRetryCta": "נסי שוב",
+    "staff.photoRemoveCta": "הסרת תמונה",
+    "staff.photoRemoveTitle": "להסיר את התמונה?",
+    "staff.photoRemoveBody":
+      "התמונה תימחק מהאחסון ולא ניתן לשחזר אותה. אפשר להעלות תמונה חדשה בכל עת.",
+    "staff.photoRemoveConfirm": "הסרה",
+
+    // A recorded FACT about a person, not a role and not a permission — which is
+    // the whole job of the help line. F38 stores the boolean and enforces
+    // nothing; F40 is its only consumer.
+    "staff.eligibleLabel": "יכולה לנהל משמרת",
+    "staff.eligibleHelp":
+      "הסימון קובע מי יכולה להיות אחראית על משמרת בסידור העבודה. הוא אינו משנה את התפקיד ואינו משנה הרשאות.",
+    "staff.phoneLabel": "טלפון",
+    // Spec C1 stated plainly: contact only, and never a login identifier.
+    "staff.phoneHelp": "מספר ליצירת קשר בלבד. הכניסה למערכת היא באמצעות אימייל וסיסמה.",
+    "staff.startDateLabel": "תאריך תחילת עבודה",
+    "staff.lastDayLabel": "יום עבודה אחרון",
+    "staff.lastDayHelp": "ברירת המחדל היא היום. אפשר לבחור תאריך אחר.",
+    // The retention paragraph, plain and unhedged: what is kept, what is erased
+    // and when, and that a return is a NEW record (re-hire continuity is OUT).
+    "staff.offboardRetentionNote":
+      "רישומי העבודה שלה — שיבוצים לחדרים, קריאות ותיקונים — נשמרים כפי שהם. הפרטים האישיים שלה יימחקו מהמערכת בתום תקופת השמירה. אפשר להוסיף אותה מחדש בעתיד כאשת צוות חדשה.",
+    // The row leaves the list, so this role="status" line is the ONLY feedback
+    // there is — which is exactly why it exists. F51 showed nothing here, and
+    // F51's act had no retention consequence worth stating.
+    "staff.offboardDone":
+      "ההעסקה של <bdi>{{name}}</bdi> הסתיימה בתאריך {{date}}. רישומי העבודה שלה נשמרו.",
+
+    // The error codes this section maps to Hebrew — a code→string map kept by
+    // hand, NOT pinned by anything (see MAPPED_CODES in StaffSection.tsx).
+    // Everything else, VALIDATION_ERROR included, falls through to
+    // errorMessage(error).
     "staff.error.DUPLICATE_EMAIL": "כתובת האימייל הזו כבר משויכת לאשת צוות פעילה.",
     "staff.error.LAST_OWNER_REQUIRED": "לבוטיק חייבת להיות בעלת בוטיק אחת לפחות.",
     "staff.error.STAFF_SELF_MANAGE": "אי אפשר לשנות את התפקיד של עצמך או להשבית את עצמך.",
     // The server's generic 403 body is ENGLISH and errorMessage() surfaces it
     // verbatim; this is the section's own Hebrew for a mid-session demotion.
     "staff.error.NOT_AUTHORIZED": "הפעולה הזו זמינה לבעלת הבוטיק בלבד.",
+    // F38's five. MEDIA_NOT_CONFIGURED and MEDIA_STORAGE_UNAVAILABLE share one
+    // sentence deliberately: the owner cannot tell the two apart and does not
+    // need to — her next action is the same either way.
+    "staff.error.MEDIA_MISMATCH": "הקובץ אינו תמונה תקינה.",
+    "staff.error.MEDIA_NOT_UPLOADED": "הקובץ לא הגיע לשרת. נסי שוב.",
+    "staff.error.MEDIA_STORAGE_UNAVAILABLE":
+      "אחסון התמונות אינו זמין כרגע. התמונות הקיימות מוצגות כרגיל.",
+    "staff.error.MEDIA_NOT_CONFIGURED":
+      "אחסון התמונות אינו זמין כרגע. התמונות הקיימות מוצגות כרגיל.",
+    "staff.error.TOO_MANY_ATTEMPTS": "יותר מדי העלאות בזמן קצר. נסי שוב בעוד כמה דקות.",
 
     // --- F52, the KPI dashboard ---
     //

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
 import type { StaffMember } from "../api";
 import { StaffSection } from "../components/StaffSection";
+import { todayJerusalem } from "../lib/jerusalem";
 
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
@@ -16,7 +17,11 @@ vi.mock("../api", async () => {
       createStaff: vi.fn(),
       updateStaff: vi.fn(),
       deactivateStaff: vi.fn(),
+      staffPhotoPresign: vi.fn(),
+      staffPhotoConfirm: vi.fn(),
+      staffPhotoDelete: vi.fn(),
     },
+    uploadToStorage: vi.fn(),
   };
 });
 
@@ -25,6 +30,10 @@ const listStaff = vi.mocked(api.listStaff);
 const createStaff = vi.mocked(api.createStaff);
 const updateStaff = vi.mocked(api.updateStaff);
 const deactivateStaff = vi.mocked(api.deactivateStaff);
+const staffPhotoPresign = vi.mocked(api.staffPhotoPresign);
+const staffPhotoConfirm = vi.mocked(api.staffPhotoConfirm);
+const staffPhotoDelete = vi.mocked(api.staffPhotoDelete);
+const uploadToStorage = vi.mocked((await import("../api")).uploadToStorage);
 
 const ME = "11111111-1111-1111-1111-111111111111";
 const HER = "22222222-2222-2222-2222-222222222222";
@@ -117,14 +126,14 @@ describe("StaffSection list", () => {
     expect(screen.getByText("זו את")).toBeInTheDocument();
     // The server refuses a self-deactivate with a 409; not drawing the button is
     // the cosmetic half of that, so she is never offered a door that refuses.
-    expect(screen.getAllByRole("button", { name: /^השבתה/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^סיום העסקה/ })).toHaveLength(1);
     // …and the one that IS drawn is the OTHER woman's.
-    expect(screen.getByRole("button", { name: "השבתה — דנה" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "סיום העסקה — דנה" })).toBeInTheDocument();
   });
 
   // The walkthrough's finding: `aria-label`, `aria-labelledby` and
   // `aria-describedby` were ALL null on both row buttons, so a boutique with
-  // seven staff rendered seven identical «עריכה» and six identical «השבתה» in
+  // seven staff rendered seven identical «עריכה» and six identical «סיום העסקה» in
   // one list — AND ONE OF THEM DEACTIVATES A COLLEAGUE'S ACCESS. A screen-reader
   // user tabbing the list, or anyone driving it by speech, had nothing to tell
   // them apart. It also broke the console's OWN convention: the floor, waitlist
@@ -155,7 +164,7 @@ describe("StaffSection list", () => {
     // No two controls in the list share a name — the actual defect, stated as
     // the property rather than as three lookups.
     const names = screen
-      .getAllByRole("button", { name: /^(עריכה|השבתה)/ })
+      .getAllByRole("button", { name: /^(עריכה|סיום העסקה)/ })
       .map((button) => button.getAttribute("aria-label"));
     expect(new Set(names).size).toBe(names.length);
     expect(names).toHaveLength(5); // 3 edits + 2 deactivates (never her own)
@@ -214,6 +223,9 @@ describe("StaffSection create", () => {
         display_name: "דנה",
         role: "shift_manager",
         password: "a-long-enough-pw",
+        // F38. ALWAYS sent, unlike phone and start_date below: an unanswered
+        // "may she be slotted as shift manager" is a no, not a third state.
+        shift_manager_eligible: false,
       }),
     );
     expect(await screen.findByText("דנה")).toBeInTheDocument();
@@ -361,8 +373,11 @@ describe("StaffSection inline edit", () => {
   });
 
   it("falls through to the server's own message for an unmapped code", async () => {
+    // ⚠ NOT `TOO_MANY_ATTEMPTS` — F38 put that in MAPPED_CODES, which is exactly
+    // the drift this test exists to notice from the other side. Any code the Set
+    // does not carry does; `INTERNAL_ERROR` is one the section will never map.
     listStaff.mockResolvedValue([OWNER, member()]);
-    updateStaff.mockRejectedValue(new ApiError(429, "TOO_MANY_ATTEMPTS", "Too many attempts."));
+    updateStaff.mockRejectedValue(new ApiError(500, "INTERNAL_ERROR", "Too many attempts."));
     renderSection();
     await screen.findByText("דנה");
     const row = openEditFor("דנה");
@@ -478,7 +493,7 @@ describe("StaffSection self edit", () => {
 
 describe("StaffSection deactivate", () => {
   function openConfirm() {
-    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^השבתה/ }));
+    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^סיום העסקה/ }));
     const dialog = screen.getByRole("dialog", { hidden: true });
     expect((dialog as HTMLDialogElement).open).toBe(true);
     return dialog;
@@ -492,14 +507,21 @@ describe("StaffSection deactivate", () => {
 
     const dialog = openConfirm();
     expect(dialog).toHaveTextContent("דנה");
-    // The two facts that make it safe to tap: it bites immediately, and it is
-    // undoable by re-creating the account.
+    // The two IMMEDIATE facts: access stops on her next action, and the photo
+    // goes now. What is retained and what is erased later is the retention
+    // note's job, asserted in its own test below.
     expect(dialog).toHaveTextContent("בפעולה הבאה שלה");
     expect(deactivateStaff).not.toHaveBeenCalled();
 
-    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "השבתה" }));
-    await waitFor(() => expect(deactivateStaff).toHaveBeenCalledWith(HER));
-    await waitFor(() => expect(screen.queryByText("דנה")).toBeNull());
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "סיום העסקה" }));
+    // F38: the leaving date rides the call, defaulted to today JERUSALEM. A
+    // blank would silently exempt her from the retention clock forever.
+    await waitFor(() => expect(deactivateStaff).toHaveBeenCalledWith(HER, todayJerusalem()));
+    // Her ROW is gone. Her NAME is not: F38's role="status" line is the only
+    // feedback there is once the row leaves the list, and it names her inside a
+    // bare <bdi>, so an unscoped queryByText would now match that instead.
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^עריכה — דנה/ })).toBeNull());
+    expect(screen.getByRole("status")).toHaveTextContent("רישומי העבודה שלה נשמרו");
   });
 
   // The one screen whose whole job is naming the right person before a
@@ -512,7 +534,7 @@ describe("StaffSection deactivate", () => {
     await screen.findByText("dana (bella).");
 
     fireEvent.click(
-      within(rowFor("dana (bella).")).getByRole("button", { name: /^השבתה/ }),
+      within(rowFor("dana (bella).")).getByRole("button", { name: /^סיום העסקה/ }),
     );
     const dialog = screen.getByRole("dialog", { hidden: true });
     const isolated = within(dialog as HTMLElement).getByText("dana (bella).");
@@ -532,7 +554,7 @@ describe("StaffSection deactivate", () => {
 
     await waitFor(() => expect((dialog as HTMLDialogElement).open).toBe(false));
     expect(deactivateStaff).not.toHaveBeenCalled();
-    expect(within(rowFor("דנה")).getByRole("button", { name: /^השבתה/ })).toHaveFocus();
+    expect(within(rowFor("דנה")).getByRole("button", { name: /^סיום העסקה/ })).toHaveFocus();
   });
 
   it("moves focus to the heading once the row is gone", async () => {
@@ -542,7 +564,7 @@ describe("StaffSection deactivate", () => {
     await screen.findByText("דנה");
 
     const dialog = openConfirm();
-    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "השבתה" }));
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "סיום העסקה" }));
 
     // The trigger unmounts with its row, so restoring focus to it would land on
     // <body> — the heading is the nearest thing that still exists.
@@ -560,7 +582,7 @@ describe("StaffSection deactivate", () => {
     await screen.findByText("דנה");
 
     const dialog = openConfirm();
-    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "השבתה" }));
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "סיום העסקה" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "אי אפשר לשנות את התפקיד של עצמך או להשבית את עצמך.",
@@ -576,7 +598,7 @@ describe("StaffSection deactivate", () => {
     await screen.findByText("דנה");
 
     const dialog = openConfirm();
-    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "השבתה" }));
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "סיום העסקה" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "הפעולה הזו זמינה לבעלת הבוטיק בלבד.",
@@ -606,7 +628,7 @@ describe("StaffSection accessibility", () => {
     listStaff.mockResolvedValue([OWNER, member()]);
     const { container } = renderSection();
     await screen.findByText("דנה");
-    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^השבתה/ }));
+    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^סיום העסקה/ }));
     expect((await run(container)).violations).toEqual([]);
   }, 20000);
 

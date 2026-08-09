@@ -829,8 +829,10 @@ describe("the third card status (F36)", () => {
     expect(role.tagName).toBe("BDI");
     expect(role).not.toHaveAttribute("dir");
     expect(role.closest("p")).toHaveClass("text-ink-muted");
-    // Badge is the only rounded-full span in the tree.
-    expect(item.querySelectorAll("span.rounded-full")).toHaveLength(1);
+    // Badge is the only rounded-full span the card EXPOSES. F38's initial-letter
+    // avatar is the second one, and it is `aria-hidden` precisely because it
+    // carries nothing — excluding it here keeps this assertion about pills.
+    expect(item.querySelectorAll("span.rounded-full:not([aria-hidden])")).toHaveLength(1);
   });
 
   it("labels the client on the occupancy line, and says so when there is none", async () => {

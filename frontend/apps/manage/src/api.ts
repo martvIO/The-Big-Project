@@ -344,8 +344,17 @@ export interface PresignResponse {
  * boundary itself, and Content-Type travels as a form *field*, not a header.
  * Fields go in first in iteration order and `file` goes last, because S3
  * ignores everything after `file`.
+ *
+ * The parameter is the STRUCTURAL pair this function actually reads, not
+ * `PresignResponse`: F38's `StaffPhotoPresignResponse` carries no `media_id`
+ * (the confirm call reads the pending triple off the row instead), and a second
+ * copy of the multipart-ordering rule for the sake of one absent field is how
+ * the two POSTs drift.
  */
-export async function uploadToStorage(presign: PresignResponse, file: File): Promise<void> {
+export async function uploadToStorage(
+  presign: { url: string; fields: Record<string, string> },
+  file: File,
+): Promise<void> {
   const form = new FormData();
   for (const [name, value] of Object.entries(presign.fields)) {
     form.append(name, value);

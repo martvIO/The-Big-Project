@@ -143,9 +143,9 @@ export const ar = {
     "staff.roleShiftManager": "אחראית משמרת",
     "staff.selfMarker": "זו את",
     "staff.editCta": "עריכה",
-    "staff.deactivateCta": "השבתה",
+    "staff.deactivateCta": "סיום העסקה",
     "staff.editAria": "עריכה — {{name}}",
-    "staff.deactivateAria": "השבתה — {{name}}",
+    "staff.deactivateAria": "סיום העסקה — {{name}}",
     "staff.displayNameLabel": "שם לתצוגה",
     "staff.emailLabel": "אימייל",
     "staff.roleLabel": "תפקיד",
@@ -161,14 +161,50 @@ export const ar = {
     "staff.passwordLabel": "סיסמה",
     "staff.passwordNotice": "יש למסור את הסיסמה לעובדת בעצמך. המערכת אינה מעבירה אותה לאיש.",
     "staff.createCta": "הוספה לצוות",
-    "staff.deactivateTitle": "להשבית את הגישה?",
+    "staff.deactivateTitle": "לסיים את ההעסקה?",
     "staff.deactivateBody":
-      "הגישה של <bdi>{{name}}</bdi> לניהול הבוטיק תיפסק בפעולה הבאה שלה. אפשר להוסיף אותה מחדש בכל עת.",
-    "staff.deactivateConfirm": "השבתה",
+      "הגישה של <bdi>{{name}}</bdi> לניהול הבוטיק תיפסק בפעולה הבאה שלה, והתמונה שלה תימחק מיד.",
+    "staff.deactivateConfirm": "סיום העסקה",
+    // F38. Untranslated by ruling (Q3 / pre-decided #47): the approved Hebrew
+    // stands in verbatim, never "" — an empty string renders as an empty screen.
+    "staff.photoUploadLabel": "תמונת פרופיל",
+    "staff.photoReplaceLabel": "החלפת תמונת פרופיל",
+    "staff.photoPurpose": "התמונה משמשת לזיהוי בלוח המשמרת ובכרטיסי הצוות בלבד.",
+    "staff.photoFormats": "JPG, PNG או WebP · עד 2MB",
+    "staff.photoUploading": "מעלה…",
+    "staff.photoVerifying": "מאמת…",
+    "staff.photoAdded": "התמונה נוספה.",
+    "staff.photoReplaced": "התמונה הוחלפה.",
+    "staff.photoRemoved": "התמונה הוסרה.",
+    "staff.photoRetryCta": "נסי שוב",
+    "staff.photoRemoveCta": "הסרת תמונה",
+    "staff.photoRemoveTitle": "להסיר את התמונה?",
+    "staff.photoRemoveBody":
+      "התמונה תימחק מהאחסון ולא ניתן לשחזר אותה. אפשר להעלות תמונה חדשה בכל עת.",
+    "staff.photoRemoveConfirm": "הסרה",
+    "staff.eligibleLabel": "יכולה לנהל משמרת",
+    "staff.eligibleHelp":
+      "הסימון קובע מי יכולה להיות אחראית על משמרת בסידור העבודה. הוא אינו משנה את התפקיד ואינו משנה הרשאות.",
+    "staff.phoneLabel": "טלפון",
+    "staff.phoneHelp": "מספר ליצירת קשר בלבד. הכניסה למערכת היא באמצעות אימייל וסיסמה.",
+    "staff.startDateLabel": "תאריך תחילת עבודה",
+    "staff.lastDayLabel": "יום עבודה אחרון",
+    "staff.lastDayHelp": "ברירת המחדל היא היום. אפשר לבחור תאריך אחר.",
+    "staff.offboardRetentionNote":
+      "רישומי העבודה שלה — שיבוצים לחדרים, קריאות ותיקונים — נשמרים כפי שהם. הפרטים האישיים שלה יימחקו מהמערכת בתום תקופת השמירה. אפשר להוסיף אותה מחדש בעתיד כאשת צוות חדשה.",
+    "staff.offboardDone":
+      "ההעסקה של <bdi>{{name}}</bdi> הסתיימה בתאריך {{date}}. רישומי העבודה שלה נשמרו.",
     "staff.error.DUPLICATE_EMAIL": "כתובת האימייל הזו כבר משויכת לאשת צוות פעילה.",
     "staff.error.LAST_OWNER_REQUIRED": "לבוטיק חייבת להיות בעלת בוטיק אחת לפחות.",
     "staff.error.STAFF_SELF_MANAGE": "אי אפשר לשנות את התפקיד של עצמך או להשבית את עצמך.",
     "staff.error.NOT_AUTHORIZED": "הפעולה הזו זמינה לבעלת הבוטיק בלבד.",
+    "staff.error.MEDIA_MISMATCH": "הקובץ אינו תמונה תקינה.",
+    "staff.error.MEDIA_NOT_UPLOADED": "הקובץ לא הגיע לשרת. נסי שוב.",
+    "staff.error.MEDIA_STORAGE_UNAVAILABLE":
+      "אחסון התמונות אינו זמין כרגע. התמונות הקיימות מוצגות כרגיל.",
+    "staff.error.MEDIA_NOT_CONFIGURED":
+      "אחסון התמונות אינו זמין כרגע. התמונות הקיימות מוצגות כרגיל.",
+    "staff.error.TOO_MANY_ATTEMPTS": "יותר מדי העלאות בזמן קצר. נסי שוב בעוד כמה דקות.",
 
     // --- F52, the KPI dashboard ---
     "nav.dashboard": "סקירה",

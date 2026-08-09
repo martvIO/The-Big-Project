@@ -69,6 +69,58 @@ function departingCardHoldsFocus(incoming: readonly StaffCard[]): boolean {
   return !incoming.some((card) => card.id === held);
 }
 
+// F38's avatar, and the PIN is the whole point of it.
+//
+// `photo_url` is freshly signed on every ~5 s tick and is therefore a DIFFERENT
+// string every time, so an <img src> read straight off the card re-downloads
+// every face on the board forever. The pin is keyed by `(id, photo_confirmed_at)`
+// — the pair that changes exactly when the image behind it does — and the ONLY
+// thing allowed to break it is `onError`, i.e. a signed URL that expired between
+// ticks. Dropping the pin there lets the next poll adopt the fresh URL with no
+// refetch call of its own: the poll IS the recovery here, unlike MediaGallery's
+// one-shot `hasRefreshed`.
+function StaffAvatar({ card }: { card: StaffCard }) {
+  const pinKey = `${card.id}:${card.photo_confirmed_at ?? ""}`;
+  const pinned = useRef<Map<string, string>>(new Map());
+  const [broken, setBroken] = useState<string | null>(null);
+
+  if (card.photo_url !== null && !pinned.current.has(pinKey)) {
+    pinned.current.set(pinKey, card.photo_url);
+  }
+  const src = pinned.current.get(pinKey) ?? null;
+
+  // The initial fallback covers all three ordinary null paths — no photo, no
+  // bucket, signing degraded — plus the expired-URL one. aria-hidden, and the
+  // <img> carries alt="": the display name is a text node immediately beside it,
+  // so announcing it again would say her name twice per card on a board that
+  // lists the whole shift.
+  if (src === null || broken === pinKey) {
+    return (
+      <span
+        aria-hidden="true"
+        className="me-3 flex size-11 shrink-0 items-center justify-center rounded-full bg-surface text-base text-ink-muted"
+      >
+        {[...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
+          card.display_name.trim(),
+        )][0]?.segment ?? ""}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onError={() => {
+        pinned.current.delete(pinKey);
+        setBroken(pinKey);
+      }}
+      className="me-3 size-11 shrink-0 rounded-full object-cover"
+    />
+  );
+}
+
 export function FloorPanel({ selfId, role }: FloorPanelProps) {
   const { t } = useTranslation();
 
@@ -813,7 +865,13 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
                     data-staff-id={card.id}
                     className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center"
                   >
-                    <div className="min-w-0 grow space-y-1">
+                    {/* Inline START of the card's flex row, before the name,
+                        logical properties throughout so RTL needs no override.
+                        Display-only, so it is exempt from the 44px touch floor —
+                        and it holds 44px anyway. */}
+                    <div className="flex min-w-0 grow items-start">
+                      <StaffAvatar card={card} />
+                      <div className="min-w-0 grow space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
                         {/* Bare <bdi>, never dir="ltr": forcing LTR on a Hebrew
                             name reverses its words. No truncation and no
@@ -888,6 +946,7 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
                           {cardError.text}
                         </p>
                       )}
+                      </div>
                     </div>
                     {mayToggle && (
                       <Button

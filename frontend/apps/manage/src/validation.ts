@@ -400,6 +400,45 @@ export function validateStaffDraft(draft: StaffDraft): string | null {
   return null;
 }
 
+// --- the leaving date (Feature 38) ---
+//
+// Mirrors `_resolve_last_day` in backend/app/auth/staff.py. Hardcoded Hebrew and
+// not an i18n key, per F51's rule above and `validateUploadFile`'s precedent: a
+// bounds message that lives beside the bound cannot drift from it.
+//
+// A TYPO FENCE and not a policy about notice periods — `2036` for `2026` is one
+// keystroke, and the server would take it, parking her outside the retention
+// scrub for a decade.
+export const MAX_LAST_DAY_LOOKAHEAD_DAYS = 365;
+
+/**
+ * `lastDay` and `startDate` are `YYYY-MM-DD` — the format `<input type="date">`
+ * speaks in both directions, and the format the wire carries.
+ *
+ * Compared as STRINGS, deliberately: ISO-8601 calendar dates sort
+ * lexicographically, so this needs no Date parsing and therefore cannot pick up
+ * a timezone the way `new Date("2026-08-09")` (UTC midnight) would.
+ *
+ * The `startDate === null` arm is load-bearing, not defensive: every pre-F38 row
+ * has no start date, so comparing unconditionally would refuse every offboarding
+ * in the boutique until somebody backfilled a column nobody has.
+ */
+export function validateLastDay(lastDay: string, startDate: string | null): string | null {
+  if (!lastDay) {
+    return "יש לבחור יום עבודה אחרון";
+  }
+  if (startDate !== null && lastDay < startDate) {
+    return "יום העבודה האחרון אינו יכול להקדים את תאריך תחילת העבודה.";
+  }
+  const ceiling = new Date(Date.now() + MAX_LAST_DAY_LOOKAHEAD_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  if (lastDay > ceiling) {
+    return "יום העבודה האחרון רחוק מדי. אפשר לבחור תאריך עד שנה מהיום.";
+  }
+  return null;
+}
+
 // --- customers CRM (Feature 53) ---
 //
 // Mirrors of backend/app/customers/validation.py. backend/tests/
