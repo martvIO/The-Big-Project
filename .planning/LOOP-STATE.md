@@ -2485,7 +2485,31 @@ queue:
     slug: invite-signup
     epic: E5
     title: Invite-code boutique signup + gateway onboarding
-    status: queued
+    status: queued                # 2026-08-09: spec+design(gate ACCEPTED r3)+plan READY. F25's merge
+                                  # unblocked it. Built to Q10 (INVITE CODES ONLY) with a five-row
+                                  # CONFLICTS table against the STALE epic brief, which still describes a
+                                  # public funnel with slug claiming, captcha and an F29 gate.
+                                  # D1: the redeemer lands at admin.{base}/platform/join?code=... INSIDE
+                                  # F25's existing bundle — the apex 404s by design and needs new DNS, the
+                                  # tenant host does not exist until redemption succeeds, and a separate
+                                  # join. label would mean leaking /platform* through a second fence or a
+                                  # FOURTH workspace app for one form.
+                                  # ⚠ CONSEQUENCE FOR F62: its planned edge IP allowlist on
+                                  # admin.{base_domain} MUST be PATH-SCOPED — /platform/join* open,
+                                  # /platform/* restricted — or invite redemption breaks.
+                                  # D2: the operator pre-assigns slug + name + owner_email; the redeemer
+                                  # supplies ONLY a password, so a leaked link can only create the boutique
+                                  # the operator authorised at the address he authorised.
+                                  # D4: redemption reuses provision's transaction (extracted _create_tenant),
+                                  # single-use under concurrency by an atomic conditional UPDATE taken as
+                                  # the FIRST statement + the slug partial unique index behind provision's
+                                  # existing IntegrityError handler.
+                                  # D7: gateway connect is NOT part of redemption — F17 already ships the
+                                  # owner-only surface, and its connect() pings the provider OUTSIDE its
+                                  # transaction on purpose. F26 adds ZERO payment code, which is also what
+                                  # keeps Gate 1 self-approving under Q1.
+                                  # ⚠ Also records a conflict against SHIPPED code: test_staff_role_gating's
+                                  # "the two public /platform routes" walker becomes FOUR — a named plan task.
     deps: [F25, F17]
     note: >-
       Q10 (against recommendation): INVITE CODES ONLY. No public signup funnel,
