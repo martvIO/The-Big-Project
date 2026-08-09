@@ -4131,7 +4131,7 @@ def _reservation_insert_admitted(url: str, starts_on: str, ends_on: str) -> bool
 
 
 @pytest.mark.db
-def test_migration_0029_creates_dress_reservations(migrated_db: str) -> None:
+def test_migration_0031_creates_dress_reservations(migrated_db: str) -> None:
     """Spec D2's DDL: DATE and not TIMESTAMPTZ on both ends (a rental leaves and
     returns on days, and the boutique is one timezone), the no-FK dress pointer,
     the OPTIONAL customer pointer (D7 — never a PII snapshot) and bounded notes.
@@ -4170,7 +4170,7 @@ def test_the_reservation_checks_admit_a_legal_range_and_refuse_both_absurdities(
 
 
 @pytest.mark.db
-def test_migration_0029_round_trips(migrated_db: str) -> None:
+def test_migration_0031_round_trips(migrated_db: str) -> None:
     """upgrade() creates the table; downgrade() drops it and touches nothing
     else — F28 adds no column to any existing table, so there is nothing to
     un-touch. The downgrade target comes from `_parent_of` so a

@@ -392,7 +392,7 @@ def test_search_length_cap() -> None:
 
 
 def test_reservation_bounds_match_the_db_check_ceiling() -> None:
-    """The 10x rule again — 0029's span CHECK is the absurdity ceiling, this is
+    """The 10x rule again — 0031's span CHECK is the absurdity ceiling, this is
     the product cap. Raising one without the other turns a clean 400 into an
     IntegrityError 500 on create."""
     assert MAX_RESERVATION_SPAN_DAYS == 365

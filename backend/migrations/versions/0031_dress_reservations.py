@@ -1,26 +1,27 @@
 """date-bound dress reservation: dress_reservations (F28's rental windows)
 
-Revision ID: 0029
-Revises: 0027
+Revision ID: 0031
+Revises: 0030
 
-⚠ RE-PARENTED AT REBASE, WHICH IS THE PROTOCOL AND NOT AN ACCIDENT. This was
-built against the head visible in the F28 worktree (0026) while F24 held 0027 in
-an open PR and F25 held 0028 in a live one. F24 has since merged, so `alembic
-heads` against rebased main answers 0027 and that is the real parent named here.
-0028 is still F25's and unmerged: 0029 stays this migration's number, and if F25
-lands first nothing here moves — whichever of the two merges SECOND re-parents
-onto the other, because two siblings pointing at one parent is two heads.
-0020's header records what a duplicated revision STRING costs instead: alembic
-keys by it, dedupes to one script and silently drops the other, so one of the
-two tables is simply never created on a fresh database.
+⚠ RENUMBERED AND RE-PARENTED AT THE FINAL REBASE, which is the protocol rather
+than an accident. This was built as 0029 against the head visible in the F28
+worktree, while F24 held 0027 and F25 held 0028 in open PRs. By the time it was
+ready, F25's 0028 AND F35's 0030 had both merged — and 0029 and 0030 had each
+been written against 0028.
+
+TWO REVISIONS NAMING THE SAME PARENT BRANCHES THE HISTORY, which reds every
+db-marked test with a message that points at nothing in the diff. The house rule
+is that whichever migration merges SECOND re-parents onto the other, so this one
+now follows 0030 and the chain is linear: 0028 -> 0030 -> 0031. The 0029 slot is
+left unused; alembic resolves a DAG, not a sequence, so a gap costs nothing.
 """
 
 from alembic import op
 
 from app.db.rls import enable_tenant_rls
 
-revision = "0029"
-down_revision = "0028"
+revision = "0031"
+down_revision = "0030"
 branch_labels = None
 depends_on = None
 
