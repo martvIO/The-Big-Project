@@ -174,7 +174,16 @@ export function VariantMatrix({
                 aria-label={alreadyListed ? `${label} — כבר ברשימה` : undefined}
                 className={`min-h-11 min-w-11 rounded-full border px-3 text-sm ${
                   alreadyListed
-                    ? "border-gold-strong bg-surface-raised font-semibold text-gold-strong"
+                    ? // ⚠ text-ink, NOT text-gold-strong. tokens.md bars
+                      // --color-gold-strong from carrying text or a
+                      // meaning-bearing glyph: it is a NON-TEXT colour that
+                      // clears only the ≥3:1 bar, and gold-strong on
+                      // surface-raised measures 3.93:1 against the 4.5 text
+                      // floor. The selected affordance stays gold where the
+                      // token allows it — the border, and the aria-hidden
+                      // bullet below, which tokens.md exempts as decorative
+                      // because visible text always sits beside it.
+                      "border-gold-strong bg-surface-raised font-semibold text-ink"
                     : "border-border text-ink-muted"
                 } disabled:opacity-50`}
                 disabled={addBlocked}
@@ -184,7 +193,7 @@ export function VariantMatrix({
                 {alreadyListed && (
                   // A real element, never ::before{content} — generated content
                   // is folded into the accessible name in Chrome and Firefox.
-                  <span aria-hidden="true" className="ms-1">
+                  <span aria-hidden="true" className="ms-1 text-gold-strong">
                     •
                   </span>
                 )}
