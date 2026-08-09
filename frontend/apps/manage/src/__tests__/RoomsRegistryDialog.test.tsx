@@ -142,7 +142,7 @@ beforeEach(() => {
   deleteRoom.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
   getSos.mockReset();
-  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW , unread_notifications: 0 });
   getFloor.mockResolvedValue(floor([room(), room({ id: ROOM_B, label: "הבמה", sort_order: 2 })]));
 });
 

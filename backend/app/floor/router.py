@@ -117,6 +117,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from app.auth.dependencies import get_current_staff, require_role
 from app.auth.service import StaffContext
+from app.floor.notifications import NotificationsService
 from app.floor.schemas import (
     AddDressRequest,
     AssignRequest,
@@ -127,6 +128,10 @@ from app.floor.schemas import (
     FloorDressList,
     FloorResponse,
     HandoverRequest,
+    MarkReadRequest,
+    MarkReadResponse,
+    NotificationListResponse,
+    NotificationView,
     RaisedAlert,
     RaiseSosRequest,
     Room,
@@ -555,3 +560,57 @@ async def cancel_sos(
     return SosAlertView.from_read(
         await service.cancel_sos(get_current_tenant(request).id, alert_id, actor=staff)
     )
+
+
+# --- F35: the staff notification bell (all five roles, NOTHING tightened) -----
+#
+# ⚠ **Two routes on THIS router, and the second path segment is still `floor`.**
+# That is the whole reason they live here: `vite.config.ts`'s `MANAGE_API`
+# alternation, `e2e/fixtures/manage.ts`'s `API_FAMILIES` and `test_spa_serving.py`'s
+# set-equality assertion between them and the live route table all already carry
+# `floor`, so an eighteenth segment would cost two edits and buy nothing while
+# both producers are floor events. Mounting at `/manage/notifications` would also
+# have collided in the reader's head with `app/notifications/`, which is the
+# SMS/OTP module and a different thing entirely.
+#
+# The router's class-level `require_role(*StaffRole)` is the WHOLE gate and no
+# per-route dependency narrows it: the bell's audience is every signed-in
+# staffer, which is exactly the five the router already admits, so
+# `test_staff_role_gating`'s default-deny walker needs no entry.
+#
+# The POST is CSRF-fenced by `CsrfOriginMiddleware` BY METHOD rather than by a
+# path list, so it is fenced by construction. The GET's protection is the session
+# cookie and the role gate alone.
+
+
+def get_notifications_service(request: Request) -> NotificationsService:
+    service: NotificationsService = request.app.state.notifications_service
+    return service
+
+
+Notifications = Annotated[NotificationsService, Depends(get_notifications_service)]
+
+
+@router.get("/floor/notifications")
+async def list_notifications(
+    request: Request, service: Notifications, staff: Staff
+) -> NotificationListResponse:
+    """⚠ `staff` is not decoration: the rows are scoped to the SESSION's actor
+    and never to anything the request names. There is no `staff_id` query
+    parameter here and there must not be one — a route that could answer «show me
+    Dana's bell» is a different feature with a different audience rule."""
+    rows = await service.recent(get_current_tenant(request).id, actor_id=staff.id)
+    return NotificationListResponse(items=[NotificationView.from_row(row) for row in rows])
+
+
+@router.post("/floor/notifications/read")
+async def mark_notifications_read(
+    request: Request, service: Notifications, staff: Staff, body: MarkReadRequest
+) -> MarkReadResponse:
+    """ONE verb for «she tapped it» and «mark all» alike — the difference is the
+    length of `ids`, and the console never sends more than the page it rendered.
+
+    Answers HER OWN unread count so the bell updates without waiting a tick.
+    """
+    unread = await service.mark_read(get_current_tenant(request).id, body.ids, actor_id=staff.id)
+    return MarkReadResponse(unread=unread)

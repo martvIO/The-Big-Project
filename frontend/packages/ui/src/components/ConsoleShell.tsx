@@ -22,6 +22,11 @@ export interface ConsoleShellProps {
   // default and no knowledge of what it is: the shell owns the slot, the caller
   // owns the control.
   guide?: ReactNode;
+  // F35's notification bell, rendered FIRST in the chrome group. Same contract
+  // as `guide` and for the same reason: the shell owns the slot and knows
+  // nothing about the control, so the count, the panel and every a11y decision
+  // in it belong to the caller. Omitting it writes no node at all.
+  bell?: ReactNode;
   children: ReactNode;
 }
 
@@ -41,6 +46,7 @@ export function ConsoleShell({
   banner,
   progress,
   guide,
+  bell,
   children,
 }: ConsoleShellProps) {
   return (
@@ -56,6 +62,7 @@ export function ConsoleShell({
               come out evenly spread and the two chrome controls stop reading as a
               pair. One wrapper restores two groups. */}
           <div className="flex items-center gap-4">
+            {bell}
             {guide}
             {/* ⚠ `min-h-11 px-2` — SIZED LIKE ITS SIBLING, and it was not. This
                 measured 29 × 21 px in a real browser: under the 44 px floor

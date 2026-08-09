@@ -69,6 +69,9 @@ export function SosProvider({
 }) {
   const [alerts, setAlerts] = useState<SosAlert[]>([]);
   const [serverNow, setServerNow] = useState<string | null>(null);
+  // F35. Never reset on a failed tick or a terminal state — see the context's
+  // doc comment. The only writers are a successful read and a successful mark.
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [failures, setFailures] = useState(0);
 
   // ⚠ THE GAP IS DERIVED FROM THE RESPONSE AND NEVER FROM REACT STATE. The tick
@@ -144,6 +147,9 @@ export function SosProvider({
       hasLiveAlertRef.current = result.alerts.some(isLive);
       setAlerts(result.alerts);
       setServerNow(result.server_now);
+      // ONE MORE STATE WRITE ON THE EXISTING TICK. No second request, no second
+      // timer — the whole of F35's delivery.
+      setUnreadNotifications(result.unread_notifications);
       setFailures(0);
       poll.succeeded();
     } catch (error) {
@@ -220,6 +226,7 @@ export function SosProvider({
   const value: SosContextValue = {
     alerts,
     serverNow,
+    unreadNotifications,
     terminal: poll.terminal,
     channelDown: poll.terminal === "access" || failures > CHANNEL_DOWN_AFTER_FAILURES,
     raise: async (body) => {
@@ -230,6 +237,13 @@ export function SosProvider({
       });
       return { raised, failure };
     },
+    // Through the SAME `mutate` helper every other action uses, so a mark-read
+    // suppresses the tick it races and re-arms the loop afterwards — a bell tap
+    // must not cost the emergency channel a beat.
+    markRead: (ids) =>
+      mutate(async () => {
+        setUnreadNotifications((await api.markNotificationsRead(ids)).unread);
+      }),
     accept: (alertId) =>
       mutate(async () => {
         merge(await api.acceptSos(alertId));

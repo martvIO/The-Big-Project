@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field
 
 from app.catalog.validation import MAX_SIZE_LABEL_LENGTH, MAX_SORT_ORDER
 from app.db.repositories.fitting_rooms import RoomRow
+from app.db.repositories.staff_notifications import StaffNotificationRow
 from app.floor.service import (
     ClientPickerRead,
     DispatchRead,
@@ -580,12 +581,17 @@ class SosResponse(BaseModel):
 
     alerts: list[SosAlertView]
     server_now: datetime.datetime
+    # F35's bell rides this payload — the console's only app-wide tick. See
+    # `SosListRead` for why, and for the accepted consequence when the channel
+    # reaches a terminal state.
+    unread_notifications: int
 
     @classmethod
     def from_read(cls, read: "SosListRead") -> "SosResponse":
         return cls(
             alerts=[SosAlertView.from_read(one) for one in read.alerts],
             server_now=read.server_now,
+            unread_notifications=read.unread_notifications,
         )
 
 
@@ -635,3 +641,81 @@ class RaiseSosRequest(ForbidExtraModel):
     target_staff_user_id: uuid.UUID | None = None
     fitting_room_assignment_id: uuid.UUID | None = None
     note: str | None = None
+
+
+# --- F35: the bell ------------------------------------------------------------
+
+# The list read's cap AND the mark-read body's cap, deliberately ONE number: the
+# «mark all» button sends the rendered page's ids, so a body longer than a page
+# is either a bug or somebody replaying ids by hand.
+MAX_MARK_READ_IDS = 20
+
+
+class NotificationView(BaseModel):
+    """One panel row.
+
+    ⚠ **`entity_id` is NOT here, and its absence is a decision rather than an
+    oversight.** It is stored (it is what makes the row a record rather than a
+    log line) and nothing renders it: the click target is the floor section, not
+    a specific room. Emitting an id nothing reads is a capability handed out for
+    free. Upgrade path when a deep link exists: one field, no migration.
+
+    ⚠ **No customer datum of any kind can reach this shape.** The row says who
+    did what to you; the floor screen, under its own audience rules, says who she
+    is.
+
+    `actor_name` is NULL only when the actor's staff row is gone entirely — the
+    join carries no `deleted_at` filter — and the copy has a nameless variant for
+    exactly that.
+    """
+
+    id: uuid.UUID
+    kind: str
+    actor_name: str | None
+    created_at: datetime.datetime
+    read_at: datetime.datetime | None
+
+    @classmethod
+    def from_row(cls, row: StaffNotificationRow) -> "NotificationView":
+        return cls(
+            id=row.notification.id,
+            kind=row.notification.kind,
+            actor_name=row.actor_name,
+            created_at=row.notification.created_at,
+            read_at=row.notification.read_at,
+        )
+
+
+class NotificationListResponse(BaseModel):
+    """An ENVELOPE rather than a bare array, `FloorResponse`'s reason: the day
+    this read grows a cursor or a total, an envelope makes it additive and a bare
+    array makes it a breaking change."""
+
+    items: list[NotificationView]
+
+
+class MarkReadRequest(ForbidExtraModel):
+    """ONE verb, not two. `ids=[one]` is «she tapped it»; `ids=<the page>` is
+    «mark all».
+
+    ⚠ **A true mark-all is deliberately not offered.** It would silently mark
+    rows that arrived after the list rendered and were never seen, which is the
+    one thing an unread count must not do.
+
+    `ForbidExtraModel` for `RaiseSosRequest`'s reason at lower stakes: a
+    body-supplied `staff_user_id` is the shape that would let one staffer clear
+    another's bell, so it is a 400 rather than a silently ignored key.
+
+    An EMPTY list is legal and is a 200 no-op — «she tapped a row that was
+    already read» is ordinary, not a client error.
+    """
+
+    ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_MARK_READ_IDS)
+
+
+class MarkReadResponse(BaseModel):
+    """Her own count, so the bell updates without waiting for the next SOS tick —
+    and so a mark that matched nothing still answers the truth rather than a
+    number the client computed."""
+
+    unread: int

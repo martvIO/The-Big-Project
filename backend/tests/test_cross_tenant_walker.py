@@ -385,6 +385,16 @@ EXPECTED_STATUS: dict[tuple[str, str], tuple[int, str]] = {
 # `test_the_exemptions_each_carry_a_reason` now asserts the count so the fence
 # cannot drift from the thing it fences again.)
 UNWALKABLE: dict[tuple[str, str], str] = {
+    ("POST", "/manage/floor/notifications/read"): (
+        "F35's mark-read ANSWERS 200 FOR A FOREIGN ID BY DESIGN, so there is no "
+        "refusal for a 404-based walk to observe: the UPDATE carries "
+        "`staff_user_id = actor.id`, an id that is not hers matches nothing, and the "
+        "response is her own unread count either way (floor/notifications.py:57-70). "
+        "Nor could the walk obtain tenant B's id: notification ids reach only their "
+        "OWN recipient, so no route in the product hands one to anybody else — which "
+        "is the property rather than a gap. Isolation is test_bell_isolation.py's, "
+        "which probes this exact verb across tenants at the repository."
+    ),
     ("POST", "/storefront/payments/webhook"): (
         "raw bytes verified by HMAC-SHA256 over the exact body; the caller is the "
         "payment gateway, not a tenant principal, and re-serialising the body "
@@ -502,6 +512,11 @@ NO_TENANT_OWNED_ID = frozenset(
         ("GET", "/manage/floor/clients"),
         ("POST", "/manage/floor/rooms"),
         ("GET", "/manage/floor/sos"),
+        # F35's list. No id in path, query or body — the only scoping is the
+        # host-derived tenant plus the SESSION's actor, and there is deliberately
+        # no `staff_id` parameter to substitute. Its cross-tenant read is probed
+        # directly in test_bell_isolation.py.
+        ("GET", "/manage/floor/notifications"),
         ("GET", "/manage/atelier/tickets"),
         ("GET", "/storefront/dresses"),
         ("GET", "/storefront/boutique"),
@@ -1174,7 +1189,7 @@ def test_the_exemptions_each_carry_a_reason() -> None:
     # that this list not grow unnoticed — so the fence is now an assertion.
     # SEVEN since F22: the storefront join shares the bookings route's
     # token-gated shape, and its type check is proved in test_waitlist_service.
-    assert len(UNWALKABLE) == 8, (
+    assert len(UNWALKABLE) == 9, (
         f"UNWALKABLE is now {len(UNWALKABLE)} entries. Update the count in its own "
         "comment and in the checklist's R9 row before changing this number."
     )

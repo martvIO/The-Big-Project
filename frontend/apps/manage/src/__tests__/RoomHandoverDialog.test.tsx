@@ -135,7 +135,7 @@ beforeEach(() => {
   handoverAssignment.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
   getSos.mockReset();
-  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW , unread_notifications: 0 });
   listFloorDresses.mockResolvedValue({ dresses: [], truncated: false });
   getFloor.mockResolvedValue(floor([room()]));
 });

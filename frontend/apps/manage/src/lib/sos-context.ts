@@ -23,6 +23,21 @@ export interface SosContextValue {
   /** A 403, or a loop backed off beyond one tick. Renders the persistent strip. */
   channelDown: boolean;
   raise: (body: RaiseSosRequest) => Promise<RaiseOutcome>;
+  /**
+   * F35's unread bell count, delivered on THIS poll's payload — the bell runs no
+   * timer of its own.
+   *
+   * ⚠ On a failed tick it KEEPS its last value and is never zeroed (design §4
+   * state K): never invent a count, never clear one. The app-wide
+   * `sos.channelDown` strip already says the channel is dead.
+   */
+  unreadNotifications: number;
+  /**
+   * Marks the given notifications read and republishes the count the SERVER
+   * answered. The optimistic zero and its rollback belong to the bell, which is
+   * the thing on screen; this only ever publishes a number the server gave it.
+   */
+  markRead: (ids: string[]) => Promise<unknown>;
   accept: (alertId: string) => Promise<unknown>;
   resolve: (alertId: string) => Promise<unknown>;
   cancel: (alertId: string) => Promise<unknown>;

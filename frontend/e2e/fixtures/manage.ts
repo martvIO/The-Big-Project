@@ -635,8 +635,50 @@ export function sosAlert(overrides: Partial<SosAlert> = {}): SosAlert {
   };
 }
 
-export function sosPayload(alerts: SosAlert[]): unknown {
-  return { alerts, server_now: SERVER_NOW };
+// ⚠ `unread` is F35's BELL COUNT and it rides THIS payload — the console's only
+// app-wide tick. Defaulted to 0 so every shipped call site here is unchanged;
+// `notifications.spec.ts` is the one that passes a number.
+export function sosPayload(alerts: SosAlert[], unread = 0): unknown {
+  return { alerts, server_now: SERVER_NOW, unread_notifications: unread };
+}
+
+// --- F35: the staff notification bell ----------------------------------------
+//
+// ⚠ NO NEW API FAMILY AND NO EDIT TO `API_FAMILIES`. Both bell paths keep
+// `floor` as their second segment, which is already intercepted — so this block
+// adds REPLIES and does not fork the harness. `test_spa_serving.py` is what
+// keeps that true against the live route table.
+//
+// ⚠ NO CUSTOMER DATUM ON THIS SHAPE, EVER, and there is no field that could
+// carry one: the wire row is two timestamps, a kind and a colleague's name.
+
+export interface BellNotification {
+  id: string;
+  kind: string;
+  actor_name: string | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export function bellNotification(
+  overrides: Partial<BellNotification> = {},
+): BellNotification {
+  return {
+    id: "nt-1",
+    kind: "dispatch_assigned",
+    actor_name: "דנה",
+    created_at: ARRIVED_AT,
+    read_at: null,
+    ...overrides,
+  };
+}
+
+export function bellList(items: BellNotification[]): unknown {
+  return { items };
+}
+
+export function bellMarked(unread: number): unknown {
+  return { unread };
 }
 
 // `rerouted` is a fact about THE REQUEST and not about the row, which is why the

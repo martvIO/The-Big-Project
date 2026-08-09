@@ -952,5 +952,22 @@ export const ar = {
     "togglesMatrix.deposits_enabled.label": "גביית מקדמות מופעלת",
     "togglesMatrix.deposits_enabled.hint":
       "מקדמה תיגבה בפועל רק אחרי שחשבון הסליקה של הבוטיק יחובר. כיבוי המתג אינו משפיע על תורים שנמצאים כבר בתהליך תשלום.",
+
+    // --- F35's staff notification bell (pre-decided #47: Hebrew placeholders) ---
+    "bell.label": "התראות",
+    "bell.labelUnread": "התראות, {{count}} חדשות",
+    "bell.title": "התראות",
+    "bell.unreadMarker": "חדש",
+    "bell.kindDispatch": "{{name}} הפנתה אליך לקוחה",
+    "bell.kindHandover": "{{name}} העבירה אליך חדר",
+    "bell.kindSos": "{{name}} ביקשה עזרה",
+    "bell.kindUnknownActor": "התקבלה התראה",
+    "bell.empty": "אין התראות",
+    "bell.capNote": "מוצגות 20 ההתראות האחרונות",
+    "bell.markAll": "סמני הכל כנקרא",
+    "bell.close": "סגירה",
+    "bell.loadFailed": "לא הצלחנו לטעון את ההתראות כרגע.",
+    "bell.retry": "ניסיון נוסף",
+    "bell.markFailed": "לא הצלחנו לסמן כנקרא כרגע.",
   },
 } as const;

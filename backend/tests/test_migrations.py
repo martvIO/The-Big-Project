@@ -3886,3 +3886,141 @@ def test_migration_0028_round_trips(migrated_db: str) -> None:
         assert exists("platform_sessions")
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F35: the staff notification table ---
+
+_BELL_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'staff_notifications'"
+)
+_BELL_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'staff_notifications'::regclass AND conname = :name"
+)
+_BELL_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE tablename = 'staff_notifications' AND indexname = :name"
+)
+_BELL_KIND_CHECK = "staff_notifications_kind_check"
+_BELL_INDEX_NAME = "idx_staff_notifications_unread"
+# CAPTURED FROM A LIVE 16.x SERVER, never transcribed from the migration source
+# — Postgres deparses `IN (...)` into `= ANY (ARRAY[...])`, adds ::text casts,
+# re-parenthesises AND operands and schema-qualifies the table. A literal that
+# merely LOOKS right pins nothing, which is the whole point for whoever adds a
+# fourth kind.
+_BELL_KIND_CHECK_DEF = (
+    "CHECK ((kind = ANY (ARRAY['dispatch_assigned'::text, 'room_handed_over'::text, "
+    "'sos_targeted'::text])))"
+)
+_BELL_INDEX_DEF_PINNED = (
+    "CREATE INDEX idx_staff_notifications_unread ON public.staff_notifications "
+    "USING btree (tenant_id, staff_user_id) "
+    "WHERE ((read_at IS NULL) AND (deleted_at IS NULL))"
+)
+_BELL_ALL_COLUMNS = {
+    "id",
+    "tenant_id",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+    "staff_user_id",
+    "actor_staff_user_id",
+    "kind",
+    "entity_id",
+    "read_at",
+}
+
+
+def _bell_columns(url: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_BELL_COLUMNS))).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _bell_pinned_definitions(url: str) -> tuple[str, str]:
+    async def read() -> tuple[str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                check = await conn.execute(text(_BELL_CONSTRAINT_DEF), {"name": _BELL_KIND_CHECK})
+                index = await conn.execute(text(_BELL_INDEX_DEF), {"name": _BELL_INDEX_NAME})
+                return (str(check.scalar_one()), str(index.scalar_one()))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_the_staff_notifications_migration_creates_the_table(migrated_db: str) -> None:
+    """Set equality on the column list, because the thing this table must never
+    grow is a customer datum — no name, no phone, no ticket id, ever. An
+    eleventh column arrives through a review or not at all.
+
+    Both staff ids are NOT NULL: a notification with no recipient has nobody to
+    ring for, and a notification with no actor cannot say who did it to her —
+    `actor_name` resolving to NULL is a missing staff ROW, never a missing id.
+    """
+    columns = _bell_columns(migrated_db)
+    assert set(columns) == _BELL_ALL_COLUMNS
+    assert columns["staff_user_id"] == ("uuid", "NO")
+    assert columns["actor_staff_user_id"] == ("uuid", "NO")
+    assert columns["kind"] == ("text", "NO")
+    assert columns["entity_id"] == ("uuid", "NO")
+    for stamp in ("created_at", "updated_at", "deleted_at", "read_at"):
+        assert columns[stamp][0] == "timestamp with time zone", stamp
+    assert columns["created_at"][1] == "NO"
+    # Unread IS null, so this column being nullable is the state machine.
+    assert columns["read_at"][1] == "YES"
+
+
+@pytest.mark.db
+def test_the_staff_notifications_definitions_are_pinned(migrated_db: str) -> None:
+    """The kind CHECK and the one partial index, deparsed.
+
+    The index predicate is `unread_count`'s predicate character for character;
+    if it ever drifts, the count on the SOS tick stops being an index-only scan
+    on the emergency channel's read and nothing else in the suite would say so.
+    """
+    kind_check, index = _bell_pinned_definitions(migrated_db)
+    assert kind_check == _BELL_KIND_CHECK_DEF
+    assert index == _BELL_INDEX_DEF_PINNED
+
+
+@pytest.mark.db
+def test_the_staff_notifications_migration_round_trips(migrated_db: str) -> None:
+    """Both directions. The target is `_parent_of`, never `-1`, so the renumber
+    this branch is guaranteed to take at rebase cannot silently redirect it."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+
+    def exists() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(
+                        text(_TABLE_EXISTS), {"name": "staff_notifications"}
+                    )
+                    return bool(result.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists()
+        command.downgrade(cfg, _parent_of("staff notifications"))
+        assert not exists()
+        command.upgrade(cfg, "head")
+        assert exists()
+        assert set(_bell_columns(migrated_db)) == _BELL_ALL_COLUMNS
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head

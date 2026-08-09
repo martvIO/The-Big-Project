@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import "../i18n";
+import i18n from "../i18n";
 import type { SosAlert, Staff } from "../api";
 import { App } from "../App";
 
@@ -38,6 +38,17 @@ vi.mock("../api", async () => {
       listCustomers: pending,
       listStaff: pending,
       getSos: vi.fn(),
+      // F35. The bell's two, on the explicit mock rather than spied at use:
+      // this module replaces `api` wholesale, so a missing key is a TypeError
+      // at the call rather than a readable failure.
+      listNotifications: vi.fn(),
+      markNotificationsRead: vi.fn(),
+      // Needed only so the bell's DESTINATION sections mount without throwing —
+      // `pending` leaves each on its skeleton, which is all these two tests
+      // look at. The panels' own behaviour is their own suites'.
+      getFloor: pending,
+      listFloorClients: pending,
+      getBoard: pending,
     },
   };
 });
@@ -45,6 +56,8 @@ vi.mock("../api", async () => {
 const { api, ApiError } = await import("../api");
 const me = vi.mocked(api.me);
 const getSos = vi.mocked(api.getSos);
+const listNotifications = vi.mocked(api.listNotifications);
+const markNotificationsRead = vi.mocked(api.markNotificationsRead);
 
 const NOW = "2026-08-04T08:25:00Z";
 const ALERT_A = "aaaaaaaa-0000-0000-0000-00000000000a";
@@ -80,7 +93,7 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.clearAllMocks();
   me.mockResolvedValue(STAFF);
-  getSos.mockResolvedValue({ alerts: [], server_now: NOW });
+  getSos.mockResolvedValue({ alerts: [], server_now: NOW , unread_notifications: 0 });
 });
 
 afterEach(() => {
@@ -92,7 +105,7 @@ describe("the overlay is mounted app-level, before the shell", () => {
     // So its controls precede every other focusable in the document — which is
     // what makes «first in DOM is first reached by Tab» true once focus is in
     // the overlay, and what the Esc route-in exists to reach when it is not.
-    getSos.mockResolvedValue({ alerts: [alertRow()], server_now: NOW });
+    getSos.mockResolvedValue({ alerts: [alertRow()], server_now: NOW , unread_notifications: 0 });
     render(<App />);
     await screen.findByText("דנה כהן");
 
@@ -136,6 +149,87 @@ describe("AC27 — a 401 on an SOS tick drops the console to the login form", ()
   });
 });
 
+
+// --- F35: the bell's slot and its role-aware destination ---------------------
+
+describe("the notification bell", () => {
+  it("renders in the console chrome on every section, inside the SOS provider", async () => {
+    // Inside the provider is what makes «no second timer» possible at all: the
+    // count comes off the tick this provider already runs.
+    getSos.mockResolvedValue({ alerts: [], server_now: NOW, unread_notifications: 2 });
+    render(<App />);
+
+    // The count arrives on the tick, not on the first commit: the bell renders
+    // immediately with no badge and gains one when the poll answers. That IS the
+    // delivery shape, so the assertion waits rather than pretending otherwise.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /התראות/ })).toHaveAccessibleName(
+        i18n.t("bell.labelUnread", { count: 2 }),
+      ),
+    );
+
+    // Still there after navigating — it is chrome, not a section.
+    fireEvent.click(await screen.findByRole("button", { name: i18n.t("nav.customers") }));
+    expect(screen.getByRole("button", { name: /התראות/ })).toBeInTheDocument();
+  });
+
+  it("sends an OWNER to the board, because her nav has no floor row", async () => {
+    // ⚠ F-B1. An unconditional setSection("floor") would land her on a section
+    // her own nav does not contain, and she is a legitimate handover recipient.
+    listNotifications.mockResolvedValue({
+      items: [
+        {
+          id: "cccccccc-0000-0000-0000-00000000000c",
+          kind: "room_handed_over",
+          actor_name: "דנה כהן",
+          created_at: NOW,
+          read_at: null,
+        },
+      ],
+    });
+    markNotificationsRead.mockResolvedValue({ unread: 0 });
+    getSos.mockResolvedValue({ alerts: [], server_now: NOW, unread_notifications: 1 });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /התראות/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /העבירה אליך חדר/ }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: i18n.t("nav.board") })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+  });
+
+  it("sends a RECEPTION staffer to the floor, which her nav does contain", async () => {
+    me.mockResolvedValue({ ...STAFF, role: "reception" });
+    listNotifications.mockResolvedValue({
+      items: [
+        {
+          id: "dddddddd-0000-0000-0000-00000000000d",
+          kind: "dispatch_assigned",
+          actor_name: "דנה כהן",
+          created_at: NOW,
+          read_at: null,
+        },
+      ],
+    });
+    markNotificationsRead.mockResolvedValue({ unread: 0 });
+    getSos.mockResolvedValue({ alerts: [], server_now: NOW, unread_notifications: 1 });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /התראות/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /הפנתה אליך לקוחה/ }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: i18n.t("nav.floor") })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+  });
+});
 
 // --- the root error boundary's WIRING ---------------------------------------
 

@@ -48,6 +48,48 @@ describe("ConsoleShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "יציאה" }));
     expect(onLogout).toHaveBeenCalledOnce();
   });
+
+  // F35's slot. The shell knows nothing about the control — `guide`'s shipped
+  // contract verbatim — so the only things worth asserting are that it lands in
+  // the chrome group, that it lands BEFORE the guide, and that omitting it
+  // writes nothing at all.
+  it("renders the bell inside the chrome group, before the guide", () => {
+    render(
+      <ConsoleShell
+        boutiqueName="ב" title="t" logoutLabel="יציאה" onLogout={() => {}}
+        skipLinkLabel="דלג" nav={nav} activeKey="profile" onNavigate={() => {}}
+        bell={<button type="button">התראות</button>}
+        guide={<button type="button">מדריך</button>}
+      >
+        <p>x</p>
+      </ConsoleShell>,
+    );
+    const bell = screen.getByRole("button", { name: "התראות" });
+    const guide = screen.getByRole("button", { name: "מדריך" });
+    const logout = screen.getByRole("button", { name: "יציאה" });
+    // One wrapper, three children — the row stays two groups and does not
+    // re-spread (the ⚠ comment on that div is the reason it exists).
+    expect(bell.parentElement).toBe(guide.parentElement);
+    expect(bell.parentElement).toBe(logout.parentElement);
+    // RTL reading order: bell, guide, logout — so the bell is first in the
+    // chrome group's tab order with no tabindex anywhere.
+    expect(bell.compareDocumentPosition(guide) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("writes no node at all when bell is omitted", () => {
+    const { container } = render(
+      <ConsoleShell
+        boutiqueName="ב" title="t" logoutLabel="יציאה" onLogout={() => {}}
+        skipLinkLabel="דלג" nav={nav} activeKey="profile" onNavigate={() => {}}
+        guide={<button type="button">מדריך</button>}
+      >
+        <p>x</p>
+      </ConsoleShell>,
+    );
+    const chrome = screen.getByRole("button", { name: "מדריך" }).parentElement;
+    expect(chrome?.children).toHaveLength(2);
+    expect(container.querySelectorAll("button")).toHaveLength(2 + nav.length);
+  });
 });
 
 describe("SetupProgress", () => {

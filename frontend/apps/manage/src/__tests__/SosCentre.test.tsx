@@ -105,7 +105,8 @@ function alertRow(overrides: Partial<SosAlert> = {}): SosAlert {
 }
 
 function sosPage(alerts: SosAlert[]) {
-  return { alerts, server_now: NOW };
+  // F35's count rides this payload; these suites are about the alerts, so zero.
+  return { alerts, server_now: NOW, unread_notifications: 0 };
 }
 
 function mount(props: { selfId?: string; role?: string } = {}) {
