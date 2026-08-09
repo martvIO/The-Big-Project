@@ -2451,10 +2451,31 @@ queue:
     slug: dress-reservation
     epic: E5
     title: Date-bound dress reservation semantics
-    status: queued                # 2026-08-06: spec+design(gate ACCEPTED r3)+plan (12 tasks) READY —
-                                  # build slot pending. RENTAL per Q9: dress_reservations, inclusive
-                                  # DATE range, overlap under the F13 advisory lock, DRESS_UNAVAILABLE
+    status: merged                # 2026-08-09: MERGED, PR #53. 18 commits, 73 tests, migration 0031.
+                                  # RENTAL per Q9: dress_reservations, inclusive DATE range, overlap
+                                  # under the F13 advisory lock (its key VERBATIM — that is what makes
+                                  # reservation-create and booking-claim serialise), DRESS_UNAVAILABLE
                                   # 409 on item-based claims; BookPage uses stepAlert NOT recoverSlot.
+                                  # Review: 1 MAJOR (a <bdi dir="ltr"> wrapper inverted Hebrew month
+                                  # names in cross-month ranges), fixed r1.
+                                  # THREE CI ROUNDS, EVERY FAILURE A GUARD WORKING — worth reading:
+                                  #  (1) three db fixtures: a str bound to a DATE through raw text(),
+                                  #      an audit test whose lifecycle never made a reservation (fixed
+                                  #      by EXERCISING the actions, never by narrowing the filter that
+                                  #      expects them — that would make the anti-vacuity test toothless),
+                                  #      and two seeded windows that OVERLAPPED each other and so died in
+                                  #      the feature's own guard during setup;
+                                  #  (2) the cross-tenant walker refused an unclassified `reservation_id`
+                                  #      — populated through the product, not exempted;
+                                  #  (3) create answered 400 VALIDATION_ERROR before the tenant check
+                                  #      could run, so it needed a PROBES body. A 400 there is not
+                                  #      evidence of isolation. Counts 61/59 -> 64/62, R9 row updated.
+                                  # ⚠ MIGRATION WOULD HAVE BRANCHED THE HISTORY: written as 0029 off
+                                  # 0028 while F35's 0030 was ALSO written off 0028. Renumbered to 0031
+                                  # and re-parented onto 0030 — house rule: whichever merges SECOND
+                                  # re-parents. Chain is linear 0028 -> 0030 -> 0031, one head.
+                                  # F23 IS NOW UNBLOCKED (it extracts claim_seat from create_booking,
+                                  # which is exactly why it had to wait for this feature).
     deps: [F8, F13]
     note: >-
       Q9 settled it: RENTAL. A real date range (wedding date + cleaning/return
