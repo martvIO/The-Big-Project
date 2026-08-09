@@ -26,10 +26,16 @@ from app.auth.staff import (
     StaffSelfManageError,
     StaffService,
 )
+from app.catalog.service import MediaNotUploadedError, MediaPresignThrottledError
 from app.errors import DomainValidationError
 from app.models.constants import AuditAction, StaffRole
 from app.models.staff_user import StaffUser
-from app.storage.base import MediaStorageUnavailableError
+from app.storage.base import (
+    MediaNotConfiguredError,
+    MediaStorageUnavailableError,
+    ObjectHead,
+    PresignedPost,
+)
 from app.storefront.validation import today_jerusalem
 
 TENANT_ID = uuid.uuid4()
@@ -162,6 +168,62 @@ class FakeStaffRepository:
         self.soft_deleted.append(staff_id)
         self.offboarded.append({"staff_id": staff_id, "last_day": last_day})
         return True
+
+    # --- the photo triples ---
+    #
+    # These mutate the SAME StaffUser instance the tests hold, which is what
+    # makes "the live photo survived a presign" assertable off the row rather
+    # than off a call log. Each mirrors the real repository's guard exactly:
+    # promote is conditional on `photo_pending_key IS NOT NULL`, clear is not.
+
+    async def set_pending_photo(
+        self,
+        session: object,
+        tenant_id: uuid.UUID,
+        staff_id: uuid.UUID,
+        *,
+        storage_key: str | None,
+        content_type: str | None,
+        at: datetime | None,
+    ) -> bool:
+        self.trace.append("set_pending_photo")
+        row = next((row for row in self.rows if row.id == staff_id), None)
+        if row is None:
+            return False
+        row.photo_pending_key = storage_key
+        row.photo_pending_content_type = content_type
+        row.photo_pending_at = at
+        return True
+
+    async def promote_pending_photo(
+        self, session: object, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, at: datetime
+    ) -> StaffUser | None:
+        self.trace.append("promote_pending_photo")
+        row = next((row for row in self.rows if row.id == staff_id), None)
+        if row is None or row.photo_pending_key is None:
+            return None
+        row.photo_key = row.photo_pending_key
+        row.photo_content_type = row.photo_pending_content_type
+        row.photo_confirmed_at = at
+        row.photo_pending_key = None
+        row.photo_pending_content_type = None
+        row.photo_pending_at = None
+        return row
+
+    async def clear_photo(
+        self, session: object, tenant_id: uuid.UUID, staff_id: uuid.UUID
+    ) -> StaffUser | None:
+        self.trace.append("clear_photo")
+        row = next((row for row in self.rows if row.id == staff_id), None)
+        if row is None:
+            return None
+        row.photo_key = None
+        row.photo_content_type = None
+        row.photo_confirmed_at = None
+        row.photo_pending_key = None
+        row.photo_pending_content_type = None
+        row.photo_pending_at = None
+        return row
 
 
 class FakeDeleteStorage:
@@ -790,7 +852,12 @@ async def test_the_phone_audit_row_records_presence_and_never_the_number() -> No
     service, _, audit, _ = _service([target])
     await service.update(TENANT_ID, target.id, phone="+972-52-999-8888", actor=_actor())
     assert audit.rows[0]["details"] == {"phone": {"from": False, "to": True}}
-    assert "999" not in str(audit.rows[0])
+    # SCOPED TO `details`, not to the whole row. The row also carries randomly
+    # generated UUIDs, every decimal digit is also a hex digit, and "999" spells
+    # itself in roughly one UUID pair in fifty — this assertion red-flagged an
+    # `actor_id` of `…4775-9660-999eab00c064` on its first run. A leak detector
+    # that fires on unrelated randomness destroys the signal in both directions.
+    assert "999" not in str(audit.rows[0]["details"])
 
 
 async def test_each_moved_profile_field_writes_exactly_one_audit_row() -> None:
@@ -1015,3 +1082,431 @@ async def test_the_three_f51_guards_still_fire_and_none_of_them_writes_a_last_da
     with pytest.raises(StaffNotFoundError):
         await service.deactivate(TENANT_ID, uuid.uuid4(), actor=_actor())
     assert staff.offboarded == []
+
+
+# --- F38: the photo pipeline, driven through the SERVICE ---------------------
+#
+# The gap this section closes: `test_staff_photo.py` covers the pure module (key
+# shape, bounds, sign-and-degrade) and `test_staff_api.py` substitutes a
+# duck-typed FakeStaffService, so until now NOTHING executed presign_photo,
+# confirm_photo or delete_photo at all. Inverting the magic-byte check at
+# staff.py:725 left the whole suite green while every valid JPEG was rejected and
+# every polyglot promoted — and that check is the ONE defence this pipeline adds
+# on top of the S3 POST policy.
+#
+# Fakes rather than real Postgres and a real bucket, deliberately: every property
+# below is a property of the SERVICE's ordering — verify before promote, promote
+# before the superseded delete, clear before reject — and none of them needs a
+# row on disk to be falsified. The RLS and GRANT halves are already proven in
+# test_staff_management_db.py.
+
+JPEG_MAGIC = b"\xff\xd8\xff" + b"\x00" * 13
+UPLOADED_JPEG = ObjectHead(content_type="image/jpeg", byte_size=1024)
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+
+
+class FakePhotoStorage:
+    """A structurally complete `MediaStorage` (the `test_staff_photo.py` rule: a
+    partial fake needs a cast, and a cast is what lets a later signature change
+    on the real port sail past every test)."""
+
+    def __init__(
+        self,
+        *,
+        configured: bool = True,
+        head: ObjectHead | None = UPLOADED_JPEG,
+        prefix: bytes = JPEG_MAGIC,
+        presign_raises: Exception | None = None,
+    ) -> None:
+        self._configured = configured
+        self.head = head
+        self.prefix = prefix
+        self._presign_raises = presign_raises
+        self.presigned: list[str] = []
+        self.headed: list[str] = []
+        self.read: list[str] = []
+        self.deleted: list[str] = []
+        #: Awaited from inside `read_prefix`, i.e. after confirm has read the
+        #: pending key and BEFORE it takes the promote lock. That is the exact
+        #: window a concurrent presign lands in.
+        self.on_read_prefix: Any = None
+
+    @property
+    def is_configured(self) -> bool:
+        return self._configured
+
+    def presigned_post(
+        self, *, key: str, content_type: str, exact_bytes: int, expires_in: int
+    ) -> PresignedPost:
+        self.presigned.append(key)
+        if self._presign_raises is not None:
+            raise self._presign_raises
+        return PresignedPost(url="https://bucket.example/", fields={"policy": "opaque"})
+
+    def signed_get_url(self, *, key: str, content_type: str, filename: str, expires_in: int) -> str:
+        return f"https://bucket.example/{key}?signed"
+
+    async def head_object(self, *, key: str) -> ObjectHead | None:
+        self.headed.append(key)
+        return self.head
+
+    async def read_prefix(self, *, key: str, length: int) -> bytes:
+        self.read.append(key)
+        if self.on_read_prefix is not None:
+            hook, self.on_read_prefix = self.on_read_prefix, None
+            await hook()
+        return self.prefix
+
+    async def delete_object(self, *, key: str) -> None:
+        self.deleted.append(key)
+
+
+def _photo_service(
+    rows: list[StaffUser] | None = None,
+    *,
+    storage: FakePhotoStorage | None = None,
+    max_attempts: int = 3,
+) -> tuple[StaffService, FakeStaffRepository, FakeAuditRepository, FakePhotoStorage]:
+    service, staff, audit, _ = _service(rows)
+    photo_storage = storage or FakePhotoStorage()
+    service._storage = photo_storage  # type: ignore[assignment]
+    service._presign_limiter = FixedWindowRateLimiter(  # type: ignore[assignment]
+        max_attempts=max_attempts, window_seconds=900, clock=time.monotonic
+    )
+    return service, staff, audit, photo_storage
+
+
+async def _presign(service: StaffService, staff_id: uuid.UUID, **kwargs: Any) -> Any:
+    return await service.presign_photo(
+        TENANT_ID,
+        staff_id,
+        content_type=kwargs.pop("content_type", "image/jpeg"),
+        byte_size=kwargs.pop("byte_size", 1024),
+        actor_id=OWNER_ID,
+    )
+
+
+# --- presign ---
+
+
+async def test_presign_writes_only_the_pending_triple_and_the_live_photo_survives() -> None:
+    """The pair of triples IS the replace mechanism: the photo currently on the
+    board must keep rendering for the whole upload, so a presign that touched the
+    live triple would blank every face in the shop for the duration of one
+    owner's file picker."""
+    target = _row()
+    target.photo_key = "tenants/t/staff/s/photo/live.jpg"
+    target.photo_content_type = "image/jpeg"
+    service, staff, audit, storage = _photo_service([target])
+
+    presigned = await _presign(service, target.id)
+
+    assert target.photo_key == "tenants/t/staff/s/photo/live.jpg"
+    assert target.photo_pending_key is not None
+    assert target.photo_pending_key != target.photo_key
+    # The POST policy pins an EXACT content-length range, so the ceiling handed
+    # back is precisely what the browser declared and not the 2 MiB cap.
+    assert presigned.max_bytes == 1024
+    assert audit.actions() == [AuditAction.STAFF_PHOTO_PRESIGNED]
+    assert audit.rows[0]["details"]["storage_key"] == target.photo_pending_key
+    assert storage.deleted == []
+
+
+async def test_a_second_presign_supersedes_the_first_and_deletes_its_object() -> None:
+    """The only thing bounding the orphan window: after the overwrite the row
+    names the old key nowhere, so if this delete is dropped the object is
+    unreachable and unaudited forever."""
+    target = _row()
+    service, _, _, storage = _photo_service([target])
+    await _presign(service, target.id)
+    first = target.photo_pending_key
+
+    await _presign(service, target.id, content_type="image/png")
+
+    assert first is not None
+    assert storage.deleted == [first]
+    assert target.photo_pending_key != first
+
+
+async def test_presign_refuses_a_bad_type_and_an_over_cap_size_before_touching_the_row() -> None:
+    target = _row()
+    service, _, audit, storage = _photo_service([target])
+    for content_type, byte_size in (("image/svg+xml", 1024), ("image/jpeg", 3_000_000)):
+        with pytest.raises(DomainValidationError):
+            await _presign(service, target.id, content_type=content_type, byte_size=byte_size)
+    assert target.photo_pending_key is None
+    assert audit.rows == []
+    assert storage.presigned == []
+
+
+async def test_an_unconfigured_bucket_refuses_the_presign_before_writing_a_pending_triple() -> None:
+    """A pending triple against a bucket that does not exist is a console stuck
+    on "uploading…" against an upload the browser never received a policy for."""
+    target = _row()
+    service, _, audit, _ = _photo_service([target], storage=FakePhotoStorage(configured=False))
+    with pytest.raises(MediaNotConfiguredError):
+        await _presign(service, target.id)
+    assert target.photo_pending_key is None
+    assert audit.rows == []
+
+
+async def test_a_signing_failure_after_the_commit_rolls_the_pending_triple_back() -> None:
+    """`is_configured` passed and signing failed anyway — a rotated IAM key. The
+    pending triple is already COMMITTED, so leaving it would make the console
+    render a permanent "uploading…"."""
+    target = _row()
+    service, _, _, _ = _photo_service(
+        [target],
+        storage=FakePhotoStorage(presign_raises=MediaStorageUnavailableError()),
+    )
+    with pytest.raises(MediaStorageUnavailableError):
+        await _presign(service, target.id)
+    assert target.photo_pending_key is None
+
+
+async def test_the_staff_throttle_bounds_presign_and_counts_successes() -> None:
+    """`FixedWindowRateLimiter` counts only what is explicitly recorded and its
+    docstring says successes never count — so a SUCCESSFUL presign, which
+    authorises a 2 MiB write to our bucket, is recorded by hand or the throttle
+    is inert. This is the test that reds if that line is deleted as a bug."""
+    target = _row()
+    service, _, _, _ = _photo_service([target], max_attempts=2)
+    await _presign(service, target.id)
+    await _presign(service, target.id)
+    with pytest.raises(MediaPresignThrottledError):
+        await _presign(service, target.id)
+
+
+async def test_the_staff_throttle_is_its_own_instance_and_not_the_catalogs() -> None:
+    """`max_attempts` lives ON the limiter, so two keys on one limiter share a
+    single ceiling (`.memory/limiter-max-is-per-instance`). Sharing the catalog's
+    would let a morning of gallery work lock out one avatar — this asserts the
+    two budgets are genuinely independent, which is the entire justification for
+    the second FixedWindowRateLimiter at main.py:857."""
+    target = _row()
+    service, _, _, _ = _photo_service([target], max_attempts=1)
+    catalog_limiter = FixedWindowRateLimiter(
+        max_attempts=1, window_seconds=900, clock=time.monotonic
+    )
+    catalog_limiter.record_failure(f"presign:{TENANT_ID}")
+    assert catalog_limiter.is_blocked(f"presign:{TENANT_ID}")
+
+    await _presign(service, target.id)
+    assert not catalog_limiter.is_blocked(f"presign:staff:{TENANT_ID}")
+
+
+# --- confirm ---
+
+
+async def test_confirm_promotes_the_pending_triple_and_audits_the_key_it_promoted() -> None:
+    target = _row()
+    service, _, audit, storage = _photo_service([target])
+    await _presign(service, target.id)
+    pending = target.photo_pending_key
+
+    confirmed = await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+
+    assert confirmed.photo_key == pending
+    assert confirmed.photo_content_type == "image/jpeg"
+    assert confirmed.photo_confirmed_at is not None
+    assert confirmed.photo_pending_key is None
+    assert audit.actions() == [
+        AuditAction.STAFF_PHOTO_PRESIGNED,
+        AuditAction.STAFF_PHOTO_CONFIRMED,
+    ]
+    assert audit.rows[1]["details"] == {"storage_key": pending, "superseded_storage_key": None}
+    assert storage.headed == [pending]
+    assert storage.read == [pending]
+
+
+async def test_a_retried_confirm_promotes_nothing_and_writes_no_second_audit_row() -> None:
+    """A row asserting a promotion nobody performed is worse than no row: the
+    audit trail is the only durable record of which object went live."""
+    target = _row()
+    service, _, audit, storage = _photo_service([target])
+    await _presign(service, target.id)
+    first = await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+    second = await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+
+    assert second.photo_key == first.photo_key
+    assert audit.actions().count(AuditAction.STAFF_PHOTO_CONFIRMED) == 1
+    # The short-circuit is BEFORE the network calls: a retry after a lost
+    # response must not re-head an object that is already live.
+    assert len(storage.headed) == 1
+    assert storage.deleted == []
+
+
+async def test_a_magic_byte_mismatch_is_refused_the_object_deleted_and_the_row_cleared() -> None:
+    """The content-type-honest polyglot: it passed the POST policy at exactly the
+    declared size and exactly the declared type, and THIS is what refuses it.
+
+    ACCEPTANCE, stated so it can be checked rather than believed: inverting
+    `if not matches_magic_prefix(...)` at staff.py must turn this test red."""
+    target = _row()
+    target.photo_key = "tenants/t/staff/s/photo/live.jpg"
+    target.photo_content_type = "image/jpeg"
+    service, _, audit, storage = _photo_service([target], storage=FakePhotoStorage(prefix=b"<svg"))
+    await _presign(service, target.id)
+    pending = target.photo_pending_key
+
+    with pytest.raises(DomainValidationError):
+        await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+
+    assert storage.deleted == [pending]
+    assert target.photo_pending_key is None
+    # The live photo is UNTOUCHED — a rejected replace never blanks the cell.
+    assert target.photo_key == "tenants/t/staff/s/photo/live.jpg"
+    assert AuditAction.STAFF_PHOTO_CONFIRMED not in audit.actions()
+
+
+async def test_a_content_type_mismatch_is_refused_before_the_bytes_are_even_read() -> None:
+    """The ORDER is the security argument: head → declared-type match →
+    read_prefix → magic match. An object whose stored type disagrees with what
+    was declared is refused without spending a range read on it."""
+    target = _row()
+    storage = FakePhotoStorage(head=ObjectHead(content_type="image/png", byte_size=1024))
+    service, _, _, _ = _photo_service([target], storage=storage)
+    await _presign(service, target.id, content_type="image/jpeg")
+    pending = target.photo_pending_key
+
+    with pytest.raises(DomainValidationError):
+        await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+
+    assert storage.read == []
+    assert storage.deleted == [pending]
+
+
+async def test_a_confirm_with_no_object_in_the_bucket_says_so_and_keeps_the_triple() -> None:
+    """Distinct from a mismatch: nothing was uploaded, so there is nothing to
+    delete and the pending triple stays valid for the retry the browser is about
+    to make against a policy that has not expired."""
+    target = _row()
+    service, _, _, storage = _photo_service([target], storage=FakePhotoStorage(head=None))
+    await _presign(service, target.id)
+
+    with pytest.raises(MediaNotUploadedError):
+        await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+    assert target.photo_pending_key is not None
+    assert storage.deleted == []
+
+
+async def test_a_confirmed_replace_deletes_the_superseded_object_after_auditing_it() -> None:
+    """AFTER the audit row that names it: the delete is best-effort, so on a
+    storage outage that row is the only durable record of the orphan."""
+    target = _row()
+    target.photo_key = "tenants/t/staff/s/photo/old.jpg"
+    target.photo_content_type = "image/jpeg"
+    service, _, audit, storage = _photo_service([target])
+    await _presign(service, target.id)
+    pending = target.photo_pending_key
+
+    await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+
+    assert audit.rows[1]["details"] == {
+        "storage_key": pending,
+        "superseded_storage_key": "tenants/t/staff/s/photo/old.jpg",
+    }
+    assert storage.deleted == ["tenants/t/staff/s/photo/old.jpg"]
+
+
+async def test_confirm_promotes_only_the_object_it_actually_verified() -> None:
+    """⚠ THE VERIFIED OBJECT AND THE PROMOTED OBJECT MUST BE THE SAME ONE.
+
+    `promote_pending_photo` copies whatever key is on the row at promote time,
+    and the two network calls run outside any session against the key read in the
+    FIRST transaction. Without the comparison before the promote, an owner can
+    presign K1, upload a valid JPEG, issue confirm A, then presign K2 inside the
+    two-network-call window and POST arbitrary bytes at the declared type and
+    size — and confirm A promotes K2, a body whose magic bytes were never read,
+    under an audit row that says K1.
+
+    The hook fires from inside `read_prefix`, which is exactly that window."""
+    target = _row()
+    service, _, audit, storage = _photo_service([target])
+    await _presign(service, target.id)
+    verified = target.photo_pending_key
+
+    async def racing_presign() -> None:
+        await _presign(service, target.id, content_type="image/png")
+
+    storage.on_read_prefix = racing_presign
+
+    result = await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+
+    raced = target.photo_pending_key
+    assert raced is not None
+    assert raced != verified
+    # Nothing was promoted, and in particular the unverified K2 did not go live.
+    assert result.photo_key is None
+    assert target.photo_pending_key == raced
+    assert AuditAction.STAFF_PHOTO_CONFIRMED not in audit.actions()
+
+
+async def test_a_rejected_confirm_racing_a_fresh_presign_leaves_the_new_triple_alone() -> None:
+    """Same root cause on the reject arm: an unconditional clear would wipe the
+    triple the NEW presign just wrote while deleting only the old object, leaving
+    an upload the browser is still waiting on with nothing to confirm."""
+    target = _row()
+    service, _, _, storage = _photo_service([target], storage=FakePhotoStorage(prefix=b"<svg"))
+    await _presign(service, target.id)
+    rejected = target.photo_pending_key
+
+    async def racing_presign() -> None:
+        await _presign(service, target.id, content_type="image/png")
+
+    storage.on_read_prefix = racing_presign
+
+    with pytest.raises(DomainValidationError):
+        await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+
+    assert target.photo_pending_key is not None
+    assert target.photo_pending_key != rejected
+    assert rejected in storage.deleted
+
+
+async def test_an_unconfigured_bucket_refuses_confirm_and_delete_too() -> None:
+    """All three WRITE paths answer 503. The READ path is unaffected — a board
+    poll degrades `photo_url` to null and never 503s (`sign_staff_photo`)."""
+    target = _row()
+    service, _, _, _ = _photo_service([target], storage=FakePhotoStorage(configured=False))
+    with pytest.raises(MediaNotConfiguredError):
+        await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+    with pytest.raises(MediaNotConfiguredError):
+        await service.delete_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+
+
+# --- delete ---
+
+
+async def test_delete_clears_both_triples_audits_the_live_key_and_removes_both_objects() -> None:
+    target = _row()
+    target.photo_key = "tenants/t/staff/s/photo/live.jpg"
+    target.photo_content_type = "image/jpeg"
+    target.photo_confirmed_at = CREATED_AT
+    target.photo_pending_key = "tenants/t/staff/s/photo/inflight.png"
+    service, _, audit, storage = _photo_service([target])
+
+    cleared = await service.delete_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
+
+    assert cleared.photo_key is None
+    assert cleared.photo_content_type is None
+    assert cleared.photo_confirmed_at is None
+    assert cleared.photo_pending_key is None
+    assert audit.actions() == [AuditAction.STAFF_PHOTO_DELETED]
+    assert audit.rows[0]["details"] == {"storage_key": "tenants/t/staff/s/photo/live.jpg"}
+    assert storage.deleted == [
+        "tenants/t/staff/s/photo/live.jpg",
+        "tenants/t/staff/s/photo/inflight.png",
+    ]
+
+
+async def test_every_photo_path_refuses_an_id_this_tenant_does_not_own() -> None:
+    service, _, audit, _ = _photo_service([])
+    stranger = uuid.uuid4()
+    with pytest.raises(StaffNotFoundError):
+        await _presign(service, stranger)
+    with pytest.raises(StaffNotFoundError):
+        await service.confirm_photo(TENANT_ID, stranger, actor_id=OWNER_ID)
+    with pytest.raises(StaffNotFoundError):
+        await service.delete_photo(TENANT_ID, stranger, actor_id=OWNER_ID)
+    assert audit.rows == []

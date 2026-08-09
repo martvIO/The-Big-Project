@@ -732,6 +732,20 @@ class StaffService:
             current = await self._staff.by_id(session, tenant_id, staff_id)
             if current is None:
                 raise StaffNotFoundError
+            if current.photo_pending_key != pending_key:
+                # ⚠ THE VERIFIED OBJECT AND THE PROMOTED OBJECT MUST BE THE SAME
+                # ONE. `promote_pending_photo` copies whatever key is on the row
+                # AT PROMOTE TIME, and the two network calls above ran outside
+                # any session against the key read in the FIRST transaction — so
+                # a presign landing in that window replaces the pending triple
+                # and, without this line, an object whose magic bytes were never
+                # read becomes the live photo while the audit row names the key
+                # that was checked. `confirm_media` has no such gap because each
+                # upload is its own `dress_media` row keyed by `media_id`;
+                # collapsing that into one mutable pending triple is what opens
+                # it here. Idempotent, not an error: the newer presign's own
+                # confirm is the one entitled to promote.
+                return current
             superseded_live = current.photo_key
             promoted = await self._staff.promote_pending_photo(
                 session, tenant_id, staff_id, at=datetime.now(UTC)
@@ -768,7 +782,14 @@ class StaffService:
             target = await self._staff.by_id(session, tenant_id, staff_id)
             if target is None:
                 raise StaffNotFoundError
-            orphaned = [key for key in (target.photo_key, target.photo_pending_key) if key]
+            # `live_key` is read here and not below: `clear_photo` is ORM-enabled
+            # DML whose `evaluate` synchronization stamps its NULLs onto this very
+            # identity-mapped instance, so `target.photo_key` reads None by the
+            # time the audit row is written — and that row is the only durable
+            # record of which object the best-effort delete below was meant to
+            # remove. Same capture-before-the-write discipline as `confirm_photo`.
+            live_key = target.photo_key
+            orphaned = [key for key in (live_key, target.photo_pending_key) if key]
             cleared = await self._staff.clear_photo(session, tenant_id, staff_id)
             if cleared is None:  # pragma: no cover — read under the same lock
                 raise StaffNotFoundError
@@ -778,7 +799,7 @@ class StaffService:
                 action=AuditAction.STAFF_PHOTO_DELETED,
                 actor_id=actor_id,
                 entity=str(staff_id),
-                details={"storage_key": target.photo_key},
+                details={"storage_key": live_key},
             )
         for key in orphaned:
             await self._best_effort_delete(tenant_id, staff_id, key)
@@ -793,11 +814,20 @@ class StaffService:
         cleared row with an orphaned object is a wasted byte, while an uncleared
         row pointing at a deleted object is a console stuck on "verifying…"
         forever.
+
+        The clear is CONDITIONAL on the triple still naming this key, under the
+        same lock and for the same reason `confirm_photo` compares before it
+        promotes: a rejected confirm racing a fresh presign would otherwise wipe
+        the NEW triple while deleting only the old object, leaving an upload the
+        browser is still waiting on with nothing to confirm.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
-            await self._staff.set_pending_photo(
-                session, tenant_id, staff_id, storage_key=None, content_type=None, at=None
-            )
+            await session.execute(_STAFF_LOCK, {"tenant_id": str(tenant_id)})
+            current = await self._staff.by_id(session, tenant_id, staff_id)
+            if current is not None and current.photo_pending_key == storage_key:
+                await self._staff.set_pending_photo(
+                    session, tenant_id, staff_id, storage_key=None, content_type=None, at=None
+                )
         await self._best_effort_delete(tenant_id, staff_id, storage_key)
         raise DomainValidationError("the uploaded file is not a valid image")
 
