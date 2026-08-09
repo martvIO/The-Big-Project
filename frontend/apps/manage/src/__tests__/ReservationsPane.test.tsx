@@ -171,6 +171,19 @@ describe("pane states", () => {
     expect(screen.getByText("חתונה בקיסריה")).toBeInTheDocument();
   });
 
+  it("leaves a split range in RTL flow — dir=ltr would put the day before the month", async () => {
+    listReservations.mockResolvedValue({
+      items: [reservation({ starts_on: "2026-08-28", ends_on: "2026-09-03" })],
+    });
+    renderPane();
+    // Each part is a whole date, not a numeral run: forcing an LTR base
+    // direction on «28 באוגוסט» renders it as «באוגוסט 28».
+    const start = await screen.findByText("28 באוגוסט");
+    expect(start.tagName).toBe("BDI");
+    expect(start).not.toHaveAttribute("dir");
+    expect(screen.getByText("3 בספטמבר")).not.toHaveAttribute("dir");
+  });
+
   it("shows an inline error with a retry when the load fails", async () => {
     listReservations.mockRejectedValue(new Error("boom"));
     renderPane();

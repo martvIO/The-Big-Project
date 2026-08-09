@@ -76,7 +76,10 @@ function daysBetween(startsOn: string, endsOn: string): number {
 }
 
 // One numeral run gets one island; two whole dates get one each, with the dash
-// in RTL flow between them (R19's split shape).
+// in RTL flow between them (R19's split shape). dir="ltr" belongs on the pure
+// numeral run only — a split part carries its own Hebrew month, and an LTR base
+// direction reorders it, so «28 באוגוסט» renders as «באוגוסט 28». Bare <bdi>
+// infers RTL from the month.
 function RangeText({ range }: { range: FormattedDateRange }) {
   if (range.kind === "same-month") {
     return (
@@ -87,7 +90,7 @@ function RangeText({ range }: { range: FormattedDateRange }) {
   }
   return (
     <>
-      <bdi dir="ltr">{range.start}</bdi> – <bdi dir="ltr">{range.end}</bdi>
+      <bdi>{range.start}</bdi> – <bdi>{range.end}</bdi>
     </>
   );
 }

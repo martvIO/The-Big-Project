@@ -251,15 +251,18 @@ export function DressPage({ dressId }: DressPageProps) {
                       {/* R19: every numeral run is its own island. A same-month
                           range is ONE run («12–18») inside the month name; a
                           split range is two whole dates with the dash between
-                          them in RTL flow. */}
+                          them in RTL flow.
+                          dir="ltr" ONLY on the pure numeral run. A split part
+                          carries its own Hebrew month, and an LTR base
+                          direction reorders it — «28 באוגוסט» renders as
+                          «באוגוסט 28». Bare <bdi> infers RTL from the month. */}
                       {formatted.kind === "same-month" ? (
                         <>
                           <bdi dir="ltr">{formatted.days}</bdi> {formatted.month}
                         </>
                       ) : (
                         <>
-                          <bdi dir="ltr">{formatted.start}</bdi> –{" "}
-                          <bdi dir="ltr">{formatted.end}</bdi>
+                          <bdi>{formatted.start}</bdi> – <bdi>{formatted.end}</bdi>
                         </>
                       )}
                     </li>

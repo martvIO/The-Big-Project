@@ -298,11 +298,25 @@ describe("DressPage — the facts column", () => {
 
   it("wraps every numeral run in a bdi island", async () => {
     await renderLoaded(
-      dress({ unavailable_ranges: [{ starts_on: "2026-08-12", ends_on: "2026-08-18" }] }),
+      dress({
+        unavailable_ranges: [
+          { starts_on: "2026-08-12", ends_on: "2026-08-18" },
+          { starts_on: "2026-12-28", ends_on: "2027-01-02" },
+        ],
+      }),
     );
 
     // R19: an unisolated numeral run reorders around neighbouring RTL text.
     expect(screen.getByText("12–18").tagName).toBe("BDI");
+    // ...and dir="ltr" on a run that CONTAINS Hebrew is the same defect
+    // upside down. A split part is a whole date, so an LTR base direction puts
+    // the day BEFORE the month in visual order and «28 בדצמבר» reads as
+    // «בדצמבר 28». Only pure numeral runs get dir="ltr" here.
+    for (const date of ["28 בדצמבר", "2 בינואר 2027"]) {
+      const island = screen.getByText(date);
+      expect(island.tagName).toBe("BDI");
+      expect(island).not.toHaveAttribute("dir");
+    }
   });
 
   it("states the dates without announcing them — nothing happened", async () => {
