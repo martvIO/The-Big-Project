@@ -189,6 +189,17 @@ export const SERVER_NOW = "2099-01-04T08:00:00Z";
 // than the just-arrived branch.
 export const ARRIVED_AT = "2099-01-04T07:40:00Z";
 
+// A 1x1 PNG, inline. F38's photo fields are on the wire, so a fixture that omits
+// them is not merely incomplete — `photo_url === null` is how BOTH renderers
+// choose the initial-letter fallback, and `undefined === null` is false, so an
+// absent field paints a srcless <img> that exists nowhere in production. Inline
+// because `img-src` carries `data:` (see fixtures/csp.txt) and a data URI needs
+// no server, no signature and no TTL: the board's pin is keyed on
+// `(id, photo_confirmed_at)` and never on the URL, so a constant one is honest.
+export const PHOTO_DATA_URI =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+export const PHOTO_CONFIRMED_AT = "2099-01-03T10:00:00Z";
+
 export interface StaffCard {
   id: string;
   display_name: string;
@@ -196,6 +207,8 @@ export interface StaffCard {
   status: string;
   break_started_at: string | null;
   occupancy: unknown;
+  photo_url: string | null;
+  photo_confirmed_at: string | null;
 }
 
 export function staffCard(overrides: Partial<StaffCard> = {}): StaffCard {
@@ -206,6 +219,10 @@ export function staffCard(overrides: Partial<StaffCard> = {}): StaffCard {
     status: "available",
     break_started_at: null,
     occupancy: null,
+    // Default to the fallback branch: every spec that predates F38 asserts a
+    // board with no faces on it, and an opt-in keeps those readings true.
+    photo_url: null,
+    photo_confirmed_at: null,
     ...overrides,
   };
 }
@@ -530,6 +547,11 @@ export function customerList(): unknown {
 // TWO rows, and the second one matters: the per-row danger control is behind
 // `!isSelf`, so a list holding only the signed-in staffer renders no «השבתה» at
 // all — and that button is the one F61's nameless-button defect lived on.
+//
+// The two rows also split F38's photo branch: רונית carries a photo and דנה
+// does not, so the section's axe sweep covers BOTH the <img> and the
+// initial-letter fallback in one pass rather than only whichever one a
+// single-shaped list happens to render.
 export function staffList(): unknown {
   return [
     {
@@ -538,6 +560,12 @@ export function staffList(): unknown {
       display_name: "רונית",
       role: "owner",
       created_at: "2098-06-01T09:00:00Z",
+      phone: "+972501234567",
+      start_date: "2098-06-01",
+      last_day: null,
+      shift_manager_eligible: false,
+      photo_url: PHOTO_DATA_URI,
+      photo_confirmed_at: PHOTO_CONFIRMED_AT,
     },
     {
       id: "st-2",
@@ -545,6 +573,14 @@ export function staffList(): unknown {
       display_name: "דנה כהן",
       role: "shift_manager",
       created_at: "2099-01-02T09:00:00Z",
+      phone: null,
+      start_date: null,
+      last_day: null,
+      // The muted eligibility word renders only on a row that carries it, so
+      // without this the copy is in the bundle and on no screen the sweep sees.
+      shift_manager_eligible: true,
+      photo_url: null,
+      photo_confirmed_at: null,
     },
   ];
 }
