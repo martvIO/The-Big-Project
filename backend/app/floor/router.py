@@ -146,6 +146,7 @@ from app.floor.schemas import (
 from app.floor.service import FloorService, RoomRead
 from app.models.constants import StaffRole
 from app.schemas import OkResponse
+from app.storage.base import MediaStorage
 from app.tenancy.middleware import get_current_tenant
 
 NO_STORE = "no-store"
@@ -160,6 +161,16 @@ def get_floor_service(request: Request) -> FloorService:
     return service
 
 
+def get_media_storage(request: Request) -> MediaStorage:
+    """A third local copy of catalog/router.py's three-liner, and a decision
+    rather than an oversight — the same call `_no_store` above already documents.
+    Importing catalog's would point app.floor at app.catalog to save two lines;
+    hoisting it to a shared module would touch three shipped files for
+    cosmetics."""
+    storage: MediaStorage = request.app.state.media_storage
+    return storage
+
+
 router = APIRouter(
     prefix="/manage",
     dependencies=[
@@ -169,17 +180,20 @@ router = APIRouter(
 )
 
 Service = Annotated[FloorService, Depends(get_floor_service)]
+Storage = Annotated[MediaStorage, Depends(get_media_storage)]
 Staff = Annotated[StaffContext, Depends(get_current_staff)]
 
 
 @router.get("/floor")
-async def get_floor(request: Request, service: Service) -> FloorResponse:
-    return FloorResponse.from_rows(await service.floor(get_current_tenant(request).id))
+async def get_floor(request: Request, service: Service, storage: Storage) -> FloorResponse:
+    return FloorResponse.from_rows(
+        await service.floor(get_current_tenant(request).id), storage=storage
+    )
 
 
 @router.post("/floor/staff/{staff_id}/break/start")
 async def start_break(
-    request: Request, staff_id: uuid.UUID, service: Service, staff: Staff
+    request: Request, staff_id: uuid.UUID, service: Service, staff: Staff, storage: Storage
 ) -> StaffCard:
     """`staff` is the ACTING identity and comes from the session cookie;
     `staff_id` is the TARGET and comes from the path. The service's two-axis
@@ -187,18 +201,18 @@ async def start_break(
     row, occupancy = await service.start_break(
         get_current_tenant(request).id, staff_id, actor=staff
     )
-    return StaffCard.from_row(row, occupancy=occupancy)
+    return StaffCard.from_row(row, occupancy=occupancy, storage=storage)
 
 
 @router.post("/floor/staff/{staff_id}/break/end")
 async def end_break(
-    request: Request, staff_id: uuid.UUID, service: Service, staff: Staff
+    request: Request, staff_id: uuid.UUID, service: Service, staff: Staff, storage: Storage
 ) -> StaffCard:
     """The occupancy the service hands back is the SECOND half of the card, not
     a decoration: if this staffer is standing in a fitting room the card must say
     `occupied`, or it contradicts the panel it lands in five seconds later."""
     row, occupancy = await service.end_break(get_current_tenant(request).id, staff_id, actor=staff)
-    return StaffCard.from_row(row, occupancy=occupancy)
+    return StaffCard.from_row(row, occupancy=occupancy, storage=storage)
 
 
 # --- F36: the registry (owner + shift_manager) --------------------------------
