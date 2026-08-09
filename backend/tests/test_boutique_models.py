@@ -3,12 +3,16 @@ no database. The real DDL (CHECKs, grants, RLS) is exercised in CI by
 migrated_db + the RLS metadata scan; these keep the ORM layer honest locally.
 """
 
+import importlib.util
+from pathlib import Path
+
 from sqlalchemy import Table
 
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.base import Base
 from app.models.constants import AppointmentAudience
+from app.models.staff_user import StaffUser  # noqa: F401  (registers staff_users on Base)
 from app.models.terms_version import TermsVersion
 
 STANDARD_COLUMNS = {"id", "tenant_id", "created_at", "updated_at", "deleted_at"}
@@ -71,3 +75,59 @@ def test_terms_version_shape() -> None:
     # StandardColumns kept for uniformity: updated_at exists but stays NULL forever
     # (append-only — the DB grants SELECT, INSERT only, so no UPDATE can ever run).
     assert "updated_at" in cols
+
+
+# --- F38: the model<->migration parity gap ----------------------------------
+
+_HR_MIGRATION = (
+    Path(__file__).resolve().parent.parent
+    / "migrations"
+    / "versions"
+    / "0031_staff_hr_directory.py"
+)
+
+
+def _migration_columns(path: Path) -> set[str]:
+    """The column names 0031 adds, read out of the migration ITSELF.
+
+    Every other option compares the model against a list retyped in this file,
+    which is a list the same hand that forgot the model would have to edit. The
+    migration is loaded by path rather than imported, because `migrations/versions`
+    is not a package — `op` is a proxy and resolves fine with no alembic context.
+    """
+    spec = importlib.util.spec_from_file_location("hr_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {declaration.split()[0] for declaration in module._COLUMNS}
+
+
+def test_staff_user_declares_every_column_the_hr_migration_adds() -> None:
+    """THE parity test this repo has never had, and the reason F38's plan says
+    "an omitted column is an AttributeError at first read, not a red test" three
+    separate times: 0023's and F57's headers both had to spell out by hand that
+    the model must be edited in the same PR, because nothing enforced it.
+
+    Scoped to F38's own migration deliberately — a walker over every migration
+    would be a different, larger feature and would red on the pre-existing gaps
+    it found. This one closes the gap for the eleven columns being added now.
+    """
+    declared = _migration_columns(_HR_MIGRATION)
+    assert len(declared) == 11, declared
+    missing = declared - set(_table("staff_users").columns.keys())
+    assert missing == set(), f"StaffUser is missing {missing}"
+
+
+def test_staff_user_photo_columns_are_all_nullable_together() -> None:
+    """The live triple and the pending triple are each all-or-nothing, and the
+    schema cannot say so — a CHECK spanning three columns would refuse the
+    ordinary intermediate state the two-phase confirm creates. So every one of
+    the six is nullable and the INVARIANT lives in StaffService, which writes and
+    clears each triple as a unit. Asserted here so a later NOT NULL on any one of
+    them collides with this sentence rather than with a 500 on confirm."""
+    columns = _table("staff_users").columns
+    for name in _migration_columns(_HR_MIGRATION):
+        if name == "shift_manager_eligible":
+            assert columns[name].nullable is False
+        else:
+            assert columns[name].nullable is True, name
