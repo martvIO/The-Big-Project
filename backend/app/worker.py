@@ -35,6 +35,7 @@ from app.notifications.twilio import TwilioSmsSender
 from app.notifications.unconfigured import UnconfiguredSmsSender
 from app.payments.sweeper import DepositSweeper, SweepResult
 from app.privacy.retention import RetentionRunner
+from app.waitlist.cascade import CascadeResult, WaitlistCascade
 
 logger = logging.getLogger("worker")
 
@@ -66,25 +67,37 @@ def build_sender(settings: Settings) -> SmsSender:
 
 
 async def poll_once(
-    comms: BookingCommsService, tenants: TenantsRepository, sweeper: DepositSweeper
+    comms: BookingCommsService,
+    tenants: TenantsRepository,
+    sweeper: DepositSweeper,
+    cascade: WaitlistCascade,
 ) -> DrainResult:
-    """One tick across every active tenant: drain due messages, then release
-    expired deposit holds (F19 D7).
+    """One tick across every active tenant: drain due messages, release expired
+    deposit holds (F19 D7), then run the waitlist offer cascade (F23 D2).
 
     A failure for one tenant must not stop the others: a single bad row would
     otherwise silence every boutique's reminders until someone noticed. The
     exception is logged, never swallowed silently, and the next tick retries the
     same rows because a rolled-back claim leaves them pending.
 
-    The two jobs get SEPARATE try blocks. Sharing one would let a bad payment row
+    The jobs get SEPARATE try blocks. Sharing one would let a bad payment row
     silence a boutique's reminders, which is the harm D7 names. The residual
     asymmetry is deliberate and stated: the drain runs first, so a drain failure
     defers that tenant's sweep by one tick. Its rows are still `pending` and the
     next tick claims them; the reverse ordering would realise the named harm
     instead.
+
+    **The cascade runs LAST**, and that is the same argument one job further on:
+    it is the newest and least-proven of the three, its work is the least urgent
+    (an offer lagging one tick is invisible against a two-hour window), and put
+    anywhere earlier its failure would add a boutique's reminders or its held
+    seats to the bill. `cascade` is a REQUIRED argument for the reason the drain
+    and the sweep are: a defaulted one turns a wiring bug into a boutique whose
+    waitlist silently never advances.
     """
     totals = DrainResult()
     swept = SweepResult()
+    cascaded = CascadeResult()
     # ponytail: O(tenants) queries per tick. Noise at pilot volume (a handful of
     # boutiques, one query each); E5 #29's scale pass is where this is revisited.
     for tenant in await tenants.list_active():
@@ -111,6 +124,18 @@ async def poll_once(
         except Exception:
             logger.exception("deposit hold sweep failed for tenant %s", tenant.id)
             continue
+        try:
+            cascaded = cascaded + await cascade.run(tenant.id)
+        except Exception:
+            logger.exception("waitlist offer cascade failed for tenant %s", tenant.id)
+            continue
+    if cascaded != CascadeResult():
+        logger.info(
+            "waitlist offers: expired=%d returned=%d offered=%d",
+            cascaded.expired,
+            cascaded.returned,
+            cascaded.offered,
+        )
     if swept != SweepResult():
         logger.info(
             "deposit holds: expired=%d released=%d orphaned=%d",
@@ -194,20 +219,31 @@ async def main() -> None:
         hold_seconds=settings.deposit_hold_seconds,
         poll_interval_seconds=settings.worker_poll_interval_seconds,
     )
+    # No SMS sender and no gateway either: the cascade WRITES the offer row and
+    # queues the SMS through `scheduled_messages`, so the drain above is what
+    # eventually sends it. That is #16's "no second poller, no second process"
+    # honoured to the letter.
+    cascade = WaitlistCascade(
+        factory,
+        window_seconds=settings.waitlist_offer_window_seconds,
+        min_lead_seconds=settings.waitlist_offer_min_lead_seconds,
+        quiet_start_hour=settings.waitlist_quiet_start_hour,
+        quiet_end_hour=settings.waitlist_quiet_end_hour,
+    )
     retention = RetentionRunner(factory, settings=settings)
     # Due immediately, so an operator who flips RETENTION_ENABLED does not wait
     # an hour to see the first run. With the flag off (the shipped default) this
     # deadline is never read.
     next_retention_at = datetime.datetime.now(datetime.UTC)
     logger.info(
-        "worker started — scheduled-message poller and deposit-hold sweeper every %ds; "
-        "retention %s, every %ds",
+        "worker started — scheduled-message poller, deposit-hold sweeper and waitlist "
+        "offer cascade every %ds; retention %s, every %ds",
         settings.worker_poll_interval_seconds,
         "ENABLED" if settings.retention_enabled else "disabled",
         settings.retention_poll_interval_seconds,
     )
     while True:
-        await poll_once(comms, tenants, sweeper)
+        await poll_once(comms, tenants, sweeper, cascade)
         next_retention_at = await retention_tick(
             retention,
             now=datetime.datetime.now(datetime.UTC),
