@@ -1,43 +1,47 @@
-"""Operator CLI for tenant lifecycle (provision / suspend / list / reset-password).
+"""Operator CLI — the MAINTENANCE surface, run over SSH/CI.
 
-Run over SSH/CI: `python -m app.cli provision --slug bella --name "Bella" \
-  --owner-email owner@bella.example`. The password is read from stdin/getpass —
-never an argv, which would leak into the process list and shell history.
+⚠ THE FOUR TENANT-LIFECYCLE SUBCOMMANDS ARE GONE (F25, pre-decided #20).
+`provision`, `suspend`, `list` and `reset-password` moved to the web console at
+`admin.{base_domain}/platform`, and they were DELETED here rather than left as a
+second door: two doors to the same audited operation is how the two drift, and
+this one needs a shell on the host. Parity was proved before the door closed —
+`tests/test_platform_console_db.py` drives all four over HTTP as `boutique_app`
+and asserts the same `platform_audit_log` rows, with `operator` now carrying an
+authenticated identity instead of `$USER`.
+
+What survives, and why each one is NOT in #20's parity set:
+
+* `backfill-booking-links` — F16's one-time deploy step, run once from a hook.
+* `retention` — F20's `--armed` rehearsal. R12's closed reading of
+  "access-restricted" MEANS a shell on the host, and the ergonomics are the
+  control.
+* `create-operator` / `deactivate-operator` — F25's own bootstrap. No HTTP route
+  mints an operator, so the console's compromise cannot make a second one.
+
+The password is read from stdin/getpass — never an argv, which would leak into
+the process list and shell history.
 """
 
 import argparse
 import asyncio
 import getpass
 import os
-import re
 import sys
 from collections.abc import Callable
 from typing import Protocol
 
-from app.platform.service import CommandResult, TenantSummary
+from app.platform.service import CommandResult
 
 PasswordReader = Callable[[], str]
 
-# Strip control chars before printing operator-supplied text — a tab/newline
-# corrupts the columnar output and an ANSI sequence could spoof the terminal.
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
-
-
-def _safe(text: str) -> str:
-    return _CONTROL_CHARS.sub(" ", text)
-
 
 class ProvisioningLike(Protocol):
-    async def provision(
-        self, *, slug: str, name: str, owner_email: str, owner_password: str, operator: str
-    ) -> CommandResult: ...
-    async def suspend(self, *, slug: str, operator: str) -> CommandResult: ...
     async def backfill_booking_links(self, *, operator: str) -> CommandResult: ...
     async def run_retention(self, *, operator: str, dry_run: bool) -> CommandResult: ...
-    async def reset_owner_password(
-        self, *, slug: str, owner_email: str, new_password: str, operator: str
+    async def create_operator(
+        self, *, email: str, display_name: str, password: str, operator: str
     ) -> CommandResult: ...
-    async def list_tenants(self, *, operator: str) -> list[TenantSummary]: ...
+    async def deactivate_operator(self, *, email: str, operator: str) -> CommandResult: ...
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,24 +54,6 @@ def build_parser() -> argparse.ArgumentParser:
             "--operator", default=default_operator, help="operator identity for the audit trail"
         )
 
-    provision = sub.add_parser("provision", help="create a tenant and its first owner")
-    provision.add_argument("--slug", required=True)
-    provision.add_argument("--name", required=True)
-    provision.add_argument("--owner-email", required=True, dest="owner_email")
-    _with_operator(provision)
-
-    suspend = sub.add_parser("suspend", help="suspend a tenant")
-    suspend.add_argument("--slug", required=True)
-    _with_operator(suspend)
-
-    reset = sub.add_parser("reset-password", help="reset an owner's password")
-    reset.add_argument("--slug", required=True)
-    reset.add_argument("--owner-email", required=True, dest="owner_email")
-    _with_operator(reset)
-
-    listing = sub.add_parser("list", help="list all tenants")
-    _with_operator(listing)
-
     # F16's one-time deploy step: F14 shipped the booking flow before any SMS
     # existed, so confirmed future bookings already exist with no manage link and
     # no reminder. Safe to re-run — the feed is "no token yet".
@@ -77,11 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _with_operator(backfill)
 
-    # F20's retention run. `--operator` is `required=True` HERE ONLY, deliberately
-    # diverging from `_with_operator`'s `$USER` default (D23). The five
-    # subcommands above are recoverable or read-only; this one issues an
-    # irreversible multi-tenant hard-DELETE, and `$USER` on a shared box is not
-    # an audit identity.
+    # F20's retention run. `--operator` is `required=True`, deliberately diverging
+    # from `_with_operator`'s `$USER` default (D23): the backfill above is
+    # re-runnable, this one issues an irreversible multi-tenant hard-DELETE, and
+    # `$USER` on a shared box is not an audit identity. (It said "the five
+    # subcommands above" until F25 deleted four of them; the argument is unchanged
+    # and the count was the only thing that rotted.)
     #
     # No `--slug`: the clocks are a duty the platform enforces on every
     # controller's behalf, and a per-tenant flag would make a legal obligation a
@@ -108,6 +95,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="actually delete. Without it the run only counts what each policy would touch",
     )
 
+    # F25's bootstrap pair, and THE CLI IS THE ONLY DOOR (spec D2). No HTTP route
+    # creates, edits or deactivates an operator — so a compromised console cannot
+    # mint a second operator, and the account list is not reachable over HTTP at
+    # all. That is also most of D6's argument for shipping without TOTP.
+    #
+    # `--operator required=True` on BOTH, the `retention` divergence rather than
+    # `_with_operator`'s `$USER` default, and for a sharper reason than
+    # retention's: the act being recorded is the creation or destruction of the
+    # credential that controls every boutique on the platform. `$USER` on a
+    # shared box is not an audit identity for that.
+    create_operator = sub.add_parser(
+        "create-operator", help="create a platform console operator (password via stdin)"
+    )
+    create_operator.add_argument("--email", required=True)
+    create_operator.add_argument("--display-name", required=True, dest="display_name")
+    create_operator.add_argument(
+        "--operator", required=True, help="operator identity for the audit trail"
+    )
+
+    deactivate_operator = sub.add_parser(
+        "deactivate-operator", help="deactivate an operator and revoke every live session"
+    )
+    deactivate_operator.add_argument("--email", required=True)
+    deactivate_operator.add_argument(
+        "--operator", required=True, help="operator identity for the audit trail"
+    )
+
     return parser
 
 
@@ -120,45 +134,29 @@ def _report(result: CommandResult) -> int:
     return 1
 
 
-def _print_tenants(rows: list[TenantSummary]) -> None:
-    if not rows:
-        print("(no tenants)")
-        return
-    for r in rows:
-        print(f"{r.slug}\t{r.status}\t{_safe(r.name)}\t{r.created_at.isoformat()}")
-
-
 async def _dispatch(
     args: argparse.Namespace, service: ProvisioningLike, read_password: PasswordReader
 ) -> int:
-    if args.command == "provision":
-        return _report(
-            await service.provision(
-                slug=args.slug,
-                name=args.name,
-                owner_email=args.owner_email,
-                owner_password=read_password(),
-                operator=args.operator,
-            )
-        )
-    if args.command == "suspend":
-        return _report(await service.suspend(slug=args.slug, operator=args.operator))
-    if args.command == "reset-password":
-        return _report(
-            await service.reset_owner_password(
-                slug=args.slug,
-                owner_email=args.owner_email,
-                new_password=read_password(),
-                operator=args.operator,
-            )
-        )
     if args.command == "backfill-booking-links":
         return _report(await service.backfill_booking_links(operator=args.operator))
     if args.command == "retention":
         return _report(await service.run_retention(operator=args.operator, dry_run=not args.armed))
-    if args.command == "list":
-        _print_tenants(await service.list_tenants(operator=args.operator))
-        return 0
+    if args.command == "create-operator":
+        # stdin/getpass, never argv — F6's rule, now carried by the one password
+        # left in this file, which is also the one that opens every boutique.
+        return _report(
+            await service.create_operator(
+                email=args.email,
+                display_name=args.display_name,
+                password=read_password(),
+                operator=args.operator,
+            )
+        )
+    if args.command == "deactivate-operator":
+        # Reads no password — deactivation proves nothing about the operator
+        # being removed, and a prompt would hang a scripted revocation at the
+        # moment somebody most needs it to finish.
+        return _report(await service.deactivate_operator(email=args.email, operator=args.operator))
     return 2
 
 

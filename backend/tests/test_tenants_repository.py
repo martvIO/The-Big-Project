@@ -55,6 +55,24 @@ async def test_suspended_tenant_is_not_resolvable(app_role_url: str) -> None:
         await engine.dispose()
 
 
+async def test_by_slug_any_status_resolves_suspended_but_not_deleted(app_role_url: str) -> None:
+    """The half `by_slug` deliberately refuses: platform operations that must
+    still reach a boutique BECAUSE it is suspended (owner password reset)."""
+    engine, repo = _make(app_role_url)
+    try:
+        slug = _unique_slug("paused")
+        tenant = await repo.insert(slug=slug, name="Paused")
+        assert await repo.suspend(tenant.id) is True
+        found = await repo.by_slug_any_status(slug)
+        assert found is not None and found.id == tenant.id
+        assert found.status == TenantStatus.SUSPENDED
+
+        assert await repo.soft_delete(tenant.id) is True
+        assert await repo.by_slug_any_status(slug) is None
+    finally:
+        await engine.dispose()
+
+
 async def test_soft_delete_frees_slug_for_reuse(app_role_url: str) -> None:
     engine, repo = _make(app_role_url)
     try:

@@ -1,31 +1,17 @@
-import uuid
+import contextlib
+import io
+from collections.abc import Iterator
 
 import pytest
 
 from app.cli import build_parser, run
-from app.platform.service import CommandResult, TenantSummary
+from app.platform.service import CommandResult
 
 
 class FakeService:
     def __init__(self, result: CommandResult | None = None) -> None:
         self.calls: list[tuple[str, dict]] = []
         self._result = result or CommandResult(ok=True, message="done")
-
-    async def provision(self, **kwargs: object) -> CommandResult:
-        self.calls.append(("provision", kwargs))
-        return self._result
-
-    async def suspend(self, **kwargs: object) -> CommandResult:
-        self.calls.append(("suspend", kwargs))
-        return self._result
-
-    async def reset_owner_password(self, **kwargs: object) -> CommandResult:
-        self.calls.append(("reset_owner_password", kwargs))
-        return self._result
-
-    async def list_tenants(self, **kwargs: object) -> list[TenantSummary]:
-        self.calls.append(("list_tenants", kwargs))
-        return []
 
     async def backfill_booking_links(self, **kwargs: object) -> CommandResult:
         self.calls.append(("backfill_booking_links", kwargs))
@@ -35,122 +21,18 @@ class FakeService:
         self.calls.append(("run_retention", kwargs))
         return self._result
 
+    async def create_operator(self, **kwargs: object) -> CommandResult:
+        self.calls.append(("create_operator", kwargs))
+        return self._result
+
+    async def deactivate_operator(self, **kwargs: object) -> CommandResult:
+        self.calls.append(("deactivate_operator", kwargs))
+        return self._result
+
 
 def _dispatch(argv: list[str], service: FakeService, password: str = "pw") -> int:
     args = build_parser().parse_args(argv)
     return run(args, service, lambda: password)
-
-
-def test_provision_maps_args_and_reads_password_from_stdin() -> None:
-    service = FakeService(CommandResult(ok=True, message="ok", tenant_id=uuid.uuid4()))
-    code = _dispatch(
-        ["provision", "--slug", "bella", "--name", "Bella", "--owner-email", "o@b.example"],
-        service,
-        password="s3cret",
-    )
-    assert code == 0
-    name, kwargs = service.calls[0]
-    assert name == "provision"
-    assert kwargs["slug"] == "bella"
-    assert kwargs["owner_email"] == "o@b.example"
-    assert kwargs["owner_password"] == "s3cret"  # from the reader, never argv
-
-
-def test_password_is_not_a_cli_argument() -> None:
-    # No subcommand accepts a password flag — it must come from stdin only, never
-    # argv (argv leaks into the process list and shell history). argparse exits
-    # non-zero on an unrecognized argument, which proves the flag doesn't exist.
-    parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "provision",
-                "--slug",
-                "b",
-                "--name",
-                "n",
-                "--owner-email",
-                "o@e.co",
-                "--password",
-                "x",
-            ]
-        )
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            ["reset-password", "--slug", "b", "--owner-email", "o@e.co", "--owner-password", "x"]
-        )
-
-
-def test_failure_result_is_nonzero_exit() -> None:
-    service = FakeService(CommandResult(ok=False, message="slug_taken"))
-    code = _dispatch(
-        ["provision", "--slug", "admin", "--name", "X", "--owner-email", "o@b.example"], service
-    )
-    assert code == 1
-
-
-def test_suspend_and_reset_map_through() -> None:
-    service = FakeService()
-    assert _dispatch(["suspend", "--slug", "bella"], service) == 0
-    assert service.calls[-1][0] == "suspend"
-    assert (
-        _dispatch(
-            ["reset-password", "--slug", "bella", "--owner-email", "o@b.example"],
-            service,
-            password="new-pw",
-        )
-        == 0
-    )
-    name, kwargs = service.calls[-1]
-    assert name == "reset_owner_password"
-    assert kwargs["new_password"] == "new-pw"
-
-
-def test_list_does_not_read_password() -> None:
-    service = FakeService()
-    called = {"read": False}
-
-    def reader() -> str:
-        called["read"] = True
-        return "x"
-
-    args = build_parser().parse_args(["list"])
-    assert run(args, service, reader) == 0
-    assert service.calls[-1][0] == "list_tenants"
-    # F21 D6: `list` is a full cross-tenant read and now carries the operator
-    # through to a platform_audit_log row. `--operator` was parsed and discarded
-    # before F21, which is the whole finding.
-    assert service.calls[-1][1] == {"operator": args.operator}
-    assert called["read"] is False
-
-
-def test_operator_defaults_but_is_overridable() -> None:
-    service = FakeService()
-    _dispatch(["suspend", "--slug", "bella", "--operator", "ci-bot"], service)
-    assert service.calls[-1][1]["operator"] == "ci-bot"
-
-
-def test_list_output_strips_control_chars(capsys: object) -> None:
-    import datetime
-
-    from app.cli import _print_tenants
-
-    _print_tenants(
-        [
-            TenantSummary(
-                slug="bella",
-                name="Bella\t\x1b[31mEVIL\nName",
-                status="active",
-                created_at=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
-            )
-        ]
-    )
-    out = capsys.readouterr().out  # type: ignore[attr-defined]
-    line = out.splitlines()[0]
-    # Exactly the 3 intended column tabs; no stray tab/newline/ESC from the name.
-    assert line.count("\t") == 3
-    assert "\x1b" not in line
-    assert "EVIL" in line
 
 
 def test_backfill_booking_links_maps_through_and_reads_no_password() -> None:
@@ -219,22 +101,6 @@ def test_retention_requires_an_explicit_operator() -> None:
         build_parser().parse_args(["retention"])
 
 
-def test_the_five_older_subcommands_still_default_their_operator() -> None:
-    """Asserted BESIDE the requirement above so the divergence reads as intent
-    rather than as an inconsistency someone will "fix". `provision`, `suspend`,
-    `reset-password`, `list` and `backfill-booking-links` are recoverable or
-    read-only; this one is not."""
-    parser = build_parser()
-    for argv in (
-        ["provision", "--slug", "b", "--name", "n", "--owner-email", "o@e.co"],
-        ["suspend", "--slug", "b"],
-        ["reset-password", "--slug", "b", "--owner-email", "o@e.co"],
-        ["list"],
-        ["backfill-booking-links"],
-    ):
-        assert parser.parse_args(argv).operator
-
-
 def test_retention_takes_no_slug() -> None:
     """Platform-wide by design: the clocks are a duty the platform enforces on
     every controller's behalf, and a per-tenant flag would make a legal obligation
@@ -250,3 +116,155 @@ def test_retention_failure_is_a_nonzero_exit() -> None:
     `test_retention_db.test_a_run_with_a_failing_tenant_is_not_ok`."""
     service = FakeService(CommandResult(ok=False, message="boom"))
     assert _dispatch(["retention", "--operator", "ops"], service) == 1
+
+
+# --- F25's operator bootstrap ------------------------------------------------
+#
+# ⚠ THE ONLY WAY AN OPERATOR IS EVER CREATED. Spec D2: no HTTP route mints or
+# edits one, so the console's own compromise cannot make a second operator. That
+# makes this pair the highest-privilege surface in the CLI, and the tests below
+# are shaped by that rather than by symmetry with the tenant commands.
+
+
+def test_create_operator_maps_args_and_reads_the_password_from_stdin() -> None:
+    """F6's rule, inherited whole: the password never touches argv, where it
+    would land in the process list and the shell history of a shared box."""
+    service = FakeService()
+    args = build_parser().parse_args(
+        [
+            "create-operator",
+            "--email",
+            "dana@modryn.example",
+            "--display-name",
+            "Dana",
+            "--operator",
+            "ops",
+        ]
+    )
+    assert run(args, service, lambda: "op-console-pw") == 0
+    assert service.calls == [
+        (
+            "create_operator",
+            {
+                "email": "dana@modryn.example",
+                "display_name": "Dana",
+                "password": "op-console-pw",
+                "operator": "ops",
+            },
+        )
+    ]
+
+
+def test_neither_operator_command_accepts_a_password_flag() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["create-operator", "--email", "d@x.co", "--display-name", "D", "--password", "x"]
+        )
+
+
+def test_both_operator_commands_require_an_explicit_operator() -> None:
+    """The `retention` precedent (D23), and it binds harder here. `_with_operator`
+    defaults to `$USER`, which is not an audit identity on a shared box — and the
+    act being recorded is the creation or destruction of the credential that
+    controls every boutique on the platform."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["create-operator", "--email", "d@x.co", "--display-name", "D"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["deactivate-operator", "--email", "d@x.co"])
+
+
+def test_deactivate_operator_maps_through_and_reads_no_password() -> None:
+    """No password to read — deactivation proves nothing about the operator being
+    removed, and prompting for one would hang a scripted revocation."""
+    service = FakeService()
+
+    def _no_password() -> str:
+        raise AssertionError("deactivate-operator must not read a password")
+
+    args = build_parser().parse_args(
+        ["deactivate-operator", "--email", "dana@modryn.example", "--operator", "ops"]
+    )
+    assert run(args, service, _no_password) == 0
+    assert service.calls == [
+        ("deactivate_operator", {"email": "dana@modryn.example", "operator": "ops"})
+    ]
+
+
+def test_a_refused_operator_command_is_a_nonzero_exit() -> None:
+    """A duplicate active email and the last-operator refusal both arrive as
+    `CommandResult(ok=False)`. A shell that cannot see the refusal is how a
+    bootstrap script "succeeds" without creating anybody."""
+    service = FakeService(CommandResult(ok=False, message="operator_email_taken"))
+    assert (
+        _dispatch(
+            ["create-operator", "--email", "d@x.co", "--display-name", "D", "--operator", "ops"],
+            service,
+        )
+        == 1
+    )
+    service = FakeService(CommandResult(ok=False, message="last_operator"))
+    assert (
+        _dispatch(["deactivate-operator", "--email", "d@x.co", "--operator", "ops"], service) == 1
+    )
+
+
+# --- F25's parity deletion ---------------------------------------------------
+
+
+@contextlib.contextmanager
+def _stderr() -> Iterator[io.StringIO]:
+    """argparse writes its refusal to stderr and then exits; capsys cannot be
+    read inside a `pytest.raises` block, so the stream is swapped instead."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stderr(buffer):
+        yield buffer
+
+
+def test_the_four_lifecycle_subcommands_are_gone() -> None:
+    """⚠ THIS IS THE POINT OF PRE-DECIDED #20, and the deletion is deliberate
+    rather than incidental: two doors to the same audited operation is how they
+    drift, and the CLI's door needs a shell on the host.
+
+    Parity was proved BEFORE the door was closed —
+    `test_platform_console_db.py::test_the_whole_console_lifecycle_writes_the_same
+    _book_the_cli_wrote` drives all four over HTTP as `boutique_app` and asserts
+    the same `platform_audit_log` rows, with the operator column now carrying an
+    authenticated identity instead of `$USER`.
+
+    ⚠ THE ASSERTION IS ON THE MESSAGE, not merely on SystemExit. `provision`,
+    `suspend` and `reset-password` all had REQUIRED flags, so
+    `parse_args(["provision"])` exited 2 before this feature as well — a bare
+    `pytest.raises(SystemExit)` would have been green against the old parser for
+    three of the four and would have proved nothing. "invalid choice" is the
+    string argparse produces only when the subcommand itself is gone.
+
+    That is also what a stale runbook or a deploy hook still calling one now
+    gets — loudly, rather than a shell that quietly does nothing."""
+    parser = build_parser()
+    for gone in ("provision", "suspend", "reset-password", "list"):
+        with pytest.raises(SystemExit), _stderr() as captured:
+            parser.parse_args([gone])
+        assert "invalid choice" in captured.getvalue(), gone
+
+
+def test_the_surviving_commands_still_parse() -> None:
+    """The CLI FILE survives (spec conflict 1). #20's parity set is the four
+    lifecycle operations, and the commands below are not in it: the backfill is
+    F16's one-time deploy step, retention is F20's `--armed` rehearsal whose R12
+    posture is deliberately shell-only, and the operator pair is F25's own
+    bootstrap — the console must not be able to mint its own operators."""
+    parser = build_parser()
+    assert parser.parse_args(["backfill-booking-links"]).operator
+    assert parser.parse_args(["retention", "--operator", "ops"]).operator == "ops"
+    assert (
+        parser.parse_args(
+            ["create-operator", "--email", "d@x.co", "--display-name", "D", "--operator", "ops"]
+        ).email
+        == "d@x.co"
+    )
+    assert (
+        parser.parse_args(["deactivate-operator", "--email", "d@x.co", "--operator", "ops"]).email
+        == "d@x.co"
+    )

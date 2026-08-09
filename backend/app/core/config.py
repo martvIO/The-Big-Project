@@ -19,9 +19,38 @@ class Settings(BaseSettings):
     # Staging/production set the real platform domain via BASE_DOMAIN.
     base_domain: str = "localtest.me"
 
+    # F25 D1. The platform console is served at `{platform_host_label}.{base_domain}`
+    # and NOWHERE else. `admin` is already in RESERVED_SLUGS — un-provisionable at
+    # request time and at provision time both — which is exactly why it was
+    # chosen over a new label: the wildcard DNS and wildcard cert already cover
+    # it, so standing the console up costs no external work on a deployment whose
+    # production DNS is still parked.
+    platform_host_label: str = "admin"
+
     login_max_attempts: int = 5
     login_window_seconds: int = 900
     session_ttl_seconds: int = 60 * 60 * 12
+
+    # F25 D3/D4 — the console's own budget and its own TTL, never the staff
+    # numbers reused. FOUR HOURS and not the staff twelve: highest privilege,
+    # lowest login frequency, and re-login costs one password entry (no SMS bill,
+    # unlike the customer portal's 30d rationale). Fixed expiry, no sliding
+    # renewal — nothing writes expires_at after the insert.
+    platform_session_ttl_seconds: int = 60 * 60 * 4
+    # Sized like the staff login's, and spelled separately for the reason
+    # main.py repeats about limiter instances: these are two budgets, and one
+    # tenant's brute-force must not be able to spend the platform's.
+    platform_login_max_attempts: int = 5
+    platform_login_window_seconds: int = 900
+    # ⚠ THE ARM THAT AN ATTACKER CANNOT ROTATE OUT OF. The per-email budget is
+    # keyed on a value the CALLER chooses, so a script POSTing a fresh address
+    # every time never trips it, and the per-IP arm is inert while
+    # `trust_forwarded_for` is False (which is every deployment we have). Each
+    # such attempt costs a full argon2id verify (64 MiB) and writes a permanent
+    # `platform_audit_log` row the app can neither read nor prune. Sized far above
+    # any plausible operator activity — a handful of operators, 5 failures each —
+    # so it binds only on a flood.
+    platform_login_global_max_attempts: int = 60
 
     # Modest per-tenant throttle on terms-version creation: the table is
     # append-only by DB grant, so spam on this path is permanent bloat.
@@ -304,6 +333,26 @@ class Settings(BaseSettings):
         # ends with .localtest.me) — fail at boot, not as a silent outage.
         if self.app_env != "dev" and self.base_domain == "localtest.me":
             raise ValueError("BASE_DOMAIN must be set when APP_ENV is not 'dev'")
+        return self
+
+    @model_validator(mode="after")
+    def _require_a_reserved_platform_host_label(self) -> Self:
+        # F25 D1's invariant, at boot rather than in prose. A label outside
+        # RESERVED_SLUGS is provisionable as a boutique — so the console and a
+        # tenant would resolve to the SAME hostname, and the tenancy middleware's
+        # label branch runs first, which means the boutique is the one that
+        # silently disappears. Fail here, where the cause is one line away.
+        #
+        # Imported inside the validator: app.tenancy.slugs must not import
+        # Settings and this keeps the direction one-way.
+        from app.tenancy.slugs import RESERVED_SLUGS
+
+        if self.platform_host_label not in RESERVED_SLUGS:
+            raise ValueError(
+                f"PLATFORM_HOST_LABEL {self.platform_host_label!r} must be one of RESERVED_SLUGS "
+                "— an unreserved label can be provisioned as a boutique and would collide "
+                "with the console's own hostname"
+            )
         return self
 
     @model_validator(mode="after")

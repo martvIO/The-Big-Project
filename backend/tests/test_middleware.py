@@ -1,12 +1,13 @@
 import uuid
 from typing import Annotated
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.main import create_app
 from app.tenancy.middleware import (
+    EXEMPT_PATHS,
     TenantContext,
     TenantNotResolvedError,
     get_current_tenant,
@@ -132,3 +133,113 @@ def test_host_header_with_port_and_case_resolves() -> None:
         resp = client.get("/whoami", headers={"host": "BELLA.LOCALTEST.ME:8443"})
     assert resp.status_code == 200
     assert resp.json()["slug"] == "bella"
+
+
+# --- F25's console-host fence ------------------------------------------------
+#
+# ⚠ THE FENCE IS BIDIRECTIONAL AND BOTH DIRECTIONS ARE THE SAME 404 BODY. The
+# console host answers nothing but /platform* and the exact EXEMPT_PATHS; tenant
+# hosts answer nothing on /platform*. One body either way, so no probe learns
+# from a status which surface it found — the anti-enumeration invariant this
+# module already holds for slugs, extended to a second axis.
+#
+# ⚠ AND `/platform` IS DELIBERATELY NOT IN EXEMPT_PATHS. Exemption skips tenant
+# resolution on EVERY host, which would open the console's routes on every
+# boutique's subdomain — the exact inversion of what the fence is for. The fence
+# lives in the label branch; the spec names this as a trap and this comment is
+# the tripwire for whoever "simplifies" it.
+
+CONSOLE_HOST = "admin.localtest.me"
+
+
+def _fenced_app(resolver: RecordingResolver) -> FastAPI:
+    app = create_app(resolver=resolver)
+
+    @app.get("/platform/probe")
+    async def platform_probe(request: Request) -> dict[str, bool]:
+        return {"platform_host": getattr(request.state, "platform_host", False)}
+
+    @app.get("/whoami")
+    async def whoami(
+        tenant: Annotated[TenantContext, Depends(get_current_tenant)],
+    ) -> dict[str, str]:
+        return {"slug": tenant.slug}
+
+    return app
+
+
+def test_the_console_host_serves_platform_paths_and_marks_the_request() -> None:
+    """`request.state.platform_host` is the belt `get_current_operator` checks;
+    the middleware fence is the braces. A cookie replayed on a tenant host must
+    fail for BOTH reasons independently."""
+    resolver = RecordingResolver()
+    with TestClient(_fenced_app(resolver), base_url=f"http://{CONSOLE_HOST}") as client:
+        resp = client.get("/platform/probe")
+    assert resp.status_code == 200
+    assert resp.json() == {"platform_host": True}
+    # No tenant resolution happened at all — `admin` is reserved, and the branch
+    # returns before the resolver would ever be reached.
+    assert resolver.calls == []
+
+
+def test_the_console_host_404s_every_path_that_is_not_the_console() -> None:
+    """The storefront shell, the tenant console and every tenant API are
+    unreachable at admin.{base}. `/platformx` is in the list on purpose: the
+    prefix test is `/platform` or `/platform/…`, never `startswith("/platform")`,
+    or a route named `/platformer` would be inside the fence."""
+    resolver = RecordingResolver()
+    app = _fenced_app(resolver)
+    with TestClient(app, base_url=f"http://{CONSOLE_HOST}") as client:
+        for path in ("/", "/manage", "/manage/auth/me", "/storefront/dresses", "/platformx"):
+            resp = client.get(path)
+            assert resp.status_code == 404, path
+            assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND", path
+    assert resolver.calls == []
+
+
+def test_the_console_does_not_exist_on_a_tenant_host() -> None:
+    """The other direction, and it is the one that would be quietly missing: a
+    fence that only guards the console host leaves /platform/* answering on every
+    boutique's own subdomain, where the CSRF prefix and the cookie name are the
+    only things left standing between a tenant's staff and the platform API."""
+    resolver = RecordingResolver()
+    app = _fenced_app(resolver)
+    with TestClient(app, base_url="http://bella.localtest.me") as client:
+        for path in ("/platform", "/platform/probe", "/platform/auth/login"):
+            resp = client.get(path)
+            assert resp.status_code == 404, path
+            assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND", path
+    # Refused BEFORE resolution — the fence costs no database work and gives no
+    # timing signal about whether the boutique exists.
+    assert resolver.calls == []
+
+
+def test_both_directions_of_the_fence_answer_the_same_body_as_an_unknown_slug() -> None:
+    """Byte-identical, like the three failure kinds above. A distinguishable body
+    would tell a prober which host it is standing on."""
+    resolver = RecordingResolver()
+    app = _fenced_app(resolver)
+    bodies = []
+    with TestClient(app, base_url=f"http://{CONSOLE_HOST}") as client:
+        bodies.append(client.get("/manage").json())
+    with TestClient(app, base_url="http://bella.localtest.me") as client:
+        bodies.append(client.get("/platform/probe").json())
+    with TestClient(app, base_url="http://nosuch.localtest.me") as client:
+        bodies.append(client.get("/whoami").json())
+    assert bodies[0] == bodies[1] == bodies[2]
+
+
+def test_health_still_answers_on_the_console_host() -> None:
+    """EXEMPT_PATHS is exact-match and host-agnostic, and it stays that way — an
+    infra probe hitting /health by IP must not care which host it landed on."""
+    resolver = RecordingResolver()
+    with TestClient(_fenced_app(resolver), base_url=f"http://{CONSOLE_HOST}") as client:
+        assert client.get("/health").status_code == 200
+    assert resolver.calls == []
+
+
+def test_platform_paths_are_not_exempt() -> None:
+    """The trap, asserted rather than described. Adding /platform to EXEMPT_PATHS
+    would skip tenant resolution on every host and open the console's routes on
+    every boutique's subdomain."""
+    assert not any(path.startswith("/platform") for path in EXEMPT_PATHS)

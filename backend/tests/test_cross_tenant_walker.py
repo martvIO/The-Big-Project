@@ -132,7 +132,32 @@ NOT_TENANT_SCOPED = frozenset(
         ("GET", "/docs/oauth2-redirect"),
         ("GET", "/openapi.json"),
         ("GET", "/redoc"),
+        # F25's platform console. These SEVEN are not "exempt from a walk that
+        # could otherwise drive them" — a tenant principal CANNOT REACH THEM AT
+        # ALL: the tenancy middleware 404s /platform* on every tenant host before
+        # a handler is looked at, and this walk drives everything with Host set to
+        # tenant A's slug. Driving them here would assert the fence, not
+        # isolation, and would report a 404 as evidence of a tenant check that no
+        # console route contains (there is no tenant to check — an operator acts
+        # across all of them).
+        #
+        # `test_the_console_is_unreachable_from_a_tenant_host` below drives them
+        # anyway and asserts exactly what they DO answer, so this exemption is
+        # proved rather than asserted.
+        ("POST", "/platform/auth/login"),
+        ("POST", "/platform/auth/logout"),
+        ("GET", "/platform/auth/me"),
+        ("POST", "/platform/tenants/provision"),
+        ("POST", "/platform/tenants/suspend"),
+        ("POST", "/platform/tenants/reset-owner-password"),
+        ("GET", "/platform/tenants"),
     }
+)
+
+# The console's whole surface, spelled once. Derived from NOT_TENANT_SCOPED so it
+# cannot drift from the exemption it proves.
+PLATFORM_ROUTES = frozenset(
+    route for route in NOT_TENANT_SCOPED if route[1].startswith("/platform")
 )
 
 
@@ -545,10 +570,14 @@ MODULES_WITH_NO_ID_ROUTES = {
     "notifications": "OTP send/verify are keyed on a phone number, never an id",
 }
 
-# platform/ and storage/ appear in the plan's floor list and are absent here
-# because NEITHER REGISTERS AN HTTP ROUTE: platform/ is the provisioning CLI
-# (cli.py) and storage/ is the S3 adapter behind catalog's media routes. A floor
-# of >=1 on a module with zero routes is unsatisfiable, not unmet.
+# ⚠ THIS COMMENT WAS TRUE UNTIL F25 AND HALF OF IT NO LONGER IS. `storage/` still
+# registers no HTTP route — it is the S3 adapter behind catalog's media routes.
+# `platform/` NOW DOES: F25 put the provisioning command layer behind a web
+# console. It stays here anyway, for a different reason than before: its routes
+# live on a host this walk never speaks to, so they never enter the route table
+# below (they are in NOT_TENANT_SCOPED, with the argument written out there) and
+# a per-module floor over them would still be unsatisfiable — there is no tenant
+# principal that can drive a single one.
 MODULES_WITHOUT_ROUTES = frozenset({"platform", "storage"})
 
 _MODULE_BY_PREFIX = (
@@ -607,6 +636,27 @@ def _leaf_routes(node: Any) -> Iterator[Any]:
             yield from _leaf_routes(inner)
             continue
         yield route
+
+
+def _every_route() -> set[tuple[str, str]]:
+    """The whole live table INCLUDING the not-tenant-scoped rows, which
+    `_route_table` strips. F25's console exemption needs to be checked against the
+    routes that exist, not against the ones that survived the filter it is part
+    of — otherwise the check is circular and passes on an empty set."""
+
+    async def _nothing_resolves(slug: str) -> None:
+        return None
+
+    app = create_app(resolver=_nothing_resolves)
+    table: set[tuple[str, str]] = set()
+    for route in _leaf_routes(app):
+        path = getattr(route, "path", None)
+        if path is None:
+            continue
+        for method in getattr(route, "methods", None) or ():
+            if method not in ("HEAD", "OPTIONS"):
+                table.add((method, path))
+    return table
 
 
 def _route_table(app: FastAPI) -> set[tuple[str, str]]:
@@ -1166,4 +1216,48 @@ def test_the_state_guarded_routes_are_walked_and_named(
         f"the walk drove {len(responses)} routes, {discriminating} of them "
         "discriminating. Both numbers are quoted as evidence in "
         ".planning/security-checklist-v1.md's R9 row — update it in the same commit."
+    )
+
+
+def test_the_console_is_unreachable_from_a_tenant_host(walk: Walk, app_role_url: str) -> None:
+    """F25's fence, driven as a real tenant principal rather than trusted.
+
+    NOT_TENANT_SCOPED above claims the console's seven routes cannot be reached
+    from a tenant host. That claim is the reason they are exempt from the walk, so
+    it is worth more than a comment: every one of them is driven here with tenant
+    A's Host and tenant A's live owner session, and every one must answer the
+    house TENANT_NOT_FOUND 404 — not 401, not 403, not 405. A 401 would say "the
+    console is here, you are just not signed in", which is an existence oracle for
+    the platform's own front door on every boutique's subdomain.
+    """
+    monkeypatch = pytest.MonkeyPatch()
+    engine: AsyncEngine = create_async_engine(app_role_url, poolclass=NullPool)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        app, _ = _app(monkeypatch, factory)
+        _, slug, email = asyncio.run(_seed_tenant(factory))
+        with _client(app, slug) as client:
+            assert (
+                client.post(
+                    "/manage/auth/login", json={"email": email, "password": PASSWORD}
+                ).status_code
+                == 200
+            )
+            for method, path in sorted(PLATFORM_ROUTES):
+                resp = client.request(method, path, json={})
+                assert resp.status_code == 404, f"{method} {path} -> {resp.status_code}"
+                assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND", f"{method} {path}"
+    finally:
+        monkeypatch.undo()
+        asyncio.run(engine.dispose())
+
+
+def test_the_console_routes_are_all_named_in_the_exemption() -> None:
+    """Both directions, like every other exemption in this module. A NEW console
+    route is a test failure here rather than a silent gap, and a pruned one must
+    leave this list rather than linger."""
+    app_routes = {(method, path) for method, path in _every_route() if path.startswith("/platform")}
+    assert app_routes == set(PLATFORM_ROUTES), (
+        "the console's route surface moved. Add or prune it in NOT_TENANT_SCOPED "
+        f"with a written reason: {sorted(app_routes ^ set(PLATFORM_ROUTES))}"
     )

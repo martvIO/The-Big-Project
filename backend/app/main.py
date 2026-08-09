@@ -131,6 +131,11 @@ from app.payments.service import (
 from app.payments.unconfigured import UnconfiguredGateway
 from app.payments.webhook_router import DepositBookingService
 from app.payments.webhook_router import router as webhook_router
+from app.platform.auth import OperatorAuthService
+from app.platform.auth_router import router as platform_auth_router
+from app.platform.router import ConsoleCommandRefused
+from app.platform.router import router as platform_router
+from app.platform.service import ProvisioningService
 from app.portal.router import router as portal_router
 from app.portal.service import PortalNoBookingsError, PortalService, PortalThrottledError
 from app.privacy.router import router as privacy_router
@@ -483,7 +488,10 @@ TICKET_ALREADY_ASSIGNED_BODY = {
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 
 # The API owns these first path segments; the SPA fallback must never claim them.
-_RESERVED_SEGMENTS = frozenset({"manage", "storefront"})
+# "platform" joined them in F25: the storefront catch-all must DECLINE the
+# console's shell and API alike, or a GET /platform on a tenant host would be
+# answered with the boutique's own HTML instead of reaching the tenancy fence.
+_RESERVED_SEGMENTS = frozenset({"manage", "storefront", "platform"})
 
 # Nothing here is content-hashed, so nothing here may be cached without asking.
 # ETag + Last-Modified alone make a response heuristically cacheable (RFC 9111
@@ -544,6 +552,7 @@ def _register_spas(app: FastAPI) -> None:
     """Called LAST, after every include_router, so every API route wins first."""
     manage = STATIC_ROOT / "manage"
     storefront = STATIC_ROOT / "storefront"
+    platform = STATIC_ROOT / "platform"
     if not (manage / "index.html").is_file() or not (storefront / "index.html").is_file():
         # Absence is a supported state, never a boot failure: no dev machine has
         # run `pnpm -r build`, and neither has the test suite. A deploy whose
@@ -553,7 +562,13 @@ def _register_spas(app: FastAPI) -> None:
         logger.info("SPA bundles not found under %s — serving the API only", STATIC_ROOT)
         return
 
-    for prefix, app_dir in (("/manage/assets", manage), ("/assets", storefront)):
+    for prefix, app_dir in (
+        ("/manage/assets", manage),
+        ("/assets", storefront),
+        # F25's console, built with `base: "/platform/"` — same shape as manage,
+        # so the three static trees are disjoint on one origin.
+        ("/platform/assets", platform),
+    ):
         assets = app_dir / "assets"
         if assets.is_dir():
             app.mount(prefix, StaticFiles(directory=assets), name=f"{app_dir.name}-assets")
@@ -565,7 +580,16 @@ def _register_spas(app: FastAPI) -> None:
     # with a 200, which nosniff then makes the browser refuse. Silently dead.
     # `base: "/manage/"` puts the console's copies under /manage/, which is what
     # keeps the two trees disjoint.
-    for prefix, app_dir in (("/manage", manage), ("", storefront)):
+    for prefix, app_dir in (("/manage", manage), ("", storefront), ("/platform", platform)):
+        if not app_dir.is_dir():
+            # ⚠ THE THIRD APP IS ALLOWED TO BE ABSENT ON ITS OWN, and the two
+            # above are not. The guard at the top of this function still boot-
+            # fails to API-only when manage or storefront is missing, because
+            # `railway up` shipping a deploy without a storefront is a dead
+            # origin. A missing console is not: it costs the operator a screen
+            # while every boutique keeps trading, so a partial copy degrades to
+            # exactly what it copied instead of taking the other two down.
+            continue
         for entry in sorted(app_dir.iterdir()):
             if entry.is_file() and entry.name != "index.html":
                 _serve_file(app, f"{prefix}/{entry.name}", entry)
@@ -574,6 +598,11 @@ def _register_spas(app: FastAPI) -> None:
     # drives its sections from useState), so exactly one URL is the console and
     # a subtree fallback would invent deep links the app cannot restore.
     _serve_file(app, "/manage", manage / "index.html")
+    # Same exact-path rule, same reason: apps/platform has one screen driven from
+    # useState and no client router, so a subtree fallback would invent deep links
+    # it cannot restore. `_serve_file` no-ops when the file is absent, which is
+    # what makes the missing-console case degrade rather than raise.
+    _serve_file(app, "/platform", platform / "index.html")
 
     storefront_index = storefront / "index.html"
 
@@ -708,6 +737,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         TenantResolutionMiddleware,
         resolver=resolver,
         base_domain=settings.base_domain,
+        # F25's console-host fence. Settings validates the label is in
+        # RESERVED_SLUGS at boot, so it can never collide with a boutique.
+        platform_host_label=settings.platform_host_label,
     )
     # Added after (= runs before) tenant resolution: a cross-origin forgery is
     # rejected without touching the database.
@@ -769,6 +801,35 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     app.state.login_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.login_max_attempts,
         window_seconds=settings.login_window_seconds,
+        clock=time.monotonic,
+    )
+    # F25's console. Its OWN service beside the staff one — the two auth
+    # populations never share a lookup path (spec D3), and folding operators into
+    # AuthService would put a tenant predicate one refactor away from the
+    # platform's front door.
+    app.state.platform_auth_service = OperatorAuthService(get_session_factory(), settings)
+    # THE SAME CLASS THE CLI HAS ALWAYS CALLED, unchanged (pre-decided #20). It
+    # owns its own audit rows — the failure ones included — which is why the
+    # console's router validates nothing the service already validates.
+    app.state.provisioning_service = ProvisioningService(get_session_factory())
+    # ⚠ ITS OWN LIMITER INSTANCE, and this is the SIXTH time this file states the
+    # rule: max_attempts lives on the LIMITER, so a key on `login_rate_limiter`
+    # above would give the console the staff ceiling — one tenant's brute-force
+    # could then close the platform's front door, and a console lockout could
+    # close a boutique's. Two budgets, two instances
+    # (`.memory/limiter-max-is-per-instance`).
+    app.state.platform_login_rate_limiter = FixedWindowRateLimiter(
+        max_attempts=settings.platform_login_max_attempts,
+        window_seconds=settings.platform_login_window_seconds,
+        clock=time.monotonic,
+    )
+    # …and a THIRD instance for the same reason, not a key on the one above: the
+    # global arm's ceiling has to be an order of magnitude wider than the
+    # per-email one, and `max_attempts` lives on the LIMITER. Sharing would give
+    # every email address the flood ceiling.
+    app.state.platform_login_global_rate_limiter = FixedWindowRateLimiter(
+        max_attempts=settings.platform_login_global_max_attempts,
+        window_seconds=settings.platform_login_window_seconds,
         clock=time.monotonic,
     )
     app.state.boutique_service = BoutiqueSettingsService(
@@ -1078,6 +1139,26 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     async def _invalid_credentials(request: Request, exc: InvalidCredentialsError) -> JSONResponse:
         # One body for wrong-password AND unknown-email — no account enumeration.
         return JSONResponse(INVALID_CREDENTIALS_BODY, status_code=401)
+
+    # F25 D5. ONE handler for all five console refusals: the console branches on
+    # the CODE STRING, so five exception classes would be five places to forget
+    # the next one. The code is the service's own message verbatim — an unmapped
+    # message arrives as itself at 400 rather than as a 500 or as somebody else's
+    # refusal.
+    @app.exception_handler(ConsoleCommandRefused)
+    async def _console_refused(request: Request, exc: ConsoleCommandRefused) -> JSONResponse:
+        return JSONResponse(
+            {
+                "error": {
+                    "code": exc.code,
+                    # English, and it is never what an operator reads: the console
+                    # owns the Hebrew per code (design deck §6) and falls through
+                    # to its own generic sentence for anything unlisted.
+                    "message": "The platform refused that command.",
+                }
+            },
+            status_code=exc.status,
+        )
 
     @app.exception_handler(RateLimitedError)
     async def _rate_limited(request: Request, exc: RateLimitedError) -> JSONResponse:
@@ -1494,6 +1575,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(auth_router)
+    # F25's console auth, and it is deliberately NOT under /manage: the tenancy
+    # middleware fences /platform* to the console host in both directions, and a
+    # /manage prefix would put the platform's front door behind a tenant's
+    # hostname. Registered beside the staff auth router so the two doors sit
+    # together and neither can silently shadow the other — different prefixes, so
+    # there is nothing to shadow, which is the point.
+    app.include_router(platform_auth_router)
+    # The console's four lifecycle routes, on the same fenced prefix.
+    app.include_router(platform_router)
     app.include_router(boutique_router)
     # After the boutique router: both mount prefix="/manage", so a duplicated
     # path would silently shadow. The ROUTES table in test_catalog_api.py is

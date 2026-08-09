@@ -435,10 +435,16 @@ def test_unknown_host_is_tenant_not_found(method: str, path: str) -> None:
 def test_the_portal_lives_under_the_storefront_prefix() -> None:
     """Spec D7: no new top-level API family. A `/portal` prefix would need a
     vite proxy entry, an SPA-fallback exclusion and a CSRF review, for nothing —
-    and `_RESERVED_SEGMENTS` would have to grow a third member."""
+    and `_RESERVED_SEGMENTS` would have to grow a member for it.
+
+    Asserted as an ABSENCE rather than as the whole frozenset: a workspace app
+    that genuinely IS its own surface (F25's `/platform`) is supposed to add a
+    segment, and pinning the full set would red this module for a feature that
+    never touched the portal."""
     from app.main import _RESERVED_SEGMENTS
 
-    assert frozenset({"manage", "storefront"}) == _RESERVED_SEGMENTS
+    assert "portal" not in _RESERVED_SEGMENTS
+    assert {"manage", "storefront"} <= _RESERVED_SEGMENTS
     for path in (SESSION, ME, LOGOUT):
         assert path.startswith("/storefront/portal/")
 

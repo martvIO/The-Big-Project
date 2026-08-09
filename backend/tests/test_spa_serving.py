@@ -27,6 +27,7 @@ is what makes the whole suite identical with and without a local SPA build.
 """
 
 import re
+import shutil
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -45,6 +46,8 @@ from app.storefront.validation import STOREFRONT_LIST_DEFAULT_LIMIT
 from app.tenancy.middleware import EXEMPT_PATHS, TenantContext
 
 HOST = "bella.boutique.example"
+# F25's console host. The RESERVED `admin` label, so it can never be a boutique.
+CONSOLE_HOST = "admin.boutique.example"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -52,6 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # case-insensitively and Linux CI checks it out that way
 # (test_frontend_constant_parity.py's precedent).
 MANAGE_VITE_CONFIG = REPO_ROOT / "frontend/apps/manage/vite.config.ts"
+PLATFORM_VITE_CONFIG = REPO_ROOT / "frontend/apps/platform/vite.config.ts"
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 
 TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="בלה כלות", settings={})
@@ -61,7 +65,12 @@ TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="בלה כלות", se
 MANAGE_HTML = '<!doctype html><title>MODRYN — ניהול</title><div id="root">manage</div>'
 STOREFRONT_HTML = '<!doctype html><title>בלה כלות</title><div id="root">storefront</div>'
 
+PLATFORM_HTML = (
+    '<!doctype html><title>MODRYN — ניהול הפלטפורמה</title><div id="root">platform</div>'
+)
+
 MANAGE_JS = "/manage/assets/index-manage.js"
+PLATFORM_JS = "/platform/assets/index-platform.js"
 STOREFRONT_JS = "/assets/index-storefront.js"
 
 # Every path apps/storefront/src/router.tsx can match, plus the bare root. Each
@@ -134,7 +143,13 @@ def _build_static(root: Path) -> None:
     """The exact shape `pnpm -r build` + the CI copy leave behind: each app's
     `dist/` contents at `app/static/{app}/`, manage's assets under its own
     `base: "/manage/"` prefix so the two trees are disjoint."""
-    for name, html in (("manage", MANAGE_HTML), ("storefront", STOREFRONT_HTML)):
+    for name, html in (
+        ("manage", MANAGE_HTML),
+        ("storefront", STOREFRONT_HTML),
+        # F25's third app, built with `base: "/platform/"` so its tree is
+        # disjoint from the other two exactly as manage's is.
+        ("platform", PLATFORM_HTML),
+    ):
         app_dir = root / name
         (app_dir / "assets").mkdir(parents=True)
         (app_dir / "index.html").write_text(html, encoding="utf-8")
@@ -150,10 +165,10 @@ def _app(monkeypatch: pytest.MonkeyPatch, static_root: Path) -> FastAPI:
     return create_app(resolver=_resolver)
 
 
-def _client(monkeypatch: pytest.MonkeyPatch, static_root: Path) -> TestClient:
+def _client(monkeypatch: pytest.MonkeyPatch, static_root: Path, host: str = HOST) -> TestClient:
     app = _app(monkeypatch, static_root)
     app.state.storefront_service = _EmptyStorefrontService()
-    return TestClient(app, base_url=f"http://{HOST}")
+    return TestClient(app, base_url=f"http://{host}")
 
 
 @pytest.fixture
@@ -508,3 +523,124 @@ def test_the_console_shell_is_intentionally_ungated(client: TestClient) -> None:
     assert resp.status_code == 200
     assert not resp.cookies
     assert "manage" in resp.text
+
+
+# --- F25's console shell -----------------------------------------------------
+
+
+@pytest.fixture
+def console_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[TestClient]:
+    """The same built tree, addressed at the CONSOLE host. It has to be a separate
+    client rather than a header swap: the tenancy fence answers on the host, and
+    every other test in this file is a tenant host by design."""
+    static_root = tmp_path / "static"
+    _build_static(static_root)
+    yield _client(monkeypatch, static_root, host=CONSOLE_HOST)
+
+
+def test_the_platform_shell_is_served_at_exactly_slash_platform(
+    console_client: TestClient,
+) -> None:
+    """Exact path, no subtree — the manage rule for the manage reason: apps/platform
+    has no client-side router (one screen, driven from useState), so a subtree
+    fallback would invent deep links the app cannot restore."""
+    resp = console_client.get("/platform")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "platform" in resp.text
+    assert resp.headers["cache-control"] == "no-cache"
+
+
+def test_the_platform_assets_are_served_from_their_own_tree(console_client: TestClient) -> None:
+    """`base: "/platform/"` is what keeps three static trees disjoint on one
+    origin. A mount wired to the wrong tree still serves a valid file, so the
+    marker in the body is what says which app it came from."""
+    resp = console_client.get(PLATFORM_JS)
+    assert resp.status_code == 200
+    assert "export" in resp.text
+    assert console_client.get("/platform/favicon.svg").status_code == 200
+
+
+def test_an_unknown_platform_path_is_a_404_not_the_console_shell(
+    console_client: TestClient,
+) -> None:
+    assert console_client.get("/platform/not-a-screen").status_code == 404
+
+
+def test_the_storefront_catch_all_declines_platform(client: TestClient) -> None:
+    """R-C's tripwire. The fence (`tenancy/middleware.py`) and the SPA catch-all
+    both claim `/platform`, and the catch-all is the one that would win silently:
+    a GET /platform on a TENANT host would be answered with that boutique's own
+    HTML shell at 200, and nothing would look wrong. `_RESERVED_SEGMENTS` is what
+    stops it, and the answer is the house 404 the fence produces."""
+    resp = client.get("/platform")
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND"
+    assert "storefront" not in resp.text
+
+
+def test_the_console_host_serves_nothing_but_the_console(console_client: TestClient) -> None:
+    """The other half of the fence, over the STATIC tree rather than over the API:
+    with all three bundles present, the storefront shell and the manage shell must
+    still be unreachable at admin.{base}."""
+    for path in ("/", "/manage", "/about", "/robots.txt"):
+        resp = console_client.get(path)
+        assert resp.status_code == 404, path
+        assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND", path
+
+
+def test_the_app_boots_without_the_platform_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A partial build must not take the API down with it. `_register_spas`
+    already treats absence as a supported state; this pins that the THIRD app
+    joining did not turn it into an all-or-nothing gate — a deploy that copied two
+    of three trees still answers /health and still serves the two it has."""
+    static_root = tmp_path / "static"
+    _build_static(static_root)
+    shutil.rmtree(static_root / "platform")
+    console = _client(monkeypatch, static_root, host=CONSOLE_HOST)
+    assert console.get("/health").status_code == 200
+    assert console.get("/platform").status_code == 404
+    tenant = _client(monkeypatch, static_root)
+    assert tenant.get("/manage").status_code == 200
+    assert tenant.get("/").status_code == 200
+
+
+def test_the_platform_dev_proxy_names_the_console_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The manage proxy's lesson, one app over — and here it is SIMPLER by
+    construction, which is worth pinning so nobody "improves" it back into the
+    trap. apps/manage cannot proxy a bare "/manage" because its own shell and
+    assets live under that prefix; apps/platform has the same problem with
+    "/platform", so it names the API's second segments too.
+
+    Derived from the live route table rather than transcribed: a fifth console
+    router would otherwise work in production, in this suite and in CI, and break
+    only on a developer's machine."""
+    monkeypatch.setattr("app.main.get_settings", _settings)
+    expected = {
+        route.path.split("/")[2]
+        for route in _leaf_routes(create_app(resolver=_resolver))
+        if getattr(route, "path", "").startswith("/platform/")
+    }
+    assert expected, "no /platform API route was discovered — the walker is broken"
+
+    source = PLATFORM_VITE_CONFIG.read_text(encoding="utf-8")
+    match = re.search(r'"\^/platform/\(([a-z|-]+)\)"', source)
+    assert match is not None, f"no ^/platform/(...) proxy key found in {PLATFORM_VITE_CONFIG}"
+    assert set(match.group(1).split("|")) == expected
+
+
+def test_the_ci_copy_step_carries_all_three_trees() -> None:
+    """⚠ SPEC D8 CLAIMED "zero workflow edits" AND IT WAS WRONG ABOUT THIS ONE
+    STEP. `pnpm -r` does pick the third app up for lint, typecheck and build with
+    no edit — but ci.yml:173-183 hardcodes two `cp -R` lines and a two-file
+    assert loop, so without an edit the console builds on CI, is never copied into
+    the upload, and production answers 404 for every console URL while every job
+    is green. Pinned by text, like `test_the_ci_copy_target_is_exactly_static_root`
+    above and for the same reason."""
+    workflow = CI_WORKFLOW.read_text()
+    copied = set(re.findall(r"cp -R frontend/apps/(\w+)/dist \S+", workflow))
+    assert copied == {"manage", "storefront", "platform"}, copied
+    asserted = set(re.findall(r"backend/app/static/(\w+)/index\.html", workflow))
+    assert asserted == {"manage", "storefront", "platform"}, asserted

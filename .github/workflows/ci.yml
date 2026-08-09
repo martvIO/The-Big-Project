@@ -174,13 +174,22 @@ jobs:
           mkdir -p backend/app/static
           cp -R frontend/apps/manage/dist backend/app/static/manage
           cp -R frontend/apps/storefront/dist backend/app/static/storefront
+          # F25's platform console. ⚠ SPEC D8 CLAIMED "zero workflow edits" AND
+          # WAS WRONG ABOUT THIS STEP: `pnpm -r` picks the third app up for
+          # lint/typecheck/build with no edit, but these two lines and the assert
+          # loop below are hardcoded — without this the console builds green, is
+          # never copied into the upload, and production 404s every console URL
+          # with every job passing.
+          cp -R frontend/apps/platform/dist backend/app/static/platform
       - name: Assert the SPAs are actually in the upload
         # The failure mode this exists for is silent: a renamed outDir, a
         # mistyped path or a new .gitignore rule leaves a green build and a
         # production origin that serves nothing but JSON. Fail here, before
         # `railway up`, where the cause is one step away.
         run: |
-          for f in backend/app/static/manage/index.html backend/app/static/storefront/index.html; do
+          for f in backend/app/static/manage/index.html \
+                   backend/app/static/storefront/index.html \
+                   backend/app/static/platform/index.html; do
             test -s "$f" || { echo "::error::missing or empty: $f"; exit 1; }
           done
           # Two shells prove the copy ran; they do not prove it carried the

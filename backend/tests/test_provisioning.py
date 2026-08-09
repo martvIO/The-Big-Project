@@ -73,7 +73,7 @@ def test_provision_rejects_reserved_and_invalid_slugs(app_role_url: str) -> None
                     slug=bad,
                     name="X",
                     owner_email="o@x.example",
-                    owner_password="pw",
+                    owner_password="owner-first-pw",
                     operator="tester",
                 )
             )
@@ -93,7 +93,7 @@ def test_provision_rejects_duplicate_slug(app_role_url: str) -> None:
                 slug=slug,
                 name="First",
                 owner_email="a@x.example",
-                owner_password="pw",
+                owner_password="owner-first-pw",
                 operator="t",
             )
         )
@@ -103,7 +103,7 @@ def test_provision_rejects_duplicate_slug(app_role_url: str) -> None:
                 slug=slug,
                 name="Second",
                 owner_email="b@x.example",
-                owner_password="pw",
+                owner_password="owner-first-pw",
                 operator="t",
             )
         )
@@ -127,6 +127,71 @@ def test_provision_rejects_blank_password(app_role_url: str) -> None:
             )
         )
         assert result.ok is False and result.message == "empty_password"
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_every_password_this_service_sets_carries_the_staff_floor(app_role_url: str) -> None:
+    """⚠ THE SAME 10 CHARACTERS `/manage/staff` ENFORCES, on the three passwords
+    that were exempt.
+
+    `MIN_STAFF_PASSWORD_LENGTH`'s own comment argues that length is the only
+    control surviving a password one person chooses and speaks to another — which
+    is the trip all three of these make. Until this check, an operator could
+    provision a boutique whose owner password was `a`, reset an existing owner to
+    `a`, or seed the credential that controls EVERY tenant with `a`, through a
+    console the boutique's own staff screen would have refused. It also underwrites
+    spec D6's decision to decline TOTP on the strength of the operator credential
+    being "argon2-hashed, un-enumerable, rate-limited".
+
+    Blank keeps its own code (tested above) so the console's existing sentence and
+    the CLI's message are unchanged.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    provisioning = ProvisioningService(factory)
+    try:
+        slug = _slug()
+        short = asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="Nine",
+                owner_email="o@x.example",
+                owner_password="nine-char",  # 9
+                operator="t",
+            )
+        )
+        assert short.ok is False and short.message == "password_too_short"
+
+        assert asyncio.run(
+            provisioning.provision(
+                slug=slug,
+                name="Ten",
+                owner_email="o@x.example",
+                owner_password="ten-charss",  # 10, the floor itself
+                operator="t",
+            )
+        ).ok
+
+        reset = asyncio.run(
+            provisioning.reset_owner_password(
+                slug=slug,
+                owner_email="o@x.example",
+                new_password="nine-char",
+                operator="t",
+            )
+        )
+        assert reset.ok is False and reset.message == "password_too_short"
+
+        seeded = asyncio.run(
+            provisioning.create_operator(
+                email=f"{uuid.uuid4().hex[:8]}@modryn.example",
+                display_name="Short",
+                password="a",
+                operator="cli",
+            )
+        )
+        assert seeded.ok is False and seeded.message == "password_too_short"
     finally:
         asyncio.run(engine.dispose())
 
@@ -157,7 +222,7 @@ def test_provision_after_suspend_hits_integrity_backstop(
                 slug=slug,
                 name="First",
                 owner_email="a@x.example",
-                owner_password="pw",
+                owner_password="owner-first-pw",
                 operator="t",
             )
         ).ok
@@ -168,7 +233,7 @@ def test_provision_after_suspend_hits_integrity_backstop(
                 slug=slug,
                 name="Second",
                 owner_email="b@x.example",
-                owner_password="pw",
+                owner_password="owner-first-pw",
                 operator="t",
             )
         )
@@ -202,7 +267,7 @@ def test_provision_rolls_back_the_tenant_on_partial_failure(
                     slug=slug,
                     name="Orphan?",
                     owner_email="o@x.example",
-                    owner_password="pw",
+                    owner_password="owner-first-pw",
                     operator="t",
                 )
             )
@@ -223,7 +288,7 @@ def test_reset_password_rejects_blank_password(app_role_url: str) -> None:
                 slug=slug,
                 name="Shop",
                 owner_email="owner@shop.example",
-                owner_password="old-pw",
+                owner_password="owner-old-pw",
                 operator="t",
             )
         )
@@ -251,7 +316,7 @@ def test_suspend_flips_status_and_list_reflects_it(app_role_url: str) -> None:
                 slug=slug,
                 name="Paused",
                 owner_email="o@x.example",
-                owner_password="pw",
+                owner_password="owner-first-pw",
                 operator="t",
             )
         )
@@ -278,7 +343,7 @@ def test_reset_password_changes_credentials(app_role_url: str) -> None:
                 slug=slug,
                 name="Shop",
                 owner_email="owner@shop.example",
-                owner_password="old-pw",
+                owner_password="owner-old-pw",
                 operator="t",
             )
         )
@@ -296,7 +361,7 @@ def test_reset_password_changes_credentials(app_role_url: str) -> None:
         assert reset.ok
 
         with pytest.raises(InvalidCredentialsError):
-            asyncio.run(auth.login(tenant_id, "owner@shop.example", "old-pw"))
+            asyncio.run(auth.login(tenant_id, "owner@shop.example", "owner-old-pw"))
         staff, _ = asyncio.run(auth.login(tenant_id, "owner@shop.example", "brand-new-pw"))
         assert staff.email == "owner@shop.example"
 
@@ -305,7 +370,7 @@ def test_reset_password_changes_credentials(app_role_url: str) -> None:
                 provisioning.reset_owner_password(
                     slug=_slug(),
                     owner_email="nobody@x.example",
-                    new_password="pw",
+                    new_password="owner-next-pw",
                     operator="t",
                 )
             ).ok
@@ -330,7 +395,7 @@ def test_each_state_change_writes_platform_audit(app_role_url: str, migrated_db:
                 slug=slug,
                 name="Audited",
                 owner_email="o@x.example",
-                owner_password="pw",
+                owner_password="owner-first-pw",
                 operator="opsy",
             )
         )

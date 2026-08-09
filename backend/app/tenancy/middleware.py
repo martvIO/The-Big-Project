@@ -54,19 +54,69 @@ def _not_found() -> JSONResponse:
     return JSONResponse(TENANT_NOT_FOUND_BODY, status_code=404)
 
 
+# F25's console prefix.
+#
+# ⚠ THIS IS NOT AN ENTRY IN `EXEMPT_PATHS` AND MUST NEVER BECOME ONE. Exemption
+# skips tenant resolution on EVERY host, which would open the console's routes on
+# every boutique's own subdomain — the precise inversion of what this fence is
+# for. The fence is the label branch below; `test_platform_paths_are_not_exempt`
+# is the tripwire.
+PLATFORM_PREFIX = "/platform"
+
+
+def _is_platform_path(path: str) -> bool:
+    # Exact, or a real path segment. `startswith(PLATFORM_PREFIX)` alone would put
+    # a future `/platformer` route inside the fence on the console host and
+    # outside every tenant's reach — a routing decision made by a substring.
+    return path == PLATFORM_PREFIX or path.startswith(PLATFORM_PREFIX + "/")
+
+
 class TenantResolutionMiddleware(BaseHTTPMiddleware):
     """Binds the tenant from the request hostname — never from client input
-    beyond the Host header, which yields nothing more than DNS already does."""
+    beyond the Host header, which yields nothing more than DNS already does.
 
-    def __init__(self, app: ASGIApp, resolver: TenantResolver, base_domain: str) -> None:
+    Since F25 it also fences the platform console, BOTH WAYS and with the one
+    `TENANT_NOT_FOUND` body in either direction: on `{platform_host_label}.{base}`
+    only `/platform*` (and the exact `EXEMPT_PATHS`) proceed, and on every tenant
+    host `/platform*` is refused. One place, one body, no oracle either way.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        resolver: TenantResolver,
+        base_domain: str,
+        platform_host_label: str,
+    ) -> None:
         super().__init__(app)
         self._resolver = resolver
         self._base_domain = base_domain
+        self._platform_host_label = platform_host_label
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        if request.url.path in EXEMPT_PATHS:
+        path = request.url.path
+        if path in EXEMPT_PATHS:
             return await call_next(request)
         slug = extract_slug(request.headers.get("host"), self._base_domain)
+
+        # The label branch runs BEFORE `is_valid_slug`, and it has to: the label
+        # is reserved, so `is_valid_slug` refuses it and the console host would
+        # otherwise 404 itself.
+        if slug is not None and slug == self._platform_host_label:
+            if not _is_platform_path(path):
+                return _not_found()
+            # No tenant is resolved here and none exists to resolve. The flag is
+            # the BELT that `get_current_operator` checks; this branch is the
+            # braces, and neither is trusted alone.
+            request.state.platform_host = True
+            return await call_next(request)
+
+        # Tenant hosts: the console does not exist here. Refused before
+        # resolution, so the fence costs no database work and leaks no timing
+        # signal about whether the boutique exists.
+        if _is_platform_path(path):
+            return _not_found()
+
         if slug is None or not is_valid_slug(slug):
             return _not_found()
         tenant = await self._resolver(slug)

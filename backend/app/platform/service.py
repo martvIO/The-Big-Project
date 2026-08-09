@@ -8,8 +8,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.passwords import hash_password
+from app.auth.schemas import MIN_STAFF_PASSWORD_LENGTH
 from app.booking.backfill import ManageLinkBackfill
 from app.core.config import get_settings
+from app.db.repositories.platform_operators import PlatformOperatorsRepository
+from app.db.repositories.platform_sessions import PlatformSessionsRepository
+from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
@@ -19,6 +23,38 @@ from app.models.tenant import Tenant
 from app.platform.repository import PlatformAuditLogRepository
 from app.privacy.retention import RetentionRunner
 from app.tenancy.slugs import is_valid_slug
+
+
+def _password_problem(password: str) -> str | None:
+    """⚠ THE SAME FLOOR `/manage/staff` ENFORCES, on the three passwords that were
+    exempt from it.
+
+    `MIN_STAFF_PASSWORD_LENGTH` argues (auth/schemas.py) that length is the only
+    control surviving a password one person chooses and speaks to another — which
+    is exactly the trip every password below makes: an operator types it, then
+    hands it to a boutique owner or keeps it as the credential that controls every
+    tenant on the platform. `a` passed all three until this check, while the
+    boutique's own staff screen refused it.
+
+    It matters more than usual here because spec D6 declines TOTP on the strength
+    of the operator credential being "argon2-hashed, un-enumerable, rate-limited"
+    — a floor is the leg of that argument the code did not implement.
+
+    HERE and not in `schemas.py`: the service owns the failure audit rows
+    (router.py's opening note), so a schema-level refusal would answer with a
+    422→400 the console has no sentence for AND skip the `*_FAILED` row the CLI
+    writes for the same refusal. This also covers `create-operator`, which no
+    schema sees at all.
+
+    Length is measured on the RAW value, matching `CreateStaffRequest`'s
+    `min_length`; blank keeps its own code so the console's existing sentence and
+    the CLI's own tests are unchanged.
+    """
+    if not password.strip():
+        return "empty_password"
+    if len(password) < MIN_STAFF_PASSWORD_LENGTH:
+        return "password_too_short"
+    return None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -45,7 +81,15 @@ class ProvisioningService:
         self._session_factory = session_factory
         self._tenants = TenantsRepository(session_factory)
         self._staff = StaffUsersRepository()
+        # Staff sessions, for the one command that invalidates a boutique
+        # credential from outside the boutique — see `reset_owner_password`.
+        self._sessions = SessionsRepository()
         self._audit = PlatformAuditLogRepository()
+        # F25's bootstrap pair. ON THIS CLASS rather than in a second service,
+        # because pre-decided #20 says there is ONE audited command layer and a
+        # fork of it is how the audit posture drifts between two files.
+        self._operators = PlatformOperatorsRepository()
+        self._operator_sessions = PlatformSessionsRepository()
 
     async def provision(
         self,
@@ -58,10 +102,12 @@ class ProvisioningService:
     ) -> CommandResult:
         if not is_valid_slug(slug):
             return await self._fail_provision(operator, slug, "invalid_or_reserved_slug")
-        if not owner_password.strip():
+        password_problem = _password_problem(owner_password)
+        if password_problem is not None:
             # A blank password (e.g. `echo -n | … provision`) would create a
-            # loginable owner with a hashed empty string — reject it.
-            return await self._fail_provision(operator, slug, "empty_password")
+            # loginable owner with a hashed empty string; a one-character one is
+            # loginable in five guesses. Both refused, with their own codes.
+            return await self._fail_provision(operator, slug, password_problem)
         if await self._tenants.by_slug(slug) is not None:
             return await self._fail_provision(operator, slug, "slug_taken")
 
@@ -237,9 +283,16 @@ class ProvisioningService:
     async def reset_owner_password(
         self, *, slug: str, owner_email: str, new_password: str, operator: str
     ) -> CommandResult:
-        if not new_password.strip():
-            return CommandResult(ok=False, message="empty_password")
-        tenant = await self._tenants.by_slug(slug)
+        password_problem = _password_problem(new_password)
+        if password_problem is not None:
+            return CommandResult(ok=False, message=password_problem)
+        # ⚠ `by_slug_any_status`, NOT `by_slug`. Suspension must not make this
+        # command unreachable: suspend-then-reset is the natural order of an
+        # account takeover response, and the console renders «איפוס סיסמת בעלים»
+        # as the ONLY action left on a suspended row (design §Screen 2). With
+        # active-only resolution the reset 404s exactly when an operator needs
+        # it. Soft-deleted tenants still resolve to nothing.
+        tenant = await self._tenants.by_slug_any_status(slug)
         if tenant is None:
             return CommandResult(ok=False, message="tenant_not_found")
         async with tenant_session(self._session_factory, tenant.id) as session:
@@ -255,8 +308,18 @@ class ProvisioningService:
                 .values(password_hash=hash_password(new_password))
                 .returning(StaffUser.id)
             )
-            if result.scalar_one_or_none() is None:
+            staff_user_id = result.scalar_one_or_none()
+            if staff_user_id is None:
                 return CommandResult(ok=False, message="owner_not_found")
+            # A new hash does not end the takeover it is meant to end:
+            # `resolve_session` never reads `password_hash`, so a cookie minted
+            # under the OLD password stays good for the rest of
+            # `session_ttl_seconds`. `auth/staff.py` pays for the same claim on
+            # the tenant-side password change; this is the same operation at
+            # higher stakes. Same transaction, so the hash and the revocation
+            # commit together. No `except_token_hash`: the operator holds no
+            # session of the owner's, so every one of them goes.
+            await self._sessions.revoke_for_staff_user(session, tenant.id, staff_user_id)
             await self._audit.record(
                 session,
                 operator=operator,
@@ -265,6 +328,118 @@ class ProvisioningService:
                 details={"slug": slug, "email": owner_email.lower()},
             )
         return CommandResult(ok=True, message="password_reset", tenant_id=tenant.id)
+
+    async def create_operator(
+        self, *, email: str, display_name: str, password: str, operator: str
+    ) -> CommandResult:
+        """The ONLY way a platform operator comes into existence (spec D2).
+
+        No HTTP route calls this and none ever should: the console's own
+        compromise must not be able to mint a second operator, which is why the
+        credential that controls every boutique is seeded from a shell and
+        nowhere else.
+        """
+        normalized = email.strip().lower()
+        password_problem = _password_problem(password)
+        if password_problem is not None:
+            # The `provision` argument one table over, at higher stakes: this
+            # credential controls every tenant on the platform, and 5 guesses per
+            # 15 min is ample for a one-character secret.
+            return await self._fail_operator(operator, normalized, password_problem, created=True)
+        if not display_name.strip():
+            return await self._fail_operator(
+                operator, normalized, "empty_display_name", created=True
+            )
+
+        async with self._session_factory() as session:
+            existing = await self._operators.by_active_email(session, normalized)
+        if existing is not None:
+            return await self._fail_operator(
+                operator, normalized, "operator_email_taken", created=True
+            )
+
+        try:
+            async with self._session_factory() as session, session.begin():
+                await self._operators.insert(
+                    session,
+                    email=normalized,
+                    password_hash=hash_password(password),
+                    display_name=display_name.strip(),
+                )
+                await self._audit.record(
+                    session,
+                    operator=operator,
+                    action=PlatformAuditAction.OPERATOR_CREATED,
+                    details={"email": normalized},
+                )
+        except IntegrityError:
+            # The partial unique index is the real control; the read above is
+            # the ergonomic one. `provision`'s shape exactly.
+            return await self._fail_operator(
+                operator, normalized, "operator_email_taken", created=True
+            )
+        return CommandResult(ok=True, message="operator_created")
+
+    async def deactivate_operator(self, *, email: str, operator: str) -> CommandResult:
+        """Soft delete + revoke every live session, in ONE transaction.
+
+        Both halves matter and neither is enough alone: the soft delete is what
+        `get_current_operator`'s re-read notices on the next request, and the
+        revoke is what closes the window between now and that request on a
+        console tab already open.
+
+        REFUSES THE LAST ACTIVE OPERATOR. There is no HTTP route that creates
+        one, so an empty `platform_operators` is a platform whose console can
+        only be reopened from a shell — recoverable, but not by anyone looking
+        at the login screen.
+        """
+        normalized = email.strip().lower()
+        # Compute the outcome INSIDE the transaction, raise nothing, and write
+        # the failure audit outside it — the F5 lesson: a refusal reported by an
+        # exception rolls back the row that reports it.
+        async with self._session_factory() as session, session.begin():
+            found = await self._operators.by_active_email(session, normalized)
+            if found is None:
+                reason: str | None = "operator_not_found"
+            elif await self._operators.count_active(session) <= 1:
+                reason = "last_operator"
+            else:
+                await self._operators.soft_delete(session, found.id)
+                await self._operator_sessions.revoke_all_for_operator(session, found.id)
+                await self._audit.record(
+                    session,
+                    operator=operator,
+                    action=PlatformAuditAction.OPERATOR_DEACTIVATED,
+                    details={"email": normalized},
+                )
+                reason = None
+
+        if reason is not None:
+            return await self._fail_operator(operator, normalized, reason, created=False)
+        return CommandResult(ok=True, message="operator_deactivated")
+
+    async def _fail_operator(
+        self, operator: str, email: str, reason: str, *, created: bool
+    ) -> CommandResult:
+        """`_fail_provision` for the operator pair, and it writes its OWN action
+        rather than reusing the success one. `TENANT_PROVISION_FAILED` exists for
+        this reason: a row reading `operator_created` when no operator was created
+        is not a weaker record, it is a false one — and this book is the only
+        evidence anybody has about who touched the platform's credentials.
+
+        `details` carries the address and the reason. NEVER the password or its
+        hash — the whole point of reading the password from stdin is that it does
+        not get written down.
+        """
+        details: dict[str, Any] = {"email": email, "reason": reason}
+        action = (
+            PlatformAuditAction.OPERATOR_CREATE_FAILED
+            if created
+            else PlatformAuditAction.OPERATOR_DEACTIVATE_FAILED
+        )
+        async with self._session_factory() as session, session.begin():
+            await self._audit.record(session, operator=operator, action=action, details=details)
+        return CommandResult(ok=False, message=reason)
 
     async def _fail_provision(self, operator: str, slug: str, reason: str) -> CommandResult:
         details: dict[str, Any] = {"slug": slug, "reason": reason}

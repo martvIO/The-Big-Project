@@ -3677,3 +3677,212 @@ def test_migration_0027_round_trips(migrated_db: str) -> None:
         assert restored is not None and restored[1] == "YES"
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F25: the two platform-scoped operator tables ----------------------------
+#
+# ⚠ db-marked: these run on CI only (no local Docker).
+#
+# NEITHER TABLE CARRIES `tenant_id`, and that is the whole schema decision (spec
+# D7, inheriting 0004's `target_tenant_id` lesson): a `tenant_id` column would
+# put both inside `test_every_tenant_id_table_has_forced_rls`'s metadata scan and
+# demand RLS on rows that belong to no tenant. The absence is asserted below
+# rather than described, because a later reader "completing" the standard block
+# with a tenant_id is exactly the edit that would break the forced-RLS test in a
+# module that never heard of F25.
+
+_PLATFORM_OPERATOR_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'platform_operators'"
+)
+_PLATFORM_SESSION_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'platform_sessions'"
+)
+_PLATFORM_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE tablename = :table AND indexname = :name"
+)
+# Spelled as POSTGRES deparses them (schema-qualified, USING btree, parenthesised
+# predicate) — the 0018/F22 pinning technique. The partial predicates are the
+# load-bearing half: drop `WHERE deleted_at IS NULL` from the operator index and
+# a deactivated operator's address can never be reused; drop it from the session
+# ones and every revoked row stays in the lookup's way.
+_OPERATOR_EMAIL_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_platform_operators_email_unique ON public.platform_operators "
+    "USING btree (lower(email)) WHERE (deleted_at IS NULL)"
+)
+_SESSION_TOKEN_INDEX_DEF = (
+    "CREATE INDEX idx_platform_sessions_token ON public.platform_sessions "
+    "USING btree (token_hash) WHERE (deleted_at IS NULL)"
+)
+_SESSION_OPERATOR_INDEX_DEF = (
+    "CREATE INDEX idx_platform_sessions_operator ON public.platform_sessions "
+    "USING btree (operator_id) WHERE (deleted_at IS NULL)"
+)
+
+
+def _columns(url: str, statement: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(statement))).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _platform_index_defs(url: str) -> tuple[str, str, str]:
+    async def read() -> tuple[str, str, str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                email = await conn.execute(
+                    text(_PLATFORM_INDEX_DEF),
+                    {"table": "platform_operators", "name": "idx_platform_operators_email_unique"},
+                )
+                token = await conn.execute(
+                    text(_PLATFORM_INDEX_DEF),
+                    {"table": "platform_sessions", "name": "idx_platform_sessions_token"},
+                )
+                operator = await conn.execute(
+                    text(_PLATFORM_INDEX_DEF),
+                    {"table": "platform_sessions", "name": "idx_platform_sessions_operator"},
+                )
+                return (
+                    str(email.scalar_one()),
+                    str(token.scalar_one()),
+                    str(operator.scalar_one()),
+                )
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_migration_0028_creates_platform_operator_tables(migrated_db: str) -> None:
+    """The DDL spec D7 pins, including the absence that matters most."""
+    operators = _columns(migrated_db, _PLATFORM_OPERATOR_COLUMNS)
+    assert operators["email"] == ("text", "NO")
+    assert operators["password_hash"] == ("text", "NO")
+    assert operators["display_name"] == ("text", "NO")
+    assert operators["deleted_at"] == ("timestamp with time zone", "YES")
+    assert "tenant_id" not in operators
+
+    sessions = _columns(migrated_db, _PLATFORM_SESSION_COLUMNS)
+    # No FK, house rule — the pointer is a bare UUID validated in the app.
+    assert sessions["operator_id"] == ("uuid", "NO")
+    assert sessions["token_hash"] == ("text", "NO")
+    assert sessions["expires_at"] == ("timestamp with time zone", "NO")
+    assert "tenant_id" not in sessions
+
+
+@pytest.mark.db
+def test_the_platform_operator_indexes_are_pinned(migrated_db: str) -> None:
+    """All three partial indexes, deparsed. Weakening any predicate is a visible
+    act rather than a silent one."""
+    email, token, operator = _platform_index_defs(migrated_db)
+    assert email == _OPERATOR_EMAIL_INDEX_DEF
+    assert token == _SESSION_TOKEN_INDEX_DEF
+    assert operator == _SESSION_OPERATOR_INDEX_DEF
+
+
+@pytest.mark.db
+def test_the_email_uniqueness_is_case_insensitive_and_frees_on_soft_delete(
+    migrated_db: str,
+) -> None:
+    """Both halves of the partial unique index, as behaviour.
+
+    `lower(email)` — so `Dana@x` cannot shadow `dana@x` into a second operator
+    account nobody expects. `WHERE deleted_at IS NULL` — so deactivate-then-
+    recreate is the remedy for a typo'd address, exactly as it is for staff_users
+    (F51's D5 note)."""
+
+    async def probe() -> tuple[bool, bool]:
+        engine = create_async_engine(migrated_db)
+        insert = (
+            "INSERT INTO platform_operators (email, password_hash, display_name, deleted_at) "
+            "VALUES (:email, 'hash', 'Probe', :deleted_at)"
+        )
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                await conn.execute(text(insert), {"email": "dana@x.example", "deleted_at": None})
+                try:
+                    await conn.execute(
+                        text(insert), {"email": "DANA@x.example", "deleted_at": None}
+                    )
+                    case_insensitive = False
+                except IntegrityError:
+                    case_insensitive = True
+                await trans.rollback()
+
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                await conn.execute(
+                    text(insert),
+                    # A real datetime, not an ISO string: this parameter reaches
+                    # asyncpg unmediated (raw text() with a bind, no ORM column
+                    # type to coerce it), and asyncpg refuses a str for a
+                    # TIMESTAMPTZ with "expected a datetime.date or
+                    # datetime.datetime instance, got 'str'".
+                    {
+                        "email": "dana@x.example",
+                        "deleted_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC),
+                    },
+                )
+                try:
+                    await conn.execute(
+                        text(insert), {"email": "dana@x.example", "deleted_at": None}
+                    )
+                    reusable = True
+                except IntegrityError:
+                    reusable = False
+                await trans.rollback()
+            return case_insensitive, reusable
+        finally:
+            await engine.dispose()
+
+    case_insensitive, reusable = asyncio.run(probe())
+    assert case_insensitive
+    assert reusable
+
+
+@pytest.mark.db
+def test_migration_0028_round_trips(migrated_db: str) -> None:
+    """upgrade() creates both tables; downgrade() drops both and touches nothing
+    else — `platform_audit_log` in particular, whose INSERT-only grant this
+    feature inherits rather than restates. The downgrade target comes from
+    `_parent_of` so a renumber-at-rebase cannot silently stop one revision
+    short."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+
+    def exists(name: str) -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text(_TABLE_EXISTS), {"name": name})
+                    return bool(result.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists("platform_operators")
+        assert exists("platform_sessions")
+        command.downgrade(cfg, _parent_of("platform operators"))
+        assert not exists("platform_operators")
+        assert not exists("platform_sessions")
+        # The audit book is NOT collateral of this downgrade.
+        assert exists("platform_audit_log")
+        command.upgrade(cfg, "head")
+        assert exists("platform_operators")
+        assert exists("platform_sessions")
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head

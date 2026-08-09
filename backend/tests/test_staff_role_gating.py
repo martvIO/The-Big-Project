@@ -277,6 +277,19 @@ def _leaf_routes(node: Any) -> Iterator[Any]:
         yield route
 
 
+def _operator_gates(dependant: Any) -> Iterator[bool]:
+    """F25's console gate, found however deep — router-level `dependencies=[...]`
+    and a per-route `Depends` both surface here. `_gate_role_sets`' shape for a
+    dependency that carries no attribute to introspect: the identity of the
+    callable IS the gate."""
+    from app.platform.auth import get_current_operator
+
+    for dep in getattr(dependant, "dependencies", []):
+        if dep.call is get_current_operator:
+            yield True
+        yield from _operator_gates(dep)
+
+
 def _gate_role_sets(dependant: Any) -> Iterator[frozenset[str]]:
     """Every RoleGate in the dependency tree, however deep — router-level gates
     and per-route tightenings both surface here via `allowed_roles`."""
@@ -990,3 +1003,50 @@ def test_head_and_options_on_a_gated_route_are_405_before_the_gate() -> None:
         assert client.request("HEAD", "/manage/settings").status_code == 405
         assert client.request("OPTIONS", "/manage/settings").status_code == 405
     assert auth.resolve_calls == 0
+
+
+# --- F25's console: the same default-deny walk, for the other population -------
+
+
+def test_every_platform_route_but_the_two_public_ones_requires_an_operator() -> None:
+    """The `/manage` RoleGate walker's analogue for the platform console, and it
+    exists for the identical reason: a console route added later WITHOUT
+    `Depends(get_current_operator)` must be a red build, not a convention nobody
+    re-read.
+
+    STAFF ROLES ARE MEANINGLESS HERE — an operator is not a staffer of anything,
+    which is why `test_no_route_outside_manage_carries_a_role_gate` above stays
+    green with seven new routes in the table. The console's gate is a different
+    dependency guarding a different population against a different table (spec
+    D3), and this is that gate's walk.
+
+    Two routes are deliberately open, and both must be: login has nobody to
+    authenticate yet, and logout must answer the same 200 with or without a live
+    cookie or it becomes an oracle for "was that token live".
+    """
+    open_by_design = {
+        ("POST", "/platform/auth/login"),
+        ("POST", "/platform/auth/logout"),
+    }
+    app = create_app(resolver=_null_resolver)
+    walked: set[tuple[str, str]] = set()
+    ungated: set[tuple[str, str]] = set()
+    for route in _leaf_routes(app):
+        path = getattr(route, "path", None)
+        dependant = getattr(route, "dependant", None)
+        if path is None or dependant is None or not path.startswith("/platform"):
+            continue
+        gated = any(_operator_gates(dependant))
+        for method in getattr(route, "methods", None) or ():
+            if method in ("HEAD", "OPTIONS"):
+                continue
+            walked.add((method, path))
+            if not gated:
+                ungated.add((method, path))
+
+    assert walked, "no /platform route was discovered — the walker is broken"
+    assert ungated == open_by_design, (
+        "console routes with no operator gate: "
+        f"{sorted(ungated - open_by_design)}; and routes listed as open by design "
+        f"that are now gated (prune them): {sorted(open_by_design - ungated)}"
+    )
