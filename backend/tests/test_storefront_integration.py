@@ -679,10 +679,19 @@ async def test_the_detail_shows_current_and_future_windows_ascending(app_role_ur
     try:
         catalog = _catalog(factory, storage)
         dress_id = await _dress(catalog, tenant, "Aurora")
+        # ⚠ THESE WINDOWS MUST NOT OVERLAP EACH OTHER. They are seeded through
+        # `create_reservation`, which enforces the feature's own overlap rule, so
+        # a fixture that overlaps does not test the projection — it dies in the
+        # setup with ReservationOverlapError. The first draft paired
+        # (2026-08-01 .. today) with (2026-07-01 .. 2026-08-07) and those share
+        # the whole of 1-7 August.
+        # The two properties still hold, and adjacently: the row ENDING TODAY is
+        # kept, the row that ENDED YESTERDAY is dropped, and 7 -> 8 August is a
+        # legal adjacency (only a same-day touch is a conflict).
         for starts_on, ends_on in (
             (datetime.date(2026, 9, 1), datetime.date(2026, 9, 4)),
             (datetime.date(2026, 8, 12), datetime.date(2026, 8, 18)),
-            (datetime.date(2026, 8, 1), today),
+            (today, today),
             (datetime.date(2026, 7, 1), datetime.date(2026, 8, 7)),
         ):
             await catalog.create_reservation(
@@ -690,7 +699,7 @@ async def test_the_detail_shows_current_and_future_windows_ascending(app_role_ur
             )
         view = await _storefront(factory, storage, now=noon).get_dress(tenant, dress_id)
         assert [(row.starts_on, row.ends_on) for row in view.unavailable_ranges] == [
-            (datetime.date(2026, 8, 1), today),
+            (today, today),
             (datetime.date(2026, 8, 12), datetime.date(2026, 8, 18)),
             (datetime.date(2026, 9, 1), datetime.date(2026, 9, 4)),
         ]

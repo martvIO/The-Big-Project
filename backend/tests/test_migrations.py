@@ -4100,6 +4100,12 @@ def _reservation_pinned_definitions(url: str) -> tuple[str, str, str]:
 
 
 def _reservation_insert_admitted(url: str, starts_on: str, ends_on: str) -> bool:
+    """`starts_on`/`ends_on` are ISO strings for readability at the call sites,
+    but they are converted to real `date` objects before binding: these reach
+    asyncpg through a raw `text()` parameter with no ORM column type to coerce
+    them, and asyncpg rejects a str for a DATE with "'str' object has no
+    attribute 'toordinal'"."""
+
     async def probe() -> bool:
         engine = create_async_engine(url)
         try:
@@ -4107,7 +4113,11 @@ def _reservation_insert_admitted(url: str, starts_on: str, ends_on: str) -> bool
                 trans = await conn.begin()
                 try:
                     await conn.execute(
-                        text(_RESERVATION_INSERT), {"starts_on": starts_on, "ends_on": ends_on}
+                        text(_RESERVATION_INSERT),
+                        {
+                            "starts_on": datetime.date.fromisoformat(starts_on),
+                            "ends_on": datetime.date.fromisoformat(ends_on),
+                        },
                     )
                 except IntegrityError:
                     return False

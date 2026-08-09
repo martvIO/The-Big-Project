@@ -21,6 +21,7 @@ are exact rather than "at least one" — an assertion that would survive the ver
 duplicate-row bug the module exists to catch.
 """
 
+import datetime
 import time
 import uuid
 
@@ -384,6 +385,18 @@ async def test_every_catalog_action_has_a_live_writer(app_role_url: str) -> None
         await service.delete_media(tenant, dress_id, media.media_id, actor_id=ACTOR_ID)
         await service.archive_dress(tenant, dress_id, actor_id=ACTOR_ID)
         await service.restore_dress(tenant, dress_id, actor_id=ACTOR_ID)
+        # F28's pair. They belong in the LIFECYCLE rather than in the expected
+        # set's filter: this test's whole property is that a shipped AuditAction
+        # with no live writer reds here, so narrowing the filter to exclude them
+        # would be the one edit that turns the assertion vacuous.
+        reservation = await service.create_reservation(
+            tenant,
+            dress_id,
+            starts_on=datetime.date(2099, 3, 1),
+            ends_on=datetime.date(2099, 3, 6),
+            actor_id=ACTOR_ID,
+        )
+        await service.delete_reservation(tenant, dress_id, reservation.row.id, actor_id=ACTOR_ID)
 
         written = {row.action for row in await _rows(engine, tenant)}
         expected = {
