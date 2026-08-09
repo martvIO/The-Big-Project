@@ -19,6 +19,7 @@ from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.models.alteration_ticket import AlterationTicket
 from app.models.constants import (
+    MessageKind,
     QueueTicketStatus,
     ScheduledMessageKind,
     StaffRole,
@@ -4590,6 +4591,35 @@ def _offer_pinned_definitions(url: str) -> dict[str, str]:
     return asyncio.run(read())
 
 
+_MESSAGE_LOG_INSERT = (
+    "INSERT INTO message_log (tenant_id, booking_id, phone, kind, body, status) "
+    "VALUES (uuid_generate_v4(), NULL, '+972500000000', :kind, 'x', 'sent')"
+)
+
+
+def _message_kind_admitted(url: str, kind: str) -> bool:
+    """`message_log.kind` is a SECOND bounded set on a SECOND table, and 0032
+    widens it beside the queue's. They are not the same fact: one says what may
+    be QUEUED, the other what may be RECORDED as sent."""
+
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(text(_MESSAGE_LOG_INSERT), {"kind": kind})
+                except IntegrityError:
+                    return False
+                finally:
+                    await trans.rollback()
+                return True
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
 def _subject_insert_admitted(url: str, *, booking: bool, entry: bool, kind: str) -> bool:
     async def probe() -> bool:
         engine = create_async_engine(url)
@@ -4672,6 +4702,20 @@ def test_the_kind_check_admits_exactly_the_enum(migrated_db: str) -> None:
             kind
         )
     assert not _subject_insert_admitted(migrated_db, booking=True, entry=False, kind="no-such-kind")
+
+
+@pytest.mark.db
+def test_the_message_log_kind_check_admits_exactly_the_enum(migrated_db: str) -> None:
+    """The evidence half of the same widening, and the reason it exists at all:
+    an offer send that reached the provider and then failed its message_log
+    INSERT would be a text that went out with no record of it. `booking_id` is
+    already nullable there (0007), so an offer's absent booking needs nothing.
+
+    Iterated from the live enum, 0018's rule, so a seventh kind is either
+    migrated with its CHECK or this is the red."""
+    for kind in MessageKind:
+        assert _message_kind_admitted(migrated_db, kind.value), kind
+    assert not _message_kind_admitted(migrated_db, "no-such-kind")
 
 
 @pytest.mark.db

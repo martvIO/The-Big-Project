@@ -161,6 +161,11 @@ class MessageKind(StrEnum):
     # The deposit is held and the boutique will call — this body promises no
     # refund and names no new time, because neither is decided at send time.
     PAYMENT_RECEIVED_NO_SLOT = "payment_received_no_slot"
+    # F23: the offer text. It carries no booking — `message_log.booking_id` has
+    # been nullable since 0007 — and 0032 widens this table's kind CHECK beside
+    # the queue's, because "what may be queued" and "what may be recorded as
+    # sent" are two different sets on two different tables.
+    WAITLIST_OFFER = "waitlist_offer"
 
 
 class MessageStatus(StrEnum):

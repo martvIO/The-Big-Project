@@ -22,18 +22,22 @@ from app.booking.comms_templates import (
     REMINDER_MAX_SEGMENTS,
     UCS2_CONCAT_LIMIT,
     UCS2_SINGLE_LIMIT,
+    WAITLIST_OFFER_MAX_SEGMENTS,
     confirmation_sms_body,
     jerusalem_date,
     jerusalem_time,
     jerusalem_weekday,
     manage_link,
     mask_manage_link,
+    offer_link,
     owner_cancel_sms_body,
     owner_reschedule_sms_body,
     reminder_sms_body,
     truncate_boutique_name,
     ucs2_segments,
+    waitlist_offer_sms_body,
 )
+from app.storefront.validation import BOUTIQUE_TIMEZONE
 
 # The documented worst case, from the spec's Named-constants row: a 30-char slug,
 # a 43-char token (generate_session_token's length), the real production domain,
@@ -252,3 +256,108 @@ def test_masking_a_body_that_never_held_the_token_is_a_no_op() -> None:
         boutique_name="בלה", starts_at=WORST_INSTANT, boutique_phone="+972501234567"
     )
     assert mask_manage_link(body, WORST_TOKEN) == body
+
+
+# --- F23: the offer body ----------------------------------------------------
+
+
+WORST_OFFER_LINK = offer_link(slug=WORST_SLUG, base_domain=WORST_DOMAIN, token=WORST_TOKEN)
+
+# 20:59 Jerusalem — the latest instant the cascade may issue at, one minute
+# before the quiet gate closes. Its deadline at the shipped 2h window is 22:59,
+# which is the case F-O1 says can never cross midnight.
+LATEST_ISSUE = datetime.datetime(2026, 12, 31, 18, 59, tzinfo=datetime.UTC)
+
+
+def _worst_offer(*, deadline: datetime.datetime, sent_at: datetime.datetime = LATEST_ISSUE) -> str:
+    return waitlist_offer_sms_body(
+        boutique_name=WORST_NAME,
+        slot_starts_at=WORST_INSTANT,
+        deadline=deadline,
+        sent_at=sent_at,
+        offer_url=WORST_OFFER_LINK,
+    )
+
+
+def test_the_offer_link_is_manage_links_sibling_one_letter_apart() -> None:
+    assert offer_link(slug="bella", base_domain="modryn.co.il", token="abc") == (
+        "https://bella.modryn.co.il/w/abc"
+    )
+
+
+def test_the_offer_body_states_the_slot_and_an_absolute_deadline() -> None:
+    """Design §1's shape. The deadline is a clock time, never «בעוד שעתיים»: an
+    SMS read forty minutes late makes a relative claim false, and the two-hour
+    window is a SETTING while the clock time is a FACT."""
+    deadline = LATEST_ISSUE + datetime.timedelta(hours=2)
+    body = _worst_offer(deadline=deadline)
+    assert body.startswith(f"{WORST_NAME}: התפנה תור ביום ")
+    assert jerusalem_weekday(WORST_INSTANT) in body
+    assert jerusalem_date(WORST_INSTANT) in body
+    assert f"בשעה {jerusalem_time(WORST_INSTANT)}" in body
+    assert f"שמור עבורך עד {jerusalem_time(deadline)}, לאישור: {WORST_OFFER_LINK}" in body
+    # No relative offset anywhere.
+    assert "בעוד" not in body
+
+
+def test_the_offer_body_carries_no_urgency_and_no_exclamation_mark() -> None:
+    """Rule 7 of the copy deck. The whole storefront bundle contains zero
+    exclamation marks and this body will not be the first — and the cascade
+    offers sequentially, so a scarcity claim would also be a claim about other
+    brides she is owed nothing about."""
+    body = _worst_offer(deadline=LATEST_ISSUE + datetime.timedelta(hours=2))
+    assert "!" not in body
+    for banned in ("מהרי", "נותרו רק", "ראשון שמגיע", "רק אלייך"):
+        assert banned not in body
+
+
+def test_the_offer_body_fits_three_segments_at_the_documented_worst_case() -> None:
+    """Parity with the reminder, at a 25-char truncated name, the longest
+    weekday and the 30-char slug budget. A fourth segment sends fine and bills
+    again — this is a cost ceiling, and an invoice must not be how it is
+    discovered."""
+    body = _worst_offer(deadline=LATEST_ISSUE + datetime.timedelta(hours=2))
+    assert ucs2_segments(body) <= WAITLIST_OFFER_MAX_SEGMENTS
+
+
+def test_the_shipped_defaults_keep_the_deadline_a_bare_time() -> None:
+    """F-O1's premise, asserted rather than assumed: at the shipped 21:00 gate
+    and 2h window the latest possible deadline is 22:59, so it never crosses
+    midnight and the bare `HH:MM` is unambiguous."""
+    deadline = LATEST_ISSUE + datetime.timedelta(hours=2)
+    assert deadline.astimezone(BOUTIQUE_TIMEZONE).date() == (
+        LATEST_ISSUE.astimezone(BOUTIQUE_TIMEZONE).date()
+    )
+    body = _worst_offer(deadline=deadline)
+    assert f"עד {jerusalem_time(deadline)}," in body
+    assert "עד יום" not in body
+
+
+def test_a_deadline_on_another_day_grows_its_weekday() -> None:
+    """F-O1. Raise `waitlist_offer_window_seconds` past ~3h and a 20:59 offer
+    expires TOMORROW while a bare `HH:MM` still reads as tonight. One comparison
+    of Jerusalem calendar dates removes the whole class of support call, and it
+    costs nothing on the default path because the branch is never taken there."""
+    deadline = LATEST_ISSUE + datetime.timedelta(hours=4)
+    body = _worst_offer(deadline=deadline)
+    assert f"עד יום {jerusalem_weekday(deadline)} {jerusalem_time(deadline)}," in body
+
+
+def test_the_conditional_is_against_the_SEND_day_and_not_the_slot_day() -> None:
+    """The slot is usually weeks out, so comparing the deadline against IT would
+    take the weekday branch on every single offer — the opposite of the rule, and
+    a longer body on the default path for no reason."""
+    sent_at = datetime.datetime(2026, 12, 1, 9, 0, tzinfo=datetime.UTC)
+    deadline = sent_at + datetime.timedelta(hours=2)
+    body = _worst_offer(deadline=deadline, sent_at=sent_at)
+    assert "עד יום" not in body, "same send day — the bare time is unambiguous"
+
+
+def test_the_offer_mask_hides_the_raw_token_from_the_evidence_row() -> None:
+    """`waitlist_entries` keeps only the sha256, so the raw token may not sit in
+    the forever-table beside its own hash. One mask covers both link shapes
+    because it replaces the TOKEN, not the path."""
+    body = _worst_offer(deadline=LATEST_ISSUE + datetime.timedelta(hours=2))
+    masked = mask_manage_link(body, WORST_TOKEN)
+    assert WORST_TOKEN not in masked
+    assert f"/w/{MASKED_TOKEN}" in masked

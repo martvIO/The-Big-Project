@@ -31,6 +31,10 @@ REMINDER_MAX_SEGMENTS = 3
 OWNER_CANCEL_MAX_SEGMENTS = 3
 OWNER_RESCHEDULE_MAX_SEGMENTS = 3
 PAYMENT_RECEIVED_NO_SLOT_MAX_SEGMENTS = 3
+# F23's offer, at parity with the reminder: prefix 101 UCS-2 units at a 25-char
+# truncated name and the longest weekday, link 97 at the documented 30-char slug
+# budget.
+WAITLIST_OFFER_MAX_SEGMENTS = 3
 
 # tenants.name is unbounded TEXT, but the arithmetic above assumes ~25 characters
 # of it. Truncating here is the only way production matches the tested fixture
@@ -166,6 +170,64 @@ def reminder_sms_body(*, boutique_name: str, starts_at: datetime.datetime, manag
         f"{truncate_boutique_name(boutique_name)}: "
         f"תזכורת — התור שלך ביום {weekday}, {date} בשעה {time}. "
         f"לאישור הגעה או ביטול: {manage_url}"
+    )
+
+
+def offer_link(*, slug: str, base_domain: str, token: str) -> str:
+    """`/w/{token}` — `manage_link`'s sibling, one letter apart on purpose.
+
+    Same short path for the same reason (D7): the alternative spends ~14 extra
+    UCS-2 characters per SMS forever. `mask_manage_link` masks this one too — it
+    replaces the TOKEN, not the path, so one function covers both link shapes.
+    """
+    return f"https://{slug}.{base_domain}/w/{token}"
+
+
+def waitlist_offer_sms_body(
+    *,
+    boutique_name: str,
+    slot_starts_at: datetime.datetime,
+    deadline: datetime.datetime,
+    sent_at: datetime.datetime,
+    offer_url: str,
+) -> str:
+    """F23's offer — the fifth lifecycle body.
+
+    **The deadline is ABSOLUTE, never «בעוד שעתיים».** The reminder's own rule:
+    a body renders from an instant, never from an offset, because an SMS read
+    forty minutes late makes a relative claim false. The two-hour window is a
+    SETTING; the clock time is a FACT.
+
+    **F-O1 — the weekday is appended when the deadline falls on another day.**
+    At the shipped defaults the deadline cannot cross midnight (the cascade stops
+    issuing at 21:00 and the window is two hours, so 22:59 is the latest), which
+    is what lets it render as a bare `HH:MM`. That guarantee is a function of
+    `waitlist_offer_window_seconds`: raise it past ~3h and a 20:30 offer expires
+    TOMORROW while the body still reads as today. One comparison of Jerusalem
+    calendar dates removes the whole class of support call, and it costs nothing
+    on the default path because the branch is never taken there.
+
+    No send-promise, no «נשלח רק אלייך», no «נותרו רק» and NO EXCLAMATION MARK.
+    The cascade offers sequentially (#13), but the bride is owed no statement
+    about other brides, and urgency is the one register this product does not
+    use.
+    """
+    weekday, date, time = _when(slot_starts_at)
+    # Against the SEND day, not the slot's: "until 00:30" is ambiguous to
+    # somebody reading it at 22:45 tonight, and the slot may be weeks away.
+    same_day = (
+        deadline.astimezone(BOUTIQUE_TIMEZONE).date()
+        == sent_at.astimezone(BOUTIQUE_TIMEZONE).date()
+    )
+    until = (
+        jerusalem_time(deadline)
+        if same_day
+        else f"יום {jerusalem_weekday(deadline)} {jerusalem_time(deadline)}"
+    )
+    return (
+        f"{truncate_boutique_name(boutique_name)}: "
+        f"התפנה תור ביום {weekday}, {date} בשעה {time}. "
+        f"שמור עבורך עד {until}, לאישור: {offer_url}"
     )
 
 

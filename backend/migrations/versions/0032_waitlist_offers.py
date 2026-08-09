@@ -99,8 +99,35 @@ def upgrade() -> None:
         "WHERE deleted_at IS NULL AND status = 'pending' AND waitlist_entry_id IS NOT NULL"
     )
 
+    # ⚠ A SECOND kind CHECK, on a different table, and it is not the same fact.
+    # `scheduled_messages.kind` above says what may be QUEUED; `message_log.kind`
+    # says what may be RECORDED as having been sent. 0016 widened this one for
+    # F19's `payment_received_no_slot` in exactly this drop-then-add shape.
+    #
+    # Without it the offer send raises on its evidence row — after the provider
+    # has already taken the message. `message_log.booking_id` is already nullable
+    # (0007), so the offer's absent booking needs nothing else.
+    op.execute("ALTER TABLE message_log DROP CONSTRAINT message_log_kind_check")
+    op.execute(
+        "ALTER TABLE message_log ADD CONSTRAINT message_log_kind_check "
+        "CHECK (kind IN ('otp','confirmation','reminder','owner_cancel','owner_reschedule',"
+        "'payment_received_no_slot','waitlist_offer'))"
+    )
+
 
 def downgrade() -> None:
+    # The evidence rows go first: narrowing the CHECK is refused while any row
+    # still holds the value, and an offer send that happened cannot be un-sent —
+    # deleting its log line is the only way back, and it is why this downgrade is
+    # a development affordance rather than a production one.
+    op.execute("DELETE FROM message_log WHERE kind = 'waitlist_offer'")
+    op.execute("ALTER TABLE message_log DROP CONSTRAINT IF EXISTS message_log_kind_check")
+    op.execute(
+        "ALTER TABLE message_log ADD CONSTRAINT message_log_kind_check "
+        "CHECK (kind IN ('otp','confirmation','reminder','owner_cancel','owner_reschedule',"
+        "'payment_received_no_slot'))"
+    )
+
     # Restoring `booking_id NOT NULL` is safe because it is only reachable once
     # every offer row is gone, and an offer row is the only kind that can carry a
     # NULL booking_id — so the DELETE below is both the precondition and the
