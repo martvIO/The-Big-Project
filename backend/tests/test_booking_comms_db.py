@@ -58,6 +58,7 @@ from app.db.repositories.message_log import MessageLogRepository
 from app.db.repositories.otp_codes import OtpCodesRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.repositories.terms import TermsVersionsRepository
+from app.db.repositories.waitlist_entries import WaitlistEntriesRepository
 from app.db.tenant import tenant_session
 from app.models.constants import (
     AppointmentAudience,
@@ -74,6 +75,7 @@ from app.notifications.service import NotificationService, OtpService
 from app.notifications.unconfigured import UnconfiguredSmsSender
 from app.notifications.validation import normalize_israeli_mobile
 from app.storefront.validation import BOUTIQUE_TIMEZONE
+from app.waitlist.cascade import WaitlistCascade
 
 pytestmark = pytest.mark.db
 
@@ -1271,5 +1273,198 @@ async def test_a_slot_freed_by_a_customer_cancel_is_offered_again_by_the_grid(
 
         # ... and claimable again the moment it is cancelled.
         assert (await _claim(factory, tenant_id, type_id)).created is True
+    finally:
+        await engine.dispose()
+
+
+# --- F23: the waitlist_offer branch -----------------------------------------
+
+
+def _cascade(
+    factory: async_sessionmaker[AsyncSession], *, now: datetime.datetime = NOW
+) -> WaitlistCascade:
+    return WaitlistCascade(
+        factory,
+        window_seconds=2 * 3600,
+        min_lead_seconds=2 * 3600,
+        quiet_start_hour=21,
+        quiet_end_hour=8,
+        # 12:00 UTC is 15:00 Jerusalem — outside the quiet block, so this tick
+        # can issue at all.
+        clock=lambda: now,
+    )
+
+
+async def _offered(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    type_id: uuid.UUID,
+    *,
+    phone: str,
+) -> uuid.UUID:
+    """A live offer through the real cascade — never a hand-written UPDATE, for
+    the reason every F23 file gives."""
+    async with tenant_session(factory, tenant_id) as session:
+        entry = await WaitlistEntriesRepository().insert(
+            session,
+            tenant_id=tenant_id,
+            day=TARGET_DATE,
+            appointment_type_id=type_id,
+            phone=phone,
+        )
+        entry_id = entry.id
+    assert (await _cascade(factory).run(tenant_id)).offered == 1
+    return entry_id
+
+
+async def _offer_row(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID, entry_id: uuid.UUID
+) -> Any:
+    async with tenant_session(factory, tenant_id) as session:
+        return await ScheduledMessagesRepository().latest_for_entry(
+            session,
+            tenant_id,
+            waitlist_entry_id=entry_id,
+            kind=ScheduledMessageKind.WAITLIST_OFFER.value,
+        )
+
+
+async def test_a_due_offer_is_sent_and_logged_without_a_booking(app_role_url: str) -> None:
+    """The branch's happy path, and the two things that make it different from a
+    reminder: the evidence row carries NO booking_id (message_log's has been
+    nullable since 0007) and the body's link is `/w/`, masked in the log for the
+    reason the reminder masks its own."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        entry_id = await _offered(factory, tenant_id, type_id, phone=phone)
+        row = await _offer_row(factory, tenant_id, entry_id)
+        assert row is not None and row.manage_token is not None
+        token = row.manage_token
+
+        comms, sender = _comms(factory)
+        result = await comms.drain_due(_tenant(tenant_id))
+        assert (result.sent, result.failed, result.cancelled) == (1, 0, 0)
+
+        assert (await _offer_row(factory, tenant_id, entry_id)).status == (
+            ScheduledMessageStatus.SENT.value
+        )
+        [outbox] = sender.outbox
+        assert outbox.phone == phone
+        assert f"/w/{token}" in outbox.body
+        assert "!" not in outbox.body
+
+        async with tenant_session(factory, tenant_id) as session:
+            logs = await MessageLogRepository().list_by_phone(session, tenant_id, phone=phone)
+        offers = [log for log in logs if log.kind == MessageKind.WAITLIST_OFFER.value]
+        assert len(offers) == 1
+        assert offers[0].booking_id is None
+        assert token not in offers[0].body
+        assert MASKED_TOKEN in offers[0].body
+    finally:
+        await engine.dispose()
+
+
+async def test_an_entry_that_left_offered_gets_its_text_cancelled(app_role_url: str) -> None:
+    """The ENTRY re-read, and the reason it is the mirror of the reminder's
+    booking re-read: she claimed, declined or was cancelled between the queue and
+    the tick, so the text is about a dead offer. Cancelled, nothing sent."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        entry_id = await _offered(factory, tenant_id, type_id, phone=_phone())
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await WaitlistEntriesRepository().cancel(session, tenant_id, entry_id) is not None
+            )
+
+        comms, sender = _comms(factory)
+        result = await comms.drain_due(_tenant(tenant_id))
+        assert (result.sent, result.cancelled) == (0, 1)
+        assert sender.outbox == []
+    finally:
+        await engine.dispose()
+
+
+async def test_an_offer_whose_deadline_passed_is_cancelled_not_sent(app_role_url: str) -> None:
+    """The drain re-checks the deadline itself. The cascade's expiry and this
+    drain run in the SAME tick with no guaranteed ordering, and texting a link
+    the next statement invalidates is worse than one wasted read."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        await _offered(factory, tenant_id, type_id, phone=_phone())
+
+        comms, sender = _comms(factory, now=NOW + datetime.timedelta(hours=3))
+        result = await comms.drain_due(_tenant(tenant_id))
+        assert (result.sent, result.cancelled) == (0, 1)
+        assert sender.outbox == []
+    finally:
+        await engine.dispose()
+
+
+async def test_an_unconfigured_provider_leaves_the_offer_pending(app_role_url: str) -> None:
+    """F16's rule, unchanged — and it is the half that makes D7 work: the row
+    stays `pending`, so the cascade's expiry sees an offer whose SMS never
+    reached `sent` and returns the entry to `waiting` instead of expiring her."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        entry_id = await _offered(factory, tenant_id, type_id, phone=_phone())
+
+        comms, _ = _comms(factory, sender=UnconfiguredSmsSender())
+        result = await comms.drain_due(_tenant(tenant_id))
+        assert (result.sent, result.failed, result.deferred) == (0, 0, 1)
+        assert (await _offer_row(factory, tenant_id, entry_id)).status == (
+            ScheduledMessageStatus.PENDING.value
+        )
+    finally:
+        await engine.dispose()
+
+
+async def test_a_refusing_provider_marks_the_offer_failed(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        entry_id = await _offered(factory, tenant_id, type_id, phone=_phone())
+
+        comms, _ = _comms(factory, sender=RefusingSender())
+        result = await comms.drain_due(_tenant(tenant_id))
+        assert (result.sent, result.failed) == (0, 1)
+        assert (await _offer_row(factory, tenant_id, entry_id)).status == (
+            ScheduledMessageStatus.FAILED.value
+        )
+    finally:
+        await engine.dispose()
+
+
+async def test_a_reminder_in_the_same_batch_is_unaffected(app_role_url: str) -> None:
+    """The branch is a branch, not a mode. One tick drains both kinds and each
+    reads its own subject — a bug that re-read the booking for an offer row (or
+    the entry for a reminder) would cancel exactly one of them."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        claim = await _claim(factory, tenant_id, type_id, starts_at=_slot(10))
+        assert claim.created
+        entry_id = await _offered(factory, tenant_id, type_id, phone=_phone())
+
+        # The reminder is scheduled 24h before the slot; move the clock past it
+        # so both rows are due in one claim.
+        comms, sender = _comms(factory, now=claim.booking.starts_at - datetime.timedelta(hours=23))
+        result = await comms.drain_due(_tenant(tenant_id))
+        assert result.sent == 2
+        kinds = sorted(message.body for message in sender.outbox)
+        assert len(kinds) == 2
+        assert (await _offer_row(factory, tenant_id, entry_id)).status == (
+            ScheduledMessageStatus.SENT.value
+        )
     finally:
         await engine.dispose()
