@@ -38,6 +38,7 @@ from app.models.otp_code import OtpCode
 from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.models.session import Session as SessionRow
+from app.models.staff_user import StaffUser
 from app.models.terms_version import TermsVersion
 from app.models.waitlist_entry import WaitlistEntry
 from app.platform.service import ProvisioningService
@@ -121,6 +122,41 @@ def _booking(
         terms_version_accepted=1,
         terms_accepted_at=starts_at,
         appointment_type_name="מדידה",
+    )
+
+
+#: The Jerusalem CALENDAR day `NOW` falls on. `last_day` is a date column and
+#: `_scrub_staff_users` converts before it subtracts, so every fixture below
+#: counts back from this and never from `NOW.date()` — the two are different days
+#: for two or three hours of every night.
+TODAY_JERUSALEM = NOW.astimezone(BOUTIQUE_TIMEZONE).date()
+
+
+def _staffer(
+    tenant_id: uuid.UUID,
+    *,
+    left_days_ago: int | None,
+    deleted: bool = True,
+    **kwargs: Any,
+) -> StaffUser:
+    """`left_days_ago=None` writes a NULL `last_day` — which is not "unknown" but
+    "never scrub this person", and is exactly what 0031's backfill exists to stop
+    happening by accident."""
+    return StaffUser(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        email=f"dana-{uuid.uuid4().hex[:10]}@bella.example",
+        # Never verified by anything this policy touches: `by_email` filters
+        # `deleted_at IS NULL`, so no code path reaches an offboarded row's hash.
+        password_hash="$argon2id$never-verified",
+        display_name="דנה כהן",
+        role="owner",
+        phone="+972501234567",
+        last_day=None
+        if left_days_ago is None
+        else TODAY_JERUSALEM - datetime.timedelta(days=left_days_ago),
+        deleted_at=NOW - datetime.timedelta(days=1) if deleted else None,
+        **kwargs,
     )
 
 
@@ -549,6 +585,146 @@ async def test_two_orphans_in_one_chunk_are_both_scrubbed_without_a_unique_viola
         await engine.dispose()
 
 
+# --- 8. staff_users (F38) ---------------------------------------------------
+#
+# Plan task E3. Every conjunct of `_scrub_staff_users`' predicate gets a test
+# that reds when it is deleted, because this UPDATE is IRREVERSIBLE: it destroys
+# a former employee's name, email and phone, and there is no second copy.
+
+
+async def test_the_seven_year_clock_is_asserted_in_both_directions(app_role_url: str) -> None:
+    """A SQL predicate, so a fast test could only recompute the same arithmetic
+    in Python and compare Python to Python — which stays green with the predicate
+    gone. The boundary day itself is INSIDE the window (`<=`)."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        inside = _staffer(tenant_id, left_days_ago=SETTINGS.staff_retention_days + 1)
+        boundary = _staffer(tenant_id, left_days_ago=SETTINGS.staff_retention_days)
+        outside = _staffer(tenant_id, left_days_ago=SETTINGS.staff_retention_days - 1)
+        await _add(factory, tenant_id, inside, boundary, outside)
+
+        assert await _apply(factory, tenant_id, "staff_users") == 2
+
+        by_id = {row.id: row for row in await _rows(factory, tenant_id, StaffUser)}
+        assert by_id[inside.id].display_name == ERASED_NAME
+        assert by_id[boundary.id].display_name == ERASED_NAME
+        assert by_id[outside.id].display_name == "דנה כהן"
+    finally:
+        await engine.dispose()
+
+
+async def test_a_live_staffer_past_seven_years_of_service_is_never_touched(
+    app_role_url: str,
+) -> None:
+    """`deleted_at IS NOT NULL` is the conjunct this reds, and it is the one whose
+    absence would be catastrophic rather than merely wrong: a long-serving
+    EMPLOYEE is not a retention subject, and scrubbing her blanks the name on the
+    shift board of somebody who came to work this morning."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        employed = _staffer(
+            tenant_id, left_days_ago=SETTINGS.staff_retention_days + 400, deleted=False
+        )
+        await _add(factory, tenant_id, employed)
+
+        assert await _apply(factory, tenant_id, "staff_users") == 0
+        assert (await _rows(factory, tenant_id, StaffUser))[0].display_name == "דנה כהן"
+    finally:
+        await engine.dispose()
+
+
+async def test_a_null_last_day_means_never_scrub_and_not_scrub_immediately(
+    app_role_url: str,
+) -> None:
+    """`last_day IS NOT NULL` — the reason 0031 BACKFILLS the column and the
+    reason offboarding refuses to leave it blank. Without the conjunct a NULL
+    would not be excluded, it would compare NULL and be excluded anyway; the test
+    exists so the DAY somebody rewrites this as `COALESCE(last_day, created_at)`
+    the change is a deliberate one and not a silent widening."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        await _add(factory, tenant_id, _staffer(tenant_id, left_days_ago=None))
+
+        assert await _apply(factory, tenant_id, "staff_users") == 0
+        assert (await _rows(factory, tenant_id, StaffUser))[0].display_name == "דנה כהן"
+    finally:
+        await engine.dispose()
+
+
+async def test_two_offboarded_staff_in_one_chunk_get_distinct_erased_emails(
+    app_role_url: str,
+) -> None:
+    """`idx_staff_users_tenant_email_unique` is PARTIAL on `deleted_at IS NULL`,
+    so a constant placeholder would technically survive here — and that is
+    exactly why this is asserted rather than assumed. The `customers` scrub
+    shipped the per-row form after this reasoning failed once; one convention
+    across both is cheaper than a footnote explaining why they differ."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        leavers = [
+            _staffer(tenant_id, left_days_ago=SETTINGS.staff_retention_days + n) for n in range(3)
+        ]
+        await _add(factory, tenant_id, *leavers)
+
+        assert await _apply(factory, tenant_id, "staff_users") == 3
+
+        rows = await _rows(factory, tenant_id, StaffUser)
+        assert {row.email for row in rows} == {f"{ERASED_PHONE_PREFIX}{row.id}" for row in rows}
+        assert len({row.email for row in rows}) == 3
+    finally:
+        await engine.dispose()
+
+
+async def test_the_scrub_nulls_the_phone_and_keeps_the_row_resolvable(app_role_url: str) -> None:
+    """SCRUB and not PURGE: five tables hold no-FK pointers at this id, and a
+    purged row would leave all five unable to tell "erased" from "never
+    existed". `password_hash` is deliberately left alone — nothing reaches it and
+    a non-argon2 sentinel would raise `InvalidHashError` on any path that did."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        leaver = _staffer(tenant_id, left_days_ago=SETTINGS.staff_retention_days + 10)
+        await _add(factory, tenant_id, leaver)
+
+        assert await _apply(factory, tenant_id, "staff_users") == 1
+
+        row = (await _rows(factory, tenant_id, StaffUser))[0]
+        assert row.id == leaver.id
+        assert row.display_name == ERASED_NAME
+        assert row.phone is None
+        assert row.scrubbed_at == NOW
+        assert row.password_hash == "$argon2id$never-verified"
+        # Offboarding already nulled these; the scrub is a pure SQL statement and
+        # never reaches storage.
+        assert row.deleted_at is not None
+        assert row.last_day is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_a_dry_run_counts_the_staffers_and_writes_nothing(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        leavers = [
+            _staffer(tenant_id, left_days_ago=SETTINGS.staff_retention_days + n) for n in range(2)
+        ]
+        await _add(factory, tenant_id, *leavers)
+
+        assert await _apply(factory, tenant_id, "staff_users", limit=1, dry_run=True) == 2
+        assert [row.display_name for row in await _rows(factory, tenant_id, StaffUser)] == [
+            "דנה כהן"
+        ] * 2
+
+        assert await _apply(factory, tenant_id, "staff_users") == 2
+    finally:
+        await engine.dispose()
+
+
 # --- cross-cutting ----------------------------------------------------------
 
 
@@ -722,6 +898,10 @@ async def _fixture_customers(factory: Any, tenant_id: uuid.UUID) -> None:
     await _add(factory, tenant_id, _customer(tenant_id, age_days=90, phone="+972504444444"))
 
 
+async def _fixture_staff_users(factory: Any, tenant_id: uuid.UUID) -> None:
+    await _add(factory, tenant_id, _staffer(tenant_id, left_days_ago=365 * 8))
+
+
 POLICY_FIXTURES = {
     "otp_codes": _fixture_otp_codes,
     "sessions": _fixture_sessions,
@@ -730,6 +910,7 @@ POLICY_FIXTURES = {
     "message_log": _fixture_message_log,
     "bookings": _fixture_bookings,
     "customers": _fixture_customers,
+    "staff_users": _fixture_staff_users,
 }
 
 

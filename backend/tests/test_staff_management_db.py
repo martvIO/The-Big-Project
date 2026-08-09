@@ -61,13 +61,18 @@ from app.auth.staff import (
 from app.boutique.service import BoutiqueSettingsService
 from app.core.config import Settings
 from app.db.repositories.audit_log import AuditLogRepository
+from app.db.repositories.fitting_rooms import FittingRoomsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainValidationError
 from app.main import NOT_AUTHENTICATED_BODY, NOT_AUTHORIZED_BODY, create_app
+from app.models.alteration_ticket import AlterationTicket
 from app.models.audit_log import AuditLog
 from app.models.constants import AuditAction, StaffRole
+from app.models.fitting_room import FittingRoom
+from app.models.fitting_room_assignment import FittingRoomAssignment
+from app.models.sos_alert import SosAlert
 from app.tenancy.resolver import RepositoryTenantResolver
 
 # F38 made `last_day` a REQUIRED argument on StaffUsersRepository.soft_delete —
@@ -709,6 +714,120 @@ async def test_another_tenants_staff_row_is_indistinguishable_from_missing(
             survivor = await StaffUsersRepository().by_id(session, elsewhere, theirs)
             assert survivor is not None
             assert survivor.display_name == "Staff"
+    finally:
+        await engine.dispose()
+
+
+# --- D2: the retention proof ------------------------------------------------
+
+
+async def test_offboarding_retains_every_operational_row_that_points_at_her(
+    app_role_url: str,
+) -> None:
+    """Plan task D2, and it needs its OWN test precisely because the FK-less
+    schema makes the regression silent.
+
+    `soft_delete` touches only `staff_users` columns TODAY. Nothing enforces
+    that: no constraint, no CASCADE to forbid, no join to notice. A future
+    "tidy-up" adding `deleted_at IS NULL` to any of the four reads below — or a
+    well-meant `DELETE FROM fitting_room_assignments WHERE staff_user_id = …`
+    inside the offboarding transaction — destroys the boutique's operational
+    history with a green suite, because every existing test here offboards a
+    staffer who appears in no other table.
+
+    Four tables, chosen because each is a different SHAPE of pointer:
+      * `fitting_room_assignments.staff_user_id` — NOT NULL, the room she held;
+      * `sos_alerts.target_staff_user_id` — nullable, whom a colleague paged;
+      * `alteration_tickets.assigned_staff_user_id` — nullable, her workload;
+      * `audit_log.actor_id` — the evidence trail, which has no retention class
+        at all by ruling.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
+        owner = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        leaver = await _seed_staff(
+            factory, tenant_id, role=StaffRole.SHIFT_MANAGER.value, display_name="דנה כהן"
+        )
+
+        room = FittingRoom(id=uuid.uuid4(), tenant_id=tenant_id, label="חדר 1", sort_order=1)
+        assignment = FittingRoomAssignment(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            fitting_room_id=room.id,
+            staff_user_id=leaver,
+        )
+        alert = SosAlert(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            raised_by=owner,
+            target_staff_user_id=leaver,
+        )
+        ticket = AlterationTicket(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            customer_id=uuid.uuid4(),
+            due_date=date(2026, 9, 1),
+            effort_minutes=30,
+            assigned_staff_user_id=leaver,
+        )
+        trail = AuditLog(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            actor_id=leaver,
+            action=AuditAction.STAFF_UPDATED,
+            entity=str(leaver),
+        )
+        async with tenant_session(factory, tenant_id) as session:
+            for row in (room, assignment, alert, ticket, trail):
+                session.add(row)
+
+        await service.deactivate(tenant_id, leaver, actor=_actor(owner, tenant_id))
+
+        async with tenant_session(factory, tenant_id) as session:
+            gone = await StaffUsersRepository().by_id(session, tenant_id, leaver)
+            assert gone is None, "the staffer herself IS offboarded — the test is not vacuous"
+
+            # Each read is by PRIMARY KEY and asserts the pointer column too: a
+            # row that survived with its `staff_user_id` nulled would satisfy a
+            # bare existence check and still have lost the fact.
+            held = await session.get(FittingRoomAssignment, assignment.id)
+            assert held is not None
+            assert held.staff_user_id == leaver
+            assert held.released_at is None
+
+            paged = await session.get(SosAlert, alert.id)
+            assert paged is not None
+            assert paged.target_staff_user_id == leaver
+
+            work = await session.get(AlterationTicket, ticket.id)
+            assert work is not None
+            assert work.assigned_staff_user_id == leaver
+
+            evidence = await session.get(AuditLog, trail.id)
+            assert evidence is not None
+            assert evidence.actor_id == leaver
+
+            # ⚠ The plan's D2 line says this tile renders `staff_display_name:
+            # null`. It does NOT, and the difference is deliberate upstream: the
+            # `staff_users` join in `_occupancy_rows` carries NO `deleted_at`
+            # filter, precisely so a holder offboarded mid-fitting leaves a tile
+            # that can still say who is in there
+            # (`test_a_soft_deleted_holder_still_names_the_tile`). What D2 is
+            # actually about is that the ROW SURVIVES the offboarding rather than
+            # the room reading as free, so that is what is asserted.
+            tile = await FittingRoomsRepository().room_with_occupancy(session, tenant_id, room.id)
+            assert tile is not None
+            assert tile.assignment_id == assignment.id
+            assert tile.staff_user_id == leaver
+            assert tile.staff_display_name == "דנה כהן"
     finally:
         await engine.dispose()
 
