@@ -49,7 +49,11 @@ from app.auth.photo import build_staff_photo_key, validate_staff_photo_presign
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.boutique.validation import validate_phone
-from app.catalog.service import MediaNotUploadedError, MediaPresignThrottledError
+from app.catalog.service import (
+    MediaMismatchError,
+    MediaNotUploadedError,
+    MediaPresignThrottledError,
+)
 from app.catalog.validation import (
     MAGIC_PREFIX_LENGTH,
     PRESIGN_TTL_SECONDS,
@@ -86,6 +90,19 @@ logger = logging.getLogger(__name__)
 # A TYPO FENCE, not a policy about notice periods: `2036` for `2026` is one
 # keystroke and would park her outside the retention scrub for a decade.
 MAX_LAST_DAY_LOOKAHEAD_DAYS = 365
+
+# The floor, and unlike the ceiling this one is a SECURITY bound, not a typo
+# fence. `last_day` is the retention clock's zero, so an unbounded past date is
+# the boutique choosing its own retention: back-date past
+# `now - staff_retention_days` and the very next armed retention tick blanks
+# display_name/email/phone, seven years early, at the request of the one role
+# that already holds offboarding. `start_date` is NOT that floor — 0031 backfills
+# `last_day` and never `start_date`, so every pre-F38 row has none, and
+# `UpdateStaffRequest.start_date` would let an owner PATCH one backwards first
+# anyway. This bound holds whatever the row says, and a year is orders of
+# magnitude inside the retention window, so a legitimately late offboarding is
+# clamped to a LONGER retention rather than a shorter one.
+MAX_LAST_DAY_BACKDATE_DAYS = 365
 
 _CURRENT_PASSWORD_REQUIRED = (
     "current_password is required and must match to change your own password"
@@ -142,16 +159,25 @@ def _resolve_last_day(last_day: date | None, *, start_date: date | None) -> date
     counts from, and the two zones are different days for two or three hours of
     every night.
 
-    The lower bound is skipped when `start_date` is NULL, and that arm is
-    load-bearing: every pre-F38 row has no start date, so comparing against it
-    unconditionally would refuse every offboarding in the boutique until somebody
-    backfilled a column nobody has.
+    The `start_date` comparison is skipped when `start_date` is NULL, and that
+    arm is load-bearing: every pre-F38 row has no start date, so comparing
+    against it unconditionally would refuse every offboarding in the boutique
+    until somebody backfilled a column nobody has.
+
+    `MAX_LAST_DAY_BACKDATE_DAYS` is the REAL floor and is applied unconditionally
+    for exactly that reason — `start_date` is absent on most rows and PATCHable
+    on the rest, so it can bound nothing. See its constant for what an unbounded
+    past `last_day` buys the caller.
     """
     today = today_jerusalem()
     resolved = last_day if last_day is not None else today
     if resolved > today + timedelta(days=MAX_LAST_DAY_LOOKAHEAD_DAYS):
         raise DomainValidationError(
             f"last_day must not be more than {MAX_LAST_DAY_LOOKAHEAD_DAYS} days from today"
+        )
+    if resolved < today - timedelta(days=MAX_LAST_DAY_BACKDATE_DAYS):
+        raise DomainValidationError(
+            f"last_day must not be more than {MAX_LAST_DAY_BACKDATE_DAYS} days in the past"
         )
     if start_date is not None and resolved < start_date:
         raise DomainValidationError("last_day must not be before start_date")
@@ -829,7 +855,14 @@ class StaffService:
                     session, tenant_id, staff_id, storage_key=None, content_type=None, at=None
                 )
         await self._best_effort_delete(tenant_id, staff_id, storage_key)
-        raise DomainValidationError("the uploaded file is not a valid image")
+        # MediaMismatchError, not DomainValidationError — the SAME catalog error
+        # the dress-media pipeline raises for this exact refusal, and the reason
+        # `MediaNotUploadedError` two branches up is imported rather than
+        # restated. main.py maps it to 409 `{"code": "MEDIA_MISMATCH"}`, which is
+        # in StaffSection.tsx's MAPPED_CODES; DomainValidationError maps to
+        # VALIDATION_ERROR, which is not, so the one security refusal in this
+        # pipeline would print its English sentence into a Hebrew RTL alert.
+        raise MediaMismatchError("the uploaded file is not a valid image")
 
     async def _best_effort_delete(
         self, tenant_id: uuid.UUID, staff_id: uuid.UUID, storage_key: str

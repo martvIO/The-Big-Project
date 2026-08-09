@@ -26,7 +26,11 @@ from app.auth.staff import (
     StaffSelfManageError,
     StaffService,
 )
-from app.catalog.service import MediaNotUploadedError, MediaPresignThrottledError
+from app.catalog.service import (
+    MediaMismatchError,
+    MediaNotUploadedError,
+    MediaPresignThrottledError,
+)
 from app.errors import DomainValidationError
 from app.models.constants import AuditAction, StaffRole
 from app.models.staff_user import StaffUser
@@ -979,14 +983,40 @@ async def test_a_last_day_before_her_start_date_is_refused() -> None:
     assert staff.offboarded == []
 
 
-async def test_a_last_day_before_a_start_date_she_does_not_have_is_allowed() -> None:
+async def test_a_past_last_day_is_allowed_when_she_has_no_start_date() -> None:
     """NULL `start_date` means "no start date recorded", which is the state every
     pre-F38 row is in. Comparing against it would refuse every offboarding in the
-    boutique until somebody backfilled a column nobody has."""
+    boutique until somebody backfilled a column nobody has — so a back-dated
+    last day on such a row is legal, up to the absolute floor below."""
     target = _row()
+    backdated = today_jerusalem() - timedelta(days=30)
     service, staff, _, _ = _offboard_service([target])
-    await service.deactivate(TENANT_ID, target.id, last_day=date(2020, 1, 1), actor=_actor())
-    assert staff.offboarded[0]["last_day"] == date(2020, 1, 1)
+    await service.deactivate(TENANT_ID, target.id, last_day=backdated, actor=_actor())
+    assert staff.offboarded[0]["last_day"] == backdated
+
+
+async def test_a_last_day_further_back_than_a_year_is_refused_even_with_no_start_date() -> None:
+    """THE retention guard, and it is a security bound rather than a typo fence.
+
+    `last_day` is the clock the seven-year scrub counts from, so with no floor an
+    owner could offboard at `2000-01-01` and have `_scrub_staff_users` blank
+    display_name/email/phone on the very next armed tick — the boutique choosing
+    its own retention, which spec C4 refuses. `start_date` cannot be that floor:
+    it is NULL on every pre-F38 row (0031 backfills `last_day` and not it) and
+    PATCHable backwards on the rest, which is what this row asserts by having
+    none."""
+    target = _row()
+    assert target.start_date is None
+    service, staff, audit, _ = _offboard_service([target])
+    with pytest.raises(DomainValidationError):
+        await service.deactivate(
+            TENANT_ID,
+            target.id,
+            last_day=today_jerusalem() - timedelta(days=366),
+            actor=_actor(),
+        )
+    assert staff.offboarded == []
+    assert audit.rows == []
 
 
 async def test_offboarding_never_sweeps_her_sessions() -> None:
@@ -1169,8 +1199,11 @@ def _photo_service(
 ) -> tuple[StaffService, FakeStaffRepository, FakeAuditRepository, FakePhotoStorage]:
     service, staff, audit, _ = _service(rows)
     photo_storage = storage or FakePhotoStorage()
-    service._storage = photo_storage  # type: ignore[assignment]
-    service._presign_limiter = FixedWindowRateLimiter(  # type: ignore[assignment]
+    # No `# type: ignore[assignment]` on either: dae383b made FakePhotoStorage a
+    # structurally complete MediaStorage, and mypy's `warn_unused_ignores` errors
+    # on the leftovers.
+    service._storage = photo_storage
+    service._presign_limiter = FixedWindowRateLimiter(
         max_attempts=max_attempts, window_seconds=900, clock=time.monotonic
     )
     return service, staff, audit, photo_storage
@@ -1349,7 +1382,12 @@ async def test_a_magic_byte_mismatch_is_refused_the_object_deleted_and_the_row_c
     await _presign(service, target.id)
     pending = target.photo_pending_key
 
-    with pytest.raises(DomainValidationError):
+    # MediaMismatchError and NOT DomainValidationError: main.py maps this one to
+    # `{"code": "MEDIA_MISMATCH"}`, the only staff-photo code StaffSection.tsx
+    # speaks Hebrew for. A DomainValidationError here answers VALIDATION_ERROR,
+    # which that console renders by printing the server's English sentence into
+    # an RTL alert.
+    with pytest.raises(MediaMismatchError):
         await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
 
     assert storage.deleted == [pending]
@@ -1369,7 +1407,7 @@ async def test_a_content_type_mismatch_is_refused_before_the_bytes_are_even_read
     await _presign(service, target.id, content_type="image/jpeg")
     pending = target.photo_pending_key
 
-    with pytest.raises(DomainValidationError):
+    with pytest.raises(MediaMismatchError):
         await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
 
     assert storage.read == []
@@ -1456,7 +1494,7 @@ async def test_a_rejected_confirm_racing_a_fresh_presign_leaves_the_new_triple_a
 
     storage.on_read_prefix = racing_presign
 
-    with pytest.raises(DomainValidationError):
+    with pytest.raises(MediaMismatchError):
         await service.confirm_photo(TENANT_ID, target.id, actor_id=OWNER_ID)
 
     assert target.photo_pending_key is not None

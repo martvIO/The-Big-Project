@@ -79,12 +79,20 @@ function departingCardHoldsFocus(incoming: readonly StaffCard[]): boolean {
 // ticks. Dropping the pin there lets the next poll adopt the fresh URL with no
 // refetch call of its own: the poll IS the recovery here, unlike MediaGallery's
 // one-shot `hasRefreshed`.
+//
+// ⚠ `broken` holds the URL THAT FAILED, never the pin key. Keyed by the pin key
+// it would latch: the key does not change until she replaces her photo, so one
+// transient error would freeze the initial in place for the life of that image
+// however many fresh URLs arrived after it. Keyed by the URL it both suppresses
+// the re-pin of the same dead string on the very next render (which would
+// otherwise re-adopt it and defeat the drop) and clears itself the moment a
+// DIFFERENT one is signed, which is every ~5 s tick.
 function StaffAvatar({ card }: { card: StaffCard }) {
   const pinKey = `${card.id}:${card.photo_confirmed_at ?? ""}`;
   const pinned = useRef<Map<string, string>>(new Map());
   const [broken, setBroken] = useState<string | null>(null);
 
-  if (card.photo_url !== null && !pinned.current.has(pinKey)) {
+  if (card.photo_url !== null && card.photo_url !== broken && !pinned.current.has(pinKey)) {
     pinned.current.set(pinKey, card.photo_url);
   }
   const src = pinned.current.get(pinKey) ?? null;
@@ -94,7 +102,7 @@ function StaffAvatar({ card }: { card: StaffCard }) {
   // <img> carries alt="": the display name is a text node immediately beside it,
   // so announcing it again would say her name twice per card on a board that
   // lists the whole shift.
-  if (src === null || broken === pinKey) {
+  if (src === null) {
     return (
       <span
         aria-hidden="true"
@@ -114,7 +122,7 @@ function StaffAvatar({ card }: { card: StaffCard }) {
       decoding="async"
       onError={() => {
         pinned.current.delete(pinKey);
-        setBroken(pinKey);
+        setBroken(src);
       }}
       className="me-3 size-11 shrink-0 rounded-full object-cover"
     />

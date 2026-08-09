@@ -411,6 +411,15 @@ export function validateStaffDraft(draft: StaffDraft): string | null {
 // scrub for a decade.
 export const MAX_LAST_DAY_LOOKAHEAD_DAYS = 365;
 
+// The floor, and NOT a typo fence — `MAX_LAST_DAY_BACKDATE_DAYS` in
+// backend/app/auth/staff.py, where the argument is written out. Short version:
+// `last_day` is the retention clock's zero, so a far-past one forces the
+// seven-year scrub on the next armed tick. `start_date` cannot be that floor,
+// because most rows have none. The server refuses it either way; this is here so
+// the console says so in Hebrew instead of surfacing the server's English
+// VALIDATION_ERROR text, which is not in StaffSection.tsx's MAPPED_CODES.
+export const MAX_LAST_DAY_BACKDATE_DAYS = 365;
+
 /**
  * `lastDay` and `startDate` are `YYYY-MM-DD` — the format `<input type="date">`
  * speaks in both directions, and the format the wire carries.
@@ -435,6 +444,12 @@ export function validateLastDay(lastDay: string, startDate: string | null): stri
     .slice(0, 10);
   if (lastDay > ceiling) {
     return "יום העבודה האחרון רחוק מדי. אפשר לבחור תאריך עד שנה מהיום.";
+  }
+  const floor = new Date(Date.now() - MAX_LAST_DAY_BACKDATE_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  if (lastDay < floor) {
+    return "יום העבודה האחרון רחוק מדי בעבר. אפשר לבחור תאריך עד שנה אחורה.";
   }
   return null;
 }

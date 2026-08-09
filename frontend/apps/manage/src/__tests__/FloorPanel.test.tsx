@@ -1241,6 +1241,41 @@ describe("the staff card photo (F38)", () => {
     expect(within(tile("נועה לוי")).getByText("נ")).toHaveAttribute("aria-hidden", "true");
   });
 
+  it("puts the face back on the NEXT poll after an expired url", async () => {
+    // The other half of the sentence above, and the half that was never
+    // asserted. A `broken` flag keyed by the pin key latches — the key does not
+    // move until she replaces the photo — so one transient error would leave her
+    // as an initial for the life of that image. This advances a tick and demands
+    // the <img> back.
+    getFloor.mockResolvedValue(
+      floor([
+        ME,
+        card({ photo_url: "https://bucket.example/k?stale", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+      ]),
+    );
+    mount();
+    await screen.findByText("נועה לוי");
+
+    await act(async () => {
+      fireEvent.error(tile("נועה לוי").querySelector("img") as HTMLImageElement);
+    });
+    expect(tile("נועה לוי").querySelector("img")).toBeNull();
+
+    // Same photo — `photo_confirmed_at` is UNCHANGED, so the pin key is too.
+    getFloor.mockResolvedValue(
+      floor([
+        ME,
+        card({ photo_url: "https://bucket.example/k?fresh", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+      ]),
+    );
+    await advance(POLL_INTERVAL_MS);
+
+    expect(tile("נועה לוי").querySelector("img")).toHaveAttribute(
+      "src",
+      "https://bucket.example/k?fresh",
+    );
+  });
+
   it("renders the initial for all three ordinary null paths", async () => {
     // No photo, no bucket, and a signing failure degrade to the SAME null on the
     // wire, and the board must render all three as a fallback and never as a

@@ -287,6 +287,190 @@ async def test_soft_delete_is_idempotent_and_misses_unknown_ids(app_role_url: st
         await engine.dispose()
 
 
+async def test_insert_and_update_write_f38s_three_hr_fields(app_role_url: str) -> None:
+    """`phone`, `start_date` and `shift_manager_eligible` against real columns.
+
+    Both writers, because they disagree on purpose. `insert` defaults all three
+    so ProvisioningService.provision — a shipped file on the tenant-creation
+    path — needs no edit; `update` reads `None` as "not sent" and `""` as
+    "clear it", the one spelling that can ever remove a number. The hand-written
+    fake in test_staff_service.py cannot prove either against a real
+    nullable/NOT NULL pair, or that `boutique_app` may write them at all."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        repo = StaffUsersRepository()
+        async with tenant_session(factory, tenant_id) as session:
+            defaulted = await repo.insert(
+                session,
+                tenant_id=tenant_id,
+                email=_email(),
+                password_hash=hash_password(PASSWORD),
+                display_name="Defaulted",
+            )
+            filled = await repo.insert(
+                session,
+                tenant_id=tenant_id,
+                email=_email(),
+                password_hash=hash_password(PASSWORD),
+                display_name="Filled",
+                phone="050-1234567",
+                start_date=date(2026, 3, 1),
+                shift_manager_eligible=True,
+            )
+            defaulted_id, filled_id = defaulted.id, filled.id
+
+        async with tenant_session(factory, tenant_id) as session:
+            blank = await repo.by_id(session, tenant_id, defaulted_id)
+            written = await repo.by_id(session, tenant_id, filled_id)
+        assert blank is not None
+        # NOT NULL with a server default on the boolean; the other two are null.
+        assert (blank.phone, blank.start_date, blank.shift_manager_eligible) == (None, None, False)
+        assert written is not None
+        assert written.phone == "050-1234567"
+        assert written.start_date == date(2026, 3, 1)
+        assert written.shift_manager_eligible is True
+
+        async with tenant_session(factory, tenant_id) as session:
+            moved = await repo.update(
+                session,
+                tenant_id,
+                filled_id,
+                phone="050-7654321",
+                start_date=date(2026, 4, 1),
+                shift_manager_eligible=False,
+            )
+        assert moved is not None
+        assert moved.phone == "050-7654321"
+        assert moved.start_date == date(2026, 4, 1)
+        assert moved.shift_manager_eligible is False
+
+        # "" removes the number and leaves everything else where it was.
+        async with tenant_session(factory, tenant_id) as session:
+            cleared = await repo.update(session, tenant_id, filled_id, phone="")
+        assert cleared is not None
+        assert cleared.phone is None
+        assert cleared.start_date == date(2026, 4, 1)
+    finally:
+        await engine.dispose()
+
+
+async def test_the_photo_triples_pend_promote_idempotently_and_clear(app_role_url: str) -> None:
+    """The two-transaction confirm dance, against the database it was written for.
+
+    Three things only real Postgres can answer. `promote_pending_photo` assigns
+    COLUMN TO COLUMN (`photo_key = photo_pending_key`) under a
+    `photo_pending_key IS NOT NULL` guard — SQL the fake in test_staff_service.py
+    reproduces by hand and therefore cannot falsify. That guard is what makes a
+    retried confirm after a lost response a no-op returning `None` rather than a
+    second promotion that blanks the live triple it just wrote. And `boutique_app`
+    has never written any of these six columns under forced RLS before this test.
+
+    The replace half is the middle block: `set_pending_photo` must leave the LIVE
+    triple alone, which is the whole reason there are two triples — the photo on
+    the board keeps rendering while an upload is in flight."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        repo = StaffUsersRepository()
+        staff_id = await _seed_staff(factory, tenant_id)
+        first_at = datetime(2026, 8, 1, 9, 0, tzinfo=UTC)
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await repo.set_pending_photo(
+                    session,
+                    tenant_id,
+                    staff_id,
+                    storage_key="tenants/t/staff/s/photo/one.jpg",
+                    content_type="image/jpeg",
+                    at=first_at,
+                )
+                is True
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            pending = await repo.by_id(session, tenant_id, staff_id)
+        assert pending is not None
+        assert pending.photo_pending_key == "tenants/t/staff/s/photo/one.jpg"
+        assert pending.photo_pending_content_type == "image/jpeg"
+        assert pending.photo_pending_at == first_at
+        # Presign writes ONLY the pending triple.
+        assert pending.photo_key is None
+        assert pending.photo_confirmed_at is None
+
+        confirmed_at = datetime(2026, 8, 1, 9, 5, tzinfo=UTC)
+        async with tenant_session(factory, tenant_id) as session:
+            promoted = await repo.promote_pending_photo(
+                session, tenant_id, staff_id, at=confirmed_at
+            )
+        assert promoted is not None
+        assert promoted.photo_key == "tenants/t/staff/s/photo/one.jpg"
+        assert promoted.photo_content_type == "image/jpeg"
+        assert promoted.photo_confirmed_at == confirmed_at
+        assert promoted.photo_pending_key is None
+        assert promoted.photo_pending_content_type is None
+        assert promoted.photo_pending_at is None
+
+        # The retry after a lost response: nothing to promote, and — the point —
+        # the live triple it already wrote is still standing.
+        async with tenant_session(factory, tenant_id) as session:
+            assert (
+                await repo.promote_pending_photo(
+                    session, tenant_id, staff_id, at=datetime(2026, 8, 1, 9, 6, tzinfo=UTC)
+                )
+                is None
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            after_retry = await repo.by_id(session, tenant_id, staff_id)
+        assert after_retry is not None
+        assert after_retry.photo_key == "tenants/t/staff/s/photo/one.jpg"
+        assert after_retry.photo_confirmed_at == confirmed_at
+
+        # REPLACE: the old photo stays visible for the whole upload window.
+        async with tenant_session(factory, tenant_id) as session:
+            await repo.set_pending_photo(
+                session,
+                tenant_id,
+                staff_id,
+                storage_key="tenants/t/staff/s/photo/two.png",
+                content_type="image/png",
+                at=datetime(2026, 8, 2, 9, 0, tzinfo=UTC),
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            replacing = await repo.by_id(session, tenant_id, staff_id)
+        assert replacing is not None
+        assert replacing.photo_key == "tenants/t/staff/s/photo/one.jpg"
+        assert replacing.photo_pending_key == "tenants/t/staff/s/photo/two.png"
+
+        # clear_photo is unconditional and takes BOTH halves, so a delete racing
+        # a confirm cannot leave the pending half behind.
+        async with tenant_session(factory, tenant_id) as session:
+            cleared = await repo.clear_photo(session, tenant_id, staff_id)
+        assert cleared is not None
+        assert cleared.photo_key is None
+        assert cleared.photo_content_type is None
+        assert cleared.photo_confirmed_at is None
+        assert cleared.photo_pending_key is None
+        assert cleared.photo_pending_content_type is None
+        assert cleared.photo_pending_at is None
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert await repo.clear_photo(session, tenant_id, uuid.uuid4()) is None
+            assert (
+                await repo.set_pending_photo(
+                    session,
+                    tenant_id,
+                    uuid.uuid4(),
+                    storage_key="k",
+                    content_type="image/jpeg",
+                    at=first_at,
+                )
+                is False
+            )
+    finally:
+        await engine.dispose()
+
+
 async def test_count_live_owners_counts_only_live_owners(app_role_url: str) -> None:
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
@@ -681,6 +865,88 @@ async def test_audit_writes_one_row_per_actual_change_and_none_for_a_no_op(
         rendered = repr([row.details for row in rows])
         assert "another-long-pw" not in rendered
         assert "argon2" not in rendered
+    finally:
+        await engine.dispose()
+
+
+async def test_f38s_three_patch_fields_audit_one_row_each_and_none_for_a_no_op(
+    app_role_url: str,
+) -> None:
+    """The sibling of the test above, for F38's three — and deliberately its own
+    test rather than three more kwargs on that one.
+
+    Each of phone, start_date and shift_manager_eligible records its OWN
+    STAFF_UPDATED row (spec D8: one row per thing that actually changed), so
+    folding them into that test would have added three rows to an assertion that
+    pins ORDER, and `created_at` is `now()` — one value for every row written in
+    a single transaction. Asserted by DETAILS KEY instead, which is order-free.
+
+    The no-op half is the load-bearing half: the console's edit form posts every
+    field on every save, so a field left out of the moved-not-present comparison
+    would write an audit row each time the owner pressed save having changed
+    nothing.
+
+    The phone row carries PRESENCE and never the number — stricter than the
+    shipped `phone_last4` convention, because `audit_log` has no retention class
+    and any digits here would outlive the seven-year scrub that exists to destroy
+    exactly this identifier."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
+        owner = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        actor = _actor(owner, tenant_id)
+        target = await _seed_staff(factory, tenant_id, role=StaffRole.SHIFT_MANAGER.value)
+
+        updated = await service.update(
+            tenant_id,
+            target,
+            phone="050-1234567",
+            start_date=date(2026, 3, 1),
+            shift_manager_eligible=True,
+            actor=actor,
+        )
+        assert updated.phone == "050-1234567"
+        assert updated.start_date == date(2026, 3, 1)
+        assert updated.shift_manager_eligible is True
+
+        # Every value re-sent unchanged — the save-with-nothing-touched case.
+        await service.update(
+            tenant_id,
+            target,
+            phone="050-1234567",
+            start_date=date(2026, 3, 1),
+            shift_manager_eligible=True,
+            actor=actor,
+        )
+
+        async with tenant_session(factory, tenant_id) as session:
+            rows = list((await session.execute(select(AuditLog))).scalars().all())
+        assert [row.action for row in rows] == [AuditAction.STAFF_UPDATED.value] * 3
+        assert {row.actor_id for row in rows} == {owner}
+        assert {row.entity for row in rows} == {str(target)}
+        by_key = {next(iter(row.details)): row.details for row in rows}
+        assert set(by_key) == {"phone", "start_date", "shift_manager_eligible"}
+        assert by_key["phone"] == {"phone": {"from": False, "to": True}}
+        assert by_key["start_date"] == {"start_date": {"from": None, "to": "2026-03-01"}}
+        assert by_key["shift_manager_eligible"] == {
+            "shift_manager_eligible": {"from": False, "to": True}
+        }
+        # The number itself is never written to a log with no retention clock.
+        assert "1234567" not in repr([row.details for row in rows])
+
+        # "" is the one spelling that removes a number, and removing IS a move.
+        await service.update(tenant_id, target, phone="", actor=actor)
+        async with tenant_session(factory, tenant_id) as session:
+            after = list((await session.execute(select(AuditLog))).scalars().all())
+        assert len(after) == 4
+        assert {"phone": {"from": True, "to": False}} in [row.details for row in after]
     finally:
         await engine.dispose()
 

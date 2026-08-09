@@ -889,8 +889,13 @@ describe("StaffSection photo", () => {
     ]);
     staffPhotoPresign.mockResolvedValue(PRESIGN);
     uploadToStorage.mockResolvedValue(undefined);
+    // 409, which is what the server actually answers: `_reject_photo` raises the
+    // catalog's MediaMismatchError and main.py maps that to 409/MEDIA_MISMATCH.
+    // It was 400 here, the shape a DomainValidationError would have produced —
+    // and a DomainValidationError carries code VALIDATION_ERROR, so the pairing
+    // was one the wire could never emit.
     staffPhotoConfirm.mockRejectedValue(
-      new ApiError(400, "MEDIA_MISMATCH", "the uploaded file is not a valid image"),
+      new ApiError(409, "MEDIA_MISMATCH", "the uploaded file is not a valid image"),
     );
     renderSection();
     await screen.findByText("דנה");
@@ -1061,6 +1066,28 @@ describe("StaffSection offboarding", () => {
 
     expect(await within(dialog as HTMLElement).findByRole("alert")).toHaveTextContent(
       "אינו יכול להקדים את תאריך תחילת העבודה",
+    );
+    expect(deactivateStaff).not.toHaveBeenCalled();
+  });
+
+  it("refuses a last day further back than a year, on a row with no start date", async () => {
+    // The floor the server enforces (`MAX_LAST_DAY_BACKDATE_DAYS`), mirrored so
+    // the refusal is Hebrew. `last_day` is the retention clock's zero, so a
+    // far-past one forces the scrub early — and `start_date` is null here on
+    // purpose, because that is the state every pre-F38 row is in and it is why
+    // the start-date comparison above cannot be the bound.
+    listStaff.mockResolvedValue([OWNER, member({ start_date: null })]);
+    renderSection();
+    await screen.findByText("דנה");
+
+    const dialog = openOffboard();
+    fireEvent.change(within(dialog as HTMLElement).getByLabelText("יום עבודה אחרון"), {
+      target: { value: "2000-01-01" },
+    });
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "סיום העסקה" }));
+
+    expect(await within(dialog as HTMLElement).findByRole("alert")).toHaveTextContent(
+      "רחוק מדי בעבר",
     );
     expect(deactivateStaff).not.toHaveBeenCalled();
   });
