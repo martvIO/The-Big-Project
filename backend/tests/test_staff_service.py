@@ -9,7 +9,7 @@ is proven on real Postgres in test_staff_management_db.py, which is CI-only.
 """
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Self
 
 import pytest
@@ -27,6 +27,8 @@ from app.auth.staff import (
 from app.errors import DomainValidationError
 from app.models.constants import AuditAction, StaffRole
 from app.models.staff_user import StaffUser
+from app.storage.base import MediaStorageUnavailableError
+from app.storefront.validation import today_jerusalem
 
 TENANT_ID = uuid.uuid4()
 OWNER_ID = uuid.uuid4()
@@ -110,6 +112,7 @@ class FakeStaffRepository:
         self.inserted: list[dict[str, Any]] = []
         self.updates: list[dict[str, Any]] = []
         self.soft_deleted: list[uuid.UUID] = []
+        self.offboarded: list[dict[str, Any]] = []
         self.raise_integrity_on_insert = False
 
     async def list_live(self, session: object, tenant_id: uuid.UUID) -> list[StaffUser]:
@@ -150,10 +153,29 @@ class FakeStaffRepository:
                 setattr(row, field, value)
         return row
 
-    async def soft_delete(self, session: object, tenant_id: uuid.UUID, staff_id: uuid.UUID) -> bool:
+    async def soft_delete(
+        self, session: object, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, last_day: date
+    ) -> bool:
         self.trace.append("soft_delete")
         self.soft_deleted.append(staff_id)
+        self.offboarded.append({"staff_id": staff_id, "last_day": last_day})
         return True
+
+
+class FakeDeleteStorage:
+    """Only `delete_object` — the one storage member offboarding touches. The
+    read-side signer is exercised in test_staff_photo.py against a structurally
+    complete fake; this one is deliberately narrow because it is injected onto a
+    private attribute rather than passed to a typed parameter."""
+
+    def __init__(self, *, raises: Exception | None = None) -> None:
+        self._raises = raises
+        self.deleted: list[str] = []
+
+    async def delete_object(self, *, key: str) -> None:
+        self.deleted.append(key)
+        if self._raises is not None:
+            raise self._raises
 
 
 class FakeSessionsRepository:
@@ -191,7 +213,10 @@ def _service(
 ) -> tuple[StaffService, FakeStaffRepository, FakeAuditRepository, Trace]:
     trace = Trace()
     session = FakeSession(trace)
-    service = StaffService(lambda: session)  # type: ignore[arg-type]
+    service = StaffService(
+        lambda: session,  # type: ignore[arg-type]
+        media_storage=FakeDeleteStorage(),  # type: ignore[arg-type]
+    )
     staff = FakeStaffRepository(trace, rows)
     audit = FakeAuditRepository()
     service._staff = staff  # type: ignore[assignment]
@@ -641,9 +666,16 @@ async def test_deactivate_audits_the_row_it_removed() -> None:
     await service.deactivate(TENANT_ID, target.id, actor=_actor())
     assert staff.soft_deleted == [target.id]
     assert audit.actions() == [AuditAction.STAFF_DEACTIVATED]
+    # F38 widened this row from two keys to four. Asserted by equality rather
+    # than by containment so the widening had to be made here, on purpose:
+    # `last_day` is the retention clock's zero and `photo_storage_key` is the
+    # only durable record of an orphaned object when the best-effort delete
+    # fails, so neither may quietly disappear from the trail later.
     assert audit.rows[0]["details"] == {
         "email": "gone@bella.example",
         "role": StaffRole.SHIFT_MANAGER.value,
+        "last_day": today_jerusalem().isoformat(),
+        "photo_storage_key": None,
     }
 
 
@@ -807,3 +839,172 @@ async def test_a_patch_resending_the_three_unchanged_is_still_a_no_op() -> None:
     assert returned is target
     assert staff.updates == []
     assert audit.rows == []
+
+
+# --- F38: offboarding -------------------------------------------------------
+
+
+def _offboard_service(
+    rows: list[StaffUser] | None = None, *, delete_raises: Exception | None = None
+) -> tuple[StaffService, FakeStaffRepository, FakeAuditRepository, FakeDeleteStorage]:
+    """`_service` already wires a quiet storage fake, so this only replaces it
+    when a test needs to SEE the deletes or make one fail."""
+    service, staff, audit, _ = _service(rows)
+    storage = FakeDeleteStorage(raises=delete_raises)
+    service._storage = storage  # type: ignore[assignment]
+    return service, staff, audit, storage
+
+
+async def test_offboarding_defaults_last_day_to_today_in_jerusalem() -> None:
+    """A missing default would silently exempt her from the retention clock
+    FOREVER — the policy's predicate requires `last_day IS NOT NULL`, so a NULL
+    here is not "unknown", it is "never scrub this person".
+
+    Jerusalem and not UTC: the two are different calendar days for two or three
+    hours of every night, and this is the date the seven-year clock counts from.
+    """
+    target = _row()
+    service, staff, _, _ = _offboard_service([target])
+    await service.deactivate(TENANT_ID, target.id, actor=_actor())
+    assert staff.offboarded[0]["last_day"] == today_jerusalem()
+
+
+async def test_an_explicit_last_day_is_written_instead_of_today() -> None:
+    target = _row()
+    target.start_date = date(2020, 1, 1)
+    service, staff, _, _ = _offboard_service([target])
+    await service.deactivate(TENANT_ID, target.id, last_day=date(2026, 8, 31), actor=_actor())
+    assert staff.offboarded[0]["last_day"] == date(2026, 8, 31)
+
+
+async def test_a_last_day_more_than_a_year_out_is_refused_and_writes_nothing() -> None:
+    """A typo fence, not a policy about notice periods. `2036` for `2026` is one
+    keystroke and would park her outside the scrub for a decade."""
+    target = _row()
+    service, staff, audit, _ = _offboard_service([target])
+    with pytest.raises(DomainValidationError):
+        await service.deactivate(
+            TENANT_ID,
+            target.id,
+            last_day=today_jerusalem() + timedelta(days=366),
+            actor=_actor(),
+        )
+    assert staff.offboarded == []
+    assert audit.rows == []
+
+
+async def test_a_last_day_before_her_start_date_is_refused() -> None:
+    """She cannot have left before she arrived, and the pair is the only place
+    the two dates are ever compared — so this is where an inverted range gets
+    caught rather than in a report six months later."""
+    target = _row()
+    target.start_date = date(2026, 5, 1)
+    service, staff, _, _ = _offboard_service([target])
+    with pytest.raises(DomainValidationError):
+        await service.deactivate(TENANT_ID, target.id, last_day=date(2026, 4, 30), actor=_actor())
+    assert staff.offboarded == []
+
+
+async def test_a_last_day_before_a_start_date_she_does_not_have_is_allowed() -> None:
+    """NULL `start_date` means "no start date recorded", which is the state every
+    pre-F38 row is in. Comparing against it would refuse every offboarding in the
+    boutique until somebody backfilled a column nobody has."""
+    target = _row()
+    service, staff, _, _ = _offboard_service([target])
+    await service.deactivate(TENANT_ID, target.id, last_day=date(2020, 1, 1), actor=_actor())
+    assert staff.offboarded[0]["last_day"] == date(2020, 1, 1)
+
+
+async def test_offboarding_never_sweeps_her_sessions() -> None:
+    """THE assertion, and it is an assertion about an ABSENCE.
+
+    `resolve_session` re-reads `staff_users` on every request and `by_id` filters
+    `deleted_at IS NULL`, so her live cookie is a 401 on her very next request —
+    proven on real Postgres by F31. F20's `sessions` policy reclaims the dead rows
+    on its own clock. A `revoke_for_staff_user` here would be a SECOND mechanism
+    for a fact the first one already guarantees, and a second mechanism is one
+    that can disagree."""
+    target = _row()
+    service, _, _, _ = _offboard_service([target])
+    sessions = _session_spy(service, Trace())
+    await service.deactivate(TENANT_ID, target.id, actor=_actor())
+    assert sessions.revoked == []
+
+
+async def test_the_audit_row_carries_the_last_day_and_the_photo_key() -> None:
+    """`photo_storage_key` is the load-bearing field: the object delete below is
+    best-effort and swallows a storage outage, so on that path THIS ROW is the
+    only durable record of which object was orphaned."""
+    target = _row()
+    target.photo_key = "tenants/t/staff/s/photo/p.jpg"
+    service, _, audit, _ = _offboard_service([target])
+    await service.deactivate(TENANT_ID, target.id, last_day=None, actor=_actor())
+    assert audit.actions() == [AuditAction.STAFF_DEACTIVATED]
+    details = audit.rows[0]["details"]
+    assert details["last_day"] == today_jerusalem().isoformat()
+    assert details["photo_storage_key"] == "tenants/t/staff/s/photo/p.jpg"
+
+
+async def test_a_staffer_with_no_photo_audits_a_null_key_and_deletes_nothing() -> None:
+    target = _row()
+    service, _, audit, storage = _offboard_service([target])
+    await service.deactivate(TENANT_ID, target.id, actor=_actor())
+    assert audit.rows[0]["details"]["photo_storage_key"] is None
+    assert storage.deleted == []
+
+
+async def test_the_photo_object_is_deleted_after_the_transaction() -> None:
+    """At OFFBOARDING and not at the seven-year scrub — stricter than the brief,
+    deliberately. Her face is the most identifying datum on the row, nothing
+    operational reads it once she is gone, and it keeps the retention policy a
+    PURE SQL STATEMENT: the shipped `PolicyRun` contract hands a policy a session
+    and nothing else, so an S3 call inside one would widen a tested interface for
+    a single caller."""
+    target = _row()
+    target.photo_key = "tenants/t/staff/s/photo/p.jpg"
+    target.photo_pending_key = "tenants/t/staff/s/photo/pending.png"
+    service, _, _, storage = _offboard_service([target])
+    await service.deactivate(TENANT_ID, target.id, actor=_actor())
+    # BOTH objects: an in-flight replace at the moment she is offboarded would
+    # otherwise leave the pending upload in the bucket with nothing pointing at
+    # it and no audit row naming it.
+    assert storage.deleted == [
+        "tenants/t/staff/s/photo/p.jpg",
+        "tenants/t/staff/s/photo/pending.png",
+    ]
+
+
+async def test_a_storage_failure_does_not_fail_the_offboarding() -> None:
+    """Best-effort and LOGGED, never raised: the row is already soft-deleted and
+    committed, so raising here would answer 503 to an owner whose staffer IS in
+    fact offboarded — and she would press it again."""
+    target = _row()
+    target.photo_key = "tenants/t/staff/s/photo/p.jpg"
+    service, staff, audit, _ = _offboard_service(
+        [target], delete_raises=MediaStorageUnavailableError()
+    )
+    await service.deactivate(TENANT_ID, target.id, actor=_actor())
+    assert staff.offboarded[0]["staff_id"] == target.id
+    assert audit.rows[0]["details"]["photo_storage_key"] == "tenants/t/staff/s/photo/p.jpg"
+
+
+async def test_the_three_f51_guards_still_fire_and_none_of_them_writes_a_last_day() -> None:
+    """F51's protocol is unchanged, and the addition must not have created a path
+    where a refused offboarding still stamps a leaving date on a live employee."""
+    me = _row(staff_id=OWNER_ID, role=StaffRole.OWNER.value)
+    service, staff, _, _ = _offboard_service([me])
+    with pytest.raises(StaffSelfManageError):
+        await service.deactivate(TENANT_ID, OWNER_ID, actor=_actor())
+    assert staff.offboarded == []
+
+    only_owner = _row(role=StaffRole.OWNER.value)
+    service, staff, _, _ = _offboard_service([only_owner])
+    staff.live_owners = 1
+    with pytest.raises(LastOwnerRequiredError):
+        await service.deactivate(TENANT_ID, only_owner.id, actor=_actor())
+    assert staff.offboarded == []
+
+    service, staff, _, _ = _offboard_service([])
+    with pytest.raises(StaffNotFoundError):
+        await service.deactivate(TENANT_ID, uuid.uuid4(), actor=_actor())
+    assert staff.offboarded == []

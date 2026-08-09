@@ -23,7 +23,7 @@ here truncates.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -53,6 +53,14 @@ from app.models.constants import BookingStatus, StaffRole
 from app.models.customer import Customer
 from app.models.dress import Dress
 from app.models.dress_variant import DressVariant
+
+# F38 made `last_day` a REQUIRED argument on StaffUsersRepository.soft_delete —
+# the retention policy's predicate needs `last_day IS NOT NULL`, so a row
+# offboarded without one is a person the platform can never scrub, and a default
+# would have made forgetting it silent. This module only ever soft-deletes a
+# staffer to set up a fixture, so any past date does; naming it says so.
+_LEFT_ON = date(2026, 1, 31)
+
 
 pytestmark = pytest.mark.db
 
@@ -834,7 +842,12 @@ async def test_a_soft_deleted_holder_still_names_the_tile(app_role_url: str) -> 
             await ASSIGNMENTS.claim(
                 session, tenant_id, room_id=room_id, staff_id=staff_id, booking_id=None
             )
-            assert await StaffUsersRepository().soft_delete(session, tenant_id, staff_id) is True
+            assert (
+                await StaffUsersRepository().soft_delete(
+                    session, tenant_id, staff_id, last_day=_LEFT_ON
+                )
+                is True
+            )
 
         async with tenant_session(factory, tenant_id) as session:
             rows = await ROOMS.list_with_occupancy(session, tenant_id)

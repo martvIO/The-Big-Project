@@ -30,6 +30,7 @@ duplication reads as a decision.
 codebase; F15's D7 already ruled this.
 """
 
+from datetime import date
 from typing import Annotated
 from uuid import UUID
 
@@ -165,8 +166,20 @@ async def update_staff(
 
 @router.delete("/staff/{staff_id}")
 async def deactivate_staff(
-    request: Request, staff: Staff, service: Service, staff_id: UUID
+    request: Request,
+    staff: Staff,
+    service: Service,
+    staff_id: UUID,
+    last_day: date | None = None,
 ) -> OkResponse:
+    """Offboarding — F51's endpoint, extended rather than replaced.
+
+    `last_day` is an OPTIONAL query parameter and its absence means "today in
+    Jerusalem", resolved in the service. It is deliberately not a body: DELETE
+    with a body is unevenly supported by clients and proxies, and this is one
+    scalar. A `date` annotation means `?last_day=not-a-date` is a house 400 at
+    the boundary and never reaches the column.
+    """
     tenant = get_current_tenant(request)
-    await service.deactivate(tenant.id, staff_id, actor=staff)
+    await service.deactivate(tenant.id, staff_id, last_day=last_day, actor=staff)
     return OkResponse()

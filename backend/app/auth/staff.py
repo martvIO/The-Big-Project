@@ -34,8 +34,9 @@ an insert can only RAISE the live-owner count, and a raise never invalidates a
 decision another transaction already made under the lock.
 """
 
+import logging
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from typing import NoReturn
 
 from sqlalchemy import text
@@ -52,6 +53,12 @@ from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError, DomainValidationError
 from app.models.constants import AuditAction, StaffRole
 from app.models.staff_user import StaffUser
+from app.storage.base import (
+    MediaNotConfiguredError,
+    MediaStorage,
+    MediaStorageUnavailableError,
+)
+from app.storefront.validation import today_jerusalem
 
 # hashtext() keys an xact-scoped lock that releases with the transaction. The
 # prefix is a SQL literal and the tenant id is bound — never interpolated.
@@ -64,6 +71,12 @@ from app.models.staff_user import StaffUser
 #
 # ponytail: one lock per tenant's staff table; nothing in a boutique needs finer.
 _STAFF_LOCK = text("SELECT pg_advisory_xact_lock(hashtext('staff:' || :tenant_id))")
+
+logger = logging.getLogger(__name__)
+
+# A TYPO FENCE, not a policy about notice periods: `2036` for `2026` is one
+# keystroke and would park her outside the retention scrub for a decade.
+MAX_LAST_DAY_LOOKAHEAD_DAYS = 365
 
 _CURRENT_PASSWORD_REQUIRED = (
     "current_password is required and must match to change your own password"
@@ -97,6 +110,33 @@ def _refuse_current_password() -> NoReturn:
     raise DomainValidationError(_CURRENT_PASSWORD_REQUIRED)
 
 
+def _resolve_last_day(last_day: date | None, *, start_date: date | None) -> date:
+    """`None` means TODAY IN JERUSALEM and never "leave it NULL".
+
+    The retention policy's predicate requires `last_day IS NOT NULL`, so a NULL
+    is not "unknown" — it is "never scrub this person", and that is not a state
+    an owner pressing a button should be able to reach by omitting a field.
+
+    Jerusalem and not UTC because this is the date a seven-year calendar clock
+    counts from, and the two zones are different days for two or three hours of
+    every night.
+
+    The lower bound is skipped when `start_date` is NULL, and that arm is
+    load-bearing: every pre-F38 row has no start date, so comparing against it
+    unconditionally would refuse every offboarding in the boutique until somebody
+    backfilled a column nobody has.
+    """
+    today = today_jerusalem()
+    resolved = last_day if last_day is not None else today
+    if resolved > today + timedelta(days=MAX_LAST_DAY_LOOKAHEAD_DAYS):
+        raise DomainValidationError(
+            f"last_day must not be more than {MAX_LAST_DAY_LOOKAHEAD_DAYS} days from today"
+        )
+    if start_date is not None and resolved < start_date:
+        raise DomainValidationError("last_day must not be before start_date")
+    return resolved
+
+
 def _normalize_phone(phone: str | None) -> str | None:
     """`None` means NOT SENT and is the caller's problem; "" (or any blank) means
     CLEAR IT and resolves to NULL here.
@@ -122,8 +162,18 @@ def _normalize_phone(phone: str | None) -> str | None:
 
 
 class StaffService:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        media_storage: MediaStorage,
+    ) -> None:
+        # F38 threads storage in, and this is the one dependency this service
+        # gained since F51. Keyword-only and required rather than defaulted: a
+        # None default would let a mis-wired create_app() ship an offboarding
+        # that silently leaves every photo in the bucket.
         self._session_factory = session_factory
+        self._storage = media_storage
         self._staff = StaffUsersRepository()
         self._sessions = SessionsRepository()
         self._audit = AuditLogRepository()
@@ -409,12 +459,40 @@ class StaffService:
             return updated
 
     async def deactivate(
-        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor: StaffContext
+        self,
+        tenant_id: uuid.UUID,
+        staff_id: uuid.UUID,
+        *,
+        last_day: date | None = None,
+        actor: StaffContext,
     ) -> None:
-        """Instantly effective, by construction: resolve_session re-reads
+        """Offboarding. F51's protocol unchanged, plus F38's leaving date and the
+        removal of her photo.
+
+        Instantly effective, by construction: resolve_session re-reads
         staff_users on every request and by_id filters deleted_at IS NULL, so the
-        target's live cookie is a 401 on her very next request. There is no
-        session sweep and there must not be one."""
+        target's live cookie is a 401 on her very next request. **There is no
+        session sweep and there must not be one** — F20's `sessions` policy
+        reclaims the dead rows on its own clock, and a `revoke_for_staff_user`
+        here would be a second mechanism for a fact the first already guarantees.
+
+        `last_day=None` means "today in Jerusalem" and NEVER "leave it NULL". The
+        retention policy's predicate requires `last_day IS NOT NULL`, so a NULL
+        here does not mean "unknown" — it means "never scrub this person", which
+        is not a state an owner pressing a button should be able to reach.
+
+        Her photo OBJECT goes here rather than at the seven-year scrub, which is
+        stricter than the brief and deliberately so: her face is the most
+        identifying datum on the row, nothing operational reads it once she is
+        gone, and it keeps the retention policy a pure SQL statement — the
+        shipped `PolicyRun` contract hands a policy a session and nothing else.
+
+        Every operational row she appears in is RETAINED, joined by a
+        `staff_user_id` that is never nulled: her fitting-room assignments, the
+        SOS alerts aimed at her, her alteration tickets and her audit trail. No
+        CASCADE exists anywhere to undo that — the FK-less schema makes retention
+        the default and erasure the deliberate act.
+        """
         async with tenant_session(self._session_factory, tenant_id) as session:
             await session.execute(_STAFF_LOCK, {"tenant_id": str(tenant_id)})
             target = await self._staff.by_id(session, tenant_id, staff_id)
@@ -432,13 +510,44 @@ class StaffService:
             ):
                 raise LastOwnerRequiredError
 
+            # AFTER the three guards, so a refused offboarding cannot stamp a
+            # leaving date on a live employee, and after the read because the
+            # lower bound is HER start date.
+            leaving = _resolve_last_day(last_day, start_date=target.start_date)
+
             email, role = target.email, target.role
-            await self._staff.soft_delete(session, tenant_id, staff_id)
+            # Captured BEFORE the write — the UPDATE nulls both columns, so this
+            # is the last moment either key exists anywhere.
+            orphaned = [key for key in (target.photo_key, target.photo_pending_key) if key]
+            await self._staff.soft_delete(session, tenant_id, staff_id, last_day=leaving)
             await self._audit.record(
                 session,
                 tenant_id=tenant_id,
                 action=AuditAction.STAFF_DEACTIVATED,
                 actor_id=actor.id,
                 entity=str(staff_id),
-                details={"email": email, "role": role},
+                # `photo_storage_key` is load-bearing: the delete below is
+                # best-effort and swallows a storage outage, so on that path this
+                # row is the ONLY durable record of which object was orphaned.
+                details={
+                    "email": email,
+                    "role": role,
+                    "last_day": leaving.isoformat(),
+                    "photo_storage_key": target.photo_key,
+                },
             )
+
+        # OUTSIDE the transaction, and best-effort. The row is already committed:
+        # raising here would answer 503 to an owner whose staffer IS offboarded,
+        # and she would press it again.
+        for key in orphaned:
+            try:
+                await self._storage.delete_object(key=key)
+            except (MediaNotConfiguredError, MediaStorageUnavailableError):
+                logger.warning(
+                    "offboarded staff photo object was not deleted, it is orphaned: "
+                    "tenant_id=%s staff_user_id=%s storage_key=%s",
+                    tenant_id,
+                    staff_id,
+                    key,
+                )

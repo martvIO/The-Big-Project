@@ -723,3 +723,28 @@ def test_an_over_long_phone_is_refused_at_the_schema_not_the_service() -> None:
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
     assert fake.calls == []
+
+
+def test_delete_forwards_an_explicit_last_day_and_defaults_it_to_none() -> None:
+    """A query parameter and not a body: DELETE-with-a-body is unevenly supported
+    by clients and proxies, and this is one scalar. `None` here is the router
+    saying "not sent" — the SERVICE is what turns that into today-Jerusalem, so
+    the default lives in exactly one place."""
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        assert client.delete(f"{DETAIL_PATH}?last_day=2026-08-31").status_code == 200
+        assert fake.call("deactivate")["last_day"] == date(2026, 8, 31)
+
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        assert client.delete(DETAIL_PATH).status_code == 200
+        assert fake.call("deactivate")["last_day"] is None
+
+
+def test_a_malformed_last_day_never_reaches_the_service() -> None:
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        resp = client.delete(f"{DETAIL_PATH}?last_day=whenever")
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert fake.calls == []

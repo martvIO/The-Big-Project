@@ -32,7 +32,7 @@ nothing here truncates.
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi import FastAPI
@@ -68,6 +68,33 @@ from app.main import NOT_AUTHENTICATED_BODY, NOT_AUTHORIZED_BODY, create_app
 from app.models.audit_log import AuditLog
 from app.models.constants import AuditAction, StaffRole
 from app.tenancy.resolver import RepositoryTenantResolver
+
+# F38 made `last_day` a REQUIRED argument on StaffUsersRepository.soft_delete —
+# the retention policy's predicate needs `last_day IS NOT NULL`, so a row
+# offboarded without one is a person the platform can never scrub, and a default
+# would have made forgetting it silent. This module only ever soft-deletes a
+# staffer to set up a fixture, so any past date does; naming it says so.
+_LEFT_ON = date(2026, 1, 31)
+
+
+class _NoBucket:
+    """An unconfigured storage port. Every test in this module offboards a
+    staffer who has no photo, so the only member offboarding could reach is
+    `delete_object` on an empty key list — i.e. never. `is_configured` answers
+    False so that if a test ever DOES give someone a photo, the read path
+    degrades to `photo_url: null` rather than reaching for credentials that do
+    not exist in CI."""
+
+    @property
+    def is_configured(self) -> bool:
+        return False
+
+    async def delete_object(self, *, key: str) -> None:  # pragma: no cover
+        raise AssertionError("this module offboards nobody with a photo")
+
+
+_NO_BUCKET = _NoBucket()
+
 
 pytestmark = pytest.mark.db
 
@@ -228,7 +255,7 @@ async def test_update_misses_an_unknown_and_a_soft_deleted_row(app_role_url: str
             assert await repo.update(session, tenant_id, uuid.uuid4(), display_name="X") is None
 
         async with tenant_session(factory, tenant_id) as session:
-            assert await repo.soft_delete(session, tenant_id, staff_id) is True
+            assert await repo.soft_delete(session, tenant_id, staff_id, last_day=_LEFT_ON) is True
         async with tenant_session(factory, tenant_id) as session:
             assert await repo.update(session, tenant_id, staff_id, display_name="X") is None
     finally:
@@ -242,11 +269,13 @@ async def test_soft_delete_is_idempotent_and_misses_unknown_ids(app_role_url: st
         repo = StaffUsersRepository()
         staff_id = await _seed_staff(factory, tenant_id)
         async with tenant_session(factory, tenant_id) as session:
-            assert await repo.soft_delete(session, tenant_id, staff_id) is True
+            assert await repo.soft_delete(session, tenant_id, staff_id, last_day=_LEFT_ON) is True
         async with tenant_session(factory, tenant_id) as session:
             # The predicate carries deleted_at IS NULL, so the second call misses.
-            assert await repo.soft_delete(session, tenant_id, staff_id) is False
-            assert await repo.soft_delete(session, tenant_id, uuid.uuid4()) is False
+            assert await repo.soft_delete(session, tenant_id, staff_id, last_day=_LEFT_ON) is False
+            assert (
+                await repo.soft_delete(session, tenant_id, uuid.uuid4(), last_day=_LEFT_ON) is False
+            )
             assert await repo.by_id(session, tenant_id, staff_id) is None
     finally:
         await engine.dispose()
@@ -262,7 +291,7 @@ async def test_count_live_owners_counts_only_live_owners(app_role_url: str) -> N
         archived_owner = await _seed_staff(factory, tenant_id)
         async with tenant_session(factory, tenant_id) as session:
             assert await repo.count_live_owners(session, tenant_id) == 2
-            await repo.soft_delete(session, tenant_id, archived_owner)
+            await repo.soft_delete(session, tenant_id, archived_owner, last_day=_LEFT_ON)
         async with tenant_session(factory, tenant_id) as session:
             assert await repo.count_live_owners(session, tenant_id) == 1
     finally:
@@ -295,7 +324,7 @@ async def test_list_live_is_live_only_and_ordered_by_created_at(app_role_url: st
         second = await _seed_staff(factory, tenant_id, display_name="Second")
         gone = await _seed_staff(factory, tenant_id, display_name="Gone")
         async with tenant_session(factory, tenant_id) as session:
-            await repo.soft_delete(session, tenant_id, gone)
+            await repo.soft_delete(session, tenant_id, gone, last_day=_LEFT_ON)
         async with tenant_session(factory, tenant_id) as session:
             rows = await repo.list_live(session, tenant_id)
         assert [row.id for row in rows] == [first, second]
@@ -326,7 +355,7 @@ async def test_a_soft_deleted_email_can_be_reused(app_role_url: str) -> None:
         repo = StaffUsersRepository()
         first = await _seed_staff(factory, tenant_id, email=address)
         async with tenant_session(factory, tenant_id) as session:
-            await repo.soft_delete(session, tenant_id, first)
+            await repo.soft_delete(session, tenant_id, first, last_day=_LEFT_ON)
         second = await _seed_staff(factory, tenant_id, email=address)
         assert second != first
         async with tenant_session(factory, tenant_id) as session:
@@ -369,7 +398,7 @@ async def test_two_concurrent_removals_of_two_owners_leave_exactly_one(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory)
+        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
         first = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         second = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
 
@@ -398,7 +427,7 @@ async def test_a_deactivation_racing_a_demotion_also_leaves_exactly_one(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory)
+        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
         first = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         second = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
 
@@ -428,7 +457,7 @@ async def test_a_duplicate_live_email_is_409_on_the_pre_check(app_role_url: str)
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory)
+        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
         owner = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         address = _email()
         await service.create(
@@ -461,7 +490,7 @@ async def test_a_duplicate_live_email_is_409_on_the_integrity_backstop(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory)
+        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
         owner = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         address = _email()
         await service.create(
@@ -496,7 +525,7 @@ async def test_the_self_guard_refuses_and_writes_nothing(app_role_url: str) -> N
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory)
+        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
         me = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         actor = _actor(me, tenant_id)
@@ -524,7 +553,7 @@ async def test_an_owner_renames_herself_and_changes_her_own_password(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory)
+        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
         me = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         actor = _actor(me, tenant_id)
 
@@ -563,7 +592,7 @@ async def test_audit_writes_one_row_per_actual_change_and_none_for_a_no_op(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory)
+        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
         owner = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         actor = _actor(owner, tenant_id)
         target = await _seed_staff(
@@ -616,7 +645,7 @@ async def test_another_tenants_staff_row_is_indistinguishable_from_missing(
     engine, factory = _factory(app_role_url)
     here, elsewhere = uuid.uuid4(), uuid.uuid4()
     try:
-        service = StaffService(factory)
+        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
         theirs = await _seed_staff(factory, elsewhere, role=StaffRole.SHIFT_MANAGER.value)
         mine = await _seed_staff(factory, here, role=StaffRole.OWNER.value)
         actor = _actor(mine, here)
@@ -644,7 +673,7 @@ def _app(factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     recipe, plus the staff service this feature adds."""
     app = create_app(resolver=RepositoryTenantResolver(factory))
     app.state.auth_service = AuthService(factory, SETTINGS)
-    app.state.staff_service = StaffService(factory)
+    app.state.staff_service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
     app.state.boutique_service = BoutiqueSettingsService(
         factory,
         terms_rate_limiter=FixedWindowRateLimiter(

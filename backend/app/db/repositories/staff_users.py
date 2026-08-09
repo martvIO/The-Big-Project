@@ -294,11 +294,27 @@ class StaffUsersRepository:
             )
         ).scalar_one_or_none()
 
-    async def soft_delete(self, session: AsyncSession, tenant_id: UUID, staff_id: UUID) -> bool:
-        """Returns whether a live row was hit — not the row, because DELETE
-        answers OkResponse and the service already holds the row from its
-        post-lock read. deleted_at IS NULL in the predicate is what makes a second
-        call answer False rather than re-stamping the timestamp."""
+    async def soft_delete(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID, *, last_day: date
+    ) -> bool:
+        """Offboarding, as ONE statement.
+
+        Returns whether a live row was hit — not the row, because DELETE answers
+        OkResponse and the service already holds the row from its post-lock read.
+        `deleted_at IS NULL` in the predicate is what makes a second call answer
+        False rather than re-stamping the timestamp.
+
+        ⚠ `last_day` is REQUIRED and has no default. That is the second half of
+        the guard the service's `_resolve_last_day` is the first half of: the
+        retention policy's predicate needs `last_day IS NOT NULL`, so a row
+        soft-deleted without one is a person the platform can never scrub. A
+        default here would make forgetting it silent.
+
+        The six photo columns are nulled in the SAME statement as `deleted_at`,
+        so there is no window in which a row is offboarded but still points at an
+        object — and no second UPDATE that could fail on its own. The OBJECT is
+        deleted by the caller, after the transaction, best-effort.
+        """
         stmt = (
             update(StaffUser)
             .where(
@@ -306,7 +322,16 @@ class StaffUsersRepository:
                 StaffUser.id == staff_id,
                 StaffUser.deleted_at.is_(None),
             )
-            .values(deleted_at=func.now())
+            .values(
+                deleted_at=func.now(),
+                last_day=last_day,
+                photo_key=None,
+                photo_content_type=None,
+                photo_confirmed_at=None,
+                photo_pending_key=None,
+                photo_pending_content_type=None,
+                photo_pending_at=None,
+            )
             .returning(StaffUser.id)
         )
         return (await session.execute(stmt)).scalar_one_or_none() is not None

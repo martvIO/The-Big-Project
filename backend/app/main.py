@@ -778,10 +778,6 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware, csp=build_csp(settings))
 
     app.state.auth_service = AuthService(get_session_factory(), settings)
-    # Its own service beside the auth one, never methods on it: AuthService
-    # verifies credentials and issues sessions, and folding administration in
-    # would put the login path's fake into every staff CRUD test.
-    app.state.staff_service = StaffService(get_session_factory())
     # No clock wired: the parameter exists so the db suite can freeze the
     # window, and production reads a real one (D8).
     app.state.dashboard_service = DashboardService(get_session_factory())
@@ -871,6 +867,17 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         ),
     )
     app.state.media_storage = _build_media_storage(settings)
+    # Its own service beside the auth one, never methods on it: AuthService
+    # verifies credentials and issues sessions, and folding administration in
+    # would put the login path's fake into every staff CRUD test.
+    #
+    # Constructed HERE and not up with auth_service, because F38 gave it the
+    # storage port: offboarding deletes the leaver's photo object. The
+    # dependency is required rather than defaulted, so this ordering is a boot
+    # failure if it ever regresses rather than a silent bucket leak.
+    app.state.staff_service = StaffService(
+        get_session_factory(), media_storage=app.state.media_storage
+    )
     app.state.catalog_service = CatalogService(
         get_session_factory(),
         media_storage=app.state.media_storage,
