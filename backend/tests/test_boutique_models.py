@@ -79,16 +79,19 @@ def test_terms_version_shape() -> None:
 
 # --- F38: the model<->migration parity gap ----------------------------------
 
-_HR_MIGRATION = (
-    Path(__file__).resolve().parent.parent
-    / "migrations"
-    / "versions"
-    / "0031_staff_hr_directory.py"
+# GLOBBED, not spelled with its number. A migration's number is claim order and
+# moves at every rebase — this one shipped as 0031, then F28 merged as
+# 0031_dress_reservations.py and it became 0032. A hardcoded filename turns that
+# routine renumber into a FileNotFoundError in an unrelated test file.
+_HR_MIGRATION = next(
+    (Path(__file__).resolve().parent.parent / "migrations" / "versions").glob(
+        "*_staff_hr_directory.py"
+    )
 )
 
 
 def _migration_columns(path: Path) -> set[str]:
-    """The column names 0031 adds, read out of the migration ITSELF.
+    """The column names the HR migration adds, read out of the migration ITSELF.
 
     Every other option compares the model against a list retyped in this file,
     which is a list the same hand that forgot the model would have to edit. The

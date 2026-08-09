@@ -1,20 +1,27 @@
 """staff hr directory: eleven columns, two content-type CHECKs, one backfill
 
-Revision ID: 0031
-Revises: 0030
+Revision ID: 0032
+Revises: 0031
 
-The number was resolved from `alembic heads` at build time and is NOT reserved.
-Observed head on rebased `main` was `0028` at build time, with F28 and F35
-holding `0029` and `0030` in live unmerged worktrees. F35 then MERGED mid-build
-and `0030` became real, so `down_revision` was repointed from `0028` to `0030`
-at the rebase — the renumber protocol working exactly as written. `0029` is
-still F28's and is still unmerged, so this chain reads 0028 -> 0030 -> 0031 with
-a gap, which alembic does not care about and a reader might: the numbers are
-claim order, not a dense sequence. 0023's header records what
-reserving a number costs — alembic keys revisions by the STRING, warns
-`Revision N is present more than once`, dedupes to ONE script and silently drops
-the other, which on a fresh database means a whole feature's DDL never runs.
-`test_exactly_one_migration_head` is what proves it, and only AFTER the rebase.
+The number is resolved at the REBASE and never at build time, and this file is
+the case study for why. Build time observed `0028` on `main`, with F28 and F35
+holding `0029` and `0030` in live unmerged worktrees, so this claimed `0031`.
+F35 merged mid-build and `0030` became real — the renumber protocol working.
+Then F28 merged too, as `0031_dress_reservations.py`, and the number this file
+had claimed against an unmerged tree was suddenly taken on `main`.
+
+Two scripts declaring `revision = "0031"` do not collide loudly. Alembic keys
+revisions by the STRING: it warns `Revision 0031 is present more than once`,
+dedupes to ONE script and silently drops the other. On a fresh database
+`alembic upgrade head` then runs one of them, so either staff_users never gains
+its eleven columns (every GET /manage/staff is an UndefinedColumn) or the
+dress-reservation tables never exist — and `test_exactly_one_migration_head`
+still sees exactly one head, so CI is green with a whole feature's DDL missing.
+0023's header records the same lesson; this is the second telling.
+
+`0029` is still unclaimed on `main` and this chain reads 0028 -> 0030 -> 0031 ->
+0032 with a gap. Alembic does not care and a reader might: the numbers are claim
+order, not a dense sequence.
 
 0023_seamstress_capacity.py is the precedent this follows in every particular:
 raw `op.execute`, NAMED table constraints so `pg_get_constraintdef` has a name to
@@ -25,8 +32,8 @@ AttributeError at first read, not a red test.
 
 from alembic import op
 
-revision = "0031"
-down_revision = "0030"
+revision = "0032"
+down_revision = "0031"
 branch_labels = None
 depends_on = None
 
