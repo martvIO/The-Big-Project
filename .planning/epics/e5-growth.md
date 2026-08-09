@@ -34,7 +34,7 @@ v1 (E1–E4) proves one boutique end-to-end with an operator holding its hand; E
 | 25 | Web platform console (replaces v1 CLI) | done (PR #52) | [spec](../specs/platform-console.md) | [plan](../plans/platform-console.md) | E1 #6 |
 | 26 | Self-serve boutique signup + gateway-connect onboarding | todo | — | — | #25, E1 #4, E4 #17 · **public launch gated by #29** |
 | 27 | Full feature-toggle matrix UI (§2 grid) | done (PR #51) | [spec](../specs/toggle-matrix-ui.md) | [plan](../plans/toggle-matrix-ui.md) | E2 #7 |
-| 28 | Date-bound dress reservation semantics | todo | — | — | E2 #8, E3 #13 · **blocked on pilot product decision** |
+| 28 | Date-bound dress reservation semantics | done (PR #53) | [spec](../specs/dress-reservation.md) | [plan](../plans/dress-reservation.md) | E2 #8, E3 #13 · Q9 settled it: RENTAL |
 | 29 | Pre-scale gate: refund-API automation, k6, Redis caching | todo | — | — | E4 #18, #21 |
 
 **Sequencing when E5 starts**: #22 → #23 are a chain and the epic's transactional heart — spec them first. #24 is independent of the waitlist chain and can run in parallel. #25 → #26 are a chain; #26 can be *built* early but its **public launch is gated by #29** — a platform that invites the public to create tenants must already have its load pass, caching, and automated refunds. #27 is small and slots anywhere after E2 #7. #28 waits on the pilot's purchase/rental/made-to-order answer — if that decision is still open when E5 starts, everything else proceeds around it.
