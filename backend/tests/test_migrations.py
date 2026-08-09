@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import logging
+import re
 import uuid
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.catalog.validation import ACCEPTED_CONTENT_TYPES
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.models.alteration_ticket import AlterationTicket
@@ -4197,5 +4199,278 @@ def test_migration_0031_round_trips(migrated_db: str) -> None:
         command.upgrade(cfg, "head")
         assert exists()
         assert _reservation_columns(migrated_db)["starts_on"] == ("date", "NO")
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F38: the HR directory columns ------------------------------------------
+
+_HR_COLUMNS: dict[str, tuple[str, str]] = {
+    "phone": ("text", "YES"),
+    "start_date": ("date", "YES"),
+    "last_day": ("date", "YES"),
+    "shift_manager_eligible": ("boolean", "NO"),
+    "scrubbed_at": ("timestamp with time zone", "YES"),
+    "photo_key": ("text", "YES"),
+    "photo_content_type": ("text", "YES"),
+    "photo_confirmed_at": ("timestamp with time zone", "YES"),
+    "photo_pending_key": ("text", "YES"),
+    "photo_pending_content_type": ("text", "YES"),
+    "photo_pending_at": ("timestamp with time zone", "YES"),
+}
+_HR_COLUMN_READ = (
+    "SELECT column_name, data_type, is_nullable, column_default "
+    "FROM information_schema.columns WHERE table_name = 'staff_users' "
+    "AND column_name = ANY(:names)"
+)
+_PHOTO_CHECK_NAME = "staff_users_photo_content_type_check"
+_PHOTO_PENDING_CHECK_NAME = "staff_users_photo_pending_content_type_check"
+_HR_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = 'staff_users'::regclass AND conname = :name"
+)
+_HR_EMAIL = "hr@check.example"
+_HR_PHOTO_INSERT = (
+    "INSERT INTO staff_users "
+    "(tenant_id, email, password_hash, display_name, role, "
+    " photo_key, photo_content_type, photo_pending_key, photo_pending_content_type) "
+    f"VALUES (uuid_generate_v4(), '{_HR_EMAIL}', 'hash', 'Probe', 'owner', "
+    "'k', :content_type, 'p', :content_type)"
+)
+
+
+def _hr_columns(url: str) -> dict[str, tuple[str, str, str | None]]:
+    async def read() -> dict[str, tuple[str, str, str | None]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = await conn.execute(text(_HR_COLUMN_READ), {"names": list(_HR_COLUMNS)})
+                return {
+                    str(row[0]): (str(row[1]), str(row[2]), None if row[3] is None else str(row[3]))
+                    for row in rows
+                }
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _hr_constraint_def(url: str, name: str) -> str:
+    async def read() -> str:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                result = await conn.execute(text(_HR_CONSTRAINT_DEF), {"name": name})
+                return str(result.scalar_one())
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _hr_photo_type_admitted(url: str, content_type: str) -> bool:
+    """Every probe rolls back — `migrated_db` is session-scoped and a committed
+    probe row would surface in a later module's staff read (the rule
+    test_staff_role_check_pins_the_role_set records the hard way)."""
+
+    async def write() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(text(_HR_PHOTO_INSERT), {"content_type": content_type})
+                    return True
+                except IntegrityError:
+                    return False
+                finally:
+                    await trans.rollback()
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(write())
+
+
+@pytest.mark.db
+def test_the_hr_directory_columns_exist_with_their_declared_shapes(migrated_db: str) -> None:
+    """Eleven columns, and the two halves that are decisions rather than defaults
+    are asserted as such: `shift_manager_eligible` is the ONLY NOT NULL one and
+    the only one with a default (an unanswered "may she be slotted" is `false`,
+    not a third state), and every other column is nullable because NULL is a real
+    state on each — no phone recorded, still employed, never scrubbed, no photo.
+    """
+    found = _hr_columns(migrated_db)
+    assert set(found) == set(_HR_COLUMNS), f"missing {set(_HR_COLUMNS) - set(found)}"
+    for name, (data_type, nullable) in _HR_COLUMNS.items():
+        assert found[name][0] == data_type, name
+        assert found[name][1] == nullable, name
+    assert "false" in (found["shift_manager_eligible"][2] or "")
+    for name in _HR_COLUMNS:
+        if name != "shift_manager_eligible":
+            assert found[name][2] is None, name
+
+
+@pytest.mark.db
+def test_the_photo_content_type_checks_pin_the_accepted_set(migrated_db: str) -> None:
+    """Both CHECKs, pinned against the IMPORTED `ACCEPTED_CONTENT_TYPES` rather
+    than a retyped list — 0011's role test's rule, and for its reason: the day a
+    fourth type is accepted, either the migration widened both CHECKs with it and
+    this covers it for free, or it did not and this is the red. A literal here
+    would have to be edited by the same hand that forgot the migration.
+
+    The set is extracted from the deparsed definition rather than compared to a
+    captured string, because `pg_get_constraintdef` renders `IN (…)` as
+    `= ANY (ARRAY[…]::text[])` with parenthesisation this test has no business
+    pinning — the SET is the security boundary, its rendering is not.
+    """
+    for name in (_PHOTO_CHECK_NAME, _PHOTO_PENDING_CHECK_NAME):
+        definition = _hr_constraint_def(migrated_db, name)
+        assert "IS NULL" in definition, name
+        quoted = set(re.findall(r"'([^']+)'", definition))
+        assert quoted == set(ACCEPTED_CONTENT_TYPES), f"{name}: {definition}"
+
+
+@pytest.mark.db
+def test_the_photo_content_type_checks_refuse_an_unaccepted_type(migrated_db: str) -> None:
+    """The behavioural half. `image/gif` is the one the catalog's own comment
+    names as excluded, and SVG — executable markup served from our bucket, i.e.
+    stored XSS — is the reason this set is pinned in the DB at all."""
+    for content_type in ACCEPTED_CONTENT_TYPES:
+        assert _hr_photo_type_admitted(migrated_db, content_type) is True, content_type
+    assert _hr_photo_type_admitted(migrated_db, "image/gif") is False
+    assert _hr_photo_type_admitted(migrated_db, "image/svg+xml") is False
+
+
+@pytest.mark.db
+def test_the_hr_directory_migration_backfills_last_day_for_pre_f38_leavers(
+    migrated_db: str,
+) -> None:
+    """The load-bearing half of the migration, and the only one that cannot be
+    observed on a fresh database: a staffer deactivated BEFORE F38 has
+    `last_day IS NULL`, the retention policy's predicate requires it NOT NULL, so
+    without the backfill she is permanently unscrubbable — silently, with nothing
+    anywhere to indicate it.
+
+    Asserted through a real downgrade/upgrade cycle rather than by inspecting the
+    SQL, because the failure this guards is the statement being dropped, not
+    mistyped. A LIVE row is probed alongside: the WHERE clause must leave her
+    alone, or every employed staffer acquires a leaving date.
+
+    The Jerusalem conversion is asserted on an instant where UTC and local
+    disagree about the DAY — 22:30 UTC is 00:30 the NEXT day in Jerusalem — which
+    is the whole reason for the `AT TIME ZONE` rather than a bare `::date`.
+    """
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("staff hr directory")
+    leaver = "backfill-leaver@check.example"
+    stayer = "backfill-stayer@check.example"
+
+    async def seed() -> None:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO staff_users "
+                        "(tenant_id, email, password_hash, display_name, role, deleted_at) "
+                        "VALUES (uuid_generate_v4(), :email, 'hash', 'Gone', 'owner', :at)"
+                    ),
+                    {
+                        "email": leaver,
+                        "at": datetime.datetime(2026, 3, 10, 22, 30, tzinfo=datetime.UTC),
+                    },
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO staff_users "
+                        "(tenant_id, email, password_hash, display_name, role) "
+                        "VALUES (uuid_generate_v4(), :email, 'hash', 'Here', 'owner')"
+                    ),
+                    {"email": stayer},
+                )
+        finally:
+            await engine.dispose()
+
+    async def read_last_days() -> dict[str, datetime.date | None]:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                rows = await conn.execute(
+                    text("SELECT email, last_day FROM staff_users WHERE email = ANY(:emails)"),
+                    {"emails": [leaver, stayer]},
+                )
+                return {str(row[0]): row[1] for row in rows}
+        finally:
+            await engine.dispose()
+
+    async def cleanup() -> None:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("DELETE FROM staff_users WHERE email = ANY(:emails)"),
+                    {"emails": [leaver, stayer]},
+                )
+        finally:
+            await engine.dispose()
+
+    try:
+        command.downgrade(cfg, down_to)
+        asyncio.run(seed())
+        command.upgrade(cfg, "head")
+        found = asyncio.run(read_last_days())
+        assert found[leaver] == datetime.date(2026, 3, 11)
+        assert found[stayer] is None
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+        asyncio.run(cleanup())
+
+
+@pytest.mark.db
+def test_the_hr_directory_migration_round_trips(migrated_db: str) -> None:
+    """upgrade() adds eleven columns and two CHECKs; downgrade() removes all
+    thirteen. Probes both directions rather than only the end state (0013's rule):
+    a downgrade that silently no-ops stays green while shipping a migration that
+    cannot be rolled back.
+
+    The target is resolved by IDENTITY (`_parent_of`), never as a literal and
+    never as `-1` — this migration's number comes from `alembic heads` at build
+    time and is renumbered at the rebase that precedes the push.
+
+    The finally is not decoration: left downgraded, the ORM maps eleven columns
+    `staff_users` no longer has and every later db test in this shared session
+    fails with UndefinedColumn somewhere unrelated to itself."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("staff hr directory")
+
+    def constraint_count() -> int:
+        async def read() -> int:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(
+                        text(
+                            "SELECT count(*) FROM pg_constraint "
+                            "WHERE conrelid = 'staff_users'::regclass AND conname = ANY(:names)"
+                        ),
+                        {"names": [_PHOTO_CHECK_NAME, _PHOTO_PENDING_CHECK_NAME]},
+                    )
+                    return int(result.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert set(_hr_columns(migrated_db)) == set(_HR_COLUMNS)
+        assert constraint_count() == 2
+        command.downgrade(cfg, down_to)
+        assert _hr_columns(migrated_db) == {}
+        assert constraint_count() == 0
+        command.upgrade(cfg, "head")
+        assert set(_hr_columns(migrated_db)) == set(_HR_COLUMNS)
+        assert constraint_count() == 2
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
