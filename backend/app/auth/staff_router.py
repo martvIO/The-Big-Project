@@ -39,7 +39,13 @@ from fastapi import APIRouter, Depends, Request, Response
 from app.auth.cookies import SESSION_COOKIE
 from app.auth.dependencies import get_current_staff, require_role
 from app.auth.photo import sign_staff_photo
-from app.auth.schemas import CreateStaffRequest, StaffMember, UpdateStaffRequest
+from app.auth.schemas import (
+    CreateStaffRequest,
+    StaffMember,
+    StaffPhotoPresignRequest,
+    StaffPhotoPresignResponse,
+    UpdateStaffRequest,
+)
 from app.auth.service import StaffContext
 from app.auth.staff import StaffService
 from app.auth.tokens import hash_token
@@ -183,3 +189,60 @@ async def deactivate_staff(
     tenant = get_current_tenant(request)
     await service.deactivate(tenant.id, staff_id, last_day=last_day, actor=staff)
     return OkResponse()
+
+
+# --- F38: the profile photo, three routes on the SAME owner-only router ------
+#
+# No per-route decorator, deliberately: the gate is mounted on the router, so a
+# route added here cannot forget it. The three (method, path) templates still
+# have to be named in test_staff_role_gating's OWNER_ONLY set, in
+# test_cross_tenant_walker's walk and in test_audit_coverage's mutating-route
+# assertion — those three tables are what turn "cannot forget" into a test.
+
+
+@router.post("/staff/{staff_id}/photo/presign")
+async def presign_staff_photo(
+    request: Request,
+    staff: Staff,
+    service: Service,
+    staff_id: UUID,
+    body: StaffPhotoPresignRequest,
+) -> StaffPhotoPresignResponse:
+    """Answers the POST policy the browser uploads with. It carries no photo id:
+    the confirm route reads the pending triple off the row, so the client never
+    holds an identifier it could substitute for another staffer's."""
+    tenant = get_current_tenant(request)
+    presign = await service.presign_photo(
+        tenant.id,
+        staff_id,
+        content_type=body.content_type,
+        byte_size=body.byte_size,
+        actor_id=staff.id,
+    )
+    return StaffPhotoPresignResponse(
+        url=presign.url,
+        fields=presign.fields,
+        expires_in=presign.expires_in,
+        max_bytes=presign.max_bytes,
+    )
+
+
+@router.post("/staff/{staff_id}/photo/confirm")
+async def confirm_staff_photo(
+    request: Request, staff: Staff, service: Service, storage: Storage, staff_id: UUID
+) -> StaffMember:
+    """No body: everything this needs is already on the row. Answers the updated
+    member so the console re-renders from the server's own view rather than
+    guessing what the promote did."""
+    tenant = get_current_tenant(request)
+    confirmed = await service.confirm_photo(tenant.id, staff_id, actor_id=staff.id)
+    return _member(confirmed, storage)
+
+
+@router.delete("/staff/{staff_id}/photo")
+async def delete_staff_photo(
+    request: Request, staff: Staff, service: Service, storage: Storage, staff_id: UUID
+) -> StaffMember:
+    tenant = get_current_tenant(request)
+    cleared = await service.delete_photo(tenant.id, staff_id, actor_id=staff.id)
+    return _member(cleared, storage)

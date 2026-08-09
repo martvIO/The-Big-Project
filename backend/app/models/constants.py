@@ -375,6 +375,15 @@ class AuditAction(StrEnum):
     # `previous_break_started_at`: ending a break destroys the only copy of when
     # it began, so a row without it records that something stopped and cannot say
     # what.
+    # F38's profile photo, three rows over a two-phase upload. Each carries the
+    # STORAGE KEY, and that is the load-bearing part rather than decoration:
+    # every object delete in this feature is best-effort, so on the path where
+    # one fails these rows are the ONLY durable record of which object was
+    # orphaned. audit_log.action is plain TEXT with no CHECK (0003), so they need
+    # no migration.
+    STAFF_PHOTO_PRESIGNED = "staff_photo_presigned"
+    STAFF_PHOTO_CONFIRMED = "staff_photo_confirmed"
+    STAFF_PHOTO_DELETED = "staff_photo_deleted"
     STAFF_BREAK_STARTED = "staff_break_started"
     STAFF_BREAK_ENDED = "staff_break_ended"
     # F17's payment gateway. Same fact as the two blocks above: audit_log.action

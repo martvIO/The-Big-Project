@@ -294,6 +294,110 @@ class StaffUsersRepository:
             )
         ).scalar_one_or_none()
 
+    async def set_pending_photo(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        staff_id: UUID,
+        *,
+        storage_key: str | None,
+        content_type: str | None,
+        at: datetime | None,
+    ) -> bool:
+        """Writes — or, with all three None, CLEARS — the pending triple.
+
+        One method for both because they are the same statement with different
+        values, and because the triple is all-or-nothing: three columns that must
+        move together are one write, not three arguments a caller could get half
+        right. The schema cannot express it (a CHECK spanning three would refuse
+        the ordinary intermediate state a two-phase confirm creates), so this is
+        where the invariant lives.
+
+        Touches NEITHER the live triple nor `deleted_at`: an in-flight upload
+        must leave the photo currently on the board rendering, which is the whole
+        reason there are two triples.
+        """
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.deleted_at.is_(None),
+            )
+            .values(
+                photo_pending_key=storage_key,
+                photo_pending_content_type=content_type,
+                photo_pending_at=at,
+            )
+            .returning(StaffUser.id)
+        )
+        return wrote.scalar_one_or_none() is not None
+
+    async def promote_pending_photo(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID, *, at: datetime
+    ) -> StaffUser | None:
+        """Pending becomes live, in ONE statement, guarded by
+        `photo_pending_key IS NOT NULL`.
+
+        That predicate is what makes a retried confirm — after a lost response —
+        a no-op rather than a second promotion that would blank the live triple
+        it already wrote. `None` back therefore means "nothing to promote", which
+        the caller reads as idempotent success and not as an error.
+
+        The answer comes through `_refreshed` and never off the returning row:
+        this is ORM-enabled DML whose `evaluate` synchronization stamps these
+        values onto the identity-mapped instance whatever the database matched,
+        and the session factory is `expire_on_commit=False`.
+        """
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.deleted_at.is_(None),
+                StaffUser.photo_pending_key.is_not(None),
+            )
+            .values(
+                photo_key=StaffUser.photo_pending_key,
+                photo_content_type=StaffUser.photo_pending_content_type,
+                photo_confirmed_at=at,
+                photo_pending_key=None,
+                photo_pending_content_type=None,
+                photo_pending_at=None,
+            )
+            .returning(StaffUser.id)
+        )
+        if wrote.scalar_one_or_none() is None:
+            return None
+        return await self._refreshed(session, tenant_id, staff_id)
+
+    async def clear_photo(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID
+    ) -> StaffUser | None:
+        """All six columns, one statement. Unconditional rather than guarded on
+        `photo_key IS NOT NULL`, so a delete that races a confirm cannot leave
+        the pending half behind."""
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.deleted_at.is_(None),
+            )
+            .values(
+                photo_key=None,
+                photo_content_type=None,
+                photo_confirmed_at=None,
+                photo_pending_key=None,
+                photo_pending_content_type=None,
+                photo_pending_at=None,
+            )
+            .returning(StaffUser.id)
+        )
+        if wrote.scalar_one_or_none() is None:
+            return None
+        return await self._refreshed(session, tenant_id, staff_id)
+
     async def soft_delete(
         self, session: AsyncSession, tenant_id: UUID, staff_id: UUID, *, last_day: date
     ) -> bool:

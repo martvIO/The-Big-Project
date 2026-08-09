@@ -130,3 +130,24 @@ class UpdateStaffRequest(ForbidExtraModel):
     # alone", and a `False` default would silently un-tick eligibility on every
     # save of any other field.
     shift_manager_eligible: bool | None = None
+
+
+class StaffPhotoPresignRequest(ForbidExtraModel):
+    """The declared type and size. Both are CLAIMS the client makes and neither
+    is trusted: the type is checked against the accepted set here, pinned into
+    the POST policy, re-read off the stored object at confirm and matched against
+    its magic bytes; the size is pinned as an EXACT content-length range in the
+    policy, so the browser may post precisely what it declared and nothing else.
+    """
+
+    content_type: str = Field(max_length=100)
+    byte_size: int = Field(ge=0)
+
+
+class StaffPhotoPresignResponse(BaseModel):
+    url: str
+    # Bearer material for its whole TTL — carries `policy` and `x-amz-signature`.
+    # Never logged, never in an error.
+    fields: dict[str, str]
+    expires_in: int
+    max_bytes: int

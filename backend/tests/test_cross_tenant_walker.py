@@ -240,6 +240,16 @@ _FUTURE_INSTANT = (
 PROBES: dict[tuple[str, str], dict[str, Any]] = {
     # staff
     ("PATCH", "/manage/staff/{staff_id}"): {"display_name": "Walker"},
+    # ⚠ POPULATE, DON'T EXEMPT — and the body has to be VALID for this probe to
+    # mean anything. `presign_photo` validates the declared type and size BEFORE
+    # it resolves the staff row (the catalog's `presign_media` ordering), so a
+    # junk body would answer 400 for a reason that has nothing to do with
+    # tenancy and the walk's refusal would prove nothing. The other two photo
+    # routes take no body and need no entry here.
+    ("POST", "/manage/staff/{staff_id}/photo/presign"): {
+        "content_type": "image/jpeg",
+        "byte_size": 2048,
+    },
     # boutique
     ("PATCH", "/manage/appointment-types/{type_id}"): {
         "name": "Walker fitting",

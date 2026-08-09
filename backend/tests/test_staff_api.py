@@ -33,12 +33,15 @@ from app.auth.staff import (
     DuplicateEmailError,
     LastOwnerRequiredError,
     StaffNotFoundError,
+    StaffPhotoPresign,
     StaffSelfManageError,
 )
+from app.catalog.service import MediaPresignThrottledError
 from app.errors import DomainValidationError
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.constants import StaffRole
 from app.models.staff_user import StaffUser
+from app.storage.base import MediaNotConfiguredError
 from app.tenancy.middleware import TenantContext
 
 TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="Bella Bridal", settings={})
@@ -187,6 +190,29 @@ class FakeStaffService:
 
     async def deactivate(self, tenant_id: uuid.UUID, staff_id: uuid.UUID, **kwargs: Any) -> None:
         self._record("deactivate", tenant_id=tenant_id, staff_id=staff_id, **kwargs)
+
+    async def presign_photo(
+        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, **kwargs: Any
+    ) -> StaffPhotoPresign:
+        self._record("presign_photo", tenant_id=tenant_id, staff_id=staff_id, **kwargs)
+        return StaffPhotoPresign(
+            url="https://bucket.example/",
+            fields={"key": "tenants/t/staff/s/photo/p.jpg", "policy": "opaque"},
+            expires_in=300,
+            max_bytes=kwargs["byte_size"],
+        )
+
+    async def confirm_photo(
+        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, **kwargs: Any
+    ) -> StaffUser:
+        self._record("confirm_photo", tenant_id=tenant_id, staff_id=staff_id, **kwargs)
+        return _row(staff_id=staff_id)
+
+    async def delete_photo(
+        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, **kwargs: Any
+    ) -> StaffUser:
+        self._record("delete_photo", tenant_id=tenant_id, staff_id=staff_id, **kwargs)
+        return _row(staff_id=staff_id)
 
 
 def _client(
@@ -748,3 +774,132 @@ def test_a_malformed_last_day_never_reaches_the_service() -> None:
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
     assert fake.calls == []
+
+
+# --- F38: the three photo routes ---
+
+
+PRESIGN_PATH = f"{DETAIL_PATH}/photo/presign"
+CONFIRM_PATH = f"{DETAIL_PATH}/photo/confirm"
+PHOTO_PATH = f"{DETAIL_PATH}/photo"
+PRESIGN_BODY: dict[str, Any] = {"content_type": "image/jpeg", "byte_size": 4096}
+
+PHOTO_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
+    ("POST", PRESIGN_PATH, PRESIGN_BODY),
+    ("POST", CONFIRM_PATH, None),
+    ("DELETE", PHOTO_PATH, None),
+]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    PHOTO_ROUTES,
+    ids=[f"{m}-{p}" for m, p, _ in PHOTO_ROUTES],
+)
+def test_every_photo_route_inherits_the_router_gate_without_its_own_decorator(
+    method: str, path: str, body: dict[str, Any] | None
+) -> None:
+    """The gate is mounted on the ROUTER, so these three carry no decorator of
+    their own — which is only safe if that inheritance is tested rather than
+    assumed. A shift manager is the probe because she is the role closest to an
+    owner and the one a mis-scoped gate would admit."""
+    fake = FakeStaffService()
+    with _client(fake, role=StaffRole.SHIFT_MANAGER.value) as client:
+        resp = client.request(method, path, json=body)
+    assert resp.status_code == 403, f"{method} {path} → {resp.status_code}"
+    assert resp.json() == NOT_AUTHORIZED_BODY
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    PHOTO_ROUTES,
+    ids=[f"{m}-{p}" for m, p, _ in PHOTO_ROUTES],
+)
+def test_every_photo_route_answers_404_for_an_unknown_staffer(
+    method: str, path: str, body: dict[str, Any] | None
+) -> None:
+    """Which is also what ANOTHER TENANT's staff id answers — RLS and the
+    repository's redundant tenant predicate make a foreign row indistinguishable
+    from a missing one, and this route family must not become the place that
+    distinction leaks."""
+    fake = FakeStaffService()
+    fake.raise_on = {"presign_photo": StaffNotFoundError(), "confirm_photo": StaffNotFoundError()}
+    fake.raise_on["delete_photo"] = StaffNotFoundError()
+    with _client(fake) as client:
+        resp = client.request(method, path, json=body)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_presign_answers_the_post_policy_and_forwards_the_declared_claims() -> None:
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        resp = client.post(PRESIGN_PATH, json=PRESIGN_BODY)
+    assert resp.status_code == 200
+    assert set(resp.json()) == {"url", "fields", "expires_in", "max_bytes"}
+    call = fake.call("presign_photo")
+    assert call["content_type"] == "image/jpeg"
+    assert call["byte_size"] == 4096
+    assert call["actor_id"] == STAFF_ID
+
+
+def test_the_presign_response_carries_no_photo_id() -> None:
+    """Deliberate: the confirm route reads the pending triple off the ROW, so the
+    client never holds an identifier it could substitute for another staffer's.
+    Asserted positively because "we did not add a field" is exactly the kind of
+    decision a later convenience edit undoes."""
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        body = client.post(PRESIGN_PATH, json=PRESIGN_BODY).json()
+    assert "photo_id" not in body
+    assert "storage_key" not in body
+
+
+def test_confirm_and_delete_answer_the_updated_member() -> None:
+    """The full member and not a bare ok: the console re-renders from the
+    server's own view rather than guessing what the promote did."""
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        assert set(client.post(CONFIRM_PATH).json()) == STAFF_MEMBER_KEYS
+        assert set(client.delete(PHOTO_PATH).json()) == STAFF_MEMBER_KEYS
+
+
+def test_a_presign_body_with_an_unknown_field_is_refused() -> None:
+    """`ForbidExtraModel`, so a client that invents `storage_key` gets a 400
+    rather than having it silently ignored — the key is server-built and no
+    client value may ever reach it."""
+    fake = FakeStaffService()
+    with _client(fake) as client:
+        resp = client.post(
+            PRESIGN_PATH, json={**PRESIGN_BODY, "storage_key": "tenants/other/x.jpg"}
+        )
+    assert resp.status_code == 400
+    assert fake.calls == []
+
+
+def test_an_unconfigured_bucket_is_a_503_on_every_photo_write() -> None:
+    """…while `GET /manage/staff` still answers 200 with `photo_url: null`. The
+    asymmetry is the whole degrade posture: a storage outage must never take down
+    a read the boutique runs on."""
+    fake = FakeStaffService()
+    fake.raise_on = {
+        "presign_photo": MediaNotConfiguredError(),
+        "confirm_photo": MediaNotConfiguredError(),
+        "delete_photo": MediaNotConfiguredError(),
+    }
+    with _client(fake) as client:
+        for method, path, body in PHOTO_ROUTES:
+            assert client.request(method, path, json=body).status_code == 503
+        listed = client.get(LIST_PATH)
+    assert listed.status_code == 200
+    assert listed.json()[0]["photo_url"] is None
+
+
+def test_a_throttled_presign_is_a_429_in_the_house_shape() -> None:
+    fake = FakeStaffService()
+    fake.raise_on = {"presign_photo": MediaPresignThrottledError()}
+    with _client(fake) as client:
+        resp = client.post(PRESIGN_PATH, json=PRESIGN_BODY)
+    assert resp.status_code == 429
+    assert resp.json()["error"]["code"] == "TOO_MANY_ATTEMPTS"

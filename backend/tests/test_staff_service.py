@@ -8,6 +8,7 @@ deliberate ABSENCE of a lock on create. The concurrency behaviour those steps bu
 is proven on real Postgres in test_staff_management_db.py, which is CI-only.
 """
 
+import time
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Self
@@ -16,6 +17,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.auth.passwords import hash_password, verify_password
+from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.auth.staff import (
     DuplicateEmailError,
@@ -216,6 +218,11 @@ def _service(
     service = StaffService(
         lambda: session,  # type: ignore[arg-type]
         media_storage=FakeDeleteStorage(),  # type: ignore[arg-type]
+        # A real limiter with a real budget — the photo tests below assert the
+        # throttle, and a stub would make those assertions vacuous.
+        presign_rate_limiter=FixedWindowRateLimiter(
+            max_attempts=3, window_seconds=900, clock=time.monotonic
+        ),
     )
     staff = FakeStaffRepository(trace, rows)
     audit = FakeAuditRepository()

@@ -34,9 +34,10 @@ an insert can only RAISE the live-owner count, and a raise never invalidates a
 decision another transaction already made under the lock.
 """
 
+import dataclasses
 import logging
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import NoReturn
 
 from sqlalchemy import text
@@ -44,8 +45,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.passwords import hash_password, verify_password
+from app.auth.photo import build_staff_photo_key, validate_staff_photo_presign
+from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.boutique.validation import validate_phone
+from app.catalog.service import MediaNotUploadedError, MediaPresignThrottledError
+from app.catalog.validation import (
+    MAGIC_PREFIX_LENGTH,
+    PRESIGN_TTL_SECONDS,
+    matches_magic_prefix,
+)
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
@@ -81,6 +90,18 @@ MAX_LAST_DAY_LOOKAHEAD_DAYS = 365
 _CURRENT_PASSWORD_REQUIRED = (
     "current_password is required and must match to change your own password"
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class StaffPhotoPresign:
+    """What the browser needs to POST the file, and nothing else. No `photo_id`
+    on the wire: the confirm route reads the pending triple off the row, so the
+    client never holds an identifier it could substitute."""
+
+    url: str
+    fields: dict[str, str]
+    expires_in: int
+    max_bytes: int
 
 
 class DuplicateEmailError(Exception):
@@ -167,6 +188,7 @@ class StaffService:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         media_storage: MediaStorage,
+        presign_rate_limiter: FixedWindowRateLimiter,
     ) -> None:
         # F38 threads storage in, and this is the one dependency this service
         # gained since F51. Keyword-only and required rather than defaulted: a
@@ -174,6 +196,11 @@ class StaffService:
         # that silently leaves every photo in the bucket.
         self._session_factory = session_factory
         self._storage = media_storage
+        # Its OWN instance, never the catalog's — `max_attempts` lives on the
+        # limiter, so two keys on one limiter share a single ceiling and a
+        # morning of dress uploads would lock out one avatar
+        # (`.memory/limiter-max-is-per-instance`).
+        self._presign_limiter = presign_rate_limiter
         self._staff = StaffUsersRepository()
         self._sessions = SessionsRepository()
         self._audit = AuditLogRepository()
@@ -551,3 +578,239 @@ class StaffService:
                     staff_id,
                     key,
                 )
+
+    # --- F38: the profile photo, over F8's two-phase pipeline ----------------
+
+    async def presign_photo(
+        self,
+        tenant_id: uuid.UUID,
+        staff_id: uuid.UUID,
+        *,
+        content_type: str,
+        byte_size: int,
+        actor_id: uuid.UUID,
+    ) -> StaffPhotoPresign:
+        """`presign_media`'s sequence exactly: throttle → validate →
+        `is_configured` → lock → resolve → write the pending triple → audit,
+        then sign OUTSIDE the transaction.
+
+        The throttle is the OUTERMOST guard so a blocked tenant cannot spend a
+        transaction discovering it is blocked, and it runs on its OWN limiter
+        instance — `max_attempts` lives on the limiter, so sharing the catalog's
+        would give dress uploads and staff photos a single ceiling and let a
+        morning of gallery work lock out one avatar.
+        """
+        throttle_key = f"presign:staff:{tenant_id}"
+        if self._presign_limiter.is_blocked(throttle_key):
+            raise MediaPresignThrottledError
+        validate_staff_photo_presign(content_type=content_type, byte_size=byte_size)
+        # Before the row is written: an unconfigured bucket would otherwise leave
+        # a pending triple nobody can ever upload against.
+        if not self._storage.is_configured:
+            raise MediaNotConfiguredError
+
+        photo_id = uuid.uuid4()
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await session.execute(_STAFF_LOCK, {"tenant_id": str(tenant_id)})
+            target = await self._staff.by_id(session, tenant_id, staff_id)
+            if target is None:
+                raise StaffNotFoundError
+            # Captured BEFORE the overwrite — after it, this key exists nowhere.
+            superseded_pending = target.photo_pending_key
+            storage_key = build_staff_photo_key(
+                tenant_id=tenant_id,
+                staff_user_id=staff_id,
+                photo_id=photo_id,
+                content_type=content_type,
+            )
+            await self._staff.set_pending_photo(
+                session,
+                tenant_id,
+                staff_id,
+                storage_key=storage_key,
+                content_type=content_type,
+                at=datetime.now(UTC),
+            )
+            # In the SAME transaction as the pending triple, so a presign refused
+            # by an unknown id leaves no trace of a credential never issued.
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.STAFF_PHOTO_PRESIGNED,
+                actor_id=actor_id,
+                entity=str(staff_id),
+                details={
+                    "storage_key": storage_key,
+                    "content_type": content_type,
+                    "byte_size": byte_size,
+                },
+            )
+        # FixedWindowRateLimiter counts only what is explicitly recorded — its
+        # docstring says successes never count. A successful presign authorises a
+        # 2 MiB write to our bucket, so it is recorded by hand or the throttle is
+        # inert. Deleting this line because it reads like a bug is how the
+        # throttle dies.
+        self._presign_limiter.record_failure(throttle_key)
+
+        # Outside the transaction: the row no longer names this key, so this is
+        # the only thing bounding the orphan window.
+        if superseded_pending is not None:
+            await self._best_effort_delete(tenant_id, staff_id, superseded_pending)
+        try:
+            presigned = self._storage.presigned_post(
+                key=storage_key,
+                content_type=content_type,
+                exact_bytes=byte_size,
+                expires_in=PRESIGN_TTL_SECONDS,
+            )
+        except (MediaNotConfiguredError, MediaStorageUnavailableError):
+            # `is_configured` passed the early guard and signing failed anyway —
+            # a rotated IAM key. The pending triple is committed, so leaving it
+            # would make the console render a permanent "uploading…" against an
+            # upload the browser never received a policy for.
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                await self._staff.set_pending_photo(
+                    session, tenant_id, staff_id, storage_key=None, content_type=None, at=None
+                )
+            raise
+        return StaffPhotoPresign(
+            url=presigned.url,
+            fields=presigned.fields,
+            expires_in=PRESIGN_TTL_SECONDS,
+            # The POST policy pins an EXACT content-length range, so the maximum
+            # the browser may post is precisely what it declared.
+            max_bytes=byte_size,
+        )
+
+    async def confirm_photo(
+        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor_id: uuid.UUID
+    ) -> StaffUser:
+        """`confirm_media`'s sequence exactly, and the ORDER is the security
+        argument: `head_object` → declared-type match → `read_prefix` → magic
+        match → promote in a SECOND transaction, with every storage call outside
+        any session.
+
+        ⚠ Scope the magic check honestly: it verifies the object AT CONFIRM TIME
+        only. An S3 POST policy cannot be revoked, so within the remainder of
+        `PRESIGN_TTL_SECONDS` the same policy can re-POST a different body of the
+        identical size to the identical key, after this check has run. The two
+        layers covering that window are `signed_get_url` pinning
+        ResponseContentType with an attachment disposition, and media-origin
+        isolation. Neither is optional and neither may be trimmed on the strength
+        of this one.
+        """
+        if not self._storage.is_configured:
+            raise MediaNotConfiguredError
+
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            target = await self._staff.by_id(session, tenant_id, staff_id)
+            if target is None:
+                raise StaffNotFoundError
+            pending_key = target.photo_pending_key
+            pending_type = target.photo_pending_content_type
+        if pending_key is None or pending_type is None:
+            # The idempotent short-circuit: a retried confirm after a lost
+            # response has nothing to promote and answers the same row without
+            # touching storage.
+            return target
+
+        # Outside any session: two real network calls, neither of which may hold
+        # a Postgres transaction open.
+        head = await self._storage.head_object(key=pending_key)
+        if head is None:
+            raise MediaNotUploadedError
+        if head.content_type != pending_type:
+            await self._reject_photo(tenant_id, staff_id, pending_key)
+        prefix = await self._storage.read_prefix(key=pending_key, length=MAGIC_PREFIX_LENGTH)
+        if not matches_magic_prefix(pending_type, prefix):
+            # The content-type-honest polyglot: it passed the POST policy at
+            # exactly the declared size, and this is what refuses it.
+            await self._reject_photo(tenant_id, staff_id, pending_key)
+
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await session.execute(_STAFF_LOCK, {"tenant_id": str(tenant_id)})
+            current = await self._staff.by_id(session, tenant_id, staff_id)
+            if current is None:
+                raise StaffNotFoundError
+            superseded_live = current.photo_key
+            promoted = await self._staff.promote_pending_photo(
+                session, tenant_id, staff_id, at=datetime.now(UTC)
+            )
+            if promoted is None:
+                # Another request promoted it between the two transactions.
+                # Idempotent, not an error.
+                return current
+            # INSIDE the promote branch, not beside it: a retried confirm
+            # promoted nothing, and a row asserting otherwise would name an act
+            # nobody performed.
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.STAFF_PHOTO_CONFIRMED,
+                actor_id=actor_id,
+                entity=str(staff_id),
+                details={"storage_key": pending_key, "superseded_storage_key": superseded_live},
+            )
+        # AFTER the audit row that names it — that row is the only durable record
+        # if this delete fails.
+        if superseded_live is not None and superseded_live != pending_key:
+            await self._best_effort_delete(tenant_id, staff_id, superseded_live)
+        return promoted
+
+    async def delete_photo(
+        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor_id: uuid.UUID
+    ) -> StaffUser:
+        if not self._storage.is_configured:
+            raise MediaNotConfiguredError
+
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await session.execute(_STAFF_LOCK, {"tenant_id": str(tenant_id)})
+            target = await self._staff.by_id(session, tenant_id, staff_id)
+            if target is None:
+                raise StaffNotFoundError
+            orphaned = [key for key in (target.photo_key, target.photo_pending_key) if key]
+            cleared = await self._staff.clear_photo(session, tenant_id, staff_id)
+            if cleared is None:  # pragma: no cover — read under the same lock
+                raise StaffNotFoundError
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.STAFF_PHOTO_DELETED,
+                actor_id=actor_id,
+                entity=str(staff_id),
+                details={"storage_key": target.photo_key},
+            )
+        for key in orphaned:
+            await self._best_effort_delete(tenant_id, staff_id, key)
+        return cleared
+
+    async def _reject_photo(
+        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, storage_key: str
+    ) -> NoReturn:
+        """Clear the pending triple, delete the object, then refuse.
+
+        The object goes FIRST in intent and the clear goes first in order: a
+        cleared row with an orphaned object is a wasted byte, while an uncleared
+        row pointing at a deleted object is a console stuck on "verifying…"
+        forever.
+        """
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._staff.set_pending_photo(
+                session, tenant_id, staff_id, storage_key=None, content_type=None, at=None
+            )
+        await self._best_effort_delete(tenant_id, staff_id, storage_key)
+        raise DomainValidationError("the uploaded file is not a valid image")
+
+    async def _best_effort_delete(
+        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, storage_key: str
+    ) -> None:
+        try:
+            await self._storage.delete_object(key=storage_key)
+        except (MediaNotConfiguredError, MediaStorageUnavailableError):
+            logger.warning(
+                "staff photo object was not deleted, it is orphaned: "
+                "tenant_id=%s staff_user_id=%s storage_key=%s",
+                tenant_id,
+                staff_id,
+                storage_key,
+            )

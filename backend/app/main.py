@@ -876,7 +876,19 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # dependency is required rather than defaulted, so this ordering is a boot
     # failure if it ever regresses rather than a silent bucket leak.
     app.state.staff_service = StaffService(
-        get_session_factory(), media_storage=app.state.media_storage
+        get_session_factory(),
+        media_storage=app.state.media_storage,
+        # A SEPARATE instance from the catalog's below, and the separation is the
+        # whole point: `max_attempts` lives on the limiter, so two keys sharing
+        # one instance share one ceiling — a morning of dress-gallery uploads
+        # would then 429 an owner trying to set one avatar. Same env knobs,
+        # because the budgets are the same SHAPE even though they must not be
+        # the same bucket.
+        presign_rate_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.media_presign_max_per_window,
+            window_seconds=settings.media_presign_window_seconds,
+            clock=time.monotonic,
+        ),
     )
     app.state.catalog_service = CatalogService(
         get_session_factory(),

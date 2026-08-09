@@ -31,6 +31,7 @@ nothing here truncates.
 """
 
 import asyncio
+import time
 import uuid
 from datetime import UTC, date, datetime
 
@@ -398,7 +399,13 @@ async def test_two_concurrent_removals_of_two_owners_leave_exactly_one(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
         first = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         second = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
 
@@ -427,7 +434,13 @@ async def test_a_deactivation_racing_a_demotion_also_leaves_exactly_one(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
         first = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         second = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
 
@@ -457,7 +470,13 @@ async def test_a_duplicate_live_email_is_409_on_the_pre_check(app_role_url: str)
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
         owner = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         address = _email()
         await service.create(
@@ -490,7 +509,13 @@ async def test_a_duplicate_live_email_is_409_on_the_integrity_backstop(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
         owner = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         address = _email()
         await service.create(
@@ -525,7 +550,13 @@ async def test_the_self_guard_refuses_and_writes_nothing(app_role_url: str) -> N
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
         me = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         actor = _actor(me, tenant_id)
@@ -553,7 +584,13 @@ async def test_an_owner_renames_herself_and_changes_her_own_password(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
         me = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         actor = _actor(me, tenant_id)
 
@@ -592,7 +629,13 @@ async def test_audit_writes_one_row_per_actual_change_and_none_for_a_no_op(
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
-        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
         owner = await _seed_staff(factory, tenant_id, role=StaffRole.OWNER.value)
         actor = _actor(owner, tenant_id)
         target = await _seed_staff(
@@ -645,7 +688,13 @@ async def test_another_tenants_staff_row_is_indistinguishable_from_missing(
     engine, factory = _factory(app_role_url)
     here, elsewhere = uuid.uuid4(), uuid.uuid4()
     try:
-        service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
+        service = StaffService(
+            factory,
+            media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+            presign_rate_limiter=FixedWindowRateLimiter(
+                max_attempts=50, window_seconds=900, clock=time.monotonic
+            ),
+        )
         theirs = await _seed_staff(factory, elsewhere, role=StaffRole.SHIFT_MANAGER.value)
         mine = await _seed_staff(factory, here, role=StaffRole.OWNER.value)
         actor = _actor(mine, here)
@@ -673,7 +722,13 @@ def _app(factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     recipe, plus the staff service this feature adds."""
     app = create_app(resolver=RepositoryTenantResolver(factory))
     app.state.auth_service = AuthService(factory, SETTINGS)
-    app.state.staff_service = StaffService(factory, media_storage=_NO_BUCKET)  # type: ignore[arg-type]
+    app.state.staff_service = StaffService(
+        factory,
+        media_storage=_NO_BUCKET,  # type: ignore[arg-type]
+        presign_rate_limiter=FixedWindowRateLimiter(
+            max_attempts=50, window_seconds=900, clock=time.monotonic
+        ),
+    )
     app.state.boutique_service = BoutiqueSettingsService(
         factory,
         terms_rate_limiter=FixedWindowRateLimiter(

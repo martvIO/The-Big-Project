@@ -54,6 +54,13 @@ STAFF_LIST = ("GET", "/manage/staff")
 STAFF_CREATE = ("POST", "/manage/staff")
 STAFF_PATCH = ("PATCH", "/manage/staff/{staff_id}")
 STAFF_DELETE = ("DELETE", "/manage/staff/{staff_id}")
+# F38's three. They inherit the router-level gate rather than carrying one of
+# their own, so what makes that inheritance a TESTED fact rather than a hopeful
+# one is their presence in OWNER_ONLY below — the walker reads `allowed_roles`
+# off the mounted route and compares.
+STAFF_PHOTO_PRESIGN = ("POST", "/manage/staff/{staff_id}/photo/presign")
+STAFF_PHOTO_CONFIRM = ("POST", "/manage/staff/{staff_id}/photo/confirm")
+STAFF_PHOTO_DELETE = ("DELETE", "/manage/staff/{staff_id}/photo")
 
 # F17's four. The first router in the repo that is owner-only IN FULL (D13): a
 # shift manager has no relationship to the boutique's merchant account, and the
@@ -86,6 +93,9 @@ OWNER_ONLY = {
     STAFF_CREATE,
     STAFF_PATCH,
     STAFF_DELETE,
+    STAFF_PHOTO_PRESIGN,
+    STAFF_PHOTO_CONFIRM,
+    STAFF_PHOTO_DELETE,
     GATEWAY_GET,
     GATEWAY_SET,
     GATEWAY_VALIDATE,
