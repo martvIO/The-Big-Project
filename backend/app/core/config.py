@@ -154,6 +154,31 @@ class Settings(BaseSettings):
     waitlist_join_phone_window_seconds: int = 3600
     waitlist_join_max_per_tenant_window: int = 300
     waitlist_join_tenant_window_seconds: int = 3600
+    # F23's offer clock, pre-decided #12 and #15. All four are per-boutique
+    # tunable in intent; these are the shipped defaults.
+    #
+    # ⚠ The QUIET HOURS gate the CASCADE, never the WINDOW (spec D3). No offer is
+    # ISSUED inside [quiet_start, quiet_end) Jerusalem; expiry runs at every hour
+    # of the day, because an offer must be able to die at night so the slot goes
+    # back to being directly bookable.
+    #
+    # ⚠ RAISING waitlist_offer_window_seconds past ~3h breaks a guarantee the SMS
+    # body leans on: at 2h with a 21:00 gate the latest issue is 20:59 and the
+    # latest deadline 22:59, so a deadline can never cross midnight. Past that it
+    # can, and both the body and the page must render the weekday (design F-O1 —
+    # they do, conditionally; this note is why the conditional exists).
+    waitlist_offer_window_seconds: int = 2 * 3600
+    waitlist_quiet_start_hour: int = 21
+    waitlist_quiet_end_hour: int = 8
+    # #15: stop offering a slot this close, and truncate the final window at it,
+    # so an offer can never outlive the appointment it names.
+    waitlist_offer_min_lead_seconds: int = 2 * 3600
+    # F23's anti-scrape budget for /storefront/waitlist/offer. Its OWN instance,
+    # never a second key on the booking-lookup limiter: max_attempts lives on the
+    # LIMITER, so a shared instance is one shared ceiling and the tighter budget
+    # could never trip first (.memory/limiter-max-is-per-instance).
+    waitlist_offer_lookup_max_per_window: int = 60
+    waitlist_offer_lookup_window_seconds: int = 3600
     # F24's portal session. THIRTY DAYS, deliberately far longer than the staff
     # `session_ttl_seconds` above (12h) and its own setting rather than a reuse:
     # every customer re-login costs the tenant a real SMS, so a short TTL here is

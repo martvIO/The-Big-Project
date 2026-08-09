@@ -419,7 +419,15 @@ class BookingCommsService:
         async with tenant_session(self._session_factory, tenant.id) as session:
             rows = await self._scheduled.claim_due(session, tenant.id, now=now, limit=limit)
             for index, row in enumerate(rows):
-                booking = await self._bookings.by_id(session, tenant.id, row.booking_id)
+                # `booking_id` is nullable from 0032 — a `waitlist_offer` row's
+                # subject is an ENTRY. None here therefore falls into the
+                # cancel branch below, which is also the right answer for the
+                # impossible case of a reminder row with no booking.
+                booking = (
+                    await self._bookings.by_id(session, tenant.id, row.booking_id)
+                    if row.booking_id is not None
+                    else None
+                )
                 if (
                     booking is None
                     or booking.status != BookingStatus.CONFIRMED.value
