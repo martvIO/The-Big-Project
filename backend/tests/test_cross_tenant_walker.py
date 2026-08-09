@@ -337,6 +337,15 @@ PROBES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/manage/atelier/seamstresses/{staff_user_id}/capacity"): {
         "weekly_capacity_hours": 10
     },
+    # F28. WITHOUT a body this route answers 400 VALIDATION_ERROR before the
+    # tenant check ever runs, and a 400 is not evidence of isolation — it only
+    # says the request never got far enough to be refused. The dates are valid
+    # and in the future so the ONLY thing left to refuse is the foreign
+    # `dress_id`.
+    ("POST", "/manage/dresses/{dress_id}/reservations"): {
+        "starts_on": _FUTURE_DATE,
+        "ends_on": _FUTURE_DATE,
+    },
 }
 
 
@@ -1243,7 +1252,7 @@ def test_the_state_guarded_routes_are_walked_and_named(
     discriminating = len(responses) - len(STATE_GUARDED)
     # 57/55 since F22: the manage cancel joined the walk, driven with tenant
     # B's entry id populated through the product's own join.
-    assert (len(responses), discriminating) == (62, 60), (
+    assert (len(responses), discriminating) == (64, 62), (
         f"the walk drove {len(responses)} routes, {discriminating} of them "
         "discriminating. Both numbers are quoted as evidence in "
         ".planning/security-checklist-v1.md's R9 row — update it in the same commit."
