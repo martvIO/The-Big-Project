@@ -64,11 +64,14 @@ from app.catalog.validation import (
     normalize_size_label,
     validate_dress,
     validate_presign,
+    validate_reservation,
     validate_search,
     validate_variants,
 )
 from app.db.repositories.audit_log import AuditLogRepository
+from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.dress_media import DressMediaRepository
+from app.db.repositories.dress_reservations import DressReservationsRepository
 from app.db.repositories.dress_variants import DressVariantsRepository, VariantAggregate
 from app.db.repositories.dresses import DressesRepository
 from app.db.tenant import tenant_session
@@ -76,6 +79,7 @@ from app.errors import DomainNotFoundError
 from app.models.constants import AuditAction, DressMediaStatus
 from app.models.dress import Dress
 from app.models.dress_media import DressMedia
+from app.models.dress_reservation import DressReservation
 from app.models.dress_variant import DressVariant
 from app.storage.base import (
     MediaNotConfiguredError,
@@ -100,6 +104,14 @@ MAX_LIST_OFFSET = 1_000_000
 # prefix is a SQL literal and the dress id is bound — never interpolated.
 _MEDIA_LOCK = text("SELECT pg_advisory_xact_lock(hashtext('dress-media:' || :dress_id))")
 _VARIANTS_LOCK = text("SELECT pg_advisory_xact_lock(hashtext('dress-variants:' || :dress_id))")
+# ⚠ NOT a third `dress-…:` prefix, and that is the decision. A reservation write
+# and a storefront booking claim must serialise against EACH OTHER — an owner
+# recording a rental while a bride claims a fitting for the same gown-day is
+# exactly the race this feature exists to lose safely — so this takes Feature
+# 13's un-prefixed per-tenant key VERBATIM (`booking/service.py`, step 4). A
+# prefixed key here would leave both writers holding different locks, both
+# passing their own check, and the serialisation argument would be fiction.
+_TENANT_CLAIM_LOCK = text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))")
 
 
 class CatalogNotFoundError(DomainNotFoundError):
@@ -111,6 +123,25 @@ class CatalogNotFoundError(DomainNotFoundError):
 class DuplicateSizeError(Exception):
     """Two variants normalise to the same lower(size_label) — caught in the
     payload, or by the partial unique index, never as a raw 500."""
+
+
+class ReservationOverlapError(Exception):
+    """A live reservation for this dress already covers part of the requested
+    range. 409, not 400: the body is well-formed and conflicts with server state.
+
+    Carries `details` with the CONFLICTING range so the manage pane can name the
+    dates that collide instead of telling the owner to guess. Follows
+    `_DetailedConflictError`'s PATTERN rather than importing its class — that
+    base lives in `app/floor/validation.py` and catalog has no other reason to
+    point an arrow there. Deliberately NOT a `DomainValidationError` subclass:
+    Starlette walks `type(exc).__mro__`, and a subclass shipped without its own
+    handler must answer a loud 500 rather than a quiet, plausible 400 on a
+    conflict.
+    """
+
+    def __init__(self, details: dict[str, str]) -> None:
+        super().__init__(type(self).__name__)
+        self.details = details
 
 
 class MediaLimitReachedError(Exception):
@@ -176,6 +207,18 @@ class DressView:
     slots_remaining: int
     variants: list[DressVariant] = dataclasses.field(default_factory=list)
     media: list[MediaView] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass(frozen=True)
+class ReservationView:
+    """`customer_name` is RESOLVED at read time from the live `customers` row and
+    is never a column on the reservation (D7). An erase scrubs that row and every
+    reservation renders the scrubbed name automatically — which is exactly why
+    F20's export and erase surfaces need zero changes for this table. None means
+    no CRM pointer, or a pointer whose customer has since been removed."""
+
+    row: DressReservation
+    customer_name: str | None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -283,6 +326,8 @@ class CatalogService:
         self._dresses = DressesRepository()
         self._variants = DressVariantsRepository()
         self._media = DressMediaRepository()
+        self._reservations = DressReservationsRepository()
+        self._customers = CustomersRepository()
         self._audit = AuditLogRepository()
 
     # --- dresses ---
@@ -950,3 +995,136 @@ class CatalogService:
                 media_id,
                 storage_key,
             )
+
+    # --- reservations (F28) ---
+
+    async def list_reservations(
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID
+    ) -> list[ReservationView]:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            dress = await self._dresses.by_id(session, tenant_id, dress_id)
+            if dress is None:
+                raise CatalogNotFoundError
+            rows = await self._reservations.live_by_dress(session, tenant_id, dress_id)
+            return await self._resolve_customer_names(session, tenant_id, rows)
+
+    async def create_reservation(
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        *,
+        starts_on: datetime.date,
+        ends_on: datetime.date,
+        customer_id: uuid.UUID | None = None,
+        notes: str | None = None,
+        actor_id: uuid.UUID,
+    ) -> ReservationView:
+        """⚠ THE LOCK COMES FIRST AND IT IS THE BOOKING CLAIM'S KEY.
+
+        The overlap SELECT below is a read: under READ COMMITTED two concurrent
+        creates both see an empty result and both insert, and no constraint in
+        the schema catches it (D3 declined EXCLUDE/btree_gist). The advisory lock
+        is the entire guard, and it must be `hashtext(tenant_id)` — Feature 13's
+        key — so that this write and a storefront item claim for the same gown-day
+        block on each other rather than on two different locks.
+        """
+        validate_reservation(starts_on=starts_on, ends_on=ends_on, notes=notes)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await session.execute(_TENANT_CLAIM_LOCK, {"tenant_id": str(tenant_id)})
+            dress = await self._dresses.by_id(session, tenant_id, dress_id)
+            if dress is None:
+                raise CatalogNotFoundError
+            if customer_id is not None:
+                customer = await self._customers.by_id(session, tenant_id, customer_id)
+                # An ERASED subject is the same 404 as an unknown one — the
+                # walk-in's D3d rule. The picker still shows her (the search
+                # filters only `deleted_at`), so the server is where it is
+                # refused.
+                if customer is None or customer.erased_at is not None:
+                    raise CatalogNotFoundError
+            conflicts = await self._reservations.overlapping(
+                session, tenant_id, dress_id, starts_on=starts_on, ends_on=ends_on
+            )
+            if conflicts:
+                raise ReservationOverlapError(
+                    {
+                        "starts_on": conflicts[0].starts_on.isoformat(),
+                        "ends_on": conflicts[0].ends_on.isoformat(),
+                    }
+                )
+            row = await self._reservations.insert(
+                session,
+                tenant_id=tenant_id,
+                dress_id=dress_id,
+                starts_on=starts_on,
+                ends_on=ends_on,
+                customer_id=customer_id,
+                notes=notes,
+            )
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.DRESS_RESERVATION_CREATED,
+                actor_id=actor_id,
+                entity=str(row.id),
+                # ⚠ The range and the two ids, never a name or a phone: the id
+                # resolves both, and a name copied here outlives the erase that
+                # scrubs the customer row. `notes` is owner free text that may
+                # hold a renter's name, so it does not go in either.
+                details={
+                    "dress_id": str(dress_id),
+                    "starts_on": starts_on.isoformat(),
+                    "ends_on": ends_on.isoformat(),
+                    "customer_id": str(customer_id) if customer_id else None,
+                },
+            )
+            views = await self._resolve_customer_names(session, tenant_id, [row])
+            return views[0]
+
+    async def delete_reservation(
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        reservation_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID,
+    ) -> None:
+        """Soft delete, which frees the window for both the overlap check and the
+        booking claim. No lock: an UPDATE with a `deleted_at IS NULL` predicate is
+        its own serialisation point, and freeing a window can never over-book."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            dress = await self._dresses.by_id(session, tenant_id, dress_id)
+            if dress is None:
+                raise CatalogNotFoundError
+            if not await self._reservations.soft_delete(
+                session, tenant_id, dress_id, reservation_id
+            ):
+                raise CatalogNotFoundError
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.DRESS_RESERVATION_DELETED,
+                actor_id=actor_id,
+                entity=str(reservation_id),
+                details={"dress_id": str(dress_id)},
+            )
+
+    async def _resolve_customer_names(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        rows: Sequence[DressReservation],
+    ) -> list[ReservationView]:
+        """One `by_ids` statement for the whole page rather than one per row."""
+        pointers = [row.customer_id for row in rows if row.customer_id is not None]
+        names: dict[uuid.UUID, str] = {}
+        if pointers:
+            for customer in await self._customers.by_ids(session, tenant_id, pointers):
+                names[customer.id] = customer.name
+        return [
+            ReservationView(
+                row=row,
+                customer_name=names.get(row.customer_id) if row.customer_id else None,
+            )
+            for row in rows
+        ]

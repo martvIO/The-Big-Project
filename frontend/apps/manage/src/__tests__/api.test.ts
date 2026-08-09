@@ -236,6 +236,66 @@ describe("catalog endpoints", () => {
     expect(init.method).toBe("PUT");
     expect(JSON.parse(init.body as string)).toEqual({ media_ids: ["m2", "m1"] });
   });
+
+  // --- date-bound reservations (F28) ---
+
+  it("lists reservations under the dress", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { items: [] }));
+    await api.listDressReservations("d 1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/manage/dresses/d%201/reservations",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("creates a reservation with the two dates and the two optional fields", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(201, { id: "r1" }));
+    await api.createDressReservation("d1", {
+      starts_on: "2026-08-12",
+      ends_on: "2026-08-18",
+      customer_id: "c1",
+      notes: "חתונה בקיסריה",
+    });
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/manage/dresses/d1/reservations");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      starts_on: "2026-08-12",
+      ends_on: "2026-08-18",
+      customer_id: "c1",
+      notes: "חתונה בקיסריה",
+    });
+  });
+
+  it("deletes a reservation under the dress", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.deleteDressReservation("d1", "r 1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/manage/dresses/d1/reservations/r%201",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("surfaces the overlap 409 with the conflicting range in details", async () => {
+    // The whole point of the third key: the pane names WHICH dates collide, so
+    // the owner fixes the form without leaving it.
+    stubFetch(() =>
+      jsonResponse(409, {
+        error: {
+          code: "RESERVATION_OVERLAP",
+          message: "This dress is already reserved for part of those dates.",
+          details: { starts_on: "2026-08-12", ends_on: "2026-08-18" },
+        },
+      }),
+    );
+    await expect(
+      api.createDressReservation("d1", { starts_on: "2026-08-18", ends_on: "2026-08-20" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "RESERVATION_OVERLAP",
+      details: { starts_on: "2026-08-12", ends_on: "2026-08-18" },
+    });
+  });
 });
 
 // --- owner bookings (Feature 15) ---

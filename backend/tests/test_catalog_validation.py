@@ -7,6 +7,7 @@ caps are asserted against each other here, so tightening one without the other
 fails the fast loop instead of an IntegrityError in production.
 """
 
+import datetime
 import re
 import uuid
 
@@ -18,6 +19,7 @@ from app.catalog.validation import (
     DB_MAX_BYTE_SIZE,
     DB_MAX_PRICE_AGOROT,
     DB_MAX_QUANTITY,
+    DB_MAX_RESERVATION_SPAN_DAYS,
     DRESS_LIST_DEFAULT_LIMIT,
     DRESS_LIST_MAX_LIMIT,
     MAGIC_PREFIX_LENGTH,
@@ -26,6 +28,8 @@ from app.catalog.validation import (
     MAX_DRESS_NAME_LENGTH,
     MAX_MEDIA_PER_DRESS,
     MAX_PRICE_AGOROT,
+    MAX_RESERVATION_NOTES_LENGTH,
+    MAX_RESERVATION_SPAN_DAYS,
     MAX_SEARCH_LENGTH,
     MAX_SIZE_LABEL_LENGTH,
     MAX_SORT_ORDER,
@@ -42,6 +46,7 @@ from app.catalog.validation import (
     normalize_size_label,
     validate_dress,
     validate_presign,
+    validate_reservation,
     validate_search,
     validate_variants,
 )
@@ -381,3 +386,57 @@ def test_search_length_cap() -> None:
     validate_search("a" * MAX_SEARCH_LENGTH)
     with pytest.raises(CatalogValidationError):
         validate_search("a" * (MAX_SEARCH_LENGTH + 1))
+
+
+# --- F28 date-bound reservations ---
+
+
+def test_reservation_bounds_match_the_db_check_ceiling() -> None:
+    """The 10x rule again — 0031's span CHECK is the absurdity ceiling, this is
+    the product cap. Raising one without the other turns a clean 400 into an
+    IntegrityError 500 on create."""
+    assert MAX_RESERVATION_SPAN_DAYS == 365
+    assert MAX_RESERVATION_SPAN_DAYS * 10 == DB_MAX_RESERVATION_SPAN_DAYS
+    assert DB_MAX_RESERVATION_SPAN_DAYS == 3650
+    # Same paragraph-not-a-document bound as bookings.notes.
+    assert MAX_RESERVATION_NOTES_LENGTH == 500
+
+
+def test_single_day_reservation_is_legal() -> None:
+    """A one-day hold is the shortest real rental, not a degenerate range —
+    `ends_on` is INCLUSIVE, so starts == ends is one unavailable day."""
+    day = datetime.date(2026, 8, 12)
+    validate_reservation(starts_on=day, ends_on=day, notes=None)
+
+
+def test_reservation_end_before_start_rejected() -> None:
+    with pytest.raises(CatalogValidationError):
+        validate_reservation(
+            starts_on=datetime.date(2026, 8, 18),
+            ends_on=datetime.date(2026, 8, 12),
+            notes=None,
+        )
+
+
+def test_reservation_span_ceiling() -> None:
+    start = datetime.date(2026, 8, 12)
+    validate_reservation(
+        starts_on=start,
+        ends_on=start + datetime.timedelta(days=MAX_RESERVATION_SPAN_DAYS),
+        notes=None,
+    )
+    with pytest.raises(CatalogValidationError):
+        validate_reservation(
+            starts_on=start,
+            ends_on=start + datetime.timedelta(days=MAX_RESERVATION_SPAN_DAYS + 1),
+            notes=None,
+        )
+
+
+def test_reservation_notes_bound() -> None:
+    day = datetime.date(2026, 8, 12)
+    validate_reservation(starts_on=day, ends_on=day, notes="a" * MAX_RESERVATION_NOTES_LENGTH)
+    with pytest.raises(CatalogValidationError):
+        validate_reservation(
+            starts_on=day, ends_on=day, notes="a" * (MAX_RESERVATION_NOTES_LENGTH + 1)
+        )

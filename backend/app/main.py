@@ -49,6 +49,7 @@ from app.booking.router import router as booking_router
 from app.booking.service import (
     BookingService,
     BookingThrottledError,
+    DressUnavailableError,
     PhoneNotVerifiedError,
     SlotUnavailableError,
     TermsStaleError,
@@ -70,6 +71,7 @@ from app.catalog.service import (
     MediaNotUploadedError,
     MediaOrderMismatchError,
     MediaPresignThrottledError,
+    ReservationOverlapError,
 )
 from app.catalog.validation import PENDING_MEDIA_TTL_SECONDS
 from app.core.config import Settings, get_settings
@@ -245,6 +247,17 @@ MEDIA_ORDER_MISMATCH_BODY = {
         "message": "The photo order is out of date. Reload and try again.",
     }
 }
+# F28. `details` carries the CONFLICTING range — the one catalog 409 that names
+# what it collided with, because the remedy is to change those exact dates and
+# the pane can only say which without a second round trip. Built through
+# `_body_with_details` for that helper's own reason: the base is a module
+# constant shared by every request.
+RESERVATION_OVERLAP_BODY = {
+    "error": {
+        "code": "RESERVATION_OVERLAP",
+        "message": "This dress is already reserved for part of those dates.",
+    }
+}
 # Fixed bodies: no bucket, region, endpoint, IAM identifier or AWS-supplied text
 # may ever reach a user-facing message.
 MEDIA_NOT_CONFIGURED_BODY = {
@@ -278,6 +291,17 @@ PHONE_NOT_VERIFIED_BODY = {
 # tell a prober the shape of the boutique's grid.
 SLOT_UNAVAILABLE_BODY = {
     "error": {"code": "SLOT_UNAVAILABLE", "message": "That time was just taken. Choose another."}
+}
+# F28. Its OWN code beside SLOT_UNAVAILABLE, because the remedy differs: every
+# time on this day is equally refused for this gown, so «choose another time»
+# would walk her down the same day's slot list. The client must branch on the
+# code — the two 409s need different recoveries, and only one of them refetches
+# slots.
+DRESS_UNAVAILABLE_BODY = {
+    "error": {
+        "code": "DRESS_UNAVAILABLE",
+        "message": "This dress is not available on the date you chose. Choose another date.",
+    }
 }
 TERMS_STALE_BODY = {
     "error": {
@@ -1241,6 +1265,12 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
         # it conflicts with server state, like every other media conflict.
         return JSONResponse(MEDIA_ORDER_MISMATCH_BODY, status_code=409)
 
+    @app.exception_handler(ReservationOverlapError)
+    async def _reservation_overlap(request: Request, exc: ReservationOverlapError) -> JSONResponse:
+        return JSONResponse(
+            _body_with_details(RESERVATION_OVERLAP_BODY, exc.details), status_code=409
+        )
+
     @app.exception_handler(MediaPresignThrottledError)
     async def _presign_throttled(request: Request, exc: MediaPresignThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
@@ -1302,6 +1332,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     @app.exception_handler(SlotUnavailableError)
     async def _slot_unavailable(request: Request, exc: SlotUnavailableError) -> JSONResponse:
         return JSONResponse(SLOT_UNAVAILABLE_BODY, status_code=409)
+
+    @app.exception_handler(DressUnavailableError)
+    async def _dress_unavailable(request: Request, exc: DressUnavailableError) -> JSONResponse:
+        return JSONResponse(DRESS_UNAVAILABLE_BODY, status_code=409)
 
     @app.exception_handler(TermsStaleError)
     async def _terms_stale(request: Request, exc: TermsStaleError) -> JSONResponse:

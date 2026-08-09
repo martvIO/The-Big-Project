@@ -64,6 +64,11 @@ class SizeChip(BaseModel):
     available: bool
 
 
+class UnavailableRange(BaseModel):
+    starts_on: datetime.date
+    ends_on: datetime.date
+
+
 class StorefrontDetail(BaseModel):
     """NOT a subclass of StorefrontDress: the two shapes differ (cover vs. the
     full gallery, description present vs. absent), and a shared base would make
@@ -76,6 +81,9 @@ class StorefrontDetail(BaseModel):
     reserved: bool
     sizes: list[SizeChip]
     media: list[StorefrontMedia]
+    # F28 D6. Current and future only, ascending, INCLUSIVE at both ends. Absent
+    # from StorefrontDress by design — the card never becomes date-aware.
+    unavailable_ranges: list[UnavailableRange]
 
 
 class DressListResponse(BaseModel):

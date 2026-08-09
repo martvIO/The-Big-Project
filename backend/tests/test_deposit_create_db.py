@@ -31,16 +31,20 @@ from sqlalchemy.pool import NullPool
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.tokens import hash_token
-from app.booking.service import BookingClaim, BookingService
+from app.booking.service import BookingClaim, BookingService, DressUnavailableError
 from app.booking.validation import jerusalem_day_index
 from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.availability import AvailabilityRulesRepository
 from app.db.repositories.bookings import BookingsRepository
+from app.db.repositories.dress_reservations import DressReservationsRepository
+from app.db.repositories.dress_variants import DressVariantsRepository
+from app.db.repositories.dresses import DressesRepository
 from app.db.repositories.otp_codes import OtpCodesRepository
 from app.db.repositories.payments import GATEWAY_UNAVAILABLE_ERROR
 from app.db.repositories.terms import TermsVersionsRepository
 from app.db.tenant import tenant_session
 from app.models.audit_log import AuditLog
+from app.models.booking import Booking
 from app.models.constants import (
     AppointmentAudience,
     AuditAction,
@@ -349,6 +353,73 @@ async def test_md4_an_unreachable_gateway_books_her_anyway_and_marks_the_row(
         assert AuditAction.GATEWAY_UNAVAILABLE_AT_CHECKOUT.value in await _actions(
             factory, tenant_id
         )
+    finally:
+        await _drop_bookings(factory, tenant_id)
+        await engine.dispose()
+
+
+async def test_the_deposit_path_inherits_the_dress_reservation_refusal(
+    app_role_url: str,
+) -> None:
+    """F28 D4. The check sits in the shared locked section BEFORE any deposit
+    branching, so the money path inherits it by riding the same claim — and
+    inheritance is a claim about code that moves, which is why it is asserted
+    rather than reasoned about.
+
+    The assertion that matters is the SECOND one: a refused claim must leave no
+    row at all. A deposit booking that committed as `pending_payment` and only
+    then discovered the gown was away would have opened a hold, taken money and
+    seated a bride for a dress at somebody else's wedding.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id, phone = uuid.uuid4(), _phone()
+    gateway = FakeGateway()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        service = await _service(factory, tenant_id, gateway=gateway)
+        async with tenant_session(factory, tenant_id) as session:
+            dress = await DressesRepository().insert(
+                session,
+                tenant_id=tenant_id,
+                name="Aurora",
+                description=None,
+                price_agorot=None,
+                price_visible=True,
+                reserved=False,
+                sort_order=0,
+            )
+            await DressVariantsRepository().insert(
+                session,
+                tenant_id=tenant_id,
+                dress_id=dress.id,
+                size_label="38",
+                quantity=1,
+                sort_order=0,
+            )
+            await DressReservationsRepository().insert(
+                session,
+                tenant_id=tenant_id,
+                dress_id=dress.id,
+                starts_on=TARGET_DATE,
+                ends_on=TARGET_DATE,
+            )
+        with pytest.raises(DressUnavailableError):
+            await service.create_booking(
+                tenant_id,
+                raw_phone=phone,
+                verification_token=await _verified_token(factory, tenant_id, phone),
+                name="נועה לוי",
+                appointment_type_id=type_id,
+                starts_at=SLOT,
+                terms_version=1,
+                dress_id=dress.id,
+                dress_size="38",
+                settings=DEPOSITS_ON,
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            assert (await session.execute(select(Booking))).scalars().all() == []
+        assert await _payments(factory, tenant_id) == []
+        assert gateway.sessions == []
     finally:
         await _drop_bookings(factory, tenant_id)
         await engine.dispose()

@@ -122,6 +122,14 @@ const F19_KEYS = [
   "errors.bookingAwaitingPayment",
 ];
 
+// F28's three. Same rule, same file — and the ar mirror is the half that gets
+// forgotten, because nothing renders from it today.
+const F28_KEYS = [
+  "dress.reservedDatesHeading",
+  "dress.reservedDatesNote",
+  "errors.dressUnavailable",
+];
+
 // F59 / spec D13. The check-in notice is the notice AT THE MOMENT OF COLLECTION,
 // and F59 makes the shipped value incomplete: the first word of the name she
 // types is now published on an unauthenticated URL anyone with the boutique's
@@ -219,6 +227,17 @@ describe("the ar bundle", () => {
     expect(F24_KEYS.length).toBeGreaterThanOrEqual(30);
     const missing = F24_KEYS.filter((key) => typeof resolve(key, ar.translation) !== "string");
     expect(missing).toEqual([]);
+  });
+
+  it("carries F28's three with the same Hebrew value as he.ts", () => {
+    // VALUE parity, not presence: the ar mirror is the half that gets forgotten
+    // because nothing renders from it today, and a presence check passes on a
+    // TODO or on a different Hebrew wording.
+    for (const key of F28_KEYS) {
+      expect(resolve(key, ar.translation), `${key} missing from ar.ts`).toBe(
+        resolve(key, he.translation),
+      );
+    }
   });
 
   it("carries the approved Hebrew VALUE for the four gated checkin keys, not merely the key", () => {

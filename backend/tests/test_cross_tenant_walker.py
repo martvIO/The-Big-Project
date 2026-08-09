@@ -179,6 +179,7 @@ class Kind(StrEnum):
     ATELIER_TICKET = "atelier_ticket"
     SOS_ALERT = "sos_alert"
     WAITLIST_ENTRY = "waitlist_entry"
+    DRESS_RESERVATION = "dress_reservation"
 
 
 # Path-parameter name -> entity kind. An unknown name is a hard failure in
@@ -198,6 +199,7 @@ PATH_PARAM_KIND = {
     "binding_id": Kind.BINDING,
     "alert_id": Kind.SOS_ALERT,
     "entry_id": Kind.WAITLIST_ENTRY,
+    "reservation_id": Kind.DRESS_RESERVATION,
 }
 
 
@@ -334,6 +336,15 @@ PROBES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/manage/atelier/tickets/{ticket_id}/stage/undo"): {"stage": "in_progress"},
     ("POST", "/manage/atelier/seamstresses/{staff_user_id}/capacity"): {
         "weekly_capacity_hours": 10
+    },
+    # F28. WITHOUT a body this route answers 400 VALIDATION_ERROR before the
+    # tenant check ever runs, and a 400 is not evidence of isolation — it only
+    # says the request never got far enough to be refused. The dates are valid
+    # and in the future so the ONLY thing left to refuse is the foreign
+    # `dress_id`.
+    ("POST", "/manage/dresses/{dress_id}/reservations"): {
+        "starts_on": _FUTURE_DATE,
+        "ends_on": _FUTURE_DATE,
     },
 }
 
@@ -866,6 +877,20 @@ def _populate(client: TestClient, storage: InMemoryMediaStorage) -> dict[Kind, u
     assert listed["entries"], "the waitlist join left no entry to probe with"
     ids[Kind.WAITLIST_ENTRY] = uuid.UUID(listed["entries"][0]["id"])
 
+    # F28's dress reservation, populated THROUGH THE PRODUCT as this tenant's
+    # signed-in owner — the same posture as the waitlist entry above. The create
+    # answers the row, so the id comes straight off it rather than off a list.
+    # The window sits in the future so it can never collide with a seed another
+    # probe depends on.
+    reservation = _ok(
+        client.post(
+            f"/manage/dresses/{ids[Kind.DRESS]}/reservations",
+            json={"starts_on": _FUTURE_DATE, "ends_on": _FUTURE_DATE},
+        ),
+        "dress reservation create",
+    )
+    ids[Kind.DRESS_RESERVATION] = uuid.UUID(reservation["id"])
+
     ticket = _ok(
         client.post(
             "/storefront/checkin",
@@ -1227,7 +1252,7 @@ def test_the_state_guarded_routes_are_walked_and_named(
     discriminating = len(responses) - len(STATE_GUARDED)
     # 57/55 since F22: the manage cancel joined the walk, driven with tenant
     # B's entry id populated through the product's own join.
-    assert (len(responses), discriminating) == (61, 59), (
+    assert (len(responses), discriminating) == (64, 62), (
         f"the walk drove {len(responses)} routes, {discriminating} of them "
         "discriminating. Both numbers are quoted as evidence in "
         ".planning/security-checklist-v1.md's R9 row — update it in the same commit."

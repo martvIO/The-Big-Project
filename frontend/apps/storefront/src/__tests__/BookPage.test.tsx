@@ -78,6 +78,11 @@ const OTP_WRONG = new ApiError(400, "OTP_INVALID", "Invalid code.");
 const OTP_STALE = new ApiError(400, "OTP_EXPIRED", "Code expired.");
 const TOKEN_DEAD = new ApiError(403, "PHONE_NOT_VERIFIED", "Phone not verified.");
 const SLOT_TAKEN = new ApiError(409, "SLOT_UNAVAILABLE", "That time is no longer available.");
+const DRESS_AWAY = new ApiError(
+  409,
+  "DRESS_UNAVAILABLE",
+  "This dress is not available on the date you chose. Choose another date.",
+);
 const TERMS_MOVED = new ApiError(409, "TERMS_STALE", "Terms have been republished.");
 const BROKEN = new ApiError(500, "UNKNOWN", "boom");
 
@@ -109,6 +114,7 @@ function dressDetail(overrides: Partial<StorefrontDetail> = {}): StorefrontDetai
       { size_label: "38", available: false },
     ],
     media: [],
+    unavailable_ranges: [],
     ...overrides,
   };
 }
@@ -2165,6 +2171,33 @@ describe("BookPage — the error-recovery matrix", () => {
     expect(screen.getByRole("radio", { name: /מדידה ראשונה/ })).toBeChecked();
     expect(screen.getByLabelText(i18n.t("booking.pickDate"))).toHaveValue("2026-08-04");
     expect(verifyOtp).toHaveBeenCalledTimes(1);
+    expect(createBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays on the step and refetches nothing on DRESS_UNAVAILABLE", async () => {
+    // ⚠ THE OBVIOUS IMPLEMENTATION — reusing the SLOT_UNAVAILABLE branch — IS A
+    // 409 LOOP. recoverSlot() navigates back to /book/slot and re-reads the
+    // grid, and the slot engine has ZERO awareness of reservation windows
+    // (spec D4), so the same blocked day comes back with the same times and
+    // every pick fails identically. This asserts the three things that
+    // distinguish the two paths: no navigation, no slot refetch, and the copy
+    // that names the actual remedy.
+    await readyToSubmit("d1");
+    const slotReadsBefore = listSlots.mock.calls.length;
+    createBooking.mockRejectedValueOnce(DRESS_AWAY);
+
+    fireEvent.click(submitButton());
+
+    const alert = await screen.findByText(i18n.t("errors.dressUnavailable"));
+    expect(alert).toHaveAttribute("role", "alert");
+    // Still on verify AND still carrying the dress — the binding survives,
+    // because the remedy is another date for THIS dress.
+    expect(window.location.pathname).toBe("/book/verify/d1");
+    expect(listSlots).toHaveBeenCalledTimes(slotReadsBefore);
+    expect(screen.queryByText(i18n.t("errors.slotUnavailable"))).toBeNull();
+    expect(screen.queryByText(i18n.t("errors.unknown"))).toBeNull();
+    // Nothing she entered is touched — the remedy is a different date, and she
+    // reaches it through the picker she already filled in.
     expect(createBooking).toHaveBeenCalledTimes(1);
   });
 

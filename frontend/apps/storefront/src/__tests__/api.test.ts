@@ -163,6 +163,14 @@ describe("errorMessage", () => {
       "This appointment is waiting for payment.",
       "errors.bookingAwaitingPayment",
     ],
+    // F28. Its OWN key beside slotUnavailable, because the remedy differs: the
+    // dress is away for the whole DAY, so «choose another time» would walk her
+    // down the same day's slot list.
+    [
+      "DRESS_UNAVAILABLE",
+      "This dress is not available on the date you chose. Choose another date.",
+      "errors.dressUnavailable",
+    ],
   ])("renders Hebrew for %s and never the server's English", (code, english, key) => {
     const rendered = errorMessage(new ApiError(400, code, english), t);
 

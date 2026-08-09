@@ -39,6 +39,7 @@ from app.db.repositories.availability import (
 )
 from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.dress_media import DressMediaRepository
+from app.db.repositories.dress_reservations import DressReservationsRepository
 from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
 from app.db.repositories.terms import TermsVersionsRepository
@@ -94,10 +95,25 @@ class StorefrontSizeView:
 
 
 @dataclasses.dataclass(frozen=True)
+class StorefrontRangeView:
+    """One booked-out window, boutique-local and INCLUSIVE at both ends. Dates,
+    not instants — the page renders «12-18 באוגוסט», and an instant on this
+    boundary is how a UTC-vs-Jerusalem off-by-one reaches the copy."""
+
+    starts_on: datetime.date
+    ends_on: datetime.date
+
+
+@dataclasses.dataclass(frozen=True)
 class StorefrontDressDetailView:
     row: Dress
     sizes: list[StorefrontSizeView]
     media: list[MediaView]
+    # F28 D6. DETAIL ONLY — the card is deliberately date-blind (see
+    # `StorefrontDressView`): a gown rented 12-18 August is available to an
+    # October bride, and a badge for a passing window drives her away from a
+    # dress she can have.
+    unavailable_ranges: list[StorefrontRangeView] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -132,6 +148,7 @@ class StorefrontService:
         self._dresses = DressesRepository()
         self._variants = DressVariantsRepository()
         self._media = DressMediaRepository()
+        self._reservations = DressReservationsRepository()
         self._rules = AvailabilityRulesRepository()
         self._exceptions = AvailabilityExceptionsRepository()
         self._appointment_types = AppointmentTypesRepository()
@@ -175,13 +192,21 @@ class StorefrontService:
     async def get_dress(
         self, tenant_id: uuid.UUID, dress_id: uuid.UUID
     ) -> StorefrontDressDetailView:
-        """Three statements: dress, variants, media."""
+        """Four statements: dress, variants, media, reservation windows."""
+        today = today_jerusalem(self._clock)
         async with tenant_session(self._session_factory, tenant_id) as session:
             row = await self._dresses.by_id(session, tenant_id, dress_id)
             if row is None:
                 raise CatalogNotFoundError
             variants = await self._variants.list_active(session, tenant_id, dress_id)
             media = await self._media.list_ready(session, tenant_id, dress_id)
+            # `ends_on >= today` in BOUTIQUE-LOCAL terms, and today COUNTS: a
+            # gown due back today is away for the rest of it. Past windows are
+            # dropped because this block is what a bride can still collide with,
+            # not the gown's rental history.
+            reservations = await self._reservations.current_or_future_by_dress(
+                session, tenant_id, dress_id, today
+            )
 
         return StorefrontDressDetailView(
             row=row,
@@ -190,6 +215,10 @@ class StorefrontService:
                 for item in variants
             ],
             media=[sign_media(self._storage, item) for item in media],
+            unavailable_ranges=[
+                StorefrontRangeView(starts_on=item.starts_on, ends_on=item.ends_on)
+                for item in reservations
+            ],
         )
 
     async def list_slots(

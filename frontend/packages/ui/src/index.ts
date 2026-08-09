@@ -3,6 +3,8 @@ export type { Tokens, ThemeTokens } from "./tokens";
 
 export { cn, focusRing } from "./lib/styles";
 export { safeHref } from "./lib/url";
+export { formatDateRange } from "./lib/dateRange";
+export type { FormattedDateRange } from "./lib/dateRange";
 
 export { Button, ButtonLink } from "./components/Button";
 export type { ButtonProps, ButtonLinkProps, ButtonVariant, ButtonSize } from "./components/Button";

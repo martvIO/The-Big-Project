@@ -36,6 +36,8 @@ from app.catalog.service import (
     MediaPresignThrottledError,
     MediaView,
     PresignResult,
+    ReservationOverlapError,
+    ReservationView,
     StockSummary,
 )
 from app.catalog.validation import (
@@ -47,6 +49,7 @@ from app.core.config import Settings
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.dress import Dress
 from app.models.dress_media import DressMedia
+from app.models.dress_reservation import DressReservation
 from app.models.dress_variant import DressVariant
 from app.storage.base import (
     MediaNotConfiguredError,
@@ -65,6 +68,8 @@ TOKEN = "session-token-abc"
 DRESS_ID = uuid.uuid4()
 VARIANT_ID = uuid.uuid4()
 MEDIA_ID = uuid.uuid4()
+RESERVATION_ID = uuid.uuid4()
+CUSTOMER_ID = uuid.uuid4()
 
 JPEG = "image/jpeg"
 STORAGE_KEY = f"tenants/{TENANT.id}/dresses/{DRESS_ID}/media/{MEDIA_ID}.jpg"
@@ -86,6 +91,7 @@ DRESS_UPDATE_BODY: dict[str, Any] = {
 VARIANTS_BODY = {"variants": [{"size_label": " 38 ", "quantity": 2}]}
 PRESIGN_BODY = {"content_type": JPEG, "byte_size": 4096}
 REORDER_BODY = {"media_ids": [str(MEDIA_ID)]}
+RESERVATION_BODY: dict[str, Any] = {"starts_on": "2026-08-12", "ends_on": "2026-08-18"}
 
 LIST_PATH = "/manage/dresses"
 DETAIL_PATH = f"/manage/dresses/{DRESS_ID}"
@@ -95,6 +101,8 @@ PRESIGN_PATH = f"/manage/dresses/{DRESS_ID}/media/presign"
 CONFIRM_PATH = f"/manage/dresses/{DRESS_ID}/media/{MEDIA_ID}/confirm"
 MEDIA_PATH = f"/manage/dresses/{DRESS_ID}/media/{MEDIA_ID}"
 ORDER_PATH = f"/manage/dresses/{DRESS_ID}/media/order"
+RESERVATIONS_PATH = f"/manage/dresses/{DRESS_ID}/reservations"
+RESERVATION_PATH = f"{RESERVATIONS_PATH}/{RESERVATION_ID}"
 
 # Every /manage route this feature adds, with a body that passes schema
 # validation — so 401 (and CSRF) failures are attributable to the guard alone.
@@ -112,6 +120,9 @@ ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", CONFIRM_PATH, None),
     ("DELETE", MEDIA_PATH, None),
     ("PUT", ORDER_PATH, REORDER_BODY),
+    ("GET", RESERVATIONS_PATH, None),
+    ("POST", RESERVATIONS_PATH, RESERVATION_BODY),
+    ("DELETE", RESERVATION_PATH, None),
 ]
 
 # The spec's error table, verbatim. test_every_spec_error_code_is_asserted
@@ -125,6 +136,7 @@ SPEC_ERROR_CODES = {
     "MEDIA_NOT_UPLOADED",
     "MEDIA_MISMATCH",
     "MEDIA_ORDER_MISMATCH",
+    "RESERVATION_OVERLAP",
     "MEDIA_NOT_CONFIGURED",
     "MEDIA_STORAGE_UNAVAILABLE",
     "TOO_MANY_ATTEMPTS",
@@ -186,6 +198,22 @@ def _media_view(*, url: str | None = SIGNED_URL) -> MediaView:
         row=_media_row(),
         url=url,
         url_expires_at=URL_EXPIRES_AT if url is not None else None,
+    )
+
+
+def _reservation_view() -> ReservationView:
+    return ReservationView(
+        row=DressReservation(
+            id=RESERVATION_ID,
+            tenant_id=TENANT.id,
+            dress_id=DRESS_ID,
+            starts_on=datetime.date(2026, 8, 12),
+            ends_on=datetime.date(2026, 8, 18),
+            customer_id=CUSTOMER_ID,
+            notes="חתונה בקיסריה",
+            created_at=CREATED_AT,
+        ),
+        customer_name="נועה",
     )
 
 
@@ -443,6 +471,34 @@ class FakeCatalogService:
         )
         return self.view
 
+    async def list_reservations(
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID
+    ) -> list[ReservationView]:
+        self._record("list_reservations", tenant_id=tenant_id, dress_id=dress_id)
+        return [_reservation_view()]
+
+    async def create_reservation(
+        self, tenant_id: uuid.UUID, dress_id: uuid.UUID, **kwargs: Any
+    ) -> ReservationView:
+        self._record("create_reservation", tenant_id=tenant_id, dress_id=dress_id, **kwargs)
+        return _reservation_view()
+
+    async def delete_reservation(
+        self,
+        tenant_id: uuid.UUID,
+        dress_id: uuid.UUID,
+        reservation_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID,
+    ) -> None:
+        self._record(
+            "delete_reservation",
+            tenant_id=tenant_id,
+            dress_id=dress_id,
+            reservation_id=reservation_id,
+            actor_id=actor_id,
+        )
+
 
 def _client(
     fake: FakeCatalogService,
@@ -516,7 +572,9 @@ def test_every_route_is_wired_and_reaches_the_service() -> None:
         fake = FakeCatalogService()
         with _client(fake) as client:
             resp = client.request(method, path, json=body)
-        assert resp.status_code == 200, f"{method} {path} → {resp.status_code} {resp.text}"
+        # 201 only on reservation-create — the one route in the table that
+        # creates a row addressable by its own id. Everything else answers 200.
+        assert resp.status_code in (200, 201), f"{method} {path} → {resp.status_code} {resp.text}"
         assert fake.calls, f"{method} {path} never reached the service"
 
 
@@ -816,7 +874,7 @@ def test_signed_url_carrying_responses_are_never_cached(
     fake = FakeCatalogService()
     with _client(fake) as client:
         resp = client.request(method, path, json=body)
-    assert resp.status_code == 200
+    assert resp.status_code in (200, 201)
     assert resp.headers["cache-control"] == "no-store"
 
 
@@ -903,6 +961,10 @@ class ErrorCase:
     error: Exception
     status: int
     code: str
+    # RESERVATION_OVERLAP is the ONE catalog error whose body carries a third
+    # key. Defaulted empty so the other rows keep asserting the exact two-key
+    # house shape rather than "at least code and message".
+    extra_keys: frozenset[str] = frozenset()
 
 
 ERROR_CASES: list[ErrorCase] = [
@@ -956,6 +1018,16 @@ ERROR_CASES: list[ErrorCase] = [
         "MEDIA_ORDER_MISMATCH",
     ),
     ErrorCase(
+        "create_reservation",
+        "POST",
+        RESERVATIONS_PATH,
+        RESERVATION_BODY,
+        ReservationOverlapError({"starts_on": "2026-08-12", "ends_on": "2026-08-18"}),
+        409,
+        "RESERVATION_OVERLAP",
+        frozenset({"details"}),
+    ),
+    ErrorCase(
         "presign_media",
         "POST",
         PRESIGN_PATH,
@@ -997,7 +1069,7 @@ def test_every_domain_error_maps_to_its_status_and_house_shape(case: ErrorCase) 
     assert resp.status_code == case.status
     body = resp.json()
     assert set(body) == {"error"}
-    assert set(body["error"]) == {"code", "message"}
+    assert set(body["error"]) == {"code", "message"} | case.extra_keys
     assert body["error"]["code"] == case.code
     assert body["error"]["message"]
 
@@ -1096,3 +1168,116 @@ def test_invalid_json_body_is_house_shape_400() -> None:
         )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+# --- reservations (F28) ---
+
+
+RESERVATION_JSON: dict[str, Any] = {
+    "id": str(RESERVATION_ID),
+    "starts_on": "2026-08-12",
+    "ends_on": "2026-08-18",
+    "customer_id": str(CUSTOMER_ID),
+    "customer_name": "נועה",
+    "notes": "חתונה בקיסריה",
+    "created_at": "2026-07-24T10:00:00Z",
+}
+
+
+def test_list_reservations_returns_the_resolved_view() -> None:
+    """`customer_name` is on the wire and is NOT a column — the service resolves
+    it from the live customer row, so an erased subject renders scrubbed."""
+    fake = FakeCatalogService()
+    with _client(fake) as client:
+        resp = client.get(RESERVATIONS_PATH)
+    assert resp.status_code == 200
+    assert resp.json() == {"items": [RESERVATION_JSON]}
+    assert fake.call("list_reservations")["dress_id"] == DRESS_ID
+
+
+def test_create_reservation_passes_the_body_and_the_actor_through() -> None:
+    fake = FakeCatalogService()
+    with _client(fake) as client:
+        resp = client.post(
+            RESERVATIONS_PATH,
+            json={
+                **RESERVATION_BODY,
+                "customer_id": str(CUSTOMER_ID),
+                "notes": "חתונה בקיסריה",
+            },
+        )
+    assert resp.status_code == 201
+    assert resp.json() == RESERVATION_JSON
+    call = fake.call("create_reservation")
+    assert call["starts_on"] == datetime.date(2026, 8, 12)
+    assert call["ends_on"] == datetime.date(2026, 8, 18)
+    assert call["customer_id"] == CUSTOMER_ID
+    assert call["notes"] == "חתונה בקיסריה"
+    # The actor is the SESSION's staff id and never a client-supplied value —
+    # the audit row this write leaves is only worth having if that holds.
+    assert call["actor_id"] == STAFF_ID
+
+
+def test_create_reservation_defaults_the_two_optional_fields_to_none() -> None:
+    fake = FakeCatalogService()
+    with _client(fake) as client:
+        resp = client.post(RESERVATIONS_PATH, json=RESERVATION_BODY)
+    assert resp.status_code == 201
+    call = fake.call("create_reservation")
+    assert call["customer_id"] is None
+    assert call["notes"] is None
+
+
+def test_delete_reservation_answers_ok_and_names_both_ids() -> None:
+    fake = FakeCatalogService()
+    with _client(fake) as client:
+        resp = client.delete(RESERVATION_PATH)
+    assert resp.status_code == 200
+    call = fake.call("delete_reservation")
+    assert call["dress_id"] == DRESS_ID
+    assert call["reservation_id"] == RESERVATION_ID
+    assert call["actor_id"] == STAFF_ID
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"starts_on": "2026-08-12"},
+        {"ends_on": "2026-08-18"},
+        {"starts_on": "not-a-date", "ends_on": "2026-08-18"},
+        {"starts_on": "2026-08-12", "ends_on": "2026-08-18", "customer_id": "not-a-uuid"},
+    ],
+)
+def test_malformed_reservation_bodies_are_house_shape_400s(body: dict[str, Any]) -> None:
+    fake = FakeCatalogService()
+    with _client(fake) as client:
+        resp = client.post(RESERVATIONS_PATH, json=body)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert fake.calls == []
+
+
+def test_the_overlap_409_names_the_conflicting_range() -> None:
+    """The whole point of the third key: the pane says WHICH dates collide, so
+    the owner fixes the form without leaving it."""
+    fake = FakeCatalogService()
+    fake.raise_on["create_reservation"] = ReservationOverlapError(
+        {"starts_on": "2026-08-12", "ends_on": "2026-08-18"}
+    )
+    with _client(fake) as client:
+        resp = client.post(RESERVATIONS_PATH, json=RESERVATION_BODY)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["details"] == {
+        "starts_on": "2026-08-12",
+        "ends_on": "2026-08-18",
+    }
+
+
+def test_reservation_routes_are_no_store_like_the_rest_of_the_router() -> None:
+    fake = FakeCatalogService()
+    with _client(fake) as client:
+        assert client.get(RESERVATIONS_PATH).headers["cache-control"] == "no-store"
+        assert (
+            client.post(RESERVATIONS_PATH, json=RESERVATION_BODY).headers["cache-control"]
+            == "no-store"
+        )

@@ -460,6 +460,41 @@ export function dressList(): unknown {
   };
 }
 
+// --- F28: date-bound reservations ---------------------------------------------
+
+/** The detail `GET /manage/dresses/{id}` answers — dressList()'s row widened
+ *  with the three detail-only fields, so the editor opens on a real dress. */
+export function dressDetail(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const [row] = (dressList() as { items: Record<string, unknown>[] }).items;
+  return {
+    ...row,
+    variants: [
+      { id: "v-1", size_label: "38", quantity: 2, sort_order: 0 },
+      { id: "v-2", size_label: "40", quantity: 1, sort_order: 1 },
+    ],
+    media: [],
+    media_uploads_enabled: true,
+    media_slots_remaining: 12,
+    ...overrides,
+  };
+}
+
+export function reservation(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "res-1",
+    // 2099 so the window is future no matter when the suite runs, and the
+    // formatter's "year differs from the current one" branch is the one under
+    // test on both surfaces.
+    starts_on: "2099-08-12",
+    ends_on: "2099-08-18",
+    customer_id: null,
+    customer_name: null,
+    notes: null,
+    created_at: "2099-01-02T09:00:00Z",
+    ...overrides,
+  };
+}
+
 export function bookingList(): unknown {
   return {
     items: [

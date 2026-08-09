@@ -152,6 +152,9 @@ const DETAILS: Record<string, unknown> = {
       { size_label: "40", available: false },
     ],
     media: PHOTOS.map((url) => ({ url, url_expires_at: EXPIRES_AT })),
+    // F28. Empty on four of the five; the fifth (RESERVED) carries a real
+    // window, so this file's own scan renders the block at least once.
+    unavailable_ranges: [],
   },
   [HIDDEN.id]: {
     id: HIDDEN.id,
@@ -161,6 +164,7 @@ const DETAILS: Record<string, unknown> = {
     reserved: false,
     sizes: [{ size_label: "38", available: true }],
     media: [{ url: PHOTOS[1], url_expires_at: EXPIRES_AT }],
+    unavailable_ranges: [],
   },
   [RESERVED.id]: {
     id: RESERVED.id,
@@ -170,6 +174,9 @@ const DETAILS: Record<string, unknown> = {
     reserved: true,
     sizes: [{ size_label: "36", available: false }],
     media: [{ url: PHOTOS[2], url_expires_at: EXPIRES_AT }],
+    // The manual `reserved` badge AND a dated window on one dress: D5's two
+    // states are orthogonal and both render.
+    unavailable_ranges: [{ starts_on: "2099-08-12", ends_on: "2099-08-18" }],
   },
   [BARE.id]: {
     id: BARE.id,
@@ -179,6 +186,7 @@ const DETAILS: Record<string, unknown> = {
     reserved: false,
     sizes: [],
     media: [],
+    unavailable_ranges: [],
   },
   [LONG.id]: {
     id: LONG.id,
@@ -188,6 +196,7 @@ const DETAILS: Record<string, unknown> = {
     reserved: false,
     sizes: [{ size_label: "38", available: true }],
     media: [{ url: PHOTOS[0], url_expires_at: EXPIRES_AT }],
+    unavailable_ranges: [],
   },
 };
 
@@ -1646,6 +1655,9 @@ const SLOT_TAKEN_MESSAGE =
   "המועד הזה נתפס בינתיים. אלה המועדים הפנויים המעודכנים — אפשר לבחור מועד אחר.";
 const TERMS_STALE_MESSAGE =
   "מדיניות הביטולים התעדכנה בזמן שמילאת את הפרטים. זו הגרסה המעודכנת — נשמח שתקראי ותאשרי אותה שוב.";
+// F28, verbatim from apps/storefront/src/i18n/he.ts — a DATE problem, not a time
+// one, which is why it does not reuse the slot copy.
+const DRESS_UNAVAILABLE_MESSAGE = "השמלה אינה זמינה בתאריך שנבחר. אפשר לבחור תאריך אחר.";
 
 // R1: the h1 is the STEP, never the boutique — a static i18n string, so it
 // survives every degraded branch by construction. `confirm` is the one
@@ -2292,6 +2304,48 @@ test("storefront booking: republished terms are re-shown and re-accepted before 
     expect.objectContaining({ terms_version: TERMS_V3.version }),
     expect.objectContaining({ terms_version: TERMS_V4.version }),
   ]);
+});
+
+// --- F28: the gown is booked out on that date ---------------------------------
+//
+// The THIRD create-time 409 and the only one that moves her NOWHERE. It lives
+// here rather than in dress-reservation.spec.ts because the /book/* harness —
+// six stubbed endpoints and the five-step walk — is here, beside its two sibling
+// 409 branches; duplicating it into the feature file to keep the four surfaces
+// in one place would be the deviation, not this. It is design §8's fourth
+// axe-checked surface, and the axe pass is the reason it is a browser test:
+// BookPage.test.tsx already pins the LOGIC in jsdom, which computes neither
+// contrast nor accessible names.
+test("storefront booking: a dress booked out on that date holds her on verify with its own copy", async ({
+  page,
+}) => {
+  await installApi(page, "populated", BOUTIQUE, {
+    bookings: [conflict(409, "DRESS_UNAVAILABLE")],
+  });
+  let slotReads = 0;
+  let readsBeforeSubmit = -1;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/storefront/slots") slotReads += 1;
+  });
+
+  await walkBooking(page, {
+    dressId: GALLERY.id,
+    size: "36",
+    landsOn: "verify",
+    atStep: async (label) => {
+      // The last hook before the submit click.
+      if (label === "verify-code") readsBeforeSubmit = slotReads;
+    },
+  });
+
+  await expect(page.getByRole("alert")).toHaveText(DRESS_UNAVAILABLE_MESSAGE);
+  expect(await axeViolations(page), "the dress-unavailable error state").toEqual([]);
+
+  // ⚠ DELIBERATELY NOT recoverSlot, and this is what proves it: D4's slot engine
+  // has zero awareness of reservation windows, so a re-read would hand back the
+  // same blocked day with the same times and every pick would fail identically.
+  expect(slotReads, "the 409 refetched a grid that cannot fix this").toBe(readsBeforeSubmit);
+  await expect(page).toHaveURL(`${STOREFRONT}/book/verify/${GALLERY.id}`);
 });
 
 // --- F16: the tokenized manage page `/b/{token}` ------------------------------

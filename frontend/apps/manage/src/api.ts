@@ -275,6 +275,35 @@ export interface DressDetail extends Dress {
   media_slots_remaining: number;
 }
 
+// F28. Both dates are date-only strings ("2026-08-12") and `ends_on` is
+// INCLUSIVE. ⚠ `new Date("2026-08-12")` parses as UTC midnight — anything that
+// formats these must pass `timeZone: "UTC"`, or the rendered day shifts west of
+// UTC. See lib/dateRange.ts.
+export interface ReservationInput {
+  starts_on: string;
+  ends_on: string;
+  // Optional CRM POINTER, never a name. A renter who is not in the system goes
+  // in `notes`.
+  customer_id?: string | null;
+  notes?: string | null;
+}
+
+export interface Reservation {
+  id: string;
+  starts_on: string;
+  ends_on: string;
+  customer_id: string | null;
+  // Resolved server-side from the live customer row at read time — not a stored
+  // column, so an erased subject renders scrubbed with no work here.
+  customer_name: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface ReservationList {
+  items: Reservation[];
+}
+
 export interface DressList {
   items: Dress[];
   total: number;
@@ -1535,6 +1564,20 @@ export const api = {
     return apiFetch(`${dressPath(dressId)}/media/order`, {
       method: "PUT",
       body: { media_ids: mediaIds },
+    });
+  },
+  listDressReservations(dressId: string): Promise<ReservationList> {
+    return apiFetch(`${dressPath(dressId)}/reservations`);
+  },
+  // 409 RESERVATION_OVERLAP arrives as an ApiError whose `details` carries the
+  // conflicting {starts_on, ends_on} — the generic extractor already surfaces
+  // it, so no per-code handling lives here.
+  createDressReservation(dressId: string, body: ReservationInput): Promise<Reservation> {
+    return apiFetch(`${dressPath(dressId)}/reservations`, { method: "POST", body });
+  },
+  deleteDressReservation(dressId: string, reservationId: string): Promise<OkResponse> {
+    return apiFetch(`${dressPath(dressId)}/reservations/${encodeURIComponent(reservationId)}`, {
+      method: "DELETE",
     });
   },
 

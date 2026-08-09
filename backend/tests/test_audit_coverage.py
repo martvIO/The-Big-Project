@@ -371,9 +371,15 @@ def test_the_partially_audited_route_is_audited_and_named() -> None:
 def test_catalog_is_no_longer_the_module_with_zero_audit_rows() -> None:
     """The R38 finding in one assertion. Before F21 every one of catalog's nine
     mutating routes was unaudited and unrecorded; `grep -n audit
-    catalog/service.py` returned nothing at all."""
+    catalog/service.py` returned nothing at all.
+
+    ELEVEN since F28 added reservation create and delete, and the number is
+    asserted rather than dropped: it is the tripwire that makes a NEW catalog
+    mutation land as a decision. Both new routes reach `_audit.record` — the
+    walker proved that before this count was touched, which is the only order in
+    which raising it is honest."""
     routes = _mutating_audited_routes()
     catalog = {key for key in routes if key[1].startswith("/manage/dresses")}
-    assert len(catalog) == 9, f"catalog's mutating route count moved: {sorted(catalog)}"
+    assert len(catalog) == 11, f"catalog's mutating route count moved: {sorted(catalog)}"
     unaudited = {key for key in catalog if not _route_writes_audit(routes[key])}
     assert not unaudited, f"catalog mutations with no audit row: {sorted(unaudited)}"

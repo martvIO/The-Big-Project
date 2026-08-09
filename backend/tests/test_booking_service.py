@@ -12,6 +12,7 @@ import secrets
 import uuid
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -27,15 +28,18 @@ from app.booking.service import (
     BookingNotFoundError,
     BookingService,
     BookingThrottledError,
+    DressUnavailableError,
     PhoneNotVerifiedError,
     SlotUnavailableError,
     TermsStaleError,
 )
 from app.booking.validation import jerusalem_day_index
+from app.catalog.service import CatalogService
 from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.availability import AvailabilityRulesRepository
 from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.customers import CustomersRepository
+from app.db.repositories.dress_reservations import DressReservationsRepository
 from app.db.repositories.dress_variants import DressVariantsRepository
 from app.db.repositories.dresses import DressesRepository
 from app.db.repositories.otp_codes import OtpCodesRepository
@@ -46,6 +50,7 @@ from app.models.constants import AppointmentAudience, BookingStatus
 from app.notifications.service import NotificationService, OtpService
 from app.notifications.unconfigured import UnconfiguredSmsSender
 from app.notifications.validation import normalize_israeli_mobile
+from app.storage.memory import InMemoryMediaStorage
 from app.storefront.validation import BOUTIQUE_TIMEZONE
 
 pytestmark = pytest.mark.db
@@ -125,16 +130,23 @@ async def _seed_boutique(
     *,
     capacity: int = 1,
     with_terms: bool = True,
+    open_time: datetime.time = datetime.time(9, 0),
+    close_time: datetime.time = datetime.time(13, 0),
 ) -> uuid.UUID:
-    """One weekly rule covering TARGET_DATE (09:00–13:00), one appointment
-    type, and terms v1. Returns the appointment type id."""
+    """One weekly rule covering TARGET_DATE (09:00–13:00 unless overridden), one
+    appointment type, and terms v1. Returns the appointment type id.
+
+    The two time overrides exist for exactly one caller: F28's Jerusalem-boundary
+    test needs a slot in the small hours, where the boutique-local date and the
+    UTC date disagree.
+    """
     async with tenant_session(factory, tenant_id) as session:
         await AvailabilityRulesRepository().insert(
             session,
             tenant_id=tenant_id,
             day_of_week=jerusalem_day_index(TARGET_DATE),
-            open_time=datetime.time(9, 0),
-            close_time=datetime.time(13, 0),
+            open_time=open_time,
+            close_time=close_time,
             capacity=capacity,
         )
         type_row = await AppointmentTypesRepository().insert(
@@ -1151,3 +1163,274 @@ async def test_dress_size_matching_is_case_insensitive_and_snapshots_the_catalog
         assert booking.dress_size == "US 6"
     finally:
         await engine.dispose()
+
+
+# --- F28: a dress that is away on the requested local day ---
+
+
+async def _reservable_dress(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID
+) -> uuid.UUID:
+    async with tenant_session(factory, tenant_id) as session:
+        dress = await DressesRepository().insert(
+            session,
+            tenant_id=tenant_id,
+            name="Aurora",
+            description=None,
+            price_agorot=None,
+            price_visible=True,
+            reserved=False,
+            sort_order=0,
+        )
+        await DressVariantsRepository().insert(
+            session,
+            tenant_id=tenant_id,
+            dress_id=dress.id,
+            size_label="38",
+            quantity=1,
+            sort_order=0,
+        )
+        return dress.id
+
+
+async def _reserve(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    dress_id: uuid.UUID,
+    starts_on: datetime.date,
+    ends_on: datetime.date,
+) -> uuid.UUID:
+    async with tenant_session(factory, tenant_id) as session:
+        row = await DressReservationsRepository().insert(
+            session,
+            tenant_id=tenant_id,
+            dress_id=dress_id,
+            starts_on=starts_on,
+            ends_on=ends_on,
+        )
+        return row.id
+
+
+async def _claim(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    type_id: uuid.UUID,
+    *,
+    dress_id: uuid.UUID | None,
+    starts_at: datetime.datetime = SLOT,
+) -> Booking:
+    phone = _phone()
+    token = await _mint_verified_token(factory, tenant_id, phone)
+    claim = await _service(factory).create_booking(
+        tenant_id,
+        raw_phone=phone,
+        verification_token=token,
+        name="שירה",
+        appointment_type_id=type_id,
+        starts_at=starts_at,
+        terms_version=1,
+        dress_id=dress_id,
+        dress_size="38" if dress_id is not None else None,
+    )
+    return claim.booking
+
+
+async def test_item_claim_inside_a_reservation_window_is_refused(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=5)
+        dress_id = await _reservable_dress(factory, tenant_id)
+        await _reserve(factory, tenant_id, dress_id, TARGET_DATE, TARGET_DATE)
+        with pytest.raises(DressUnavailableError):
+            await _claim(factory, tenant_id, type_id, dress_id=dress_id)
+    finally:
+        await engine.dispose()
+
+
+async def test_window_edges_are_inclusive_and_the_days_either_side_are_free(
+    app_role_url: str,
+) -> None:
+    """A window 22-24 blocks all three days and neither the 21st nor the 25th.
+    Every off-by-one this feature can have lands on one of those four."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=5)
+        dress_id = await _reservable_dress(factory, tenant_id)
+        await _reserve(
+            factory,
+            tenant_id,
+            dress_id,
+            TARGET_DATE - datetime.timedelta(days=1),
+            TARGET_DATE + datetime.timedelta(days=1),
+        )
+        # The rule is per weekday, so only TARGET_DATE itself is a bookable day
+        # here — the edges are asserted through the repository the claim reads.
+        with pytest.raises(DressUnavailableError):
+            await _claim(factory, tenant_id, type_id, dress_id=dress_id)
+        async with tenant_session(factory, tenant_id) as session:
+            repo = DressReservationsRepository()
+            for offset in (-1, 0, 1):
+                day = TARGET_DATE + datetime.timedelta(days=offset)
+                assert await repo.containing(session, tenant_id, dress_id, day) is not None
+            for offset in (-2, 2):
+                day = TARGET_DATE + datetime.timedelta(days=offset)
+                assert await repo.containing(session, tenant_id, dress_id, day) is None
+    finally:
+        await engine.dispose()
+
+
+async def test_the_window_is_compared_against_the_jerusalem_date_not_the_utc_one(
+    app_role_url: str,
+) -> None:
+    """⚠ THE TEST THAT ONLY FAILS IF THE IMPLEMENTATION IS WRONG IN THE OBVIOUS
+    WAY. A 01:00 Jerusalem slot on TARGET_DATE is 22:00 UTC on the day BEFORE.
+    A reservation covering TARGET_DATE alone must refuse it; `starts_at.date()`
+    in UTC yields the previous day, finds no window, and books the gown while it
+    is at somebody's wedding.
+
+    Every test written in UTC+2/+3 daytime passes either way, which is why this
+    one exists and why it uses a small-hours slot rather than the 10:00 default.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed_boutique(
+            factory,
+            tenant_id,
+            capacity=5,
+            open_time=datetime.time(0, 0),
+            close_time=datetime.time(3, 0),
+        )
+        dress_id = await _reservable_dress(factory, tenant_id)
+        await _reserve(factory, tenant_id, dress_id, TARGET_DATE, TARGET_DATE)
+        small_hours = _slot(1, 0)
+        # The premise: this instant really is the previous day in UTC.
+        assert small_hours.date() == TARGET_DATE - datetime.timedelta(days=1)
+        with pytest.raises(DressUnavailableError):
+            await _claim(factory, tenant_id, type_id, dress_id=dress_id, starts_at=small_hours)
+    finally:
+        await engine.dispose()
+
+
+async def test_a_claim_outside_the_window_and_a_generic_claim_both_succeed(
+    app_role_url: str,
+) -> None:
+    """The blast radius, stated as a test: a reservation blocks THIS gown on
+    THOSE days and nothing else. A generic booking at the same instant carries no
+    dress and is untouched — the slot engine never sees reservations."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=5)
+        dress_id = await _reservable_dress(factory, tenant_id)
+        other_dress_id = await _reservable_dress(factory, tenant_id)
+        await _reserve(
+            factory,
+            tenant_id,
+            dress_id,
+            TARGET_DATE + datetime.timedelta(days=7),
+            TARGET_DATE + datetime.timedelta(days=9),
+        )
+        assert (await _claim(factory, tenant_id, type_id, dress_id=dress_id)).dress_id == dress_id
+        assert (await _claim(factory, tenant_id, type_id, dress_id=None)).dress_id is None
+        assert (
+            await _claim(factory, tenant_id, type_id, dress_id=other_dress_id)
+        ).dress_id == other_dress_id
+    finally:
+        await engine.dispose()
+
+
+async def test_a_deleted_reservation_frees_the_claim(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed_boutique(factory, tenant_id, capacity=5)
+        dress_id = await _reservable_dress(factory, tenant_id)
+        reservation_id = await _reserve(factory, tenant_id, dress_id, TARGET_DATE, TARGET_DATE)
+        with pytest.raises(DressUnavailableError):
+            await _claim(factory, tenant_id, type_id, dress_id=dress_id)
+        async with tenant_session(factory, tenant_id) as session:
+            assert await DressReservationsRepository().soft_delete(
+                session, tenant_id, dress_id, reservation_id
+            )
+        assert (await _claim(factory, tenant_id, type_id, dress_id=dress_id)).dress_id == dress_id
+    finally:
+        await engine.dispose()
+
+
+# The one key both writers must take, spelled out here so that a prefix added
+# to either side stops matching this literal: booking/service.py step 4 and
+# catalog/service.py's _TENANT_CLAIM_LOCK.
+_TENANT_CLAIM_LOCK = text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))")
+# A floor, not a race. While the holder below has the key NEITHER writer can
+# finish, however long we wait; the wait only has to outlast the handful of
+# statements each needs to reach its lock.
+_BLOCKED_FOR_SECONDS = 1.0
+
+
+async def test_a_reservation_create_and_an_item_claim_block_on_the_same_key(
+    app_role_url: str,
+) -> None:
+    """⚠ THE PROOF THAT THE TWO WRITERS SHARE A LOCK KEY, and the only test that
+    can tell `hashtext(tenant_id)` from a `dress-reservations:` prefix.
+
+    A third session holds Feature 13's key and nothing else. Neither writer may
+    reach its own read while it is held; give either one a prefixed key and it
+    sails past a lock it no longer takes, finishes inside the wait, and this
+    reds. Both writers read, then write, so different keys mean both reads come
+    back clear and the boutique promises one gown twice for one day.
+
+    Racing the two without a holder proves nothing: create_reservation reaches
+    its lock in two statements and the claim only after a whole token-minting
+    transaction, so the head start decides the winner and a lock-key regression
+    ships green.
+    """
+    engine_a, factory_a = _factory(app_role_url)
+    engine_b, factory_b = _factory(app_role_url)
+    engine_c, factory_c = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        type_id = await _seed_boutique(factory_a, tenant_id, capacity=5)
+        dress_id = await _reservable_dress(factory_a, tenant_id)
+        catalog = CatalogService(
+            factory_b,
+            media_storage=InMemoryMediaStorage(),
+            presign_rate_limiter=_loose_limiter(),
+            pending_ttl_seconds=3600,
+        )
+        async with tenant_session(factory_c, tenant_id) as holder:
+            # Taken BEFORE either task exists — a task started first could win
+            # the key and turn this into the race it is meant to replace.
+            await holder.execute(_TENANT_CLAIM_LOCK, {"tenant_id": str(tenant_id)})
+            reservation = asyncio.create_task(
+                catalog.create_reservation(
+                    tenant_id,
+                    dress_id,
+                    starts_on=TARGET_DATE,
+                    ends_on=TARGET_DATE,
+                    actor_id=uuid.uuid4(),
+                )
+            )
+            claim = asyncio.create_task(_claim(factory_a, tenant_id, type_id, dress_id=dress_id))
+            done, _ = await asyncio.wait({reservation, claim}, timeout=_BLOCKED_FOR_SECONDS)
+            assert not done, done
+        # The holder's transaction has ended, so the key is free. Both writers
+        # were queued on it rather than broken by it, and each runs to a legal
+        # end: the reservation commits, and the claim either precedes it or is
+        # refused by it. Which one the lock queue serves first is its business.
+        reserved, claimed = await asyncio.gather(reservation, claim, return_exceptions=True)
+        assert not isinstance(reserved, BaseException), reserved
+        assert isinstance(claimed, Booking | DressUnavailableError), claimed
+        async with tenant_session(factory_a, tenant_id) as session:
+            assert (
+                await DressReservationsRepository().containing(
+                    session, tenant_id, dress_id, TARGET_DATE
+                )
+                is not None
+            )
+    finally:
+        await engine_a.dispose()
+        await engine_b.dispose()
+        await engine_c.dispose()

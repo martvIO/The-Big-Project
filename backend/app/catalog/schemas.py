@@ -20,6 +20,7 @@ from app.catalog.validation import (
     MAX_DRESS_NAME_LENGTH,
     MAX_MEDIA_PER_DRESS,
     MAX_PRICE_AGOROT,
+    MAX_RESERVATION_NOTES_LENGTH,
     MAX_SIZE_LABEL_LENGTH,
     MAX_SORT_ORDER,
     MAX_UPLOAD_BYTES,
@@ -163,3 +164,41 @@ class DressListResponse(BaseModel):
     total: int
     offset: int
     limit: int
+
+
+# --- reservations (F28) ---
+
+
+class CreateReservationRequest(ForbidExtraModel):
+    """`ends_on` is INCLUSIVE. Both dates are plain `date` and not datetimes: a
+    rental leaves and returns on calendar days, and letting an instant onto this
+    boundary is how a UTC-vs-Jerusalem off-by-one gets in.
+
+    The ORDER of the two dates and the span ceiling are NOT expressible as Field
+    bounds — they are cross-field rules — so they live in `validate_reservation`
+    and surface as the same house-shape 400.
+    """
+
+    starts_on: datetime.date
+    ends_on: datetime.date
+    # Optional CRM POINTER, never a name (D7). A renter who is not in CRM goes
+    # in `notes`.
+    customer_id: UUID | None = None
+    notes: str | None = Field(default=None, max_length=MAX_RESERVATION_NOTES_LENGTH)
+
+
+class ReservationResponse(BaseModel):
+    id: UUID
+    starts_on: datetime.date
+    ends_on: datetime.date
+    customer_id: UUID | None
+    # RESOLVED at read time from the live customer row — not a column, which is
+    # why this is not a `from_attributes` projection. None means no pointer, or a
+    # pointer whose customer is gone.
+    customer_name: str | None
+    notes: str | None
+    created_at: datetime.datetime
+
+
+class ReservationListResponse(BaseModel):
+    items: list[ReservationResponse]
