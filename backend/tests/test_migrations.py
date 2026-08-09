@@ -3823,7 +3823,16 @@ def test_the_email_uniqueness_is_case_insensitive_and_frees_on_soft_delete(
             async with engine.connect() as conn:
                 trans = await conn.begin()
                 await conn.execute(
-                    text(insert), {"email": "dana@x.example", "deleted_at": "2020-01-01T00:00:00Z"}
+                    text(insert),
+                    # A real datetime, not an ISO string: this parameter reaches
+                    # asyncpg unmediated (raw text() with a bind, no ORM column
+                    # type to coerce it), and asyncpg refuses a str for a
+                    # TIMESTAMPTZ with "expected a datetime.date or
+                    # datetime.datetime instance, got 'str'".
+                    {
+                        "email": "dana@x.example",
+                        "deleted_at": datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC),
+                    },
                 )
                 try:
                     await conn.execute(
