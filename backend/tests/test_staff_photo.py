@@ -26,7 +26,12 @@ from app.catalog.validation import (
 )
 from app.errors import DomainValidationError
 from app.models.staff_user import StaffUser
-from app.storage.base import MediaNotConfiguredError, MediaStorageUnavailableError
+from app.storage.base import (
+    MediaNotConfiguredError,
+    MediaStorageUnavailableError,
+    ObjectHead,
+    PresignedPost,
+)
 
 TENANT_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 STAFF_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
@@ -43,9 +48,19 @@ def _key(content_type: str = "image/jpeg") -> str:
 
 
 class FakeStorage:
-    """Only the two members `sign_staff_photo` touches. Neither is async —
-    `signed_get_url` is local HMAC with zero I/O, and making it awaitable would
-    be a lie costing an await per staff row on a board that polls every 5 s."""
+    """A structurally complete `MediaStorage`, not just the two members
+    `sign_staff_photo` touches.
+
+    Complete deliberately: mypy checks the Protocol at the call site, so a
+    partial fake would need a `cast` — and a cast is exactly what would let a
+    later signature change on the real port sail past every test in this file.
+    The unused members raise, so a test that reaches one by accident says so
+    instead of silently returning None.
+
+    `is_configured` and `signed_get_url` are plain, not async: signing is local
+    HMAC with zero I/O, and awaiting it would be a lie costing an await per staff
+    row on a board that polls every 5 s.
+    """
 
     def __init__(self, *, configured: bool = True, raises: Exception | None = None) -> None:
         self._configured = configured
@@ -55,6 +70,11 @@ class FakeStorage:
     @property
     def is_configured(self) -> bool:
         return self._configured
+
+    def presigned_post(
+        self, *, key: str, content_type: str, exact_bytes: int, expires_in: int
+    ) -> PresignedPost:
+        raise NotImplementedError
 
     def signed_get_url(self, *, key: str, content_type: str, filename: str, expires_in: int) -> str:
         self.calls.append(
@@ -68,6 +88,15 @@ class FakeStorage:
         if self._raises is not None:
             raise self._raises
         return f"https://bucket.example/{key}?signed"
+
+    async def head_object(self, *, key: str) -> ObjectHead | None:
+        raise NotImplementedError
+
+    async def read_prefix(self, *, key: str, length: int) -> bytes:
+        raise NotImplementedError
+
+    async def delete_object(self, *, key: str) -> None:
+        raise NotImplementedError
 
 
 def _row(*, key: str | None = None, content_type: str | None = None) -> StaffUser:
