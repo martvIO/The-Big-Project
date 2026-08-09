@@ -86,6 +86,25 @@ function retarget(queue: Reply[], next: Reply): void {
 }
 
 async function axeViolations(page: Page): Promise<string[]> {
+  // Settle bounded animations BEFORE scanning. The panel fades in, and
+  // `toBeVisible()` resolves when it paints, not when the opacity transition
+  // ends — scanning inside that window makes axe composite a half-faded layer
+  // and report a contrast the page never renders at rest. That is what failed
+  // here: `--color-ink-muted` on the panel is 6.2:1 settled, well over the 4.5
+  // floor. Third spec in this codebase to need it (waitlist, platform, here).
+  // ⚠ Infinite animations are filtered out: `--animate-skeleton` and Button's
+  // `animate-spin` never resolve `.finished`, and this panel renders a Skeleton
+  // in its loading state — awaiting one hangs the scan until the test times out.
+  await page.evaluate(async () => {
+    const bounded = document
+      .getAnimations()
+      .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+      .map((a) => a.finished);
+    await Promise.race([
+      Promise.allSettled(bounded),
+      new Promise((resolve) => setTimeout(resolve, 1000)),
+    ]);
+  });
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   return results.violations.map(
     (v) => `${v.id} — ${v.nodes.map((n) => n.target.join(" ")).join(" | ")}`,

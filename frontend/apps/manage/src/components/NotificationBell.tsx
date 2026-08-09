@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge, Button, Modal, Skeleton, cn, focusRing } from "@boutique/ui";
 import { api, type StaffNotification } from "../api";
@@ -58,6 +58,11 @@ export function NotificationBell({ onOpenFloor }: { onOpenFloor: () => void }) {
   const [optimistic, setOptimistic] = useState<number | null>(null);
   const count = optimistic ?? unreadNotifications;
 
+  // §3's last step, held as an INTENT rather than performed inline. See `openRow`
+  // for why the call cannot sit at the end of the handler, and the effect below
+  // for why the parent is the only place it can sit.
+  const parkMainRef = useRef(false);
+
   const load = async () => {
     setLoadFailed(false);
     setItems(null);
@@ -108,9 +113,16 @@ export function NotificationBell({ onOpenFloor }: { onOpenFloor: () => void }) {
     return true;
   };
 
-  // §3's order, and it is an order rather than a set. `close()` synchronously
-  // returns focus to the bell, so the move to the section must come AFTER it —
-  // otherwise she lands on a chrome button above a section she did not ask for.
+  // §3's order, and it is an order rather than a set: the move to the section
+  // must land AFTER the dialog has closed and returned focus to the bell, or she
+  // ends on a chrome button above a section she did not ask for.
+  //
+  // ⚠ **`closePanel()` DOES NOT CLOSE THE DIALOG — it only sets `open` false.**
+  // `Modal` calls `dlg.close()` from its own effect, one commit later, so a
+  // `focus()` written on the next line here runs while the dialog is STILL modal
+  // and the rest of the document is still inert: the call is a silent no-op, and
+  // the `close()` that follows then parks focus on the bell. The intent is
+  // therefore recorded here and consumed in the effect below.
   const openRow = async (row: StaffNotification) => {
     if (!NAVIGATES.has(row.kind)) {
       return;
@@ -119,9 +131,22 @@ export function NotificationBell({ onOpenFloor }: { onOpenFloor: () => void }) {
       return;
     }
     onOpenFloor();
+    parkMainRef.current = true;
     closePanel();
-    document.getElementById("console-main")?.focus();
   };
+
+  // The move itself. It lives in the PARENT of the Modal on purpose: React
+  // flushes a child's effects before its parent's, so `Modal`'s `[open]` effect
+  // — the `dlg.close()` that lifts inertness and hands focus back to the bell —
+  // has already run by the time this line does. Same shape as the shipped
+  // precedent the design cites (SosOverlay's MOVE B), and for the same reason.
+  useEffect(() => {
+    if (open || !parkMainRef.current) {
+      return;
+    }
+    parkMainRef.current = false;
+    document.getElementById("console-main")?.focus();
+  }, [open]);
 
   const rendered = (items ?? []).filter((one) => one.kind in KIND_COPY);
   const unreadOnPage = rendered.filter((one) => one.read_at === null).map((one) => one.id);
