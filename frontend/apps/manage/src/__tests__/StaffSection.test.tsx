@@ -711,3 +711,464 @@ describe("StaffSection carries the five roles F57 added", () => {
     }
   });
 });
+
+// --- F38: the HR fields, the photo control and the offboard dialog ---
+//
+// Plan G2-G6. Until this block, the whole Manage half of F38 was unreachable
+// from the product: `validateStaffPhotoFile` had zero call sites outside its own
+// test, `api.staffPhoto*` were never invoked, and `deactivateStaff`'s `lastDay`
+// argument was never passed anywhere real.
+
+function editorFor(name: string): HTMLElement {
+  const row = rowFor(name);
+  fireEvent.click(within(row).getByRole("button", { name: /^עריכה/ }));
+  return row;
+}
+
+// Only the three properties `validateStaffPhotoFile` and the presign body read,
+// so nothing here needs a File polyfill beyond what jsdom already gives.
+function imageFile(overrides: Partial<{ name: string; type: string; size: number }> = {}): File {
+  const file = new File(["x"], overrides.name ?? "dana.jpg", {
+    type: overrides.type ?? "image/jpeg",
+  });
+  Object.defineProperty(file, "size", { value: overrides.size ?? 400_000 });
+  return file;
+}
+
+function pick(row: HTMLElement, label: string, file: File) {
+  const input = within(row).getByLabelText(label, { exact: false }) as HTMLInputElement;
+  Object.defineProperty(input, "files", { value: [file], configurable: true });
+  fireEvent.change(input);
+  return input;
+}
+
+const PRESIGN = {
+  url: "https://bucket.example/",
+  fields: { policy: "opaque" },
+  expires_in: 300,
+  max_bytes: 400_000,
+};
+
+describe("StaffSection profile fields", () => {
+  it("sends only the HR fields that actually moved", async () => {
+    listStaff.mockResolvedValue([
+      OWNER,
+      member({ phone: "+972501111111", start_date: "2026-01-01" }),
+    ]);
+    updateStaff.mockResolvedValue(member({ shift_manager_eligible: true }));
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    // Name, role, phone and start date all resent UNCHANGED — F51's audit-honesty
+    // rule reaching the new fields, and the inline form posts every field on
+    // every save, so this is the ordinary case rather than the exotic one.
+    fireEvent.click(within(row).getByLabelText("יכולה לנהל משמרת"));
+    fireEvent.click(within(row).getByRole("button", { name: "שמירה" }));
+
+    await waitFor(() =>
+      expect(updateStaff).toHaveBeenCalledWith(HER, { shift_manager_eligible: true }),
+    );
+  });
+
+  it("sends an EMPTY phone rather than dropping it, which is the only way to clear one", async () => {
+    // ⚠ `undefined` already means "not sent" on this API, so a form that coerced
+    // "" to undefined would make the clear unreachable from the product and a
+    // staffer who asked for her number to come off could not be obliged until
+    // the seven-year scrub.
+    listStaff.mockResolvedValue([OWNER, member({ phone: "+972501111111" })]);
+    updateStaff.mockResolvedValue(member({ phone: null }));
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    fireEvent.change(within(row).getByLabelText("טלפון"), { target: { value: "" } });
+    fireEvent.click(within(row).getByRole("button", { name: "שמירה" }));
+
+    await waitFor(() => expect(updateStaff).toHaveBeenCalledWith(HER, { phone: "" }));
+  });
+
+  it("says plainly that the number is contact-only and not a way in", async () => {
+    // Spec C1. Staff sign in with email + password through the unchanged
+    // /manage/auth/login, and a phone field on a staff row reads like a second
+    // login unless the form says otherwise.
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+    expect(within(row).getByText(/מספר ליצירת קשר בלבד/)).toBeInTheDocument();
+  });
+
+  it("renders eligibility as muted words on the row and never as a second Badge", async () => {
+    listStaff.mockResolvedValue([OWNER, member({ shift_manager_eligible: true })]);
+    const { container } = renderSection();
+    await screen.findByText("דנה");
+    const row = rowFor("דנה");
+
+    expect(within(row).getByText("יכולה לנהל משמרת")).toBeInTheDocument();
+    // ONE pill per row, so the pill means one thing (F36's ruling). The avatar
+    // fallback is rounded-full too and is aria-hidden, hence the exclusion.
+    expect(row.querySelectorAll("span.rounded-full:not([aria-hidden])")).toHaveLength(1);
+    expect(container.querySelectorAll("img")).toHaveLength(0);
+  });
+
+  it("says the checkbox is neither a role nor a permission", async () => {
+    // O4: F38 stores the boolean and enforces nothing; F40 is its only consumer.
+    // A checkbox called «יכולה לנהל משמרת» beside a role select reads as a role
+    // unless the description says it is not.
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+    expect(within(row).getByText(/אינו משנה את התפקיד ואינו משנה הרשאות/)).toBeInTheDocument();
+  });
+});
+
+describe("StaffSection photo", () => {
+  it("runs presign, POST and confirm, and patches the row from the confirm response", async () => {
+    listStaff.mockResolvedValue([OWNER, member()]);
+    staffPhotoPresign.mockResolvedValue(PRESIGN);
+    uploadToStorage.mockResolvedValue(undefined);
+    staffPhotoConfirm.mockResolvedValue(
+      member({ photo_url: "https://bucket.example/k?sig", photo_confirmed_at: "2026-08-09T09:00:00Z" }),
+    );
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    pick(row, "תמונת פרופיל", imageFile());
+
+    await waitFor(() =>
+      expect(staffPhotoPresign).toHaveBeenCalledWith(HER, {
+        content_type: "image/jpeg",
+        byte_size: 400_000,
+      }),
+    );
+    // The middle call is NOT optional: the object is not hers until confirm
+    // verifies its magic bytes server-side.
+    await waitFor(() => expect(staffPhotoConfirm).toHaveBeenCalledWith(HER));
+    expect(uploadToStorage).toHaveBeenCalledWith(PRESIGN, expect.anything());
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("התמונה נוספה."));
+    // `alt=""` maps to role="presentation", so this is a DOM query by design and
+    // not a getByRole that would silently never match.
+    expect(row.querySelector("img")).toHaveAttribute("src", "https://bucket.example/k?sig");
+  });
+
+  it("refuses an over-cap file client-side, with no request at all", async () => {
+    // The bound is MIRRORED (validation.ts ↔ auth/photo.py), and the mirror is
+    // what makes the immediate Hebrew honest: without it a 3 MiB photo would
+    // travel, come back a 400, and land as the server's English sentence.
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    pick(row, "תמונת פרופיל", imageFile({ size: 3_000_000 }));
+
+    expect(await within(row).findByRole("alert")).toHaveTextContent("גדולה מ-2MB");
+    expect(staffPhotoPresign).not.toHaveBeenCalled();
+  });
+
+  it("gives HEIC its own message, because saving as JPG is an action she can take", async () => {
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    // Safari hands over an EMPTY type for HEIC, so the extension is the fallback.
+    pick(row, "תמונת פרופיל", imageFile({ name: "IMG_0001.HEIC", type: "" }));
+
+    expect(await within(row).findByRole("alert")).toHaveTextContent("HEIC");
+    expect(staffPhotoPresign).not.toHaveBeenCalled();
+  });
+
+  it("keeps the previous photo rendering when a replace fails, and offers a retry", async () => {
+    listStaff.mockResolvedValue([
+      OWNER,
+      member({ photo_url: "https://bucket.example/old?sig", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+    ]);
+    staffPhotoPresign.mockResolvedValue(PRESIGN);
+    uploadToStorage.mockResolvedValue(undefined);
+    staffPhotoConfirm.mockRejectedValue(
+      new ApiError(400, "MEDIA_MISMATCH", "the uploaded file is not a valid image"),
+    );
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    pick(row, "החלפת תמונת פרופיל", imageFile());
+
+    // Mapped Hebrew, never the server's English — and the LIVE triple was never
+    // touched, so the cell still shows the photo the board is showing.
+    expect(await within(row).findByRole("alert")).toHaveTextContent("הקובץ אינו תמונה תקינה.");
+    expect(row.querySelector("img")).toHaveAttribute("src", "https://bucket.example/old?sig");
+    expect(within(row).getByRole("button", { name: "נסי שוב" })).toBeInTheDocument();
+  });
+
+  it("maps an unconfigured bucket to the same sentence as an unavailable one", async () => {
+    // The owner cannot tell the two apart and does not need to — her next action
+    // is the same either way.
+    listStaff.mockResolvedValue([OWNER, member()]);
+    staffPhotoPresign.mockRejectedValue(
+      new ApiError(503, "MEDIA_NOT_CONFIGURED", "Media storage is not configured."),
+    );
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    pick(row, "תמונת פרופיל", imageFile());
+
+    expect(await within(row).findByRole("alert")).toHaveTextContent("אחסון התמונות אינו זמין כרגע");
+  });
+
+  it("maps the dedicated presign throttle to Hebrew", async () => {
+    listStaff.mockResolvedValue([OWNER, member()]);
+    staffPhotoPresign.mockRejectedValue(
+      new ApiError(429, "TOO_MANY_ATTEMPTS", "Too many attempts. Try again later."),
+    );
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    pick(row, "תמונת פרופיל", imageFile());
+
+    expect(await within(row).findByRole("alert")).toHaveTextContent("יותר מדי העלאות בזמן קצר");
+  });
+
+  it("announces the PPL purpose line at capture, through the input's own description", async () => {
+    // ⚠ THE ONLY PLACE the purpose limitation is ever shown to anyone, and the
+    // platform's stated operational mitigation for PPL Amendment 13 (spec O1).
+    // In the `help` slot rather than a footnote so aria-describedby announces it
+    // BEFORE a file is chosen, to keyboard and screen-reader users alike.
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    const input = within(row).getByLabelText("תמונת פרופיל", { exact: false });
+    const describedBy = input.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    const described = (describedBy ?? "")
+      .split(" ")
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ");
+    expect(described).toContain("התמונה משמשת לזיהוי בלוח המשמרת ובכרטיסי הצוות בלבד.");
+    expect(described).toContain("עד 2MB");
+  });
+
+  it("is a real, visible, focusable file input and never a display:none shim", async () => {
+    // MediaGallery's discipline: a hidden input plus a label shim breaks
+    // Safari/VoiceOver and hides the disabled reason. `multiple` is absent —
+    // one photo per person.
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    const input = within(row).getByLabelText("תמונת פרופיל", { exact: false }) as HTMLInputElement;
+    expect(input.type).toBe("file");
+    expect(input.multiple).toBe(false);
+    expect(input.accept).toBe("image/jpeg,image/png,image/webp");
+    expect(input.className).not.toContain("hidden");
+  });
+
+  it("confirms before removing, then clears the cell from the delete response", async () => {
+    listStaff.mockResolvedValue([
+      OWNER,
+      member({ photo_url: "https://bucket.example/k?sig", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+    ]);
+    staffPhotoDelete.mockResolvedValue(member());
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+
+    fireEvent.click(within(row).getByRole("button", { name: "הסרת תמונה" }));
+    const dialog = screen.getByRole("dialog", { hidden: true });
+    expect(dialog).toHaveTextContent("להסיר את התמונה?");
+    expect(dialog).toHaveTextContent("ולא ניתן לשחזר אותה");
+    expect(staffPhotoDelete).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "הסרה" }));
+    await waitFor(() => expect(staffPhotoDelete).toHaveBeenCalledWith(HER));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("התמונה הוסרה."));
+  });
+
+  it("offers no remove control when there is no photo to remove", async () => {
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+    expect(within(row).queryByRole("button", { name: "הסרת תמונה" })).toBeNull();
+  });
+
+  it("uses ONE dialog for both confirms rather than mounting a second", async () => {
+    // R3. A second <Modal> would duplicate the focus-restore effect that exists
+    // because the trigger unmounts under the open dialog.
+    listStaff.mockResolvedValue([
+      OWNER,
+      member({ photo_url: "https://bucket.example/k?sig", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+    ]);
+    renderSection();
+    await screen.findByText("דנה");
+    expect(screen.getAllByRole("dialog", { hidden: true })).toHaveLength(1);
+  });
+});
+
+describe("StaffSection offboarding", () => {
+  function openOffboard() {
+    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^סיום העסקה/ }));
+    return screen.getByRole("dialog", { hidden: true });
+  }
+
+  it("defaults the last day to today in Jerusalem", async () => {
+    // A BLANK would silently exempt her from the retention clock forever: the
+    // policy's predicate needs `last_day IS NOT NULL`, so NULL does not mean
+    // "unknown", it means "never scrub this person".
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderSection();
+    await screen.findByText("דנה");
+
+    const dialog = openOffboard();
+    expect(within(dialog as HTMLElement).getByLabelText("יום עבודה אחרון")).toHaveValue(
+      todayJerusalem(),
+    );
+  });
+
+  it("states plainly what is kept and what is erased later", async () => {
+    listStaff.mockResolvedValue([OWNER, member()]);
+    renderSection();
+    await screen.findByText("דנה");
+
+    const dialog = openOffboard();
+    expect(dialog).toHaveTextContent("שיבוצים לחדרים, קריאות ותיקונים");
+    expect(dialog).toHaveTextContent("בתום תקופת השמירה");
+    // A return is a NEW record — re-hire continuity is OUT.
+    expect(dialog).toHaveTextContent("כאשת צוות חדשה");
+    // And the two IMMEDIATE facts, including the photo.
+    expect(dialog).toHaveTextContent("התמונה שלה תימחק מיד");
+  });
+
+  it("refuses a last day before her start date, before any request", async () => {
+    listStaff.mockResolvedValue([OWNER, member({ start_date: "2026-06-01" })]);
+    renderSection();
+    await screen.findByText("דנה");
+
+    const dialog = openOffboard();
+    fireEvent.change(within(dialog as HTMLElement).getByLabelText("יום עבודה אחרון"), {
+      target: { value: "2026-05-31" },
+    });
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "סיום העסקה" }));
+
+    expect(await within(dialog as HTMLElement).findByRole("alert")).toHaveTextContent(
+      "אינו יכול להקדים את תאריך תחילת העבודה",
+    );
+    expect(deactivateStaff).not.toHaveBeenCalled();
+  });
+
+  it("sends the chosen date rather than today when the owner picks one", async () => {
+    listStaff.mockResolvedValue([OWNER, member({ start_date: "2020-01-01" })]);
+    deactivateStaff.mockResolvedValue({ ok: true });
+    renderSection();
+    await screen.findByText("דנה");
+
+    const dialog = openOffboard();
+    fireEvent.change(within(dialog as HTMLElement).getByLabelText("יום עבודה אחרון"), {
+      target: { value: "2026-08-31" },
+    });
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "סיום העסקה" }));
+
+    await waitFor(() => expect(deactivateStaff).toHaveBeenCalledWith(HER, "2026-08-31"));
+  });
+
+  it("names her and the date in the one status line, with the name isolated", async () => {
+    // The row leaves the list, so this is the ONLY feedback there is — which is
+    // exactly why it exists. F51 showed nothing here, and F51's act had no
+    // retention consequence worth stating.
+    listStaff.mockResolvedValue([OWNER, member({ display_name: "dana (bella)." })]);
+    deactivateStaff.mockResolvedValue({ ok: true });
+    renderSection();
+    await screen.findByText("dana (bella).");
+
+    fireEvent.click(
+      within(rowFor("dana (bella).")).getByRole("button", { name: /^סיום העסקה/ }),
+    );
+    const dialog = screen.getByRole("dialog", { hidden: true });
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "סיום העסקה" }));
+
+    const status = await waitFor(() => {
+      const node = screen.getByRole("status");
+      expect(node).toHaveTextContent("רישומי העבודה שלה נשמרו");
+      return node;
+    });
+    const isolated = within(status).getByText("dana (bella).");
+    expect(isolated.tagName).toBe("BDI");
+    expect(isolated).not.toHaveAttribute("dir");
+  });
+});
+
+// --- accessibility on F38's new states: IS 5568 / WCAG 2.0 AA is legal ---
+
+describe("StaffSection accessibility with F38's surface", () => {
+  it("passes axe with photos on the list", async () => {
+    listStaff.mockResolvedValue([
+      OWNER,
+      member({ photo_url: "https://bucket.example/k?sig", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+    ]);
+    const { container } = renderSection();
+    await screen.findByText("דנה");
+    expect((await run(container)).violations).toEqual([]);
+  }, 20000);
+
+  it("passes axe with the edit panel open mid-upload", async () => {
+    listStaff.mockResolvedValue([OWNER, member()]);
+    // Never settles: the panel is scanned while the input is disabled and the
+    // role="status" region carries «מעלה…».
+    staffPhotoPresign.mockReturnValue(new Promise(() => {}));
+    const { container } = renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+    pick(row, "תמונת פרופיל", imageFile());
+
+    await screen.findByText("מעלה…");
+    expect((await run(container)).violations).toEqual([]);
+  }, 20000);
+
+  it("passes axe with the offboard dialog open", async () => {
+    listStaff.mockResolvedValue([OWNER, member()]);
+    const { container } = renderSection();
+    await screen.findByText("דנה");
+    fireEvent.click(within(rowFor("דנה")).getByRole("button", { name: /^סיום העסקה/ }));
+    expect((await run(container)).violations).toEqual([]);
+  }, 20000);
+
+  it("passes axe with the remove-photo dialog open", async () => {
+    listStaff.mockResolvedValue([
+      OWNER,
+      member({ photo_url: "https://bucket.example/k?sig", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+    ]);
+    const { container } = renderSection();
+    await screen.findByText("דנה");
+    const row = editorFor("דנה");
+    fireEvent.click(within(row).getByRole("button", { name: "הסרת תמונה" }));
+    expect((await run(container)).violations).toEqual([]);
+  }, 20000);
+
+  it("gives every photo an empty alt and every initial fallback aria-hidden", async () => {
+    // The display name is a text node immediately beside the image, so
+    // `alt="תמונה של {{name}}"` would announce her name twice per row. The photo
+    // is the definition of decorative here.
+    listStaff.mockResolvedValue([
+      OWNER,
+      member({ photo_url: "https://bucket.example/k?sig", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+    ]);
+    const { container } = renderSection();
+    await screen.findByText("דנה");
+
+    for (const image of container.querySelectorAll("img")) {
+      expect(image.getAttribute("alt")).toBe("");
+    }
+    // שרה has no photo, so her cell is the initial fallback.
+    const fallback = within(rowFor("שרה")).getByText("ש");
+    expect(fallback).toHaveAttribute("aria-hidden", "true");
+  });
+});

@@ -194,23 +194,53 @@ describe("F15 keys resolve", () => {
 
 describe("F51 staff keys resolve", () => {
   it("carries the whole copy deck", () => {
-    expect(HE_F51.length).toBeGreaterThan(25);
+    // F38 added ~28 more into the same `staff.` namespace, which is where they
+    // belong: the namespace names the payload, not the feature that added the
+    // key (see the HE_F57 comment). The floor rises with them.
+    expect(HE_F51.length).toBeGreaterThanOrEqual(57);
   });
 
   it("resolves the seventh nav item beside the nested nav object", () => {
     expect(i18n.t("nav.staff")).toBe("צוות");
   });
 
-  it("resolves the four error codes the section maps to Hebrew", () => {
+  it("resolves the nine error codes the section maps to Hebrew", () => {
     for (const code of [
       "DUPLICATE_EMAIL",
       "LAST_OWNER_REQUIRED",
       "STAFF_SELF_MANAGE",
       "NOT_AUTHORIZED",
+      // F38's five. MAPPED_CODES in StaffSection.tsx is a hand-kept Set that
+      // nothing pins, so a code missing from the bundle renders the server's
+      // ENGLISH sentence into an RTL console on a green build.
+      "MEDIA_MISMATCH",
+      "MEDIA_NOT_UPLOADED",
+      "MEDIA_STORAGE_UNAVAILABLE",
+      "MEDIA_NOT_CONFIGURED",
+      "TOO_MANY_ATTEMPTS",
     ]) {
       const key = `staff.error.${code}`;
       expect(i18n.t(key)).not.toBe(key);
     }
+  });
+
+  it("keeps the PPL purpose line greppable and quotable as its own key", () => {
+    // Spec open question O1: this sentence is the platform's stated operational
+    // mitigation under PPL Amendment 13, and it is the ONLY place the purpose
+    // limitation is shown to anyone. Its own key so it can be quoted verbatim in
+    // the compliance record rather than sliced out of a longer help string.
+    expect(i18n.t("staff.photoPurpose")).toBe(
+      "התמונה משמשת לזיהוי בלוח המשמרת ובכרטיסי הצוות בלבד.",
+    );
+  });
+
+  it("interpolates her name AND her last day into the offboard confirmation", () => {
+    const line = i18n.t("staff.offboardDone", { name: "דנה", date: "9.8.2026" });
+    expect(line).toContain("דנה");
+    expect(line).toContain("9.8.2026");
+    // The <bdi> is markup rendered through <Trans>, so it must SURVIVE in the
+    // raw string rather than being pre-resolved away.
+    expect(line).toContain("<bdi>");
   });
 
   it("interpolates the deactivated staffer's name into the confirm body", () => {

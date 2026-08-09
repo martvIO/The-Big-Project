@@ -1128,3 +1128,140 @@ describe("the waitlist rides this panel's poll and nothing else", () => {
     expect(container.querySelectorAll('[data-testid="floor-cue"]')).toHaveLength(1);
   });
 });
+
+// --- F38: the board avatar and its pinned URL -------------------------------
+
+describe("the staff card photo (F38)", () => {
+  function tile(name: string): HTMLElement {
+    const node = screen.getByText(name).closest("li");
+    expect(node).not.toBeNull();
+    return node as HTMLElement;
+  }
+
+  it("renders the photo with an empty alt, because the name is right beside it", async () => {
+    // `alt="תמונה של {{name}}"` would announce her name TWICE per card on a
+    // board that lists the whole shift. The photo is decorative by definition
+    // here; the initial fallback is aria-hidden for the same reason.
+    getFloor.mockResolvedValue(
+      floor([
+        ME,
+        card({ photo_url: "https://bucket.example/k?sig1", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+      ]),
+    );
+    mount();
+    await screen.findByText("נועה לוי");
+
+    const image = tile("נועה לוי").querySelector("img");
+    expect(image).not.toBeNull();
+    expect(image?.getAttribute("alt")).toBe("");
+    expect(image?.getAttribute("loading")).toBe("lazy");
+    // Her own card has no photo, so it renders the initial, hidden from AT.
+    expect(within(tile("דנה כהן")).getByText("ד")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("PINS the url across polls, so the browser does not re-download every face", async () => {
+    // ⚠ The reason `photo_confirmed_at` is on the wire at all. `photo_url` is
+    // freshly SIGNED on every ~5 s tick and is therefore a different string
+    // every time; a component keyed on it re-downloads every face on the board
+    // forever. Delete the pin and this test goes red.
+    getFloor.mockResolvedValue(
+      floor([
+        ME,
+        card({ photo_url: "https://bucket.example/k?sig1", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+      ]),
+    );
+    mount();
+    await screen.findByText("נועה לוי");
+    expect(tile("נועה לוי").querySelector("img")).toHaveAttribute(
+      "src",
+      "https://bucket.example/k?sig1",
+    );
+
+    // Same photo, freshly signed — the ordinary case, every single tick.
+    getFloor.mockResolvedValue(
+      floor([
+        ME,
+        card({ photo_url: "https://bucket.example/k?sig2", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+      ]),
+    );
+    await advance(POLL_INTERVAL_MS);
+
+    expect(tile("נועה לוי").querySelector("img")).toHaveAttribute(
+      "src",
+      "https://bucket.example/k?sig1",
+    );
+  });
+
+  it("adopts the new url when the photo behind it actually changed", async () => {
+    // The pin is keyed by `(id, photo_confirmed_at)` — the pair that changes
+    // exactly when the image does — so a REPLACE must not be pinned away.
+    getFloor.mockResolvedValue(
+      floor([
+        ME,
+        card({ photo_url: "https://bucket.example/old?sig", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+      ]),
+    );
+    mount();
+    await screen.findByText("נועה לוי");
+
+    getFloor.mockResolvedValue(
+      floor([
+        ME,
+        card({ photo_url: "https://bucket.example/new?sig", photo_confirmed_at: "2026-08-04T09:00:00Z" }),
+      ]),
+    );
+    await advance(POLL_INTERVAL_MS);
+
+    expect(tile("נועה לוי").querySelector("img")).toHaveAttribute(
+      "src",
+      "https://bucket.example/new?sig",
+    );
+  });
+
+  it("falls back to the initial on a url that expired between ticks", async () => {
+    // Drops the pin as well as rendering the fallback, so the NEXT poll adopts
+    // the fresh url. No refetch call of its own — the poll IS the recovery here,
+    // unlike MediaGallery's one-shot `hasRefreshed`.
+    getFloor.mockResolvedValue(
+      floor([
+        ME,
+        card({ photo_url: "https://bucket.example/k?stale", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+      ]),
+    );
+    mount();
+    await screen.findByText("נועה לוי");
+
+    const image = tile("נועה לוי").querySelector("img");
+    expect(image).not.toBeNull();
+    await act(async () => {
+      fireEvent.error(image as HTMLImageElement);
+    });
+
+    expect(tile("נועה לוי").querySelector("img")).toBeNull();
+    expect(within(tile("נועה לוי")).getByText("נ")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("renders the initial for all three ordinary null paths", async () => {
+    // No photo, no bucket, and a signing failure degrade to the SAME null on the
+    // wire, and the board must render all three as a fallback and never as a
+    // broken image.
+    getFloor.mockResolvedValue(floor([ME, card({ photo_url: null })]));
+    mount();
+    await screen.findByText("נועה לוי");
+
+    expect(tile("נועה לוי").querySelector("img")).toBeNull();
+    expect(within(tile("נועה לוי")).getByText("נ")).toBeInTheDocument();
+  });
+
+  it("passes axe with photos on the board", async () => {
+    getFloor.mockResolvedValue(
+      floor([
+        ME,
+        card({ photo_url: "https://bucket.example/k?sig", photo_confirmed_at: "2026-08-01T09:00:00Z" }),
+      ]),
+    );
+    const { container } = mount();
+    await screen.findByText("נועה לוי");
+    expect((await run(container)).violations).toEqual([]);
+  }, 20000);
+});
