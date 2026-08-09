@@ -3,6 +3,10 @@ import { api, ApiError, apiFetch, FALLBACK_ERROR_MESSAGE, uploadToStorage } from
 import type { PresignResponse } from "../api";
 import { TOGGLE_KEYS } from "../lib/toggles";
 
+// F38's target staffer. A literal uuid rather than a helper: these assertions
+// are about the URL the client builds, so the id has to be visible in them.
+const HER = "22222222-2222-2222-2222-222222222222";
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -457,6 +461,53 @@ describe("staff endpoints", () => {
     await api.deactivateStaff("a b/c");
     expect(fetchMock.mock.calls[0][0]).toBe("/manage/staff/a%20b%2Fc");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "DELETE" });
+  });
+
+  // --- F38 ---
+
+  it("sends an explicit last day as a query parameter and omits it otherwise", async () => {
+    // OMITTED is not "null": the server defaults a missing last_day to
+    // today-Jerusalem, and that default lives THERE so two callers cannot
+    // disagree about what a missing leaving date means. Sending an empty
+    // parameter would be a third meaning.
+    const withDate = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.deactivateStaff(HER, "2026-08-31");
+    expect(withDate.mock.calls[0][0]).toBe(`/manage/staff/${HER}?last_day=2026-08-31`);
+
+    const without = stubFetch(() => jsonResponse(200, { ok: true }));
+    await api.deactivateStaff(HER);
+    expect(without.mock.calls[0][0]).toBe(`/manage/staff/${HER}`);
+  });
+
+  it("posts the declared type and size to presign and nothing else", async () => {
+    const fetchMock = stubFetch(() =>
+      jsonResponse(200, { url: "https://b/", fields: {}, expires_in: 300, max_bytes: 4096 }),
+    );
+    await api.staffPhotoPresign(HER, { content_type: "image/jpeg", byte_size: 4096 });
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe(`/manage/staff/${HER}/photo/presign`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ content_type: "image/jpeg", byte_size: 4096 });
+  });
+
+  it("confirms with no body at all", async () => {
+    // Everything confirm needs is already on the row. A body here would be a
+    // client-supplied handle to an object, which is exactly what the pending
+    // triple exists to avoid.
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.staffPhotoConfirm(HER);
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe(`/manage/staff/${HER}/photo/confirm`);
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+  });
+
+  it("deletes the photo without touching the staff row route", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.staffPhotoDelete(HER);
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe(`/manage/staff/${HER}/photo`);
+    expect(init.method).toBe("DELETE");
   });
 
   it("surfaces the three staff 409s as ApiError codes the section can map", async () => {

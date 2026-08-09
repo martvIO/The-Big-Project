@@ -197,6 +197,11 @@ export const MAX_VARIANT_QUANTITY = 1000;
 export const MAX_MEDIA_PER_DRESS = 12;
 export const MAX_UPLOAD_BYTES = 10_485_760;
 export const MIN_UPLOAD_BYTES = 1024;
+// F38's staff photo cap — a DELIBERATE FIFTH of MAX_UPLOAD_BYTES above. A 44 px
+// avatar on a board that polls every ~5 s is not boutique photography, and this
+// payload is re-rendered on every tick by every screen in the shop. Mirrored
+// from backend/app/auth/photo.py and pinned by test_frontend_constant_parity.
+export const MAX_STAFF_PHOTO_BYTES = 2_097_152;
 export const MAX_SEARCH_LENGTH = 100;
 export const MAX_SORT_ORDER = 1_000_000;
 
@@ -318,6 +323,21 @@ export function validateUploadFile(file: UploadCandidate): string | null {
     return "הקובץ אינו תמונה תקינה.";
   }
   return null;
+}
+
+export function validateStaffPhotoFile(file: UploadCandidate): string | null {
+  // Reuses validateUploadFile's HEIC and type branches verbatim — the accepted
+  // set and the "save as JPG" advice are identical, and a second copy would
+  // drift the day either is tuned. Only the CEILING differs, so only the
+  // ceiling is re-checked here.
+  const shared = validateUploadFile(file);
+  if (shared !== null && file.size <= MAX_UPLOAD_BYTES) {
+    return shared;
+  }
+  if (file.size > MAX_STAFF_PHOTO_BYTES) {
+    return "התמונה גדולה מ-2MB";
+  }
+  return shared;
 }
 
 // --- staff (Feature 51) ---

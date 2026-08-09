@@ -36,6 +36,14 @@ function member(overrides: Partial<StaffMember> = {}): StaffMember {
     display_name: "דנה",
     role: "shift_manager",
     created_at: "2026-07-30T09:00:00Z",
+    // F38's six. Defaulted to the absent state so every test written before
+    // this feature keeps describing the row it meant to describe.
+    phone: null,
+    start_date: null,
+    last_day: null,
+    shift_manager_eligible: false,
+    photo_url: null,
+    photo_confirmed_at: null,
     ...overrides,
   };
 }

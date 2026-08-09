@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ACCEPTED_CONTENT_TYPES,
-  agorotFromIlsInput,
   EU_SIZE_QUICK_LIST,
-  formatIlsAmount,
-  ilsFromAgorot,
   MAX_CUSTOMER_NOTES_LENGTH,
   MAX_DEPOSIT_AMOUNT_AGOROT,
   MAX_DISPLAY_NAME_LENGTH,
@@ -16,19 +13,24 @@ import {
   MAX_SEARCH_LENGTH,
   MAX_SIZE_LABEL_LENGTH,
   MAX_SORT_ORDER,
-  MAX_TAG_LENGTH,
+  MAX_STAFF_PHOTO_BYTES,
   MAX_TAGS,
+  MAX_TAG_LENGTH,
   MAX_UPLOAD_BYTES,
-  MAX_VARIANT_QUANTITY,
   MAX_VARIANTS_PER_DRESS,
+  MAX_VARIANT_QUANTITY,
   MIN_STAFF_PASSWORD_LENGTH,
   MIN_UPLOAD_BYTES,
+  agorotFromIlsInput,
+  formatIlsAmount,
+  ilsFromAgorot,
   normalizeSizeLabel,
   validateAppointmentType,
   validateCustomerNotes,
   validateDress,
   validateExceptionTimes,
   validateStaffDraft,
+  validateStaffPhotoFile,
   validateTag,
   validateTerms,
   validateUploadFile,
@@ -523,5 +525,43 @@ describe("validateCustomerNotes", () => {
   // Empty string means CLEARED, never an error — boutique/validation.py:110.
   it("accepts an empty string", () => {
     expect(validateCustomerNotes("")).toBeNull();
+  });
+});
+
+// --- F38: the staff photo cap ---
+
+describe("validateStaffPhotoFile", () => {
+  const jpeg = (size: number) => ({ name: "dana.jpg", type: "image/jpeg", size });
+
+  it("accepts a file at exactly the 2MB ceiling and refuses one byte over", () => {
+    // Both edges from both sides: a cap that admits everything is not a cap,
+    // and one that refuses its own documented maximum is a different bug.
+    expect(validateStaffPhotoFile(jpeg(MAX_STAFF_PHOTO_BYTES))).toBeNull();
+    expect(validateStaffPhotoFile(jpeg(MAX_STAFF_PHOTO_BYTES + 1))).toBe("התמונה גדולה מ-2MB");
+  });
+
+  it("refuses a file the dress gallery would have accepted", () => {
+    // THE assertion that makes this function worth existing rather than
+    // reusing validateUploadFile: a 5 MiB photo is a legal dress image and an
+    // illegal avatar, and only this cap tells them apart before the request.
+    expect(validateUploadFile(jpeg(5_000_000))).toBeNull();
+    expect(validateStaffPhotoFile(jpeg(5_000_000))).toBe("התמונה גדולה מ-2MB");
+  });
+
+  it("keeps the HEIC advice rather than restating it as a size problem", () => {
+    // Safari hands over an empty type for HEIC, so the extension is the
+    // fallback — and the message names an action the owner can take on her own
+    // phone. Reporting it as "too large" would send her to crop a file no
+    // browser can render at any size.
+    expect(validateStaffPhotoFile({ name: "dana.HEIC", type: "", size: 4096 })).toBe(
+      "HEIC אינו נתמך. שמרי כ-JPG",
+    );
+  });
+
+  it("keeps the shared type and floor rules", () => {
+    expect(validateStaffPhotoFile({ name: "d.gif", type: "image/gif", size: 4096 })).toBe(
+      "סוג הקובץ אינו נתמך — JPG, PNG או WebP בלבד",
+    );
+    expect(validateStaffPhotoFile(jpeg(MIN_UPLOAD_BYTES - 1))).toBe("הקובץ אינו תמונה תקינה.");
   });
 });
