@@ -2364,7 +2364,14 @@ queue:
     slug: platform-console
     epic: E5
     title: Web platform console (replaces v1 CLI)
-    status: building              # 2026-08-08: BUILD COMPLETE (10 commits, 117 tests, migration 0028
+    status: merged                # 2026-08-09: MERGED, PR #52. 18 commits, 117 tests, migration 0028.
+                                  # Review found a real BLOCKER: reset_owner_password resolved via
+                                  # by_slug (documented ACTIVE-ONLY), so the one action the console
+                                  # leaves on a SUSPENDED row 404'd — and suspend-then-reset is the
+                                  # natural incident-response order. Fixed with by_slug_any_status used
+                                  # ONLY by the reset path; by_slug keeps active-only for provision's
+                                  # duplicate pre-check. F26 is now unblocked.
+                                  # (was: BUILD COMPLETE, 10 commits, migration 0028
                                   # with down_revision 0026 — MUST become 0027 once F24 merges), but
                                   # review rounds 2-3, the r2 fix commit and local gates ALL died on a
                                   # model limit. NOT PUSHED, NO PR. Five MAJOR findings are OUTSTANDING:

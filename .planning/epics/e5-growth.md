@@ -31,7 +31,7 @@ v1 (E1–E4) proves one boutique end-to-end with an operator holding its hand; E
 | 22 | Waitlist join + entries model | done (PR #49) | [spec](../specs/waitlist-join.md) | [plan](../plans/waitlist-join.md) | E3 #12, #13, #14 |
 | 23 | Auto-reallocation loop | todo | — | — | #22, E3 #16, E4 #19 |
 | 24 | Client portal: OTP login, "My Bookings", `.ics`, bell | done (PR #50) | [spec](../specs/client-portal.md) | [plan](../plans/client-portal.md) | E3 #11, #13, #16 |
-| 25 | Web platform console (replaces v1 CLI) | todo | — | — | E1 #6 |
+| 25 | Web platform console (replaces v1 CLI) | done (PR #52) | [spec](../specs/platform-console.md) | [plan](../plans/platform-console.md) | E1 #6 |
 | 26 | Self-serve boutique signup + gateway-connect onboarding | todo | — | — | #25, E1 #4, E4 #17 · **public launch gated by #29** |
 | 27 | Full feature-toggle matrix UI (§2 grid) | done (PR #51) | [spec](../specs/toggle-matrix-ui.md) | [plan](../plans/toggle-matrix-ui.md) | E2 #7 |
 | 28 | Date-bound dress reservation semantics | todo | — | — | E2 #8, E3 #13 · **blocked on pilot product decision** |
