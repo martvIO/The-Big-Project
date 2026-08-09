@@ -72,6 +72,51 @@ def grid_totals(
     )
 
 
+async def day_slots(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    day: datetime.date,
+    now: datetime.datetime,
+    rules: AvailabilityRulesRepository,
+    exceptions: AvailabilityExceptionsRepository,
+    bookings: BookingsRepository,
+) -> list[Slot]:
+    """One boutique-calendar day's grid, fed the REAL booked counts — ascending.
+
+    Extracted from `offered_slot` below rather than written beside it, because
+    F23's cascade needs the same grid to pick a slot to OFFER and a second
+    assembly of "rules + exceptions + count_by_start -> materialize_slots" is a
+    second chance to disagree with the engine that will then refuse the claim.
+    The whole point of `slots.py:6-8` is that there is one implementation.
+
+    A full slot is DROPPED by `materialize_slots`, never marked, so "the earliest
+    slot here" already means "the earliest FREE slot" and no caller has to ask
+    about capacity.
+    """
+    active_rules = await rules.list_active(session, tenant_id)
+    active_exceptions = await exceptions.list_active(
+        session, tenant_id, on_or_after=day, on_or_before=day
+    )
+    day_start = datetime.datetime.combine(
+        day, datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
+    ).astimezone(datetime.UTC)
+    day_end = datetime.datetime.combine(
+        day + datetime.timedelta(days=1), datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
+    ).astimezone(datetime.UTC)
+    booked = await bookings.count_by_start(
+        session, tenant_id, from_instant=day_start, until_instant=day_end
+    )
+    return materialize_slots(
+        rules=active_rules,
+        exceptions=active_exceptions,
+        booked=booked,
+        window_start=day,
+        window_end=day,
+        now=now,
+    )
+
+
 async def offered_slot(
     session: AsyncSession,
     *,
@@ -89,27 +134,14 @@ async def offered_slot(
     a slot's date in the boutique's own zone is the only date whose rules
     and exceptions can produce it."""
     wanted = starts_at.astimezone(datetime.UTC)
-    target_date = wanted.astimezone(BOUTIQUE_TIMEZONE).date()
-    active_rules = await rules.list_active(session, tenant_id)
-    active_exceptions = await exceptions.list_active(
-        session, tenant_id, on_or_after=target_date, on_or_before=target_date
-    )
-    day_start = datetime.datetime.combine(
-        target_date, datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
-    ).astimezone(datetime.UTC)
-    day_end = datetime.datetime.combine(
-        target_date + datetime.timedelta(days=1), datetime.time.min, tzinfo=BOUTIQUE_TIMEZONE
-    ).astimezone(datetime.UTC)
-    booked = await bookings.count_by_start(
-        session, tenant_id, from_instant=day_start, until_instant=day_end
-    )
-    slots = materialize_slots(
-        rules=active_rules,
-        exceptions=active_exceptions,
-        booked=booked,
-        window_start=target_date,
-        window_end=target_date,
+    slots = await day_slots(
+        session,
+        tenant_id=tenant_id,
+        day=wanted.astimezone(BOUTIQUE_TIMEZONE).date(),
         now=now,
+        rules=rules,
+        exceptions=exceptions,
+        bookings=bookings,
     )
     return next((slot for slot in slots if slot.starts_at == wanted), None)
 
