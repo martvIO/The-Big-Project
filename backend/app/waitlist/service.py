@@ -34,10 +34,11 @@ from app.auth.service import StaffContext
 from app.booking.service import BookingNotFoundError, PhoneNotVerifiedError
 from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.audit_log import AuditLogRepository
+from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
 from app.db.repositories.waitlist_entries import WaitlistEntriesRepository
 from app.db.tenant import tenant_session
 from app.models.appointment_type import AppointmentType
-from app.models.constants import AuditAction
+from app.models.constants import AuditAction, ScheduledMessageKind
 from app.models.customer import Customer
 from app.models.waitlist_entry import WaitlistEntry
 from app.notifications.service import OtpService
@@ -73,6 +74,7 @@ class WaitlistService:
         self._clock = clock
         self._entries = WaitlistEntriesRepository()
         self._types = AppointmentTypesRepository()
+        self._scheduled = ScheduledMessagesRepository()
         self._audit = AuditLogRepository()
 
     async def join(
@@ -169,10 +171,17 @@ class WaitlistService:
     async def cancel_entry(
         self, tenant_id: uuid.UUID, *, entry_id: uuid.UUID, actor: StaffContext
     ) -> ManageWaitlistRow:
-        """The guarded UPDATE (`WHERE status = 'waiting'`). Rowcount 0 with the
-        row present is the idempotent double-tap — answered with the row as-is,
-        no second audit row; rowcount 0 with no row is the shipped 404
-        (foreign-tenant indistinguishable by design).
+        """The guarded UPDATE — `WHERE status IN ('waiting','offered')` since F23
+        D8. Rowcount 0 with the row present is the idempotent double-tap —
+        answered with the row as-is, no second audit row; rowcount 0 with no row
+        is the shipped 404 (foreign-tenant indistinguishable by design).
+
+        **The widening is why the message cancel is here.** Taking an `offered`
+        entry off the list kills a live offer a bride may be holding right now,
+        and leaving her queued SMS behind would text her a link to claim a seat
+        she has just been removed from. Same transaction as the status change, so
+        the two cannot come apart; the repository clears the token with the same
+        UPDATE for the same reason.
 
         The audit row's `details` carry {entry_id, day, appointment_type_id}
         and NO PHONE — F20's `phone_last4` rule made moot by carrying no phone
@@ -184,6 +193,12 @@ class WaitlistService:
                 if existing is None:
                     raise BookingNotFoundError
                 return (await self._decorate(session, tenant_id, [existing]))[0]
+            await self._scheduled.cancel_pending_for_entry(
+                session,
+                tenant_id,
+                waitlist_entry_id=cancelled.id,
+                kind=ScheduledMessageKind.WAITLIST_OFFER.value,
+            )
             await self._audit.record(
                 session,
                 tenant_id=tenant_id,

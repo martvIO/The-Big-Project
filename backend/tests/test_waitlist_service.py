@@ -37,14 +37,22 @@ from test_booking_owner_db import (
 
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.booking.service import PhoneNotVerifiedError
+from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
+from app.db.repositories.waitlist_entries import WaitlistEntriesRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError, DomainValidationError
 from app.models.audit_log import AuditLog
-from app.models.constants import AuditAction, WaitlistEntryStatus
+from app.models.constants import (
+    AuditAction,
+    ScheduledMessageKind,
+    ScheduledMessageStatus,
+    WaitlistEntryStatus,
+)
 from app.models.otp_code import OtpCode
 from app.models.waitlist_entry import WaitlistEntry
 from app.notifications.service import NotificationService, OtpService
 from app.notifications.unconfigured import UnconfiguredSmsSender
+from app.waitlist.cascade import WaitlistCascade
 from app.waitlist.service import WaitlistService
 from app.waitlist.validation import WaitlistThrottledError
 
@@ -479,5 +487,76 @@ async def test_a_cancelled_entry_leaves_the_manage_list(app_role_url: str) -> No
         await service.cancel_entry(tenant_id, entry_id=entry.id, actor=_staff(tenant_id))
         listed = await service.list_entries(tenant_id)
         assert listed.entries == []
+    finally:
+        await engine.dispose()
+
+
+async def test_cancelling_an_offered_entry_kills_its_live_offer_too(app_role_url: str) -> None:
+    """F23 D8's widening, and the write it drags with it.
+
+    F22's guard was `WHERE status = 'waiting'`; an owner clearing the list could
+    not touch a row the cascade had just offered. It is now
+    `IN ('waiting','offered')` — and cancelling an `offered` row kills a live
+    offer a bride may be holding this second, so her queued SMS must die in the
+    SAME transaction. Left behind, it would text her a link to claim a seat she
+    has just been removed from, and the link would still work: the token is only
+    cleared by the status change beside it.
+
+    The offer is produced by the real cascade rather than a hand-written UPDATE,
+    for the reason every F23 file gives — a fixture that writes `status='offered'`
+    passes while the offer write is broken.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    phone = _phone()
+    try:
+        type_id = await _seed(factory, tenant_id)
+        service = _service(factory)
+        await _join(factory, service, tenant_id, type_id, phone=phone)
+        entry = (await _rows(factory, tenant_id))[0]
+
+        cascade = WaitlistCascade(
+            factory,
+            window_seconds=2 * 3600,
+            min_lead_seconds=2 * 3600,
+            quiet_start_hour=21,
+            quiet_end_hour=8,
+            # 12:00 UTC is 15:00 Jerusalem — outside the quiet block, which is
+            # what lets this tick issue anything at all.
+            clock=lambda: NOW,
+        )
+        assert (await cascade.run(tenant_id)).offered == 1
+
+        async with tenant_session(factory, tenant_id) as session:
+            offered = await WaitlistEntriesRepository().by_id(session, tenant_id, entry.id)
+        assert offered is not None
+        assert offered.status == WaitlistEntryStatus.OFFERED.value
+
+        row = await service.cancel_entry(tenant_id, entry_id=entry.id, actor=_staff(tenant_id))
+        assert row.status == WaitlistEntryStatus.CANCELLED.value
+
+        async with tenant_session(factory, tenant_id) as session:
+            cancelled = await WaitlistEntriesRepository().by_id(session, tenant_id, entry.id)
+            message = await ScheduledMessagesRepository().latest_for_entry(
+                session,
+                tenant_id,
+                waitlist_entry_id=entry.id,
+                kind=ScheduledMessageKind.WAITLIST_OFFER.value,
+            )
+        assert cancelled is not None
+        assert cancelled.offer_token_hash is None, "a live token must not outlive its entry"
+        assert message is not None
+        assert message.status == ScheduledMessageStatus.CANCELLED.value
+        assert message.manage_token is None
+
+        # The audit `details` key set is unchanged by the widening — still no
+        # phone, still three keys.
+        rows = [
+            r
+            for r in await _audit(factory, tenant_id)
+            if r.action == AuditAction.WAITLIST_ENTRY_CANCELLED.value
+        ]
+        assert len(rows) == 1
+        assert set(rows[0].details) == {"entry_id", "day", "appointment_type_id"}
     finally:
         await engine.dispose()
