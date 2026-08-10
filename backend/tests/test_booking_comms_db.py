@@ -1301,9 +1301,15 @@ async def _offered(
     type_id: uuid.UUID,
     *,
     phone: str,
+    now: datetime.datetime = NOW,
 ) -> uuid.UUID:
     """A live offer through the real cascade — never a hand-written UPDATE, for
-    the reason every F23 file gives."""
+    the reason every F23 file gives.
+
+    ⚠ `now` is the tick that MINTS the offer, and the offer's window is two
+    hours wide. A caller that drains at a clock more than two hours past it is
+    not testing its branch at all: the drain's own guard reads the deadline and
+    cancels, which is a different test's assertion."""
     async with tenant_session(factory, tenant_id) as session:
         entry = await WaitlistEntriesRepository().insert(
             session,
@@ -1313,7 +1319,7 @@ async def _offered(
             phone=phone,
         )
         entry_id = entry.id
-    assert (await _cascade(factory).run(tenant_id)).offered == 1
+    assert (await _cascade(factory, now=now).run(tenant_id)).offered == 1
     return entry_id
 
 
@@ -1454,11 +1460,14 @@ async def test_a_reminder_in_the_same_batch_is_unaffected(app_role_url: str) -> 
         type_id = await _seed(factory, tenant_id)
         claim = await _claim(factory, tenant_id, type_id, starts_at=_slot(10))
         assert claim.created
-        entry_id = await _offered(factory, tenant_id, type_id, phone=_phone())
-
         # The reminder is scheduled 24h before the slot; move the clock past it
-        # so both rows are due in one claim.
-        comms, sender = _comms(factory, now=claim.booking.starts_at - datetime.timedelta(hours=23))
+        # so both rows are due in one claim. The OFFER has to be minted on that
+        # same tick — a two-hour window opened at NOW would be 25 days dead by
+        # then, and the drain would rightly cancel it instead of sending it.
+        drain_now = claim.booking.starts_at - datetime.timedelta(hours=23)
+        entry_id = await _offered(factory, tenant_id, type_id, phone=_phone(), now=drain_now)
+
+        comms, sender = _comms(factory, now=drain_now)
         result = await comms.drain_due(_tenant(tenant_id))
         assert result.sent == 2
         kinds = sorted(message.body for message in sender.outbox)
