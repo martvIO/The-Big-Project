@@ -20,6 +20,8 @@ vi.mock("../api", async () => {
     api: {
       getFloor: vi.fn(),
       startStaffBreak: vi.fn(),
+      setOnShift: vi.fn(),
+      clearOnShift: vi.fn(),
       endStaffBreak: vi.fn(),
       // F36: the panel now renders RoomsPanel, whose one-shot client picker
       // fires on mount. Infrastructure, not an expectation — every assertion
@@ -42,6 +44,8 @@ vi.mock("../api", async () => {
 const { api, ApiError } = await import("../api");
 const getFloor = vi.mocked(api.getFloor);
 const startStaffBreak = vi.mocked(api.startStaffBreak);
+const setOnShift = vi.mocked(api.setOnShift);
+const clearOnShift = vi.mocked(api.clearOnShift);
 const endStaffBreak = vi.mocked(api.endStaffBreak);
 const listFloorClients = vi.mocked(api.listFloorClients);
 const callQueueTicket = vi.mocked(api.callQueueTicket);
@@ -134,6 +138,8 @@ beforeEach(() => {
   vi.setSystemTime(new Date(NOW));
   getFloor.mockReset();
   startStaffBreak.mockReset();
+  setOnShift.mockReset();
+  clearOnShift.mockReset();
   endStaffBreak.mockReset();
   listFloorClients.mockReset();
   listFloorClients.mockResolvedValue({ clients: [], truncated: false });
@@ -1304,4 +1310,203 @@ describe("the staff card photo (F38)", () => {
     await screen.findByText("נועה לוי");
     expect((await run(container)).violations).toEqual([]);
   }, 20000);
+});
+
+describe("F40: the on-shift line and the same-day override", () => {
+  it("renders both rule labels, and NOTHING for fallback", async () => {
+    // ⚠ DESIGN F-4 / §6.2, and this is the most consequential departure in the
+    // design. Eight cards each carrying «אין סידור עבודה לשבוע הזה» is eight
+    // copies of a sentence that says nothing about the person it is attached to,
+    // permanently, on the screen a seamstress opens twenty times a day — and C1
+    // promises a boutique that never publishes sees NO CHANGE AT ALL.
+    getFloor.mockResolvedValue(
+      floor([
+        card({ id: SELF_ID, display_name: "דנה", on_shift: true, on_shift_source: "roster" }),
+        card({ id: OTHER_ID, display_name: "נועה", on_shift: false, on_shift_source: "roster" }),
+      ]),
+    );
+    mount();
+    expect(await screen.findByText("במשמרת · לפי סידור העבודה")).toBeInTheDocument();
+    expect(screen.getByText("לא במשמרת · לפי סידור העבודה")).toBeInTheDocument();
+  });
+
+  it("renders the manual label and the once-per-board note", async () => {
+    getFloor.mockResolvedValue(
+      floor([card({ on_shift: false, on_shift_source: "manual_today" })]),
+    );
+    mount();
+    expect(await screen.findByText("לא במשמרת · נקבע ידנית להיום")).toBeInTheDocument();
+    expect(screen.getAllByText("הסימון הידני תקף להיום בלבד ומתאפס בחצות.")).toHaveLength(1);
+  });
+
+  it("puts rule 3 above the list ONCE and on no card at all", async () => {
+    getFloor.mockResolvedValue(
+      floor([
+        card({ id: SELF_ID, display_name: "דנה" }),
+        card({ id: OTHER_ID, display_name: "נועה" }),
+      ]),
+    );
+    mount();
+    const line = await screen.findByText(
+      "אין סידור עבודה לשבוע הזה. כל מי שלא סומנה ידנית נחשבת כמי שבמשמרת.",
+    );
+    expect(screen.getAllByText(line.textContent as string)).toHaveLength(1);
+    // Not one card carries an on-shift line under a fallback rule.
+    expect(screen.queryByText(/במשמרת · /)).toBeNull();
+    // And the line sits ABOVE the list, not inside it.
+    expect(line.compareDocumentPosition(screen.getByRole("list"))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("keeps an off-shift card rendered, undimmed and in place", async () => {
+    // ⚠ D1's REGRESSION GUARD ON THE CLIENT. The board LABELS and never filters:
+    // `GET /manage/floor` is what a seamstress opens to find out who is in the
+    // building, and a colleague who walked in anyway must not vanish. A visual
+    // de-emphasis is filtering with the evidence left on screen.
+    getFloor.mockResolvedValue(
+      floor([
+        card({ id: SELF_ID, display_name: "דנה", on_shift: true, on_shift_source: "roster" }),
+        card({
+          id: OTHER_ID,
+          display_name: "נועה",
+          status: "occupied",
+          on_shift: false,
+          on_shift_source: "roster",
+          occupancy: occupancy({ client_label: null }),
+        }),
+      ]),
+    );
+    mount();
+    const rows = await screen.findAllByRole("listitem");
+    const off = rows.find((row) => row.textContent?.includes("נועה")) as HTMLElement;
+    expect(off).toBeDefined();
+    expect(rows.indexOf(off)).toBe(1); // NOT reordered.
+    expect(off.className).not.toMatch(/opacity|grayscale|text-ink-muted\b/);
+    // ⚠ D9: `occupied` AND «לא במשמרת» at once — the tuple a fourth
+    // StaffCardStatus would have made unrepresentable.
+    expect(within(off).getByText("תפוסה")).toBeInTheDocument();
+    expect(within(off).getByText("לא במשמרת · לפי סידור העבודה")).toBeInTheDocument();
+  });
+
+  it("renders the mark button for an elevated viewer on a COLLEAGUE's card", async () => {
+    getFloor.mockResolvedValue(
+      floor([card({ on_shift: true, on_shift_source: "roster", display_name: "נועה" })]),
+    );
+    mount({ role: "owner" });
+    expect(
+      await screen.findByRole("button", { name: "סימון שאינה במשמרת — נועה" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders NO mark button on a seamstress's own card", async () => {
+    // ⚠ F-26 / R-D, AND THE FAILURE IS NOT COSMETIC. Reusing `mayToggle` — the
+    // variable those exact lines already compute — would render the control on
+    // her own card; her press is a 403; `mutate`'s P-6 rule makes {401,403}
+    // TERMINAL, so she loses the whole floor board for the session, having
+    // attempted precisely the attendance punch D13 puts out of scope.
+    getFloor.mockResolvedValue(
+      floor([card({ id: SELF_ID, display_name: "נועה", on_shift_source: "roster" })]),
+    );
+    mount({ selfId: SELF_ID, role: "seamstress" });
+    await screen.findByText("נועה");
+    expect(screen.queryByRole("button", { name: /סימון/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /ביטול הסימון הידני/ })).toBeNull();
+    // …but her OWN break toggle still renders: the two predicates differ by
+    // exactly the `isSelf` term, and that term is the whole difference.
+    expect(screen.getByRole("button", { name: /להפסקה/ })).toBeInTheDocument();
+  });
+
+  it("shows the clear button only while an override is live", async () => {
+    getFloor.mockResolvedValue(
+      floor([card({ display_name: "נועה", on_shift: true, on_shift_source: "roster" })]),
+    );
+    const { unmount } = mount({ role: "shift_manager" });
+    await screen.findByText("נועה");
+    expect(screen.queryByRole("button", { name: /ביטול הסימון הידני/ })).toBeNull();
+    unmount();
+
+    getFloor.mockResolvedValue(
+      floor([card({ display_name: "נועה", on_shift: false, on_shift_source: "manual_today" })]),
+    );
+    mount({ role: "shift_manager" });
+    expect(
+      await screen.findByRole("button", { name: "ביטול הסימון הידני — נועה" }),
+    ).toBeInTheDocument();
+  });
+
+  it("writes through the server's card and announces in the EXISTING cue", async () => {
+    // ⚠ F-28. Three writes modelled on `toggle` that announce NOTHING would
+    // leave a screen-reader user in silence — focus stays on the button by
+    // design, an accessible-name change does not re-announce — while the break
+    // toggle 2px away speaks on every press. This is not a new region.
+    const before = card({ display_name: "נועה", on_shift: true, on_shift_source: "roster" });
+    getFloor.mockResolvedValue(floor([before]));
+    setOnShift.mockResolvedValue({
+      ...before,
+      on_shift: false,
+      on_shift_source: "manual_today",
+    });
+    mount({ role: "owner" });
+    fireEvent.click(await screen.findByRole("button", { name: "סימון שאינה במשמרת — נועה" }));
+
+    await waitFor(() => {
+      expect(setOnShift).toHaveBeenCalledWith(OTHER_ID, false);
+    });
+    // Patched FROM THE SERVER'S CARD, never optimistically — the label and the
+    // rule both move, and the clear button appears.
+    expect(await screen.findByText("לא במשמרת · נקבע ידנית להיום")).toBeInTheDocument();
+    const status = screen.getAllByRole("status").map((node) => node.textContent ?? "");
+    expect(status.some((text) => text.includes("מסומנת כמי שאינה במשמרת היום"))).toBe(true);
+  });
+
+  it("clears through the same writer and announces the clear", async () => {
+    const before = card({
+      display_name: "נועה",
+      on_shift: false,
+      on_shift_source: "manual_today",
+    });
+    getFloor.mockResolvedValue(floor([before]));
+    clearOnShift.mockResolvedValue({ ...before, on_shift: true, on_shift_source: "fallback" });
+    mount({ role: "owner" });
+    fireEvent.click(await screen.findByRole("button", { name: "ביטול הסימון הידני — נועה" }));
+
+    await waitFor(() => {
+      expect(clearOnShift).toHaveBeenCalledWith(OTHER_ID);
+    });
+    const status = screen.getAllByRole("status").map((node) => node.textContent ?? "");
+    expect(status.some((text) => text.includes("הסימון הידני עבור"))).toBe(true);
+  });
+
+  it("keys the control refs per control, not per card", async () => {
+    // ⚠ F-27's REGRESSION GUARD. Three buttons on one card writing one key means
+    // the last mounted wins and React's ref cleanup on «ביטול הסימון הידני»
+    // nulls that card's slot — which breaks the NEW controls and regresses the
+    // shipped break-toggle focus restore along with them. Observable here as
+    // three distinct, simultaneously-present buttons on one card.
+    getFloor.mockResolvedValue(
+      floor([card({ display_name: "נועה", on_shift: false, on_shift_source: "manual_today" })]),
+    );
+    mount({ role: "owner" });
+    const row = (await screen.findAllByRole("listitem"))[0];
+    const names = within(row)
+      .getAllByRole("button")
+      .map((node) => node.getAttribute("aria-label") ?? node.textContent ?? "");
+    expect(names.some((name) => name.includes("להפסקה"))).toBe(true);
+    expect(names.some((name) => name.includes("סימון במשמרת"))).toBe(true);
+    expect(names.some((name) => name.includes("ביטול הסימון הידני"))).toBe(true);
+  });
+
+  it("gives every new control size md and its stated variant", async () => {
+    // F-W1: `size="sm"` is min-h-9 = 36px and fails the 44px floor, which is a
+    // LEGAL gate here (IS 5568 / WCAG 2.0 AA) rather than a preference.
+    getFloor.mockResolvedValue(
+      floor([card({ display_name: "נועה", on_shift: false, on_shift_source: "manual_today" })]),
+    );
+    mount({ role: "owner" });
+    const mark = await screen.findByRole("button", { name: /סימון במשמרת/ });
+    const clear = screen.getByRole("button", { name: /ביטול הסימון הידני/ });
+    expect(mark.className).toContain("min-h-11");
+    expect(clear.className).toContain("min-h-11");
+  });
 });

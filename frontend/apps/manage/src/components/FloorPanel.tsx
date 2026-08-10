@@ -7,6 +7,7 @@ import type { DispatchResult, Room, StaffCard, StaffCardStatus, Waitlist } from 
 import { isolateBidi, isolateLtr } from "../lib/booking";
 import { elapsedLine } from "../lib/elapsed";
 import { jerusalemTime } from "../lib/jerusalem";
+import { ON_SHIFT_SOURCE_KEY } from "../lib/onShift";
 import { roleLabelKey } from "../lib/roles";
 import { IDLE_STOP_MINUTES, usePoll } from "../lib/usePoll";
 import type { TickOutcome } from "../lib/usePoll";
@@ -192,6 +193,14 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const cueRef = useRef<HTMLParagraphElement>(null);
   const cardAlertRef = useRef<HTMLParagraphElement>(null);
+  // ⚠ KEYED `${card.id}:${control}`, NOT by card id (design F-27). F57 shipped
+  // this map with ONE writer — the break toggle's ref callback — and F40 puts up
+  // to THREE buttons on a card. Registered unchanged, all three would write the
+  // same key: the last mounted wins, and React's ref cleanup on «ביטול הסימון
+  // הידני» writes `null` into that card's slot. The restore below would then
+  // focus whichever button happens to hold it — the BREAK TOGGLE, or nothing —
+  // which regresses a focus rescue that has worked since F57 along with the new
+  // controls.
   const controlRefs = useRef(new Map<string, HTMLButtonElement | null>());
   const restoreFocusRef = useRef<string | null>(null);
   const cardsRef = useRef<StaffCard[] | null>(null);
@@ -279,7 +288,11 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
       // card's own control — where she was when she tapped — and fall back to
       // the heading if the control is gone.
       if (cardAlertRef.current !== null && document.activeElement === cardAlertRef.current) {
-        reclaimFocusRef.current = cardErrorRef.current?.id ?? null;
+        // The composite key of the control she was on when it failed. Her
+        // break toggle is the one that raised the alert, so `:break` is the
+        // right segment (F-27).
+        const failedCard = cardErrorRef.current?.id;
+        reclaimFocusRef.current = failedCard === undefined ? null : `${failedCard}:break`;
       }
       // The in-card alert promises «הרשימה תתוקן בעדכון הבא» and this is the
       // update that keeps it.
@@ -369,7 +382,9 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
     // Guarded on document.body so it can never steal focus from wherever she
     // moved it in the meantime (BoardSection.tsx's shipped shape).
     const pending = restoreFocusRef.current;
-    if (pending === null || busyIds.includes(pending)) {
+    // `busyIds` holds CARD ids, so the guard reads the card id off the composite
+    // key's first segment (F-27).
+    if (pending === null || busyIds.includes(pending.split(":")[0])) {
       return;
     }
     restoreFocusRef.current = null;
@@ -557,6 +572,65 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
     }
   };
 
+  // F40's override writer, modelled on `toggle` exactly (design §6.3): the poll
+  // is suppressed for the request through `mutate`, the panel is patched FROM
+  // THE SERVER'S CARD and never optimistically, the re-arm lives in the
+  // `.finally()` that `mutate` owns, and — the part that is easy to drop — each
+  // write ANNOUNCES ITSELF in the panel's EXISTING `role="status"` cue.
+  //
+  // ⚠ WITHOUT THE CUE A SCREEN-READER USER GETS SILENCE. Focus stays on the
+  // button by design, an accessible-name change does not re-announce without a
+  // focus event, the on-shift line silently flips and a third button appears —
+  // while the break toggle 2px away speaks on every press (F-28). This is NOT a
+  // new region: it is the one the panel already has, used for the only thing it
+  // is allowed to carry — an outcome the viewer asked for.
+  const markOnShift = async (card: StaffCard, next: boolean | null) => {
+    setBusyIds((current) => [...current, card.id]);
+    setCardError(null);
+    // The composite key of the control she pressed (F-27). «ביטול הסימון הידני»
+    // does NOT survive its own press — clearing moves the source to
+    // roster/fallback and unmounts it — so focus goes to the mark button on the
+    // same card, the nearest surviving control in the same group (§10's one
+    // named exception on this panel).
+    restoreFocusRef.current = `${card.id}:mark`;
+    const failure = await mutate(async () => {
+      const patched =
+        next === null ? await api.clearOnShift(card.id) : await api.setOnShift(card.id, next);
+      const updated = (cardsRef.current ?? []).map((item) =>
+        item.id === patched.id ? patched : item,
+      );
+      cardsRef.current = updated;
+      setCards(updated);
+      setUpdatedAt(new Date().toISOString());
+      setCue({
+        text: t(
+          next === null
+            ? "floor.onShiftOverrideClearedCue"
+            : next
+              ? "floor.markedOnShiftCue"
+              : "floor.markedOffShiftCue",
+          { name: patched.display_name },
+        ),
+        name: patched.display_name,
+      });
+    });
+    setBusyIds((current) => current.filter((id) => id !== card.id));
+    if (failure !== null) {
+      // A 404 is NOT terminal — a colleague vanishing between ticks is a fact
+      // about her, not about the viewer's access. A 403 IS terminal, and
+      // correctly so: `mutate`'s P-6 rule owns that, the control never renders
+      // for a role that would be refused, and the only path to one is a role
+      // change mid-session (F-19).
+      setCardError({
+        id: card.id,
+        text:
+          failure instanceof ApiError && failure.status === 404
+            ? t("floor.error.notFound")
+            : t("staff.loadFailed"),
+      });
+    }
+  };
+
   const toggle = async (card: StaffCard) => {
     // ⚠ The break fact is `break_started_at`, NOT `status`. F36 makes
     // `occupied` win the status while the timestamp stays on the wire, so
@@ -567,7 +641,7 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
     const onBreak = card.break_started_at !== null;
     setBusyIds((current) => [...current, card.id]);
     setCardError(null);
-    restoreFocusRef.current = card.id;
+    restoreFocusRef.current = `${card.id}:break`;
     const failure = await mutate(async () => {
       const patched = onBreak
         ? await api.endStaffBreak(card.id)
@@ -850,6 +924,22 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
             /* NO live attributes on the list. role="log" is the tempting wrong
                answer — it is for append-only chat and this list mutates in
                place. */
+            <>
+            {/* F40's notes region — ZERO, ONE OR TWO muted lines, above the
+                list (design §6.4): the week line first (the fact), the override
+                note second (the exception to it). Both can render at once and
+                each is then true of a DIFFERENT card, which is exactly why the
+                week line says «כל מי שלא סומנה ידנית».
+
+                ⚠ ONCE PER BOARD, never once per card — §6.2's repetition
+                argument, and the same rule `shifts.managerNoneEligible` follows
+                on the roster pane. */}
+            {cards.some((card) => card.on_shift_source === "fallback") && (
+              <p className="mb-3 text-sm text-ink-muted">{t("floor.onShiftNoRoster")}</p>
+            )}
+            {cards.some((card) => card.on_shift_source === "manual_today") && (
+              <p className="mb-3 text-sm text-ink-muted">{t("floor.onShiftOverrideNote")}</p>
+            )}
             <ul className="divide-y divide-border">
               {cards.map((card) => {
                 // ⚠ THE BREAK FACT, and it is NOT `card.status` — see `toggle`.
@@ -865,6 +955,17 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
                 // lock glyph, no «אין לך הרשאה» line, no tooltip. The absence is
                 // cosmetics; the control is the server's check.
                 const mayToggle = isSelf || ELEVATED.has(role);
+                // ⚠ A NEW PREDICATE, AND EMPHATICALLY NOT `mayToggle` (F-26 /
+                // R-D). The break toggle is SELF-OR-elevated because a seamstress
+                // may record her own break; reusing that variable here — it is
+                // the one these exact lines already compute, which is why the
+                // mistake is AVAILABLE rather than merely possible — renders
+                // «סימון שאינה במשמרת» on a seamstress's OWN card. She taps it,
+                // the server refuses 403, and `mutate`'s P-6 rule makes {401,403}
+                // TERMINAL: she loses the whole floor board for the session, by
+                // pressing a button that should never have rendered, having
+                // attempted precisely the attendance punch D13 puts out of scope.
+                const mayMarkOnShift = ELEVATED.has(role);
                 const busy = busyIds.includes(card.id);
                 const labelKey = roleLabelKey(card.role);
                 return (
@@ -901,6 +1002,32 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
                       <p className="text-sm text-ink-muted">
                         <bdi>{labelKey === null ? card.role : t(labelKey)}</bdi>
                       </p>
+                      {/* F40's on-shift line: TWO ELEMENTS with the console's
+                          shipped « · » between them, NEVER one interpolated
+                          sentence (design §6.1).
+
+                          ⚠ A `fallback` CARD RENDERS NOTHING HERE (§6.2 / F-4).
+                          Eight cards each saying «אין סידור עבודה לשבוע הזה» is
+                          eight copies of a sentence that says nothing about the
+                          person it is attached to, permanently, on the screen a
+                          seamstress opens twenty times a day — and C1 promises a
+                          boutique that never publishes sees NO CHANGE AT ALL.
+                          The week-level line above the list carries rule 3 once
+                          instead.
+
+                          ⚠ AN OFF-SHIFT CARD IS NOT DIMMED, GREYED, REORDERED OR
+                          HIDDEN (D1). A visual de-emphasis is filtering with the
+                          evidence left on screen, and it would make on-shift-ness
+                          a colour. `card_status` still wins the Badge: she can be
+                          `occupied` AND «לא במשמרת» at once, and D9 says that
+                          tuple is the most useful thing this feature puts here. */}
+                      {card.on_shift_source !== "fallback" && (
+                        <p className="text-sm text-ink">
+                          {t(card.on_shift ? "floor.onShift" : "floor.offShift")}
+                          {" · "}
+                          {t(ON_SHIFT_SOURCE_KEY[card.on_shift_source])}
+                        </p>
+                      )}
                       {/* THREE FRAGMENTS, each its own element, separated by the
                           console's existing «·» — never one interpolated
                           sentence. «בחדר {{room}}» would render «בחדר חדר 2»
@@ -956,10 +1083,51 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
                       )}
                       </div>
                     </div>
+                    {mayMarkOnShift && (
+                      <Button
+                        ref={(node) => {
+                          controlRefs.current.set(`${card.id}:mark`, node);
+                        }}
+                        variant="secondary"
+                        size="md"
+                        fullWidthMobile={false}
+                        loading={busy}
+                        aria-label={t(
+                          card.on_shift ? "floor.markOffShiftAria" : "floor.markOnShiftAria",
+                          { name: card.display_name },
+                        )}
+                        onClick={() => void markOnShift(card, !card.on_shift)}
+                      >
+                        {/* EXACTLY ONE mark button, and its label always
+                            CONTRADICTS the current answer. Two buttons («on» and
+                            «off») would leave one of them a no-op that still
+                            writes a row and an audit entry. */}
+                        {t(card.on_shift ? "floor.markOffShift" : "floor.markOnShift")}
+                      </Button>
+                    )}
+                    {mayMarkOnShift && card.on_shift_source === "manual_today" && (
+                      <Button
+                        ref={(node) => {
+                          controlRefs.current.set(`${card.id}:clear`, node);
+                        }}
+                        // `ghost`: it UNDOES a state, which is the shipped break
+                        // toggle's own ghost branch.
+                        variant="ghost"
+                        size="md"
+                        fullWidthMobile={false}
+                        loading={busy}
+                        aria-label={t("floor.clearOnShiftOverrideAria", {
+                          name: card.display_name,
+                        })}
+                        onClick={() => void markOnShift(card, null)}
+                      >
+                        {t("floor.clearOnShiftOverride")}
+                      </Button>
+                    )}
                     {mayToggle && (
                       <Button
                         ref={(node) => {
-                          controlRefs.current.set(card.id, node);
+                          controlRefs.current.set(`${card.id}:break`, node);
                         }}
                         variant={onBreak ? "ghost" : "secondary"}
                         size="md"
@@ -981,6 +1149,7 @@ export function FloorPanel({ selfId, role }: FloorPanelProps) {
                 );
               })}
             </ul>
+            </>
           )}
         </Card>
       )}
