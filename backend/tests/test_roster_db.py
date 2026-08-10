@@ -1445,6 +1445,91 @@ async def test_the_published_read_answers_an_unpublished_week_rather_than_404ing
         assert [row.staff_user_id for shift in live.shifts for row in shift.assignments] == [her]
 
 
+async def test_the_retry_answers_409_when_the_manager_slot_went_in_the_race(
+    app_role_url: str,
+) -> None:
+    """⚠ THE RETRY IS PART OF THE HANDLER, NOT AFTER IT. `assign` catches the
+    triple index's `IntegrityError` and runs `_apply_assignment` a second time;
+    if THAT attempt hits the manager index the caller must get the same designed
+    409 the first attempt would have given her, not a 500.
+
+    The race is forced rather than raced: `live_for_triple` is made to miss ONCE,
+    which is exactly the window the retry exists for — the loser of two identical
+    inserts sees no live row, inserts, and violates the triple. Here she also
+    wants the manager slot, and a third staffer already holds it.
+
+    Measured, not assumed: an INSERT violating BOTH partial uniques is reported
+    against whichever index has the lower OID, and `0036` creates the triple
+    first — so the first attempt lands on the RETRY branch every time rather than
+    on the manager branch. That is what puts the manager conflict on the retry.
+    """
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        holder = await _staff(factory, tenant_id, eligible=True, display_name="נועה לוי")
+        her = await _staff(factory, tenant_id, eligible=True)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        # A third staffer holds the shift's one manager slot.
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK,
+                shift_template_id=template_id,
+                staff_user_id=holder,
+                is_shift_manager=True,
+            ),
+        )
+        # And SHE is already on the shift, as an ordinary assignment.
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+            ),
+        )
+
+        real = RosterAssignmentsRepository.live_for_triple
+        misses = {"left": 1}
+
+        async def _miss_once(self: object, *args: object, **kwargs: object) -> object:
+            if misses["left"]:
+                misses["left"] -= 1
+                return None
+            return await real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        RosterAssignmentsRepository.live_for_triple = _miss_once  # type: ignore[method-assign]
+        try:
+            with pytest.raises(ShiftManagerSlotTakenError):
+                await service.assign(
+                    tenant_id,
+                    actor=actor,
+                    body=CreateAssignmentRequest(
+                        week_start=WEEK,
+                        shift_template_id=template_id,
+                        staff_user_id=her,
+                        is_shift_manager=True,
+                    ),
+                )
+        finally:
+            RosterAssignmentsRepository.live_for_triple = real  # type: ignore[method-assign]
+
+        assert misses["left"] == 0, "the forced miss never fired — the race was not reproduced"
+
+        # And the slot still belongs to the holder: a refused retry writes nothing.
+        shift = await service.roster(tenant_id, actor=actor, week_start=WEEK)
+        managers = [
+            row.staff_user_id
+            for block in shift.shifts
+            for row in block.assignments
+            if row.is_shift_manager
+        ]
+        assert managers == [holder]
+
+
 async def test_the_open_published_read_carries_no_submitted_state(
     app_role_url: str,
 ) -> None:

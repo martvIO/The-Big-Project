@@ -178,6 +178,21 @@ class ShiftManagerSlotTakenError(Exception):
     """
 
 
+def _reject_manager_conflict(exc: IntegrityError) -> None:
+    """D12's 409, told apart from the assignment triple's retryable race by the
+    driver's own index name — and applied to BOTH of `assign`'s attempts, so the
+    two cannot answer one state with two codes.
+
+    ⚠ An INSERT that violates BOTH partial uniques (the same staffer, wanting the
+    same manager slot) is reported against whichever index has the lower OID, and
+    `0036` creates the triple first. So a doubly-violating write always lands on
+    the RETRY branch, never here — which is exactly what puts the manager
+    conflict on the second attempt rather than the first.
+    """
+    if _MANAGER_INDEX in str(exc.orig):
+        raise ShiftManagerSlotTakenError from None
+
+
 class NoOpeningHoursError(Exception):
     """D3's other refusal: there is nothing to seed FROM. 409 `NO_OPENING_HOURS`.
 
@@ -769,6 +784,13 @@ class ShiftsService:
         ⚠ THE MANAGER INDEX'S `IntegrityError` IS NOT RETRIED. It is a genuine
         conflict — somebody else holds that shift's slot — and retrying would
         answer 409 one round-trip later having written nothing either way.
+
+        ⚠ AND IT IS CLASSIFIED ON BOTH ATTEMPTS, through ONE shared classifier.
+        The retry runs precisely because the first attempt's read missed a live
+        row, so the retry is the attempt MOST likely to want a manager slot that
+        has since gone — and an unclassified retry answers that state with a raw
+        500 where the first attempt would have answered 409. Two writers, one
+        shift, two different codes for one fact.
         """
         self._assert_elevated(actor)
         current = current_week_start(today_jerusalem(self._clock))
@@ -777,9 +799,13 @@ class ShiftsService:
         try:
             return await self._apply_assignment(tenant_id, actor=actor, body=body)
         except IntegrityError as exc:
-            if _MANAGER_INDEX in str(exc.orig):
-                raise ShiftManagerSlotTakenError from None
+            _reject_manager_conflict(exc)
+        try:
             return await self._apply_assignment(tenant_id, actor=actor, body=body)
+        except IntegrityError as exc:
+            _reject_manager_conflict(exc)
+            # The triple twice over is no longer a race — it is a bug worth seeing.
+            raise
 
     async def _apply_assignment(
         self, tenant_id: UUID, *, actor: StaffContext, body: CreateAssignmentRequest
