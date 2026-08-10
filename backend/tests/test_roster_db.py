@@ -1501,7 +1501,7 @@ async def test_the_retry_answers_409_when_the_manager_slot_went_in_the_race(
                 return None
             return await real(self, *args, **kwargs)  # type: ignore[arg-type]
 
-        RosterAssignmentsRepository.live_for_triple = _miss_once  # type: ignore[method-assign]
+        RosterAssignmentsRepository.live_for_triple = _miss_once  # type: ignore[method-assign,assignment]
         try:
             with pytest.raises(ShiftManagerSlotTakenError):
                 await service.assign(
