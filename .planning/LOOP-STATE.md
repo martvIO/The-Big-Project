@@ -2745,7 +2745,27 @@ queue:
     slug: f40-placeholder
     epic: E8
     title: "Roster builder + published roster as current-shift source"
-    status: queued
+    status: building              # 15 of 19 plan tasks committed on feature/roster-builder, migration
+                                  # 0036, all gates green at that commit (fast lane 3096, db lane 1228,
+                                  # frontend 3090). FOUR TASKS ARE MISSING and the builder said so rather
+                                  # than letting the diff imply otherwise: F1 RosterCellDialog, F2
+                                  # RosterPane, F3 the mount + third guide step, G1 e2e. THE ROSTER SCREEN
+                                  # THEREFORE DOES NOT EXIST — an elevated actor can build and publish only
+                                  # through the API — and there is NO F40 e2e at all, so none of the axe
+                                  # zero-violation checks the design calls a legal gate have ever run. NOT
+                                  # SHIPPABLE until those four land. A completion builder is running.
+                                  # ⚠ THE EPIC'S PREMISE WAS FICTION: there is no F31 on-shift toggle, so
+                                  # nothing is demoted. Rule 3 resolves to today's behaviour and a boutique
+                                  # that never publishes sees no change — an additive feature, not a cutover.
+                                  # R9 pair moved (70,68) -> (74,72), MEASURED by running the walker: seven
+                                  # routes moved it by four, because two ?week_start= reads and the publish
+                                  # carry a calendar week rather than a handle. Do not re-derive by adding.
+                                  # Two finds worth keeping: stamp_published now uses func.now() because a
+                                  # service clock and Postgres clocks were being COMPARED by changed_since,
+                                  # so skew could swallow a real edit or invent one; and the walker needed an
+                                  # assignment_id disambiguation (a fitting-room assignment and a roster
+                                  # assignment share the path shape), without which the roster DELETE was
+                                  # driven with the wrong id and proved nothing while the pair still moved.
     deps: [F9, F34, F37, F38, F39]
     note: >-
       The published roster supersedes F31's manual on-shift marking; the epic specifies
