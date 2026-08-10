@@ -288,7 +288,9 @@ async def _seed(
             duration_minutes=60,
             audience=AppointmentAudience.ALL.value,
             deposit_required=deposit,
-            deposit_amount_agorot=DEPOSIT_AGOROT if deposit else 0,
+            # NULL, not 0 — 0005's CHECK is `IS NULL OR > 0`, so a deposit-off
+            # type carries no amount at all.
+            deposit_amount_agorot=DEPOSIT_AGOROT if deposit else None,
             sort_order=0,
         )
         await TermsVersionsRepository().insert(
