@@ -68,6 +68,7 @@ class ShiftTemplatesRepository:
         starts_at_time: datetime.time,
         ends_at_time: datetime.time,
         sort_order: int = 0,
+        coverage_targets: dict[str, int] | None = None,
     ) -> ShiftTemplate:
         row = ShiftTemplate(
             tenant_id=tenant_id,
@@ -76,6 +77,9 @@ class ShiftTemplatesRepository:
             starts_at_time=starts_at_time,
             ends_at_time=ends_at_time,
             sort_order=sort_order,
+            # The seed and any non-console caller get D10's empty map, which is
+            # «no target on this shift» and renders as a plain count.
+            coverage_targets=coverage_targets or {},
         )
         session.add(row)
         await session.flush()
@@ -92,8 +96,10 @@ class ShiftTemplatesRepository:
         starts_at_time: datetime.time,
         ends_at_time: datetime.time,
         sort_order: int,
+        coverage_targets: dict[str, int],
     ) -> ShiftTemplate | None:
-        """A FULL REPLACE of all five editable fields (D2), never a partial patch
+        """A FULL REPLACE of all SIX editable fields (D2 + F40 D10), never a
+        partial patch
         — `UpdateAppointmentTypeRequest`'s shipped rule, so an omitted key can
         never silently clear a value. `None` means no live row by that id for
         this tenant: unknown, already deleted, or another tenant's, one
@@ -111,6 +117,7 @@ class ShiftTemplatesRepository:
                 starts_at_time=starts_at_time,
                 ends_at_time=ends_at_time,
                 sort_order=sort_order,
+                coverage_targets=coverage_targets,
             )
             .returning(ShiftTemplate.id)
         )

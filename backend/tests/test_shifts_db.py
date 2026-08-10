@@ -27,7 +27,7 @@ import datetime
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -164,13 +164,19 @@ def _template(
     starts: datetime.time = datetime.time(9, 0),
     ends: datetime.time = datetime.time(14, 0),
     sort_order: int = 0,
+    coverage_targets: dict[str, object] | None = None,
 ) -> ShiftTemplateInput:
+    # ⚠ F40 D10's SIXTH REQUIRED FIELD. The schema carries NO default — this
+    # PATCH is a full replace, so an omitted key would silently clear the targets
+    # on every unrelated label edit — so the helper supplies the empty map that
+    # every pre-F40 template already has.
     return ShiftTemplateInput(
         day_of_week=day_of_week,
         label=label,
         starts_at_time=starts,
         ends_at_time=ends,
         sort_order=sort_order,
+        coverage_targets={} if coverage_targets is None else coverage_targets,
     )
 
 
@@ -913,5 +919,98 @@ async def test_a_week_start_that_is_not_a_sunday_is_refused_by_the_db_check_alon
                 template_id=uuid.uuid4(),
                 week_start=_NEXT_WEEK + datetime.timedelta(days=1),
             )
+    finally:
+        await engine.dispose()
+
+
+# --- F40 D10: a targets-only edit is not a material edit ----------------------
+
+
+async def test_a_targets_only_edit_invalidates_no_submission(app_role_url: str) -> None:
+    """⚠ THE DATA-LOSS REFLEX THIS TEST EXISTS TO CATCH. «Add the new field to
+    the material set» is the obvious edit, and it would soft-delete every future
+    answer against a template the first time somebody fixes a target from 2 to 3
+    — an owner adjusting a number, silently costing her staff a week of
+    submissions they would then be asked to give again.
+
+    `is_material_edit` reads `day_of_week`, `starts_at_time`, `ends_at_time` and
+    must not gain a fourth field (D10 / design F-12).
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _service(factory)
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        template = await service.create_template(
+            tenant_id, actor=_actor(tenant_id), body=_template()
+        )
+        future = _WEEK_AFTER
+        await _answer(
+            factory,
+            tenant_id,
+            staff_user_id=staff_id,
+            template_id=template.id,
+            week_start=future,
+        )
+
+        moved = await service.update_template(
+            tenant_id,
+            template.id,
+            actor=_actor(tenant_id),
+            body=_template(coverage_targets={"sales_assistant": 2}),
+        )
+        assert moved.invalidated_submissions == 0
+        assert moved.template is not None
+        assert moved.template.coverage_targets == {"sales_assistant": 2}
+
+        # And the answer is still live — asserted on the row rather than on the
+        # returned count, because a count of 0 could also mean «found nothing».
+        async with tenant_session(factory, tenant_id) as session:
+            rows = await StaffAvailabilityRepository().live_for_week(
+                session, tenant_id, week_start=future, staff_user_id=staff_id
+            )
+            assert len(rows) == 1
+
+        # The control: a MATERIAL edit in the same shape still invalidates.
+        material = await service.update_template(
+            tenant_id,
+            template.id,
+            actor=_actor(tenant_id),
+            body=_template(starts=datetime.time(10, 0), coverage_targets={"sales_assistant": 2}),
+        )
+        assert material.invalidated_submissions == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_a_targets_only_edit_still_writes_its_existing_audit_action(
+    app_role_url: str,
+) -> None:
+    """Coverage targets fold into the EXISTING `SHIFT_TEMPLATE_UPDATED` rather
+    than earning a sixth action: they are written by that route, in that
+    transaction, and a second action for one field of one payload is a row
+    nobody queries."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _service(factory)
+    try:
+        template = await service.create_template(
+            tenant_id, actor=_actor(tenant_id), body=_template()
+        )
+        await service.update_template(
+            tenant_id,
+            template.id,
+            actor=_actor(tenant_id),
+            body=_template(coverage_targets={"seamstress": 1}),
+        )
+        async with tenant_session(factory, tenant_id) as session:
+            actions = [
+                str(row[0])
+                for row in (
+                    await session.execute(text("SELECT action FROM audit_log ORDER BY created_at"))
+                ).all()
+            ]
+        assert actions.count("shift_template_updated") == 1
+        assert not any("coverage" in action for action in actions)
     finally:
         await engine.dispose()

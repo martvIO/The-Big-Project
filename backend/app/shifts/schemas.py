@@ -33,6 +33,10 @@ class ShiftTemplateResponse(BaseModel):
     starts_at_time: datetime.time
     ends_at_time: datetime.time
     sort_order: int
+    # F40 D10's sparse map, on the read so `ShiftTemplatesPane`'s draft can be
+    # SEEDED with the existing targets — the PATCH is a full replace, so a draft
+    # that did not carry them would clear them on an unrelated label edit.
+    coverage_targets: dict[str, int] = Field(default_factory=dict)
     # D4's pre-commit count, and it exists because NO OTHER ROUTE CAN ANSWER IT
     # (design F-2): `invalidated_submissions` lives only in the audit `details` of
     # a write that has already happened, so without this field D4's binding
@@ -67,6 +71,17 @@ class ShiftTemplateInput(ForbidExtraModel):
     # render. Same `MAX_SORT_ORDER` every other sort_order on the wire carries
     # (`catalog/schemas.py`, `floor/schemas.py`); F39 was the one that missed it.
     sort_order: int = Field(default=0, ge=-MAX_SORT_ORDER, le=MAX_SORT_ORDER)
+    # F40 D10, and the SIXTH REQUIRED FIELD — no default, deliberately. This
+    # PATCH is a full replace, so an omitted key would silently clear the targets
+    # on every unrelated label edit, and a `default_factory=dict` here is exactly
+    # that omission wearing a default's clothes.
+    #
+    # ⚠ TYPED `object` AND VALIDATED IN `validate_coverage_targets`, not typed
+    # `int`. Pydantic would coerce `true` to `1` before the validator ever saw
+    # it (F39's `AtelierSettingsUpdate` finding), and it would answer a generic
+    # 422 where the console has a specific Hebrew sentence keyed on
+    # `COVERAGE_TARGET_INVALID`.
+    coverage_targets: dict[str, object]
 
 
 class TemplateWriteResponse(BaseModel):

@@ -75,6 +75,7 @@ from app.shifts.validation import (
     deadline_at,
     default_week_start,
     scheduling_pair,
+    validate_coverage_targets,
     validate_template,
     validate_week_start,
     week_end,
@@ -241,6 +242,7 @@ class ShiftsService:
             starts_at_time=body.starts_at_time,
             ends_at_time=body.ends_at_time,
         )
+        targets = validate_coverage_targets(body.coverage_targets)
         async with tenant_session(self._sessions, tenant_id) as session:
             counts = await self._templates.counts(session, tenant_id)
             assert_template_capacity(
@@ -254,6 +256,7 @@ class ShiftsService:
                 starts_at_time=body.starts_at_time,
                 ends_at_time=body.ends_at_time,
                 sort_order=body.sort_order,
+                coverage_targets=targets,
             )
             await self._audit.record(
                 session,
@@ -287,6 +290,7 @@ class ShiftsService:
             starts_at_time=body.starts_at_time,
             ends_at_time=body.ends_at_time,
         )
+        targets = validate_coverage_targets(body.coverage_targets)
         current = current_week_start(today_jerusalem(self._clock))
         async with tenant_session(self._sessions, tenant_id) as session:
             before = await self._templates.by_id(session, tenant_id, template_id)
@@ -309,6 +313,7 @@ class ShiftsService:
                 starts_at_time=body.starts_at_time,
                 ends_at_time=body.ends_at_time,
                 sort_order=body.sort_order,
+                coverage_targets=targets,
             )
             if row is None:
                 raise ShiftNotFoundError
@@ -1222,6 +1227,7 @@ class ShiftsService:
             starts_at_time=row.starts_at_time,
             ends_at_time=row.ends_at_time,
             sort_order=row.sort_order,
+            coverage_targets=dict(row.coverage_targets),
             future_submission_count=None if counts is None else counts.get(row.id, 0),
         )
 

@@ -46,7 +46,12 @@ from app.shifts.service import (
     SubmissionClosedError,
     TemplatesAlreadySeededError,
 )
-from app.shifts.validation import TemplateLimitReachedError, WeekOutOfRangeError
+from app.shifts.validation import (
+    MAX_COVERAGE_TARGET,
+    CoverageTargetInvalidError,
+    TemplateLimitReachedError,
+    WeekOutOfRangeError,
+)
 from app.tenancy.middleware import TenantContext
 
 TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="Bella Bridal", settings={})
@@ -85,6 +90,11 @@ TEMPLATE_BODY: dict[str, Any] = {
     "starts_at_time": "09:00:00",
     "ends_at_time": "14:00:00",
     "sort_order": 0,
+    # ⚠ F40 D10's SIXTH REQUIRED FIELD. This PATCH is a full replace, so an
+    # omitted key would silently clear the targets on every unrelated label
+    # edit — which is why the schema carries no default and every body here
+    # gained the field rather than the field gaining a default.
+    "coverage_targets": {},
 }
 SUBMIT_BODY: dict[str, Any] = {
     "week_start": WEEK_START.isoformat(),
@@ -657,3 +667,70 @@ def test_every_mutating_route_is_csrf_fenced(
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "CSRF_ORIGIN_MISMATCH"
     assert fake.calls == []
+
+
+# --- F40 D10: coverage targets on the template full-replace -------------------
+
+
+def test_the_template_write_refuses_a_body_without_coverage_targets() -> None:
+    """⚠ THE SIXTH REQUIRED FIELD, and required is the whole point (D10). F39's
+    PATCH is a FULL REPLACE, so a `coverage_targets` carrying a default would let
+    an unrelated label edit silently clear every target the owner set — the same
+    class of silent loss `UpdateAppointmentTypeRequest`'s rule exists to prevent.
+
+    Refused BEFORE the service, by the schema, which is why the fake records no
+    call at all.
+    """
+    without = {key: value for key, value in TEMPLATE_BODY.items() if key != "coverage_targets"}
+    fake = FakeShiftsService()
+    with _client(fake) as client:
+        assert client.patch(f"{TEMPLATES_PATH}/{TEMPLATE_ID}", json=without).status_code == 400
+        assert client.post(TEMPLATES_PATH, json=without).status_code == 400
+    assert fake.calls == []
+
+
+def test_an_empty_map_is_accepted_and_reaches_the_service() -> None:
+    """`{}` is the DEFAULT state of every template that predates this feature, so
+    it is the ordinary case rather than an edge one."""
+    fake = FakeShiftsService()
+    with _client(fake) as client:
+        resp = client.patch(
+            f"{TEMPLATES_PATH}/{TEMPLATE_ID}",
+            json={**TEMPLATE_BODY, "coverage_targets": {}},
+        )
+    assert resp.status_code == 200
+    assert fake.call("update_template")["body"].coverage_targets == {}
+
+
+def test_a_sparse_map_reaches_the_service_untouched() -> None:
+    """⚠ `0` SURVIVES THE WIRE. An absent key is «no target» and `0` is
+    «deliberately nobody» (D10) — a schema that dropped falsy values would turn
+    the second into the first between the browser and the validator."""
+    fake = FakeShiftsService()
+    with _client(fake) as client:
+        client.patch(
+            f"{TEMPLATES_PATH}/{TEMPLATE_ID}",
+            json={**TEMPLATE_BODY, "coverage_targets": {"sales_assistant": 2, "seamstress": 0}},
+        )
+    assert fake.call("update_template")["body"].coverage_targets == {
+        "sales_assistant": 2,
+        "seamstress": 0,
+    }
+
+
+def test_an_invalid_target_maps_to_its_own_coded_400() -> None:
+    """⚠ `COVERAGE_TARGET_INVALID` AND NOT A GENERIC 422, because the console has
+    a specific Hebrew sentence keyed on this code — an unmapped code renders the
+    server's ENGLISH message, right-aligned, in a Hebrew console, on a green
+    build (F38's build note). This proves the HANDLER is registered, which is the
+    half a validator test cannot reach."""
+    with _client(FakeShiftsService(raises=CoverageTargetInvalidError())) as client:
+        resp = client.patch(
+            f"{TEMPLATES_PATH}/{TEMPLATE_ID}",
+            json={**TEMPLATE_BODY, "coverage_targets": {"seamstress": 99}},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "COVERAGE_TARGET_INVALID"
+    # O3 says the constant will move, so the bound is INTERPOLATED rather than
+    # typed into the sentence (design F-33).
+    assert str(MAX_COVERAGE_TARGET) in resp.json()["error"]["message"]
