@@ -124,7 +124,7 @@ const NAV_LABELS = [
   //
   // Its roles are ALL FIVE, so it is inside the shift manager's slice AND the
   // seamstress's row list below — the first row in this console that is.
-  "זמינות למשמרות",
+  "משמרות",
   // F33, after the board and before the owner-only rows. Both console roles
   // reach it: the payload is the public URL printed on a sign in the window and
   // a picture of it, so locking a shift manager out of reprinting a torn poster
@@ -211,7 +211,7 @@ describe("the console nav is role-filtered", () => {
       // staffer answers her own week — and it sits AFTER `floor`, which is
       // what keeps `reachable[0]?.key` landing her on «הצוות בקומה» with no
       // edit to `useState("dashboard")` anywhere.
-      expect(navItems()).toEqual(["הצוות בקומה", "זמינות למשמרות"]);
+      expect(navItems()).toEqual(["הצוות בקומה", "משמרות"]);
       expect(screen.queryByRole("button", { name: "לוח היום" })).toBeNull();
       // She is ON the floor section, not merely able to reach it.
       expect(screen.getByRole("heading", { name: "צוות בקומה" })).toBeInTheDocument();
@@ -232,7 +232,7 @@ describe("the console nav is role-filtered", () => {
     render(<App />);
     await screen.findByRole("navigation");
 
-    expect(navItems()).toEqual(["הצוות בקומה", "תפירה", "זמינות למשמרות"]);
+    expect(navItems()).toEqual(["הצוות בקומה", "תפירה", "משמרות"]);
     expect(screen.queryByRole("button", { name: "לוח היום" })).toBeNull();
     // Still LANDS on the floor, not on the atelier.
     expect(screen.getByRole("heading", { name: "צוות בקומה" })).toBeInTheDocument();
