@@ -999,9 +999,48 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # console's service would compute out_of_stock/total_quantity/variant_count
     # on every anonymous request and keep them off the wire only by the response
     # model remembering to omit them. See app/storefront/service.py.
+    # ⚠ HOISTED ABOVE StorefrontService AND BookingService, DELIBERATELY, and the
+    # order IS the feature. `deposit_due()` is
+    #     deposits_enabled AND deposit_required AND amount > 0 AND gateway_connected
+    # and both of those services take `gateway_credentials` as an OPTIONAL argument
+    # defaulting to None, which reads as NOT CONNECTED. Built before this block, they
+    # silently took that default and every deposit in the product became
+    # uncollectable — the storefront disclosed none and POST /storefront/bookings
+    # answered `deposit_due: false` with a gateway connected AND validated. It failed
+    # in the safe direction, so nothing alerted; found only by walking the journey
+    # against a real database (2026-08-10). `tests/test_deposit_wiring.py` asserts the
+    # object graph so a future reordering reds instead of going quiet.
+    app.state.payment_gateway = _build_payment_gateway(settings)
+    app.state.secret_box = _build_secret_box(settings)
+    # TWO limiter instances, not one with two keys. max_attempts lives on the
+    # LIMITER, so a second key on an existing budget could never trip first —
+    # the rule main.py states four times above. The connect budget exists for a
+    # stronger reason than the validate one: rotation is insert-only on a table
+    # whose DELETE is revoked (D6, D7), so a loop on PUT is permanent,
+    # unreclaimable table growth plus unbounded KMS request spend. Verbatim why
+    # terms_creation_max_per_window exists.
+    app.state.gateway_credential_service = GatewayCredentialService(
+        get_session_factory(),
+        gateway=app.state.payment_gateway,
+        secret_box=app.state.secret_box,
+        connect_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.gateway_connect_max_per_tenant_window,
+            window_seconds=settings.gateway_connect_window_seconds,
+            clock=time.monotonic,
+        ),
+        validate_limiter=FixedWindowRateLimiter(
+            max_attempts=settings.gateway_validate_max_per_tenant_window,
+            window_seconds=settings.gateway_validate_window_seconds,
+            clock=time.monotonic,
+        ),
+    )
+
     app.state.storefront_service = StorefrontService(
         get_session_factory(),
         media_storage=app.state.media_storage,
+        # The disclosure half of deposit_due(): without this the storefront hides
+        # every deposit, whatever the boutique has configured.
+        gateway_credentials=app.state.gateway_credential_service,
     )
     app.state.sms_sender = _build_sms_sender(settings)
     app.state.notification_service = NotificationService(
@@ -1039,6 +1078,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     app.state.booking_service = BookingService(
         get_session_factory(),
         otp=app.state.otp_service,
+        # The USE half of deposit_due(). It must be the SAME instance the
+        # storefront holds, or the page she reads and the flow she enters could
+        # disagree about whether money is owed.
+        gateway_credentials=app.state.gateway_credential_service,
         create_limiter=FixedWindowRateLimiter(
             max_attempts=settings.booking_create_max_per_window,
             window_seconds=settings.booking_create_window_seconds,
@@ -1195,30 +1238,6 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # surface's service to reach a /manage read would be the larger change.
     app.state.checkin_qr_service = CheckinQrService(base_domain=settings.base_domain)
 
-    app.state.payment_gateway = _build_payment_gateway(settings)
-    app.state.secret_box = _build_secret_box(settings)
-    # TWO limiter instances, not one with two keys. max_attempts lives on the
-    # LIMITER, so a second key on an existing budget could never trip first —
-    # the rule main.py states four times above. The connect budget exists for a
-    # stronger reason than the validate one: rotation is insert-only on a table
-    # whose DELETE is revoked (D6, D7), so a loop on PUT is permanent,
-    # unreclaimable table growth plus unbounded KMS request spend. Verbatim why
-    # terms_creation_max_per_window exists.
-    app.state.gateway_credential_service = GatewayCredentialService(
-        get_session_factory(),
-        gateway=app.state.payment_gateway,
-        secret_box=app.state.secret_box,
-        connect_limiter=FixedWindowRateLimiter(
-            max_attempts=settings.gateway_connect_max_per_tenant_window,
-            window_seconds=settings.gateway_connect_window_seconds,
-            clock=time.monotonic,
-        ),
-        validate_limiter=FixedWindowRateLimiter(
-            max_attempts=settings.gateway_validate_max_per_tenant_window,
-            window_seconds=settings.gateway_validate_window_seconds,
-            clock=time.monotonic,
-        ),
-    )
     # F19 is the consumer the comment that used to sit here was waiting for.
     # PaymentService stays the single writer of `payments`; the booking-side
     # half is DepositBookingService, and the two are separate because

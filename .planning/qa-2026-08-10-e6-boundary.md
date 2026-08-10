@@ -61,3 +61,58 @@ parent, along with a stale verified-head (0024 → 0035).
   `deposit_required` appointment type. Still owed; not attempted rather than claimed.
 - E5's storefront journeys (waitlist join → offer → claim, client portal OTP) — covered by their own
   suites, not yet walked in a browser.
+
+---
+
+## Addendum — the deposit journey (E4's owed item, gap G2)
+
+Walked it, and it found the most serious defect of the run plus a second one still open.
+
+### Defect A — the deposit was uncollectable in the assembled app. FIXED.
+
+`deposit_due()` is `deposits_enabled AND deposit_required AND amount > 0 AND gateway_connected`.
+The last conjunct is answered by a `GatewayCredentialService` that `StorefrontService` and
+`BookingService` each take as an **optional** argument defaulting to `None` — which reads as *not
+connected*. `create_app` built both about two hundred lines **before** it built that service, so both
+took the default. With `deposits_enabled`, a 15000-agorot `deposit_required` type and a gateway both
+connected and validated, the storefront disclosed **no deposit at all**.
+
+It failed in the safe direction — nobody was charged, nobody was stranded in an unpaid hold — which
+is exactly why nothing alerted.
+
+**Why neither suite caught it:** every unit test constructs those services *with* the dependency,
+including `test_storefront_hides_the_deposit_with_no_connected_gateway`. The suite proved both
+branches while the assembled app was pinned to one forever. The e2e fixtures intercept the API and
+never build the object graph at all. `tests/test_deposit_wiring.py` now asserts the graph `create_app`
+actually produces, and is red before the fix.
+
+F23's waitlist claim was the **one** caller wired correctly, and its own comment says why: it is
+constructed after the payments block on purpose.
+
+**Verified fixed:** the storefront now discloses «מדידה ראשונה = 15000 agorot» where it disclosed
+nothing before.
+
+### Defect B — `POST /storefront/bookings` still answers `deposit_due: false`. OPEN.
+
+With Defect A fixed and the process restarted, a booking on that same type still returns
+`deposit_due: false, redirect_url: null, payment_session_id: null`, and the booking lands `confirmed`
+rather than in a `pending_payment` hold.
+
+This is **not** the wiring bug. Probed directly against the object graph `create_app` builds:
+
+```
+storefront wired: True   booking wired: True   is_connected: True
+type row: (deposit_required=True, amount=15000)   toggles: {'deposits_enabled': True}
+```
+
+Every conjunct of `deposit_due()` is true, both services hold the same gateway service, and both
+routes take `settings` from the same `get_current_tenant(request)`. The disclosure path honours it;
+the create path does not. Cause not established — recorded rather than guessed at.
+
+**Next step for whoever picks this up:** instrument `BookingService.create_booking` around
+`app/booking/service.py:481` and print the four inputs it actually receives, rather than the ones the
+object graph holds. The two disagree, and that disagreement is the bug.
+
+⚠ A false lead cost time here and is worth writing down: an intermediate test of Defect B was run
+against a uvicorn started **before** the booking-side edit. A stale server reads exactly like a failed
+fix — the same trap as Playwright serving a stale `dist/`. Restart before believing any result.
