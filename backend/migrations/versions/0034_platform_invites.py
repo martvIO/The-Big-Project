@@ -1,7 +1,7 @@
 """platform invites (F26 D3 — the operator-issued signup code)
 
 Revision ID: 0034
-Revises: 0032
+Revises: 0033
 
 Numbered 0034 over a then-head of 0032 because `.worktrees/waitlist-auto-
 reallocation` holds `0033` while this branch is cut. 0028's note states the rule
@@ -9,6 +9,13 @@ this follows: two files declaring the SAME `revision` id break `alembic upgrade`
 outright and red every db-marked test with a message about nothing in the diff,
 whereas a gap costs nothing. `down_revision` is re-resolved to the real head at
 the pre-push rebase (`.memory/parallel-alembic-numbering`).
+
+RE-PARENTED 0032 -> 0033 AT THAT REBASE, which is that rule firing rather than
+being quoted. F23 merged while this branch was open and its 0033 also named 0032
+as parent. Two revisions naming ONE parent BRANCHES the history: `alembic heads`
+reports two heads and every db-marked test reds with a message that points at
+nothing in the diff. The renumber alone would have looked like a passing edit —
+the re-parent is what makes it correct. Chain is linear: 0032 -> 0033 -> 0034.
 
 NO `tenant_id` (spec D3), 0028's argument a third time: an invite belongs to the
 platform, and the tenant it creates does not exist yet. A `tenant_id` column
@@ -36,7 +43,7 @@ fourth feature in a row to lean on that.
 from alembic import op
 
 revision = "0034"
-down_revision = "0032"
+down_revision = "0033"
 branch_labels = None
 depends_on = None
 
