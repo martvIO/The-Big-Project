@@ -356,8 +356,10 @@ async def test_a_waitlist_entry_past_the_window_is_purged_and_a_recent_one_is_no
 
     Registration is asserted by count: an unregistered policy is silently green
     (R-B), and `POLICY_FIXTURES`' key-set equality is the other half of that
-    fence."""
-    assert len(POLICIES) == 7
+    fence. EIGHT since F38 registered the ex-staff scrub — the number moves with
+    the registry on purpose, which is what makes a forgotten registration red
+    here rather than quietly passing."""
+    assert len(POLICIES) == 8
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     try:
