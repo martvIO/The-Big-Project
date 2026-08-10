@@ -457,6 +457,23 @@ describe("the decline", () => {
     expect(declineOffer).not.toHaveBeenCalled();
   });
 
+  it("Escape backs out of the reveal, exactly as the keep button does", async () => {
+    // Not a WCAG requirement — the reveal is not a dialog — but it IS the
+    // shipped behaviour of the console's own danger swap, and a destructive
+    // two-step control a keyboard user cannot dismiss is a trap in practice.
+    await arriveAtLiveOffer();
+    fireEvent.click(screen.getByRole("button", { name: t("offer.declineCta") }));
+    const question = await findVisible(t("offer.declineQuestion"));
+
+    fireEvent.keyDown(question, { key: "Escape" });
+
+    await waitFor(() => {
+      expect(screen.queryByText(t("offer.declineQuestion"))).toBeNull();
+    });
+    await expectFocus(screen.getByRole("button", { name: t("offer.declineCta") }));
+    expect(declineOffer).not.toHaveBeenCalled();
+  });
+
   it("confirms into the declined state and says what it cost her", async () => {
     await arriveAtLiveOffer();
     fireEvent.click(screen.getByRole("button", { name: t("offer.declineCta") }));

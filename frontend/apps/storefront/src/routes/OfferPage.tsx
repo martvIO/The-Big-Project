@@ -471,7 +471,17 @@ function OfferBody({
       </Button>
 
       {revealed ? (
-        <Card className="flex flex-col gap-4 bg-surface-raised">
+        // Escape backs out, the console's own danger-swap behaviour. The reveal
+        // is NOT a dialog, so this is not the WCAG requirement — it is that a
+        // destructive two-step control a keyboard user cannot dismiss is a trap
+        // in practice. onKeep is the SAME path, so the focus return cannot drift
+        // between the two ways out.
+        <Card
+          className="flex flex-col gap-4 bg-surface-raised"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") onKeep();
+          }}
+        >
           {/* The focus destination is the QUESTION, so a screen reader hears
               what is being asked rather than an anonymous container. */}
           <p ref={revealRef} tabIndex={-1} className="text-lg text-ink">
