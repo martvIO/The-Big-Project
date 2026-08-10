@@ -60,7 +60,7 @@ export const he = {
     // §5 Provision form
     "platform.provision.heading": "בוטיק חדש",
     "platform.provision.slugLabel": "כתובת (תת־דומיין)",
-    "platform.provision.slugHelp": "הכתובת תהיה {{slug}}.modryn.co.il",
+    "platform.provision.slugHelp": "הכתובת תהיה {{slug}}.{{domain}}",
     "platform.provision.slugInvalid":
       "הכתובת יכולה להכיל אותיות לטיניות קטנות, ספרות ומקפים בלבד.",
     "platform.provision.slugReserved": "הכתובת הזו שמורה למערכת ואינה זמינה.",

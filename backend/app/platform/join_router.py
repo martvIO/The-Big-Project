@@ -123,7 +123,12 @@ async def preview_invite(
     if found is None:
         _record_failure(request, body.code)
         raise ConsoleCommandRefused("invalid_invite")
-    return InvitePreviewResponse(slug=found.slug, name=found.name, owner_email=found.owner_email)
+    return InvitePreviewResponse(
+        slug=found.slug,
+        name=found.name,
+        owner_email=found.owner_email,
+        base_domain=get_settings().base_domain,
+    )
 
 
 @router.post("/redeem")

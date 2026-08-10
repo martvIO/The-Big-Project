@@ -16,6 +16,14 @@ class OperatorResponse(BaseModel):
 
     email: str
     display_name: str
+    # The platform's base domain, so the console can SHOW an address rather than
+    # guess one. Every address the console displays used to be built from a
+    # hardcoded "modryn.co.il", which is correct in exactly one deployment and
+    # wrong in dev (`localtest.me`) and in any future domain migration. The
+    # server already composes `join_url` and `manage_url` this way; a live hint
+    # under a slug field cannot round-trip per keystroke, so the domain itself
+    # has to be on the wire once.
+    base_domain: str
 
 
 # ⚠ NO CLIENT VALIDATION OF THE SLUG BEYOND ITS LENGTH, deliberately. The
@@ -140,6 +148,11 @@ class InvitePreviewResponse(BaseModel):
     slug: str
     name: str
     owner_email: str
+    # Same reason as OperatorResponse.base_domain, for the ANONYMOUS caller: the
+    # claim screen tells her what her address will be, and it must be the address
+    # she will actually get. Disclosing it to a holder of the code discloses
+    # nothing — it is the same domain her browser is already talking to.
+    base_domain: str
 
 
 class PreviewInviteRequest(ForbidExtraModel):

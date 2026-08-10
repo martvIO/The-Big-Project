@@ -779,10 +779,16 @@ def test_the_join_routes_preview_and_redeem_an_invite_anonymously(
         with TestClient(app, base_url="http://admin.localtest.me") as client:
             preview = client.post("/platform/join/invite", json={"code": created.code})
             assert preview.status_code == 200, preview.text
+            # ⚠ base_domain IS PART OF THIS RESPONSE, and exact dict equality is
+            # what keeps it there. The claim screen tells the owner what her
+            # address will be; before F26 the client rebuilt it from a hardcoded
+            # "modryn.co.il", so she was shown a host she would never reach in
+            # any deployment but production.
             assert preview.json() == {
                 "slug": slug,
                 "name": "Bella Bridal",
                 "owner_email": "owner@bella.example",
+                "base_domain": "localtest.me",
             }
 
             redeemed = client.post(

@@ -15,7 +15,14 @@ function refusal(code: string, status: number): Response {
   return json(status, { error: { code, message: "English the screen must never show." } });
 }
 
-const INVITE = { slug: "bella", name: "בלה כלות", owner_email: "dana@bella.example" };
+// ⚠ base_domain DELIBERATELY NOT "modryn.co.il", same argument as the redeem
+// fixture below: the claim screen must render the domain the SERVER sent.
+const INVITE = {
+  slug: "bella",
+  name: "בלה כלות",
+  owner_email: "dana@bella.example",
+  base_domain: "boutiques.example.test",
+};
 
 // The FRAGMENT, matching the link the server now builds: `#code=` is never sent
 // to any server, so the credential reaches no access log.
@@ -69,7 +76,7 @@ describe("the join panel", () => {
 
     await screen.findByRole("heading", { name: "הקמת הבוטיק", level: 2 });
     expect(screen.getByText("בלה כלות")).toBeInTheDocument();
-    expect(screen.getByText("bella.modryn.co.il")).toBeInTheDocument();
+    expect(screen.getByText("bella.boutiques.example.test")).toBeInTheDocument();
     expect(screen.getByText("dana@bella.example")).toBeInTheDocument();
 
     // EVERY <input> on the screen, not just the ones with a queryable role — a

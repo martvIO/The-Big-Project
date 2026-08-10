@@ -17,7 +17,15 @@ import { JOIN, installPlatformApi, ok, refuse } from "./fixtures/platform";
 //
 // The axe gate is a LEGAL requirement (IS 5568 / WCAG 2.0 AA, pre-decided #38).
 
-const PREVIEW = { slug: "chen", name: "בוטיק של חן", owner_email: "chen@x.example" };
+// ⚠ base_domain DELIBERATELY NOT "modryn.co.il", the same argument as the redeem
+// host below: the claim screen must show the domain the SERVER sent, so a client
+// that rebuilds the production literal itself has to fail here.
+const PREVIEW = {
+  slug: "chen",
+  name: "בוטיק של חן",
+  owner_email: "chen@x.example",
+  base_domain: "boutiques.example.test",
+};
 // ⚠ THE REDEEM HOST IS DELIBERATELY NOT `chen.modryn.co.il`. The server composes
 // `manage_url` from `settings.base_domain` — `localtest.me` in dev, a
 // deployment's own domain in staging and production — so a stub that echoes the
@@ -100,12 +108,14 @@ test("join: the three facts are read-only and the only input is the password", a
   await page.goto(`${JOIN}#code=${CODE}`);
   await expect(page.getByRole("heading", { name: "הקמת הבוטיק", level: 2 })).toBeVisible();
   await expect(page.getByText("בוטיק של חן")).toBeVisible();
-  await expect(page.getByText("chen.modryn.co.il")).toBeVisible();
+  await expect(page.getByText("chen.boutiques.example.test")).toBeVisible();
   await expect(page.getByText("chen@x.example")).toBeVisible();
   await expect(page.locator("input")).toHaveCount(1);
   await expect(page.locator("input")).toHaveAttribute("type", "password");
   // The Latin runs carry their isolate; the Hebrew name is NOT forced LTR.
-  await expect(page.locator("bdi[dir='ltr']", { hasText: "chen.modryn.co.il" })).toBeVisible();
+  await expect(
+    page.locator("bdi[dir='ltr']", { hasText: "chen.boutiques.example.test" }),
+  ).toBeVisible();
   await expect(page.locator("bdi[dir='ltr']", { hasText: "בוטיק של חן" })).toHaveCount(0);
 });
 

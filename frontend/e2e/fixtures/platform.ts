@@ -101,6 +101,7 @@ export interface Recorder {
 export interface Operator {
   email: string;
   display_name: string;
+  base_domain: string;
 }
 
 export interface Tenant {
@@ -125,7 +126,15 @@ export interface Invite {
 }
 
 export function operator(overrides: Partial<Operator> = {}): Operator {
-  return { email: "dana@modryn.example", display_name: "דנה", ...overrides };
+  // ⚠ base_domain DELIBERATELY NOT "modryn.co.il". The console composes every
+  // address it displays from this field; pinning the production literal would let
+  // a component that rebuilds it client-side pass the whole suite.
+  return {
+    email: "dana@modryn.example",
+    display_name: "דנה",
+    base_domain: "boutiques.example.test",
+    ...overrides,
+  };
 }
 
 export function tenant(overrides: Partial<Tenant> = {}): Tenant {

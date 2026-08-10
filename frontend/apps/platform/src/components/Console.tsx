@@ -245,10 +245,11 @@ export function Console({ operator, onSignedOut }: { operator: Operator; onSigne
         </Card>
 
         <ProvisionForm
+          baseDomain={operator.base_domain}
           onProvisioned={(tenant) => setTenants((rows) => [...(rows ?? []), tenant])}
         />
 
-        <InvitesSection />
+        <InvitesSection baseDomain={operator.base_domain} />
       </div>
 
       <Modal
@@ -297,7 +298,13 @@ export function Console({ operator, onSignedOut }: { operator: Operator; onSigne
   );
 }
 
-function ProvisionForm({ onProvisioned }: { onProvisioned: (tenant: Tenant) => void }) {
+function ProvisionForm({
+  baseDomain,
+  onProvisioned,
+}: {
+  baseDomain: string;
+  onProvisioned: (tenant: Tenant) => void;
+}) {
   const { t } = useTranslation();
   const [slug, setSlug] = useState("");
   const [name, setName] = useState("");
@@ -337,7 +344,7 @@ function ProvisionForm({ onProvisioned }: { onProvisioned: (tenant: Tenant) => v
         // typed, which is what the design's data discipline calls for.
         created_at: new Date().toISOString(),
       });
-      setDone(t("platform.provision.done", { url: `https://${slug}.modryn.co.il` }));
+      setDone(t("platform.provision.done", { url: `https://${slug}.${baseDomain}` }));
       setSlug("");
       setName("");
       setOwnerEmail("");
@@ -376,7 +383,7 @@ function ProvisionForm({ onProvisioned }: { onProvisioned: (tenant: Tenant) => v
           required
           value={slug}
           error={slugError}
-          help={t("platform.provision.slugHelp", { slug: slug || "…" })}
+          help={t("platform.provision.slugHelp", { slug: slug || "…", domain: baseDomain })}
           onChange={(event) => setSlug(event.target.value)}
         />
         <Input
@@ -510,7 +517,7 @@ function ResetPasswordDialog({
 // ⚠ NO CALL SITE BELOW PASSES `size` (F-W1: `sm` is min-h-9 = 36px, under the
 // 44px floor), and the ONLY `danger` is the revoke Modal's footer confirm — the
 // row trigger is plain, F25's suspend precedent for table density.
-function InvitesSection() {
+function InvitesSection({ baseDomain }: { baseDomain: string }) {
   const { t } = useTranslation();
   const [invites, setInvites] = useState<Invite[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -667,6 +674,7 @@ function InvitesSection() {
       </Card>
 
       <CreateInviteCard
+        baseDomain={baseDomain}
         created={created}
         onCreated={(result) => {
           setCreated(result);
@@ -718,10 +726,12 @@ function InvitesSection() {
 // one Card (rule 3): a second create cannot clobber an unread code, and the
 // panel cannot scroll out of sight behind a form the operator is retyping into.
 function CreateInviteCard({
+  baseDomain,
   created,
   onCreated,
   onDismiss,
 }: {
+  baseDomain: string;
   created: InviteCreated | null;
   onCreated: (result: InviteCreated) => void;
   onDismiss: () => void;
@@ -793,7 +803,7 @@ function CreateInviteCard({
         <p className="text-sm text-ink">
           <Trans
             i18nKey="platform.invites.createdFor"
-            values={{ name: created.invite.name, url: `${created.invite.slug}.modryn.co.il` }}
+            values={{ name: created.invite.name, url: `${created.invite.slug}.${baseDomain}` }}
             components={{ bdi: <bdi dir="ltr" />, name: <bdi /> }}
           />
         </p>
@@ -869,7 +879,7 @@ function CreateInviteCard({
           required
           value={slug}
           error={slugError}
-          help={t("platform.provision.slugHelp", { slug: slug || "…" })}
+          help={t("platform.provision.slugHelp", { slug: slug || "…", domain: baseDomain })}
           onChange={(event) => setSlug(event.target.value)}
         />
         <Input

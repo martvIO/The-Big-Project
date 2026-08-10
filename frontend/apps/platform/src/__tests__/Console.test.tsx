@@ -10,7 +10,16 @@ function json(status: number, body: unknown): Response {
   return { ok: status < 400, status, json: async () => body } as Response;
 }
 
-const OPERATOR = { email: "dana@modryn.example", display_name: "Dana" };
+// ⚠ base_domain is DELIBERATELY NOT "modryn.co.il". Every address this console
+// shows is composed from what the server sent; pinning the production literal
+// here would let a component that rebuilds `${slug}.modryn.co.il` itself pass
+// this suite forever — which is exactly how the redeem-screen bug survived
+// review. A fixture that agrees with the bug proves nothing.
+const OPERATOR = {
+  email: "dana@modryn.example",
+  display_name: "Dana",
+  base_domain: "boutiques.example.test",
+};
 const BELLA = {
   slug: "bella",
   name: "בלה כלות",
@@ -198,6 +207,11 @@ describe("the provision form", () => {
     // success line never repeats it.
     expect(provisionForm().getByLabelText("סיסמה ראשונית")).toHaveValue("");
     expect(screen.getByText(/הבוטיק הוקם/)).toBeInTheDocument();
+    // ⚠ THE ADDRESS IS THE SERVER'S, NOT A LITERAL. base_domain arrives on the
+    // operator; a component that rebuilds `${slug}.modryn.co.il` itself is wrong
+    // in dev and in every future domain, and used to pass this suite silently.
+    expect(screen.getByText(/https:\/\/chen\.boutiques\.example\.test/)).toBeInTheDocument();
+    expect(screen.queryByText(/modryn\.co\.il/)).not.toBeInTheDocument();
     expect(screen.queryByText(/first-owner-pw/)).not.toBeInTheDocument();
     // Appended locally — no second list GET, no second audit row.
     expect(listCalls()).toBe(1);
@@ -414,6 +428,9 @@ describe("the one-time link panel", () => {
     await userEvent.click(screen.getByRole("button", { name: "יצירת הזמנה" }));
 
     await screen.findByRole("heading", { name: "ההזמנה נוצרה", level: 3 });
+    // Same rule as the provision line: the boutique's address is composed from
+    // the server's base_domain, never from a literal.
+    expect(screen.getByText(/chen\.boutiques\.example\.test/)).toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "הזמנה חדשה" })).not.toBeInTheDocument();
 
     // readOnly, NOT disabled — a disabled control is unselectable, so manual

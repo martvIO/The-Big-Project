@@ -251,7 +251,9 @@ export function JoinPanel() {
                   {t("platform.join.addressLabel")}
                 </dt>
                 <dd className="text-base text-ink">
-                  <bdi dir="ltr">{invite.slug}.modryn.co.il</bdi>
+                  <bdi dir="ltr">
+                    {invite.slug}.{invite.base_domain}
+                  </bdi>
                 </dd>
                 <dt className="text-sm font-semibold text-ink">{t("platform.join.emailLabel")}</dt>
                 <dd className="text-base text-ink">

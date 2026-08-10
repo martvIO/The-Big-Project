@@ -23,7 +23,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const OPERATOR = { email: "dana@modryn.example", display_name: "Dana" };
+// ⚠ base_domain is DELIBERATELY NOT "modryn.co.il". Every address this console
+// shows is composed from what the server sent; pinning the production literal
+// here would let a component that rebuilds `${slug}.modryn.co.il` itself pass
+// this suite forever — which is exactly how the redeem-screen bug survived
+// review. A fixture that agrees with the bug proves nothing.
+const OPERATOR = {
+  email: "dana@modryn.example",
+  display_name: "Dana",
+  base_domain: "boutiques.example.test",
+};
 const BELLA = {
   slug: "bella",
   name: "בלה כלות",

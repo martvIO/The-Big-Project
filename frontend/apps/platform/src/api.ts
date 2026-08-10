@@ -83,6 +83,10 @@ export async function apiFetch<T>(
 export interface Operator {
   email: string;
   display_name: string;
+  // The platform's base domain. Every address the console SHOWS is composed from
+  // this, never from a literal: "modryn.co.il" is right in one deployment and
+  // wrong in dev and in any domain migration.
+  base_domain: string;
 }
 
 export interface Tenant {
@@ -123,6 +127,8 @@ export interface InvitePreview {
   slug: string;
   name: string;
   owner_email: string;
+  // Same reason as Operator.base_domain, for the anonymous claim screen.
+  base_domain: string;
 }
 
 export interface CreateInviteInput {
