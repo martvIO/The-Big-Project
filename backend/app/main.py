@@ -160,6 +160,14 @@ from app.queue.router import router as queue_router
 from app.queue.service import QueueService
 from app.queue.validation import CheckinThrottledError
 from app.security_headers import SecurityHeadersMiddleware, build_csp
+from app.shifts.router import router as shifts_router
+from app.shifts.service import (
+    NoOpeningHoursError,
+    ShiftsService,
+    SubmissionClosedError,
+    TemplatesAlreadySeededError,
+)
+from app.shifts.validation import TemplateLimitReachedError, WeekOutOfRangeError
 from app.storage.base import (
     MediaNotConfiguredError,
     MediaStorage,
@@ -256,6 +264,40 @@ MEDIA_ORDER_MISMATCH_BODY = {
 # the pane can only say which without a second round trip. Built through
 # `_body_with_details` for that helper's own reason: the base is a module
 # constant shared by every request.
+# F39's five. Each is a code the console maps to a Hebrew sentence, which is
+# why none of them is a `DomainValidationError` subclass answering the generic
+# VALIDATION_ERROR — an unmapped code renders the server's ENGLISH message,
+# right-aligned, in a Hebrew console, on a green build (F38's build note).
+WEEK_OUT_OF_RANGE_BODY = {
+    "error": {
+        "code": "WEEK_OUT_OF_RANGE",
+        "message": "That week is outside the submission window.",
+    }
+}
+SUBMISSION_CLOSED_BODY = {
+    "error": {
+        "code": "SUBMISSION_CLOSED",
+        "message": "The deadline for that week has passed.",
+    }
+}
+TEMPLATES_ALREADY_SEEDED_BODY = {
+    "error": {
+        "code": "TEMPLATES_ALREADY_SEEDED",
+        "message": "Shifts already exist. Edit them by hand instead.",
+    }
+}
+NO_OPENING_HOURS_BODY = {
+    "error": {
+        "code": "NO_OPENING_HOURS",
+        "message": "No opening hours are set, so there is nothing to create shifts from.",
+    }
+}
+TEMPLATE_LIMIT_REACHED_BODY = {
+    "error": {
+        "code": "TEMPLATE_LIMIT_REACHED",
+        "message": "That day already has the maximum number of shifts.",
+    }
+}
 RESERVATION_OVERLAP_BODY = {
     "error": {
         "code": "RESERVATION_OVERLAP",
@@ -838,6 +880,10 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # delivered window and the due-date horizon all read — and production reads a
     # real one.
     app.state.atelier_service = AtelierService(get_session_factory())
+    # F39. No clock wired either, and for the same reason plus one: the db suite
+    # freezes it to drive the deadline boundary one second either side, and
+    # `today_jerusalem` decides which week is «current» for D1's whole window.
+    app.state.shifts_service = ShiftsService(get_session_factory())
     app.state.login_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.login_max_attempts,
         window_seconds=settings.login_window_seconds,
@@ -1348,6 +1394,29 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
             _body_with_details(RESERVATION_OVERLAP_BODY, exc.details), status_code=409
         )
 
+    # F39's five. `WEEK_OUT_OF_RANGE` and `TEMPLATE_LIMIT_REACHED` are 400s —
+    # the request is malformed against the server's rules. The other three are
+    # 409s: the body is well-formed and conflicts with server state.
+    @app.exception_handler(WeekOutOfRangeError)
+    async def _week_out_of_range(request: Request, exc: WeekOutOfRangeError) -> JSONResponse:
+        return JSONResponse(WEEK_OUT_OF_RANGE_BODY, status_code=400)
+
+    @app.exception_handler(TemplateLimitReachedError)
+    async def _template_limit(request: Request, exc: TemplateLimitReachedError) -> JSONResponse:
+        return JSONResponse(TEMPLATE_LIMIT_REACHED_BODY, status_code=400)
+
+    @app.exception_handler(SubmissionClosedError)
+    async def _submission_closed(request: Request, exc: SubmissionClosedError) -> JSONResponse:
+        return JSONResponse(SUBMISSION_CLOSED_BODY, status_code=409)
+
+    @app.exception_handler(TemplatesAlreadySeededError)
+    async def _templates_seeded(request: Request, exc: TemplatesAlreadySeededError) -> JSONResponse:
+        return JSONResponse(TEMPLATES_ALREADY_SEEDED_BODY, status_code=409)
+
+    @app.exception_handler(NoOpeningHoursError)
+    async def _no_opening_hours(request: Request, exc: NoOpeningHoursError) -> JSONResponse:
+        return JSONResponse(NO_OPENING_HOURS_BODY, status_code=409)
+
     @app.exception_handler(MediaPresignThrottledError)
     async def _presign_throttled(request: Request, exc: MediaPresignThrottledError) -> JSONResponse:
         return JSONResponse(TOO_MANY_ATTEMPTS_BODY, status_code=429)
@@ -1736,6 +1805,15 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     # silently shadow whichever was included first. The ROUTES table in
     # test_staff_api.py is what keeps that honest for this one.
     app.include_router(staff_router)
+    # F39's shifts. Mounted after the staff router (spec D7) and carrying the
+    # same shadowing warning every /manage include carries — a duplicated
+    # (method, path) would silently win or lose on include order, and
+    # `test_shifts_api.py`'s ROUTES table plus
+    # `test_no_route_is_registered_twice_across_routers` are what keep that
+    # honest. It is the SECOND router whose gate admits more than two roles;
+    # `test_staff_role_gating.py`'s per-role reach equalities are what make that
+    # safe, and both halves ship in this commit or neither should.
+    app.include_router(shifts_router)
     # The sixth /manage router, after the staff one. Same hazard, now with six
     # surfaces on one prefix: a duplicated (method, path) would silently shadow
     # whichever was included first. The ROUTES table in test_dashboard_api.py is

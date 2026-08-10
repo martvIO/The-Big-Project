@@ -62,6 +62,22 @@ class ShiftTemplateInput(ForbidExtraModel):
     sort_order: int = 0
 
 
+class TemplateWriteResponse(BaseModel):
+    """The answer to the two template writes that INVALIDATE (D4).
+
+    `invalidated_submissions` is the count that really moved, which may differ
+    from the `future_submission_count` the confirm dialog predicted if somebody
+    submitted in between — so the console announces THIS one and not the
+    prediction it opened with.
+
+    `template` is null on DELETE: there is no row left to render, and returning
+    the pre-delete one would put a shift back on a screen that just removed it.
+    """
+
+    template: ShiftTemplateResponse | None
+    invalidated_submissions: int
+
+
 class SeedTemplatesResponse(BaseModel):
     """`created` is the count the console announces («משמרות שנוצרו משעות
     הפעילות: {{total}}»), and the templates come back in the same payload so the

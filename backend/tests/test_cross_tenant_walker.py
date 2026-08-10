@@ -114,6 +114,7 @@ from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
 from app.main import create_app
+from app.shifts.validation import current_week_start as _current_week_start
 from app.storage.memory import InMemoryMediaStorage
 from app.tenancy.resolver import RepositoryTenantResolver
 
@@ -196,6 +197,7 @@ class Kind(StrEnum):
     SOS_ALERT = "sos_alert"
     WAITLIST_ENTRY = "waitlist_entry"
     DRESS_RESERVATION = "dress_reservation"
+    SHIFT_TEMPLATE = "shift_template"
 
 
 # Path-parameter name -> entity kind. An unknown name is a hard failure in
@@ -216,6 +218,7 @@ PATH_PARAM_KIND = {
     "alert_id": Kind.SOS_ALERT,
     "entry_id": Kind.WAITLIST_ENTRY,
     "reservation_id": Kind.DRESS_RESERVATION,
+    "template_id": Kind.SHIFT_TEMPLATE,
 }
 
 
@@ -249,6 +252,14 @@ def _path_kind(path: str, param: str) -> Kind:
 # pinned literal also rots into the past and starts masking the same check
 # silently, which is exactly the failure this module exists to prevent.
 _FUTURE_DATE = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+# F39. The week key is a JERUSALEM SUNDAY (D1) and writes are forward-only, so a
+# probe body must carry a real future Sunday or the route answers 400 on the
+# week before the tenant check ever runs — a 400 is not evidence of isolation.
+# Computed, never pinned: `current_week_start` is the shipped helper and a
+# literal would rot into the past and start masking the check silently.
+_FUTURE_SUNDAY = (
+    _current_week_start(datetime.date.today()) + datetime.timedelta(weeks=2)
+).isoformat()
 _FUTURE_INSTANT = (
     datetime.datetime.now(datetime.UTC).replace(microsecond=0) + datetime.timedelta(days=3)
 ).isoformat()
@@ -362,6 +373,25 @@ PROBES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/manage/atelier/tickets/{ticket_id}/stage/undo"): {"stage": "in_progress"},
     ("POST", "/manage/atelier/seamstresses/{staff_user_id}/capacity"): {
         "weekly_capacity_hours": 10
+    },
+    # F39. The PATCH is a FULL REPLACE of all five fields (D2), so every one is
+    # sent — an omitted key is a 422 and the template_id check would never run.
+    ("PATCH", "/manage/shifts/templates/{template_id}"): {
+        "day_of_week": 4,
+        "label": "Walker shift",
+        "starts_at_time": "09:00:00",
+        "ends_at_time": "14:00:00",
+        "sort_order": 0,
+    },
+    # ⚠ THE ONE F39 ROUTE WHOSE TENANT-OWNED IDS ARE ALL IN THE BODY, and BOTH
+    # are tenant B's: the staffer she is recorded for and the shift she is
+    # answering. The walk drives it as tenant A's OWNER, who is elevated — so the
+    # self-or-elevated guard passes and the deadline does not apply, leaving the
+    # foreign `staff_user_id` as the only thing left to refuse.
+    ("PUT", "/manage/shifts/week/availability"): {
+        "week_start": _FUTURE_SUNDAY,
+        "staff_user_id": Kind.STAFF,
+        "entries": [{"shift_template_id": Kind.SHIFT_TEMPLATE, "state": "available"}],
     },
     # F28. WITHOUT a body this route answers 400 VALIDATION_ERROR before the
     # tenant check ever runs, and a 400 is not evidence of isolation — it only
@@ -571,6 +601,17 @@ NO_TENANT_OWNED_ID = frozenset(
         # directly in test_bell_isolation.py.
         ("GET", "/manage/floor/notifications"),
         ("GET", "/manage/atelier/tickets"),
+        # F39. FIVE of its eight carry no tenant-owned id anywhere. The two
+        # `?week_start=` reads take a DATE, which is a calendar page and not a
+        # handle — there is nothing of tenant B's to substitute — and the three
+        # template routes without a path id are a list, a create and the seed.
+        # Their scoping is the host-derived tenant, proved by the same two suites
+        # as every sibling here.
+        ("GET", "/manage/shifts/templates"),
+        ("POST", "/manage/shifts/templates"),
+        ("POST", "/manage/shifts/templates/seed"),
+        ("GET", "/manage/shifts/week"),
+        ("GET", "/manage/shifts/week/submissions"),
         ("GET", "/storefront/dresses"),
         ("GET", "/storefront/boutique"),
         ("GET", "/storefront/slots"),
@@ -622,6 +663,11 @@ MODULE_WALK_FLOOR = {
     # me, logout, bookings, bell) carry no tenant-owned id and sit in
     # NO_TENANT_OWNED_ID with their siblings.
     "portal": 4,
+    # F39: THREE id-carrying routes — the template PATCH and DELETE, driven with
+    # tenant B's template id, and the weekly write, driven with B's staffer AND
+    # B's template in the body. The other five carry no tenant-owned id and sit
+    # in NO_TENANT_OWNED_ID with their siblings.
+    "shifts": 3,
 }
 
 # Modules that expose no route carrying a tenant-owned id, with the reason. A
@@ -669,6 +715,7 @@ _MODULE_BY_PREFIX = (
     ("/manage/privacy", "privacy"),
     ("/manage/checkin-qr", "queue"),
     ("/manage/atelier", "atelier"),
+    ("/manage/shifts", "shifts"),
     ("/manage/waitlist", "waitlist"),
     ("/storefront/waitlist", "waitlist"),
     ("/storefront/portal", "portal"),
@@ -932,6 +979,24 @@ def _populate(client: TestClient, storage: InMemoryMediaStorage) -> dict[Kind, u
         "dress reservation create",
     )
     ids[Kind.DRESS_RESERVATION] = uuid.UUID(reservation["id"])
+
+    # F39's template, created THROUGH THE PRODUCT as this tenant's signed-in
+    # owner — `_populate`'s rule. The create answers the row, so the id comes
+    # straight off it. The weekday is arbitrary; what the walk needs is a live
+    # template id belonging to this tenant and nobody else.
+    template = _ok(
+        client.post(
+            "/manage/shifts/templates",
+            json={
+                "day_of_week": 4,
+                "label": "Walker shift",
+                "starts_at_time": "09:00:00",
+                "ends_at_time": "14:00:00",
+            },
+        ),
+        "shift template",
+    )
+    ids[Kind.SHIFT_TEMPLATE] = uuid.UUID(template["id"])
 
     ticket = _ok(
         client.post(
@@ -1299,7 +1364,14 @@ def test_the_state_guarded_routes_are_walked_and_named(
     discriminating = len(responses) - len(STATE_GUARDED)
     # 57/55 since F22: the manage cancel joined the walk, driven with tenant
     # B's entry id populated through the product's own join.
-    assert (len(responses), discriminating) == (67, 65), (
+    # 70/68 since F39: the template PATCH and DELETE, driven with tenant B's
+    # template id, and the weekly write, driven with B's staffer AND B's template
+    # in the body. All three DISCRIMINATE — none of them is state-guarded, so the
+    # pair moves by the same three. ⚠ MEASURED BY RUNNING THIS WALK, never by
+    # adding the route count to the previous pair: five of F39's eight carry no
+    # tenant-owned id and are exempt, so arithmetic on eight would have been
+    # wrong by five.
+    assert (len(responses), discriminating) == (70, 68), (
         f"the walk drove {len(responses)} routes, {discriminating} of them "
         "discriminating. Both numbers are quoted as evidence in "
         ".planning/security-checklist-v1.md's R9 row — update it in the same commit."

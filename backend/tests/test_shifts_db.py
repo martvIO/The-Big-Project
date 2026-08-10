@@ -429,7 +429,9 @@ async def test_deleting_a_template_invalidates_its_future_answers(app_role_url: 
                 template_id=created.id,
                 week_start=week,
             )
-        assert await service.delete_template(tenant_id, created.id, actor=_actor(tenant_id)) == 1
+        removed = await service.delete_template(tenant_id, created.id, actor=_actor(tenant_id))
+        assert removed.invalidated_submissions == 1
+        assert removed.template is None
         assert await _live_weeks(factory, tenant_id, created.id) == {_CURRENT_WEEK}
         assert (await service.list_templates(tenant_id, actor=_actor(tenant_id))).templates == []
         # Gone means gone: a second delete is a 404, not a silent success.

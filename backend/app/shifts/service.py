@@ -53,6 +53,7 @@ from app.shifts.schemas import (
     ShiftTemplateResponse,
     ShiftWeekResponse,
     SubmitAvailabilityRequest,
+    TemplateWriteResponse,
     WeekSubmissionRowResponse,
     WeekSubmissionsResponse,
 )
@@ -217,7 +218,7 @@ class ShiftsService:
         *,
         actor: StaffContext,
         body: ShiftTemplateInput,
-    ) -> ShiftTemplateResponse:
+    ) -> TemplateWriteResponse:
         """D2's full replace plus D4's invalidation, in ONE transaction.
 
         ⚠ THE MATERIALITY TEST READS THE ROW BEFORE THE WRITE. SQLAlchemy's
@@ -270,11 +271,14 @@ class ShiftsService:
                 entity=str(template_id),
                 details={"material": material, "invalidated_submissions": invalidated},
             )
-            return self._template_response(row, {template_id: 0})
+            return TemplateWriteResponse(
+                template=self._template_response(row, {template_id: 0}),
+                invalidated_submissions=invalidated,
+            )
 
     async def delete_template(
         self, tenant_id: UUID, template_id: UUID, *, actor: StaffContext
-    ) -> int:
+    ) -> TemplateWriteResponse:
         """Soft delete plus D4's invalidation, in one transaction. Returns the
         count so the console can announce the number that really moved rather
         than the one it predicted."""
@@ -293,7 +297,7 @@ class ShiftsService:
                 entity=str(template_id),
                 details={"invalidated_submissions": invalidated},
             )
-            return invalidated
+            return TemplateWriteResponse(template=None, invalidated_submissions=invalidated)
 
     async def seed_templates(
         self, tenant_id: UUID, *, actor: StaffContext
