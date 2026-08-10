@@ -17,7 +17,7 @@ from typing import Any
 from app.booking.validation import jerusalem_day_index
 from app.boutique.validation import SCHEDULING_DEFAULTS
 from app.errors import DomainValidationError
-from app.models.constants import AvailabilityState, OnShiftSource
+from app.models.constants import AvailabilityState, OnShiftSource, StaffRole
 from app.models.shift_template import ShiftTemplate
 from app.storefront.validation import BOUTIQUE_TIMEZONE
 
@@ -52,6 +52,14 @@ MAX_SHIFT_LABEL_LENGTH = 60
 # correct if the last day of the week is the Saturday rather than the next Sunday.
 _DAYS_IN_WEEK = 7
 
+# F40 D10. ⚠ A GUARD AGAINST A FAT FINGER, NOT A PRODUCT RULE (spec O3): no
+# boutique in this pilot has twenty of anything on one shift, and the number
+# exists so a stray keypress cannot store 200. It is a constant and not a
+# migration, so it moves without one — which is exactly why the console
+# INTERPOLATES it into its Hebrew bound message rather than typing «20» there
+# (design F-33), and why the server's own error string carries `{{max}}`.
+MAX_COVERAGE_TARGET = 20
+
 
 class ShiftsValidationError(DomainValidationError):
     """Domain-rule violation on a shifts write; the platform's shipped handler
@@ -73,6 +81,17 @@ class WeekOutOfRangeError(Exception):
 class TemplateLimitReachedError(Exception):
     """`MAX_TEMPLATES_PER_DAY` or `MAX_TEMPLATES` reached. 400
     `TEMPLATE_LIMIT_REACHED`. Same non-subclassing rule as `WeekOutOfRangeError`."""
+
+
+class CoverageTargetInvalidError(Exception):
+    """F40 D10: an unknown role key, a non-integer, or a number outside
+    `0..MAX_COVERAGE_TARGET`. 400 `COVERAGE_TARGET_INVALID`.
+
+    Same non-subclassing rule as `WeekOutOfRangeError` and for its reason: the
+    console has a specific Hebrew sentence keyed on this code, and a
+    `DomainValidationError` subclass without its own handler would answer a
+    quiet, plausible `VALIDATION_ERROR` 400 the console has no string for.
+    """
 
 
 def current_week_start(today: datetime.date) -> datetime.date:
@@ -325,3 +344,36 @@ def on_shift_at(
     if roster_published:
         return rostered_now, OnShiftSource.ROSTER
     return True, OnShiftSource.FALLBACK
+
+
+def validate_coverage_targets(value: object) -> dict[str, int]:
+    """D10's sparse map: `{"sales_assistant": 2, "seamstress": 1}`.
+
+    ⚠ SPARSE, AND THE SPARSENESS CARRIES MEANING. An ABSENT key is «no target»
+    and renders as a plain count; `0` is «deliberately nobody» and renders as a
+    target with a «חסר איוש» badge the moment somebody is assigned. They are not
+    the same fact, so a validator that dropped falsy values would silently
+    destroy the second — which is why every branch below preserves `0`.
+
+    ⚠ `bool` IS A SUBCLASS OF `int`, so `isinstance(True, int)` is True and a
+    naive check stores «1 seamstress» for a client that sent `true`. F39's
+    `AtelierSettingsUpdate` finding, verbatim reason, and the reason the type
+    test is spelled as two clauses rather than one.
+
+    Keys are validated against `StaffRole` rather than a curated subset, so a
+    sixth role is a legal target the day it exists (`lib/roles.ts`' own
+    guarantee, kept on the server side too).
+    """
+    if not isinstance(value, dict):
+        raise CoverageTargetInvalidError
+    known = {member.value for member in StaffRole}
+    validated: dict[str, int] = {}
+    for key, target in value.items():
+        if key not in known:
+            raise CoverageTargetInvalidError
+        if isinstance(target, bool) or not isinstance(target, int):
+            raise CoverageTargetInvalidError
+        if not 0 <= target <= MAX_COVERAGE_TARGET:
+            raise CoverageTargetInvalidError
+        validated[key] = target
+    return validated

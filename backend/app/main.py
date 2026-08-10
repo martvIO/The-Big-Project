@@ -167,7 +167,12 @@ from app.shifts.service import (
     SubmissionClosedError,
     TemplatesAlreadySeededError,
 )
-from app.shifts.validation import TemplateLimitReachedError, WeekOutOfRangeError
+from app.shifts.validation import (
+    MAX_COVERAGE_TARGET,
+    CoverageTargetInvalidError,
+    TemplateLimitReachedError,
+    WeekOutOfRangeError,
+)
 from app.storage.base import (
     MediaNotConfiguredError,
     MediaStorage,
@@ -296,6 +301,17 @@ TEMPLATE_LIMIT_REACHED_BODY = {
     "error": {
         "code": "TEMPLATE_LIMIT_REACHED",
         "message": "That day already has the maximum number of shifts.",
+    }
+}
+# F40 D10. The bound is INTERPOLATED from the constant rather than typed into
+# the sentence: O3 calls MAX_COVERAGE_TARGET a fat-finger guard rather than a
+# product rule, so it will move, and a literal here would leave this message and
+# the console's own Hebrew one disagreeing about the same field in the same
+# session (design F-33).
+COVERAGE_TARGET_INVALID_BODY = {
+    "error": {
+        "code": "COVERAGE_TARGET_INVALID",
+        "message": f"A coverage target must be a whole number between 0 and {MAX_COVERAGE_TARGET}.",
     }
 }
 RESERVATION_OVERLAP_BODY = {
@@ -1423,6 +1439,13 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     @app.exception_handler(TemplateLimitReachedError)
     async def _template_limit(request: Request, exc: TemplateLimitReachedError) -> JSONResponse:
         return JSONResponse(TEMPLATE_LIMIT_REACHED_BODY, status_code=400)
+
+    # F40's, and it lands here with its error class rather than with its route:
+    # a coded error shipped without its own handler answers a quiet, plausible
+    # VALIDATION_ERROR 400 that the console has no Hebrew string for.
+    @app.exception_handler(CoverageTargetInvalidError)
+    async def _coverage_target(request: Request, exc: CoverageTargetInvalidError) -> JSONResponse:
+        return JSONResponse(COVERAGE_TARGET_INVALID_BODY, status_code=400)
 
     @app.exception_handler(SubmissionClosedError)
     async def _submission_closed(request: Request, exc: SubmissionClosedError) -> JSONResponse:
