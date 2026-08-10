@@ -3,10 +3,8 @@ import type { FormEvent } from "react";
 import { Badge, Button, Card, Input, Modal, Select, Skeleton, Toggle } from "@boutique/ui";
 import { api, errorMessage } from "../api";
 import type { AvailabilityException, WeeklyRuleInput } from "../api";
+import { DAY_NAMES } from "../lib/week";
 import { validateExceptionTimes, validateWeeklyRules } from "../validation";
-
-// 0=Sunday … 6=Saturday (Israeli week).
-const DAY_NAMES = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
 
 // Backend serializes TIME as HH:MM:SS; <input type="time"> wants HH:MM.
 const toInputTime = (time: string) => time.slice(0, 5);

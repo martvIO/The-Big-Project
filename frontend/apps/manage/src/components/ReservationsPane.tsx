@@ -12,6 +12,9 @@ import {
 } from "@boutique/ui";
 import type { FormattedDateRange } from "@boutique/ui";
 import { api, ApiError, errorMessage } from "../api";
+// F39 is `RangeText`'s second consumer, so both presenters moved to lib/ —
+// `lib/booking.tsx`'s rule for a JSX helper two components share.
+import { RangeText } from "../lib/dateRange";
 import type { CustomerRow, Reservation } from "../api";
 
 // Q9's cleaning-and-return gap, and the ONLY place the number lives. A tenant
@@ -75,26 +78,10 @@ function daysBetween(startsOn: string, endsOn: string): number {
   return Math.round((end - start) / 86_400_000);
 }
 
-// One numeral run gets one island; two whole dates get one each, with the dash
-// in RTL flow between them (R19's split shape). dir="ltr" belongs on the pure
-// numeral run only — a split part carries its own Hebrew month, and an LTR base
-// direction reorders it, so «28 באוגוסט» renders as «באוגוסט 28». Bare <bdi>
-// infers RTL from the month.
-function RangeText({ range }: { range: FormattedDateRange }) {
-  if (range.kind === "same-month") {
-    return (
-      <>
-        <bdi dir="ltr">{range.days}</bdi> {range.month}
-      </>
-    );
-  }
-  return (
-    <>
-      <bdi>{range.start}</bdi> – <bdi>{range.end}</bdi>
-    </>
-  );
-}
-
+// Flattens a range for an `aria-label`, where JSX cannot go. It carries no
+// isolation of its own: an accessible name is read, not laid out. Stays private
+// here — `RangeText` moved to lib/ because F39 renders it too, and this one has
+// exactly one consumer.
 function rangeToText(range: FormattedDateRange): string {
   return range.kind === "same-month"
     ? `${range.days} ${range.month}`
