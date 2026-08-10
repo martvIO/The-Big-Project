@@ -55,6 +55,7 @@ import type { Reply, WaitlistEntry } from "./fixtures/manage";
 
 const LOGIN_SUBMIT = "כניסה";
 const NAV_FLOOR = "הצוות בקומה";
+const NAV_SHIFTS = "זמינות למשמרות";
 const NAV_BOARD = "לוח היום";
 const DASHBOARD_HEADING = "סקירה";
 const FLOOR_HEADING = "צוות בקומה";
@@ -191,11 +192,18 @@ test("manage floor: reception signs in and the floor renders with a populated wa
   await expect(page.getByRole("heading", { level: 2, name: FLOOR_HEADING })).toBeVisible();
   await expect(page.getByRole("heading", { level: 3, name: ROOMS_HEADING })).toBeVisible();
 
-  // Reception reaches exactly one section, so `activeKey` lands on the floor
-  // with no navigation at all.
+  // Reception reaches two sections: the floor, and F39's «זמינות למשמרות»
+  // (D12 — the shifts row is EVERY_ROLE, which is the whole point of it).
+  //
+  // ⚠ THE ORDER IS THE ASSERTION, not the count. `activeKey` is
+  // `reachable[0]?.key`, so the floor landing survives only while the shifts
+  // row sits AFTER `floor` — which is exactly why D12/F-10 forces that slot
+  // from both sides. Pinning the order here catches a re-ordered NAV row that
+  // a bare count would let through.
   const nav = page.getByRole("navigation").getByRole("button");
-  await expect(nav).toHaveCount(1);
-  await expect(nav).toHaveText(NAV_FLOOR);
+  await expect(nav).toHaveCount(2);
+  await expect(nav.nth(0)).toHaveText(NAV_FLOOR);
+  await expect(nav.nth(1)).toHaveText(NAV_SHIFTS);
 
   // Three rows, in the server's order, each named.
   const rows = page.locator("[data-entry-id]");
