@@ -26,11 +26,13 @@ run the same predicate, so they cannot disagree about which rows they mean.
 """
 
 import datetime
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.dependencies import NotAuthorizedError
 from app.auth.service import StaffContext
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.availability import AvailabilityRulesRepository
@@ -39,18 +41,33 @@ from app.db.repositories.staff_availability import StaffAvailabilityRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
-from app.models.constants import AuditAction, StaffRole
+from app.models.constants import AuditAction, AvailabilityState, StaffRole
 from app.models.shift_template import ShiftTemplate
+from app.models.staff_availability import StaffAvailability
+from app.models.staff_user import StaffUser
 from app.shifts.schemas import (
+    AvailabilityEntryResponse,
     SeedTemplatesResponse,
     ShiftTemplateInput,
     ShiftTemplateListResponse,
     ShiftTemplateResponse,
+    ShiftWeekResponse,
+    SubmitAvailabilityRequest,
+    WeekSubmissionRowResponse,
+    WeekSubmissionsResponse,
 )
 from app.shifts.validation import (
+    WeekOutOfRangeError,
+    assert_readable_week,
     assert_template_capacity,
+    assert_writable_week,
     current_week_start,
+    deadline_at,
+    default_week_start,
+    scheduling_pair,
     validate_template,
+    validate_week_start,
+    week_end,
 )
 from app.storefront.validation import today_jerusalem
 
@@ -88,6 +105,22 @@ class TemplatesAlreadySeededError(Exception):
     recorded rule: a coded error shipped without its own handler must answer a
     loud 500 rather than a quiet, plausible 400 the console has no Hebrew string
     for.
+    """
+
+
+class SubmissionClosedError(Exception):
+    """The deadline for that week has passed and the caller is NOT elevated.
+    409 `SUBMISSION_CLOSED`.
+
+    ⚠ THERE IS NO REOPEN (spec C3). An elevated actor is simply not subject to
+    the deadline and may record for anyone, at any time before the week starts,
+    with `recorded_by` on the row and `after_deadline` in the audit entry. The
+    brief's reopen mechanism needed per-week state — a row, a clock, a who, an
+    expiry — to express something the shipped role model already expresses for
+    free, and state that does not exist cannot drift.
+
+    Same non-subclassing rule as its neighbours: a coded error without its own
+    handler must answer a loud 500.
     """
 
 
@@ -314,7 +347,335 @@ class ShiftsService:
                 templates=[self._template_response(row, {}) for row in created],
             )
 
+    # --- the week ------------------------------------------------------------
+
+    async def week(
+        self,
+        tenant_id: UUID,
+        *,
+        actor: StaffContext,
+        settings: dict[str, object],
+        week_start: datetime.date | None = None,
+    ) -> ShiftWeekResponse:
+        """HER OWN week. `week_start` is optional and defaults to NEXT week (D1),
+        which is the week she opened the section to answer.
+
+        ⚠ `locked` IS ACTOR-RELATIVE (design F-1) AND ALSO WEEK-RELATIVE. D5
+        exempts elevated actors from the deadline entirely, so a `locked` computed
+        from `(setting, week)` alone would remove the owner's save button on a
+        write that would have succeeded. It is equally true in the other
+        direction: an elevated actor reading a PAST week can write nothing either,
+        because D1's window is forward-only for writes — so `locked` is «this
+        actor cannot write this week», computed by the same two guards
+        `submit` runs. `deposit_due`'s rule: the page a person reads and the flow
+        she then enters cannot disagree.
+        """
+        today = today_jerusalem(self._clock)
+        current = current_week_start(today)
+        target = (
+            validate_week_start(week_start) if week_start is not None else default_week_start(today)
+        )
+        assert_readable_week(target, current=current)
+        resolved_deadline = self._deadline(target, settings)
+        async with tenant_session(self._sessions, tenant_id) as session:
+            templates = await self._templates.list_live(session, tenant_id)
+            entries = await self._availability.live_for_week(
+                session, tenant_id, week_start=target, staff_user_id=actor.id
+            )
+            names = await self._recorder_names(session, tenant_id, entries)
+        return ShiftWeekResponse(
+            week_start=target,
+            week_end=week_end(target),
+            deadline_at=resolved_deadline,
+            locked=self._locked(
+                target, current=current, actor=actor, resolved_deadline=resolved_deadline
+            ),
+            templates=[self._template_response(row, None) for row in templates],
+            entries=[self._entry_response(row, names) for row in entries],
+        )
+
+    async def submit(
+        self,
+        tenant_id: UUID,
+        *,
+        actor: StaffContext,
+        settings: dict[str, object],
+        body: SubmitAvailabilityRequest,
+    ) -> ShiftWeekResponse:
+        """D11's whole-week replace for ONE staffer, in one request.
+
+        The three refusals that depend on the REQUEST ALONE run before any session
+        opens (`floor/service.py:11-16`'s rule) — a 403 raised after a read is an
+        existence oracle:
+
+            1. the self-or-elevated guard (403);
+            2. the week window, forward-only for writes (400);
+            3. the deadline, for a non-elevated actor only (409).
+
+        ⚠ RETRIED EXACTLY ONCE ON `IntegrityError`. Two devices saving the same
+        pair at the same moment both see zero rows on the UPDATE and both INSERT;
+        `idx_staff_availability_unique` refuses the loser, whose transaction is
+        then unusable, so the retry runs in a FRESH `tenant_session` and the
+        second pass finds the row and updates it
+        (`_insert_next_terms_version`'s shipped optimistic shape). No advisory
+        lock: the tenant-wide key is far too coarse for a per-tap write and the
+        index is a structural guarantee where the lock is only a serialisation.
+        """
+        target_staff_id = body.staff_user_id or actor.id
+        self._authorize(target_staff_id, actor)
+        today = today_jerusalem(self._clock)
+        current = current_week_start(today)
+        assert_writable_week(body.week_start, current=current)
+        resolved_deadline = self._deadline(body.week_start, settings)
+        after_deadline = self._clock() >= resolved_deadline
+        elevated = actor.role in ELEVATED_ROLES
+        if after_deadline and not elevated:
+            raise SubmissionClosedError
+
+        try:
+            await self._apply(
+                tenant_id,
+                actor=actor,
+                target_staff_id=target_staff_id,
+                body=body,
+                after_deadline=after_deadline,
+            )
+        except IntegrityError:
+            # Lost the per-pair race. The aborted transaction cannot be reused —
+            # a FRESH tenant_session re-reads and retries exactly once.
+            await self._apply(
+                tenant_id,
+                actor=actor,
+                target_staff_id=target_staff_id,
+                body=body,
+                after_deadline=after_deadline,
+            )
+
+        async with tenant_session(self._sessions, tenant_id) as session:
+            templates = await self._templates.list_live(session, tenant_id)
+            entries = await self._availability.live_for_week(
+                session, tenant_id, week_start=body.week_start, staff_user_id=target_staff_id
+            )
+            names = await self._recorder_names(session, tenant_id, entries)
+        return ShiftWeekResponse(
+            week_start=body.week_start,
+            week_end=week_end(body.week_start),
+            deadline_at=resolved_deadline,
+            locked=self._locked(
+                body.week_start, current=current, actor=actor, resolved_deadline=resolved_deadline
+            ),
+            templates=[self._template_response(row, None) for row in templates],
+            entries=[self._entry_response(row, names) for row in entries],
+        )
+
+    async def _apply(
+        self,
+        tenant_id: UUID,
+        *,
+        actor: StaffContext,
+        target_staff_id: UUID,
+        body: SubmitAvailabilityRequest,
+        after_deadline: bool,
+    ) -> None:
+        """One transaction: validate the parents, diff against what is live, write
+        only what moved, and audit only if anything did."""
+        # `recorded_by` is the ACTOR when she is recording for somebody else and
+        # NULL when it is her own week — including when a staffer corrects a row an
+        # elevated actor recorded for her, which must clear the column or her
+        # screen keeps saying somebody else gave the answer she just gave.
+        recorded_by = actor.id if target_staff_id != actor.id else None
+        async with tenant_session(self._sessions, tenant_id) as session:
+            staffer = await self._staff.by_id(session, tenant_id, target_staff_id)
+            if staffer is None or not is_available_for_week(
+                staffer, week_end_date=week_end(body.week_start)
+            ):
+                raise ShiftNotFoundError
+            live_templates = {row.id for row in await self._templates.list_live(session, tenant_id)}
+            requested = {entry.shift_template_id: entry.state for entry in body.entries}
+            unknown = set(requested) - live_templates
+            if unknown:
+                raise ShiftNotFoundError
+
+            existing = {
+                row.shift_template_id: row
+                for row in await self._availability.live_for_week(
+                    session,
+                    tenant_id,
+                    week_start=body.week_start,
+                    staff_user_id=target_staff_id,
+                )
+            }
+            changed, cleared = plan_week_write(
+                existing={
+                    template_id: (row.state, row.recorded_by)
+                    for template_id, row in existing.items()
+                },
+                requested=requested,
+                recorded_by=recorded_by,
+            )
+            if not changed and not cleared:
+                # ⚠ A SAVE THAT CHANGES NOTHING WRITES NO AUDIT ROW (the shipped
+                # no-op rule). A row asserting otherwise names an act nobody
+                # performed — and «who recorded whose availability» is exactly the
+                # question this table gets asked.
+                return
+
+            for template_id in changed:
+                await self._availability.set_state(
+                    session,
+                    tenant_id=tenant_id,
+                    staff_user_id=target_staff_id,
+                    shift_template_id=template_id,
+                    week_start=body.week_start,
+                    state=requested[template_id].value,
+                    recorded_by=recorded_by,
+                )
+            await self._availability.soft_delete_pairs(
+                session,
+                tenant_id,
+                staff_user_id=target_staff_id,
+                week_start=body.week_start,
+                template_ids=cleared,
+            )
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.AVAILABILITY_SUBMITTED.value,
+                actor_id=actor.id,
+                entity=str(target_staff_id),
+                # ⚠ IDS AND COUNTS ONLY, NEVER A DISPLAY NAME (CUSTOMER_UPDATED's
+                # rule): `audit_log` has no retention class and platform operators
+                # read across tenants. `on_behalf_of` is None for her own save, so
+                # «who recorded this, for whom, past the deadline» stays one
+                # `WHERE action = 'availability_submitted'` and not a JSONB walk.
+                details={
+                    "week_start": body.week_start.isoformat(),
+                    "on_behalf_of": str(target_staff_id) if recorded_by is not None else None,
+                    "after_deadline": after_deadline,
+                    "counts": _state_counts(list(requested.values())),
+                    "cleared": len(cleared),
+                },
+            )
+
+    async def submissions(
+        self,
+        tenant_id: UUID,
+        *,
+        week_start: datetime.date | None = None,
+    ) -> WeekSubmissionsResponse:
+        """Roster readiness: every staffer who will still be here that week, with
+        what she said. TWO statements plus one name resolution.
+
+        `submitted` is «at least one live row» and NOT «answered every template»
+        (design P8): D8 has no way to distinguish a deliberate blank from a
+        refusal, so making it the stricter thing would punish a staffer who
+        answered eleven of twelve on purpose.
+        """
+        today = today_jerusalem(self._clock)
+        current = current_week_start(today)
+        target = (
+            validate_week_start(week_start) if week_start is not None else default_week_start(today)
+        )
+        assert_readable_week(target, current=current)
+        ends_on = week_end(target)
+        async with tenant_session(self._sessions, tenant_id) as session:
+            staff = [
+                row
+                for row in await self._staff.list_live(session, tenant_id)
+                if is_available_for_week(row, week_end_date=ends_on)
+            ]
+            entries = await self._availability.live_for_week(session, tenant_id, week_start=target)
+            names = await self._recorder_names(session, tenant_id, entries)
+        by_staff: dict[UUID, list[AvailabilityEntryResponse]] = {row.id: [] for row in staff}
+        for entry in entries:
+            # An answer belonging to an offboarded staffer is dropped rather than
+            # given a row of its own: D10's whole point is that she is never asked,
+            # and a name on this list is a name F40 would roster.
+            if entry.staff_user_id in by_staff:
+                by_staff[entry.staff_user_id].append(self._entry_response(entry, names))
+        rows = [
+            WeekSubmissionRowResponse(
+                staff_user_id=row.id,
+                display_name=row.display_name,
+                submitted=bool(by_staff[row.id]),
+                entries=by_staff[row.id],
+            )
+            for row in staff
+        ]
+        return WeekSubmissionsResponse(
+            week_start=target,
+            week_end=ends_on,
+            submitted_count=sum(1 for row in rows if row.submitted),
+            total=len(rows),
+            rows=rows,
+        )
+
     # --- shared --------------------------------------------------------------
+
+    def _deadline(
+        self, week_start: datetime.date, settings: dict[str, object]
+    ) -> datetime.datetime:
+        day_of_week, deadline_time = scheduling_pair(settings)
+        return deadline_at(week_start, day_of_week=day_of_week, deadline_time=deadline_time)
+
+    def _locked(
+        self,
+        week_start: datetime.date,
+        *,
+        current: datetime.date,
+        actor: StaffContext,
+        resolved_deadline: datetime.datetime,
+    ) -> bool:
+        """«this actor cannot write this week» — the exact predicate `submit`
+        enforces, so the button the panel renders and the request it then sends
+        cannot disagree (design F-1)."""
+        try:
+            assert_writable_week(week_start, current=current)
+        except WeekOutOfRangeError:
+            return True
+        if actor.role in ELEVATED_ROLES:
+            return False
+        return self._clock() >= resolved_deadline
+
+    async def _recorder_names(
+        self, session: AsyncSession, tenant_id: UUID, entries: list[StaffAvailability]
+    ) -> dict[UUID, str]:
+        """⚠ A REMOVED RECORDER RESOLVES TO NOTHING, and the line simply does not
+        render — `floor/service.py`'s `_staff_display_name` rule: «{{name}} כבר
+        מגיעה.» with an empty interpolation is worse than a sentence that admits
+        it does not know."""
+        wanted = {entry.recorded_by for entry in entries if entry.recorded_by is not None}
+        resolved: dict[UUID, str] = {}
+        for staff_id in wanted:
+            row = await self._staff.by_id(session, tenant_id, staff_id)
+            if row is not None:
+                resolved[staff_id] = row.display_name
+        return resolved
+
+    @staticmethod
+    def _entry_response(
+        row: StaffAvailability, names: dict[UUID, str]
+    ) -> AvailabilityEntryResponse:
+        return AvailabilityEntryResponse(
+            id=row.id,
+            shift_template_id=row.shift_template_id,
+            state=AvailabilityState(row.state),
+            recorded_by_name=None if row.recorded_by is None else names.get(row.recorded_by),
+        )
+
+    @staticmethod
+    def _authorize(staff_user_id: UUID, actor: StaffContext) -> None:
+        """The acting identity is `StaffContext`, resolved from the session cookie
+        by `get_current_staff`. It is NEVER read from the body: the request names
+        only WHOM to record, never WHO is asking. A body-supplied `staff_user_id`
+        doubling as the caller's identity is the one shape that turns "any staffer
+        on herself" into "any staffer on anyone".
+
+        Compares IDS. A display name or an email would be a mutable string two
+        people can share.
+        """
+        if staff_user_id != actor.id and actor.role not in ELEVATED_ROLES:
+            raise NotAuthorizedError
 
     @staticmethod
     def _template_response(
@@ -329,6 +690,68 @@ class ShiftsService:
             sort_order=row.sort_order,
             future_submission_count=None if counts is None else counts.get(row.id, 0),
         )
+
+
+def plan_week_write(
+    *,
+    existing: Mapping[UUID, tuple[str, UUID | None]],
+    requested: Mapping[UUID, AvailabilityState],
+    recorded_by: UUID | None,
+) -> tuple[list[UUID], list[UUID]]:
+    """D11's diff, as a total function: `(to write, to clear)`.
+
+    Four cases, and every one is asserted in `test_shifts_service.py`:
+
+        ADDED      requested, no live row      -> write
+        CHANGED    requested, different state  -> write
+        REASSIGNED requested, same state but a
+                   different `recorded_by`     -> write
+        REMOVED    live but not requested      -> clear (D8's soft delete)
+        UNCHANGED  same state, same recorder   -> neither
+
+    ⚠ THE `recorded_by` COMPARISON IS NOT DECORATION. A staffer correcting a row
+    an elevated actor recorded for her sends the SAME state — and without this
+    clause that is "unchanged", the column keeps the stale id, and her own screen
+    goes on saying «נרשם על ידי דנה» about an answer she just gave herself.
+
+    The lists drive the write; whether they are BOTH empty drives whether an audit
+    row is written at all (the shipped no-op rule).
+    """
+    changed = [
+        template_id
+        for template_id, state in requested.items()
+        if existing.get(template_id) != (state.value, recorded_by)
+    ]
+    cleared = [template_id for template_id in existing if template_id not in requested]
+    return changed, cleared
+
+
+def is_available_for_week(staffer: StaffUser, *, week_end_date: datetime.date) -> bool:
+    """D10: an offboarded staffer is NEVER asked, and never rostered.
+
+    The `deleted_at IS NULL` half is the live one — F38's offboarding sets
+    `last_day` and `deleted_at` in one transaction and `UpdateStaffRequest` cannot
+    set `last_day` alone, so the second clause never fires TODAY. It is written
+    anyway because the day F38's panel gains a "leaving on" field, the silent
+    failure is asking a staffer for a week she will not work — and F40 then
+    rostering her.
+
+    A Python filter over a single-digit staff list rather than a SQL predicate:
+    both readers already hold the rows, and one spelling of the rule is what makes
+    it testable in one place.
+    """
+    return staffer.deleted_at is None and (
+        staffer.last_day is None or staffer.last_day >= week_end_date
+    )
+
+
+def _state_counts(states: list[AvailabilityState]) -> dict[str, int]:
+    """Per-state counts for the audit row, every member present including the
+    zeroes — a reader comparing two rows must not have to guess whether a missing
+    key means «none» or «this row predates the member»."""
+    return {
+        member.value: sum(1 for state in states if state is member) for member in AvailabilityState
+    }
 
 
 def is_material_edit(*, before: dict[str, object], after: dict[str, object]) -> bool:

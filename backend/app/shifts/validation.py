@@ -12,8 +12,10 @@ identity and never product policy. The boutique wall clock lives once in
 """
 
 import datetime
+from typing import Any
 
 from app.booking.validation import jerusalem_day_index
+from app.boutique.validation import SCHEDULING_DEFAULTS
 from app.errors import DomainValidationError
 from app.models.constants import AvailabilityState
 from app.storefront.validation import BOUTIQUE_TIMEZONE
@@ -196,3 +198,29 @@ def deadline_at(
     deadline_date = week_start - datetime.timedelta(days=_DAYS_IN_WEEK - day_of_week)
     local = datetime.datetime.combine(deadline_date, deadline_time, tzinfo=BOUTIQUE_TIMEZONE)
     return local.astimezone(datetime.UTC)
+
+
+def scheduling_pair(settings: dict[str, Any]) -> tuple[int, datetime.time]:
+    """The tenant's `(deadline weekday, local time)`, default-complete.
+
+    ⚠ READ OFF `TenantContext.settings`, WHICH THE MIDDLEWARE HAS ALREADY BOUND
+    — `AtelierService`'s shipped rule for its effort bands. `TenantsRepository`
+    is constructed with a `session_factory` and opens its own session inside every
+    method, so reading it there would cost a second pool checkout and BEGIN/COMMIT
+    on every week load, for two values that are already in hand.
+
+    The overlay is `{**SCHEDULING_DEFAULTS, **stored}` and not `.get(..., default)`
+    per field: a blob hand-edited to hold one of the two keys must still resolve
+    to a complete pair, because a missing deadline cannot be allowed to read as
+    «no deadline» on a surface whose whole job is to lock.
+    """
+    stored = settings.get("scheduling")
+    block = {**SCHEDULING_DEFAULTS, **(stored if isinstance(stored, dict) else {})}
+    day_of_week = block["submission_deadline_day_of_week"]
+    if not isinstance(day_of_week, int) or isinstance(day_of_week, bool):
+        raise ShiftsValidationError("submission_deadline_day_of_week must be an integer")
+    try:
+        deadline_time = datetime.time.fromisoformat(str(block["submission_deadline_time"]))
+    except ValueError:
+        raise ShiftsValidationError("submission_deadline_time must be HH:MM") from None
+    return day_of_week, deadline_time

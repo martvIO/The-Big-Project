@@ -22,11 +22,13 @@ seven — with an IntegrityError that names nothing in the diff (the plan's R-D)
 Every test mints its own tenant id; nothing here truncates.
 """
 
+import asyncio
 import datetime
 import uuid
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -35,6 +37,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from app.auth.dependencies import NotAuthorizedError
 from app.auth.service import StaffContext
 from app.db.repositories.availability import AvailabilityRulesRepository
 from app.db.repositories.staff_availability import StaffAvailabilityRepository
@@ -43,14 +46,23 @@ from app.db.tenant import tenant_session
 from app.models.audit_log import AuditLog
 from app.models.constants import AuditAction, AvailabilityState, StaffRole
 from app.models.staff_availability import StaffAvailability
-from app.shifts.schemas import ShiftTemplateInput
+from app.shifts.schemas import (
+    AvailabilityEntryInput,
+    ShiftTemplateInput,
+    SubmitAvailabilityRequest,
+)
 from app.shifts.service import (
     NoOpeningHoursError,
     ShiftNotFoundError,
     ShiftsService,
+    SubmissionClosedError,
     TemplatesAlreadySeededError,
 )
-from app.shifts.validation import MAX_TEMPLATES_PER_DAY, TemplateLimitReachedError
+from app.shifts.validation import (
+    MAX_TEMPLATES_PER_DAY,
+    TemplateLimitReachedError,
+    WeekOutOfRangeError,
+)
 
 pytestmark = pytest.mark.db
 
@@ -459,5 +471,445 @@ async def test_another_tenants_template_is_invisible_to_both_writes(app_role_url
         assert (await service.list_templates(tenant_a, actor=_actor(tenant_a))).templates[
             0
         ].label == "משמרת בוקר"
+    finally:
+        await engine.dispose()
+
+
+# --- D1 / D5 / D11: the weekly write ----------------------------------------
+
+# Wednesday 18:00 Jerusalem in the week before `_NEXT_WEEK` is 2026-11-04 18:00
+# local = 16:00Z (winter, UTC+2). The two clocks below sit one second either
+# side of it, which is the whole boundary test.
+_JUST_BEFORE = datetime.datetime(2026, 11, 4, 15, 59, 59, tzinfo=datetime.UTC)
+_JUST_AFTER = datetime.datetime(2026, 11, 4, 16, 0, 0, tzinfo=datetime.UTC)
+_SETTINGS: dict[str, object] = {}
+
+
+def _clocked(factory: async_sessionmaker[AsyncSession], at: datetime.datetime) -> ShiftsService:
+    return ShiftsService(factory, clock=lambda: at)
+
+
+def _submit(week_start: datetime.date, *pairs: tuple[uuid.UUID, AvailabilityState], staff=None):  # type: ignore[no-untyped-def]
+    return SubmitAvailabilityRequest(
+        week_start=week_start,
+        staff_user_id=staff,
+        entries=[
+            AvailabilityEntryInput(shift_template_id=template_id, state=state)
+            for template_id, state in pairs
+        ],
+    )
+
+
+async def test_the_week_defaults_to_next_week_and_carries_a_utc_deadline(
+    app_role_url: str,
+) -> None:
+    """D1: the read with no parameter lands on the week she is here to answer.
+    `deadline_at` is an ISO-8601 UTC INSTANT and `week_start`/`week_end` are plain
+    calendar dates — different kinds of thing, and the wire says so."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        payload = await _service(factory).week(
+            tenant_id, actor=_actor(tenant_id), settings=_SETTINGS
+        )
+        assert payload.week_start == _NEXT_WEEK
+        assert payload.week_end == datetime.date(2026, 11, 14)
+        assert payload.deadline_at == datetime.datetime(2026, 11, 4, 16, 0, tzinfo=datetime.UTC)
+    finally:
+        await engine.dispose()
+
+
+async def test_a_whole_week_save_upserts_clears_and_writes_one_audit_row(
+    app_role_url: str,
+) -> None:
+    """D11: fifteen taps become one request, one transaction and ONE audit row —
+    and a re-save that changes nothing writes none at all."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _clocked(factory, _JUST_BEFORE)
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        me = _actor(tenant_id, staff_id=staff_id)
+        morning = await service.create_template(tenant_id, actor=me, body=_template(label="בוקר"))
+        evening = await service.create_template(
+            tenant_id,
+            actor=me,
+            body=_template(label="ערב", starts=datetime.time(16, 0), ends=datetime.time(21, 0)),
+        )
+
+        saved = await service.submit(
+            tenant_id,
+            actor=me,
+            settings=_SETTINGS,
+            body=_submit(
+                _NEXT_WEEK,
+                (morning.id, AvailabilityState.AVAILABLE),
+                (evening.id, AvailabilityState.PREFERRED),
+            ),
+        )
+        assert {(e.shift_template_id, e.state) for e in saved.entries} == {
+            (morning.id, AvailabilityState.AVAILABLE),
+            (evening.id, AvailabilityState.PREFERRED),
+        }
+        # Her own save leaves recorded_by NULL, so no attribution line renders.
+        assert all(e.recorded_by_name is None for e in saved.entries)
+
+        # The second save drops the evening entirely — D8's clear path.
+        cleared = await service.submit(
+            tenant_id,
+            actor=me,
+            settings=_SETTINGS,
+            body=_submit(_NEXT_WEEK, (morning.id, AvailabilityState.UNAVAILABLE)),
+        )
+        assert [e.shift_template_id for e in cleared.entries] == [morning.id]
+
+        # A third, identical save writes nothing.
+        await service.submit(
+            tenant_id,
+            actor=me,
+            settings=_SETTINGS,
+            body=_submit(_NEXT_WEEK, (morning.id, AvailabilityState.UNAVAILABLE)),
+        )
+        submitted = [
+            row
+            for row in await _audit_actions(factory, tenant_id)
+            if row.action == AuditAction.AVAILABILITY_SUBMITTED.value
+        ]
+        assert len(submitted) == 2
+        assert submitted[0].details["week_start"] == "2026-11-08"
+        assert submitted[0].details["on_behalf_of"] is None
+        assert submitted[0].details["after_deadline"] is False
+        assert submitted[0].details["counts"] == {"available": 1, "unavailable": 0, "preferred": 1}
+        # ⚠ IDS AND COUNTS ONLY — no display name reaches `audit_log`.
+        assert "display_name" not in submitted[0].details
+        assert "Staffer" not in str(submitted[0].details)
+    finally:
+        await engine.dispose()
+
+
+async def test_a_resave_is_idempotent_under_the_partial_unique_index(app_role_url: str) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _clocked(factory, _JUST_BEFORE)
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        me = _actor(tenant_id, staff_id=staff_id)
+        template = await service.create_template(tenant_id, actor=me, body=_template())
+        for state in (
+            AvailabilityState.AVAILABLE,
+            AvailabilityState.UNAVAILABLE,
+            AvailabilityState.AVAILABLE,
+        ):
+            await service.submit(
+                tenant_id,
+                actor=me,
+                settings=_SETTINGS,
+                body=_submit(_NEXT_WEEK, (template.id, state)),
+            )
+        async with tenant_session(factory, tenant_id) as session:
+            live = await StaffAvailabilityRepository().live_for_week(
+                session, tenant_id, week_start=_NEXT_WEEK, staff_user_id=staff_id
+            )
+        assert len(live) == 1
+        assert live[0].state == AvailabilityState.AVAILABLE.value
+    finally:
+        await engine.dispose()
+
+
+async def test_two_concurrent_saves_leave_exactly_one_live_row_per_pair(
+    app_role_url: str,
+) -> None:
+    """⚠ THE RACE THE PARTIAL UNIQUE INDEX EXISTS FOR, driven with a NullPool
+    engine and `asyncio.gather` (`test_deposit_races_db.py`'s shape). Both see
+    zero rows on the UPDATE, both INSERT, the index refuses the loser, and the
+    ONE retry finds the row and updates it — no advisory lock anywhere."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _clocked(factory, _JUST_BEFORE)
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        me = _actor(tenant_id, staff_id=staff_id)
+        template = await service.create_template(tenant_id, actor=me, body=_template())
+        await asyncio.gather(
+            service.submit(
+                tenant_id,
+                actor=me,
+                settings=_SETTINGS,
+                body=_submit(_NEXT_WEEK, (template.id, AvailabilityState.AVAILABLE)),
+            ),
+            service.submit(
+                tenant_id,
+                actor=me,
+                settings=_SETTINGS,
+                body=_submit(_NEXT_WEEK, (template.id, AvailabilityState.PREFERRED)),
+            ),
+        )
+        async with tenant_session(factory, tenant_id) as session:
+            live = await StaffAvailabilityRepository().live_for_week(
+                session, tenant_id, week_start=_NEXT_WEEK, staff_user_id=staff_id
+            )
+        assert len(live) == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_the_deadline_locks_a_staffer_one_second_after_and_not_before(
+    app_role_url: str,
+) -> None:
+    """D5, on real rows, one second either side of the resolved instant. The
+    default `(3, "18:00")` is Wednesday 18:00 Jerusalem = 16:00Z in November."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        me = _actor(tenant_id, staff_id=staff_id, role=StaffRole.SEAMSTRESS.value)
+        template = await _clocked(factory, _JUST_BEFORE).create_template(
+            tenant_id, actor=_actor(tenant_id), body=_template()
+        )
+        before = _clocked(factory, _JUST_BEFORE)
+        assert (await before.week(tenant_id, actor=me, settings=_SETTINGS)).locked is False
+        await before.submit(
+            tenant_id,
+            actor=me,
+            settings=_SETTINGS,
+            body=_submit(_NEXT_WEEK, (template.id, AvailabilityState.AVAILABLE)),
+        )
+
+        after = _clocked(factory, _JUST_AFTER)
+        assert (await after.week(tenant_id, actor=me, settings=_SETTINGS)).locked is True
+        with pytest.raises(SubmissionClosedError):
+            await after.submit(
+                tenant_id,
+                actor=me,
+                settings=_SETTINGS,
+                body=_submit(_NEXT_WEEK, (template.id, AvailabilityState.UNAVAILABLE)),
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_an_elevated_actor_is_never_locked_and_stamps_recorded_by(
+    app_role_url: str,
+) -> None:
+    """⚠ F-1 AND D5 TOGETHER. `locked` is false for both elevated roles even past
+    the deadline — computed without an actor it would remove the owner's save
+    button on a write that would have succeeded — and the on-behalf write stamps
+    `recorded_by`, which is what her own screen renders «נרשם על ידי…» from."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _clocked(factory, _JUST_AFTER)
+    try:
+        manager_id = await _seed_staff(
+            factory, tenant_id, display_name="דנה כהן", role=StaffRole.SHIFT_MANAGER.value
+        )
+        staffer_id = await _seed_staff(factory, tenant_id, display_name="מיכל ברזילי")
+        manager = _actor(tenant_id, staff_id=manager_id, role=StaffRole.SHIFT_MANAGER.value)
+        staffer = _actor(tenant_id, staff_id=staffer_id, role=StaffRole.SEAMSTRESS.value)
+        template = await service.create_template(tenant_id, actor=manager, body=_template())
+
+        assert (await service.week(tenant_id, actor=manager, settings=_SETTINGS)).locked is False
+        await service.submit(
+            tenant_id,
+            actor=manager,
+            settings=_SETTINGS,
+            body=_submit(_NEXT_WEEK, (template.id, AvailabilityState.AVAILABLE), staff=staffer_id),
+        )
+
+        hers = await service.week(tenant_id, actor=staffer, settings=_SETTINGS)
+        assert hers.locked is True
+        assert [e.recorded_by_name for e in hers.entries] == ["דנה כהן"]
+
+        submitted = [
+            row
+            for row in await _audit_actions(factory, tenant_id)
+            if row.action == AuditAction.AVAILABILITY_SUBMITTED.value
+        ]
+        assert submitted[0].details["after_deadline"] is True
+        assert submitted[0].details["on_behalf_of"] == str(staffer_id)
+        assert submitted[0].actor_id == manager_id
+        # ⚠ NO DISPLAY NAME anywhere in the row, on either side of the handover.
+        assert "דנה" not in str(submitted[0].details)
+        assert "מיכל" not in str(submitted[0].details)
+    finally:
+        await engine.dispose()
+
+
+async def test_a_staffer_correcting_an_on_behalf_row_clears_the_attribution(
+    app_role_url: str,
+) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _clocked(factory, _JUST_BEFORE)
+    try:
+        manager_id = await _seed_staff(
+            factory, tenant_id, display_name="דנה כהן", role=StaffRole.SHIFT_MANAGER.value
+        )
+        staffer_id = await _seed_staff(factory, tenant_id, display_name="מיכל ברזילי")
+        manager = _actor(tenant_id, staff_id=manager_id, role=StaffRole.SHIFT_MANAGER.value)
+        staffer = _actor(tenant_id, staff_id=staffer_id, role=StaffRole.SEAMSTRESS.value)
+        template = await service.create_template(tenant_id, actor=manager, body=_template())
+        body = _submit(_NEXT_WEEK, (template.id, AvailabilityState.AVAILABLE))
+
+        await service.submit(
+            tenant_id,
+            actor=manager,
+            settings=_SETTINGS,
+            body=_submit(_NEXT_WEEK, (template.id, AvailabilityState.AVAILABLE), staff=staffer_id),
+        )
+        # ⚠ THE SAME STATE, sent by the staffer herself. A diff on state alone
+        # would call this unchanged and leave the manager's id on the row.
+        hers = await service.submit(tenant_id, actor=staffer, settings=_SETTINGS, body=body)
+        assert [e.recorded_by_name for e in hers.entries] == [None]
+    finally:
+        await engine.dispose()
+
+
+async def test_a_staffer_may_not_record_for_another_and_an_unknown_target_is_a_404(
+    app_role_url: str,
+) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _clocked(factory, _JUST_BEFORE)
+    try:
+        staffer_id = await _seed_staff(factory, tenant_id)
+        other_id = await _seed_staff(factory, tenant_id)
+        staffer = _actor(tenant_id, staff_id=staffer_id, role=StaffRole.SEAMSTRESS.value)
+        template = await service.create_template(
+            tenant_id, actor=_actor(tenant_id), body=_template()
+        )
+        with pytest.raises(NotAuthorizedError):
+            await service.submit(
+                tenant_id,
+                actor=staffer,
+                settings=_SETTINGS,
+                body=_submit(
+                    _NEXT_WEEK, (template.id, AvailabilityState.AVAILABLE), staff=other_id
+                ),
+            )
+        with pytest.raises(ShiftNotFoundError):
+            await service.submit(
+                tenant_id,
+                actor=_actor(tenant_id),
+                settings=_SETTINGS,
+                body=_submit(
+                    _NEXT_WEEK, (template.id, AvailabilityState.AVAILABLE), staff=uuid.uuid4()
+                ),
+            )
+        with pytest.raises(ShiftNotFoundError):
+            await service.submit(
+                tenant_id,
+                actor=_actor(tenant_id, staff_id=staffer_id),
+                settings=_SETTINGS,
+                body=_submit(_NEXT_WEEK, (uuid.uuid4(), AvailabilityState.AVAILABLE)),
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_the_current_and_past_weeks_are_readable_and_never_writable(
+    app_role_url: str,
+) -> None:
+    """D1's asymmetry on real rows, and `locked` agrees with it for EVERY role —
+    the button the panel renders and the request it then sends cannot disagree."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _clocked(factory, _JUST_BEFORE)
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        owner = _actor(tenant_id, staff_id=staff_id)
+        template = await service.create_template(tenant_id, actor=owner, body=_template())
+        for week in (_CURRENT_WEEK, _PAST_WEEK):
+            payload = await service.week(
+                tenant_id, actor=owner, settings=_SETTINGS, week_start=week
+            )
+            assert payload.week_start == week
+            assert payload.locked is True, week
+            with pytest.raises(WeekOutOfRangeError):
+                await service.submit(
+                    tenant_id,
+                    actor=owner,
+                    settings=_SETTINGS,
+                    body=_submit(week, (template.id, AvailabilityState.AVAILABLE)),
+                )
+        with pytest.raises(WeekOutOfRangeError):
+            await service.week(
+                tenant_id,
+                actor=owner,
+                settings=_SETTINGS,
+                week_start=_NEXT_WEEK + datetime.timedelta(weeks=5),
+            )
+    finally:
+        await engine.dispose()
+
+
+# --- D10 / roster readiness --------------------------------------------------
+
+
+async def test_the_readiness_read_counts_who_started_and_hides_offboarded_staff(
+    app_role_url: str,
+) -> None:
+    """`submitted` is «at least one live row» and the per-row entries say how far
+    she got (design P8). An offboarded staffer never appears — D10's whole point
+    is that she is not asked, and a name on this list is a name F40 would
+    roster."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    service = _clocked(factory, _JUST_BEFORE)
+    try:
+        answered_id = await _seed_staff(factory, tenant_id, display_name="דנה כהן")
+        silent_id = await _seed_staff(factory, tenant_id, display_name="מיכל ברזילי")
+        leaving_id = await _seed_staff(
+            factory, tenant_id, display_name="רונית בר", last_day=_CURRENT_WEEK
+        )
+        owner = _actor(tenant_id, staff_id=answered_id)
+        template = await service.create_template(tenant_id, actor=owner, body=_template())
+        await service.submit(
+            tenant_id,
+            actor=owner,
+            settings=_SETTINGS,
+            body=_submit(_NEXT_WEEK, (template.id, AvailabilityState.AVAILABLE)),
+        )
+        # She answered for the week she IS here for, then leaves before the next
+        # one — the row survives and she still drops off the list.
+        await _answer(
+            factory,
+            tenant_id,
+            staff_user_id=leaving_id,
+            template_id=template.id,
+            week_start=_NEXT_WEEK,
+        )
+
+        readiness = await service.submissions(tenant_id)
+        assert readiness.week_start == _NEXT_WEEK
+        assert readiness.total == 2
+        assert readiness.submitted_count == 1
+        by_id = {row.staff_user_id: row for row in readiness.rows}
+        assert leaving_id not in by_id
+        assert by_id[answered_id].submitted is True
+        assert by_id[answered_id].display_name == "דנה כהן"
+        assert [e.state for e in by_id[answered_id].entries] == [AvailabilityState.AVAILABLE]
+        assert by_id[silent_id].submitted is False
+        assert by_id[silent_id].entries == []
+    finally:
+        await engine.dispose()
+
+
+async def test_a_week_start_that_is_not_a_sunday_is_refused_by_the_db_check_alone(
+    app_role_url: str,
+) -> None:
+    """⚠ THE SERVICE GUARD IS NOT THE ONLY GUARD. Written straight through the
+    repository — which has no week validation at all — so what refuses the Monday
+    is `staff_availability_week_start_check` and nothing else."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        with pytest.raises(IntegrityError):
+            await _answer(
+                factory,
+                tenant_id,
+                staff_user_id=uuid.uuid4(),
+                template_id=uuid.uuid4(),
+                week_start=_NEXT_WEEK + datetime.timedelta(days=1),
+            )
     finally:
         await engine.dispose()
