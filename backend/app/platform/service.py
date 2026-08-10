@@ -1,5 +1,5 @@
 import dataclasses
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -9,8 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.passwords import hash_password
 from app.auth.schemas import MIN_STAFF_PASSWORD_LENGTH
+from app.auth.tokens import generate_session_token, hash_token
 from app.booking.backfill import ManageLinkBackfill
 from app.core.config import get_settings
+from app.db.repositories.platform_invites import PlatformInvitesRepository
 from app.db.repositories.platform_operators import PlatformOperatorsRepository
 from app.db.repositories.platform_sessions import PlatformSessionsRepository
 from app.db.repositories.sessions import SessionsRepository
@@ -18,11 +20,22 @@ from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.tenant import tenant_session
 from app.models.constants import PlatformAuditAction, StaffRole, TenantStatus
+from app.models.platform_invite import PlatformInvite
 from app.models.staff_user import StaffUser
 from app.models.tenant import Tenant
 from app.platform.repository import PlatformAuditLogRepository
 from app.privacy.retention import RetentionRunner
 from app.tenancy.slugs import is_valid_slug
+
+
+class _InviteAlreadyClaimed(Exception):
+    """Raised INSIDE the redemption transaction when the conditional claim
+    matches zero rows, so the whole transaction rolls back rather than
+    continuing past a guard that refused.
+
+    Private and caught two frames away: this is a control-flow signal for one
+    `async with`, not an error anybody outside this module handles. The business
+    refusal it produces is still RETURNED (F5) — see `redeem_invite`."""
 
 
 def _password_problem(password: str) -> str | None:
@@ -57,6 +70,17 @@ def _password_problem(password: str) -> str | None:
     return None
 
 
+def _redeemable(row: PlatformInvite) -> bool:
+    """The three predicates `by_code_hash` does not carry, in one place so the
+    preview and the redemption cannot disagree about what "usable" means.
+
+    This is NOT the single-use guard — `claim`'s conditional UPDATE is, and it
+    re-checks every one of these inside the transaction. This decides only which
+    refusal a caller is shaped into and, through it, whose name goes on the
+    audit row."""
+    return row.deleted_at is None and row.redeemed_at is None and row.expires_at > datetime.now(UTC)
+
+
 @dataclasses.dataclass(frozen=True)
 class CommandResult:
     ok: bool
@@ -70,6 +94,59 @@ class TenantSummary:
     name: str
     status: str
     created_at: datetime
+
+
+@dataclasses.dataclass(frozen=True)
+class InviteSummary:
+    """What the console's table and the join screen's preview both read.
+
+    NO `code` AND NO `code_hash` FIELD, on either surface. The console renders
+    this and the raw code has already left the process by then; the join preview
+    renders three of these fields to a caller who authenticated with nothing but
+    the code itself."""
+
+    id: UUID
+    slug: str
+    name: str
+    owner_email: str
+    created_by: str
+    expires_at: datetime
+    redeemed_at: datetime | None
+    created_at: datetime
+
+
+@dataclasses.dataclass(frozen=True)
+class InviteCreated:
+    """⚠ THE ONLY TYPE IN THIS PROCESS THAT EVER CARRIES A RAW INVITE CODE, and
+    it is spelled as its own class so `grep -r InviteCreated` is the complete
+    list of places one can be. It is built once, returned through one route, and
+    never persisted, logged or audited (spec D3, R-C)."""
+
+    ok: bool
+    message: str
+    code: str | None = None
+    invite: InviteSummary | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class RedeemResult:
+    ok: bool
+    message: str
+    slug: str | None = None
+    tenant_id: UUID | None = None
+
+
+def _invite_summary(row: PlatformInvite) -> InviteSummary:
+    return InviteSummary(
+        id=row.id,
+        slug=row.slug,
+        name=row.name,
+        owner_email=row.owner_email,
+        created_by=row.created_by,
+        expires_at=row.expires_at,
+        redeemed_at=row.redeemed_at,
+        created_at=row.created_at,
+    )
 
 
 class ProvisioningService:
@@ -90,6 +167,11 @@ class ProvisioningService:
         # fork of it is how the audit posture drifts between two files.
         self._operators = PlatformOperatorsRepository()
         self._operator_sessions = PlatformSessionsRepository()
+        # F26's invites, on this class for the same pre-decided #20 reason: the
+        # operator issues them and a redemption creates a tenant, so both belong
+        # to the ONE audited command layer rather than to a second service that
+        # would eventually drift from this one's audit posture.
+        self._invites = PlatformInvitesRepository()
 
     async def provision(
         self,
@@ -115,27 +197,281 @@ class ProvisioningService:
         try:
             # Atomic: tenant + owner + audit commit together, or none of them.
             async with tenant_session(self._session_factory, tenant_id) as session:
-                session.add(Tenant(id=tenant_id, slug=slug, name=name))
-                await session.flush()
-                await self._staff.insert(
+                await self._create_tenant(
                     session,
                     tenant_id=tenant_id,
-                    email=owner_email.lower(),
-                    password_hash=hash_password(owner_password),
-                    display_name=owner_email,
-                )
-                await self._audit.record(
-                    session,
+                    slug=slug,
+                    name=name,
+                    owner_email=owner_email,
+                    owner_password=owner_password,
                     operator=operator,
-                    action=PlatformAuditAction.TENANT_PROVISIONED,
-                    target_tenant_id=tenant_id,
-                    details={"slug": slug},
                 )
         except IntegrityError:
             # Race/suspended-slug backstop behind the partial unique index.
             return await self._fail_provision(operator, slug, "slug_taken")
 
         return CommandResult(ok=True, message="provisioned", tenant_id=tenant_id)
+
+    async def _create_tenant(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: UUID,
+        slug: str,
+        name: str,
+        owner_email: str,
+        owner_password: str,
+        operator: str,
+    ) -> None:
+        """⚠ THE ONE PLACE A BOUTIQUE COMES INTO EXISTENCE (spec D4).
+
+        Extracted from `provision` VERBATIM and called by `provision` and
+        `redeem_invite` alike, so an invite redemption writes the UNCHANGED
+        `TENANT_PROVISIONED` row rather than a parallel one that drifts. That
+        row's presence after a redemption is the mechanical proof the two share
+        a path — pre-decided #20's one audited command layer, applied to the one
+        operation that has two callers.
+
+        Takes an OPEN session and opens no transaction of its own: the caller
+        owns the transaction, because redemption's first statement must be the
+        single-use claim and a helper that began its own would put the claim in a
+        different transaction from the tenant it authorises.
+
+        `operator` is the accountable identity, NOT the caller: for a redemption
+        it is the invite's `created_by`, since the redeemer authenticates as
+        nobody.
+        """
+        session.add(Tenant(id=tenant_id, slug=slug, name=name))
+        await session.flush()
+        await self._staff.insert(
+            session,
+            tenant_id=tenant_id,
+            email=owner_email.lower(),
+            password_hash=hash_password(owner_password),
+            display_name=owner_email,
+        )
+        await self._audit.record(
+            session,
+            operator=operator,
+            action=PlatformAuditAction.TENANT_PROVISIONED,
+            target_tenant_id=tenant_id,
+            details={"slug": slug},
+        )
+
+    # --- F26 invites -------------------------------------------------------
+
+    async def create_invite(
+        self, *, slug: str, name: str, owner_email: str, operator: str
+    ) -> InviteCreated:
+        """`provision`'s validation order, minus the password (D2 — the redeemer
+        supplies that, which is the whole point of the feature).
+
+        The code is a `token_urlsafe(32)`; only `hash_token(code)` is stored, and
+        the raw value is returned exactly once, here. It reaches no logger, no
+        audit `details` and no error message (R-C)."""
+        if not is_valid_slug(slug):
+            return await self._fail_invite(operator, slug, "invalid_or_reserved_slug")
+        if await self._tenants.by_slug(slug) is not None:
+            # An ergonomic pre-check, exactly like `provision`'s. The real
+            # control on the address is the partial unique index, and it fires at
+            # REDEMPTION — an invite issued today for a slug someone takes
+            # tomorrow refuses then, with the invite left unspent (D4).
+            return await self._fail_invite(operator, slug, "slug_taken")
+
+        code = generate_session_token()
+        expires_at = datetime.now(UTC) + timedelta(seconds=get_settings().invite_ttl_seconds)
+        async with self._session_factory() as session, session.begin():
+            row = await self._invites.insert(
+                session,
+                code_hash=hash_token(code),
+                slug=slug,
+                name=name,
+                owner_email=owner_email,
+                created_by=operator,
+                expires_at=expires_at,
+            )
+            await self._audit.record(
+                session,
+                operator=operator,
+                action=PlatformAuditAction.INVITE_CREATED,
+                # NO target_tenant_id: the tenant does not exist yet. NO code and
+                # no hash in details — this book is append-only by DB grant, so
+                # anything written here is written forever.
+                details={"slug": slug, "owner_email": owner_email.strip().lower()},
+            )
+            summary = _invite_summary(row)
+        return InviteCreated(ok=True, message="invite_created", code=code, invite=summary)
+
+    async def list_invites(self) -> list[InviteSummary]:
+        """No audit row, and the asymmetry with `list_tenants` is deliberate.
+        That one is a full cross-tenant enumeration of every boutique trading on
+        the platform (F21 D6); this is a list of authorisations the operator
+        population issued itself, naming no boutique that exists. Recorded in
+        `test_audit_coverage.py` rather than left silent."""
+        async with self._session_factory() as session:
+            rows = await self._invites.list_visible(session)
+        return [_invite_summary(row) for row in rows]
+
+    async def revoke_invite(self, *, invite_id: UUID, operator: str) -> CommandResult:
+        """Soft delete. The migration REVOKEs DELETE, so this cannot quietly
+        become a hard one, and a revoked invite reads as absent everywhere —
+        which is what makes it answer the same `invalid_invite` an unknown code
+        gets (D5)."""
+        async with self._session_factory() as session, session.begin():
+            removed = await self._invites.soft_delete(session, invite_id)
+            if removed:
+                await self._audit.record(
+                    session,
+                    operator=operator,
+                    action=PlatformAuditAction.INVITE_REVOKED,
+                    details={"invite_id": str(invite_id)},
+                )
+        if not removed:
+            # NO audit row, and no `INVITE_REVOKE_FAILED` member to write one
+            # with. Nothing happened and nothing could have: the id names an
+            # invite that is already revoked or never existed, so there is no act
+            # to record. The create/redeem refusals DO write rows because those
+            # paths refuse a real request against real state — this one refuses a
+            # no-op. Recorded here so the asymmetry is a decision rather than an
+            # omission.
+            return CommandResult(ok=False, message="invite_not_found")
+        return CommandResult(ok=True, message="invite_revoked")
+
+    async def preview_invite(self, *, code: str) -> InviteSummary | None:
+        """The anonymous read behind `POST /platform/join/invite` (a POST because
+        the code must not travel in a request line — see the router).
+
+        Returns None for unknown, expired, redeemed AND revoked alike — one
+        refusal for four states, because a distinct "already redeemed" would tell
+        an unauthenticated caller that a code was real (D5, `TENANT_NOT_FOUND`'s
+        reading).
+
+        Writes no audit row: a read of one's own invite is not a platform event,
+        and `TENANTS_LISTED`'s cross-tenant-enumeration argument does not reach
+        a caller who already holds the 256-bit secret for this one row."""
+        row = await self._readable_invite(code)
+        return None if row is None else _invite_summary(row)
+
+    async def redeem_invite(self, *, code: str, owner_password: str) -> RedeemResult:
+        """⚠ ONE TRANSACTION, AND IT IS `provision`'S TRANSACTION (spec D4).
+
+        Order matters and is asserted by tests: read to SHAPE the refusal, check
+        the password, generate the tenant id, then open the transaction whose
+        FIRST statement is the atomic claim. The read above the transaction can
+        be arbitrarily stale — it decides nothing. The claim decides.
+
+        A claim that matches zero rows raises, so the whole transaction rolls
+        back and the loser of a race leaves no `Tenant`, no `StaffUser` and no
+        `TENANT_PROVISIONED` row.
+        """
+        code_hash = hash_token(code)
+        # ⚠ THE REVOKED ROW IS READ ON PURPOSE. The refusal is identical for all
+        # four states, but the AUDIT ROW is not: an expired, redeemed or revoked
+        # invite has an accountable issuer sitting right here, and dropping the
+        # row on the floor would attribute a replay of a REAL authorisation to
+        # "anonymous:join" (spec § Audit contract). Only an unknown code has no
+        # issuer. `_redeemable` — not the query — decides who may proceed.
+        async with self._session_factory() as session:
+            row = await self._invites.by_code_hash(session, code_hash, include_revoked=True)
+        if row is None or not _redeemable(row):
+            return await self._fail_redeem(code_hash, row, "invalid_invite")
+        password_problem = _password_problem(owner_password)
+        if password_problem is not None:
+            return await self._fail_redeem(code_hash, row, password_problem)
+
+        # BEFORE the transaction, so the claim can name the tenant it authorises.
+        # A rollback simply discards the value.
+        tenant_id = uuid4()
+        try:
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                # ⚠ FIRST STATEMENT. Writing `platform_invites` inside a
+                # `tenant_session` is safe — the table carries no RLS policy, so
+                # the session's tenant context does not touch it.
+                claimed = await self._invites.claim(
+                    session,
+                    code_hash=code_hash,
+                    tenant_id=tenant_id,
+                    now=datetime.now(UTC),
+                )
+                if claimed is None:
+                    raise _InviteAlreadyClaimed
+                await self._create_tenant(
+                    session,
+                    tenant_id=tenant_id,
+                    slug=row.slug,
+                    name=row.name,
+                    owner_email=row.owner_email,
+                    owner_password=owner_password,
+                    # The invite's issuer, NOT the redeemer — she authenticates
+                    # as nobody, and this is the accountable identity.
+                    operator=row.created_by,
+                )
+                await self._audit.record(
+                    session,
+                    operator=row.created_by,
+                    action=PlatformAuditAction.INVITE_REDEEMED,
+                    target_tenant_id=tenant_id,
+                    details={"slug": row.slug, "owner_email": row.owner_email},
+                )
+        except _InviteAlreadyClaimed:
+            return await self._fail_redeem(code_hash, row, "invalid_invite")
+        except IntegrityError:
+            # The slug was taken between issue and redemption. The claim rolled
+            # back with everything else, so the invite is still unspent and a
+            # reissue for a free address can still use it.
+            return await self._fail_redeem(code_hash, row, "slug_taken")
+
+        return RedeemResult(ok=True, message="redeemed", slug=row.slug, tenant_id=tenant_id)
+
+    async def _readable_invite(self, code: str) -> PlatformInvite | None:
+        """by_code_hash plus the predicates it does not carry. Soft-deleted rows
+        are already excluded by the repository's default."""
+        async with self._session_factory() as session:
+            row = await self._invites.by_code_hash(session, hash_token(code))
+        return row if row is not None and _redeemable(row) else None
+
+    async def _fail_invite(self, operator: str, slug: str, reason: str) -> InviteCreated:
+        """`_fail_provision` for the invite pair. Outside any transaction the
+        refusal aborted, so the row COMMITS (F5): a refusal reported by an
+        exception rolls back the row that reports it."""
+        details: dict[str, Any] = {"slug": slug, "reason": reason}
+        async with self._session_factory() as session, session.begin():
+            await self._audit.record(
+                session,
+                operator=operator,
+                action=PlatformAuditAction.INVITE_CREATE_FAILED,
+                details=details,
+            )
+        return InviteCreated(ok=False, message=reason)
+
+    async def _fail_redeem(
+        self, code_hash: str, row: PlatformInvite | None, reason: str
+    ) -> RedeemResult:
+        """⚠ THE HASH PREFIX, NEVER THE CODE. `platform_audit_log` is
+        append-only by DB grant and no retention policy prunes it, so a raw code
+        written here would be a live boutique-creation credential stored forever
+        in the one table the app cannot read back or delete from. Eight hex
+        characters are enough to correlate a burst of failures against one
+        invite and are useless as a credential.
+
+        `operator` is the invite's issuer whenever the code names a real row —
+        expired, already-redeemed and revoked included, since the whole question
+        the book has to answer is "which authorisation was being replayed, and
+        who issued it". ONLY an unknown code has no issuer at all, and only that
+        row is attributed to the anonymous surface it arrived on; a row claiming
+        an operator who does not exist would be false.
+        """
+        details: dict[str, Any] = {"reason": reason, "code_hash_prefix": code_hash[:8]}
+        if row is not None:
+            details["slug"] = row.slug
+        async with self._session_factory() as session, session.begin():
+            await self._audit.record(
+                session,
+                operator=row.created_by if row is not None else "anonymous:join",
+                action=PlatformAuditAction.INVITE_REDEEM_FAILED,
+                details=details,
+            )
+        return RedeemResult(ok=False, message=reason)
 
     async def suspend(self, *, slug: str, operator: str) -> CommandResult:
         tenant = await self._tenants.by_slug(slug)

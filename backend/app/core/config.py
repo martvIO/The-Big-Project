@@ -52,6 +52,30 @@ class Settings(BaseSettings):
     # so it binds only on a flood.
     platform_login_global_max_attempts: int = 60
 
+    # F26 D3. Fourteen days: long enough for an operator to reach a boutique
+    # owner who is not sitting by a screen, short enough that a link forwarded
+    # into a mailbox and forgotten stops working. A setting rather than a
+    # constant because the pilot's real turnaround is the only evidence that
+    # would move it, and it is deliberately NOT mirrored client-side — the join
+    # screen states the real `expires_at` the server returned, so there is no
+    # second definition to drift (`test_frontend_constant_parity`).
+    invite_ttl_seconds: int = 14 * 24 * 3600
+    # F26 D5 — the anonymous join surface's OWN budget, never a key on the
+    # console login's. What it protects is not a password: it is
+    # `platform_audit_log`, which is INSERT-only by DB grant and which no
+    # retention policy prunes, so an unmetered anonymous route that writes a
+    # failure row per attempt can permanently fill a table the app can neither
+    # read nor delete from. Failures only, so an owner redeeming her own invite
+    # never throttles herself.
+    invite_redeem_max_attempts: int = 5
+    invite_redeem_window_seconds: int = 900
+    # The arm the caller cannot rotate out of, mirroring
+    # `platform_login_global_max_attempts` exactly: both keys below it are caller
+    # -chosen (a fresh code each attempt; a per-IP key that stays inert while
+    # `trust_forwarded_for` is False), so a script rotating codes would otherwise
+    # never trip anything.
+    invite_redeem_global_max_attempts: int = 60
+
     # Modest per-tenant throttle on terms-version creation: the table is
     # append-only by DB grant, so spam on this path is permanent bloat.
     terms_creation_max_per_window: int = 10

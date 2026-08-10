@@ -870,3 +870,26 @@ class PlatformAuditAction(StrEnum):
     # email on the failure and NEVER a password or hash.
     OPERATOR_LOGIN = "operator_login"
     OPERATOR_LOGIN_FAILED = "operator_login_failed"
+    # F26's five. `action` is still plain TEXT with no CHECK (0004), so this is
+    # the fourth feature in a row that needs no migration for new members.
+    #
+    # The create/revoke pair plus their refusals, on `TENANT_PROVISIONED` /
+    # `TENANT_PROVISION_FAILED`'s precedent: a row reading "invite_created" when
+    # no invite was created is a false record, not a thinner one.
+    INVITE_CREATED = "invite_created"
+    INVITE_CREATE_FAILED = "invite_create_failed"
+    INVITE_REVOKED = "invite_revoked"
+    # ⚠ THE TWO ROWS WHOSE `operator` IS NOT THE CALLER. A redemption is made by
+    # somebody who authenticates as nobody, so both carry the invite's
+    # `created_by` — the operator who authorised the boutique, which is the only
+    # accountable identity the act has. `INVITE_REDEEMED.details` carries
+    # {slug, owner_email} and `target_tenant_id` names the new tenant; the
+    # unchanged `TENANT_PROVISIONED` row sits beside it, written by the same
+    # helper the console's provision uses, which is the mechanical proof that
+    # redemption did not fork the provisioning path (spec D4).
+    #
+    # NEITHER EVER CARRIES THE RAW CODE. `INVITE_REDEEM_FAILED` records the
+    # reason and a hash PREFIX: this book is append-only by DB grant and the app
+    # cannot prune it, so a live credential written here would be permanent.
+    INVITE_REDEEMED = "invite_redeemed"
+    INVITE_REDEEM_FAILED = "invite_redeem_failed"

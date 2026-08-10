@@ -136,7 +136,9 @@ from app.payments.webhook_router import DepositBookingService
 from app.payments.webhook_router import router as webhook_router
 from app.platform.auth import OperatorAuthService
 from app.platform.auth_router import router as platform_auth_router
+from app.platform.join_router import router as platform_join_router
 from app.platform.router import ConsoleCommandRefused
+from app.platform.router import invites_router as platform_invites_router
 from app.platform.router import router as platform_router
 from app.platform.service import ProvisioningService
 from app.portal.router import router as portal_router
@@ -630,6 +632,16 @@ def _register_spas(app: FastAPI) -> None:
     # it cannot restore. `_serve_file` no-ops when the file is absent, which is
     # what makes the missing-console case degrade rather than raise.
     _serve_file(app, "/platform", platform / "index.html")
+    # F26 D1. A SECOND exact path into the SAME bundle — not a subtree fallback,
+    # for the rule above: apps/platform has no client router, so exactly two URLs
+    # are screens and anything else must stay a 404. `App.tsx` branches on
+    # `location.pathname` before its `me()` bootstrap, so this path renders the
+    # join panel and never calls the console's auth.
+    #
+    # The alternatives were an apex that 404s by design, a tenant host that does
+    # not exist until redemption succeeds, and a fourth workspace app for one
+    # form (spec D1). This is one line.
+    _serve_file(app, "/platform/join", platform / "index.html")
 
     storefront_index = storefront / "index.html"
 
@@ -858,6 +870,31 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     app.state.platform_login_global_rate_limiter = FixedWindowRateLimiter(
         max_attempts=settings.platform_login_global_max_attempts,
         window_seconds=settings.platform_login_window_seconds,
+        clock=time.monotonic,
+    )
+    # F26's anonymous join surface, and this is the SEVENTH statement of the same
+    # rule: max_attempts lives on the LIMITER, so a key on either limiter above
+    # would give signup the console login's ceiling — a flood of bad invite codes
+    # could then close the platform's front door, and a console lockout could
+    # close signup. Two budgets, two instances
+    # (`.memory/limiter-max-is-per-instance`).
+    #
+    # What it protects is `platform_audit_log`: every refusal on the join routes
+    # writes an INSERT-only row that no retention policy prunes, so an unmetered
+    # anonymous surface can permanently fill a table the app can neither read nor
+    # delete from. Failures only, so an owner redeeming her own link never
+    # throttles herself.
+    app.state.invite_redeem_rate_limiter = FixedWindowRateLimiter(
+        max_attempts=settings.invite_redeem_max_attempts,
+        window_seconds=settings.invite_redeem_window_seconds,
+        clock=time.monotonic,
+    )
+    # …and a fourth instance for the global arm, not a key on the one above: its
+    # ceiling has to be an order of magnitude wider, and `max_attempts` lives on
+    # the LIMITER. Sharing would give every single code the flood ceiling.
+    app.state.invite_redeem_global_rate_limiter = FixedWindowRateLimiter(
+        max_attempts=settings.invite_redeem_global_max_attempts,
+        window_seconds=settings.invite_redeem_window_seconds,
         clock=time.monotonic,
     )
     app.state.boutique_service = BoutiqueSettingsService(
@@ -1674,6 +1711,16 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     app.include_router(platform_auth_router)
     # The console's four lifecycle routes, on the same fenced prefix.
     app.include_router(platform_router)
+    # F26's three operator invite routes. Its own APIRouter only because the
+    # prefix differs; the operator gate is declared the same way, on the router.
+    app.include_router(platform_invites_router)
+    # ⚠ AND THE ANONYMOUS PAIR, from its OWN module (spec D6). Two routers under
+    # one prefix is the whole design: an operator route cannot lose its gate, and
+    # a join route cannot acquire one, by anybody editing a shared dependency
+    # list. `test_staff_role_gating` names both of these in its allowlist with a
+    # written justification, so a THIRD anonymous /platform route is a deliberate
+    # act rather than a diff nobody re-read.
+    app.include_router(platform_join_router)
     app.include_router(boutique_router)
     # After the boutique router: both mount prefix="/manage", so a duplicated
     # path would silently shadow. The ROUTES table in test_catalog_api.py is

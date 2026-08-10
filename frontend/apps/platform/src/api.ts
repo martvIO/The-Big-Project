@@ -83,6 +83,10 @@ export async function apiFetch<T>(
 export interface Operator {
   email: string;
   display_name: string;
+  // The platform's base domain. Every address the console SHOWS is composed from
+  // this, never from a literal: "modryn.co.il" is right in one deployment and
+  // wrong in dev and in any domain migration.
+  base_domain: string;
 }
 
 export interface Tenant {
@@ -99,6 +103,40 @@ export interface ProvisionInput {
   owner_password: string;
 }
 
+// F26. `Invite` is the console table's row and it carries NO code and no hash —
+// the wire type mirrors the server's `InviteRow`, where that absence is asserted
+// by a test. The raw code exists on `InviteCreated` only, once (design A2 r7).
+export interface Invite {
+  id: string;
+  slug: string;
+  name: string;
+  owner_email: string;
+  created_by: string;
+  expires_at: string;
+  redeemed_at: string | null;
+  created_at: string;
+}
+
+export interface InviteCreated {
+  code: string;
+  join_url: string;
+  invite: Invite;
+}
+
+export interface InvitePreview {
+  slug: string;
+  name: string;
+  owner_email: string;
+  // Same reason as Operator.base_domain, for the anonymous claim screen.
+  base_domain: string;
+}
+
+export interface CreateInviteInput {
+  slug: string;
+  name: string;
+  owner_email: string;
+}
+
 export const api = {
   me: () => apiFetch<Operator>("/platform/auth/me"),
   login: (email: string, password: string) =>
@@ -113,5 +151,34 @@ export const api = {
     apiFetch<{ ok: boolean }>("/platform/tenants/reset-owner-password", {
       method: "POST",
       body: { slug, owner_email, new_password },
+    }),
+
+  // --- F26 invites (operator) ---
+  listInvites: async () =>
+    (await apiFetch<{ invites: Invite[] }>("/platform/invites")).invites,
+  createInvite: (input: CreateInviteInput) =>
+    apiFetch<InviteCreated>("/platform/invites", { method: "POST", body: input }),
+  revokeInvite: (id: string) =>
+    apiFetch<{ ok: boolean }>("/platform/invites/revoke", { method: "POST", body: { id } }),
+
+  // --- F26 join (anonymous) ---
+  //
+  // ⚠ THE ONLY TWO CALLS IN THIS CLIENT THAT RUN WITHOUT A SESSION. They still
+  // go through `apiFetch`, so `credentials: "include"` sends a console cookie if
+  // one happens to exist — harmless, because the server's join router carries no
+  // operator dependency and reads none.
+  //
+  // ⚠ THE CODE TRAVELS IN THE BODY ON BOTH, INCLUDING THE READ. A `?code=` puts
+  // a live boutique-creation credential into every access log and proxy trace on
+  // the path, where it stays readable for the invite's whole TTL — the same
+  // argument `queue/router.py` makes for the walk-in ticket and
+  // `booking/schemas.py` for the manage token. The join LINK carries it in the
+  // fragment for the same reason, so not even the document load logs it.
+  previewInvite: (code: string) =>
+    apiFetch<InvitePreview>("/platform/join/invite", { method: "POST", body: { code } }),
+  redeemInvite: (code: string, owner_password: string) =>
+    apiFetch<{ slug: string; manage_url: string }>("/platform/join/redeem", {
+      method: "POST",
+      body: { code, owner_password },
     }),
 };

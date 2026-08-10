@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Badge, Button, Card, EmptyState, Input, Modal, Skeleton } from "@boutique/ui";
 import { ApiError, api, errorMessage } from "../api";
-import type { Operator, Tenant } from "../api";
+import type { Invite, InviteCreated, Operator, Tenant } from "../api";
 import { slugProblem } from "../validation";
 
 // Every code the server can refuse a console command with has its own sentence
@@ -31,6 +31,16 @@ const CREATED = new Intl.DateTimeFormat("he-IL", {
 function formatDate(iso: string): string {
   return CREATED.format(new Date(iso));
 }
+
+// ⚠ TO THE MINUTE, unlike `CREATED` above. An expiry stated to the day only is a
+// lie about when the link dies — the operator hands this over and the owner acts
+// on it, so «בתוקף עד 12 באוגוסט» reads as "any time that day" when the real
+// instant is 09:04. Same explicit Jerusalem frame, same reason.
+const EXPIRES = new Intl.DateTimeFormat("he-IL", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "Asia/Jerusalem",
+});
 
 export function Console({ operator, onSignedOut }: { operator: Operator; onSignedOut: () => void }) {
   const { t } = useTranslation();
@@ -235,8 +245,11 @@ export function Console({ operator, onSignedOut }: { operator: Operator; onSigne
         </Card>
 
         <ProvisionForm
+          baseDomain={operator.base_domain}
           onProvisioned={(tenant) => setTenants((rows) => [...(rows ?? []), tenant])}
         />
+
+        <InvitesSection baseDomain={operator.base_domain} />
       </div>
 
       <Modal
@@ -285,7 +298,13 @@ export function Console({ operator, onSignedOut }: { operator: Operator; onSigne
   );
 }
 
-function ProvisionForm({ onProvisioned }: { onProvisioned: (tenant: Tenant) => void }) {
+function ProvisionForm({
+  baseDomain,
+  onProvisioned,
+}: {
+  baseDomain: string;
+  onProvisioned: (tenant: Tenant) => void;
+}) {
   const { t } = useTranslation();
   const [slug, setSlug] = useState("");
   const [name, setName] = useState("");
@@ -325,7 +344,7 @@ function ProvisionForm({ onProvisioned }: { onProvisioned: (tenant: Tenant) => v
         // typed, which is what the design's data discipline calls for.
         created_at: new Date().toISOString(),
       });
-      setDone(t("platform.provision.done", { url: `https://${slug}.modryn.co.il` }));
+      setDone(t("platform.provision.done", { url: `https://${slug}.${baseDomain}` }));
       setSlug("");
       setName("");
       setOwnerEmail("");
@@ -344,15 +363,27 @@ function ProvisionForm({ onProvisioned }: { onProvisioned: (tenant: Tenant) => v
 
   return (
     <Card>
-      <form onSubmit={(event) => void handleSubmit(event)} className="flex flex-col gap-4">
-        <h2 className="font-display text-xl text-ink">{t("platform.provision.heading")}</h2>
+      {/* ⚠ NAMED, because F26's create-invite form reuses these exact three
+          labels (design A1's declared deviation: the fields are byte-identical,
+          and three duplicate strings would be a drift surface). Two same-named
+          controls on one page is only ambiguous if neither form is addressable —
+          `aria-labelledby` makes each one a landmark of its own for a screen
+          reader and for a test. */}
+      <form
+        aria-labelledby="provision-heading"
+        onSubmit={(event) => void handleSubmit(event)}
+        className="flex flex-col gap-4"
+      >
+        <h2 id="provision-heading" className="font-display text-xl text-ink">
+          {t("platform.provision.heading")}
+        </h2>
         <Input
           label={t("platform.provision.slugLabel")}
           dir="ltr"
           required
           value={slug}
           error={slugError}
-          help={t("platform.provision.slugHelp", { slug: slug || "…" })}
+          help={t("platform.provision.slugHelp", { slug: slug || "…", domain: baseDomain })}
           onChange={(event) => setSlug(event.target.value)}
         />
         <Input
@@ -477,5 +508,407 @@ function ResetPasswordDialog({
         )}
       </div>
     </Modal>
+  );
+}
+
+// F26 design Screens A1–A4. Two Cards and one Modal, beside F25's tenants table
+// and provision form.
+//
+// ⚠ NO CALL SITE BELOW PASSES `size` (F-W1: `sm` is min-h-9 = 36px, under the
+// 44px floor), and the ONLY `danger` is the revoke Modal's footer confirm — the
+// row trigger is plain, F25's suspend precedent for table density.
+function InvitesSection({ baseDomain }: { baseDomain: string }) {
+  const { t } = useTranslation();
+  const [invites, setInvites] = useState<Invite[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [revoking, setRevoking] = useState<Invite | null>(null);
+  // ⚠ A2 RULE 7: THE RAW CODE LIVES IN EXACTLY ONE REACT STATE VARIABLE.
+  // Not in `location`, not in sessionStorage or localStorage, not in a data-*
+  // attribute, not in the document title, not in a console.log. A reload, a
+  // re-login or any remount loses it — and `GET /platform/invites` never returns
+  // it (D6), so the table below cannot re-render it either.
+  const [created, setCreated] = useState<InviteCreated | null>(null);
+
+  // Fetched once per mount, like the tenants table. The reason differs — this
+  // GET writes no audit row — but a refetch after a mutation would blank the
+  // table under the operator for nothing, so create appends and revoke removes
+  // locally.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listInvites()
+      .then((rows) => {
+        if (!cancelled) setInvites(rows);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setInvites([]);
+          setLoadFailed(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const confirmRevoke = async (invite: Invite) => {
+    setBusyId(invite.id);
+    setRowError(null);
+    try {
+      await api.revokeInvite(invite.id);
+      setInvites((rows) => (rows === null ? rows : rows.filter((row) => row.id !== invite.id)));
+      setRevoking(null);
+    } catch (error) {
+      setRowError(refusalMessage(error, t));
+      setRevoking(null);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const now = Date.now();
+
+  return (
+    <>
+      <Card className="flex flex-col gap-4">
+        <h2 className="font-display text-xl text-ink">{t("platform.invites.heading")}</h2>
+        {invites === null ? (
+          <Skeleton variant="text" lines={4} />
+        ) : loadFailed ? (
+          <p role="alert" className="text-sm text-ink-muted">
+            {t("platform.invites.loadFailed")}
+          </p>
+        ) : invites.length === 0 ? (
+          <EmptyState title={t("platform.invites.empty")} />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-start text-sm">
+              <caption className="sr-only">{t("platform.invites.caption")}</caption>
+              <thead>
+                <tr className="border-b border-border">
+                  <th scope="col" className="py-2 text-start">
+                    {t("platform.invites.colName")}
+                  </th>
+                  <th scope="col" className="py-2 text-start">
+                    {t("platform.invites.colSlug")}
+                  </th>
+                  <th scope="col" className="py-2 text-start">
+                    {t("platform.invites.colOwnerEmail")}
+                  </th>
+                  <th scope="col" className="py-2 text-start">
+                    {t("platform.invites.colStatus")}
+                  </th>
+                  <th scope="col" className="py-2 text-start">
+                    {t("platform.invites.colExpires")}
+                  </th>
+                  {/* NO CODE COLUMN EXISTS (A2 r7) — the wire type has no such
+                      field, and this is the screen where one would be rendered. */}
+                  <th scope="col" className="sr-only">
+                    {t("platform.invites.colActions")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {invites.map((row) => {
+                  const redeemed = row.redeemed_at !== null;
+                  // Derived client-side: the server has no "expired" state, only
+                  // an instant, and a row that expires while the console is open
+                  // must not keep offering an action that will refuse.
+                  const expired = !redeemed && new Date(row.expires_at).getTime() <= now;
+                  const open = !redeemed && !expired;
+                  return (
+                    <tr key={row.id} className="border-b border-border align-middle">
+                      <td className={`py-3 ${open ? "" : "text-ink-muted"}`}>
+                        <bdi>{row.name}</bdi>
+                      </td>
+                      <td className={`py-3 ${open ? "" : "text-ink-muted"}`}>
+                        <bdi dir="ltr">{row.slug}</bdi>
+                      </td>
+                      <td className={`py-3 ${open ? "" : "text-ink-muted"}`}>
+                        <bdi dir="ltr">{row.owner_email}</bdi>
+                      </td>
+                      <td className="py-3">
+                        {/* The WORD carries the state; colour never does, and the
+                            expired row's muted text is redundant with its word. */}
+                        <Badge variant={open ? "success" : "neutral"}>
+                          {t(
+                            redeemed
+                              ? "platform.invites.statusRedeemed"
+                              : expired
+                                ? "platform.invites.statusExpired"
+                                : "platform.invites.statusOpen",
+                          )}
+                        </Badge>
+                      </td>
+                      <td className="py-3">{EXPIRES.format(new Date(row.expires_at))}</td>
+                      <td className="py-3">
+                        {/* Only an OPEN row carries the action. There is nothing
+                            left to do to a redeemed or expired invite. */}
+                        {open && (
+                          <Button
+                            variant="secondary"
+                            disabled={busyId === row.id}
+                            onClick={() => {
+                              setRowError(null);
+                              setRevoking(row);
+                            }}
+                          >
+                            {t("platform.invites.revokeCta")}
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {rowError !== null && (
+          <p role="alert" className="text-sm text-danger">
+            {rowError}
+          </p>
+        )}
+      </Card>
+
+      <CreateInviteCard
+        baseDomain={baseDomain}
+        created={created}
+        onCreated={(result) => {
+          setCreated(result);
+          setInvites((rows) => [result.invite, ...(rows ?? [])]);
+        }}
+        onDismiss={() => setCreated(null)}
+      />
+
+      <Modal
+        open={revoking !== null}
+        onClose={() => setRevoking(null)}
+        title={t("platform.invites.revokeTitle")}
+        footer={
+          <div className="flex justify-end gap-2">
+            {/* «חזרה», NOT «ביטול» (design A4): a dialog whose confirm reads
+                «ביטול ההזמנה» beside a cancel reading «ביטול» is a mis-click
+                generator. F25's platform.suspend.cancel is untouched. */}
+            <Button variant="secondary" onClick={() => setRevoking(null)}>
+              {t("platform.invites.revokeCancel")}
+            </Button>
+            <Button
+              variant="danger"
+              loading={busyId !== null}
+              onClick={() => revoking !== null && void confirmRevoke(revoking)}
+            >
+              {t("platform.invites.revokeConfirm")}
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-base text-ink">
+          <Trans
+            i18nKey="platform.invites.revokeBody"
+            values={{ name: revoking?.name ?? "", slug: revoking?.slug ?? "" }}
+            // ⚠ Trans, not t(): the slug must land inside a <bdi dir="ltr"> and
+            // the boutique name inside a BARE <bdi> (it may be Hebrew — the
+            // BookPage lesson). The parentheses in this sentence are exactly the
+            // neutral characters that reorder without an isolate. Do not
+            // "simplify" this back to t() (StaffSection.tsx:443-454's note).
+            components={{ bdi: <bdi dir="ltr" />, name: <bdi /> }}
+          />
+        </p>
+      </Modal>
+    </>
+  );
+}
+
+// A2. The create form and the one-time link panel are MUTUALLY EXCLUSIVE inside
+// one Card (rule 3): a second create cannot clobber an unread code, and the
+// panel cannot scroll out of sight behind a form the operator is retyping into.
+function CreateInviteCard({
+  baseDomain,
+  created,
+  onCreated,
+  onDismiss,
+}: {
+  baseDomain: string;
+  created: InviteCreated | null;
+  onCreated: (result: InviteCreated) => void;
+  onDismiss: () => void;
+}) {
+  const { t } = useTranslation();
+  const [slug, setSlug] = useState("");
+  const [name, setName] = useState("");
+  const [ownerEmail, setOwnerEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState<"ok" | "failed" | null>(null);
+  const slugRef = useRef<HTMLInputElement>(null);
+
+  const problem = slugProblem(slug);
+  // The SHIPPED provision keys, reused rather than duplicated (design A1's
+  // declared deviation from spec D8): the three fields are byte-identical to the
+  // provision form's, and three duplicate strings are a drift surface for zero
+  // benefit.
+  const slugError =
+    problem === "invalid"
+      ? t("platform.provision.slugInvalid")
+      : problem === "reserved"
+        ? t("platform.provision.slugReserved")
+        : undefined;
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (slugError !== undefined) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.createInvite({ slug, name, owner_email: ownerEmail });
+      // Cleared BEHIND the panel: the form is not rendered while it is open, and
+      // dismissing it must return an empty one.
+      setSlug("");
+      setName("");
+      setOwnerEmail("");
+      setCopied(null);
+      onCreated(result);
+    } catch (createError) {
+      // Values stay put — a refused slug should not cost the operator the other
+      // two fields she typed.
+      setError(refusalMessage(createError, t));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(created?.join_url ?? "");
+      setCopied("ok");
+    } catch {
+      // No navigator.clipboard, or an insecure origin. The manual path is stated
+      // rather than left to be discovered, and the link Input stays selectable
+      // (readOnly, never disabled) so it is actually available.
+      setCopied("failed");
+    }
+  };
+
+  if (created !== null) {
+    return (
+      <Card className="flex flex-col gap-4">
+        {/* A PANEL INSIDE THE CARD, NEVER A Modal (A2 r1): Modal is a native
+            <dialog> wired to close on Esc, which is one accidental keypress away
+            from losing the only copy of a credential. This has no dismissal
+            vector at all — no Esc, no backdrop, no timeout, no ✕. */}
+        <h3 className="font-display text-lg text-ink">{t("platform.invites.createdHeading")}</h3>
+        <p className="text-sm text-ink">
+          <Trans
+            i18nKey="platform.invites.createdFor"
+            values={{ name: created.invite.name, url: `${created.invite.slug}.${baseDomain}` }}
+            components={{ bdi: <bdi dir="ltr" />, name: <bdi /> }}
+          />
+        </p>
+        <p className="text-sm text-ink">{t("platform.invites.linkOnce")}</p>
+        {/* readOnly, NOT disabled (A2 r4): a disabled control is unfocusable and
+            unselectable, so manual copy would be impossible on exactly the
+            machine where the clipboard API is unavailable. An <input> scrolls and
+            never truncates, so no character hides behind an ellipsis.
+            NEVER an <a href> and no "open link" control (r5): a click would put a
+            live code in browser history and in a referrer. */}
+        <Input
+          label={t("platform.invites.linkLabel")}
+          dir="ltr"
+          readOnly
+          value={created.join_url}
+          onFocus={(event) => event.target.select()}
+        />
+        <p className="text-sm text-ink-muted">
+          {t("platform.invites.linkExpires", {
+            date: EXPIRES.format(new Date(created.invite.expires_at)),
+          })}
+        </p>
+        <p className="text-sm text-ink-muted">{t("platform.invites.linkDeliver")}</p>
+        {copied === "ok" && (
+          <p role="status" className="text-sm text-ink-muted">
+            {t("platform.invites.copied")}
+          </p>
+        )}
+        {copied === "failed" && (
+          <p role="alert" className="text-sm text-danger">
+            {t("platform.invites.copyFailed")}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <Button fullWidthMobile onClick={() => void copy()}>
+            {t("platform.invites.copy")}
+          </Button>
+          {/* ⚠ LAST IN DOM ORDER, deliberately: a thumb reaching the bottom of
+              the panel must not land on the dismiss before the copy. Its label
+              states the consequence (r2) — there is no bare ✕ anywhere here. */}
+          <Button
+            variant="secondary"
+            fullWidthMobile
+            onClick={() => {
+              setCopied(null);
+              onDismiss();
+              // Focus moves to the field she will type into next, so the panel's
+              // unmount does not drop a keyboard user at the top of the document.
+              window.requestAnimationFrame(() => slugRef.current?.focus());
+            }}
+          >
+            {t("platform.invites.dismiss")}
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <form
+        aria-labelledby="create-invite-heading"
+        onSubmit={(event) => void handleSubmit(event)}
+        className="flex flex-col gap-4"
+      >
+        <h2 id="create-invite-heading" className="font-display text-xl text-ink">
+          {t("platform.invites.createHeading")}
+        </h2>
+        <Input
+          ref={slugRef}
+          label={t("platform.provision.slugLabel")}
+          dir="ltr"
+          required
+          value={slug}
+          error={slugError}
+          help={t("platform.provision.slugHelp", { slug: slug || "…", domain: baseDomain })}
+          onChange={(event) => setSlug(event.target.value)}
+        />
+        <Input
+          label={t("platform.provision.nameLabel")}
+          required
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+        />
+        <Input
+          label={t("platform.provision.ownerEmailLabel")}
+          type="email"
+          dir="ltr"
+          autoComplete="off"
+          required
+          value={ownerEmail}
+          onChange={(event) => setOwnerEmail(event.target.value)}
+        />
+        {/* NO PASSWORD FIELD — that is the whole feature (D2). And no expiry
+            statement before submit: the TTL is a server setting, and mirroring it
+            here would be a second definition of it. */}
+        {error !== null && (
+          <p role="alert" className="text-sm text-danger">
+            {error}
+          </p>
+        )}
+        <Button type="submit" loading={busy}>
+          {t("platform.invites.createCta")}
+        </Button>
+      </form>
+    </Card>
   );
 }

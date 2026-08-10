@@ -113,7 +113,15 @@ def test_a_live_cookie_reaches_me(app: FastAPI) -> None:
         client.cookies.set(PLATFORM_SESSION_COOKIE, GOOD_TOKEN, domain="admin.localtest.me")
         resp = client.get("/platform/auth/me")
     assert resp.status_code == 200
-    assert resp.json() == {"email": OPERATOR.email, "display_name": OPERATOR.display_name}
+    # ⚠ base_domain IS PART OF THIS RESPONSE. The console composes every address
+    # it shows from it; before F26 it rebuilt them from a hardcoded
+    # "modryn.co.il", which is wrong in dev and in any domain migration. Asserted
+    # by exact dict equality so a field cannot be dropped without reddening here.
+    assert resp.json() == {
+        "email": OPERATOR.email,
+        "display_name": OPERATOR.display_name,
+        "base_domain": "localtest.me",
+    }
 
 
 def test_a_valid_operator_cookie_is_worthless_on_a_tenant_host(app: FastAPI) -> None:
@@ -187,7 +195,15 @@ def test_login_sets_a_host_only_httponly_lax_cookie_under_its_own_name(app: Fast
     with _console(app) as client:
         resp = _login(client)
     assert resp.status_code == 200
-    assert resp.json() == {"email": OPERATOR.email, "display_name": OPERATOR.display_name}
+    # ⚠ base_domain IS PART OF THIS RESPONSE. The console composes every address
+    # it shows from it; before F26 it rebuilt them from a hardcoded
+    # "modryn.co.il", which is wrong in dev and in any domain migration. Asserted
+    # by exact dict equality so a field cannot be dropped without reddening here.
+    assert resp.json() == {
+        "email": OPERATOR.email,
+        "display_name": OPERATOR.display_name,
+        "base_domain": "localtest.me",
+    }
 
     jar = SimpleCookie()
     jar.load(resp.headers["set-cookie"])

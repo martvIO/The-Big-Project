@@ -10,12 +10,20 @@ import { defineConfig } from "vite";
 // That applies to `vite preview` too, which inherits `server.proxy`, so the e2e
 // run breaks the same way.
 //
-// A leading "^" is what makes Vite read the key as a RegExp. The two names are
+// A leading "^" is what makes Vite read the key as a RegExp. The names are
 // exactly the second path segments the backend's /platform routers declare, and
-// Backend/tests/test_spa_serving.py derives that set from the live route table
-// and asserts this line matches it — a third segment added without touching this
-// file fails there rather than silently 404ing in dev only.
-const PLATFORM_API = "^/platform/(auth|tenants)";
+// Backend/tests/test_spa_serving.py compiles this very string and drives it over
+// the live route table — a segment added without touching this file fails there
+// rather than silently 404ing in dev only.
+//
+// ⚠ **`join/` CARRIES ITS SLASH AND THE OTHERS MUST NOT.** F26 D1 serves the
+// join SCREEN at exactly `/platform/join`, so a bare `join` alternative matches
+// the shell and the proxy — which runs first — forwards the screen to the
+// backend, where a dev machine with no built bundle answers 404. `vite preview`
+// inherits `server.proxy`, so the e2e run breaks the same way. The slash cannot
+// be added to the others: `GET /platform/tenants` is a real route with nothing
+// after it.
+const PLATFORM_API = "^/platform/(auth|invites|tenants|join/)";
 
 export default defineConfig({
   // The console lives at admin.{domain}/platform. Without this it would emit

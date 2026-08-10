@@ -33,7 +33,11 @@ _GLOBAL_KEY = "platform-login"
 
 
 def _response(operator: OperatorContext) -> OperatorResponse:
-    return OperatorResponse(email=operator.email, display_name=operator.display_name)
+    return OperatorResponse(
+        email=operator.email,
+        display_name=operator.display_name,
+        base_domain=get_settings().base_domain,
+    )
 
 
 @router.post("/login")

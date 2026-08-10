@@ -243,3 +243,26 @@ def test_platform_paths_are_not_exempt() -> None:
     would skip tenant resolution on every host and open the console's routes on
     every boutique's subdomain."""
     assert not any(path.startswith("/platform") for path in EXEMPT_PATHS)
+
+
+def test_the_anonymous_join_routes_are_fenced_off_every_other_host() -> None:
+    """F26's join surface is ANONYMOUS, which makes the host fence the only thing
+    standing between it and every boutique's own subdomain. `/platform/join*`
+    inherits the same prefix rule as the console's operator routes — it is not
+    exempted, and `test_platform_paths_are_not_exempt` above is what keeps it
+    that way (exemption would skip resolution on EVERY host).
+
+    The apex is included because it is a genuinely different branch from a tenant
+    host: it resolves no slug at all and 404s by design (F4)."""
+    resolver = RecordingResolver()
+    app = _fenced_app(resolver)
+    join_paths = ("/platform/join", "/platform/join/invite", "/platform/join/redeem")
+    for host in ("bella.localtest.me", "localtest.me"):
+        with TestClient(app, base_url=f"http://{host}") as client:
+            for path in join_paths:
+                resp = client.get(path)
+                assert resp.status_code == 404, f"{host}{path}"
+                assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND", f"{host}{path}"
+    # Refused BEFORE resolution, so the fence costs no database work and leaks no
+    # timing signal about whether a boutique exists.
+    assert resolver.calls == []

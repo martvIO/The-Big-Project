@@ -4736,3 +4736,141 @@ def test_migration_0033_round_trips(migrated_db: str) -> None:
         assert _scheduled_columns(migrated_db)["booking_id"] == ("uuid", "YES")
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F26 platform_invites (0034) ---------------------------------------------
+#
+# The third platform-scoped table, and the absence of `tenant_id` is asserted for
+# 0028's reason: a later reader "completing" the standard block with one would
+# break `test_every_tenant_id_table_has_forced_rls` from a module that never
+# heard of F26. The GRANT is asserted by what it EXCLUDES — 0002's ALTER DEFAULT
+# PRIVILEGES hands out DELETE for free, so the REVOKE in `upgrade()` is the only
+# thing standing between "revoke is a soft delete" and "the app can erase its own
+# evidence", and a silently reverted REVOKE looks exactly like a passing edit.
+
+_PLATFORM_INVITE_COLUMNS = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = 'platform_invites'"
+)
+# Deparsed by Postgres, not transcribed — the 0018/F22 pinning technique. The
+# hash index is NOT partial on purpose (a spent code keeps its hash reserved) and
+# the open index IS (a spent invite is never listed as open again); both halves
+# are load-bearing and both are visible here.
+_INVITE_CODE_HASH_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_platform_invites_code_hash ON public.platform_invites "
+    "USING btree (code_hash)"
+)
+_INVITE_OPEN_INDEX_DEF = (
+    "CREATE INDEX idx_platform_invites_open ON public.platform_invites "
+    "USING btree (expires_at) WHERE ((redeemed_at IS NULL) AND (deleted_at IS NULL))"
+)
+
+
+def _table_privileges(url: str, table: str) -> set[str]:
+    async def read() -> set[str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                found = set()
+                for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                    granted = await conn.execute(
+                        text("SELECT has_table_privilege('app_user', :table, :privilege)"),
+                        {"table": table, "privilege": privilege},
+                    )
+                    if granted.scalar_one():
+                        found.add(privilege)
+                return found
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.db
+def test_migration_0034_creates_platform_invites(migrated_db: str) -> None:
+    """The DDL spec D3 pins, including the two absences that matter.
+
+    `code` is absent because the raw invite code is never stored; `tenant_id` is
+    absent because an invite belongs to the platform and the tenant it creates
+    does not exist yet."""
+    columns = _columns(migrated_db, _PLATFORM_INVITE_COLUMNS)
+    assert columns["code_hash"] == ("text", "NO")
+    assert columns["slug"] == ("text", "NO")
+    assert columns["name"] == ("text", "NO")
+    assert columns["owner_email"] == ("text", "NO")
+    assert columns["created_by"] == ("text", "NO")
+    assert columns["expires_at"] == ("timestamp with time zone", "NO")
+    assert columns["redeemed_at"] == ("timestamp with time zone", "YES")
+    # No FK, house rule — the pointer is a bare UUID validated in the app.
+    assert columns["redeemed_tenant_id"] == ("uuid", "YES")
+    assert columns["deleted_at"] == ("timestamp with time zone", "YES")
+    assert "tenant_id" not in columns
+    assert "code" not in columns
+    assert "redeemed_by" not in columns
+
+
+@pytest.mark.db
+def test_the_platform_invite_indexes_are_pinned(migrated_db: str) -> None:
+    async def read() -> tuple[str, str]:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                code_hash = await conn.execute(
+                    text(_PLATFORM_INDEX_DEF),
+                    {"table": "platform_invites", "name": "idx_platform_invites_code_hash"},
+                )
+                open_index = await conn.execute(
+                    text(_PLATFORM_INDEX_DEF),
+                    {"table": "platform_invites", "name": "idx_platform_invites_open"},
+                )
+                return str(code_hash.scalar_one()), str(open_index.scalar_one())
+        finally:
+            await engine.dispose()
+
+    code_hash_def, open_def = asyncio.run(read())
+    assert code_hash_def == _INVITE_CODE_HASH_INDEX_DEF
+    assert open_def == _INVITE_OPEN_INDEX_DEF
+
+
+@pytest.mark.db
+def test_the_app_role_cannot_delete_a_platform_invite(migrated_db: str) -> None:
+    """The REVOKE in `upgrade()`, asserted by its effect. Without it 0002's
+    default privileges leave DELETE in place and `revoke_invite`'s soft delete
+    becomes a convention rather than a constraint."""
+    assert _table_privileges(migrated_db, "platform_invites") == {"SELECT", "INSERT", "UPDATE"}
+
+
+@pytest.mark.db
+def test_the_platform_invites_migration_round_trips(migrated_db: str) -> None:
+    """Both directions (0013's rule): a downgrade that silently no-ops stays
+    green while shipping a migration that cannot be rolled back.
+
+    The target is resolved by IDENTITY (`_parent_of`), never as a literal and
+    never as `-1` — this migration's number comes from the free slot at build
+    time and is renumbered at the rebase that precedes the push."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("platform invites")
+
+    def exists() -> bool:
+        async def read() -> bool:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    found = await conn.execute(
+                        text("SELECT to_regclass('public.platform_invites') IS NOT NULL")
+                    )
+                    return bool(found.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists()
+        command.downgrade(cfg, down_to)
+        assert not exists()
+        command.upgrade(cfg, "head")
+        assert exists()
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head

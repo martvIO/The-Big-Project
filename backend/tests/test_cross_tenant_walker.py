@@ -132,18 +132,29 @@ NOT_TENANT_SCOPED = frozenset(
         ("GET", "/docs/oauth2-redirect"),
         ("GET", "/openapi.json"),
         ("GET", "/redoc"),
-        # F25's platform console. These SEVEN are not "exempt from a walk that
-        # could otherwise drive them" — a tenant principal CANNOT REACH THEM AT
-        # ALL: the tenancy middleware 404s /platform* on every tenant host before
-        # a handler is looked at, and this walk drives everything with Host set to
-        # tenant A's slug. Driving them here would assert the fence, not
-        # isolation, and would report a 404 as evidence of a tenant check that no
-        # console route contains (there is no tenant to check — an operator acts
-        # across all of them).
+        # F25's platform console, plus F26's invites and join. These TWELVE are
+        # not "exempt from a walk that could otherwise drive them" — a tenant
+        # principal CANNOT REACH THEM AT ALL: the tenancy middleware 404s
+        # /platform* on every tenant host before a handler is looked at, and this
+        # walk drives everything with Host set to tenant A's slug. Driving them
+        # here would assert the fence, not isolation, and would report a 404 as
+        # evidence of a tenant check that no console route contains (there is no
+        # tenant to check — an operator acts across all of them).
         #
-        # `test_the_console_is_unreachable_from_a_tenant_host` below drives them
-        # anyway and asserts exactly what they DO answer, so this exemption is
-        # proved rather than asserted.
+        # ⚠ THE SAME ARGUMENT COVERS F26's TWO ANONYMOUS ROUTES, and it is worth
+        # spelling out because "anonymous" reads like the opposite of "exempt".
+        # `/platform/join*` authenticates nobody, but it is fenced to the console
+        # host exactly like the rest of the prefix
+        # (`test_middleware.py::test_the_anonymous_join_routes_are_fenced_off_
+        # every_other_host`), and it owns no tenant: a redemption CREATES one. Do
+        # not "fix" a walker red here by moving a join route into the walked set —
+        # the walker fails hard on an unclassified path parameter, and a POST it
+        # walks with no PROBES entry answers 400 because body validation
+        # pre-empts the tenant check, which is not evidence of isolation.
+        #
+        # `test_the_console_is_unreachable_from_a_tenant_host` below drives all
+        # twelve anyway and asserts exactly what they DO answer, so this exemption
+        # is proved rather than asserted.
         ("POST", "/platform/auth/login"),
         ("POST", "/platform/auth/logout"),
         ("GET", "/platform/auth/me"),
@@ -151,6 +162,11 @@ NOT_TENANT_SCOPED = frozenset(
         ("POST", "/platform/tenants/suspend"),
         ("POST", "/platform/tenants/reset-owner-password"),
         ("GET", "/platform/tenants"),
+        ("POST", "/platform/invites"),
+        ("GET", "/platform/invites"),
+        ("POST", "/platform/invites/revoke"),
+        ("POST", "/platform/join/invite"),
+        ("POST", "/platform/join/redeem"),
     }
 )
 
@@ -1293,7 +1309,7 @@ def test_the_state_guarded_routes_are_walked_and_named(
 def test_the_console_is_unreachable_from_a_tenant_host(walk: Walk, app_role_url: str) -> None:
     """F25's fence, driven as a real tenant principal rather than trusted.
 
-    NOT_TENANT_SCOPED above claims the console's seven routes cannot be reached
+    NOT_TENANT_SCOPED above claims the console's twelve routes cannot be reached
     from a tenant host. That claim is the reason they are exempt from the walk, so
     it is worth more than a comment: every one of them is driven here with tenant
     A's Host and tenant A's live owner session, and every one must answer the

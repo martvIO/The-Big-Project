@@ -23,7 +23,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const OPERATOR = { email: "dana@modryn.example", display_name: "Dana" };
+// ⚠ base_domain is DELIBERATELY NOT "modryn.co.il". Every address this console
+// shows is composed from what the server sent; pinning the production literal
+// here would let a component that rebuilds `${slug}.modryn.co.il` itself pass
+// this suite forever — which is exactly how the redeem-screen bug survived
+// review. A fixture that agrees with the bug proves nothing.
+const OPERATOR = {
+  email: "dana@modryn.example",
+  display_name: "Dana",
+  base_domain: "boutiques.example.test",
+};
 const BELLA = {
   slug: "bella",
   name: "בלה כלות",
@@ -46,7 +55,7 @@ describe("the console bootstrap", () => {
   it("renders the console when /platform/auth/me is 200", async () => {
     fetchMock.mockImplementation((url: string) =>
       Promise.resolve(
-        url === "/platform/auth/me" ? json(200, OPERATOR) : json(200, { tenants: [] }),
+        url === "/platform/auth/me" ? json(200, OPERATOR) : json(200, { tenants: [], invites: [] }),
       ),
     );
     render(<App />);
@@ -67,6 +76,9 @@ describe("the console bootstrap", () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === "/platform/auth/me") return Promise.resolve(json(200, OPERATOR));
       if (url === "/platform/tenants") return Promise.resolve(json(200, { tenants: [BELLA] }));
+      // F26's second mount fetch. Left at 401 it would expire the session before
+      // the operator ever reached the action this test is about.
+      if (url === "/platform/invites") return Promise.resolve(json(200, { invites: [] }));
       return Promise.resolve(
         json(401, { error: { code: "NOT_AUTHENTICATED", message: "Authentication required." } }),
       );
@@ -102,5 +114,40 @@ describe("the console bootstrap", () => {
 
     expect(await screen.findByText("האימייל או הסיסמה אינם נכונים.")).toBeInTheDocument();
     expect(screen.queryByText("ההתחברות הסתיימה. יש להיכנס שוב.")).not.toBeInTheDocument();
+  });
+});
+
+describe("the join branch", () => {
+  // F26 D1. The console's bootstrap and the redeemer's screen live in ONE
+  // bundle at two exact paths; the branch is what keeps them from touching.
+  afterEach(() => {
+    window.history.replaceState({}, "", "/platform");
+  });
+
+  it("renders the join panel on /platform/join and NEVER calls me()", async () => {
+    // ⚠ THE ASSERTION THAT MATTERS IS THE ABSENCE. `me()` for a redeemer is a
+    // guaranteed 401 — one pointless round trip on the one screen in this app a
+    // non-operator opens, and a 401 that would arm the session-expired listener
+    // for somebody who never had a session.
+    window.history.replaceState({}, "", "/platform/join");
+    fetchMock.mockResolvedValue(json(200, { tenants: [] }));
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", { name: "הזנת קוד הזמנה", level: 2 }),
+    ).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "כניסה" })).not.toBeInTheDocument();
+  });
+
+  it("still bootstraps normally on /platform", async () => {
+    window.history.replaceState({}, "", "/platform");
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        url === "/platform/auth/me" ? json(200, OPERATOR) : json(200, { tenants: [], invites: [] }),
+      ),
+    );
+    render(<App />);
+    await screen.findByRole("heading", { name: "ניהול הפלטפורמה", level: 1 });
+    expect(fetchMock).toHaveBeenCalledWith("/platform/auth/me", expect.anything());
   });
 });
