@@ -374,14 +374,17 @@ PROBES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/manage/atelier/seamstresses/{staff_user_id}/capacity"): {
         "weekly_capacity_hours": 10
     },
-    # F39. The PATCH is a FULL REPLACE of all five fields (D2), so every one is
-    # sent — an omitted key is a 422 and the template_id check would never run.
+    # F39. The PATCH is a FULL REPLACE of all SIX fields (D2 + F40 D10), so every
+    # one is sent — an omitted key is a 400 and the template_id check would never
+    # run, which is exactly how this route stopped being walked when
+    # `coverage_targets` became required.
     ("PATCH", "/manage/shifts/templates/{template_id}"): {
         "day_of_week": 4,
         "label": "Walker shift",
         "starts_at_time": "09:00:00",
         "ends_at_time": "14:00:00",
         "sort_order": 0,
+        "coverage_targets": {},
     },
     # ⚠ THE ONE F39 ROUTE WHOSE TENANT-OWNED IDS ARE ALL IN THE BODY, and BOTH
     # are tenant B's: the staffer she is recorded for and the shift she is
@@ -992,6 +995,13 @@ def _populate(client: TestClient, storage: InMemoryMediaStorage) -> dict[Kind, u
                 "label": "Walker shift",
                 "starts_at_time": "09:00:00",
                 "ends_at_time": "14:00:00",
+                # F40 D10's sixth REQUIRED field — the template write is a full
+                # replace, so the schema carries no default and every body that
+                # seeds one had to gain the key. This is the fourth such site
+                # after test_shifts_api.py, test_shifts_db.py and the e2e
+                # fixtures, and the only one that is db-marked — which is why it
+                # reddened a suite that never mentions coverage targets.
+                "coverage_targets": {},
             },
         ),
         "shift template",
