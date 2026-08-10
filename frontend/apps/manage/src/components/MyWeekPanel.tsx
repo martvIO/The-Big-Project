@@ -5,7 +5,7 @@ import { api, ApiError, errorMessage } from "../api";
 import type { AvailabilityState, ShiftTemplate, ShiftWeek } from "../api";
 import { RangeText } from "../lib/dateRange";
 import { jerusalemIsoDate, jerusalemTime, jerusalemWeekday, plainDayMonth } from "../lib/jerusalem";
-import { DAY_NAMES, addDays } from "../lib/week";
+import { DAYS_IN_WEEK, DAY_NAMES, FIRST_OFFSET, LAST_OFFSET, addDays } from "../lib/week";
 import { ShiftAvailabilityFieldset, UNANSWERED } from "./ShiftAvailabilityFieldset";
 
 // The staffer's screen, and the highest-volume surface in this feature by an
@@ -35,21 +35,6 @@ const MAPPED_CODES: Record<string, string> = {
   NOT_AUTHORIZED: "shifts.errors.notAuthorized",
   NOT_FOUND: "shifts.errors.notFound",
 };
-
-// D1's window, mirrored so the two week buttons disable at the edges rather
-// than letting her walk into a 400. The server validates it regardless — this
-// is a courtesy, never the rule.
-//
-// ⚠ THE OFFSET IS COUNTED FROM THE SERVER'S DEFAULT WEEK, NOT FROM A DEVICE
-// CLOCK. The panel never computes «next week»: that changes meaning at Saturday
-// midnight and a browser on a New York clock disagrees with the server for part
-// of every day, which is `lib/jerusalem.ts`' whole reason for existing. The
-// first load's week IS the server's default — NEXT week, i.e. +1 from the
-// current one — so the window `[-4, +4]` around the current week is
-// `[-5, +3]` around this origin.
-const DAYS_IN_WEEK = 7;
-const FIRST_OFFSET = -5;
-const LAST_OFFSET = 3;
 
 export interface MyWeekPanelProps {
   // The owner and the shift manager are not subject to the deadline (D5), which

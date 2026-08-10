@@ -4,7 +4,7 @@ import { Badge, Button, Card, Skeleton, formatDateRange } from "@boutique/ui";
 import { api, ApiError, errorMessage } from "../api";
 import type { AvailabilityState, ShiftTemplate, WeekSubmissionRow } from "../api";
 import { RangeText } from "../lib/dateRange";
-import { DAY_NAMES, addDays } from "../lib/week";
+import { DAYS_IN_WEEK, DAY_NAMES, FIRST_OFFSET, LAST_OFFSET, addDays } from "../lib/week";
 import { plainDayMonth } from "../lib/jerusalem";
 import { ShiftAvailabilityFieldset, UNANSWERED } from "./ShiftAvailabilityFieldset";
 
@@ -56,6 +56,12 @@ function byWeekday(templates: ShiftTemplate[]): [number, ShiftTemplate[]][] {
 
 export function WeekSubmissionsPane({ templates }: WeekSubmissionsPaneProps) {
   const { t } = useTranslation();
+  // ⚠ THE REQUESTED WEEK, NOT THE RESOLVED ONE. `undefined` means «the server's
+  // default», which is next week — the same contract `MyWeekPanel` uses, and the
+  // reason neither pane ever computes a week from the device clock. The resolved
+  // pair below is what the range line renders.
+  const [requestedWeek, setRequestedWeek] = useState<string | undefined>(undefined);
+  const [offset, setOffset] = useState(0);
   const [weekStart, setWeekStart] = useState<string | null>(null);
   const [weekEnd, setWeekEnd] = useState<string | null>(null);
   const [rows, setRows] = useState<WeekSubmissionRow[] | null>(null);
@@ -69,7 +75,7 @@ export function WeekSubmissionsPane({ templates }: WeekSubmissionsPaneProps) {
   const load = useCallback(async () => {
     setLoadFailed(false);
     try {
-      const payload = await api.getWeekSubmissions();
+      const payload = await api.getWeekSubmissions(requestedWeek);
       setRows(payload.rows);
       setWeekStart(payload.week_start);
       setWeekEnd(payload.week_end);
@@ -77,11 +83,27 @@ export function WeekSubmissionsPane({ templates }: WeekSubmissionsPaneProps) {
       setRows(null);
       setLoadFailed(true);
     }
-  }, []);
+  }, [requestedWeek]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const step = (weeks: number) => {
+    // ⚠ WALKS FROM THE REQUESTED WEEK, falling back to the resolved one only on
+    // the first step. `weekStart` is the LAST PAYLOAD, so a second press while a
+    // load is still in flight would walk from a week she has already left.
+    if (weekStart === null) {
+      return;
+    }
+    // An expansion belongs to a row in the week she is leaving, and its
+    // pre-filled answers are that week's. Collapse rather than carry them over.
+    setExpanded(null);
+    setSaveError(null);
+    setSavedFor(null);
+    setOffset((current) => current + weeks);
+    setRequestedWeek((current) => addDays(current ?? weekStart, weeks * DAYS_IN_WEEK));
+  };
 
   const expand = (row: WeekSubmissionRow) => {
     setSaveError(null);
@@ -165,11 +187,39 @@ export function WeekSubmissionsPane({ templates }: WeekSubmissionsPaneProps) {
     <Card>
       <h2 className="text-xl font-semibold text-ink">{t("shifts.submissionsHeading")}</h2>
 
-      {weekStart !== null && weekEnd !== null && (
-        <p role="status" className="mt-3 text-base text-ink">
-          {t("shifts.weekLabel")} <RangeText range={formatDateRange(weekStart, weekEnd)} />
-        </p>
-      )}
+      {/* ⚠ THIS PANE PAGES TOO, and D1's ±4 is the reason. Pinned to the
+          server's default it could only ever answer «who has submitted for next
+          week», while `MyWeekPanel` beside it walks four weeks either way — so
+          the readiness list and her own week could show different weeks with no
+          way to reconcile them. Words, not chevrons (DL20), disabled at the same
+          edges, and the same keys `MyWeekPanel` uses. */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          size="md"
+          disabled={offset <= FIRST_OFFSET}
+          onClick={() => {
+            step(-1);
+          }}
+        >
+          {t("shifts.prevWeek")}
+        </Button>
+        <Button
+          variant="secondary"
+          size="md"
+          disabled={offset >= LAST_OFFSET}
+          onClick={() => {
+            step(1);
+          }}
+        >
+          {t("shifts.nextWeek")}
+        </Button>
+        {weekStart !== null && weekEnd !== null && (
+          <p role="status" className="text-base text-ink">
+            {t("shifts.weekLabel")} <RangeText range={formatDateRange(weekStart, weekEnd)} />
+          </p>
+        )}
+      </div>
       <p className="mt-1 text-base text-ink">
         {t("shifts.submittedCount", { submitted: submittedCount, total: rows.length })}
       </p>

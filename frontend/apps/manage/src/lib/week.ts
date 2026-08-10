@@ -14,6 +14,26 @@
 // 0=Sunday … 6=Saturday.
 export const DAY_NAMES = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
 
+export const DAYS_IN_WEEK = 7;
+
+// D1's window, mirrored so the two week buttons disable at the edges rather than
+// letting anyone walk into a 400. The server validates it regardless — this is a
+// courtesy, never the rule.
+//
+// ⚠ THE OFFSET IS COUNTED FROM THE SERVER'S DEFAULT WEEK, NOT FROM A DEVICE
+// CLOCK. No pane ever computes «next week»: that changes meaning at Saturday
+// midnight and a browser on a New York clock disagrees with the server for part
+// of every day, which is `lib/jerusalem.ts`' whole reason for existing. The first
+// load's week IS the server's default — NEXT week, i.e. +1 from the current one
+// — so the window `[-4, +4]` around the current week is `[-5, +3]` around this
+// origin.
+//
+// Both week-paging panes (`MyWeekPanel`, `WeekSubmissionsPane`) read the same
+// two routes' identical `assert_readable_week`, so the pair lives here rather
+// than twice.
+export const FIRST_OFFSET = -5;
+export const LAST_OFFSET = 3;
+
 // ⚠ DATE PARTS, NEVER MILLISECONDS. `new Date(ms + n * 86400000)` is off by an
 // hour across a DST boundary and can land on the previous day; Date's UTC
 // setters do exact calendar arithmetic and month/year/leap rollover for free.

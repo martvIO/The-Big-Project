@@ -218,3 +218,53 @@ describe("the read", () => {
     expect(await screen.findByText("הגישו 1 מתוך 2")).toBeInTheDocument();
   });
 });
+
+describe("week navigation", () => {
+  it("pages the readiness list the same ±4 weeks her own week pages", async () => {
+    // ⚠ WITHOUT THIS THE PANE IS PINNED TO THE SERVER'S DEFAULT WEEK. D1 permits
+    // ±4 and `getWeekSubmissions` has always taken the parameter — but with no
+    // control on the pane, an owner could only ever read «who has submitted for
+    // next week» while `MyWeekPanel` beside her walked four weeks either way.
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "השבוע הבא" }));
+    await waitFor(() => {
+      expect(getWeekSubmissions).toHaveBeenLastCalledWith("2026-11-15");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "השבוע הקודם" }));
+    await waitFor(() => {
+      expect(getWeekSubmissions).toHaveBeenLastCalledWith("2026-11-08");
+    });
+  });
+
+  it("disables the forward button three weeks past the server's default", async () => {
+    // The server's default is NEXT week, so D1's ±4 around the CURRENT week is
+    // [-5, +3] around this origin — the identical arithmetic `MyWeekPanel` does,
+    // now from one shared pair of constants.
+    mount();
+    const forward = await screen.findByRole("button", { name: "השבוע הבא" });
+    for (let step = 0; step < 3; step += 1) {
+      fireEvent.click(screen.getByRole("button", { name: "השבוע הבא" }));
+      await waitFor(() => {
+        expect(getWeekSubmissions).toHaveBeenCalled();
+      });
+    }
+    await waitFor(() => {
+      expect(forward).toBeDisabled();
+    });
+  });
+
+  it("collapses an expanded row when the week changes", async () => {
+    // The pre-filled answers belong to the week she is leaving, and the save
+    // button writes `week_start` — so carrying an open form across a week change
+    // is how a `recorded_by`-stamped write lands on the wrong week.
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /רישום עבור מיכל ברזילי/ }));
+    expect(screen.getByRole("button", { name: /שמירה עבור מיכל ברזילי/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "השבוע הבא" }));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /שמירה עבור מיכל ברזילי/ }),
+      ).not.toBeInTheDocument();
+    });
+  });
+});
