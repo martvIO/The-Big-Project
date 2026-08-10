@@ -3506,3 +3506,76 @@ Every feature's review found something, and the pattern is worth recording: **th
 ## Run report
 
 _Written when the queue is exhausted._
+
+---
+
+## Run report — E5 + E6 + E8, 2026-08-06 → 2026-08-11
+
+**11 of the 12 features in scope are merged. E6 and E8 are COMPLETE. E5 needs only F29,
+which is parked at its Gate 1 awaiting four money-surface answers from the user.**
+
+| Epic | Features | PRs |
+|---|---|---|
+| E5 growth | F22 · F24 · F25 · F27 · F28 · F23 · F26 | #49 #50 #51 #52 #53 #56 #57 |
+| E6 in-store realtime | F35 (F34 already merged) | #54 |
+| E8 scheduler + HR | F38 · F39 · F40 | #55 #58 #59 |
+| **Blocked** | **F29 pre-scale-gate** | Gate 1 unanswered |
+
+Every merge went through the same gate: spec → design gate (two independent critique lenses)
+→ plan → TDD build with a commit per task → dual adversarial review → five local gates → all
+FOUR gating CI jobs → `merge-gate.sh`. No `--admin`, no `--auto`, nothing merged on a pending
+or failing check.
+
+### What the process caught that a diff could not
+
+- **F40's build ran out of context at 15 of 19 tasks and REPORTED the four it had not built.**
+  Without the task-walk instruction the feature would have merged with no roster screen and no
+  axe coverage at all. A diff cannot show an absent task; only walking the plan against the
+  commits can.
+- **F39's design gate caught a `NaN` on the most-viewed string in the feature** before a line
+  was written — `plainDayMonth` splits a plain date on `-`, and fed an ISO instant it yields
+  «יום רביעי, NaN.11, 18:00». The obvious workaround reproduces a DST day-slip instead, so the
+  guard now runs under `TZ=America/New_York`.
+- **F40's spec found its epic's premise was fiction.** "F31 already gives the owner a manual way
+  to mark who is on shift" appears in four places and there is no such mechanism. Nothing was
+  demoted; rule 3 resolves to today's behaviour, and the epic's riskiest feature was additive.
+- **F23's review found cascade starvation**: the offer batch was a deterministic first-50, so a
+  boutique with more than 50 pending pairs never reached the tail — silently, forever.
+- **F26's tests colluded with its bug**: five components built addresses from a hardcoded
+  `modryn.co.il` and every fixture pinned the same literal, so each component agreed with its
+  own test indefinitely. Fixed and verified BY MUTATION.
+
+### What only the real-environment testing could catch
+
+Nine browser journeys on a fresh database as `boutique_app` (RLS genuinely binding), plus the
+roster cutover at 0036. Two defects that both suites were structurally blind to:
+
+- **Deposits were uncollectable in the assembled app.** `create_app` built the two services that
+  decide before it built the gateway service they depend on, so an optional dependency took its
+  safe default and no boutique could ever collect a deposit. Every unit test passes that
+  dependency explicitly — one is named `test_storefront_hides_the_deposit_with_no_connected_gateway`
+  — so the suite proved both branches while production was pinned to one. **FIXED**, with
+  `test_deposit_wiring.py` asserting the graph `create_app` actually produces.
+- **The QA runbook copied two SPA bundles when the app needs three**, and the missing platform
+  console 404s exactly like the documented host fence. Since F25 retired the provisioning CLI,
+  that console is the only way to create a tenant, so the runbook dead-ended. **FIXED.**
+
+### Open, and honestly open
+
+1. **Deposit Defect B** — with A fixed, `POST /storefront/bookings` still answers
+   `deposit_due: false` while the disclosure path honours it. Every conjunct of `deposit_due()`
+   was probed true against the object graph. Cause NOT established. Next step: instrument the
+   inputs `create_booking` actually receives, which is a different question from what the graph
+   holds. See `.planning/qa-2026-08-10-e6-boundary.md`.
+2. **F29** — four Gate 1 questions for the user: refund idempotency and amount-assertion rules,
+   double-refund guards, k6 target numbers, Redis TTLs + the negative-cache bound. E5's boundary
+   QA waits on it.
+3. **E5 boundary QA** — deferred until F29 merges. The storefront waitlist journeys
+   (join → offer → claim) and the client portal OTP flow have not been walked in a browser.
+4. **`MyWeekPanel`'s published block is stale-until-refetch** after publishing. By design, but
+   worth a look.
+
+### Still user actions, unchanged
+
+F62's host-gated rows, the 3 DNS records, Twilio values, the Israeli PSP. E9/E10 (F43–F49)
+remain out of scope by the user's instruction.
