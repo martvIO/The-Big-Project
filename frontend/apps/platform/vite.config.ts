@@ -15,7 +15,7 @@ import { defineConfig } from "vite";
 // Backend/tests/test_spa_serving.py derives that set from the live route table
 // and asserts this line matches it — a third segment added without touching this
 // file fails there rather than silently 404ing in dev only.
-const PLATFORM_API = "^/platform/(auth|invites|tenants)";
+const PLATFORM_API = "^/platform/(auth|invites|join|tenants)";
 
 export default defineConfig({
   // The console lives at admin.{domain}/platform. Without this it would emit

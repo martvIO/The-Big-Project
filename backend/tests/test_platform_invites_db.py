@@ -12,6 +12,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -20,6 +22,7 @@ from app.auth.service import AuthService
 from app.auth.tokens import generate_session_token, hash_token
 from app.core.config import Settings
 from app.db.repositories.platform_invites import PlatformInvitesRepository
+from app.main import create_app
 from app.models.constants import StaffRole
 from app.models.platform_invite import PlatformInvite
 from app.platform.service import ProvisioningService, RedeemResult
@@ -660,5 +663,100 @@ def test_a_weak_password_is_refused_without_spending_the_invite(
             assert details["code_hash_prefix"] == hash_token(created.code)[:8]
         assert created.code not in repr(rows)
         assert hash_token(created.code) not in repr(rows)
+    finally:
+        asyncio.run(engine.dispose())
+
+
+# --- C2: the anonymous surface over HTTP -------------------------------------
+
+
+def _console_app(factory: async_sessionmaker, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    monkeypatch.setattr("app.main.get_settings", lambda: Settings(app_env="dev"))
+    monkeypatch.setattr("app.main.get_session_factory", lambda: factory)
+
+    async def _resolver(slug: str) -> None:
+        return None
+
+    return create_app(resolver=_resolver)
+
+
+def test_the_join_routes_preview_and_redeem_an_invite_anonymously(
+    app_role_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No cookie, no session, no operator — the whole point of the feature. The
+    success response names the manage URL F17's gateway screen lives behind; F26
+    adds no payment code and only links there (D7)."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = ProvisioningService(factory)
+    try:
+        slug = _slug()
+        created = asyncio.run(
+            service.create_invite(
+                slug=slug,
+                name="Bella Bridal",
+                owner_email="owner@bella.example",
+                operator=_operator(),
+            )
+        )
+        assert created.ok and created.code is not None
+
+        app = _console_app(factory, monkeypatch)
+        with TestClient(app, base_url="http://admin.localtest.me") as client:
+            preview = client.get("/platform/join/invite", params={"code": created.code})
+            assert preview.status_code == 200, preview.text
+            assert preview.json() == {
+                "slug": slug,
+                "name": "Bella Bridal",
+                "owner_email": "owner@bella.example",
+            }
+
+            redeemed = client.post(
+                "/platform/join/redeem",
+                json={"code": created.code, "owner_password": REDEEM_PASSWORD},
+            )
+            assert redeemed.status_code == 200, redeemed.text
+            assert redeemed.json() == {
+                "slug": slug,
+                "manage_url": f"https://{slug}.localtest.me/manage",
+            }
+
+            # Spent. Same body for redeemed as for unknown (D5).
+            spent = client.get("/platform/join/invite", params={"code": created.code})
+            assert spent.status_code == 404
+            assert spent.json()["error"]["code"] == "invalid_invite"
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_repeated_bad_codes_are_throttled_after_the_budget(
+    app_role_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The budget exists because every refusal here writes an INSERT-only
+    `platform_audit_log` row nothing prunes. Keyed on the code's hash, so the
+    same bad code is what gets throttled — and the global arm is what a caller
+    rotating codes eventually hits."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    try:
+        app = _console_app(factory, monkeypatch)
+        bad = generate_session_token()
+        with TestClient(app, base_url="http://admin.localtest.me") as client:
+            budget = Settings(app_env="dev").invite_redeem_max_attempts
+            for _ in range(budget):
+                refused = client.post(
+                    "/platform/join/redeem",
+                    json={"code": bad, "owner_password": REDEEM_PASSWORD},
+                )
+                assert refused.status_code == 404
+                assert refused.json()["error"]["code"] == "invalid_invite"
+            blocked = client.post(
+                "/platform/join/redeem", json={"code": bad, "owner_password": REDEEM_PASSWORD}
+            )
+            assert blocked.status_code == 429
+            assert blocked.json()["error"]["code"] == "TOO_MANY_ATTEMPTS"
+            # The SAME budget, so a caller who exhausted redeem cannot keep
+            # hammering preview with the code it already spent it on.
+            assert client.get("/platform/join/invite", params={"code": bad}).status_code == 429
     finally:
         asyncio.run(engine.dispose())
