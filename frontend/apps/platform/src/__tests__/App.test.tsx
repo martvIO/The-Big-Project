@@ -46,7 +46,7 @@ describe("the console bootstrap", () => {
   it("renders the console when /platform/auth/me is 200", async () => {
     fetchMock.mockImplementation((url: string) =>
       Promise.resolve(
-        url === "/platform/auth/me" ? json(200, OPERATOR) : json(200, { tenants: [] }),
+        url === "/platform/auth/me" ? json(200, OPERATOR) : json(200, { tenants: [], invites: [] }),
       ),
     );
     render(<App />);
@@ -67,6 +67,9 @@ describe("the console bootstrap", () => {
     fetchMock.mockImplementation((url: string) => {
       if (url === "/platform/auth/me") return Promise.resolve(json(200, OPERATOR));
       if (url === "/platform/tenants") return Promise.resolve(json(200, { tenants: [BELLA] }));
+      // F26's second mount fetch. Left at 401 it would expire the session before
+      // the operator ever reached the action this test is about.
+      if (url === "/platform/invites") return Promise.resolve(json(200, { invites: [] }));
       return Promise.resolve(
         json(401, { error: { code: "NOT_AUTHENTICATED", message: "Authentication required." } }),
       );
