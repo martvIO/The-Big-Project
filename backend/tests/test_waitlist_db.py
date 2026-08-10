@@ -253,6 +253,17 @@ SLOT = datetime.datetime(2026, 8, 20, 11, 30, tzinfo=datetime.UTC)
 DEADLINE = NOW + datetime.timedelta(hours=2)
 
 
+def _hash(label: str) -> str:
+    """⚠ NEVER a bare literal. `idx_waitlist_entries_offer_token` is GLOBAL — it
+    has no tenant column, because `/w/{token}` resolves a tenant FROM the token —
+    and this file truncates nothing, so two tests sharing one literal are a
+    duplicate key across two tenants that had nothing to do with each other. A
+    real hash is a sha256 of 32 random bytes, so the collision is an artefact of
+    writing them by hand; the suffix restores that property and the label keeps
+    the assertions readable."""
+    return f"{label}-{uuid.uuid4()}"
+
+
 async def _offer(
     factory: async_sessionmaker[AsyncSession],
     tenant_id: uuid.UUID,
@@ -283,8 +294,9 @@ def test_the_offer_guard_moves_a_waiting_row_once_and_only_once(app_role_url: st
     async def check() -> None:
         try:
             entry_id = await _insert(factory, tenant_id)
-            assert await _offer(factory, tenant_id, entry_id, token_hash="hash-a")
-            assert not await _offer(factory, tenant_id, entry_id, token_hash="hash-b")
+            winner = _hash("hash-a")
+            assert await _offer(factory, tenant_id, entry_id, token_hash=winner)
+            assert not await _offer(factory, tenant_id, entry_id, token_hash=_hash("hash-b"))
             async with tenant_session(factory, tenant_id) as session:
                 row = await REPO.by_id(session, tenant_id, entry_id)
                 assert row is not None
@@ -293,7 +305,7 @@ def test_the_offer_guard_moves_a_waiting_row_once_and_only_once(app_role_url: st
                 assert row.offer_starts_at == SLOT
                 assert row.offer_expires_at == DEADLINE
                 # The LOSER's token never landed — the winner's row is intact.
-                assert row.offer_token_hash == "hash-a"
+                assert row.offer_token_hash == winner
         finally:
             await engine.dispose()
 
@@ -313,14 +325,15 @@ def test_due_offers_returns_only_the_expired_ones_and_close_offer_moves_them(
         try:
             due = await _insert(factory, tenant_id, phone="+972501111111")
             live = await _insert(factory, tenant_id, phone="+972502222222")
+            due_hash = _hash("hash-due")
             await _offer(
                 factory,
                 tenant_id,
                 due,
-                token_hash="hash-due",
+                token_hash=due_hash,
                 expires_at=NOW - datetime.timedelta(minutes=1),
             )
-            await _offer(factory, tenant_id, live, token_hash="hash-live")
+            await _offer(factory, tenant_id, live, token_hash=_hash("hash-live"))
             async with tenant_session(factory, tenant_id) as session:
                 rows = await REPO.due_offers(session, tenant_id, now=NOW)
                 assert [row.id for row in rows] == [due]
@@ -336,7 +349,7 @@ def test_due_offers_returns_only_the_expired_ones_and_close_offer_moves_them(
                 # Both SURVIVE the transition deliberately: the token so her SMS
                 # link still answers design row E (`expired`) instead of the
                 # invalid state, and the instant so that answer can name the slot.
-                assert expired.offer_token_hash == "hash-due"
+                assert expired.offer_token_hash == due_hash
                 assert expired.offer_starts_at == SLOT
                 still_live = await REPO.by_id(session, tenant_id, live)
                 assert still_live is not None
@@ -357,7 +370,7 @@ def test_close_offer_can_return_an_unsent_offer_to_waiting(app_role_url: str) ->
     async def check() -> None:
         try:
             entry_id = await _insert(factory, tenant_id)
-            await _offer(factory, tenant_id, entry_id, token_hash="hash-unsent")
+            await _offer(factory, tenant_id, entry_id, token_hash=_hash("hash-unsent"))
             async with tenant_session(factory, tenant_id) as session:
                 await REPO.close_offer(
                     session, tenant_id, [entry_id], status=WaitlistEntryStatus.WAITING.value
@@ -372,7 +385,7 @@ def test_close_offer_can_return_an_unsent_offer_to_waiting(app_role_url: str) ->
                 assert returned.offer_token_hash is None
                 assert returned.offer_expires_at is None
                 assert returned.offer_starts_at is None
-            assert await _offer(factory, tenant_id, entry_id, token_hash="hash-retry")
+            assert await _offer(factory, tenant_id, entry_id, token_hash=_hash("hash-retry"))
         finally:
             await engine.dispose()
 
@@ -390,12 +403,12 @@ def test_the_claim_guard_refuses_an_expired_offer_and_a_second_claim(app_role_ur
         try:
             live = await _insert(factory, tenant_id, phone="+972501111111")
             stale = await _insert(factory, tenant_id, phone="+972502222222")
-            await _offer(factory, tenant_id, live, token_hash="hash-live")
+            await _offer(factory, tenant_id, live, token_hash=_hash("hash-live"))
             await _offer(
                 factory,
                 tenant_id,
                 stale,
-                token_hash="hash-stale",
+                token_hash=_hash("hash-stale"),
                 expires_at=NOW - datetime.timedelta(seconds=1),
             )
             async with tenant_session(factory, tenant_id) as session:
@@ -434,7 +447,7 @@ def test_waiting_pairs_skips_a_pair_that_already_holds_a_live_offer(app_role_url
             async with tenant_session(factory, tenant_id) as session:
                 pairs = await REPO.waiting_pairs(session, tenant_id, from_day=DAY)
                 assert sorted(pairs) == sorted([(DAY, type_id), (DAY, other_type)])
-            await _offer(factory, tenant_id, first, token_hash="hash-first")
+            await _offer(factory, tenant_id, first, token_hash=_hash("hash-first"))
             async with tenant_session(factory, tenant_id) as session:
                 pairs = await REPO.waiting_pairs(session, tenant_id, from_day=DAY)
                 assert pairs == [(DAY, other_type)]
@@ -497,8 +510,8 @@ def test_offered_instants_counts_the_live_offers_on_one_day(app_role_url: str) -
             waiting = await _insert(factory, tenant_id, type_id=uuid.uuid4(), phone="+972503333333")
             async with tenant_session(factory, tenant_id) as session:
                 assert await REPO.offered_instants(session, tenant_id, day=DAY) == {}
-            await _offer(factory, tenant_id, first, token_hash="hash-first")
-            await _offer(factory, tenant_id, second, token_hash="hash-second")
+            await _offer(factory, tenant_id, first, token_hash=_hash("hash-first"))
+            await _offer(factory, tenant_id, second, token_hash=_hash("hash-second"))
             async with tenant_session(factory, tenant_id) as session:
                 assert await REPO.offered_instants(session, tenant_id, day=DAY) == {SLOT: 2}
                 # A `waiting` row holds nothing, and another day is another grid.
@@ -533,7 +546,7 @@ def test_oldest_waiting_is_fifo_and_ignores_the_offered_row(app_role_url: str) -
                 )
                 assert oldest is not None
                 assert oldest.id == first
-            await _offer(factory, tenant_id, first, token_hash="hash-first")
+            await _offer(factory, tenant_id, first, token_hash=_hash("hash-first"))
             async with tenant_session(factory, tenant_id) as session:
                 oldest = await REPO.oldest_waiting(
                     session, tenant_id, day=DAY, appointment_type_id=type_id
@@ -560,12 +573,13 @@ def test_the_owner_cancel_now_also_takes_an_offered_entry_and_clears_its_deadlin
     async def check() -> None:
         try:
             entry_id = await _insert(factory, tenant_id)
-            await _offer(factory, tenant_id, entry_id, token_hash="hash-offered")
+            offered_hash = _hash("hash-offered")
+            await _offer(factory, tenant_id, entry_id, token_hash=offered_hash)
             async with tenant_session(factory, tenant_id) as session:
                 cancelled = await REPO.cancel(session, tenant_id, entry_id)
                 assert cancelled is not None
                 assert cancelled.status == WaitlistEntryStatus.CANCELLED.value
-                assert cancelled.offer_token_hash == "hash-offered"
+                assert cancelled.offer_token_hash == offered_hash
                 assert cancelled.offer_expires_at is None
         finally:
             await engine.dispose()
@@ -582,7 +596,7 @@ def test_an_offer_token_is_invisible_across_tenants(app_role_url: str) -> None:
     engine, factory = _factory(app_role_url)
     tenant_a = uuid.uuid4()
     tenant_b = uuid.uuid4()
-    token_hash = f"hash-{uuid.uuid4()}"
+    token_hash = _hash("hash-cross-tenant")
 
     async def check() -> None:
         try:
