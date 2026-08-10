@@ -2,6 +2,7 @@ import datetime
 import uuid
 
 from sqlalchemy import Integer, Text, Time, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,3 +42,16 @@ class ShiftTemplate(StandardColumns, Base):
     # `ends_at_time > starts_at_time` is a named DB CHECK, so no overnight shift.
     ends_at_time: Mapped[datetime.time] = mapped_column(Time, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # F40 (spec D10). A SPARSE map keyed by `StaffRole`: {"sales_assistant": 2}.
+    # An ABSENT key is «no target» and renders as a plain count; `0` is
+    # «deliberately nobody» and renders as a target. The two are not the same
+    # thing, which is why this is a map and never a five-element vector.
+    #
+    # ⚠ A TARGET EDIT IS NOT A MATERIAL EDIT. `MATERIAL_FIELDS` reads
+    # `day_of_week`, `starts_at_time`, `ends_at_time` and must NOT gain a fourth:
+    # a coverage number changes nothing any staffer answered, and adding it would
+    # soft-delete every future submission on this template the first time
+    # somebody fixes a target from 2 to 3.
+    coverage_targets: Mapped[dict[str, int]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )

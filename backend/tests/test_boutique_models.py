@@ -11,7 +11,9 @@ from sqlalchemy import Table
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.base import Base
-from app.models.constants import AppointmentAudience, AvailabilityState
+from app.models.constants import AppointmentAudience, AuditAction, AvailabilityState, OnShiftSource
+from app.models.roster import Roster
+from app.models.roster_assignment import RosterAssignment
 from app.models.shift_template import ShiftTemplate
 from app.models.staff_availability import StaffAvailability
 from app.models.staff_user import StaffUser  # noqa: F401  (registers staff_users on Base)
@@ -113,14 +115,32 @@ def test_staff_user_declares_every_column_the_hr_migration_adds() -> None:
     separate times: 0023's and F57's headers both had to spell out by hand that
     the model must be edited in the same PR, because nothing enforced it.
 
-    Scoped to F38's own migration deliberately — a walker over every migration
-    would be a different, larger feature and would red on the pre-existing gaps
-    it found. This one closes the gap for the eleven columns being added now.
+    ⚠ F40 EXTENDS IT TO A SECOND MIGRATION rather than adding a third parity
+    test. Scoped to F38's migration alone it is blind to `on_shift_on` /
+    `on_shift_override`, and an omitted `Mapped[…]` for either is an
+    `AttributeError` on the first floor read — the highest-traffic screen in the
+    console — instead of a red test here (plan R-K).
     """
     declared = _migration_columns(_HR_MIGRATION)
     assert len(declared) == 11, declared
-    missing = declared - set(_table("staff_users").columns.keys())
+    on_shift = {
+        declaration.split()[0]
+        for declaration in _roster_migration_module()._STAFF_USER_COLUMNS  # type: ignore[attr-defined]
+    }
+    assert on_shift == {"on_shift_on", "on_shift_override"}, on_shift
+    missing = (declared | on_shift) - set(_table("staff_users").columns.keys())
     assert missing == set(), f"StaffUser is missing {missing}"
+
+
+def test_the_two_on_shift_columns_are_nullable_together() -> None:
+    """D4's pair: `(on_shift_on IS NULL) = (on_shift_override IS NULL)` is a named
+    DB CHECK, so BOTH columns are nullable and neither carries a default. A
+    NOT NULL on either would make "no override" unrepresentable and turn rule 1
+    into a rule that always fires."""
+    columns = _table("staff_users").columns
+    for name in ("on_shift_on", "on_shift_override"):
+        assert columns[name].nullable is True, name
+        assert columns[name].server_default is None, name
 
 
 def test_staff_user_photo_columns_are_all_nullable_together() -> None:
@@ -163,11 +183,23 @@ def test_shift_models_declare_every_column_their_migration_creates() -> None:
     The lists come out of the MIGRATION ITSELF (`_SHIFT_TEMPLATE_COLUMNS`,
     `_STAFF_AVAILABILITY_COLUMNS`), never out of a copy retyped here — a retyped
     list is a list the same hand that forgot the model would have to edit.
+
+    ⚠ `shift_templates`' declared set is the UNION of F39's CREATE and F40's
+    ALTER. The `extra` half below is a set difference, so leaving F40's
+    `coverage_targets` out of it would red this test the moment the model
+    declares the column — which is the same hand-edit trap the union avoids.
     """
-    module = _shifts_migration_module()
+    shifts = _shifts_migration_module()
+    roster = _roster_migration_module()
     for table_name, declarations in (
-        ("shift_templates", module._SHIFT_TEMPLATE_COLUMNS),  # type: ignore[attr-defined]
-        ("staff_availability", module._STAFF_AVAILABILITY_COLUMNS),  # type: ignore[attr-defined]
+        (
+            "shift_templates",
+            (
+                *shifts._SHIFT_TEMPLATE_COLUMNS,  # type: ignore[attr-defined]
+                *roster._SHIFT_TEMPLATE_COLUMNS,  # type: ignore[attr-defined]
+            ),
+        ),
+        ("staff_availability", shifts._STAFF_AVAILABILITY_COLUMNS),  # type: ignore[attr-defined]
     ):
         declared = {declaration.split()[0] for declaration in declarations}
         missing = declared - set(_table(table_name).columns.keys())
@@ -182,6 +214,94 @@ def test_both_shift_tables_carry_standard_columns() -> None:
     for model in (ShiftTemplate, StaffAvailability):
         missing = STANDARD_COLUMNS - set(_table(model.__tablename__).columns.keys())
         assert missing == set(), f"{model.__tablename__} missing {missing}"
+
+
+# --- F40: rosters + roster_assignments ---------------------------------------
+
+_ROSTER_MIGRATION = next(
+    (Path(__file__).resolve().parent.parent / "migrations" / "versions").glob("*_roster.py")
+)
+
+
+def _roster_migration_module() -> object:
+    spec = importlib.util.spec_from_file_location("roster_migration", _ROSTER_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_roster_models_declare_every_column_their_migration_creates() -> None:
+    """The twin of F39's, for F40's two tables. Without it every line of the
+    repositories and the service is an `AttributeError` at first read rather
+    than a red test here."""
+    module = _roster_migration_module()
+    for table_name, declarations in (
+        ("rosters", module._ROSTER_COLUMNS),  # type: ignore[attr-defined]
+        ("roster_assignments", module._ROSTER_ASSIGNMENT_COLUMNS),  # type: ignore[attr-defined]
+    ):
+        declared = {declaration.split()[0] for declaration in declarations}
+        missing = declared - set(_table(table_name).columns.keys())
+        assert missing == set(), f"{table_name} model is missing {missing}"
+        extra = set(_table(table_name).columns.keys()) - declared - STANDARD_COLUMNS
+        assert extra == set(), f"{table_name} model declares {extra}, which no migration creates"
+
+
+def test_all_four_shift_tables_carry_standard_columns() -> None:
+    """TWO became FOUR (plan A1). A soft-delete predicate is the whole contract
+    of every read in this feature, so a table that quietly lacked `deleted_at`
+    would answer every query with rows nobody can remove."""
+    for model in (ShiftTemplate, StaffAvailability, Roster, RosterAssignment):
+        missing = STANDARD_COLUMNS - set(_table(model.__tablename__).columns.keys())
+        assert missing == set(), f"{model.__tablename__} missing {missing}"
+
+
+def test_roster_shape() -> None:
+    """`published_at`/`published_by` are the WHOLE of this table's state (D6) —
+    there is no `status` enum, because a second copy of a fact can disagree with
+    the first."""
+    assert Roster.__tablename__ == "rosters"
+    cols = _table("rosters").columns
+    assert not cols["week_start"].nullable
+    # NULL = draft. Both nullable, paired by a named DB CHECK.
+    assert cols["published_at"].nullable
+    assert cols["published_by"].nullable
+
+
+def test_roster_assignment_shape() -> None:
+    assert RosterAssignment.__tablename__ == "roster_assignments"
+    cols = _table("roster_assignments").columns
+    for name in ("roster_id", "shift_template_id", "staff_user_id", "assigned_by"):
+        assert not cols[name].nullable, name
+    assert not cols["is_shift_manager"].nullable
+    # NULL = no override (D11). Only 'unavailable' is ever written today.
+    assert cols["override_of_state"].nullable
+
+
+def test_coverage_targets_is_a_non_null_sparse_map() -> None:
+    """D10: absent key means «no target» and `0` means «deliberately nobody», so
+    the column must default to an EMPTY object and never to NULL — a nullable
+    JSONB would give the sparse map a third, meaningless state."""
+    column = _table("shift_templates").columns["coverage_targets"]
+    assert column.nullable is False
+    assert column.server_default is not None
+
+
+def test_on_shift_source_has_exactly_three_members_and_no_db_check() -> None:
+    """DERIVED on read like `StaffCardStatus`, never stored like
+    `AvailabilityState` — so there is no column for a CHECK to constrain and the
+    resolver is the only producer."""
+    assert {member.value for member in OnShiftSource} == {"manual_today", "roster", "fallback"}
+
+
+def test_the_five_roster_audit_actions_exist() -> None:
+    """An unwritten member is inert; a MISSING one is a `ValueError` at 03:00 on
+    the first write of a route nobody exercised in review."""
+    assert AuditAction.ROSTER_ASSIGNED == "roster_assigned"
+    assert AuditAction.ROSTER_UNASSIGNED == "roster_unassigned"
+    assert AuditAction.ROSTER_PUBLISHED == "roster_published"
+    assert AuditAction.ON_SHIFT_OVERRIDE_SET == "on_shift_override_set"
+    assert AuditAction.ON_SHIFT_OVERRIDE_CLEARED == "on_shift_override_cleared"
 
 
 def test_shift_template_shape() -> None:

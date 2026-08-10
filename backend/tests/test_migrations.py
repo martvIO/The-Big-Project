@@ -5174,3 +5174,312 @@ def test_the_shift_migration_round_trips(migrated_db: str) -> None:
         assert _shift_columns(migrated_db, "staff_availability")["week_start"] == ("date", "NO")
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F40: rosters + roster_assignments + coverage targets + the override ------
+#
+# ⚠ db-marked, and this box has no Docker — set TEST_POSTGRES_SUPERUSER_URL at a
+# throwaway local PG16 to run them (conftest.postgres_url documents the setup).
+# Written against F39's block directly above, which is what the migration copies.
+
+# Spelled as POSTGRES deparses them (parenthesised, schema-qualified) — 0018's
+# pinning technique, F39's block's rule. Weakening a CHECK or dropping half a
+# partial predicate then collides with a review here instead of shipping.
+_ROSTER_WEEK_START_CHECK_DEF = "CHECK ((EXTRACT(dow FROM week_start) = (0)::numeric))"
+_ROSTER_PUBLISHED_PAIR_CHECK_DEF = "CHECK (((published_at IS NULL) = (published_by IS NULL)))"
+# ⚠ BUILT FROM `AvailabilityState`, NEVER RETYPED (F38's ACCEPTED_CONTENT_TYPES
+# rule, F39's `_AVAILABILITY_STATE_CHECK_DEF` verbatim). The service writes only
+# 'unavailable' today; the column admits the whole set so a later reader is not
+# pinned to one literal, and this pin is what keeps the two in step.
+_OVERRIDE_STATE_CHECK_DEF = (
+    "CHECK (((override_of_state IS NULL) OR (override_of_state = ANY (ARRAY[{}]))))".format(
+        ", ".join(f"'{member.value}'::text" for member in AvailabilityState)
+    )
+)
+# D4's pair invariant, in the schema: an override is a (day, answer) or nothing.
+_ON_SHIFT_PAIR_CHECK_DEF = "CHECK (((on_shift_on IS NULL) = (on_shift_override IS NULL)))"
+
+_ROSTER_WEEK_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_rosters_week_unique ON public.rosters "
+    "USING btree (tenant_id, week_start) WHERE (deleted_at IS NULL)"
+)
+_ASSIGNMENT_UNIQUE_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_roster_assignments_unique ON public.roster_assignments "
+    "USING btree (tenant_id, roster_id, shift_template_id, staff_user_id) "
+    "WHERE (deleted_at IS NULL)"
+)
+# D12's structural guarantee. ⚠ BOTH halves of the partial predicate are pinned:
+# dropping `AND is_shift_manager` would silently allow one assignment per shift.
+_ASSIGNMENT_MANAGER_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_roster_assignments_manager_unique ON public.roster_assignments "
+    "USING btree (tenant_id, roster_id, shift_template_id) "
+    "WHERE ((deleted_at IS NULL) AND is_shift_manager)"
+)
+_ASSIGNMENT_ROSTER_INDEX_DEF = (
+    "CREATE INDEX idx_roster_assignments_roster ON public.roster_assignments "
+    "USING btree (tenant_id, roster_id, shift_template_id) WHERE (deleted_at IS NULL)"
+)
+_ASSIGNMENT_STAFF_INDEX_DEF = (
+    "CREATE INDEX idx_roster_assignments_staff ON public.roster_assignments "
+    "USING btree (tenant_id, staff_user_id, roster_id) WHERE (deleted_at IS NULL)"
+)
+
+_ROSTER_INSERT = (
+    "INSERT INTO rosters (tenant_id, week_start, published_at, published_by) "
+    "VALUES (uuid_generate_v4(), :week_start, :published_at, :published_by)"
+)
+_ASSIGNMENT_INSERT = (
+    "INSERT INTO roster_assignments "
+    "(tenant_id, roster_id, shift_template_id, staff_user_id, assigned_by, override_of_state) "
+    "VALUES (uuid_generate_v4(), uuid_generate_v4(), uuid_generate_v4(), uuid_generate_v4(), "
+    "uuid_generate_v4(), :override_of_state)"
+)
+_STAFF_ON_SHIFT_INSERT = (
+    "INSERT INTO staff_users "
+    "(tenant_id, email, password_hash, display_name, role, on_shift_on, on_shift_override) "
+    "VALUES (uuid_generate_v4(), :email, 'x', 'דנה', :role, :on_shift_on, :on_shift_override)"
+)
+
+
+@pytest.mark.db
+def test_the_roster_migration_creates_both_tables(migrated_db: str) -> None:
+    """Spec D5/D11's DDL. `week_start` is a DATE for F39's reason unchanged, and
+    `published_at`/`published_by` are BOTH nullable because NULL is `draft` —
+    the only state this table has (D6)."""
+    rosters = _shift_columns(migrated_db, "rosters")
+    assert rosters["week_start"] == ("date", "NO")
+    assert rosters["published_at"] == ("timestamp with time zone", "YES")
+    assert rosters["published_by"] == ("uuid", "YES")
+
+    assignments = _shift_columns(migrated_db, "roster_assignments")
+    assert assignments["roster_id"] == ("uuid", "NO")
+    assert assignments["shift_template_id"] == ("uuid", "NO")
+    assert assignments["staff_user_id"] == ("uuid", "NO")
+    assert assignments["is_shift_manager"] == ("boolean", "NO")
+    assert assignments["assigned_by"] == ("uuid", "NO")
+    # NULL = no override (D11).
+    assert assignments["override_of_state"] == ("text", "YES")
+
+
+@pytest.mark.db
+def test_the_three_altered_columns_land_on_the_existing_tables(migrated_db: str) -> None:
+    """⚠ `coverage_targets` IS NOT NULL WITH AN EMPTY DEFAULT, so a template row
+    that predates this migration answers `{}` and not NULL — D10's sparse map has
+    two meanings (absent = «no target», `0` = «deliberately nobody») and a third,
+    NULL, would mean nothing at all. The two `staff_users` columns are the
+    opposite: both nullable, because «no override» is the ordinary state."""
+    templates = _shift_columns(migrated_db, "shift_templates")
+    assert templates["coverage_targets"] == ("jsonb", "NO")
+    staff = _shift_columns(migrated_db, "staff_users")
+    assert staff["on_shift_on"] == ("date", "YES")
+    assert staff["on_shift_override"] == ("boolean", "YES")
+
+
+@pytest.mark.db
+def test_a_pre_existing_template_row_gets_the_empty_coverage_map(migrated_db: str) -> None:
+    """The DEFAULT, proved by inserting a row that does not mention the column —
+    which is exactly what every shipped template row did before this migration."""
+
+    async def read_back() -> object:
+        engine = create_async_engine(migrated_db)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(
+                        text(_TEMPLATE_INSERT),
+                        {
+                            "day_of_week": 0,
+                            "starts_at_time": datetime.time(9, 0),
+                            "ends_at_time": datetime.time(17, 0),
+                        },
+                    )
+                    result = await conn.execute(
+                        text(
+                            "SELECT coverage_targets FROM shift_templates "
+                            "ORDER BY created_at DESC LIMIT 1"
+                        )
+                    )
+                    return result.scalar_one()
+                finally:
+                    await trans.rollback()
+        finally:
+            await engine.dispose()
+
+    assert asyncio.run(read_back()) == {}
+
+
+@pytest.mark.db
+def test_the_roster_definitions_are_pinned(migrated_db: str) -> None:
+    """All FOUR named CHECKs and all FIVE indexes, deparsed."""
+    assert (
+        _shift_definition(migrated_db, _SHIFT_CONSTRAINT_DEF, "rosters", "rosters_week_start_check")
+        == _ROSTER_WEEK_START_CHECK_DEF
+    )
+    assert (
+        _shift_definition(
+            migrated_db, _SHIFT_CONSTRAINT_DEF, "rosters", "rosters_published_pair_check"
+        )
+        == _ROSTER_PUBLISHED_PAIR_CHECK_DEF
+    )
+    assert (
+        _shift_definition(
+            migrated_db,
+            _SHIFT_CONSTRAINT_DEF,
+            "roster_assignments",
+            "roster_assignments_override_check",
+        )
+        == _OVERRIDE_STATE_CHECK_DEF
+    )
+    assert (
+        _shift_definition(
+            migrated_db, _SHIFT_CONSTRAINT_DEF, "staff_users", "staff_users_on_shift_pair_check"
+        )
+        == _ON_SHIFT_PAIR_CHECK_DEF
+    )
+    for table, name, expected in (
+        ("rosters", "idx_rosters_week_unique", _ROSTER_WEEK_INDEX_DEF),
+        ("roster_assignments", "idx_roster_assignments_unique", _ASSIGNMENT_UNIQUE_INDEX_DEF),
+        (
+            "roster_assignments",
+            "idx_roster_assignments_manager_unique",
+            _ASSIGNMENT_MANAGER_INDEX_DEF,
+        ),
+        ("roster_assignments", "idx_roster_assignments_roster", _ASSIGNMENT_ROSTER_INDEX_DEF),
+        ("roster_assignments", "idx_roster_assignments_staff", _ASSIGNMENT_STAFF_INDEX_DEF),
+    ):
+        assert _shift_definition(migrated_db, _SHIFT_INDEX_DEF, table, name) == expected, name
+
+
+@pytest.mark.db
+def test_the_roster_week_start_check_refuses_every_weekday_but_sunday(migrated_db: str) -> None:
+    """⚠ THE SERVICE GUARD IS NOT THE ONLY GUARD, F39's rule applied to the second
+    table that carries a week key. 2026-11-08 is a Sunday."""
+    sunday = datetime.date(2026, 11, 8)
+    assert sunday.weekday() == 6, "the fixture date is no longer a Sunday"
+    draft = {"published_at": None, "published_by": None}
+    assert _shift_insert_admitted(migrated_db, _ROSTER_INSERT, {"week_start": sunday, **draft})
+    for offset in range(1, 7):
+        assert not _shift_insert_admitted(
+            migrated_db,
+            _ROSTER_INSERT,
+            {"week_start": sunday + datetime.timedelta(days=offset), **draft},
+        ), offset
+
+
+@pytest.mark.db
+def test_the_published_pair_check_refuses_half_a_publish(migrated_db: str) -> None:
+    """D6: `published_at` is the whole state, and «stamped by nobody» or «nobody
+    stamped it at some time» are not states this table has."""
+    sunday = datetime.date(2026, 11, 8)
+    at = datetime.datetime(2026, 11, 4, 16, 0, tzinfo=datetime.UTC)
+    who = str(uuid.uuid4())
+    assert _shift_insert_admitted(
+        migrated_db,
+        _ROSTER_INSERT,
+        {"week_start": sunday, "published_at": None, "published_by": None},
+    )
+    assert _shift_insert_admitted(
+        migrated_db,
+        _ROSTER_INSERT,
+        {"week_start": sunday, "published_at": at, "published_by": who},
+    )
+    assert not _shift_insert_admitted(
+        migrated_db,
+        _ROSTER_INSERT,
+        {"week_start": sunday, "published_at": at, "published_by": None},
+    )
+    assert not _shift_insert_admitted(
+        migrated_db,
+        _ROSTER_INSERT,
+        {"week_start": sunday, "published_at": None, "published_by": who},
+    )
+
+
+@pytest.mark.db
+def test_the_override_state_check_admits_null_and_exactly_the_enum(migrated_db: str) -> None:
+    """Imported from `AvailabilityState`, never retyped — so widening the enum
+    without widening the CHECK reds here rather than at 03:00."""
+    assert _shift_insert_admitted(migrated_db, _ASSIGNMENT_INSERT, {"override_of_state": None})
+    for member in AvailabilityState:
+        assert _shift_insert_admitted(
+            migrated_db, _ASSIGNMENT_INSERT, {"override_of_state": member.value}
+        ), member
+    assert not _shift_insert_admitted(
+        migrated_db, _ASSIGNMENT_INSERT, {"override_of_state": "pending"}
+    )
+
+
+@pytest.mark.db
+def test_the_on_shift_pair_check_refuses_half_an_override(migrated_db: str) -> None:
+    """D4's invariant in the schema rather than in a comment. Half a pair is what
+    a writer that sets one column and forgets the other produces, and it would
+    make rule 1 fire on a NULL answer."""
+    day = datetime.date(2026, 11, 8)
+    base = {"email": f"{uuid.uuid4()}@example.test", "role": StaffRole.SEAMSTRESS.value}
+    assert _shift_insert_admitted(
+        migrated_db,
+        _STAFF_ON_SHIFT_INSERT,
+        {**base, "on_shift_on": None, "on_shift_override": None},
+    )
+    for value in (True, False):
+        assert _shift_insert_admitted(
+            migrated_db,
+            _STAFF_ON_SHIFT_INSERT,
+            {**base, "on_shift_on": day, "on_shift_override": value},
+        ), value
+    assert not _shift_insert_admitted(
+        migrated_db,
+        _STAFF_ON_SHIFT_INSERT,
+        {**base, "on_shift_on": day, "on_shift_override": None},
+    )
+    assert not _shift_insert_admitted(
+        migrated_db,
+        _STAFF_ON_SHIFT_INSERT,
+        {**base, "on_shift_on": None, "on_shift_override": True},
+    )
+
+
+@pytest.mark.db
+def test_the_roster_migration_round_trips(migrated_db: str) -> None:
+    """upgrade() creates both tables and all three columns; downgrade() removes
+    every one of them — unlike F39, this migration DOES touch existing tables, so
+    the round trip has to prove the ALTERs come off too. The downgrade target
+    comes from `_parent_of` so a renumber-at-rebase cannot silently stop this one
+    revision short."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("roster builder")
+
+    def state() -> tuple[bool, bool, bool, bool]:
+        async def tables() -> tuple[bool, bool]:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    rosters = await conn.execute(text(_TABLE_EXISTS), {"name": "rosters"})
+                    assignments = await conn.execute(
+                        text(_TABLE_EXISTS), {"name": "roster_assignments"}
+                    )
+                    return bool(rosters.scalar_one()), bool(assignments.scalar_one())
+            finally:
+                await engine.dispose()
+
+        has_rosters, has_assignments = asyncio.run(tables())
+        templates = _shift_columns(migrated_db, "shift_templates")
+        staff = _shift_columns(migrated_db, "staff_users")
+        return (
+            has_rosters,
+            has_assignments,
+            "coverage_targets" in templates,
+            "on_shift_on" in staff and "on_shift_override" in staff,
+        )
+
+    try:
+        assert state() == (True, True, True, True)
+        command.downgrade(cfg, down_to)
+        assert state() == (False, False, False, False)
+        command.upgrade(cfg, "head")
+        assert state() == (True, True, True, True)
+        assert _shift_columns(migrated_db, "rosters")["week_start"] == ("date", "NO")
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head

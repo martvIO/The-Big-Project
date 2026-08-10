@@ -94,6 +94,34 @@ class AvailabilityState(StrEnum):
     PREFERRED = "preferred"
 
 
+class OnShiftSource(StrEnum):
+    """WHICH OF THE THREE RULES ANSWERED «is she on shift» (F40, spec D2/D8).
+
+    DERIVED ON READ AND NEVER STORED — `StaffCardStatus`' rule, not
+    `AvailabilityState`'s. There is no column, so there is nothing for a DB CHECK
+    to constrain and `on_shift_at` is the only producer.
+
+    ⚠ THE ANSWER AND THE RULE ARE COMPUTED TOGETHER, in one tuple, so they cannot
+    disagree. That is the whole reason this enum exists rather than the client
+    inferring a label: `lib/onShift.ts` maps it through a `Record` with NO
+    fallback, so a fourth member is a compile error in the console rather than a
+    wrong Hebrew word shipping silently (F57's recorded near-miss — a two-branch
+    ternary that printed «אחראית משמרת» for every seamstress).
+
+        MANUAL_TODAY  rule 1: a same-day override for THIS Jerusalem date
+        ROSTER        rule 2: a published roster exists for the week
+        FALLBACK      rule 3: nothing has been said, so every live staffer counts
+
+    Rule 3 is TODAY'S EXACT BEHAVIOUR (spec C1): `list_live` returns every
+    non-deleted staffer and the board renders all of them. A boutique that never
+    publishes therefore sees no change at all.
+    """
+
+    MANUAL_TODAY = "manual_today"
+    ROSTER = "roster"
+    FALLBACK = "fallback"
+
+
 class StaffNotificationKind(StrEnum):
     # F35. The DB PINS this exact set (0030's staff_notifications_kind_check,
     # held byte-identical in test_migrations.py), so a fourth kind is a migration
@@ -677,6 +705,34 @@ class AuditAction(StrEnum):
     # A SAVE THAT CHANGES NOTHING WRITES NO ROW — the shipped no-op rule. A row
     # asserting otherwise names an act nobody performed.
     AVAILABILITY_SUBMITTED = "availability_submitted"
+
+    # F40's roster and the same-day override. The TWELFTH block to rely on the
+    # same fact: `audit_log.action` is plain TEXT with no CHECK (0003), so these
+    # five need no migration.
+    #
+    # ⚠ AN UNWRITTEN MEMBER IS INERT; A MISSING ONE IS A `ValueError` AT 03:00,
+    # on the first write of a route nobody exercised in review. All five are
+    # declared in the same commit as the tables they describe.
+    #
+    # `ROSTER_PUBLISHED` carries `week_start`, the assignment count, the shortage
+    # count and `republish: bool`. A PUBLISH THAT CHANGES NOTHING WRITES NO ROW
+    # (D7's no-op rule, F51's per-field audit and F39's D11 before it) — a row
+    # asserting otherwise names an act nobody performed.
+    #
+    # Coverage targets fold into the EXISTING `SHIFT_TEMPLATE_UPDATED` rather
+    # than earning a sixth action: they are written by that route, in that
+    # transaction, and a second action for one field of one payload is a row
+    # nobody queries.
+    #
+    # IDS ONLY, NEVER A DISPLAY NAME (CUSTOMER_UPDATED's rule): `audit_log` has
+    # no retention class and platform operators read across tenants.
+    ROSTER_ASSIGNED = "roster_assigned"
+    ROSTER_UNASSIGNED = "roster_unassigned"
+    ROSTER_PUBLISHED = "roster_published"
+    # The override's ONLY durable record of who flipped it and when — D4 puts no
+    # `set_at`/`set_by` on `staff_users`, which is F38's precedent verbatim.
+    ON_SHIFT_OVERRIDE_SET = "on_shift_override_set"
+    ON_SHIFT_OVERRIDE_CLEARED = "on_shift_override_cleared"
 
     # F37's SOS paging (D13). The EIGHTH block to rely on the same fact:
     # audit_log.action is plain TEXT with no CHECK (0003), so these four need no
