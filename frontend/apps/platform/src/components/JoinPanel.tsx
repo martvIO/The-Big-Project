@@ -34,6 +34,11 @@ export function JoinPanel() {
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [spent, setSpent] = useState(false);
+  // ⚠ THE SERVER'S `manage_url`, NEVER REBUILT HERE. `join_router.redeem_invite`
+  // composes it from `settings.base_domain`, which is `localtest.me` in dev and a
+  // deployment's own domain in staging/production. A literal host in this file
+  // would be the one actionable link in the feature, wrong everywhere but one.
+  const [manageUrl, setManageUrl] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [retry, setRetry] = useState(false);
 
@@ -127,7 +132,8 @@ export function JoinPanel() {
     setAlert(null);
     setFieldError(null);
     try {
-      await api.redeemInvite(code, password);
+      const redeemed = await api.redeemInvite(code, password);
+      setManageUrl(redeemed.manage_url);
       setPassword("");
       setStep("done");
     } catch (error) {
@@ -288,7 +294,7 @@ export function JoinPanel() {
           </Card>
         )}
 
-        {step === "done" && invite !== null && (
+        {step === "done" && invite !== null && manageUrl !== null && (
           <Card className="flex flex-col gap-4">
             <h2
               ref={headingRef}
@@ -310,10 +316,12 @@ export function JoinPanel() {
                 components={{ bdi: <bdi dir="ltr" /> }}
               />
             </p>
+            {/* The host she reads is PARSED OUT OF the same string the button
+                navigates to, so the two can never disagree. */}
             <p className="text-sm text-ink-muted">
-              <bdi dir="ltr">{`https://${invite.slug}.modryn.co.il/manage`}</bdi>
+              <bdi dir="ltr">{new URL(manageUrl).host}</bdi>
             </p>
-            <ButtonLink href={`https://${invite.slug}.modryn.co.il/manage`} fullWidthMobile>
+            <ButtonLink href={manageUrl} fullWidthMobile>
               {t("platform.join.toManage")}
             </ButtonLink>
           </Card>

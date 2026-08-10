@@ -169,7 +169,12 @@ describe("the join panel", () => {
       Promise.resolve(
         url.startsWith("/platform/join/invite")
           ? json(200, INVITE)
-          : json(200, { slug: "bella", manage_url: "https://bella.modryn.co.il/manage" }),
+          // ⚠ DELIBERATELY NOT `bella.modryn.co.il`. `base_domain` is
+          // `localtest.me` in dev and a deployment's own domain elsewhere, so a
+          // stub that echoes the slug back on the literal production host cannot
+          // tell a panel that RENDERS `manage_url` from one that rebuilds the
+          // string itself. This host appears nowhere in the component.
+          : json(200, { slug: "bella", manage_url: "https://bella.example.test/manage" }),
       ),
     );
     render(<JoinPanel />);
@@ -181,7 +186,9 @@ describe("the join panel", () => {
 
     await screen.findByRole("heading", { name: "הבוטיק מוכן", level: 2 });
     const link = screen.getByRole("link", { name: "כניסה לניהול הבוטיק" });
-    expect(link).toHaveAttribute("href", "https://bella.modryn.co.il/manage");
+    expect(link).toHaveAttribute("href", "https://bella.example.test/manage");
+    // The host she READS is parsed out of that same string, not rebuilt.
+    expect(screen.getByText("bella.example.test")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain(secret);
     // D7: no payment copy on a screen in a feature that ships no payment code.
     expect(document.body.textContent).not.toMatch(/תשלום|מקדמה|סליקה/);

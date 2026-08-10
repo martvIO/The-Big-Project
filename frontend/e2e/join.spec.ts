@@ -18,7 +18,14 @@ import { JOIN, installPlatformApi, ok, refuse } from "./fixtures/platform";
 // The axe gate is a LEGAL requirement (IS 5568 / WCAG 2.0 AA, pre-decided #38).
 
 const PREVIEW = { slug: "chen", name: "בוטיק של חן", owner_email: "chen@x.example" };
-const REDEEMED = { slug: "chen", manage_url: "https://chen.modryn.co.il/manage" };
+// ⚠ THE REDEEM HOST IS DELIBERATELY NOT `chen.modryn.co.il`. The server composes
+// `manage_url` from `settings.base_domain` — `localtest.me` in dev, a
+// deployment's own domain in staging and production — so a stub that echoes the
+// literal production host back cannot tell a panel that RENDERS the server's
+// answer from one that rebuilds `https://${slug}.modryn.co.il/manage` itself.
+// The two assertions below are the feature's only actionable link; this host
+// appears nowhere in `JoinPanel.tsx`, so they now fail if it ever does again.
+const REDEEMED = { slug: "chen", manage_url: "https://chen.example.test/manage" };
 const CODE = "s3cret-invite-code-value";
 
 async function axeClean(page: Page, label: string): Promise<void> {
@@ -135,7 +142,10 @@ test("join: a weak password is refused INTO the field, then a good one succeeds"
 
   await expect(page.getByRole("heading", { name: "הבוטיק מוכן", level: 2 })).toBeVisible();
   const manage = page.getByRole("link", { name: "כניסה לניהול הבוטיק" });
-  await expect(manage).toHaveAttribute("href", "https://chen.modryn.co.il/manage");
+  await expect(manage).toHaveAttribute("href", "https://chen.example.test/manage");
+  // The host she READS is parsed out of that same string rather than rebuilt, so
+  // the sentence and the button can never point at two different boutiques.
+  await expect(page.locator("bdi[dir='ltr']", { hasText: "chen.example.test" })).toBeVisible();
   // The password is never repeated back, and no payment copy appears on a screen
   // in a feature that ships no payment code (D7).
   const rendered = await page.locator("body").innerText();
