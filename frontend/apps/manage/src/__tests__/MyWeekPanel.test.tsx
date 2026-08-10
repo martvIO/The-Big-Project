@@ -36,6 +36,9 @@ function template(overrides: Partial<ShiftTemplate> = {}): ShiftTemplate {
     ends_at_time: "14:00:00",
     sort_order: 0,
     future_submission_count: null,
+    // F40 D10's sparse map. `{}` is «no target», which is the default
+    // state of every template that predates the feature.
+    coverage_targets: {},
     ...overrides,
   };
 }
@@ -48,6 +51,9 @@ function week(overrides: Partial<ShiftWeek> = {}): ShiftWeek {
     locked: false,
     templates: [template()],
     entries: [],
+    // F40 D17: not published, and therefore no shifts of her own.
+    roster_published: false,
+    rostered_template_ids: [],
     ...overrides,
   };
 }

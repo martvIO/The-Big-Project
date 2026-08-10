@@ -39,6 +39,9 @@ function template(overrides: Partial<ShiftTemplate> = {}): ShiftTemplate {
     ends_at_time: "14:00:00",
     sort_order: 0,
     future_submission_count: 0,
+    // F40 D10's sparse map. `{}` is «no target», which is the default
+    // state of every template that predates the feature.
+    coverage_targets: {},
     ...overrides,
   };
 }
@@ -157,9 +160,12 @@ describe("the seven weekday groups", () => {
 });
 
 describe("the edit", () => {
-  it("sends all five fields on the PATCH", async () => {
+  it("sends all six fields on the PATCH", async () => {
     // D2's full replace: an omitted key can never silently clear a value, and
     // `sort_order` is resent from the row because the console never shows it.
+    // ⚠ F40 D10 makes `coverage_targets` the SIXTH, and `draftOf` SEEDS it from
+    // the row — a draft that did not would silently clear every target on this
+    // very edit, which changes only the label.
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "עריכה" }));
     fireEvent.change(screen.getByLabelText("שם המשמרת"), { target: { value: "בוקר" } });
@@ -171,6 +177,7 @@ describe("the edit", () => {
         starts_at_time: "09:00:00",
         ends_at_time: "14:00:00",
         sort_order: 0,
+        coverage_targets: {},
       });
     });
   });

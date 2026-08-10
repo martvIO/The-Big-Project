@@ -567,6 +567,33 @@ export const MAX_SOS_NOTE_LENGTH = 120;
 export const MAX_TEMPLATES_PER_DAY = 6;
 export const MAX_SHIFT_LABEL_LENGTH = 60;
 
+// F40 D10. Mirrors `app/shifts/validation.py::MAX_COVERAGE_TARGET`, pinned by
+// `test_frontend_constant_parity.py`. ⚠ A FAT-FINGER GUARD, NOT A PRODUCT RULE
+// (spec O3) — it will move, which is exactly why the message below INTERPOLATES
+// it instead of typing «20» into the Hebrew (design F-33). A literal there would
+// leave the client saying «בין 0 ל־20» and the server «בין 0 ל־30» about the
+// same field in the same session.
+export const MAX_COVERAGE_TARGET = 20;
+
+// Hardcoded Hebrew, F51's rule — but the BOUND is interpolated, which that rule
+// permits: it is about WHERE the string lives, not about what may be spliced
+// into it.
+export function validateCoverageTarget(raw: string): string | null {
+  // ⚠ `""` AND `"0"` ARE DIFFERENT VALUES AND BOTH ARE VALID. Empty means «no
+  // target» — the key is omitted from the body entirely — and `0` means
+  // «deliberately nobody», which is a target that is satisfied by nobody. A
+  // guard that treated a blank as an error would make «no target» unreachable
+  // from the only control that writes one.
+  if (raw.trim() === "") {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > MAX_COVERAGE_TARGET) {
+    return `יעד האיוש חייב להיות מספר שלם בין 0 ל־${MAX_COVERAGE_TARGET}.`;
+  }
+  return null;
+}
+
 // Hardcoded Hebrew, like every other message in this file: `validation.ts`
 // returns strings and not keys, and minting i18n keys for three client-side
 // guards in a file that has never had one is the drift, not the fix.

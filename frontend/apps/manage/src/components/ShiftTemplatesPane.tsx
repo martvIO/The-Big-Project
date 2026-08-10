@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Card, EmptyState, Input, Modal, Select, Skeleton, TimeField } from "@boutique/ui";
 import { api, ApiError, errorMessage } from "../api";
-import type { ShiftTemplate, ShiftTemplateInput } from "../api";
+import type { ShiftTemplate, ShiftTemplateInput, StaffRole } from "../api";
 import { DAY_NAMES } from "../lib/week";
 import { MAX_TEMPLATES_PER_DAY, validateShiftTemplate } from "../validation";
 
@@ -39,6 +39,16 @@ interface Draft {
   // `(day, sort_order, starts_at_time)` and a manual order box on a two-item
   // list is a control nobody wants).
   sortOrder: number;
+  // ⚠ F40 D10, AND SEEDED FROM THE ROW. The PATCH is a FULL REPLACE, so a draft
+  // that did not carry the existing targets would silently CLEAR them on every
+  // unrelated label edit — which is the exact silent loss D2's full-replace rule
+  // exists to prevent, arriving through the one control that writes them.
+  //
+  // Held as STRINGS, one per role, because `""` and `"0"` are different values:
+  // empty omits the key entirely («no target») and `0` writes a zero
+  // («deliberately nobody»). A `number | null` would collapse them at the first
+  // `Number("")`.
+  coverageTargets: Partial<Record<StaffRole, string>>;
 }
 
 function draftOf(template: ShiftTemplate): Draft {
@@ -49,6 +59,9 @@ function draftOf(template: ShiftTemplate): Draft {
     startsAtTime: hhmm(template.starts_at_time),
     endsAtTime: hhmm(template.ends_at_time),
     sortOrder: template.sort_order,
+    coverageTargets: Object.fromEntries(
+      Object.entries(template.coverage_targets).map(([role, value]) => [role, String(value)]),
+    ),
   };
 }
 
@@ -59,6 +72,14 @@ function bodyOf(draft: Draft): ShiftTemplateInput {
     starts_at_time: hhmmss(draft.startsAtTime),
     ends_at_time: hhmmss(draft.endsAtTime),
     sort_order: draft.sortOrder,
+    // Sparse: a BLANK omits the key («no target»), `"0"` writes `0`
+    // («deliberately nobody»). D10's two meanings survive the round trip only
+    // because this filter tests the string and never its truthiness.
+    coverage_targets: Object.fromEntries(
+      Object.entries(draft.coverageTargets)
+        .filter(([, value]) => value.trim() !== "")
+        .map(([role, value]) => [role, Number(value)]),
+    ),
   };
 }
 
@@ -350,6 +371,9 @@ export function ShiftTemplatesPane({ onTemplates }: ShiftTemplatesPaneProps) {
                         startsAtTime: "09:00",
                         endsAtTime: "14:00",
                         sortOrder: rows.length,
+                        // A NEW shift starts with no targets at all, which is
+                        // D10's «no target» and renders as a plain count.
+                        coverageTargets: {},
                       });
                       setDraftError(null);
                     }}

@@ -37,6 +37,9 @@ const TEMPLATE: ShiftTemplate = {
   ends_at_time: "14:00:00",
   sort_order: 0,
   future_submission_count: 0,
+  // F40 D10's sparse map. `{}` is «no target», which is the default
+  // state of every template that predates the feature.
+  coverage_targets: {},
 };
 
 beforeEach(() => {
@@ -49,6 +52,9 @@ beforeEach(() => {
     locked: false,
     templates: [TEMPLATE],
     entries: [],
+    // F40 D17: not published, and therefore no shifts of her own.
+    roster_published: false,
+    rostered_template_ids: [],
   });
   getWeekSubmissions.mockResolvedValue({
     week_start: WEEK_START,
@@ -157,6 +163,9 @@ describe("first run", () => {
       locked: false,
       templates: [],
       entries: [],
+      // F40 D17: not published, and therefore no shifts of her own.
+      roster_published: false,
+      rostered_template_ids: [],
     });
     render(<ShiftsSection role="seamstress" />);
     expect(await screen.findByText("עדיין לא הוגדרו משמרות לשבוע הזה.")).toBeInTheDocument();
