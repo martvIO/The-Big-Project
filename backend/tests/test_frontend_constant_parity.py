@@ -34,6 +34,7 @@ from types import ModuleType
 
 import pytest
 
+from app.auth import photo as auth_photo
 from app.auth import schemas as auth_schemas
 from app.booking import validation as booking_validation
 from app.booking.validation import jerusalem_day_index
@@ -81,6 +82,17 @@ MIRRORS = (
             "MAX_DISPLAY_NAME_LENGTH",
         ),
         id="manage-staff",
+    ),
+    # F38's one. It rides here for this file's whole reason: it is a DELIBERATE
+    # fifth of MAX_UPLOAD_BYTES, so the two are values a reader would expect to
+    # be equal and a copy-paste would make equal. Raise it on the server only and
+    # the console queues a 4 MiB photo the presign then refuses with a 400 whose
+    # message the upload control has no field to render.
+    pytest.param(
+        MANAGE_VALIDATION_TS,
+        auth_photo,
+        ("MAX_STAFF_PHOTO_BYTES",),
+        id="manage-staff-photo",
     ),
     # F53's four. MAX_SEARCH_TERM_LENGTH is the one a reader would call
     # server-only: it is not a write bound at all, it is `Query(max_length=…)` on

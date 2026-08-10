@@ -344,8 +344,17 @@ export interface PresignResponse {
  * boundary itself, and Content-Type travels as a form *field*, not a header.
  * Fields go in first in iteration order and `file` goes last, because S3
  * ignores everything after `file`.
+ *
+ * The parameter is the STRUCTURAL pair this function actually reads, not
+ * `PresignResponse`: F38's `StaffPhotoPresignResponse` carries no `media_id`
+ * (the confirm call reads the pending triple off the row instead), and a second
+ * copy of the multipart-ordering rule for the sake of one absent field is how
+ * the two POSTs drift.
  */
-export async function uploadToStorage(presign: PresignResponse, file: File): Promise<void> {
+export async function uploadToStorage(
+  presign: { url: string; fields: Record<string, string> },
+  file: File,
+): Promise<void> {
   const form = new FormData();
   for (const [name, value] of Object.entries(presign.fields)) {
     form.append(name, value);
@@ -551,6 +560,14 @@ export interface StaffCard {
   // which would couple the card renderer to a panel it is otherwise independent
   // of.
   occupancy: Occupancy | null;
+  // F38. NULL on three ordinary paths — no photo, no bucket, signing failed —
+  // and the board must render all three as an initial-letter fallback rather
+  // than a broken image.
+  photo_url: string | null;
+  // ⚠ THE PIN KEY. `photo_url` is freshly signed on every ~5 s poll and is
+  // therefore a different string every tick; a component keyed on it would
+  // re-download every face forever. Key on `(id, photo_confirmed_at)`.
+  photo_confirmed_at: string | null;
 }
 
 // An ENVELOPE, not a bare array: F36 adds rooms and F58 the waitlist to this
@@ -904,6 +921,27 @@ export interface StaffMember {
   display_name: string;
   role: StaffRole;
   created_at: string;
+  // F38. CONTACT ONLY and never a login identifier — staff sign in with email
+  // and password through the unchanged /manage/auth/login, so nothing here or
+  // on the server reads this field for auth.
+  phone: string | null;
+  // `YYYY-MM-DD`, never an instant: these are Jerusalem CALENDAR days, and the
+  // native <input type="date"> speaks exactly this format both ways.
+  start_date: string | null;
+  // Set by offboarding and NOT writable through the edit panel. Present so an
+  // offboarded row can render its leaving date without the console inferring
+  // one from a `deleted_at` the list never carries.
+  last_day: string | null;
+  shift_manager_eligible: boolean;
+  // Signed per read and NULL on three ordinary paths, none of them an error:
+  // no photo, no bucket, or a signing failure. The UI must render all three as
+  // "no photo" and never as a broken image.
+  photo_url: string | null;
+  // ⚠ THE CACHE KEY, and the reason it is on the wire at all. `photo_url` is
+  // freshly signed — therefore DIFFERENT — on every poll, so a component keyed
+  // on the URL re-downloads every face forever. Key on `(id, photo_confirmed_at)`
+  // instead: it changes exactly when the image behind it does.
+  photo_confirmed_at: string | null;
 }
 
 // mirrors backend/app/payments/schemas.py::GatewayStatusResponse — the WHOLE
@@ -941,6 +979,11 @@ export interface CreateStaffRequest {
   display_name: string;
   role: StaffRole;
   password: string;
+  phone?: string;
+  start_date?: string;
+  // Defaults to false server-side; an unanswered "may she be slotted as shift
+  // manager" is a no, not a third state.
+  shift_manager_eligible?: boolean;
 }
 
 // Every field optional. `email` is absent on purpose: the unique index is
@@ -953,6 +996,34 @@ export interface UpdateStaffRequest {
   role?: StaffRole;
   password?: string;
   current_password?: string;
+  // ⚠ `""` IS MEANINGFUL and is the one way to REMOVE a number: `undefined`
+  // already means "not sent" on this API. An emptied <input> posts "" natively,
+  // so the clear needs no sentinel — but it does mean the form must NOT coerce
+  // an empty string to undefined before sending.
+  phone?: string;
+  // No clear arm, deliberately: a blank date input is indistinguishable from an
+  // absent one, and nothing in the product needs to un-record a start date.
+  start_date?: string;
+  shift_manager_eligible?: boolean;
+}
+
+// F38's two-phase photo upload, F8's dress-media pipeline unchanged.
+//
+// No photo id on the wire: the confirm call reads the pending triple off the
+// row, so the client never holds an identifier it could substitute for another
+// staffer's.
+export interface StaffPhotoPresignRequest {
+  content_type: string;
+  byte_size: number;
+}
+
+export interface StaffPhotoPresignResponse {
+  url: string;
+  // Bearer material for its whole TTL — carries `policy` and `x-amz-signature`.
+  // Never log it, never put it in an error message.
+  fields: Record<string, string>;
+  expires_in: number;
+  max_bytes: number;
 }
 
 function staffPath(staffId: string): string {
@@ -1839,8 +1910,34 @@ export const api = {
   updateStaff(staffId: string, body: UpdateStaffRequest): Promise<StaffMember> {
     return apiFetch(staffPath(staffId), { method: "PATCH", body });
   },
-  deactivateStaff(staffId: string): Promise<OkResponse> {
-    return apiFetch(staffPath(staffId), { method: "DELETE" });
+  // `lastDay` is a `YYYY-MM-DD` Jerusalem calendar day. OPTIONAL on the wire
+  // and the server defaults it to today-Jerusalem — the default lives THERE and
+  // not here, so a second caller cannot disagree with the first about what a
+  // missing leaving date means. It is never NULL in the column: the retention
+  // policy requires it, so a NULL would mean "never scrub this person".
+  deactivateStaff(staffId: string, lastDay?: string): Promise<OkResponse> {
+    const query = lastDay ? `?last_day=${encodeURIComponent(lastDay)}` : "";
+    return apiFetch(`${staffPath(staffId)}${query}`, { method: "DELETE" });
+  },
+
+  // F38's photo pipeline. THREE calls and the middle one is not optional: the
+  // object is not hers until confirm verifies its magic bytes server-side, so a
+  // client that uploads and skips confirm leaves a pending triple that renders
+  // nothing and is swept by the next presign.
+  staffPhotoPresign(
+    staffId: string,
+    body: StaffPhotoPresignRequest,
+  ): Promise<StaffPhotoPresignResponse> {
+    return apiFetch(`${staffPath(staffId)}/photo/presign`, { method: "POST", body });
+  },
+  // No body: everything confirm needs is already on the row. Answers the updated
+  // member, so the caller re-renders from the server's view rather than guessing
+  // what the promote did.
+  staffPhotoConfirm(staffId: string): Promise<StaffMember> {
+    return apiFetch(`${staffPath(staffId)}/photo/confirm`, { method: "POST" });
+  },
+  staffPhotoDelete(staffId: string): Promise<StaffMember> {
+    return apiFetch(`${staffPath(staffId)}/photo`, { method: "DELETE" });
   },
 
   // Both roles. No parameters at all — the window is derived server-side from a

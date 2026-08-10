@@ -74,6 +74,20 @@ from app.models.sos_alert import SosAlert
 from app.models.staff_user import StaffUser
 from app.tenancy.middleware import TenantContext
 
+# The floor card's wire shape. EIGHT keys after F38, asserted by set equality on
+# every path that emits one — a card is the payload every role in the boutique
+# can open, so both directions of drift matter.
+STAFF_CARD_KEYS = {
+    "id",
+    "display_name",
+    "role",
+    "status",
+    "break_started_at",
+    "occupancy",
+    "photo_url",
+    "photo_confirmed_at",
+}
+
 TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="Bella Bridal", settings={})
 STAFF_ID = uuid.uuid4()
 TARGET_ID = uuid.uuid4()
@@ -300,6 +314,7 @@ def _staff_user(
     display_name: str = "נועה לוי",
     role: str = StaffRole.RECEPTION.value,
     break_started_at: datetime.datetime | None = None,
+    photo: bool = False,
 ) -> StaffUser:
     row = StaffUser(
         tenant_id=TENANT.id,
@@ -310,6 +325,15 @@ def _staff_user(
     )
     row.id = staff_id
     row.break_started_at = break_started_at
+    # F38's live photo triple, written as a UNIT: the three columns are
+    # all-or-nothing (the schema cannot say so — a CHECK spanning three would
+    # refuse the ordinary intermediate state a two-phase confirm creates), so a
+    # fixture that sets one of them is a fixture describing a state the service
+    # never produces.
+    if photo:
+        row.photo_key = "tenants/t/staff/s/photo/p.jpg"
+        row.photo_content_type = "image/jpeg"
+        row.photo_confirmed_at = BREAK_BEGAN
     return row
 
 
@@ -349,7 +373,16 @@ class FakeFloorService:
     target id and the SESSION's actor, in that shape.
     """
 
-    def __init__(self, *, missing: bool = False, raises: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        missing: bool = False,
+        raises: Exception | None = None,
+        with_photos: bool = False,
+    ) -> None:
+        # F38: off by default, so the ninety-odd tests above keep asserting the
+        # no-photo shape that most of a boutique is actually in.
+        self.with_photos = with_photos
         self.floor_calls: list[uuid.UUID] = []
         self.toggle_calls: list[dict[str, Any]] = []
         # F36: every method appends here, so the thirteen-row wiring walk can
@@ -397,12 +430,18 @@ class FakeFloorService:
         self._record("floor", tenant_id=tenant_id)
         return FloorRead(
             staff_rows=[
-                _staff_user(STAFF_ID, display_name="דנה כהן", role=StaffRole.OWNER.value),
+                _staff_user(
+                    STAFF_ID,
+                    display_name="דנה כהן",
+                    role=StaffRole.OWNER.value,
+                    photo=self.with_photos,
+                ),
                 _staff_user(
                     TARGET_ID,
                     display_name="נועה לוי",
                     role=StaffRole.SEAMSTRESS.value,
                     break_started_at=BREAK_BEGAN,
+                    photo=self.with_photos,
                 ),
             ],
             occupancy_by_staff_id=self.occupancy_by_staff_id,
@@ -1021,6 +1060,8 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
                 "status": "available",
                 "break_started_at": None,
                 "occupancy": None,
+                "photo_url": None,
+                "photo_confirmed_at": None,
             },
             {
                 "id": str(TARGET_ID),
@@ -1029,6 +1070,8 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
                 "status": "break",
                 "break_started_at": BREAK_BEGAN.isoformat().replace("+00:00", "Z"),
                 "occupancy": None,
+                "photo_url": None,
+                "photo_confirmed_at": None,
             },
         ],
         "rooms": [],
@@ -1309,21 +1352,19 @@ def test_every_room_body_refuses_an_unknown_key_over_http() -> None:
 
 
 def test_a_toggle_answers_one_card_and_not_the_whole_floor() -> None:
-    """⚠ SIX keys, and it stays a SET EQUALITY. `occupancy` is F36's; the
-    assertion is what catches a SEVENTH field arriving unreviewed on a payload
-    all five roles can open, which on this particular payload is the whole of the
-    no-customer-data argument mechanised."""
+    """⚠ EIGHT keys, and it stays a SET EQUALITY. `occupancy` is F36's; F38 added
+    the last two and had to edit this line by hand to do it, which is the whole
+    job of the assertion — it catches a NINTH field arriving unreviewed on a
+    payload all five roles can open.
+
+    F38's two are staff data, not customer data, so they do not touch the
+    no-customer-data argument this card is otherwise governed by. What they DO
+    carry is a purpose limit that is review-blocking: the photo identifies a
+    colleague on the board and may never be used for attendance or monitoring."""
     fake = FakeFloorService()
     with _client(fake) as client:
         body = client.post(START_PATH).json()
-    assert set(body) == {
-        "id",
-        "display_name",
-        "role",
-        "status",
-        "break_started_at",
-        "occupancy",
-    }
+    assert set(body) == STAFF_CARD_KEYS
     assert body["status"] == "break"
 
 
@@ -1734,3 +1775,67 @@ def test_every_spec_error_code_is_asserted() -> None:
     with _client(FakeFloorService(raises=SosClosedError())) as client:
         observed.add(client.post(SOS_ACCEPT_PATH).json()["error"]["code"])
     assert observed == SPEC_ERROR_CODES
+
+
+# --- F38: the board avatar --------------------------------------------------
+
+
+def test_a_staffer_with_a_confirmed_photo_signs_a_url_on_her_card() -> None:
+    """The board's whole reason for carrying the photo: a seamstress glancing at
+    the panel sees who is on the floor, not a column of names."""
+    fake = FakeFloorService(with_photos=True)
+    with _client(fake) as client:
+        # The test app builds a REAL storage port from Settings, and CI has no
+        # bucket — so without this stub the assertion below would pass vacuously
+        # against the degrade-to-null path the very next test is about.
+        client.app.state.media_storage = _SigningStorage()  # type: ignore[attr-defined]
+        card = client.get(FLOOR_PATH).json()["staff"][0]
+    assert card["photo_url"] == "https://bucket.example/signed"
+    assert card["photo_confirmed_at"] == BREAK_BEGAN.isoformat().replace("+00:00", "Z")
+
+
+def test_an_unconfigured_bucket_nulls_the_url_without_failing_the_board_read() -> None:
+    """⚠ THE assertion. The board polls every ~5 s on a wall screen in a working
+    boutique; a storage outage that 503'd this read would take down the panel the
+    whole floor runs on, over a decoration. Only the photo WRITE endpoints answer
+    503.
+
+    `photo_confirmed_at` deliberately still ships: the row's fact is true even
+    when the bucket cannot be reached, and nulling it too would make the console
+    re-fetch on every tick once storage came back."""
+    fake = FakeFloorService(with_photos=True)
+    with _client(fake) as client:
+        client.app.state.media_storage = _UnconfiguredStorage()  # type: ignore[attr-defined]
+        resp = client.get(FLOOR_PATH)
+    assert resp.status_code == 200
+    card = resp.json()["staff"][0]
+    assert card["photo_url"] is None
+    assert card["photo_confirmed_at"] == BREAK_BEGAN.isoformat().replace("+00:00", "Z")
+
+
+def test_a_staffer_with_no_photo_carries_two_nulls_and_still_renders() -> None:
+    """The ordinary case for most of a boutique, and it must not read as an
+    error anywhere — no photo is not a missing photo."""
+    fake = FakeFloorService()
+    with _client(fake) as client:
+        card = client.get(FLOOR_PATH).json()["staff"][0]
+    assert card["photo_url"] is None
+    assert card["photo_confirmed_at"] is None
+
+
+class _UnconfiguredStorage:
+    """No bucket, which is a SUPPORTED deployment and not an error state: the
+    board must render, and only the photo write endpoints answer 503."""
+
+    @property
+    def is_configured(self) -> bool:
+        return False
+
+
+class _SigningStorage:
+    @property
+    def is_configured(self) -> bool:
+        return True
+
+    def signed_get_url(self, *, key: str, content_type: str, filename: str, expires_in: int) -> str:
+        return "https://bucket.example/signed"

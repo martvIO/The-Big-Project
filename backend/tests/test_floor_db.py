@@ -32,7 +32,7 @@ here truncates.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy import select
@@ -50,6 +50,14 @@ from app.db.tenant import tenant_session
 from app.floor.service import FloorService
 from app.models.audit_log import AuditLog
 from app.models.constants import AuditAction, StaffRole
+
+# F38 made `last_day` a REQUIRED argument on StaffUsersRepository.soft_delete —
+# the retention policy's predicate needs `last_day IS NOT NULL`, so a row
+# offboarded without one is a person the platform can never scrub, and a default
+# would have made forgetting it silent. This module only ever soft-deletes a
+# staffer to set up a fixture, so any past date does; naming it says so.
+_LEFT_ON = date(2026, 1, 31)
+
 
 pytestmark = pytest.mark.db
 
@@ -199,7 +207,7 @@ async def test_both_writers_miss_a_soft_deleted_target(app_role_url: str) -> Non
         repo = StaffUsersRepository()
         staff_id = await _seed_staff(factory, tenant_id)
         async with tenant_session(factory, tenant_id) as session:
-            await repo.soft_delete(session, tenant_id, staff_id)
+            await repo.soft_delete(session, tenant_id, staff_id, last_day=_LEFT_ON)
         async with tenant_session(factory, tenant_id) as session:
             assert await repo.start_break(session, tenant_id, staff_id, at=NOW) == (False, None)
         async with tenant_session(factory, tenant_id) as session:
@@ -238,7 +246,7 @@ async def test_list_live_carries_the_break_column_and_no_soft_deleted_row(
         gone = await _seed_staff(factory, tenant_id, display_name="Gone")
         async with tenant_session(factory, tenant_id) as session:
             await repo.start_break(session, tenant_id, resting, at=NOW)
-            await repo.soft_delete(session, tenant_id, gone)
+            await repo.soft_delete(session, tenant_id, gone, last_day=_LEFT_ON)
 
         async with tenant_session(factory, tenant_id) as session:
             rows = await repo.list_live(session, tenant_id)

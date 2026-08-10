@@ -51,6 +51,7 @@ from app.models.otp_code import OtpCode
 from app.models.queue_ticket import QueueTicket
 from app.models.scheduled_message import ScheduledMessage
 from app.models.session import Session as SessionRow
+from app.models.staff_user import StaffUser
 from app.models.waitlist_entry import WaitlistEntry
 from app.privacy.validation import ERASED_NAME, ERASED_PHONE_PREFIX
 from app.storefront.validation import BOUTIQUE_TIMEZONE
@@ -408,6 +409,78 @@ async def _scrub_customers(
     return await _scrub(session, Customer, where, values, limit=limit, dry_run=dry_run)
 
 
+async def _scrub_staff_users(
+    session: AsyncSession,
+    tenant_id: UUID,
+    *,
+    now: datetime.datetime,
+    settings: Settings,
+    limit: int,
+    dry_run: bool,
+) -> int:
+    """F38's eighth class: a staffer who left seven years ago.
+
+    SCRUB and not PURGE because FIVE tables hold no-FK pointers at this id —
+    `fitting_room_assignments.staff_user_id`, `sos_alerts.target_staff_user_id`,
+    `alteration_tickets.assigned_staff_user_id`, `audit_log.actor_id` and F40's
+    future roster rows — and every one of them is operational history the
+    boutique keeps. A purge would leave all five dangling with no way to tell
+    "erased" from "never existed", which is `customers`' own argument.
+
+    Five conjuncts, each load-bearing:
+      * `deleted_at IS NOT NULL` — only OFFBOARDED rows. A live employee past
+        seven years of service is not a retention subject, she is an employee;
+      * `scrubbed_at IS NULL` — D22, the self-falsifying guard, destroyed by this
+        policy's own UPDATE. Delete this one line and the policy re-scrubs its
+        own output forever, burning all 50 chunks on rows already done and never
+        reaching the ones queued behind them;
+      * `last_day IS NOT NULL` — which is why 0031 BACKFILLS it and why
+        offboarding refuses to leave it NULL. A NULL here is not "unknown", it is
+        "never scrub this person";
+      * `last_day <= cutoff_day`;
+      * the tenant, as everywhere.
+
+    ⚠ `.astimezone(BOUTIQUE_TIMEZONE).date()` BEFORE the date arithmetic, because
+    `last_day` is a Jerusalem calendar date and `now` is a UTC instant. Harmless
+    on a seven-year window and wrong as an idiom — this file warns about it twice
+    already, so the next clock that is not seven years wide inherits the habit
+    rather than the bug.
+
+    `password_hash` is deliberately LEFT ALONE, recorded rather than silently
+    skipped: `verify_password` catches only `VerifyMismatchError`, so a
+    non-argon2 sentinel would raise `InvalidHashError` on any path that reached
+    it. Nothing reaches it — `by_email` filters `deleted_at IS NULL` — and a
+    one-way hash is not the personal data the brief names.
+
+    The photo columns are already NULL from offboarding and stay out of this
+    UPDATE. That is why this policy is a PURE SQL STATEMENT: the shipped
+    `PolicyRun` contract hands a policy a session and nothing else, and an S3
+    call inside one would widen a tested interface for a single caller.
+    """
+    cutoff_day = now.astimezone(BOUTIQUE_TIMEZONE).date() - datetime.timedelta(
+        days=settings.staff_retention_days
+    )
+    where = [
+        StaffUser.tenant_id == tenant_id,
+        StaffUser.deleted_at.is_not(None),
+        StaffUser.scrubbed_at.is_(None),
+        StaffUser.last_day.is_not(None),
+        StaffUser.last_day <= cutoff_day,
+    ]
+    values: dict[str, Any] = {
+        "display_name": ERASED_NAME,
+        # PER ROW, never a constant. `idx_staff_users_tenant_email_unique` is
+        # partial on `deleted_at IS NULL` so a constant would technically
+        # survive here — but the `customers` scrub shipped the per-row form
+        # after exactly this reasoning failed once, and one convention across
+        # both is cheaper than a footnote explaining why they differ.
+        "email": _erased_phone(StaffUser),
+        "phone": None,
+        "scrubbed_at": now,
+    }
+    return await _scrub(session, StaffUser, where, values, limit=limit, dry_run=dry_run)
+
+
 #: ORDER IS LOAD-BEARING — `bookings` before `customers`, asserted on the tuple
 #: in `test_retention_policies.py` rather than left to this comment.
 POLICIES: tuple[RetentionPolicy, ...] = (
@@ -424,6 +497,9 @@ POLICIES: tuple[RetentionPolicy, ...] = (
         "bookings", RetentionAction.PURGE, ("bookings", "scheduled_messages"), _purge_bookings
     ),
     RetentionPolicy("customers", RetentionAction.SCRUB, ("customers",), _scrub_customers),
+    # F38, APPENDED LAST: it depends on no other policy, and only the
+    # bookings → customers pair has an order that matters.
+    RetentionPolicy("staff_users", RetentionAction.SCRUB, ("staff_users",), _scrub_staff_users),
 )
 
 

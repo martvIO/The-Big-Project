@@ -27,6 +27,7 @@ Every test mints its own tenant id; nothing here truncates.
 
 import datetime
 import uuid
+from datetime import date
 
 import pytest
 from sqlalchemy import event, select, text
@@ -56,6 +57,14 @@ from app.models.audit_log import AuditLog
 from app.models.constants import AuditAction, EffortBand, StaffRole, TicketStage
 from app.models.customer import Customer
 from app.storefront.validation import BOUTIQUE_TIMEZONE
+
+# F38 made `last_day` a REQUIRED argument on StaffUsersRepository.soft_delete —
+# the retention policy's predicate needs `last_day IS NOT NULL`, so a row
+# offboarded without one is a person the platform can never scrub, and a default
+# would have made forgetting it silent. This module only ever soft-deletes a
+# staffer to set up a fixture, so any past date does; naming it says so.
+_LEFT_ON = date(2026, 1, 31)
+
 
 pytestmark = pytest.mark.db
 
@@ -911,7 +920,7 @@ async def test_the_seamstress_list_is_a_union_and_not_a_filter(app_role_url: str
         await _seed(factory, tenant_id, assigned_staff_user_id=re_roled)
         await _seed(factory, tenant_id, assigned_staff_user_id=retired)
         async with tenant_session(factory, tenant_id) as session:
-            await StaffUsersRepository().soft_delete(session, tenant_id, retired)
+            await StaffUsersRepository().soft_delete(session, tenant_id, retired, last_day=_LEFT_ON)
 
         async with tenant_session(factory, tenant_id) as session:
             rows = await repo.assignees(session, tenant_id)

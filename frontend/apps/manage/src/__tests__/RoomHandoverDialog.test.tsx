@@ -64,6 +64,9 @@ function card(overrides: Partial<StaffCard> = {}): StaffCard {
     status: "available",
     break_started_at: null,
     occupancy: null,
+    // F38's two, defaulted to the no-photo state most of a boutique is in.
+    photo_url: null,
+    photo_confirmed_at: null,
     ...overrides,
   };
 }

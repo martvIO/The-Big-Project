@@ -40,6 +40,7 @@ import datetime
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 
 import pytest
 from sqlalchemy import event, select, update
@@ -67,6 +68,14 @@ from app.models.audit_log import AuditLog
 from app.models.constants import AuditAction, StaffRole, TicketStage
 from app.models.staff_user import StaffUser
 from app.storefront.validation import today_jerusalem
+
+# F38 made `last_day` a REQUIRED argument on StaffUsersRepository.soft_delete —
+# the retention policy's predicate needs `last_day IS NOT NULL`, so a row
+# offboarded without one is a person the platform can never scrub, and a default
+# would have made forgetting it silent. This module only ever soft-deletes a
+# staffer to set up a fixture, so any past date does; naming it says so.
+_LEFT_ON = date(2026, 1, 31)
+
 
 pytestmark = pytest.mark.db
 
@@ -715,7 +724,10 @@ async def test_a_row_soft_deleted_between_the_check_and_the_update_is_the_ONLY_4
 
             async def _uncommitted_delete() -> None:
                 async with tenant_session(factory, tenant_id) as winner:
-                    assert await repo.soft_delete(winner, tenant_id, staff_id) is True
+                    assert (
+                        await repo.soft_delete(winner, tenant_id, staff_id, last_day=_LEFT_ON)
+                        is True
+                    )
                     deleted.set()
                     # Still UNCOMMITTED for this long, and holding the row's write
                     # lock. Exiting the block is the commit (`db/tenant.py:25`),

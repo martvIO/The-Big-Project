@@ -197,6 +197,11 @@ export const MAX_VARIANT_QUANTITY = 1000;
 export const MAX_MEDIA_PER_DRESS = 12;
 export const MAX_UPLOAD_BYTES = 10_485_760;
 export const MIN_UPLOAD_BYTES = 1024;
+// F38's staff photo cap — a DELIBERATE FIFTH of MAX_UPLOAD_BYTES above. A 44 px
+// avatar on a board that polls every ~5 s is not boutique photography, and this
+// payload is re-rendered on every tick by every screen in the shop. Mirrored
+// from backend/app/auth/photo.py and pinned by test_frontend_constant_parity.
+export const MAX_STAFF_PHOTO_BYTES = 2_097_152;
 export const MAX_SEARCH_LENGTH = 100;
 export const MAX_SORT_ORDER = 1_000_000;
 
@@ -320,6 +325,21 @@ export function validateUploadFile(file: UploadCandidate): string | null {
   return null;
 }
 
+export function validateStaffPhotoFile(file: UploadCandidate): string | null {
+  // Reuses validateUploadFile's HEIC and type branches verbatim — the accepted
+  // set and the "save as JPG" advice are identical, and a second copy would
+  // drift the day either is tuned. Only the CEILING differs, so only the
+  // ceiling is re-checked here.
+  const shared = validateUploadFile(file);
+  if (shared !== null && file.size <= MAX_UPLOAD_BYTES) {
+    return shared;
+  }
+  if (file.size > MAX_STAFF_PHOTO_BYTES) {
+    return "התמונה גדולה מ-2MB";
+  }
+  return shared;
+}
+
 // --- staff (Feature 51) ---
 //
 // Mirrors of backend/app/auth/schemas.py, and load-bearing beyond the usual
@@ -376,6 +396,60 @@ export function validateStaffDraft(draft: StaffDraft): string | null {
     if (draft.password.length > MAX_PASSWORD_LENGTH) {
       return "הסיסמה ארוכה מדי";
     }
+  }
+  return null;
+}
+
+// --- the leaving date (Feature 38) ---
+//
+// Mirrors `_resolve_last_day` in backend/app/auth/staff.py. Hardcoded Hebrew and
+// not an i18n key, per F51's rule above and `validateUploadFile`'s precedent: a
+// bounds message that lives beside the bound cannot drift from it.
+//
+// A TYPO FENCE and not a policy about notice periods — `2036` for `2026` is one
+// keystroke, and the server would take it, parking her outside the retention
+// scrub for a decade.
+export const MAX_LAST_DAY_LOOKAHEAD_DAYS = 365;
+
+// The floor, and NOT a typo fence — `MAX_LAST_DAY_BACKDATE_DAYS` in
+// backend/app/auth/staff.py, where the argument is written out. Short version:
+// `last_day` is the retention clock's zero, so a far-past one forces the
+// seven-year scrub on the next armed tick. `start_date` cannot be that floor,
+// because most rows have none. The server refuses it either way; this is here so
+// the console says so in Hebrew instead of surfacing the server's English
+// VALIDATION_ERROR text, which is not in StaffSection.tsx's MAPPED_CODES.
+export const MAX_LAST_DAY_BACKDATE_DAYS = 365;
+
+/**
+ * `lastDay` and `startDate` are `YYYY-MM-DD` — the format `<input type="date">`
+ * speaks in both directions, and the format the wire carries.
+ *
+ * Compared as STRINGS, deliberately: ISO-8601 calendar dates sort
+ * lexicographically, so this needs no Date parsing and therefore cannot pick up
+ * a timezone the way `new Date("2026-08-09")` (UTC midnight) would.
+ *
+ * The `startDate === null` arm is load-bearing, not defensive: every pre-F38 row
+ * has no start date, so comparing unconditionally would refuse every offboarding
+ * in the boutique until somebody backfilled a column nobody has.
+ */
+export function validateLastDay(lastDay: string, startDate: string | null): string | null {
+  if (!lastDay) {
+    return "יש לבחור יום עבודה אחרון";
+  }
+  if (startDate !== null && lastDay < startDate) {
+    return "יום העבודה האחרון אינו יכול להקדים את תאריך תחילת העבודה.";
+  }
+  const ceiling = new Date(Date.now() + MAX_LAST_DAY_LOOKAHEAD_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  if (lastDay > ceiling) {
+    return "יום העבודה האחרון רחוק מדי. אפשר לבחור תאריך עד שנה מהיום.";
+  }
+  const floor = new Date(Date.now() - MAX_LAST_DAY_BACKDATE_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  if (lastDay < floor) {
+    return "יום העבודה האחרון רחוק מדי בעבר. אפשר לבחור תאריך עד שנה אחורה.";
   }
   return null;
 }

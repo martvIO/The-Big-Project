@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -73,6 +73,12 @@ class StaffUsersRepository:
         # says. The one consequence is that the INSERT now emits role='owner'
         # explicitly instead of letting the default fill it.
         role: str = StaffRole.OWNER.value,
+        # F38's three, each defaulted so ProvisioningService.provision — a
+        # shipped file on the tenant-creation path — needs no edit to say what
+        # the founding owner's absent phone and unset eligibility already are.
+        phone: str | None = None,
+        start_date: date | None = None,
+        shift_manager_eligible: bool = False,
     ) -> StaffUser:
         staff = StaffUser(
             tenant_id=tenant_id,
@@ -80,6 +86,9 @@ class StaffUsersRepository:
             password_hash=password_hash,
             display_name=display_name,
             role=role,
+            phone=phone,
+            start_date=start_date,
+            shift_manager_eligible=shift_manager_eligible,
         )
         session.add(staff)
         await session.flush()
@@ -95,10 +104,20 @@ class StaffUsersRepository:
         display_name: str | None = None,
         role: str | None = None,
         password_hash: str | None = None,
+        phone: str | None = None,
+        start_date: date | None = None,
+        shift_manager_eligible: bool | None = None,
     ) -> StaffUser | None:
         """Every argument omitted is a legal no-op, not an error: the service's
         no-op PATCH path calls straight through here, and an empty `.values()`
         would be a SQLAlchemy error rather than a 200.
+
+        ⚠ `phone` carries ONE extra convention, and it is the same one the HTTP
+        boundary already uses: `None` is "not sent", `""` is "clear it". On this
+        signature `None` universally means "leave it alone", so without that
+        second spelling a number could be set and changed but never REMOVED —
+        and an emptied `<input>` posts `""` natively, so it costs no sentinel
+        type and no tri-state anywhere in the stack.
 
         updated_at is never assigned — the DB trigger owns it, and `refresh` is
         what picks the trigger's value back up (the dresses/platform rule).
@@ -106,7 +125,14 @@ class StaffUsersRepository:
         row = await self.by_id(session, tenant_id, staff_id)
         if row is None:
             return None
-        if display_name is None and role is None and password_hash is None:
+        if (
+            display_name is None
+            and role is None
+            and password_hash is None
+            and phone is None
+            and start_date is None
+            and shift_manager_eligible is None
+        ):
             return row
         if display_name is not None:
             row.display_name = display_name
@@ -114,6 +140,12 @@ class StaffUsersRepository:
             row.role = role
         if password_hash is not None:
             row.password_hash = password_hash
+        if phone is not None:
+            row.phone = phone or None
+        if start_date is not None:
+            row.start_date = start_date
+        if shift_manager_eligible is not None:
+            row.shift_manager_eligible = shift_manager_eligible
         await session.flush()
         await session.refresh(row)
         return row
@@ -262,11 +294,131 @@ class StaffUsersRepository:
             )
         ).scalar_one_or_none()
 
-    async def soft_delete(self, session: AsyncSession, tenant_id: UUID, staff_id: UUID) -> bool:
-        """Returns whether a live row was hit — not the row, because DELETE
-        answers OkResponse and the service already holds the row from its
-        post-lock read. deleted_at IS NULL in the predicate is what makes a second
-        call answer False rather than re-stamping the timestamp."""
+    async def set_pending_photo(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        staff_id: UUID,
+        *,
+        storage_key: str | None,
+        content_type: str | None,
+        at: datetime | None,
+    ) -> bool:
+        """Writes — or, with all three None, CLEARS — the pending triple.
+
+        One method for both because they are the same statement with different
+        values, and because the triple is all-or-nothing: three columns that must
+        move together are one write, not three arguments a caller could get half
+        right. The schema cannot express it (a CHECK spanning three would refuse
+        the ordinary intermediate state a two-phase confirm creates), so this is
+        where the invariant lives.
+
+        Touches NEITHER the live triple nor `deleted_at`: an in-flight upload
+        must leave the photo currently on the board rendering, which is the whole
+        reason there are two triples.
+        """
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.deleted_at.is_(None),
+            )
+            .values(
+                photo_pending_key=storage_key,
+                photo_pending_content_type=content_type,
+                photo_pending_at=at,
+            )
+            .returning(StaffUser.id)
+        )
+        return wrote.scalar_one_or_none() is not None
+
+    async def promote_pending_photo(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID, *, at: datetime
+    ) -> StaffUser | None:
+        """Pending becomes live, in ONE statement, guarded by
+        `photo_pending_key IS NOT NULL`.
+
+        That predicate is what makes a retried confirm — after a lost response —
+        a no-op rather than a second promotion that would blank the live triple
+        it already wrote. `None` back therefore means "nothing to promote", which
+        the caller reads as idempotent success and not as an error.
+
+        The answer comes through `_refreshed` and never off the returning row:
+        this is ORM-enabled DML whose `evaluate` synchronization stamps these
+        values onto the identity-mapped instance whatever the database matched,
+        and the session factory is `expire_on_commit=False`.
+        """
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.deleted_at.is_(None),
+                StaffUser.photo_pending_key.is_not(None),
+            )
+            .values(
+                photo_key=StaffUser.photo_pending_key,
+                photo_content_type=StaffUser.photo_pending_content_type,
+                photo_confirmed_at=at,
+                photo_pending_key=None,
+                photo_pending_content_type=None,
+                photo_pending_at=None,
+            )
+            .returning(StaffUser.id)
+        )
+        if wrote.scalar_one_or_none() is None:
+            return None
+        return await self._refreshed(session, tenant_id, staff_id)
+
+    async def clear_photo(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID
+    ) -> StaffUser | None:
+        """All six columns, one statement. Unconditional rather than guarded on
+        `photo_key IS NOT NULL`, so a delete that races a confirm cannot leave
+        the pending half behind."""
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.deleted_at.is_(None),
+            )
+            .values(
+                photo_key=None,
+                photo_content_type=None,
+                photo_confirmed_at=None,
+                photo_pending_key=None,
+                photo_pending_content_type=None,
+                photo_pending_at=None,
+            )
+            .returning(StaffUser.id)
+        )
+        if wrote.scalar_one_or_none() is None:
+            return None
+        return await self._refreshed(session, tenant_id, staff_id)
+
+    async def soft_delete(
+        self, session: AsyncSession, tenant_id: UUID, staff_id: UUID, *, last_day: date
+    ) -> bool:
+        """Offboarding, as ONE statement.
+
+        Returns whether a live row was hit — not the row, because DELETE answers
+        OkResponse and the service already holds the row from its post-lock read.
+        `deleted_at IS NULL` in the predicate is what makes a second call answer
+        False rather than re-stamping the timestamp.
+
+        ⚠ `last_day` is REQUIRED and has no default. That is the second half of
+        the guard the service's `_resolve_last_day` is the first half of: the
+        retention policy's predicate needs `last_day IS NOT NULL`, so a row
+        soft-deleted without one is a person the platform can never scrub. A
+        default here would make forgetting it silent.
+
+        The six photo columns are nulled in the SAME statement as `deleted_at`,
+        so there is no window in which a row is offboarded but still points at an
+        object — and no second UPDATE that could fail on its own. The OBJECT is
+        deleted by the caller, after the transaction, best-effort.
+        """
         stmt = (
             update(StaffUser)
             .where(
@@ -274,7 +426,16 @@ class StaffUsersRepository:
                 StaffUser.id == staff_id,
                 StaffUser.deleted_at.is_(None),
             )
-            .values(deleted_at=func.now())
+            .values(
+                deleted_at=func.now(),
+                last_day=last_day,
+                photo_key=None,
+                photo_content_type=None,
+                photo_confirmed_at=None,
+                photo_pending_key=None,
+                photo_pending_content_type=None,
+                photo_pending_at=None,
+            )
             .returning(StaffUser.id)
         )
         return (await session.execute(stmt)).scalar_one_or_none() is not None

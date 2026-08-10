@@ -46,7 +46,7 @@ truncates.
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
@@ -81,6 +81,14 @@ from app.models.customer import Customer
 from app.models.dress import Dress
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.fitting_room_assignment import FittingRoomAssignment
+
+# F38 made `last_day` a REQUIRED argument on StaffUsersRepository.soft_delete —
+# the retention policy's predicate needs `last_day IS NOT NULL`, so a row
+# offboarded without one is a person the platform can never scrub, and a default
+# would have made forgetting it silent. This module only ever soft-deletes a
+# staffer to set up a fixture, so any past date does; naming it says so.
+_LEFT_ON = date(2026, 1, 31)
+
 
 pytestmark = pytest.mark.db
 
@@ -826,7 +834,7 @@ async def test_a_claim_whose_occupant_cannot_be_named_does_not_name_nobody(
             tenant_id, room_id, staff_user_id=ghost, booking_id=None, actor=_actor(tenant_id, ghost)
         )
         async with tenant_session(factory, tenant_id) as session:
-            await StaffUsersRepository().soft_delete(session, tenant_id, ghost)
+            await StaffUsersRepository().soft_delete(session, tenant_id, ghost, last_day=_LEFT_ON)
 
         with pytest.raises(RoomOccupiedError) as refused:
             await _service(factory).claim(

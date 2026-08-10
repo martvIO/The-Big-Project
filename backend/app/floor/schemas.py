@@ -39,6 +39,7 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel, Field
 
+from app.auth.photo import sign_staff_photo
 from app.catalog.validation import MAX_SIZE_LABEL_LENGTH, MAX_SORT_ORDER
 from app.db.repositories.fitting_rooms import RoomRow
 from app.db.repositories.staff_notifications import StaffNotificationRow
@@ -57,6 +58,7 @@ from app.models.constants import StaffCardStatus
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.staff_user import StaffUser
 from app.schemas import ForbidExtraModel
+from app.storage.base import MediaStorage
 
 
 class StaffCard(BaseModel):
@@ -75,9 +77,38 @@ class StaffCard(BaseModel):
     # over it is what catches a seventh arriving unreviewed on a five-role
     # payload.
     occupancy: "Occupancy | None"
+    # F38, and a SEVENTH and EIGHTH key on a payload every one of the five roles
+    # can open — so the set-equality assertions over this card had to be edited
+    # by hand, which is exactly what they are for.
+    #
+    # A face is not "customer data" (the rule this payload's contents are
+    # governed by), it is STAFF data, and it is here for the one job the board
+    # has: letting a seamstress see at a glance who is on the floor. The spec's
+    # purpose limit is binding and review-blocking — this image may never be used
+    # for attendance, monitoring or matching.
+    #
+    # Null on three ordinary paths and none of them is an error: she has no
+    # photo, the bucket is unconfigured, or signing failed. The board must render
+    # in all three.
+    photo_url: str | None
+    # The console's cache key, and the reason it is on the card at all: a signed
+    # URL is freshly signed — therefore DIFFERENT — on every one of the ~5 s
+    # polls, so a panel keyed on the URL would re-download every face forever.
+    # This changes exactly when the image behind it does.
+    photo_confirmed_at: datetime.datetime | None
 
     @classmethod
-    def from_row(cls, row: StaffUser, *, occupancy: "RoomRow | None" = None) -> "StaffCard":
+    def from_row(
+        cls,
+        row: StaffUser,
+        *,
+        occupancy: "RoomRow | None" = None,
+        storage: MediaStorage,
+    ) -> "StaffCard":
+        """`storage` is REQUIRED and keyword-only. Defaulting it to None would
+        make a forgotten call site render a board with every avatar silently
+        missing — which looks like "nobody has uploaded a photo yet" and would
+        survive review."""
         return cls(
             id=row.id,
             display_name=row.display_name,
@@ -85,6 +116,10 @@ class StaffCard(BaseModel):
             status=card_status(row, occupied=occupancy is not None),
             break_started_at=row.break_started_at,
             occupancy=Occupancy.from_row(occupancy) if occupancy is not None else None,
+            # Plain call, not awaited: signing is local HMAC with zero I/O, and
+            # awaiting it would cost an await per staffer on every poll tick.
+            photo_url=sign_staff_photo(storage, row),
+            photo_confirmed_at=row.photo_confirmed_at,
         )
 
 
@@ -105,12 +140,16 @@ class FloorResponse(BaseModel):
     waitlist: "Waitlist"
 
     @classmethod
-    def from_rows(cls, read: "FloorRead") -> "FloorResponse":
+    def from_rows(cls, read: "FloorRead", *, storage: MediaStorage) -> "FloorResponse":
         """A PURE RENDERER of one pre-joined structure. It issues no query, and
         keeping it that way is what stops this module growing a second one."""
         return cls(
             staff=[
-                StaffCard.from_row(row, occupancy=read.occupancy_by_staff_id.get(row.id))
+                StaffCard.from_row(
+                    row,
+                    occupancy=read.occupancy_by_staff_id.get(row.id),
+                    storage=storage,
+                )
                 for row in read.staff_rows
             ],
             rooms=[

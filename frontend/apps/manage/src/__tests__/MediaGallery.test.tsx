@@ -116,8 +116,11 @@ beforeEach(() => {
     calls.push(`presign:${id}`);
     return presign(id);
   });
+  // `uploadToStorage` takes the STRUCTURAL {url, fields} pair it actually reads
+  // — F38's staff presign carries no `media_id` — so the id this log needs comes
+  // off the mock's own envelope rather than off the parameter type.
   upload.mockImplementation(async (request) => {
-    calls.push(`upload:${request.media_id}`);
+    calls.push(`upload:${(request as PresignResponse).media_id}`);
   });
   confirmMedia.mockImplementation(async (_dressId: string, mediaId: string) => {
     calls.push(`confirm:${mediaId}`);

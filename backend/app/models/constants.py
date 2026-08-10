@@ -375,6 +375,15 @@ class AuditAction(StrEnum):
     # `previous_break_started_at`: ending a break destroys the only copy of when
     # it began, so a row without it records that something stopped and cannot say
     # what.
+    # F38's profile photo, three rows over a two-phase upload. Each carries the
+    # STORAGE KEY, and that is the load-bearing part rather than decoration:
+    # every object delete in this feature is best-effort, so on the path where
+    # one fails these rows are the ONLY durable record of which object was
+    # orphaned. audit_log.action is plain TEXT with no CHECK (0003), so they need
+    # no migration.
+    STAFF_PHOTO_PRESIGNED = "staff_photo_presigned"
+    STAFF_PHOTO_CONFIRMED = "staff_photo_confirmed"
+    STAFF_PHOTO_DELETED = "staff_photo_deleted"
     STAFF_BREAK_STARTED = "staff_break_started"
     STAFF_BREAK_ENDED = "staff_break_ended"
     # F17's payment gateway. Same fact as the two blocks above: audit_log.action
@@ -714,6 +723,13 @@ class AuditAction(StrEnum):
     # F22's waitlist purge — `audit_action()` resolves `retention_{policy.name}`
     # through this enum, so the member lands in the same commit as the policy.
     RETENTION_WAITLIST_ENTRIES = "retention_waitlist_entries"
+    # F38's ex-staff scrub, the EIGHTH class. `audit_action()` resolves
+    # `retention_{policy.name}` through this enum and RAISES on a missing member,
+    # so this line lands in the same commit as the policy or the registry test
+    # goes red — which is the point: without the member the failure would be a
+    # ValueError at 03:00, inside a tenant loop, three tables into an
+    # irreversible run.
+    RETENTION_STAFF_USERS = "retention_staff_users"
 
     # F21's catalog (D6), and it is the TENTH block to rely on the same fact:
     # audit_log.action is plain TEXT with no CHECK (0003_auth.py:71-79), so these
