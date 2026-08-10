@@ -30,6 +30,7 @@ export const ar = {
       // F20.
       privacy: "הודעת פרטיות",
       portal: "האזור האישי",
+      offer: "הצעת תור",
     },
     // F20. The footer link is on every route, so the notice is one tap from
     // any of them.
@@ -145,6 +146,24 @@ export const ar = {
     dress: {
       reservedDatesHeading: "מוזמנת בתאריכים",
       reservedDatesNote: "בשאר התאריכים אפשר לקבוע מדידה.",
+    },
+    // F23's offer page at /w/{token} — Hebrew values standing in, #47's file
+    // rule. Fourteen keys; everything else the page renders is reused.
+    offer: {
+      title: "התפנה תור עבורך",
+      loading: "טוענות את פרטי ההצעה",
+      deadlineLead: "אפשר לאשר את התור עד השעה",
+      claiming: "קובעות את התור",
+      claimed: "התור נקבע. נתראה.",
+      claimedReturning: "התור הזה כבר נקבע.",
+      expired: "תוקף ההצעה הזו פג.",
+      gone: "התור הזה נתפס בינתיים.",
+      pickAnotherHint: "אפשר לבחור מועד אחר מהמועדים הפנויים.",
+      declineCta: "ויתור על התור",
+      declineQuestion: "לוותר על התור הזה?",
+      declineConsequence: "הוויתור יסיר אותך גם מרשימת ההמתנה ליום הזה.",
+      declineConfirm: "אישור הוויתור",
+      declined: "ויתרת על התור, והסרנו אותך מרשימת ההמתנה ליום הזה.",
     },
     // F22's booking-waitlist reveal — Hebrew values standing in, pre-decided
     // #47's file rule.

@@ -40,6 +40,9 @@ export const he = {
       // dashboard, detail, bell) and it names no appointment and no person —
       // the queuePosition rule: a tab strip is read over a shoulder.
       portal: "האזור האישי",
+      // F23. ONE title for all ten states of /w/{token} — she arrived from a
+      // text message, and an outcome does not belong in the tab strip.
+      offer: "הצעת תור",
     },
 
     catalog: {
@@ -517,6 +520,40 @@ export const he = {
     //
     // ⚠ The MANAGE app's `waitlist.*` is F58's walk-in queue — an unrelated
     // block one app over (F-W2). Check the import app, not just the key name.
+    // F23's offer page at /w/{token}. FOURTEEN keys and no more: every label,
+    // every error and the whole terms block are REUSED from booking.*, manage.*
+    // and errors.* — one label, one Hebrew, no drift (design §8, P1).
+    //
+    // ⚠ NOTHING HERE TICKS. Design R1 removed the spec's countdown outright:
+    // tokens.md usage law 9 bans countdowns, and a 1 Hz repaint on a page whose
+    // whole job is a deadline drags SC 2.2.2 onto a screen with nothing to
+    // pause. What ships is ONE STATIC ABSOLUTE TIME — immune to a phone's clock
+    // drift, readable off a screenshot, and the same value the SMS carried.
+    offer: {
+      title: "התפנה תור עבורך",
+      loading: "טוענות את פרטי ההצעה",
+      // R19: the lead, then the time in its own <bdi dir="ltr"> island.
+      deadlineLead: "אפשר לאשר את התור עד השעה",
+      claiming: "קובעות את התור",
+      claimed: "התור נקבע. נתראה.",
+      // NO delivery claim — the provider can be unconfigured, and manage.invalidHint
+      // («לכל שאלה על התור, אפשר להתקשר לבוטיק.») follows this line instead (P3).
+      claimedReturning: "התור הזה כבר נקבע.",
+      expired: "תוקף ההצעה הזו פג.",
+      // The same sentence a direct booker meets. She cannot tell a waitlist
+      // claimer from another bride, and she is owed no explanation of which.
+      gone: "התור הזה נתפס בינתיים.",
+      pickAnotherHint: "אפשר לבחור מועד אחר מהמועדים הפנויים.",
+      declineCta: "ויתור על התור",
+      declineQuestion: "לוותר על התור הזה?",
+      // THE LOAD-BEARING SENTENCE (P2). Declining writes `cancelled` — it takes
+      // her off the day's list entirely, not past one slot — so one tap must
+      // never do it and the consequence must be on screen before she confirms.
+      declineConsequence: "הוויתור יסיר אותך גם מרשימת ההמתנה ליום הזה.",
+      declineConfirm: "אישור הוויתור",
+      declined: "ויתרת על התור, והסרנו אותך מרשימת ההמתנה ליום הזה.",
+    },
+
     waitlist: {
       cta: "הצטרפות לרשימת ההמתנה",
       send: "שליחת קוד אימות",

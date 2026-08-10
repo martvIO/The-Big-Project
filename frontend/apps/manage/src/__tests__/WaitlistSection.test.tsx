@@ -33,9 +33,21 @@ function row(overrides: Partial<BookingWaitlistRow> = {}): BookingWaitlistRow {
     customer_name: "נועה לוי",
     status: "waiting",
     created_at: "2026-08-01T06:30:00Z",
+    offer_starts_at: null,
+    offer_expires_at: null,
     ...overrides,
   };
 }
+
+// F23. The one row shape the offer column exists for: a bride holding a live
+// offer on 20.8 at 14:30 Jerusalem, until 12:15.
+const OFFERED = row({
+  id: "we-3",
+  customer_name: "רותם לוי",
+  status: "offered",
+  offer_starts_at: "2026-08-20T11:30:00Z",
+  offer_expires_at: "2026-08-20T09:15:00Z",
+});
 
 const STRANGER = row({
   id: "we-2",
@@ -155,5 +167,111 @@ describe("the cancel", () => {
       screen.getAllByRole("button", { name: i18n.t("bookingWaitlist.cancelConfirm") }),
     ).toHaveLength(1);
     expect(cancelButtons()).toHaveLength(1);
+  });
+
+  it("names the CONSEQUENCE when the armed row is holding a live offer", async () => {
+    // Design §4. Cancelling an `offered` row kills an offer a bride may be
+    // holding this second, and the generic «אישור הביטול» does not say so. The
+    // owner is one click from removing a woman who is reading her SMS.
+    getList.mockResolvedValue({ entries: [OFFERED, row()] });
+    render(<WaitlistSection />);
+    await screen.findByText("רותם לוי");
+
+    fireEvent.click(cancelButtons()[0]);
+
+    expect(
+      screen.getByRole("button", { name: i18n.t("bookingWaitlist.cancelOfferedConfirm") }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: i18n.t("bookingWaitlist.cancelConfirm") }),
+    ).toBeNull();
+  });
+
+  it("keeps the generic danger label on a waiting row", async () => {
+    // The pair to the above: the two labels must actually differ per row, or
+    // the consequence sentence is decoration.
+    getList.mockResolvedValue({ entries: [OFFERED, row()] });
+    render(<WaitlistSection />);
+    await screen.findByText("רותם לוי");
+
+    fireEvent.click(cancelButtons()[1]);
+
+    expect(
+      screen.getByRole("button", { name: i18n.t("bookingWaitlist.cancelConfirm") }),
+    ).toBeInTheDocument();
+    expect(
+      i18n.t("bookingWaitlist.cancelOfferedConfirm"),
+    ).not.toBe(i18n.t("bookingWaitlist.cancelConfirm"));
+  });
+});
+
+describe("the offer column", () => {
+  it("names the held slot and its deadline, both LTR-isolated", async () => {
+    // The ONE thing an owner needs from an offered row: is anyone holding this
+    // slot right now, and until when.
+    getList.mockResolvedValue({ entries: [OFFERED] });
+    render(<WaitlistSection />);
+    await screen.findByText("רותם לוי");
+
+    expect(screen.getByText(i18n.t("bookingWaitlist.colOffer"))).toBeInTheDocument();
+    // 11:30Z is 14:30 Jerusalem; 09:15Z is 12:15. Asserted as Jerusalem wall
+    // clock rather than as the wire instant — an owner reads the shop's clock.
+    const slot = screen.getByText("14:30");
+    const expiry = screen.getByText("12:15");
+    for (const node of [slot, expiry]) {
+      expect(node.tagName).toBe("BDI");
+      expect(node).toHaveAttribute("dir", "ltr");
+    }
+    // R19's lead-then-island shape, not one interpolated sentence.
+    expect(expiry.parentElement).toHaveTextContent(i18n.t("bookingWaitlist.offerUntil"));
+  });
+
+  it("renders an em dash for a row holding no offer", async () => {
+    getList.mockResolvedValue({ entries: [OFFERED, row()] });
+    render(<WaitlistSection />);
+    await screen.findByText("רותם לוי");
+
+    const rows = screen.getAllByRole("row").slice(1);
+    // Column index 4: day, type, customer, status, OFFER, joined, action.
+    expect(within(rows[1]).getAllByRole("cell")[4].textContent).toBe("—");
+    // And the waiting row must not borrow the offered row's deadline.
+    expect(within(rows[1]).queryByText("12:15")).toBeNull();
+  });
+
+  it("marks the offered badge as in-flight, not as a neutral steady state", async () => {
+    // P4. F22 shipped `neutral` as a placeholder for a status that could not
+    // yet occur. Now that it can, the row an owner must not casually cancel has
+    // to separate from the ones that are merely waiting.
+    getList.mockResolvedValue({ entries: [OFFERED, row()] });
+    render(<WaitlistSection />);
+    await screen.findByText("רותם לוי");
+
+    const rows = screen.getAllByRole("row").slice(1);
+    const offered = within(rows[0]).getByText(i18n.t("bookingWaitlist.statusOffered"));
+    const waiting = within(rows[1]).getByText(i18n.t("bookingWaitlist.statusWaiting"));
+    // The variant is asserted through the class the Badge actually paints, so a
+    // prop renamed out from under this test cannot pass silently.
+    expect(offered.className).not.toBe(waiting.className);
+    expect(offered.className).toMatch(/warning/);
+  });
+
+  it("does NOT tick — the deadline is a fact, not a timer", async () => {
+    // The manage half of R1. An owner's table is the other place a countdown
+    // would have been tempting, and it is banned here for the same reason.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      getList.mockResolvedValue({ entries: [OFFERED] });
+      const { container } = render(<WaitlistSection />);
+      await screen.findByText("רותם לוי");
+      const before = container.innerHTML;
+
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      expect(container.innerHTML).toBe(before);
+      // No poll either: a waitlist changes at human speed (F22's ceiling).
+      expect(getList).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

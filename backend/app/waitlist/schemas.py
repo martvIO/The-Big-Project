@@ -7,7 +7,7 @@ import uuid
 
 from pydantic import BaseModel, Field
 
-from app.booking.schemas import MAX_TOKEN_INPUT_LENGTH
+from app.booking.schemas import MAX_NAME_INPUT_LENGTH, MAX_TOKEN_INPUT_LENGTH
 from app.notifications.schemas import MAX_PHONE_INPUT_LENGTH
 from app.schemas import ForbidExtraModel
 
@@ -36,6 +36,44 @@ class WaitlistJoinResponse(BaseModel):
     status: str
 
 
+class WaitlistOfferTokenRequest(ForbidExtraModel):
+    """The lookup and the decline body. The token travels in a BODY, never a
+    path or a query — `manage.py` D7's rule, and the reason is that an access log
+    holding a live claim credential is a credential leak with a retention
+    policy."""
+
+    token: str = Field(min_length=1, max_length=MAX_TOKEN_INPUT_LENGTH)
+
+
+class WaitlistOfferClaimRequest(ForbidExtraModel):
+    """EXACTLY three fields. No phone (the entry carries the proven one), no
+    verification token (possession of the offer token IS the proof, the same
+    posture as `/b/{token}`), no dress, no consent, no notes."""
+
+    token: str = Field(min_length=1, max_length=MAX_TOKEN_INPUT_LENGTH)
+    name: str = Field(min_length=1, max_length=MAX_NAME_INPUT_LENGTH)
+    terms_version: int
+
+
+class WaitlistOfferResponse(BaseModel):
+    """What `/w/{token}` renders from, and nothing more.
+
+    NO phone echo and NO entry id: she typed neither and the page needs neither.
+    NO boutique name — the storefront layout already has it from the host.
+
+    `status` is a PROJECTION, not the row's column: an `offered` row whose
+    deadline has passed reads `expired` here, because the cascade sweeps on a
+    60-second tick and the page must never render a live offer over a dead
+    deadline. The claim's own SQL guard says the same thing, which is what keeps
+    this a display concern rather than a second source of truth.
+    """
+
+    status: str
+    starts_at: datetime.datetime | None
+    expires_at: datetime.datetime | None
+    appointment_type_name: str | None
+
+
 class ManageWaitlistRow(BaseModel):
     """One row of the console list (D5). The phone ships deliberately: it is
     the disambiguator and the owner's only way to call her —
@@ -51,6 +89,15 @@ class ManageWaitlistRow(BaseModel):
     customer_name: str | None
     status: str
     created_at: datetime.datetime
+    # F23 D8. The console's WHOLE share of the offer: is anyone holding this
+    # slot right now, and until when. Null on every row that is not `offered`.
+    #
+    # ⚠ NOT `offer_token_hash`, which sits one column away on the same row. It
+    # is the live claim credential and it ships to nobody — not even an owner,
+    # who has no use for it and whose session is one shoulder away from a bride
+    # whose seat it would take.
+    offer_starts_at: datetime.datetime | None = None
+    offer_expires_at: datetime.datetime | None = None
 
 
 class ManageWaitlistResponse(BaseModel):

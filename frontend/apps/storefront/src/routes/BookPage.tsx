@@ -26,6 +26,7 @@ import type {
   StorefrontDetail,
   StorefrontTerms,
 } from "../api";
+import { TermsConsent } from "../components/booking/TermsConsent";
 import { ContactCard } from "../components/ContactCard";
 import { SizeChips } from "../components/booking/SizeChips";
 import { substituteBoutique } from "../lib/privacyText";
@@ -1515,57 +1516,20 @@ export function BookPage({ step, dressId }: BookPageProps) {
             </p>
           )}
           <ForwardForm onForward={forwardTerms}>
-            <Card className="flex flex-col gap-4">
-              {/* The two numbers sit ABOVE the prose because they are what she is
-                  actually agreeing to, and a paragraph is where numbers hide.
-                  Weight and a divider carry the distinction — never a tinted
-                  callout, which would read as an alert two neutral facts are not. */}
-              {/* R19: both numbers are isolated here, mid-sentence, which is why
-                  each string is a lead and a tail rather than one interpolation.
-                  The % rides inside the bdi — "50%" is one LTR run, not a digit
-                  run and a stray neutral. */}
-              <p className="text-base font-semibold text-ink">
-                {t("booking.refundWindow")}{" "}
-                <bdi dir="ltr">{terms.refundable_until_hours_before}</bdi>{" "}
-                {t("booking.refundWindowSuffix")}
-              </p>
-              <p className="text-base font-semibold text-ink">
-                {t("booking.forfeit")} <bdi dir="ltr">{terms.forfeit_percent}%</bdi>{" "}
-                {t("booking.forfeitSuffix")}
-              </p>
-
-              <span aria-hidden="true" className="h-px bg-border" />
-
-              {/* A React text child, and only ever that: no dangerouslySetInnerHTML,
-                  no markdown renderer, no sanitise-then-inject. The owner is
-                  semi-trusted but this is a public, anonymous, multi-tenant
-                  surface, so any HTML path is stored XSS for every visitor.
-                  pre-line keeps her line breaks and collapses her stray spaces;
-                  dir="auto" because owners paste English clauses; anywhere because
-                  a pasted 200-character URL must not scroll the page sideways. No
-                  inner scroller at any width — two scroll contexts on a phone is a
-                  trap, and a scrollable box is a tab stop between the policy and
-                  the consent. */}
-              <div dir="auto" className="whitespace-pre-line text-base text-ink [overflow-wrap:anywhere]">
-                {terms.terms_text}
-              </div>
-
-              <span aria-hidden="true" className="h-px bg-border" />
-
-              {/* Last in flow, below the prose: a consent control reachable before
-                  the thing consented to is how unread consent happens. */}
-              <Checkbox
-                label={t("booking.acceptTerms")}
-                checked={accepted}
-                error={fieldErrors.accept}
-                onCheckedChange={(next) => {
-                  setAcceptedVersion(next ? terms.version : null);
-                  clearError("accept");
-                  clearReturn("terms");
-                }}
-                ref={acceptRef}
-              />
-            </Card>
+            {/* F-O4: the prose, the two numbers and the tick moved to
+                TermsConsent so /w/{token} renders the IDENTICAL legal block.
+                Behaviour-preserving — BookPage.test.tsx passes unedited. */}
+            <TermsConsent
+              terms={terms}
+              accepted={accepted}
+              error={fieldErrors.accept}
+              onAcceptedChange={(next) => {
+                setAcceptedVersion(next ? terms.version : null);
+                clearError("accept");
+                clearReturn("terms");
+              }}
+              checkboxRef={acceptRef}
+            />
           </ForwardForm>
         </>
       )}

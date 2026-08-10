@@ -16,6 +16,7 @@ from app.booking.comms import CommsTenant, DrainResult
 from app.core.config import Settings
 from app.payments.sweeper import SweepResult
 from app.privacy.retention import RetentionResult
+from app.waitlist.cascade import CascadeResult
 from app.worker import build_sender, poll_once, retention_tick
 
 
@@ -70,6 +71,24 @@ class FakeSweeper:
         return outcome
 
 
+class FakeCascade:
+    """F23's fourth job, programmable exactly like the other two. The cascade's
+    own SQL — the guarded offer UPDATE, the quiet gate, D7's return-to-waiting —
+    is `test_waitlist_cascade.py`'s business; what belongs here is that it runs
+    for every tenant and that its failure is contained."""
+
+    def __init__(self, outcomes: dict[uuid.UUID, CascadeResult | Exception] | None = None) -> None:
+        self._outcomes = outcomes or {}
+        self.cascaded: list[uuid.UUID] = []
+
+    async def run(self, tenant_id: uuid.UUID) -> CascadeResult:
+        self.cascaded.append(tenant_id)
+        outcome = self._outcomes.get(tenant_id, CascadeResult())
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 def _tenant(slug: str, *, phone: str | None = "052-1234567") -> _Tenant:
     profile: dict[str, Any] = {} if phone is None else {"phone": phone}
     return _Tenant(id=uuid.uuid4(), slug=slug, name=f"בוטיק {slug}", settings={"profile": profile})
@@ -79,7 +98,7 @@ async def test_every_active_tenant_is_drained_once_per_tick() -> None:
     tenants = [_tenant("bella"), _tenant("vered")]
     comms = FakeComms({tenants[0].id: DrainResult(sent=2), tenants[1].id: DrainResult(sent=1)})
 
-    totals = await poll_once(comms, FakeTenants(tenants), FakeSweeper())  # type: ignore[arg-type]
+    totals = await poll_once(comms, FakeTenants(tenants), FakeSweeper(), FakeCascade())  # type: ignore[arg-type]
 
     assert [t.slug for t in comms.drained] == ["bella", "vered"]
     assert totals == DrainResult(sent=3)
@@ -92,7 +111,7 @@ async def test_the_tenants_identity_reaches_the_drain_including_the_published_ph
     tenant = _tenant("bella")
     comms = FakeComms({})
 
-    await poll_once(comms, FakeTenants([tenant]), FakeSweeper())  # type: ignore[arg-type]
+    await poll_once(comms, FakeTenants([tenant]), FakeSweeper(), FakeCascade())  # type: ignore[arg-type]
 
     [seen] = comms.drained
     assert (seen.id, seen.slug, seen.name) == (tenant.id, "bella", "בוטיק bella")
@@ -105,7 +124,7 @@ async def test_a_blank_profile_phone_collapses_to_none() -> None:
     whitespace."""
     tenant = _tenant("bella", phone=None)
     comms = FakeComms({})
-    await poll_once(comms, FakeTenants([tenant]), FakeSweeper())  # type: ignore[arg-type]
+    await poll_once(comms, FakeTenants([tenant]), FakeSweeper(), FakeCascade())  # type: ignore[arg-type]
     assert comms.drained[0].phone is None
 
 
@@ -116,7 +135,7 @@ async def test_one_tenants_failure_does_not_silence_the_others() -> None:
     broken, healthy = _tenant("broken"), _tenant("healthy")
     comms = FakeComms({broken.id: RuntimeError("claim blew up"), healthy.id: DrainResult(sent=1)})
 
-    totals = await poll_once(comms, FakeTenants([broken, healthy]), FakeSweeper())  # type: ignore[arg-type]
+    totals = await poll_once(comms, FakeTenants([broken, healthy]), FakeSweeper(), FakeCascade())  # type: ignore[arg-type]
 
     assert [t.slug for t in comms.drained] == ["broken", "healthy"]
     # The failing tenant contributes nothing and its rows stay pending, so the
@@ -126,13 +145,13 @@ async def test_one_tenants_failure_does_not_silence_the_others() -> None:
 
 async def test_a_quiet_tick_totals_to_nothing() -> None:
     tenants = FakeTenants([_tenant("bella")])
-    totals = await poll_once(FakeComms({}), tenants, FakeSweeper())  # type: ignore[arg-type]
+    totals = await poll_once(FakeComms({}), tenants, FakeSweeper(), FakeCascade())  # type: ignore[arg-type]
     assert totals == DrainResult()
 
 
 async def test_no_tenants_is_not_an_error() -> None:
     swept = FakeSweeper()
-    assert await poll_once(FakeComms({}), FakeTenants([]), swept) == DrainResult()  # type: ignore[arg-type]
+    assert await poll_once(FakeComms({}), FakeTenants([]), swept, FakeCascade()) == DrainResult()  # type: ignore[arg-type]
     assert swept.swept == []
 
 
@@ -142,7 +161,7 @@ async def test_every_active_tenant_is_swept_once_per_tick() -> None:
     tenants = [_tenant("bella"), _tenant("vered")]
     sweeper = FakeSweeper({tenants[0].id: SweepResult(expired=1, released=1)})
 
-    await poll_once(FakeComms({}), FakeTenants(tenants), sweeper)  # type: ignore[arg-type]
+    await poll_once(FakeComms({}), FakeTenants(tenants), sweeper, FakeCascade())  # type: ignore[arg-type]
 
     assert sweeper.swept == [tenants[0].id, tenants[1].id]
 
@@ -155,7 +174,7 @@ async def test_a_sweep_failure_does_not_stop_the_other_tenants() -> None:
     comms = FakeComms({})
     sweeper = FakeSweeper({broken.id: RuntimeError("expiry blew up")})
 
-    totals = await poll_once(comms, FakeTenants([broken, healthy]), sweeper)  # type: ignore[arg-type]
+    totals = await poll_once(comms, FakeTenants([broken, healthy]), sweeper, FakeCascade())  # type: ignore[arg-type]
 
     assert sweeper.swept == [broken.id, healthy.id]
     # And the reminders are untouched by a payments failure — the whole reason
@@ -173,9 +192,55 @@ async def test_a_drain_failure_defers_that_tenants_sweep_to_the_next_tick() -> N
     comms = FakeComms({broken.id: RuntimeError("claim blew up")})
     sweeper = FakeSweeper()
 
-    await poll_once(comms, FakeTenants([broken, healthy]), sweeper)  # type: ignore[arg-type]
+    await poll_once(comms, FakeTenants([broken, healthy]), sweeper, FakeCascade())  # type: ignore[arg-type]
 
     assert sweeper.swept == [healthy.id]
+
+
+async def test_every_active_tenant_is_cascaded_once_per_tick() -> None:
+    """F23 D2. The cascade is a POLLER, not a hook — six paths free capacity and
+    no single seam covers them — so a tenant this loop skips has a freed slot
+    nobody is ever offered."""
+    tenants = [_tenant("bella"), _tenant("vered")]
+    cascade = FakeCascade({tenants[0].id: CascadeResult(offered=1)})
+
+    await poll_once(FakeComms({}), FakeTenants(tenants), FakeSweeper(), cascade)  # type: ignore[arg-type]
+
+    assert cascade.cascaded == [tenants[0].id, tenants[1].id]
+
+
+async def test_a_cascade_failure_does_not_stop_the_other_tenants() -> None:
+    """Its OWN try block, the third of four. And it runs LAST on purpose: the
+    drain-first asymmetry already costs a failing tenant its sweep by one tick,
+    and the newest, least-proven job must not be able to add reminders or held
+    seats to that bill."""
+    broken, healthy = _tenant("broken"), _tenant("healthy")
+    comms = FakeComms({})
+    sweeper = FakeSweeper()
+    cascade = FakeCascade({broken.id: RuntimeError("cascade blew up")})
+
+    totals = await poll_once(comms, FakeTenants([broken, healthy]), sweeper, cascade)  # type: ignore[arg-type]
+
+    assert cascade.cascaded == [broken.id, healthy.id]
+    assert [t.slug for t in comms.drained] == ["broken", "healthy"]
+    assert sweeper.swept == [broken.id, healthy.id]
+    assert totals == DrainResult()
+
+
+async def test_a_quiet_tick_cascades_and_totals_to_nothing() -> None:
+    """The steady state: every boutique is cascaded on every 60-second tick and
+    almost none of them have anything to do."""
+    tenants = [_tenant("bella")]
+    cascade = FakeCascade()
+    totals = await poll_once(FakeComms({}), FakeTenants(tenants), FakeSweeper(), cascade)  # type: ignore[arg-type]
+    assert totals == DrainResult()
+    assert cascade.cascaded == [tenants[0].id]
+
+
+def test_cascade_results_add_up_across_tenants() -> None:
+    assert CascadeResult(expired=1, offered=1) + CascadeResult(returned=2, offered=1) == (
+        CascadeResult(expired=1, returned=2, offered=2)
+    )
 
 
 def test_sweep_results_add_up_across_tenants() -> None:

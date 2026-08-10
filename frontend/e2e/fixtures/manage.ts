@@ -952,6 +952,10 @@ export interface BookingWaitlistRow {
   customer_name: string | null;
   status: string;
   created_at: string;
+  // F23. Null on every row that is not `offered` — the column renders «—» from
+  // that, so an absent field would make the em dash a client guess.
+  offer_starts_at: string | null;
+  offer_expires_at: string | null;
 }
 
 export function bookingWaitlistRow(
@@ -966,8 +970,33 @@ export function bookingWaitlistRow(
     customer_name: "נועה כהן",
     status: "waiting",
     created_at: ARRIVED_AT,
+    offer_starts_at: null,
+    offer_expires_at: null,
     ...overrides,
   };
+}
+
+// F23. A row the cascade has offered and a bride is holding right now: the slot
+// at 13:30 Jerusalem, held until 11:15. ⚠ 20 January is WINTER — Asia/Jerusalem
+// is UTC+2 (IST) on these instants, not the UTC+3 (IDT) it keeps in summer, so
+// they read an hour earlier than the same UTC times would in July. Built ON
+// bookingWaitlistRow rather than beside it, so a wire field added to one can
+// never be missing from the other.
+//
+// The instants are UTC because the wire is UTC; the console renders them in
+// Jerusalem, which is the whole point of asserting the rendered strings in the
+// spec rather than these.
+export function offeredWaitlistEntry(
+  overrides: Partial<BookingWaitlistRow> = {},
+): BookingWaitlistRow {
+  return bookingWaitlistRow({
+    id: "we-offered",
+    customer_name: "רותם לוי",
+    status: "offered",
+    offer_starts_at: "2099-01-20T11:30:00Z",
+    offer_expires_at: "2099-01-20T09:15:00Z",
+    ...overrides,
+  });
 }
 
 export function bookingWaitlist(entries: BookingWaitlistRow[]): unknown {

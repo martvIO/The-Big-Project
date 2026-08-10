@@ -221,6 +221,123 @@ class DepositOutcome:
     payment_session_id: str | None = None
 
 
+async def claim_seat(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    starts_at: datetime.datetime,
+    now: datetime.datetime,
+    customer_id: uuid.UUID,
+    appointment_type: AppointmentType,
+    terms_version: int,
+    manage_token: str,
+    due: bool,
+    rules: AvailabilityRulesRepository,
+    exceptions: AvailabilityExceptionsRepository,
+    bookings: BookingsRepository,
+    scheduled: ScheduledMessagesRepository,
+    dress_id: uuid.UUID | None = None,
+    dress_name: str | None = None,
+    dress_size: str | None = None,
+    notes: str | None = None,
+) -> Booking:
+    """`create_booking`'s steps 4-5 and 7-9, extracted so **there is exactly one
+    path in this codebase that turns a slot into a booking row** (F23 D4).
+
+    F23's waitlist claim needs the same lock, the same freshly-materialized grid,
+    the same lowest-free-seat arithmetic, the same INSERT and the same
+    IntegrityError-to-409 mapping. Writing a second one that agreed with this one
+    on the day it was written and drifted afterwards is the single failure mode
+    that feature must not create — a subtly different oversell path.
+
+    Takes a `session` rather than opening one, `upsert_reminder`'s shape and for
+    its reason: the caller is already inside the transaction this has to be part
+    of. Everything from the lock below to the caller's COMMIT is serialized per
+    tenant.
+
+    **The advisory lock is taken HERE, and `create_booking` still takes its own.**
+    That is deliberate, not an oversight: `pg_advisory_xact_lock` is re-entrant
+    within a transaction, so the second acquisition is free, and `create_booking`
+    cannot simply delegate — its 4b idempotency read must ALSO run under the
+    lock, which puts its acquisition earlier than this one. Having it here too is
+    what makes this function safe for a caller that forgets, and no caller of an
+    oversell-critical primitive should have to remember.
+
+    Raises `SlotUnavailableError` when the instant is not claimable — full,
+    off-grid, past, closed, or lost to a racer whose INSERT landed first.
+    """
+    # ponytail: one lock per tenant serializes all claims; per-slot lock keys if
+    # pilot throughput ever cares.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:tenant_id))"),
+        {"tenant_id": str(tenant_id)},
+    )
+    # Re-materialize the grid and assert the instant is offered — fed the REAL
+    # booked counts, so this also enforces capacity.
+    slot = await offered_slot(
+        session,
+        tenant_id=tenant_id,
+        starts_at=starts_at,
+        now=now,
+        rules=rules,
+        exceptions=exceptions,
+        bookings=bookings,
+    )
+    if slot is None:
+        raise SlotUnavailableError
+
+    # Claim the lowest free seat. A cancelled booking's seat number is reusable —
+    # counting alone would overflow past a freed seat into an occupied one.
+    seats = await bookings.active_seats_at(session, tenant_id, starts_at=slot.starts_at)
+    seat_index = next((index for index in range(1, slot.capacity + 1) if index not in seats), None)
+    if seat_index is None:
+        raise SlotUnavailableError
+    try:
+        booking = await bookings.insert(
+            session,
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+            appointment_type_id=appointment_type.id,
+            starts_at=slot.starts_at,
+            seat_index=seat_index,
+            terms_version_accepted=terms_version,
+            terms_accepted_at=now,
+            appointment_type_name=appointment_type.name,
+            dress_id=dress_id,
+            dress_name=dress_name,
+            dress_size=dress_size,
+            notes=notes,
+            # The token's hash commits atomically with the row it authorises; the
+            # raw value is the CALLER's to return, and after this transaction it
+            # exists only in an SMS body and on a pending scheduled_messages row.
+            manage_token_hash=manage_token_hash(manage_token),
+            # D11: create THEN pay. Paying first cannot hold the seat, so the row
+            # is claimed by the advisory-lock protocol above and the payment
+            # becomes a transition on a row that exists. The seat is occupied from
+            # this instant — every occupancy predicate excludes only `cancelled`.
+            status=(BookingStatus.PENDING_PAYMENT.value if due else BookingStatus.CONFIRMED.value),
+        )
+    except IntegrityError as exc:
+        # Lost a race the advisory lock should have prevented — the index is the
+        # backstop, and to the caller it is the same 409.
+        raise SlotUnavailableError from exc
+
+    # The reminder, under D3's bands. None means the appointment is inside the
+    # two-hour suppression window and the confirmation seconds old — no row,
+    # deliberately.
+    send_after = reminder_send_after(starts_at=booking.starts_at, now=now)
+    if send_after is not None:
+        await scheduled.insert(
+            session,
+            tenant_id=tenant_id,
+            booking_id=booking.id,
+            kind=ScheduledMessageKind.REMINDER.value,
+            send_after=send_after,
+            manage_token=manage_token,
+        )
+    return booking
+
+
 class BookingService:
     def __init__(
         self,
@@ -485,20 +602,6 @@ class BookingService:
                 ):
                     raise DressUnavailableError
 
-            # 5. Re-materialize the grid and assert the instant is offered —
-            #    fed the REAL booked counts, so this also enforces capacity.
-            slot = await offered_slot(
-                session,
-                tenant_id=tenant_id,
-                starts_at=starts_at,
-                now=now,
-                rules=self._rules,
-                exceptions=self._exceptions,
-                bookings=self._bookings,
-            )
-            if slot is None:
-                raise SlotUnavailableError
-
             # 6. Attach-or-create the customer for the proven phone.
             customer = await self._customers.upsert(
                 session, tenant_id, phone=phone, name=name.strip()
@@ -512,67 +615,33 @@ class BookingService:
             if marketing_consent:
                 await self._customers.record_marketing_consent(session, tenant_id, customer.id)
 
-            # 7. Claim the lowest free seat. A cancelled booking's seat number
-            #    is reusable — counting alone would overflow past a freed seat
-            #    into an occupied one.
-            seats = await self._bookings.active_seats_at(
-                session, tenant_id, starts_at=slot.starts_at
-            )
-            seat_index = next(
-                (index for index in range(1, slot.capacity + 1) if index not in seats), None
-            )
-            if seat_index is None:
-                raise SlotUnavailableError
-            # 8. The manage token, minted here so its hash commits atomically
-            #    with the row it authorises. The raw value leaves in the result
-            #    and is then only ever in an SMS body and (while the reminder is
-            #    still pending) on the scheduled_messages row.
+            # 5 and 7-9. The grid assertion, the lowest free seat, the INSERT and
+            # the reminder — the SHARED path, so F23's waitlist claim cannot
+            # become a second oversell path that drifts from this one.
+            #
+            # 8. The manage token is minted HERE rather than inside it, because
+            #    the raw value has to leave in the result: sha256 is one-way, so
+            #    it is unrecoverable the moment this transaction ends.
             manage_token = mint_manage_token()
-            try:
-                booking = await self._bookings.insert(
-                    session,
-                    tenant_id=tenant_id,
-                    customer_id=customer.id,
-                    appointment_type_id=type_row.id,
-                    starts_at=slot.starts_at,
-                    seat_index=seat_index,
-                    terms_version_accepted=terms_version,
-                    terms_accepted_at=now,
-                    appointment_type_name=type_row.name,
-                    dress_id=dress_id,
-                    dress_name=dress_name,
-                    dress_size=snapshot_size,
-                    notes=notes,
-                    manage_token_hash=manage_token_hash(manage_token),
-                    # D11: create THEN pay. Paying first cannot hold the seat, so
-                    # the row is claimed by the advisory-lock protocol above and
-                    # the payment becomes a transition on a row that exists. The
-                    # seat is occupied from this instant — every occupancy
-                    # predicate excludes only `cancelled`.
-                    status=(
-                        BookingStatus.PENDING_PAYMENT.value
-                        if due
-                        else BookingStatus.CONFIRMED.value
-                    ),
-                )
-            except IntegrityError as exc:
-                # Lost a race the advisory lock should have prevented — the
-                # index is the backstop, and to the caller it is the same 409.
-                raise SlotUnavailableError from exc
-
-            # 9. The reminder, under D3's bands. None means the appointment is
-            #    inside the two-hour suppression window and the confirmation
-            #    seconds old — no row, deliberately.
-            send_after = reminder_send_after(starts_at=booking.starts_at, now=now)
-            if send_after is not None:
-                await self._scheduled.insert(
-                    session,
-                    tenant_id=tenant_id,
-                    booking_id=booking.id,
-                    kind=ScheduledMessageKind.REMINDER.value,
-                    send_after=send_after,
-                    manage_token=manage_token,
-                )
+            booking = await claim_seat(
+                session,
+                tenant_id=tenant_id,
+                starts_at=starts_at,
+                now=now,
+                customer_id=customer.id,
+                appointment_type=type_row,
+                terms_version=terms_version,
+                manage_token=manage_token,
+                due=due,
+                rules=self._rules,
+                exceptions=self._exceptions,
+                bookings=self._bookings,
+                scheduled=self._scheduled,
+                dress_id=dress_id,
+                dress_name=dress_name,
+                dress_size=snapshot_size,
+                notes=notes,
+            )
             return BookingClaim(
                 booking=booking,
                 created=True,

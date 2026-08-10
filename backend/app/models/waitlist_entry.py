@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from sqlalchemy import Date, Text, text
+from sqlalchemy import TIMESTAMP, Date, Text, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,3 +40,24 @@ class WaitlistEntry(StandardColumns, Base):
     # both booked and waited.
     phone: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'waiting'"))
+    # --- F23's offer bookkeeping (0033), all four NULL until she is offered ---
+    #
+    # They move and clear TOGETHER, always inside one guarded UPDATE: the offer
+    # write sets all four, the expiry sweep clears the token and the deadline,
+    # and the claim clears the token. Nothing reads one without the others, and
+    # "no live offer" is spelled NULL rather than by a sentinel.
+    offered_at: Mapped[datetime.datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    offer_expires_at: Mapped[datetime.datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    # THE slot instant this offer names. One offer names one instant, which is
+    # what lets the claim re-materialize a single grid position rather than a set.
+    offer_starts_at: Mapped[datetime.datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    # sha256 only — `mint_manage_token`'s raw value never lands here. It lives in
+    # the SMS body and, while the offer message is pending, on
+    # `scheduled_messages.manage_token`.
+    offer_token_hash: Mapped[str | None] = mapped_column(Text, nullable=True)

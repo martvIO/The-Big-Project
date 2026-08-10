@@ -11,6 +11,7 @@ import { CatalogPage } from "./routes/CatalogPage";
 import { CheckinPage } from "./routes/CheckinPage";
 import { DressPage } from "./routes/DressPage";
 import { ManageBookingPage } from "./routes/ManageBookingPage";
+import { OfferPage } from "./routes/OfferPage";
 import { PortalPage } from "./routes/PortalPage";
 import { PrivacyPage } from "./routes/PrivacyPage";
 import { QueueBoardPage } from "./routes/QueueBoardPage";
@@ -40,7 +41,10 @@ export type RouteName =
   // F24's client portal. `manage` is taken by /b/{token} — that page is
   // possession-authed and this one is session-authed, and they are two surfaces
   // over one appointment rather than two names for one page.
-  | "portal";
+  | "portal"
+  // F23's waitlist offer at /w/{token}. Possession-authed like `manage`, and a
+  // separate route because it acts on an ENTRY rather than on a booking.
+  | "offer";
 
 // A closed set, which is what lets /book/{step} and /book/{step}/{dressId}
 // share a shape: no dress id can ever be read as a step. `pay` joins it in flow
@@ -74,7 +78,10 @@ export type RouteMatch =
   // shared link could carry. Which booking she is looking at is component state,
   // not a path — a /portal/booking/{id} URL would be a link that renders a login
   // panel for everyone she sent it to.
-  | { name: "portal" };
+  | { name: "portal" }
+  // The token is opaque here for `manage`'s verbatim reason: a dead, expired or
+  // invented token has to REACH the page so the page renders its own state.
+  | { name: "offer"; token: string };
 
 // The id of StorefrontLayout's <main tabindex="-1">. Focus lands here after
 // every client navigation, and the SkipLink targets it.
@@ -112,6 +119,10 @@ const DOC_TITLE_KEYS: Record<RouteName, string> = {
   // detail, bell) — and it never names an appointment or a person, the
   // queuePosition rule: a tab strip is read over a shoulder.
   portal: "document.portal",
+  // F23. One title for all ten states, and it names no time and no boutique —
+  // the manage rule: she arrived from a text message and a tab strip is read
+  // over a shoulder.
+  offer: "document.offer",
 };
 
 const DRESS_PATH = /^\/dress\/([^/]+)$/;
@@ -120,6 +131,9 @@ const BOOK_PATH = /^\/book(?:\/([^/]+)(?:\/([^/]+))?)?$/;
 // character is segment budget. /manage-booking/{token} would spend ~14 extra
 // characters per message forever.
 const MANAGE_PATH = /^\/b\/([^/]+)$/;
+// One letter from MANAGE_PATH and for the identical reason: the URL rides
+// inside a UCS-2 Hebrew SMS where every character is segment budget.
+const OFFER_PATH = /^\/w\/([^/]+)$/;
 // Short for the same reason MANAGE_PATH is, plus one of its own: /checkin is
 // printed on a physical sign in the shop window and this path is what the QR
 // beside it resolves to, so every character is ink and every character is a
@@ -174,6 +188,12 @@ export function matchRoute(pathname: string): RouteMatch {
   // mistyped ticket must reach the position page's own not-found state. A woman
   // standing in the doorway who gets a dress grid instead has no way to learn
   // that her place in the queue is gone.
+  // BEFORE the catalog fallthrough, the manage rule verbatim: a dead offer token
+  // must render the page's own expired/invalid state, never be swallowed into
+  // the collection.
+  const offer = OFFER_PATH.exec(path);
+  if (offer) return { name: "offer", token: decodeId(offer[1]) };
+
   const queue = QUEUE_PATH.exec(path);
   if (queue) return { name: "queuePosition", ticketId: decodeId(queue[1]) };
 
@@ -386,6 +406,8 @@ export function Router() {
       return <BookPage step={match.step} dressId={match.dressId} />;
     case "manage":
       return <ManageBookingPage token={match.token} />;
+    case "offer":
+      return <OfferPage token={match.token} />;
     case "checkin":
       return <CheckinPage />;
     case "queuePosition":

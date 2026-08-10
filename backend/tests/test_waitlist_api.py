@@ -270,7 +270,16 @@ CREATED_AT = datetime.datetime(2026, 8, 1, 9, 30, tzinfo=datetime.UTC)
 UNKNOWN_ROLE = "no-such-role"
 
 
-def _row(status: str = WaitlistEntryStatus.WAITING.value) -> ManageWaitlistRow:
+OFFER_STARTS_AT = datetime.datetime(2026, 8, 20, 11, 30, tzinfo=datetime.UTC)
+OFFER_EXPIRES_AT = datetime.datetime(2026, 8, 20, 9, 15, tzinfo=datetime.UTC)
+
+
+def _row(
+    status: str = WaitlistEntryStatus.WAITING.value,
+    *,
+    offer_starts_at: datetime.datetime | None = None,
+    offer_expires_at: datetime.datetime | None = None,
+) -> ManageWaitlistRow:
     return ManageWaitlistRow(
         id=ENTRY_ID,
         day=DAY,
@@ -280,6 +289,8 @@ def _row(status: str = WaitlistEntryStatus.WAITING.value) -> ManageWaitlistRow:
         customer_name=None,
         status=status,
         created_at=CREATED_AT,
+        offer_starts_at=offer_starts_at,
+        offer_expires_at=offer_expires_at,
     )
 
 
@@ -289,12 +300,13 @@ class StubManageWaitlistService(StubWaitlistService):
         self.list_calls: list[tuple[uuid.UUID, datetime.date | None]] = []
         self.cancel_calls: list[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = []
         self.cancel_error: Exception | None = None
+        self.rows: list[ManageWaitlistRow] = [_row()]
 
     async def list_entries(
         self, tenant_id: uuid.UUID, *, day: datetime.date | None = None
     ) -> ManageWaitlistResponse:
         self.list_calls.append((tenant_id, day))
-        return ManageWaitlistResponse(entries=[_row()])
+        return ManageWaitlistResponse(entries=list(self.rows))
 
     async def cancel_entry(
         self, tenant_id: uuid.UUID, *, entry_id: uuid.UUID, actor: StaffContext
@@ -342,6 +354,54 @@ def test_both_console_roles_reach_the_list_and_the_cancel(role: str) -> None:
     assert [entry["phone"] for entry in listed.json()["entries"]] == ["+972501234567"]
     assert cancelled.json()["status"] == WaitlistEntryStatus.CANCELLED.value
     assert stub.cancel_calls == [(TENANT.id, ENTRY_ID, STAFF_ID)]
+
+
+def test_the_manage_row_carries_the_two_offer_instants_and_nothing_more() -> None:
+    """F23 D8 / design §4 — the console's whole share of the offer.
+
+    An owner clearing a day needs exactly one thing from an `offered` row: IS
+    ANYONE HOLDING THIS SLOT RIGHT NOW, AND UNTIL WHEN. That is two instants,
+    and the design refuses the rest by name — no offer counter, no expiry log,
+    no per-entry offer trail (the audit trail lives in `audit_log`).
+
+    The key set is asserted whole, not by membership: the token hash is one
+    column away from these two on the same row, and a wire shape that grew it
+    would hand a live claim credential to every console session.
+    """
+    client, stub = _manage_client()
+    stub.rows = [
+        _row(
+            status=WaitlistEntryStatus.OFFERED.value,
+            offer_starts_at=OFFER_STARTS_AT,
+            offer_expires_at=OFFER_EXPIRES_AT,
+        ),
+        _row(),
+    ]
+    with client:
+        listed = client.get(MANAGE_LIST_PATH)
+
+    offered, waiting = listed.json()["entries"]
+    assert set(offered) == {
+        "id",
+        "day",
+        "appointment_type_id",
+        "appointment_type_name",
+        "phone",
+        "customer_name",
+        "status",
+        "created_at",
+        "offer_starts_at",
+        "offer_expires_at",
+    }
+    # The house Z form, not "+00:00": the console renders these two through
+    # `new Date(...)`, and the offer column is the one place a misparsed instant
+    # would silently show an owner the wrong deadline for a live hold.
+    assert offered["offer_starts_at"] == "2026-08-20T11:30:00Z"
+    assert offered["offer_expires_at"] == "2026-08-20T09:15:00Z"
+    # A `waiting` row carries nulls rather than omitting the fields — the column
+    # renders «—» from them, and an absent key would make that a client guess.
+    assert waiting["offer_starts_at"] is None
+    assert waiting["offer_expires_at"] is None
 
 
 def test_the_waitlist_routes_are_absent_from_owner_only() -> None:

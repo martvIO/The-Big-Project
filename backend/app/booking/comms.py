@@ -28,14 +28,17 @@ from app.booking.comms_templates import (
     confirmation_sms_body,
     manage_link,
     mask_manage_link,
+    offer_link,
     owner_cancel_sms_body,
     owner_reschedule_sms_body,
     reminder_sms_body,
+    waitlist_offer_sms_body,
 )
 from app.booking.tokens import manage_token_hash, mint_manage_token
 from app.db.repositories.bookings import BookingsRepository
 from app.db.repositories.customers import CustomersRepository
 from app.db.repositories.scheduled_messages import ScheduledMessagesRepository
+from app.db.repositories.waitlist_entries import WaitlistEntriesRepository
 from app.db.tenant import tenant_session
 from app.models.booking import Booking
 from app.models.constants import (
@@ -43,7 +46,9 @@ from app.models.constants import (
     MessageKind,
     ScheduledMessageKind,
     ScheduledMessageStatus,
+    WaitlistEntryStatus,
 )
+from app.models.scheduled_message import ScheduledMessage
 from app.notifications.base import (
     SmsNotConfiguredError,
     SmsRecipientErasedError,
@@ -216,6 +221,7 @@ class BookingCommsService:
         self._bookings = BookingsRepository()
         self._customers = CustomersRepository()
         self._scheduled = ScheduledMessagesRepository()
+        self._entries = WaitlistEntriesRepository()
 
     def link_for(self, tenant: CommsTenant, token: str) -> str:
         return manage_link(slug=tenant.slug, base_domain=self._base_domain, token=token)
@@ -419,7 +425,35 @@ class BookingCommsService:
         async with tenant_session(self._session_factory, tenant.id) as session:
             rows = await self._scheduled.claim_due(session, tenant.id, now=now, limit=limit)
             for index, row in enumerate(rows):
-                booking = await self._bookings.by_id(session, tenant.id, row.booking_id)
+                if row.kind == ScheduledMessageKind.WAITLIST_OFFER.value:
+                    outcome = await self._drain_offer(session, tenant, row, now=now)
+                    if outcome is None:
+                        # Unconfigured provider. Same rule as the reminder half:
+                        # leave every remaining row PENDING and stop, so the
+                        # backlog flushes itself on the first tick after the
+                        # adapter lands. D7 then returns the entry to `waiting`
+                        # at its deadline — the clock does not run on an unsent
+                        # text.
+                        deferred = len(rows) - index
+                        logger.warning(
+                            "SMS not configured — %d due message(s) left pending for tenant %s",
+                            deferred,
+                            tenant.id,
+                        )
+                        break
+                    sent += outcome == ScheduledMessageStatus.SENT.value
+                    failed += outcome == ScheduledMessageStatus.FAILED.value
+                    cancelled += outcome == ScheduledMessageStatus.CANCELLED.value
+                    continue
+                # `booking_id` is nullable from 0033 — a `waitlist_offer` row's
+                # subject is an ENTRY. None here therefore falls into the
+                # cancel branch below, which is also the right answer for the
+                # impossible case of a reminder row with no booking.
+                booking = (
+                    await self._bookings.by_id(session, tenant.id, row.booking_id)
+                    if row.booking_id is not None
+                    else None
+                )
                 if (
                     booking is None
                     or booking.status != BookingStatus.CONFIRMED.value
@@ -478,7 +512,111 @@ class BookingCommsService:
                 failed += not delivered
         return DrainResult(sent=sent, failed=failed, cancelled=cancelled, deferred=deferred)
 
+    async def _drain_offer(
+        self,
+        session: AsyncSession,
+        tenant: CommsTenant,
+        row: ScheduledMessage,
+        *,
+        now: datetime.datetime,
+    ) -> str | None:
+        """F23 D7's branch. Returns the status this row was marked with, or None
+        for "no provider — leave it pending and stop the batch".
+
+        **It re-reads the ENTRY where the reminder path re-reads the BOOKING**,
+        and asks the same question in the same order: is the subject still in the
+        state that justified queuing this text? Not `offered` — claimed,
+        declined, expired, or cancelled by the owner — or a deadline that has
+        already passed means the text is about a dead offer, so it is cancelled
+        and nothing is sent. That re-read is the defence against every race the
+        schedule could not see, exactly as it is for the reminder.
+
+        A passed deadline is checked HERE as well as by the cascade because the
+        two run in the same tick and the ordering between them is not guaranteed:
+        texting a link that the very next statement will invalidate is worse than
+        one wasted read.
+        """
+        entry = (
+            await self._entries.by_id(session, tenant.id, row.waitlist_entry_id)
+            if row.waitlist_entry_id is not None
+            else None
+        )
+        if (
+            entry is None
+            or entry.status != WaitlistEntryStatus.OFFERED.value
+            or entry.offer_expires_at is None
+            or entry.offer_expires_at <= now
+            or entry.offer_starts_at is None
+        ):
+            await self._scheduled.mark(
+                session, tenant.id, row.id, status=ScheduledMessageStatus.CANCELLED.value
+            )
+            return ScheduledMessageStatus.CANCELLED.value
+        if not self._notifications.is_configured:
+            return None
+        if row.manage_token is None:
+            # No recoverable link. `failed` rather than a retry loop: the token
+            # is unrecoverable by construction (only its sha256 survives), so
+            # this never heals on its own and the cascade re-offers her instead.
+            logger.warning("waitlist offer %s has no token — marking failed", row.id)
+            await self._scheduled.mark(
+                session, tenant.id, row.id, status=ScheduledMessageStatus.FAILED.value
+            )
+            return ScheduledMessageStatus.FAILED.value
+        body = waitlist_offer_sms_body(
+            boutique_name=tenant.name,
+            slot_starts_at=entry.offer_starts_at,
+            deadline=entry.offer_expires_at,
+            sent_at=now,
+            offer_url=offer_link(
+                slug=tenant.slug, base_domain=self._base_domain, token=row.manage_token
+            ),
+        )
+        delivered = await self._deliver_offer(
+            tenant.id, phone=entry.phone, body=body, token=row.manage_token
+        )
+        status = (
+            ScheduledMessageStatus.SENT.value if delivered else ScheduledMessageStatus.FAILED.value
+        )
+        await self._scheduled.mark(session, tenant.id, row.id, status=status)
+        return status
+
     # --- internals ---------------------------------------------------------
+
+    async def _deliver_offer(
+        self, tenant_id: uuid.UUID, *, phone: str, body: str, token: str
+    ) -> bool:
+        """`_deliver`'s twin for a message with NO booking.
+
+        Not a parameter on `_deliver`: that one takes a `Booking` and stamps
+        `booking_id` on the evidence row, and threading a `Booking | None`
+        through it would make the reminder path's non-null guarantee a runtime
+        question. `message_log.booking_id` is nullable, so an offer's row is
+        simply booking-less — the phone and the masked body are the evidence,
+        which is all D7 asks for.
+
+        The token is masked for the reminder's reason exactly: `waitlist_entries`
+        stores only the sha256, so the raw value may not sit in the forever-table
+        beside its own hash.
+        """
+        try:
+            await self._notifications.send_sms(
+                tenant_id,
+                phone=phone,
+                body=body,
+                kind=MessageKind.WAITLIST_OFFER.value,
+                log_body=mask_manage_link(body, token),
+            )
+        except SmsSendError:
+            logger.warning("waitlist offer send failed for tenant %s", tenant_id)
+            return False
+        except SmsNotConfiguredError:
+            logger.warning("waitlist offer skipped for tenant %s — no provider", tenant_id)
+            return False
+        except SmsRecipientErasedError:
+            logger.warning("waitlist offer skipped for tenant %s — recipient erased", tenant_id)
+            return False
+        return True
 
     async def _deliver(
         self,

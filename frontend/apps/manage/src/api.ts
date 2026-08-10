@@ -734,6 +734,15 @@ export interface BookingWaitlistRow {
   // "waiting" | "offered" (F23-era) — the two ACTIVE states; the list carries
   // nothing else.
   status: string;
+  // F23 D8. The console's WHOLE share of the offer — the slot instant she is
+  // holding and the deadline she is holding it until. Null on every row that is
+  // not `offered`; the column renders «—» from that, so an absent field would
+  // make the em dash a client guess.
+  //
+  // ⚠ There is deliberately no third field. The offer TOKEN HASH sits beside
+  // these two on the same entry and ships to nobody, owner included.
+  offer_starts_at: string | null;
+  offer_expires_at: string | null;
   created_at: string;
 }
 

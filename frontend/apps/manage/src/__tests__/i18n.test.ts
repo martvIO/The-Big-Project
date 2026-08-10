@@ -141,6 +141,21 @@ const HE_F22 = entries(
 // sixteenth console section (spec D7) — `SectionKey` stays as it is, the guide's
 // `satisfies Record<SectionKey, steps>` gate needs no entry, and the e2e nav
 // walker needs no row.
+// F23's three, selected BY NAME rather than by prefix, and DERIVED — not spread
+// into HE a second time. HE_F22 already sweeps the whole `bookingWaitlist.`
+// namespace, so a second spread would double-count and red the shipped
+// no-duplicates guard (F42's lesson, and it is the right guard).
+//
+// The block still earns its place: HE_F22's floor is a COUNT, so these three
+// could be deleted and it would still pass at nineteen. Named here, they
+// cannot vanish quietly.
+const HE_F23 = entries(he.translation, (key) =>
+  [
+    "bookingWaitlist.colOffer",
+    "bookingWaitlist.offerUntil",
+    "bookingWaitlist.cancelOfferedConfirm",
+  ].includes(key),
+);
 const HE_F27 = entries(he.translation, (key) => key.startsWith("togglesMatrix."));
 const HE = [
   ...HE_F15,
@@ -1601,6 +1616,43 @@ describe("F22 booking-waitlist keys resolve", () => {
 
   it("resolves the seventeenth nav label beside the nested nav object", () => {
     expect(i18n.t("nav.bookingWaitlist")).toBe("רשימת המתנה לתורים");
+  });
+
+  describe("F23's three offer keys", () => {
+    it("carries all three of them", () => {
+      // Design §9's table. The floor is the anti-vacuity guard: a selector that
+      // matched nothing would make the ar drift walk below pass on an empty
+      // list.
+      expect(HE_F23.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it("is IN HE by F22's prefix, and not spread a second time", () => {
+      // The design deck asks for a spread; the shipped no-duplicates guard
+      // forbids one, because HE_F22's prefix already carries these rows. Both
+      // halves are asserted here so the intent survives either way: the keys
+      // ARE resolved and ar-guarded, and HE stays duplicate-free.
+      expect(HE.map(([key]) => key)).toContain("bookingWaitlist.cancelOfferedConfirm");
+      for (const [key] of HE_F23) {
+        expect(HE.filter(([other]) => other === key)).toHaveLength(1);
+      }
+    });
+
+    it("gives the offered row a DIFFERENT danger label from the generic one", () => {
+      // The whole reason the key exists. Equal, and an owner clearing a day is
+      // told nothing about the live offer she is about to take back.
+      expect(i18n.t("bookingWaitlist.cancelOfferedConfirm")).not.toBe(
+        i18n.t("bookingWaitlist.cancelConfirm"),
+      );
+    });
+
+    it("makes no claim about a message having been sent", () => {
+      // The register guard F22 recorded: manage copy may not promise a send.
+      // These three are the offer's console vocabulary and sit closest to it.
+      for (const [, value] of HE_F23) {
+        expect(value).not.toMatch(/נשלח/);
+        expect(value).not.toContain("!");
+      }
+    });
   });
 
   it("resolves both status badges so the table never shows a raw wire value", () => {
