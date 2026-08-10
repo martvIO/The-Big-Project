@@ -19,6 +19,7 @@ from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.models.alteration_ticket import AlterationTicket
 from app.models.constants import (
+    AvailabilityState,
     MessageKind,
     QueueTicketStatus,
     ScheduledMessageKind,
@@ -4872,5 +4873,304 @@ def test_the_platform_invites_migration_round_trips(migrated_db: str) -> None:
         assert not exists()
         command.upgrade(cfg, "head")
         assert exists()
+    finally:
+        command.upgrade(cfg, "head")  # idempotent when already at head
+
+
+# --- F39: shift_templates + staff_availability -------------------------------
+#
+# ⚠ db-marked, and this box has no Docker — set TEST_POSTGRES_SUPERUSER_URL at a
+# throwaway local PG16 to run them (conftest.postgres_url documents the setup).
+# Written against 0031's block, which is what the migration itself copies.
+
+_SHIFT_COLUMN_READ = (
+    "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+    "WHERE table_name = :table"
+)
+_SHIFT_CONSTRAINT_DEF = (
+    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+    "WHERE conrelid = (:table)::regclass AND conname = :name"
+)
+_SHIFT_INDEX_DEF = "SELECT indexdef FROM pg_indexes WHERE tablename = :table AND indexname = :name"
+
+# Spelled as POSTGRES deparses them (parenthesised, schema-qualified) — 0018's
+# pinning technique. Weakening a CHECK or dropping half a partial predicate then
+# collides with a review here instead of shipping silently.
+_TEMPLATE_DAY_CHECK_DEF = "CHECK (((day_of_week >= 0) AND (day_of_week <= 6)))"
+_TEMPLATE_ORDER_CHECK_DEF = "CHECK ((ends_at_time > starts_at_time))"
+# ⚠ BUILT FROM `AvailabilityState`, NEVER RETYPED (F38's ACCEPTED_CONTENT_TYPES
+# rule). A retyped literal is a literal that agrees with the DDL and disagrees
+# with the enum the service writes from, which is the drift a pinned CHECK
+# exists to catch.
+_AVAILABILITY_STATE_CHECK_DEF = "CHECK ((state = ANY (ARRAY[{}])))".format(
+    ", ".join(f"'{member.value}'::text" for member in AvailabilityState)
+)
+# D1's last line of defence: the service guard can be deleted and a Monday key
+# is still refused.
+_WEEK_START_CHECK_DEF = "CHECK ((EXTRACT(dow FROM week_start) = (0)::numeric))"
+_TEMPLATE_DAY_INDEX_DEF = (
+    "CREATE INDEX idx_shift_templates_day ON public.shift_templates "
+    "USING btree (tenant_id, day_of_week, starts_at_time) WHERE (deleted_at IS NULL)"
+)
+# PARTIAL and UNIQUE — the structural guarantee D11's optimistic write rests on.
+_AVAILABILITY_UNIQUE_INDEX_DEF = (
+    "CREATE UNIQUE INDEX idx_staff_availability_unique ON public.staff_availability "
+    "USING btree (tenant_id, staff_user_id, shift_template_id, week_start) "
+    "WHERE (deleted_at IS NULL)"
+)
+_AVAILABILITY_WEEK_INDEX_DEF = (
+    "CREATE INDEX idx_staff_availability_week ON public.staff_availability "
+    "USING btree (tenant_id, week_start, staff_user_id) WHERE (deleted_at IS NULL)"
+)
+
+_TEMPLATE_INSERT = (
+    "INSERT INTO shift_templates (tenant_id, day_of_week, label, starts_at_time, ends_at_time) "
+    "VALUES (uuid_generate_v4(), :day_of_week, 'משמרת בוקר', :starts_at_time, :ends_at_time)"
+)
+_AVAILABILITY_INSERT = (
+    "INSERT INTO staff_availability "
+    "(tenant_id, staff_user_id, shift_template_id, week_start, state) "
+    "VALUES (uuid_generate_v4(), uuid_generate_v4(), uuid_generate_v4(), :week_start, :state)"
+)
+
+
+def _shift_columns(url: str, table: str) -> dict[str, tuple[str, str]]:
+    async def read() -> dict[str, tuple[str, str]]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text(_SHIFT_COLUMN_READ), {"table": table})).all()
+                return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _shift_definition(url: str, query: str, table: str, name: str) -> str:
+    async def read() -> str:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                result = await conn.execute(text(query), {"table": table, "name": name})
+                return str(result.scalar_one())
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def _shift_insert_admitted(url: str, statement: str, params: dict[str, object]) -> bool:
+    """Rolled back either way — `migrated_db` is session-scoped and a committed
+    row here would outlive the probe (F57's note, same trap)."""
+
+    async def probe() -> bool:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as conn:
+                trans = await conn.begin()
+                try:
+                    await conn.execute(text(statement), params)
+                except IntegrityError:
+                    return False
+                finally:
+                    await trans.rollback()
+                return True
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+@pytest.mark.db
+def test_the_shift_migration_creates_both_tables(migrated_db: str) -> None:
+    """Spec D1/D2's DDL. `week_start` is a DATE and not a TIMESTAMPTZ: a week key
+    names a page of the boutique's calendar, and Jerusalem is UTC+2 in winter and
+    UTC+3 in summer — the same civil Sunday would key to two different instants
+    across the year and an equality join would silently miss."""
+    templates = _shift_columns(migrated_db, "shift_templates")
+    assert templates["day_of_week"] == ("integer", "NO")
+    assert templates["label"] == ("text", "NO")
+    assert templates["starts_at_time"] == ("time without time zone", "NO")
+    assert templates["ends_at_time"] == ("time without time zone", "NO")
+    assert templates["sort_order"] == ("integer", "NO")
+
+    availability = _shift_columns(migrated_db, "staff_availability")
+    assert availability["staff_user_id"] == ("uuid", "NO")
+    assert availability["shift_template_id"] == ("uuid", "NO")
+    assert availability["week_start"] == ("date", "NO")
+    assert availability["state"] == ("text", "NO")
+    # NULL when she recorded it herself (D5).
+    assert availability["recorded_by"] == ("uuid", "YES")
+
+
+@pytest.mark.db
+def test_the_shift_definitions_are_pinned(migrated_db: str) -> None:
+    """All FOUR named CHECKs and all THREE indexes, deparsed."""
+    assert (
+        _shift_definition(
+            migrated_db, _SHIFT_CONSTRAINT_DEF, "shift_templates", "shift_templates_day_check"
+        )
+        == _TEMPLATE_DAY_CHECK_DEF
+    )
+    assert (
+        _shift_definition(
+            migrated_db, _SHIFT_CONSTRAINT_DEF, "shift_templates", "shift_templates_order_check"
+        )
+        == _TEMPLATE_ORDER_CHECK_DEF
+    )
+    assert (
+        _shift_definition(
+            migrated_db,
+            _SHIFT_CONSTRAINT_DEF,
+            "staff_availability",
+            "staff_availability_state_check",
+        )
+        == _AVAILABILITY_STATE_CHECK_DEF
+    )
+    assert (
+        _shift_definition(
+            migrated_db,
+            _SHIFT_CONSTRAINT_DEF,
+            "staff_availability",
+            "staff_availability_week_start_check",
+        )
+        == _WEEK_START_CHECK_DEF
+    )
+    assert (
+        _shift_definition(
+            migrated_db, _SHIFT_INDEX_DEF, "shift_templates", "idx_shift_templates_day"
+        )
+        == _TEMPLATE_DAY_INDEX_DEF
+    )
+    assert (
+        _shift_definition(
+            migrated_db, _SHIFT_INDEX_DEF, "staff_availability", "idx_staff_availability_unique"
+        )
+        == _AVAILABILITY_UNIQUE_INDEX_DEF
+    )
+    assert (
+        _shift_definition(
+            migrated_db, _SHIFT_INDEX_DEF, "staff_availability", "idx_staff_availability_week"
+        )
+        == _AVAILABILITY_WEEK_INDEX_DEF
+    )
+
+
+@pytest.mark.db
+def test_the_template_checks_admit_a_split_shift_and_refuse_an_overnight_one(
+    migrated_db: str,
+) -> None:
+    """Two overlapping templates on one weekday are LEGAL (D2) — the DDL carries
+    no uniqueness and no exclusion — but an overnight one is not, because a
+    bridal boutique does not run one. The day index is 0..6 and nothing else."""
+    morning = {
+        "day_of_week": 4,
+        "starts_at_time": datetime.time(9, 0),
+        "ends_at_time": datetime.time(14, 0),
+    }
+    assert _shift_insert_admitted(migrated_db, _TEMPLATE_INSERT, morning)
+    assert _shift_insert_admitted(
+        migrated_db,
+        _TEMPLATE_INSERT,
+        {
+            "day_of_week": 4,
+            "starts_at_time": datetime.time(13, 0),
+            "ends_at_time": datetime.time(20, 0),
+        },
+    )
+    assert not _shift_insert_admitted(
+        migrated_db,
+        _TEMPLATE_INSERT,
+        {
+            "day_of_week": 4,
+            "starts_at_time": datetime.time(22, 0),
+            "ends_at_time": datetime.time(2, 0),
+        },
+    )
+    assert not _shift_insert_admitted(
+        migrated_db,
+        _TEMPLATE_INSERT,
+        {
+            "day_of_week": 4,
+            "starts_at_time": datetime.time(9, 0),
+            "ends_at_time": datetime.time(9, 0),
+        },
+    )
+    assert not _shift_insert_admitted(migrated_db, _TEMPLATE_INSERT, {**morning, "day_of_week": 7})
+    assert not _shift_insert_admitted(migrated_db, _TEMPLATE_INSERT, {**morning, "day_of_week": -1})
+
+
+@pytest.mark.db
+def test_the_week_start_check_refuses_every_weekday_but_sunday(migrated_db: str) -> None:
+    """⚠ THE SERVICE GUARD IS NOT THE ONLY GUARD. 2026-11-08 is a Sunday; the six
+    days after it are the six other weekdays, and every one of them must be
+    refused by `staff_availability_week_start_check` alone."""
+    sunday = datetime.date(2026, 11, 8)
+    assert sunday.weekday() == 6, "the fixture date is no longer a Sunday"
+    assert _shift_insert_admitted(
+        migrated_db,
+        _AVAILABILITY_INSERT,
+        {"week_start": sunday, "state": AvailabilityState.AVAILABLE.value},
+    )
+    for offset in range(1, 7):
+        assert not _shift_insert_admitted(
+            migrated_db,
+            _AVAILABILITY_INSERT,
+            {
+                "week_start": sunday + datetime.timedelta(days=offset),
+                "state": AvailabilityState.AVAILABLE.value,
+            },
+        ), offset
+
+
+@pytest.mark.db
+def test_the_state_check_admits_exactly_the_enum(migrated_db: str) -> None:
+    """Imported from `AvailabilityState`, never retyped — so widening the enum
+    without widening the CHECK reds here rather than at 03:00."""
+    sunday = datetime.date(2026, 11, 8)
+    for member in AvailabilityState:
+        assert _shift_insert_admitted(
+            migrated_db,
+            _AVAILABILITY_INSERT,
+            {"week_start": sunday, "state": member.value},
+        ), member
+    assert not _shift_insert_admitted(
+        migrated_db, _AVAILABILITY_INSERT, {"week_start": sunday, "state": "pending"}
+    )
+
+
+@pytest.mark.db
+def test_the_shift_migration_round_trips(migrated_db: str) -> None:
+    """upgrade() creates both tables; downgrade() drops both and touches nothing
+    else — F39 adds no column to any existing table. The downgrade target comes
+    from `_parent_of` so a renumber-at-rebase cannot silently stop this one
+    revision short."""
+    cfg = _alembic_config()
+    cfg.set_main_option("sqlalchemy.url", migrated_db)
+    down_to = _parent_of("staff availability")
+
+    def exists() -> tuple[bool, bool]:
+        async def read() -> tuple[bool, bool]:
+            engine = create_async_engine(migrated_db)
+            try:
+                async with engine.connect() as conn:
+                    templates = await conn.execute(text(_TABLE_EXISTS), {"name": "shift_templates"})
+                    availability = await conn.execute(
+                        text(_TABLE_EXISTS), {"name": "staff_availability"}
+                    )
+                    return bool(templates.scalar_one()), bool(availability.scalar_one())
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(read())
+
+    try:
+        assert exists() == (True, True)
+        command.downgrade(cfg, down_to)
+        assert exists() == (False, False)
+        command.upgrade(cfg, "head")
+        assert exists() == (True, True)
+        assert _shift_columns(migrated_db, "staff_availability")["week_start"] == ("date", "NO")
     finally:
         command.upgrade(cfg, "head")  # idempotent when already at head
