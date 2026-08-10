@@ -589,6 +589,13 @@ export interface StaffCard {
   // therefore a different string every tick; a component keyed on it would
   // re-download every face forever. Key on `(id, photo_confirmed_at)`.
   photo_confirmed_at: string | null;
+  // ⚠ F40's TWO NEW KEYS, and NOT a fourth `StaffCardStatus` (D9). `status`
+  // answers WHAT SHE IS DOING RIGHT NOW; `on_shift` answers WHETHER SHE IS
+  // SUPPOSED TO BE HERE TODAY. Both are true at once — a staffer who is
+  // off-shift and standing in room 2 is `occupied` AND `on_shift: false`, and
+  // that combination is the most useful thing this feature puts on the board.
+  on_shift: boolean;
+  on_shift_source: OnShiftSource;
 }
 
 // An ENVELOPE, not a bare array: F36 adds rooms and F58 the waitlist to this
@@ -1582,6 +1589,15 @@ export interface ShiftTemplateInput {
   starts_at_time: string;
   ends_at_time: string;
   sort_order: number;
+  // ⚠ F40 D10, AND REQUIRED — the PATCH is a FULL REPLACE, so `draftOf(row)`
+  // must SEED the existing targets or an unrelated label edit silently clears
+  // them. Optional here would be that omission wearing a default's clothes.
+  //
+  // SPARSE, keyed by `StaffRole`. An ABSENT key is «no target» and renders as a
+  // plain count; `0` is «deliberately nobody» and renders as a target. The two
+  // are not the same fact, which is why `bodyOf` omits blanks rather than
+  // writing zeros.
+  coverage_targets: Partial<Record<StaffRole, number>>;
 }
 
 export interface ShiftTemplate extends ShiftTemplateInput {
@@ -1615,6 +1631,102 @@ export interface ShiftWeek {
   locked: boolean;
   templates: ShiftTemplate[];
   entries: AvailabilityEntry[];
+  // F40 D17's read-only block on `MyWeekPanel`. ⚠ A BOOLEAN BESIDE A LIST, and
+  // never an empty list standing in for both: «the roster is not published yet»
+  // and «it is published and you are on no shift» are DIFFERENT FACTS (D5) and
+  // the panel says so in two different sentences. A draft answers
+  // `(false, [])` even with her on it — a draft is invisible to staff (D6).
+  roster_published: boolean;
+  rostered_template_ids: string[];
+}
+
+// --- F40: the roster ---------------------------------------------------------
+
+// ⚠ WHICH OF THE THREE RULES ANSWERED «is she on shift» (spec D2/D8). Mapped
+// through `ON_SHIFT_SOURCE_KEY` in `lib/onShift.ts` with NO fallback, so a
+// fourth source is a COMPILE ERROR rather than a wrong Hebrew word shipping
+// silently — `lib/roles.ts`' argument, and F57's recorded near-miss.
+export type OnShiftSource = "manual_today" | "roster" | "fallback";
+
+export interface RosterAssignment {
+  id: string;
+  staff_user_id: string;
+  display_name: string;
+  role: StaffRole;
+  is_shift_manager: boolean;
+  // NON-NULL = she was assigned against what she had submitted (D11). ⚠ STAMPED
+  // AT ASSIGNMENT TIME AND NEVER UPDATED: a staffer who goes unavailable AFTER
+  // she was rostered is a DIFFERENT fact, rendered from her live
+  // `RosterStaffRef.states` entry instead (design F-5). Both are on the wire and
+  // neither overwrites the other.
+  override_of_state: AvailabilityState | null;
+}
+
+export interface RosterShift {
+  template: ShiftTemplate;
+  assignments: RosterAssignment[];
+  // Sparse, keyed by `StaffRole`. A missing key is «no target» and renders as a
+  // plain count; `0` is «deliberately nobody» and renders as a target. Not the
+  // same thing (D10).
+  coverage_targets: Partial<Record<StaffRole, number>>;
+  // Server-computed, so the pane's coverage line and the server's own shortage
+  // count in the publish audit row cannot disagree about one shift.
+  assigned_by_role: Partial<Record<StaffRole, number>>;
+}
+
+export interface RosterStaffRef {
+  id: string;
+  display_name: string;
+  role: StaffRole;
+  // D12's gate on the wire, so the dialog renders the manager control for
+  // exactly the women the server would accept.
+  shift_manager_eligible: boolean;
+  // By `shift_template_id`. ⚠ AN ABSENT KEY IS «not answered» (D8's
+  // absence-is-not-a-state) and is NOT a fourth state — the cell renders
+  // `shifts.stateUnanswered` «לא נרשם», F39's per-shift word.
+  states: Record<string, AvailabilityState>;
+}
+
+export interface RosterWeek {
+  // "YYYY-MM-DD", a plain Jerusalem date — never a `Date`. A week is a page of
+  // the boutique's calendar; `published_at` below is an INSTANT, and the wire
+  // says so.
+  week_start: string;
+  week_end: string;
+  // ISO-8601 UTC instant; `null` = draft (D6).
+  published_at: string | null;
+  published_by_name: string | null;
+  // D7: edits after a publish take effect immediately and do NOT move
+  // `published_at`, so the pane says so in one muted line rather than pretending
+  // the week is locked.
+  edited_since_publish: boolean;
+  shifts: RosterShift[];
+  staff: RosterStaffRef[];
+}
+
+export interface PublishedRoster {
+  published: boolean;
+  published_at: string | null;
+  week_start: string;
+  week_end: string;
+  // ⚠ `assignments[].override_of_state` IS ALWAYS `null` HERE AND THAT IS A
+  // SERVER GUARANTEE, not an accident of the data. This read is open to all five
+  // roles (D13) and the stamp is the SUBMITTED answer — the exact datum that
+  // gates the builder read and `/shifts/week/submissions` beside it. Anything
+  // needing the stamp reads `getRoster()`, which is `ELEVATED`.
+  shifts: RosterShift[];
+}
+
+export interface CreateAssignmentRequest {
+  week_start: string;
+  shift_template_id: string;
+  staff_user_id: string;
+  is_shift_manager: boolean;
+  // ⚠ REQUIRED TO BE `true` ONLY when her live answer for that (shift, week) is
+  // `unavailable` — else `409 AVAILABILITY_CONFLICT`. An override is always a
+  // SECOND, DELIBERATE act, never a slip (D11), which the dialog delivers as a
+  // second tap on the same button.
+  acknowledge_override: boolean;
 }
 
 export interface AvailabilityEntryInput {
@@ -2205,6 +2317,66 @@ export const api = {
   },
   seedShiftTemplates(): Promise<SeedTemplatesResponse> {
     return apiFetch("/manage/shifts/templates/seed", { method: "POST" });
+  },
+
+  // --- F40: the roster -------------------------------------------------------
+
+  getRoster(weekStart?: string): Promise<RosterWeek> {
+    // No parameter means NEXT week, resolved server-side — the same rule
+    // `getShiftWeek` follows, and for the same reason.
+    return apiFetch(
+      weekStart === undefined
+        ? "/manage/shifts/roster"
+        : `/manage/shifts/roster?week_start=${encodeURIComponent(weekStart)}`,
+    );
+  },
+  assignToShift(body: CreateAssignmentRequest): Promise<RosterShift> {
+    // ⚠ ANSWERS THE AFFECTED SHIFT, never the whole week (plan §0.1). The pane
+    // permits two concurrent writes on one shift BY DESIGN, so a whole-week
+    // payload would let the earlier-issued response arriving second overwrite
+    // the later assignment.
+    return apiFetch("/manage/shifts/roster/assignments", { method: "POST", body });
+  },
+  removeAssignment(assignmentId: string): Promise<RosterShift> {
+    return apiFetch(
+      `/manage/shifts/roster/assignments/${encodeURIComponent(assignmentId)}`,
+      { method: "DELETE" },
+    );
+  },
+  publishRoster(weekStart: string): Promise<RosterWeek> {
+    // Idempotent (D7). A publish on a week whose assignment set has not moved
+    // answers 200 with the same payload and writes nothing. THERE IS NO
+    // UNPUBLISH.
+    return apiFetch("/manage/shifts/roster/publish", {
+      method: "POST",
+      body: { week_start: weekStart },
+    });
+  },
+  getPublishedRoster(weekStart?: string): Promise<PublishedRoster> {
+    // ⚠ NEVER 404s FOR AN UNPUBLISHED WEEK (D6) — `{published: false, shifts: []}`
+    // is a real, renderable answer, so no caller branches on a status code.
+    return apiFetch(
+      weekStart === undefined
+        ? "/manage/shifts/roster/published"
+        : `/manage/shifts/roster/published?week_start=${encodeURIComponent(weekStart)}`,
+    );
+  },
+  setOnShift(staffId: string, onShift: boolean): Promise<StaffCard> {
+    // ⚠ THE BODY CARRIES NO DATE (D3). It is always today, computed server-side:
+    // accepting one would make rule 1 pre-settable for tomorrow, and would let
+    // this device's clock decide what «today» means.
+    //
+    // Answers the PATCHED CARD (design F-1) — the client cannot compute
+    // `on_shift_source`, and a guess prints the wrong Hebrew rule label.
+    return apiFetch(`/manage/floor/staff/${encodeURIComponent(staffId)}/on-shift`, {
+      method: "POST",
+      body: { on_shift: onShift },
+    });
+  },
+  clearOnShift(staffId: string): Promise<StaffCard> {
+    return apiFetch(`/manage/floor/staff/${encodeURIComponent(staffId)}/on-shift`, {
+      method: "DELETE",
+    });
   },
   getShiftWeek(weekStart?: string): Promise<ShiftWeek> {
     // No parameter means NEXT week, resolved server-side from the Jerusalem

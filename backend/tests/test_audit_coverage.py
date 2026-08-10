@@ -474,3 +474,36 @@ def test_the_four_new_mutating_platform_routes_all_reach_the_audit_repository() 
     ):
         assert key in routes, f"{key} is no longer a mutating /platform route"
         assert _route_writes_audit(routes[key]), f"{key} writes no audit row"
+
+
+def test_all_five_f40_mutating_routes_resolve_as_audited_and_none_is_exempt() -> None:
+    """⚠ A POSITIVE CLAIM, not an absence. The walk above asserts
+    `unaudited == UNAUDITED_BY_DECISION` as a set equality in BOTH directions, so
+    F40's five passing is already meaningful — but «passing» there could also mean
+    the walker never discovered them, and the anti-vacuity legs only notice an
+    EMPTY walk. This names them.
+
+    ⚠ NONE IS EXEMPT, and adding one to `UNAUDITED_BY_DECISION` would be as red as
+    omitting an audited route: `audit_log` is the only durable record that a
+    same-day override was set at all (D4 puts no `set_at`/`set_by` on
+    `staff_users`), and it is the only record of who put whom on which shift.
+
+    ⚠ PUBLISH'S NO-OP BRANCH WRITES NO ROW AND THAT IS NOT AN EXEMPTION (D7). The
+    route reaches `record` on its writing branch, which is what this walker
+    inspects — a publish that changes nothing naming an act nobody performed
+    would be the lie the no-op rule exists to prevent.
+    """
+    routes = _mutating_audited_routes()
+    f40 = {
+        ("POST", "/manage/shifts/roster/assignments"),
+        ("DELETE", "/manage/shifts/roster/assignments/{assignment_id}"),
+        ("POST", "/manage/shifts/roster/publish"),
+        ("POST", "/manage/floor/staff/{staff_id}/on-shift"),
+        ("DELETE", "/manage/floor/staff/{staff_id}/on-shift"),
+    }
+    missing = f40 - set(routes)
+    assert missing == set(), f"the walker never discovered {sorted(missing)}"
+    for key in sorted(f40):
+        assert _route_writes_audit(routes[key]), f"{key} writes no audit row"
+        assert key not in UNAUDITED_BY_DECISION, f"{key} was made exempt"
+        assert key not in PARTIALLY_AUDITED_BY_DECISION, f"{key} was made partially exempt"

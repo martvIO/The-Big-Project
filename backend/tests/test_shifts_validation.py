@@ -8,12 +8,15 @@ import datetime
 
 import pytest
 
-from app.models.constants import AvailabilityState
+from app.models.constants import AvailabilityState, StaffRole
+from app.shifts.service import MATERIAL_FIELDS, is_material_edit
 from app.shifts.validation import (
+    MAX_COVERAGE_TARGET,
     MAX_SHIFT_LABEL_LENGTH,
     MAX_TEMPLATES,
     MAX_TEMPLATES_PER_DAY,
     SUBMISSION_WEEK_WINDOW_WEEKS,
+    CoverageTargetInvalidError,
     ShiftsValidationError,
     TemplateLimitReachedError,
     WeekOutOfRangeError,
@@ -23,6 +26,7 @@ from app.shifts.validation import (
     current_week_start,
     deadline_at,
     default_week_start,
+    validate_coverage_targets,
     validate_state,
     validate_template,
     validate_week_start,
@@ -228,3 +232,109 @@ def test_a_deadline_cannot_be_resolved_against_a_non_sunday() -> None:
             day_of_week=3,
             deadline_time=datetime.time(18, 0),
         )
+
+
+# --- F40: coverage targets, and the edit that stays immaterial ----------------
+
+
+def test_a_sparse_map_of_known_roles_is_accepted_and_preserved() -> None:
+    """D10's shape. `{}` is valid and means «no target on this shift», which is
+    the DEFAULT state of every template that predates the feature."""
+    assert validate_coverage_targets({}) == {}
+    assert validate_coverage_targets(
+        {StaffRole.SALES_ASSISTANT.value: 2, StaffRole.SEAMSTRESS.value: 1}
+    ) == {"sales_assistant": 2, "seamstress": 1}
+
+
+def test_zero_is_accepted_and_is_not_the_same_as_an_absent_key() -> None:
+    """⚠ THE DISTINCTION D10 RESTS ON. An absent key is «no target» and renders
+    as a plain count; `0` is «deliberately nobody» and renders as a target. A
+    validator that dropped falsy values would silently turn the second into the
+    first, and the shift would stop reporting «חסר איוש» for a role the owner
+    had explicitly zeroed."""
+    assert validate_coverage_targets({StaffRole.SEAMSTRESS.value: 0}) == {"seamstress": 0}
+
+
+def test_every_staff_role_is_a_legal_key() -> None:
+    """Driven off the enum, so a sixth role is a legal target the day it exists —
+    `lib/roles.ts`' own guarantee, kept on the server side too."""
+    for role in StaffRole:
+        assert validate_coverage_targets({role.value: 1}) == {role.value: 1}
+
+
+def test_an_unknown_role_key_is_refused() -> None:
+    with pytest.raises(CoverageTargetInvalidError):
+        validate_coverage_targets({"barista": 1})
+
+
+@pytest.mark.parametrize("value", [-1, MAX_COVERAGE_TARGET + 1, 999])
+def test_a_target_outside_the_bound_is_refused(value: int) -> None:
+    with pytest.raises(CoverageTargetInvalidError):
+        validate_coverage_targets({StaffRole.SEAMSTRESS.value: value})
+
+
+def test_the_bound_itself_is_accepted() -> None:
+    assert validate_coverage_targets({StaffRole.SEAMSTRESS.value: MAX_COVERAGE_TARGET}) == {
+        "seamstress": MAX_COVERAGE_TARGET
+    }
+
+
+@pytest.mark.parametrize("value", ["2", 2.5, None, [2], {"n": 2}])
+def test_a_non_integer_target_is_refused(value: object) -> None:
+    with pytest.raises(CoverageTargetInvalidError):
+        validate_coverage_targets({StaffRole.SEAMSTRESS.value: value})
+
+
+def test_true_does_not_coerce_to_one() -> None:
+    """⚠ `bool` IS A SUBCLASS OF `int` IN PYTHON, so `isinstance(True, int)` is
+    True and a naive check stores «1 seamstress» for a client that sent `true`.
+    F39's `AtelierSettingsUpdate` finding, verbatim reason."""
+    for value in (True, False):
+        with pytest.raises(CoverageTargetInvalidError):
+            validate_coverage_targets({StaffRole.SEAMSTRESS.value: value})
+
+
+def test_a_non_mapping_payload_is_refused() -> None:
+    """A five-element vector is the shape D10 rejects, and a list is how a client
+    would send one."""
+    for payload in ([1, 2], "seamstress", 3, None):
+        with pytest.raises(CoverageTargetInvalidError):
+            validate_coverage_targets(payload)
+
+
+def test_a_targets_only_edit_is_not_a_material_edit() -> None:
+    """⚠ A POSITIVE UNCHANGED ASSERTION, written before the field exists anywhere
+    else. «Add the new field to the material set» is the reflex, and it is a
+    DATA-LOSS reflex: the first owner who fixes a target from 2 to 3 would
+    soft-delete every future submission on that template. `is_material_edit`
+    reads `day_of_week`, `starts_at_time`, `ends_at_time` and must not gain a
+    fourth — a coverage number changes nothing any staffer answered.
+
+    It passes a `coverage_targets` key on both sides deliberately: if somebody
+    adds the field to `MATERIAL_FIELDS`, this reds with a `KeyError` on the
+    before/after dicts long before it reds on the boolean.
+    """
+    unchanged = {
+        "day_of_week": 4,
+        "starts_at_time": datetime.time(9, 0),
+        "ends_at_time": datetime.time(14, 0),
+    }
+    assert is_material_edit(before=dict(unchanged), after=dict(unchanged)) is False
+    assert MATERIAL_FIELDS == ("day_of_week", "starts_at_time", "ends_at_time")
+    assert "coverage_targets" not in MATERIAL_FIELDS
+
+
+def test_the_three_material_fields_still_invalidate() -> None:
+    """The other direction, so the assertion above cannot be satisfied by an
+    `is_material_edit` that returns False for everything."""
+    before = {
+        "day_of_week": 4,
+        "starts_at_time": datetime.time(9, 0),
+        "ends_at_time": datetime.time(14, 0),
+    }
+    for field, moved in (
+        ("day_of_week", 5),
+        ("starts_at_time", datetime.time(10, 0)),
+        ("ends_at_time", datetime.time(15, 0)),
+    ):
+        assert is_material_edit(before=dict(before), after={**before, field: moved}) is True, field

@@ -1264,6 +1264,9 @@ const TEMPLATE_INPUT = {
   starts_at_time: "09:00:00",
   ends_at_time: "14:00:00",
   sort_order: 0,
+  // F40 D10's SIXTH REQUIRED field — the PATCH is a full replace, so an omitted
+  // key would silently clear the targets on an unrelated label edit.
+  coverage_targets: {},
 };
 
 describe("shift availability", () => {
@@ -1332,13 +1335,14 @@ describe("shift availability", () => {
     expect(bodies[1]).toEqual({ week_start: WEEK, entries: [] });
   });
 
-  it("sends all five template fields on the PATCH", async () => {
+  it("sends all six template fields on the PATCH", async () => {
     // D2's full replace: an omitted key can never silently clear a value, and
     // `sort_order` is resent from the row because the console never shows it.
     const fetchMock = stubFetch(() => jsonResponse(200, {}));
     await api.updateShiftTemplate(TEMPLATE, { ...TEMPLATE_INPUT, sort_order: 2 });
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
     expect(Object.keys(body).sort()).toEqual([
+      "coverage_targets",
       "day_of_week",
       "ends_at_time",
       "label",
@@ -1376,6 +1380,101 @@ describe("shift availability", () => {
     expect(Object.keys(body.scheduling).sort()).toEqual([
       "submission_deadline_day_of_week",
       "submission_deadline_time",
+    ]);
+  });
+});
+
+describe("F40: the roster and the same-day override", () => {
+  const ASSIGNMENT = "b1b1b1b1-1111-4111-8111-111111111111";
+  const STAFF = "c2c2c2c2-2222-4222-8222-222222222222";
+
+  it("builds all seven paths and verbs", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.getRoster();
+    await api.getRoster(WEEK);
+    await api.assignToShift({
+      week_start: WEEK,
+      shift_template_id: TEMPLATE,
+      staff_user_id: STAFF,
+      is_shift_manager: false,
+      acknowledge_override: false,
+    });
+    await api.removeAssignment(ASSIGNMENT);
+    await api.publishRoster(WEEK);
+    await api.getPublishedRoster(WEEK);
+    await api.setOnShift(STAFF, false);
+    await api.clearOnShift(STAFF);
+
+    expect(
+      fetchMock.mock.calls.map(([url, init]) => [
+        String(url),
+        (init as RequestInit).method ?? "GET",
+      ]),
+    ).toEqual([
+      ["/manage/shifts/roster", "GET"],
+      [`/manage/shifts/roster?week_start=${WEEK}`, "GET"],
+      ["/manage/shifts/roster/assignments", "POST"],
+      [`/manage/shifts/roster/assignments/${ASSIGNMENT}`, "DELETE"],
+      ["/manage/shifts/roster/publish", "POST"],
+      [`/manage/shifts/roster/published?week_start=${WEEK}`, "GET"],
+      [`/manage/floor/staff/${STAFF}/on-shift`, "POST"],
+      [`/manage/floor/staff/${STAFF}/on-shift`, "DELETE"],
+    ]);
+  });
+
+  it("sends no date on the override body", async () => {
+    // ⚠ D3. The override is ALWAYS today, computed server-side: accepting a date
+    // would make rule 1 pre-settable for tomorrow — a roster edit wearing an
+    // override's clothes — and would let THIS DEVICE's clock decide what «today»
+    // means. The body is one boolean and nothing else.
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.setOnShift(STAFF, true);
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body).toEqual({ on_shift: true });
+  });
+
+  it("clears the override with no body at all", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.clearOnShift(STAFF);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBeUndefined();
+  });
+
+  it("sends every assignment field including the acknowledgement", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.assignToShift({
+      week_start: WEEK,
+      shift_template_id: TEMPLATE,
+      staff_user_id: STAFF,
+      is_shift_manager: true,
+      acknowledge_override: true,
+    });
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body).toEqual({
+      week_start: WEEK,
+      shift_template_id: TEMPLATE,
+      staff_user_id: STAFF,
+      is_shift_manager: true,
+      acknowledge_override: true,
+    });
+  });
+
+  it("publishes by naming the week and nothing else", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.publishRoster(WEEK);
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body).toEqual({ week_start: WEEK });
+  });
+
+  it("omits the week parameter entirely when none is named", async () => {
+    // No parameter means NEXT week, resolved server-side — «next» changes
+    // meaning at Saturday midnight and a browser on a New York clock disagrees
+    // with the server for part of every day.
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.getRoster();
+    await api.getPublishedRoster();
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "/manage/shifts/roster",
+      "/manage/shifts/roster/published",
     ]);
   });
 });

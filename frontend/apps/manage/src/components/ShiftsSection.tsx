@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ShiftTemplate } from "../api";
 import { MyWeekPanel } from "./MyWeekPanel";
+import { RosterPane } from "./RosterPane";
 import { ShiftTemplatesPane } from "./ShiftTemplatesPane";
 import { ShiftsDeadlineCard } from "./ShiftsDeadlineCard";
 import { WeekSubmissionsPane } from "./WeekSubmissionsPane";
@@ -71,6 +72,10 @@ export function ShiftsSection({ role }: ShiftsSectionProps) {
       {elevated && !firstRun && (
         <>
           <WeekSubmissionsPane templates={templates ?? []} />
+          {/* Readiness above the build, configuration below it — `ShiftsSection`'s
+              stated ordering, unchanged. F40 D17: an elevated actor now sees FIVE
+              `h2`s here, a non-elevated staffer still sees one. */}
+          <RosterPane />
           <ShiftsDeadlineCard />
         </>
       )}

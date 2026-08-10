@@ -83,6 +83,11 @@ function staff(overrides: Partial<StaffCard> = {}): StaffCard {
     // F38's two, defaulted to the no-photo state most of a boutique is in.
     photo_url: null,
     photo_confirmed_at: null,
+    // F40's two. Rule 3 is the default — no published roster, so every
+    // live staffer counts as on shift, which is today's exact
+    // behaviour (spec C1).
+    on_shift: true,
+    on_shift_source: "fallback",
     ...overrides,
   };
 }

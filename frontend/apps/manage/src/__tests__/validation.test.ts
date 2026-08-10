@@ -11,6 +11,7 @@ import {
   MAX_PASSWORD_LENGTH,
   MAX_PRICE_AGOROT,
   MAX_SEARCH_LENGTH,
+  MAX_COVERAGE_TARGET,
   MAX_SHIFT_LABEL_LENGTH,
   MAX_SIZE_LABEL_LENGTH,
   MAX_SORT_ORDER,
@@ -31,6 +32,7 @@ import {
   validateCustomerNotes,
   validateDress,
   validateExceptionTimes,
+  validateCoverageTarget,
   validateShiftTemplate,
   validateStaffDraft,
   validateStaffPhotoFile,
@@ -607,5 +609,37 @@ describe("validateShiftTemplate", () => {
     // 6 × 7 = 42 exactly, so MAX_TEMPLATES is a server-side guard with no screen
     // — asserted here so nobody mirrors it and builds a meter for it.
     expect(MAX_TEMPLATES_PER_DAY).toBe(6);
+  });
+});
+
+describe("F40: the coverage-target bound", () => {
+  it("accepts a blank, which means «no target»", () => {
+    // ⚠ `""` AND `"0"` ARE DIFFERENT VALUES AND BOTH ARE VALID (D10). Empty
+    // omits the key entirely; `0` writes a zero. A guard that rejected a blank
+    // would make «no target» unreachable from the only control that writes one.
+    expect(validateCoverageTarget("")).toBeNull();
+    expect(validateCoverageTarget("   ")).toBeNull();
+  });
+
+  it("accepts zero, which means «deliberately nobody»", () => {
+    expect(validateCoverageTarget("0")).toBeNull();
+  });
+
+  it("accepts the bound itself", () => {
+    expect(validateCoverageTarget(String(MAX_COVERAGE_TARGET))).toBeNull();
+  });
+
+  it.each(["-1", "21", "2.5", "abc", "1e3"])("refuses %s", (raw) => {
+    expect(validateCoverageTarget(raw)).not.toBeNull();
+  });
+
+  it("interpolates the constant rather than typing the bound into the Hebrew", () => {
+    // ⚠ DESIGN F-33. O3 calls `MAX_COVERAGE_TARGET` a fat-finger guard rather
+    // than a product rule, so it WILL move — and the day it becomes 30 a literal
+    // here would tell the owner «בין 0 ל־20» while the server says «בין 0 ל־30»,
+    // about the same field in the same session.
+    const message = validateCoverageTarget("999");
+    expect(message).toContain(String(MAX_COVERAGE_TARGET));
+    expect(message).toBe(`יעד האיוש חייב להיות מספר שלם בין 0 ל־${MAX_COVERAGE_TARGET}.`);
   });
 });

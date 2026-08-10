@@ -37,6 +37,9 @@ const TEMPLATES: ShiftTemplate[] = [
     ends_at_time: "14:00:00",
     sort_order: 0,
     future_submission_count: 0,
+    // F40 D10's sparse map. `{}` is «no target», which is the default
+    // state of every template that predates the feature.
+    coverage_targets: {},
   },
   {
     id: THURSDAY,
@@ -46,6 +49,9 @@ const TEMPLATES: ShiftTemplate[] = [
     ends_at_time: "14:00:00",
     sort_order: 0,
     future_submission_count: 0,
+    // F40 D10's sparse map. `{}` is «no target», which is the default
+    // state of every template that predates the feature.
+    coverage_targets: {},
   },
 ];
 
@@ -82,6 +88,9 @@ beforeEach(() => {
     entries: [
       { id: "e9", shift_template_id: THURSDAY, state: "preferred", recorded_by_name: "דנה כהן" },
     ],
+    // F40 D17: not published, and therefore no shifts of her own.
+    roster_published: false,
+    rostered_template_ids: [],
   });
 });
 

@@ -215,6 +215,11 @@ export interface StaffCard {
   occupancy: unknown;
   photo_url: string | null;
   photo_confirmed_at: string | null;
+  // F40 C1: EIGHT keys became TEN. `on_shift_source` names WHICH of the three
+  // rules answered, and the client cannot compute it — a card without the pair
+  // renders no rule label at all.
+  on_shift: boolean;
+  on_shift_source: "manual_today" | "roster" | "fallback";
 }
 
 export function staffCard(overrides: Partial<StaffCard> = {}): StaffCard {
@@ -229,6 +234,11 @@ export function staffCard(overrides: Partial<StaffCard> = {}): StaffCard {
     // board with no faces on it, and an opt-in keeps those readings true.
     photo_url: null,
     photo_confirmed_at: null,
+    // ⚠ THE DEFAULT IS RULE 3, and that is the F40 cutover's whole promise: a
+    // boutique that never publishes a roster sees byte-identical behaviour plus
+    // two keys. Every board spec that predates F40 keeps its reading.
+    on_shift: true,
+    on_shift_source: "fallback",
     ...overrides,
   };
 }
@@ -1157,6 +1167,10 @@ export interface ShiftTemplateFixture {
   ends_at_time: string;
   sort_order: number;
   future_submission_count: number | null;
+  // F40 D10's sparse map. `{}` is «no target» — the state of every template
+  // that predates the feature, and the one that suppresses the pane's shortage
+  // count and its filter entirely.
+  coverage_targets: Record<string, number>;
 }
 
 export function shiftTemplate(
@@ -1172,6 +1186,7 @@ export function shiftTemplate(
     ends_at_time: "14:00:00",
     sort_order: 0,
     future_submission_count: 0,
+    coverage_targets: {},
     ...overrides,
   };
 }
@@ -1186,6 +1201,11 @@ export function shiftWeek(overrides: Record<string, unknown> = {}): unknown {
     locked: false,
     templates: [shiftTemplate()],
     entries: [],
+    // F40 D17, for `MyWeekPanel`'s read-only published block. Three distinct
+    // facts, three distinct sentences: not published; published and she is on
+    // nothing; published with her shifts.
+    roster_published: false,
+    rostered_template_ids: [],
     ...overrides,
   };
 }
@@ -1215,4 +1235,70 @@ export function shiftSubmissionRow(
 /** `/manage/shifts/templates/{id}` — the PATCH and DELETE target. */
 export function shiftTemplatePath(templateId: string): string {
   return `/manage/shifts/templates/${encodeURIComponent(templateId)}`;
+}
+
+// --- F40: the roster ----------------------------------------------------------
+
+export function rosterAssignment(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "ra-1",
+    staff_user_id: "st-dana",
+    display_name: "דנה כהן",
+    role: "sales_assistant",
+    is_shift_manager: false,
+    // NON-NULL = assigned against what she had submitted, STAMPED AT ASSIGNMENT
+    // TIME. Her going unavailable afterwards is a different fact, carried by
+    // `RosterStaffRef.states` instead.
+    override_of_state: null,
+    ...overrides,
+  };
+}
+
+export function rosterStaffRef(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "st-dana",
+    display_name: "דנה כהן",
+    role: "sales_assistant",
+    shift_manager_eligible: true,
+    // An ABSENT key is «not answered» (D8). There is no fourth state.
+    states: {},
+    ...overrides,
+  };
+}
+
+export function rosterShift(
+  template: ShiftTemplateFixture,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    template,
+    assignments: [],
+    coverage_targets: template.coverage_targets,
+    // Server-computed, so the pane's coverage line and the publish audit row's
+    // shortage count cannot disagree about one shift.
+    assigned_by_role: {},
+    ...overrides,
+  };
+}
+
+export function rosterWeek(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    week_start: SHIFT_WEEK_START,
+    week_end: SHIFT_WEEK_END,
+    published_at: null,
+    published_by_name: null,
+    edited_since_publish: false,
+    shifts: [rosterShift(shiftTemplate())],
+    staff: [rosterStaffRef()],
+    ...overrides,
+  };
+}
+
+/** `/manage/floor/staff/{id}/on-shift` — the POST and DELETE target. */
+export function onShiftPath(staffId: string): string {
+  return `/manage/floor/staff/${encodeURIComponent(staffId)}/on-shift`;
 }

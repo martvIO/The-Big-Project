@@ -59,6 +59,32 @@ class StaffUser(StandardColumns, Base):
     shift_manager_eligible: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
+    # F40's same-day override (spec D3/D4), and it is a PAIR: the DB CHECK
+    # `staff_users_on_shift_pair_check` refuses one without the other, so every
+    # writer sets and clears both in one statement.
+    #
+    # ⚠ A JERUSALEM CALENDAR DATE, NOT A TIMESTAMP, AND THAT IS THE WHOLE
+    # FRESHNESS RULE. An override for a day that is not today is never consulted,
+    # so it cannot be stale by construction — there is no clock comparison
+    # anywhere to get wrong and no `published_at` to compare against (D3 rejects
+    # that comparison outright: an edit to Thursday's shift must not revoke an
+    # override on Sunday).
+    #
+    # ⚠ NO SWEEP, NO WORKER, NO SCHEDULED JOB. At Jerusalem midnight the date
+    # stops matching and rule 2 or 3 answers again with nobody having acted —
+    # `card_status`' and F37's compute-on-read discipline, for F37's stated
+    # reason. The stale row stays on the table and is simply never consulted; the
+    # next override overwrites it.
+    #
+    # NO `set_at` AND NO `set_by`: the durable record of who flipped it and when
+    # is the `ON_SHIFT_OVERRIDE_SET` audit row (F38's precedent verbatim). Two
+    # columns that are read beat four of which two are not.
+    on_shift_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # TWO-VALUED. true = on shift, false = off shift. A one-way "mark her on"
+    # flag cannot express the commonest same-day event in a boutique, which is
+    # somebody NOT coming in — and it is the only way to say so in a boutique
+    # with no roster at all, where rule 3 puts everyone on.
+    on_shift_override: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # D22's self-falsifying guard, `customers.erased_at`'s shape: the scrub's own
     # UPDATE destroys the predicate that selected the row.
     scrubbed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)

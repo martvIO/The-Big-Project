@@ -162,12 +162,20 @@ from app.queue.validation import CheckinThrottledError
 from app.security_headers import SecurityHeadersMiddleware, build_csp
 from app.shifts.router import router as shifts_router
 from app.shifts.service import (
+    AvailabilityConflictError,
     NoOpeningHoursError,
+    NotShiftManagerEligibleError,
+    ShiftManagerSlotTakenError,
     ShiftsService,
     SubmissionClosedError,
     TemplatesAlreadySeededError,
 )
-from app.shifts.validation import TemplateLimitReachedError, WeekOutOfRangeError
+from app.shifts.validation import (
+    MAX_COVERAGE_TARGET,
+    CoverageTargetInvalidError,
+    TemplateLimitReachedError,
+    WeekOutOfRangeError,
+)
 from app.storage.base import (
     MediaNotConfiguredError,
     MediaStorage,
@@ -296,6 +304,40 @@ TEMPLATE_LIMIT_REACHED_BODY = {
     "error": {
         "code": "TEMPLATE_LIMIT_REACHED",
         "message": "That day already has the maximum number of shifts.",
+    }
+}
+# F40 D10. The bound is INTERPOLATED from the constant rather than typed into
+# the sentence: O3 calls MAX_COVERAGE_TARGET a fat-finger guard rather than a
+# product rule, so it will move, and a literal here would leave this message and
+# the console's own Hebrew one disagreeing about the same field in the same
+# session (design F-33).
+# F40's other three. None is a `DomainValidationError` subclass, for the reason
+# F39's five record: Starlette walks `type(exc).__mro__`, so a subclass without
+# its own handler answers a quiet, plausible VALIDATION_ERROR 400 — and the
+# console, which maps CODES to Hebrew, renders the server's English sentence
+# right-aligned on a green build.
+AVAILABILITY_CONFLICT_BODY = {
+    "error": {
+        "code": "AVAILABILITY_CONFLICT",
+        "message": "She marked herself unavailable for that shift. Acknowledge the override.",
+    }
+}
+NOT_SHIFT_MANAGER_ELIGIBLE_BODY = {
+    "error": {
+        "code": "NOT_SHIFT_MANAGER_ELIGIBLE",
+        "message": "Only staff marked as eligible can be assigned as shift manager.",
+    }
+}
+SHIFT_MANAGER_SLOT_TAKEN_BODY = {
+    "error": {
+        "code": "SHIFT_MANAGER_SLOT_TAKEN",
+        "message": "That shift already has a shift manager.",
+    }
+}
+COVERAGE_TARGET_INVALID_BODY = {
+    "error": {
+        "code": "COVERAGE_TARGET_INVALID",
+        "message": f"A coverage target must be a whole number between 0 and {MAX_COVERAGE_TARGET}.",
     }
 }
 RESERVATION_OVERLAP_BODY = {
@@ -1423,6 +1465,32 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     @app.exception_handler(TemplateLimitReachedError)
     async def _template_limit(request: Request, exc: TemplateLimitReachedError) -> JSONResponse:
         return JSONResponse(TEMPLATE_LIMIT_REACHED_BODY, status_code=400)
+
+    # F40's, and it lands here with its error class rather than with its route:
+    # a coded error shipped without its own handler answers a quiet, plausible
+    # VALIDATION_ERROR 400 that the console has no Hebrew string for.
+    @app.exception_handler(CoverageTargetInvalidError)
+    async def _coverage_target(request: Request, exc: CoverageTargetInvalidError) -> JSONResponse:
+        return JSONResponse(COVERAGE_TARGET_INVALID_BODY, status_code=400)
+
+    # F40's other three. `NOT_SHIFT_MANAGER_ELIGIBLE` is a 400 — the request is
+    # malformed against the server's rules. The other two are 409s: the body is
+    # well-formed and conflicts with server state.
+    @app.exception_handler(NotShiftManagerEligibleError)
+    async def _not_eligible(request: Request, exc: NotShiftManagerEligibleError) -> JSONResponse:
+        return JSONResponse(NOT_SHIFT_MANAGER_ELIGIBLE_BODY, status_code=400)
+
+    @app.exception_handler(AvailabilityConflictError)
+    async def _availability_conflict(
+        request: Request, exc: AvailabilityConflictError
+    ) -> JSONResponse:
+        return JSONResponse(AVAILABILITY_CONFLICT_BODY, status_code=409)
+
+    @app.exception_handler(ShiftManagerSlotTakenError)
+    async def _manager_slot_taken(
+        request: Request, exc: ShiftManagerSlotTakenError
+    ) -> JSONResponse:
+        return JSONResponse(SHIFT_MANAGER_SLOT_TAKEN_BODY, status_code=409)
 
     @app.exception_handler(SubmissionClosedError)
     async def _submission_closed(request: Request, exc: SubmissionClosedError) -> JSONResponse:

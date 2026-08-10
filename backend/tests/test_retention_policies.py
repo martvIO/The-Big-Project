@@ -354,3 +354,24 @@ def test_the_staff_policy_can_name_itself_in_the_audit_trail() -> None:
     a tenant loop, three tables into an irreversible run."""
     policy = next(p for p in POLICIES if p.name == "staff_users")
     assert audit_action(policy) is AuditAction.RETENTION_STAFF_USERS
+
+
+def test_the_registry_is_still_eight_after_f40() -> None:
+    """⚠ A POSITIVE UNCHANGED ASSERTION (spec D16), and it is a claim rather than
+    an absence.
+
+    `rosters` and `roster_assignments` carry a week, a template id, staff ids and
+    two booleans — NO name, no phone, no free text, nothing a subject request
+    could name. They are exactly the class F38's spec enumerated as
+    retained-and-de-identified, naming «F40's future roster rows» by name
+    alongside `fitting_room_assignments` and `sos_alerts`: the `staff_users`
+    SCRUB blanks the person, and these rows survive pointing at an erased row.
+    That is the answer rather than a gap.
+
+    Growth is ~6,200 assignment rows a year per boutique — the same order as
+    F39's submissions, and F39 added no policy either.
+    """
+    assert len(POLICIES) == 8
+    named = {table for policy in POLICIES for table in policy.tables}
+    assert "rosters" not in named
+    assert "roster_assignments" not in named

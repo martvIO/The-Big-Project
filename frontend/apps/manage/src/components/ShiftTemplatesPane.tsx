@@ -2,9 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Card, EmptyState, Input, Modal, Select, Skeleton, TimeField } from "@boutique/ui";
 import { api, ApiError, errorMessage } from "../api";
-import type { ShiftTemplate, ShiftTemplateInput } from "../api";
+import type { ShiftTemplate, ShiftTemplateInput, StaffRole } from "../api";
 import { DAY_NAMES } from "../lib/week";
-import { MAX_TEMPLATES_PER_DAY, validateShiftTemplate } from "../validation";
+import { ROLE_LABEL_KEY, ROLE_OPTIONS } from "../lib/roles";
+import {
+  MAX_COVERAGE_TARGET,
+  MAX_TEMPLATES_PER_DAY,
+  validateCoverageTarget,
+  validateShiftTemplate,
+} from "../validation";
 
 // The owner's shift editor (elevated only). ONE Card with seven hairline-
 // separated weekday sections — NOT seven Cards: seven `p-6` boxes is 336px of
@@ -39,6 +45,16 @@ interface Draft {
   // `(day, sort_order, starts_at_time)` and a manual order box on a two-item
   // list is a control nobody wants).
   sortOrder: number;
+  // ⚠ F40 D10, AND SEEDED FROM THE ROW. The PATCH is a FULL REPLACE, so a draft
+  // that did not carry the existing targets would silently CLEAR them on every
+  // unrelated label edit — which is the exact silent loss D2's full-replace rule
+  // exists to prevent, arriving through the one control that writes them.
+  //
+  // Held as STRINGS, one per role, because `""` and `"0"` are different values:
+  // empty omits the key entirely («no target») and `0` writes a zero
+  // («deliberately nobody»). A `number | null` would collapse them at the first
+  // `Number("")`.
+  coverageTargets: Partial<Record<StaffRole, string>>;
 }
 
 function draftOf(template: ShiftTemplate): Draft {
@@ -49,6 +65,9 @@ function draftOf(template: ShiftTemplate): Draft {
     startsAtTime: hhmm(template.starts_at_time),
     endsAtTime: hhmm(template.ends_at_time),
     sortOrder: template.sort_order,
+    coverageTargets: Object.fromEntries(
+      Object.entries(template.coverage_targets).map(([role, value]) => [role, String(value)]),
+    ),
   };
 }
 
@@ -59,6 +78,14 @@ function bodyOf(draft: Draft): ShiftTemplateInput {
     starts_at_time: hhmmss(draft.startsAtTime),
     ends_at_time: hhmmss(draft.endsAtTime),
     sort_order: draft.sortOrder,
+    // Sparse: a BLANK omits the key («no target»), `"0"` writes `0`
+    // («deliberately nobody»). D10's two meanings survive the round trip only
+    // because this filter tests the string and never its truthiness.
+    coverage_targets: Object.fromEntries(
+      Object.entries(draft.coverageTargets)
+        .filter(([, value]) => value.trim() !== "")
+        .map(([role, value]) => [role, Number(value)]),
+    ),
   };
 }
 
@@ -185,6 +212,16 @@ export function ShiftTemplatesPane({ onTemplates }: ShiftTemplatesPaneProps) {
     if (message !== null) {
       setDraftError(message);
       return;
+    }
+    // F40 D10, refused client-side so the bound is immediate and Hebrew. The
+    // server carries the same rule and answers `COVERAGE_TARGET_INVALID` for
+    // anything that reaches it anyway.
+    for (const raw of Object.values(current.coverageTargets)) {
+      const targetMessage = validateCoverageTarget(raw);
+      if (targetMessage !== null) {
+        setDraftError(targetMessage);
+        return;
+      }
     }
     setDraftError(null);
     setBusy(true);
@@ -350,6 +387,9 @@ export function ShiftTemplatesPane({ onTemplates }: ShiftTemplatesPaneProps) {
                         startsAtTime: "09:00",
                         endsAtTime: "14:00",
                         sortOrder: rows.length,
+                        // A NEW shift starts with no targets at all, which is
+                        // D10's «no target» and renders as a plain count.
+                        coverageTargets: {},
                       });
                       setDraftError(null);
                     }}
@@ -409,6 +449,47 @@ export function ShiftTemplatesPane({ onTemplates }: ShiftTemplatesPaneProps) {
               setDraft({ ...draft, endsAtTime: event.target.value });
             }}
           />
+          {/* ⚠ F40 D10's fieldset, AFTER the end time (design §5). The help line
+              is a PER-`Input` `help` prop and NOT one <p> under the <legend>:
+              `Input` builds its `helpId` from its own `useId()` and links it with
+              `aria-describedby` per field, so a fieldset-level paragraph is
+              linked to nothing — and a screen-reader user tabbing into «מוכרת»
+              would hear the legend and the label and never the one rule that
+              makes the control usable. She would then clear the field intending
+              «אף אחת», write an ABSENT key instead of `0`, and the shift would
+              render a plain count with no «חסר איוש» badge for a role she
+              believed she had zeroed (F-30 / F-13). */}
+          <fieldset className="border-0 p-0 m-0">
+            <legend className="text-sm font-semibold text-ink">
+              {t("shifts.coverageTargets")}
+            </legend>
+            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {ROLE_OPTIONS.map((role) => (
+                <Input
+                  key={role}
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={MAX_COVERAGE_TARGET}
+                  // 44px floor without touching packages/ui — a five-field block
+                  // on a phone is where `size` would otherwise be reached for.
+                  className="min-h-11"
+                  label={t(ROLE_LABEL_KEY[role])}
+                  help={t("shifts.coverageTargetsHelp")}
+                  value={draft.coverageTargets[role] ?? ""}
+                  onChange={(event) => {
+                    setDraft({
+                      ...draft,
+                      coverageTargets: {
+                        ...draft.coverageTargets,
+                        [role]: event.target.value,
+                      },
+                    });
+                  }}
+                />
+              ))}
+            </div>
+          </fieldset>
           {draftError !== null && (
             <p role="alert" className="text-base text-danger">
               {draftError}

@@ -53,6 +53,7 @@ from app.floor.service import (
     RoomRead,
     SosListRead,
     SosRead,
+    StaffCardRead,
     WaitlistEntryRead,
     WaitlistRead,
 )
@@ -67,16 +68,24 @@ from app.floor.validation import (
 )
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.booking import Booking
-from app.models.constants import SosStatus, StaffCardStatus, StaffRole
+from app.models.constants import OnShiftSource, SosStatus, StaffCardStatus, StaffRole
 from app.models.dress import Dress
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.sos_alert import SosAlert
 from app.models.staff_user import StaffUser
 from app.tenancy.middleware import TenantContext
 
-# The floor card's wire shape. EIGHT keys after F38, asserted by set equality on
-# every path that emits one — a card is the payload every role in the boutique
-# can open, so both directions of drift matter.
+# The floor card's wire shape. EIGHT keys after F38, TEN after F40 — asserted by
+# set equality on every path that emits one, because a card is the payload every
+# role in the boutique can open and both directions of drift matter.
+#
+# ⚠ EDITED BY HAND, and F38's comment says why that is a feature: the set
+# equality is what catches a ninth key arriving unreviewed on a five-role
+# payload. F40's two are `on_shift` and `on_shift_source`, and they are TWO NEW
+# KEYS rather than a fourth `StaffCardStatus` (D9) — `status` answers what she is
+# doing right now and `on_shift` answers whether she is supposed to be here
+# today, BOTH are true at once, and folding them together would make the
+# `occupied` + `on_shift: false` tuple unrepresentable.
 STAFF_CARD_KEYS = {
     "id",
     "display_name",
@@ -86,6 +95,8 @@ STAFF_CARD_KEYS = {
     "occupancy",
     "photo_url",
     "photo_confirmed_at",
+    "on_shift",
+    "on_shift_source",
 }
 
 TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="Bella Bridal", settings={})
@@ -104,6 +115,9 @@ SECOND_TICKET_ID = uuid.uuid4()
 FLOOR_PATH = "/manage/floor"
 START_PATH = f"/manage/floor/staff/{TARGET_ID}/break/start"
 END_PATH = f"/manage/floor/staff/{TARGET_ID}/break/end"
+# F40's override, on the SAME staffer as the break toggles so the two gates sit
+# side by side in the walk: open-with-a-service-guard vs elevated-at-the-gate.
+ON_SHIFT_PATH = f"/manage/floor/staff/{TARGET_ID}/on-shift"
 ROOMS_PATH = "/manage/floor/rooms"
 ROOM_PATH = f"{ROOMS_PATH}/{ROOM_ID}"
 CLAIM_PATH = f"{ROOM_PATH}/claim"
@@ -204,6 +218,12 @@ FLOOR_TIGHTENED_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     # than engineered around: a reception staffer calls a shift manager.
     ("POST", SKIP_PATH, {"seen_skip_count": 0}),
     ("POST", REMOVE_PATH, None),
+    # F40's same-day override (D13). TIGHTENED and not open, unlike the two break
+    # toggles beside them: there is no «herself» case to admit, because a staffer
+    # marking herself present is an attendance punch and the epic's labour-law
+    # row puts attendance visibly out of scope.
+    ("POST", ON_SHIFT_PATH, {"on_shift": False}),
+    ("DELETE", ON_SHIFT_PATH, None),
 ]
 
 FLOOR_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
@@ -424,6 +444,10 @@ class FakeFloorService:
         # empty, which is every staffer's bell on the day she starts.
         self.notification_rows: list[StaffNotificationRow] = []
         self.unread = 0
+        # F40. The DEFAULT is rule 3 — no roster published, everybody counts as
+        # on shift — which is byte-identical to the board this fake described
+        # before the cutover (spec C1). A test that wants another rule sets it.
+        self.on_shift: dict[uuid.UUID, tuple[bool, OnShiftSource]] = {}
 
     async def floor(self, tenant_id: uuid.UUID) -> FloorRead:
         self.floor_calls.append(tenant_id)
@@ -445,6 +469,10 @@ class FakeFloorService:
                 ),
             ],
             occupancy_by_staff_id=self.occupancy_by_staff_id,
+            on_shift_by_staff_id={
+                staff_id: self.on_shift.get(staff_id, (True, OnShiftSource.FALLBACK))
+                for staff_id in (STAFF_ID, TARGET_ID)
+            },
             room_rows=self.room_rows,
             bindings_by_assignment_id=self.bindings,
             server_now=SERVER_NOW,
@@ -453,13 +481,41 @@ class FakeFloorService:
 
     async def start_break(
         self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor: StaffContext
-    ) -> tuple[StaffUser, RoomRow | None]:
-        return self._toggle("start", tenant_id, staff_id, actor, BREAK_BEGAN), self.occupancy
+    ) -> StaffCardRead:
+        return self._card(self._toggle("start", tenant_id, staff_id, actor, BREAK_BEGAN), staff_id)
 
     async def end_break(
         self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor: StaffContext
-    ) -> tuple[StaffUser, RoomRow | None]:
-        return self._toggle("end", tenant_id, staff_id, actor, None), self.occupancy
+    ) -> StaffCardRead:
+        return self._card(self._toggle("end", tenant_id, staff_id, actor, None), staff_id)
+
+    async def set_on_shift(
+        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, on_shift: bool, actor: StaffContext
+    ) -> StaffCardRead:
+        self._record(
+            "set_on_shift",
+            tenant_id=tenant_id,
+            staff_id=staff_id,
+            actor=actor,
+            on_shift=on_shift,
+        )
+        return self._card(_staff_user(staff_id, display_name="נועה לוי"), staff_id)
+
+    async def clear_on_shift(
+        self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor: StaffContext
+    ) -> StaffCardRead:
+        self._record("clear_on_shift", tenant_id=tenant_id, staff_id=staff_id, actor=actor)
+        return self._card(_staff_user(staff_id, display_name="נועה לוי"), staff_id)
+
+    def _card(self, row: StaffUser, staff_id: uuid.UUID) -> StaffCardRead:
+        """⚠ THE BREAK WRITERS RESOLVE THE ON-SHIFT PAIR TOO (design F-1). The
+        client cannot compute `on_shift_source` — that is the whole of D8 — so a
+        route answering without it would force the panel to guess, and a guess
+        prints the wrong Hebrew rule label on a live floor screen."""
+        on_shift, source = self.on_shift.get(staff_id, (True, OnShiftSource.FALLBACK))
+        return StaffCardRead(
+            row=row, occupancy=self.occupancy, on_shift=on_shift, on_shift_source=source
+        )
 
     def _toggle(
         self,
@@ -851,7 +907,8 @@ def test_the_route_table_names_every_live_floor_route() -> None:
         for method in (getattr(route, "methods", None) or ())
         if getattr(route, "path", "").startswith("/manage/floor")
     }
-    assert len(live) == 25, sorted(live)
+    # TWENTY-FIVE after F35, TWENTY-SEVEN after F40's two override routes.
+    assert len(live) == 27, sorted(live)
     assert len({(method, path) for method, path, _ in FLOOR_ROUTES}) == len(FLOOR_ROUTES)
     assert len(FLOOR_ROUTES) == len(live), (
         f"the route table has {len(FLOOR_ROUTES)} rows for {len(live)} live routes: {sorted(live)}"
@@ -862,7 +919,7 @@ def test_every_route_is_wired_and_reaches_the_service() -> None:
     """SEVEN routers now mount prefix="/manage": a path collision would silently
     shadow, and a 404 here is what catches it.
 
-    TWENTY-FIVE rows after F35, and the count comes from D11's and D9's
+    TWENTY-SEVEN rows after F40, and the count comes from D11's and D9's
     tables rather than from prose — a table sized by counting sentences reds this walk on a 404 the
     first time it runs."""
     for method, path, body in FLOOR_ROUTES:
@@ -1062,6 +1119,12 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
                 "occupancy": None,
                 "photo_url": None,
                 "photo_confirmed_at": None,
+                # ⚠ F40's TWO NEW KEYS, and the default pair is RULE 3 — no
+                # roster published, so every live staffer counts as on shift.
+                # That is today's exact behaviour (spec C1) and the reason a
+                # boutique that never publishes sees no change at all.
+                "on_shift": True,
+                "on_shift_source": "fallback",
             },
             {
                 "id": str(TARGET_ID),
@@ -1072,6 +1135,8 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
                 "occupancy": None,
                 "photo_url": None,
                 "photo_confirmed_at": None,
+                "on_shift": True,
+                "on_shift_source": "fallback",
             },
         ],
         "rooms": [],
@@ -1174,6 +1239,11 @@ def test_every_mutation_answers_the_same_room_shape() -> None:
                 CLIENT_LIST_PATH,
                 START_PATH,
                 END_PATH,
+                # F40's two answer a STAFF CARD, not a tile — the same shape the
+                # payload's `staff[]` elements carry, so the panel patches one
+                # card in place from the server's own row (design F-1). Their own
+                # one-shape assertion is `STAFF_CARD_KEYS`' set equality.
+                ON_SHIFT_PATH,
                 # F58's three queue verbs answer a `Waitlist` and no tile: they
                 # act on a ROW, and the row is gone from the list they answer
                 # with. They have their own shape assertion below.
@@ -1507,16 +1577,16 @@ def test_no_other_error_body_in_main_carries_a_details_key() -> None:
 
 
 def test_every_mutating_verb_with_a_mismatched_origin_is_refused() -> None:
-    """All TWENTY mutating routes ARE fenced — CsrfOriginMiddleware gates on
+    """All TWENTY-TWO mutating routes ARE fenced — CsrfOriginMiddleware gates on
     `request.method in MUTATING_METHODS` (csrf.py:15,48), which is a METHOD test
     and not a path list, so the eight F36 adds, the five F58 adds, the four
-    F37 adds and F35's mark-read are fenced by construction. That is asserted rather
-    than assumed because
+    F37 adds, F35's mark-read and F40's two override verbs are fenced by
+    construction. That is asserted rather than assumed because
     "by construction" is the sentence that stops being true the day somebody adds
     a GET that writes."""
     fake = FakeFloorService()
     mutating = [(m, p, b) for m, p, b in FLOOR_ROUTES if m != "GET"]
-    assert len(mutating) == 20
+    assert len(mutating) == 22
     with _client(fake) as client:
         for method, path, body in mutating:
             resp = client.request(

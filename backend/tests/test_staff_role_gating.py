@@ -256,14 +256,49 @@ SHIFTS_TEMPLATE_SEED = ("POST", "/manage/shifts/templates/seed")
 # the one READ in this feature that narrows.
 SHIFTS_SUBMISSIONS = ("GET", "/manage/shifts/week/submissions")
 
+# F40's roster. ⚠ FOUR ELEVATED AND ONE OPEN, and NOTHING ENTERS `OWNER_ONLY` —
+# a shift manager is admitted to every builder verb in this feature (spec
+# C4/D13), and putting one of these in `OWNER_ONLY` is the single edit that would
+# silently make D13 false. A shift manager who may assign but not publish has
+# built a roster nobody can see, and this console has no submit-for-approval
+# concept to give her.
+ROSTER_READ = ("GET", "/manage/shifts/roster")
+ROSTER_ASSIGN = ("POST", "/manage/shifts/roster/assignments")
+ROSTER_UNASSIGN = ("DELETE", "/manage/shifts/roster/assignments/{assignment_id}")
+ROSTER_PUBLISH = ("POST", "/manage/shifts/roster/publish")
+# ⚠ THE ONE OPEN ROUTE. The floor board already names every colleague, so a
+# published roster discloses nothing new — and a staffer who cannot see it
+# cannot plan (D13). It carries no submitted state, which is what separates it
+# from the builder read above — and that is an ASSERTION, not a claim: see
+# `test_roster_db.py::test_the_open_published_read_carries_no_submitted_state`,
+# which reads the same week through both routes and pins `override_of_state` to
+# the builder alone.
+ROSTER_PUBLISHED_READ = ("GET", "/manage/shifts/roster/published")
+
 SHIFTS_ELEVATED = {
     SHIFTS_TEMPLATE_CREATE,
     SHIFTS_TEMPLATE_UPDATE,
     SHIFTS_TEMPLATE_DELETE,
     SHIFTS_TEMPLATE_SEED,
     SHIFTS_SUBMISSIONS,
+    ROSTER_READ,
+    ROSTER_ASSIGN,
+    ROSTER_UNASSIGN,
+    ROSTER_PUBLISH,
 }
-SHIFTS_OPEN = {SHIFTS_TEMPLATES_READ, SHIFTS_WEEK_READ, SHIFTS_WEEK_WRITE}
+SHIFTS_OPEN = {
+    SHIFTS_TEMPLATES_READ,
+    SHIFTS_WEEK_READ,
+    SHIFTS_WEEK_WRITE,
+    ROSTER_PUBLISHED_READ,
+}
+
+# F40's same-day override, on `floor/router.py`. ⚠ ELEVATED AT THE GATE and in
+# NOBODY's reach row — unlike the two break toggles beside them, which are open
+# to all five and narrowed in the service (D13: there is no «herself» case here).
+FLOOR_ON_SHIFT_SET = ("POST", "/manage/floor/staff/{staff_id}/on-shift")
+FLOOR_ON_SHIFT_CLEAR = ("DELETE", "/manage/floor/staff/{staff_id}/on-shift")
+FLOOR_ON_SHIFT = {FLOOR_ON_SHIFT_SET, FLOOR_ON_SHIFT_CLEAR}
 
 
 # ⚠ THE EXHAUSTIVE REACH OF EACH NON-ELEVATED ROLE, one row each, asserted as a
@@ -575,6 +610,55 @@ def test_every_elevated_shifts_route_is_tightened_in_the_route_table() -> None:
             break
         else:
             pytest.fail(f"{method} {path} not found in the route table")
+
+
+def test_both_on_shift_override_routes_are_tightened_in_the_route_table() -> None:
+    """⚠ F40 D13, STRUCTURALLY: no self-service on-shift marking, anywhere, for
+    anyone. Both routes sit on `floor/router.py`, whose OTHER staff routes — the
+    two break toggles — are open to all five and narrowed in the service by the
+    SELF-OR-elevated guard. These two are narrowed at the GATE instead, because
+    there is no «herself» case to admit: a staffer marking herself present is an
+    attendance punch, which the epic's labour-law row puts visibly out of scope.
+
+    ⚠ NEITHER IS IN `OWNER_ONLY` (C4/D13) and neither is in any reach row. A
+    shift manager is the person standing on the floor when somebody calls in
+    sick, and she is admitted to both.
+
+    ⚠ THE `pytest.fail` FALLTHROUGH IS NOT DECORATION. Without it a renamed or
+    removed route makes this test pass by never entering the loop.
+    """
+    app = create_app(resolver=_null_resolver)
+    elevated = frozenset({StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value})
+    for method, path in sorted(FLOOR_ON_SHIFT):
+        assert (method, path) not in OWNER_ONLY, f"{method} {path} became owner-only"
+        for role_set in NON_ELEVATED_REACH.values():
+            assert (method, path) not in role_set, f"{method} {path} reached a floor role"
+        for route in _leaf_routes(app):
+            if getattr(route, "path", None) != path:
+                continue
+            if method not in (getattr(route, "methods", None) or ()):
+                continue
+            role_sets = list(_gate_role_sets(route.dependant))
+            assert elevated in role_sets, f"{method} {path} lost its per-route tightening"
+            assert frozenset.intersection(*role_sets) == elevated, (
+                f"{method} {path} admits {sorted(frozenset.intersection(*role_sets))}"
+            )
+            break
+        else:
+            pytest.fail(f"{method} {path} not found in the route table")
+
+
+def test_no_roster_route_is_owner_only() -> None:
+    """⚠ C4/D13 as a POSITIVE assertion, because the failure would be an EDIT
+    somebody made on purpose. A shift manager who may assign but not publish has
+    built a roster nobody can see, and this console has no submit-for-approval
+    concept to give her — so the whole builder is elevated and none of it is the
+    owner's alone."""
+    for route in (ROSTER_READ, ROSTER_ASSIGN, ROSTER_UNASSIGN, ROSTER_PUBLISH):
+        assert route not in OWNER_ONLY, route
+        assert route in SHIFTS_ELEVATED, route
+    assert ROSTER_PUBLISHED_READ in SHIFTS_OPEN
+    assert ROSTER_PUBLISHED_READ not in SHIFTS_ELEVATED
 
 
 def test_the_weekly_availability_write_stays_open_to_every_role() -> None:

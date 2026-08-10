@@ -205,6 +205,14 @@ export function MyWeekPanel({ elevated }: MyWeekPanelProps) {
 
   const answered = Object.values(answers).filter((state) => state !== UNANSWERED).length;
 
+  // F40 D17. ⚠ THE SERVER'S ORDER, UNCHANGED — `templates` already arrives in
+  // `(day, sort_order, starts_at_time)` order, so filtering preserves it and no
+  // client-side sort can disagree with the list she reads one Card away.
+  const myShifts =
+    week === null
+      ? []
+      : week.templates.filter((template) => week.rostered_template_ids.includes(template.id));
+
   return (
     <Card>
       <h2 className="text-xl font-semibold text-ink">{t("shifts.myWeekHeading")}</h2>
@@ -254,6 +262,43 @@ export function MyWeekPanel({ elevated }: MyWeekPanelProps) {
               {t("shifts.weekLabel")}{" "}
               <RangeText range={formatDateRange(week.week_start, week.week_end)} />
             </p>
+          </div>
+
+          {/* ⚠ F40 D17's READ-ONLY BLOCK — above the answering form and below
+              the week bar (design §4). The week bar governs BOTH blocks, so it
+              stays first; then the fact she came for («when do I work»), then
+              the task.
+
+              ⚠ NO CONTROL OF ANY KIND, and no hour total, no «סה"כ» and no
+              count of shifts (§0.3). She cannot accept, decline, swap or
+              acknowledge a shift: D13 puts self-service on-shift marking out by
+              name, and a button here would be the attendance punch the epic's
+              labour-law row forbids.
+
+              ⚠ THREE DISTINCT SENTENCES FOR THREE DISTINCT FACTS (D5). «not
+              published yet», «published and you are on nothing» and «here are
+              your shifts» are different things to be told, and the middle one is
+              what a staffer needs before she makes other plans. */}
+          <div className="border-t border-hairline pt-4">
+            <h3 className="text-base font-semibold text-ink">{t("shifts.myRosterHeading")}</h3>
+            {!week.roster_published ? (
+              <p className="mt-2 text-base text-ink-muted">{t("shifts.myRosterUnpublished")}</p>
+            ) : myShifts.length === 0 ? (
+              <p className="mt-2 text-base text-ink-muted">{t("shifts.myRosterNone")}</p>
+            ) : (
+              <ul className="mt-2 space-y-1">
+                {myShifts.map((template) => (
+                  <li key={template.id} className="text-base text-ink">
+                    {DAY_NAMES[template.day_of_week]} · {template.label} ·{" "}
+                    {/* The one order-breaking run on this block: the en dash is a
+                        direction-neutral and reorders without the isolate. */}
+                    <bdi dir="ltr">
+                      {template.starts_at_time.slice(0, 5)}–{template.ends_at_time.slice(0, 5)}
+                    </bdi>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           <p className="text-sm text-ink-muted">

@@ -156,7 +156,14 @@ MIRRORS = (
     pytest.param(
         MANAGE_VALIDATION_TS,
         shifts_validation,
-        ("MAX_TEMPLATES_PER_DAY", "MAX_SHIFT_LABEL_LENGTH"),
+        # ⚠ F40 ADDS AN EIGHTH ROW'S THIRD NAME. `MAX_COVERAGE_TARGET` is a
+        # fat-finger guard rather than a product rule (spec O3), so it WILL move
+        # — and it is spliced into a Hebrew sentence on both sides (design F-33).
+        # Raised on the server alone, the console refuses a target the API would
+        # accept; lowered on the server alone, the owner types 25, presses save
+        # and reads an ENGLISH 400 in a Hebrew editor, for an input error that
+        # fails identically on every retry.
+        ("MAX_TEMPLATES_PER_DAY", "MAX_SHIFT_LABEL_LENGTH", "MAX_COVERAGE_TARGET"),
         id="manage-shifts",
     ),
     pytest.param(

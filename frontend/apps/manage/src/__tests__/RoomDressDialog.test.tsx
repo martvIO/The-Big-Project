@@ -68,6 +68,11 @@ function staff(): StaffCard {
     // F38's two, defaulted to the no-photo state most of a boutique is in.
     photo_url: null,
     photo_confirmed_at: null,
+  // F40's two. The DEFAULT pair is rule 3 — no roster published, so every live
+  // staffer counts as on shift — which is byte-identical to the board these
+  // fixtures described before the cutover (spec C1).
+  on_shift: true,
+  on_shift_source: "fallback",
   };
 }
 

@@ -378,15 +378,12 @@ export const ar = {
     // translation.
     "nav.floor": "הצוות בקומה",
     "floor.heading": "צוות בקומה",
-
     "floor.loading": "טוען את רשימת הצוות…",
     "floor.empty": "אין נשות צוות פעילות",
-
     "floor.updatedAt": "עודכן {{time}}",
     "floor.staleAt": "אין עדכון מאז {{time}}",
     "floor.staleBody": "ייתכן שהמידע אינו עדכני.",
     "floor.refresh": "רענון",
-
     "floor.pause": "השהיה",
     "floor.pauseAria": "השהיה — עדכון הצוות",
     "floor.resume": "חידוש",
@@ -395,8 +392,33 @@ export const ar = {
     "floor.paused": "העדכון מושהה. רשימת הצוות לא תתעדכן עד לחידוש.",
     "floor.idleStopped": "עדכון הצוות הופסק אחרי {{minutes}} דקות ללא פעילות.",
     "floor.resumed": "העדכון חודש.",
-
     "floor.statusAvailable": "פנויה",
+    // --- F40: the on-shift line and the same-day override (design §6, §9.7) --
+    //
+    // The card's line is TWO ELEMENTS with the console's shipped « · » between
+    // them, never one interpolated sentence — so `floor.onShift` and
+    // `floor.onShiftRoster` are separate rows and the client composes them.
+    //
+    // ⚠ `floor.onShiftNoRoster` IS A WEEK-LEVEL LINE ABOVE THE LIST, not a card
+    // label (design §6.2 / F-4). Eight copies of one sentence that says nothing
+    // about the person it is attached to is permanent noise on the screen a
+    // seamstress opens twenty times a day — and C1 promises a boutique that
+    // never publishes sees NO CHANGE AT ALL.
+    "floor.onShift": "במשמרת",
+    "floor.offShift": "לא במשמרת",
+    "floor.onShiftManualToday": "נקבע ידנית להיום",
+    "floor.onShiftRoster": "לפי סידור העבודה",
+    "floor.onShiftNoRoster": "אין סידור עבודה לשבוע הזה. כל מי שלא סומנה ידנית נחשבת כמי שבמשמרת.",
+    "floor.onShiftOverrideNote": "הסימון הידני תקף להיום בלבד ומתאפס בחצות.",
+    "floor.markOnShift": "סימון במשמרת",
+    "floor.markOnShiftAria": "סימון במשמרת — {{name}}",
+    "floor.markOffShift": "סימון שאינה במשמרת",
+    "floor.markOffShiftAria": "סימון שאינה במשמרת — {{name}}",
+    "floor.clearOnShiftOverride": "ביטול הסימון הידני",
+    "floor.clearOnShiftOverrideAria": "ביטול הסימון הידני — {{name}}",
+    "floor.markedOnShiftCue": "{{name}} מסומנת כמי שבמשמרת היום.",
+    "floor.markedOffShiftCue": "{{name}} מסומנת כמי שאינה במשמרת היום.",
+    "floor.onShiftOverrideClearedCue": "הסימון הידני עבור {{name}} בוטל.",
     "floor.statusBreak": "בהפסקה",
     "floor.statusOccupied": "תפוסה",
     "floor.breakSince": "מאז {{time}}",
@@ -404,10 +426,8 @@ export const ar = {
     "floor.breakStartAria": "להפסקה — {{name}}",
     "floor.breakEnd": "חזרה",
     "floor.breakEndAria": "חזרה — {{name}}",
-
     "floor.breakStartedCue": "נרשמה הפסקה עבור {{name}}.",
     "floor.breakEndedCue": "ההפסקה הסתיימה עבור {{name}}.",
-
     "floor.sessionEnded": "תוקף החיבור פג. צריך להתחבר מחדש.",
     "floor.accessEnded": "אין הרשאה לצפות ברשימת הצוות כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
     "floor.reload": "רענון הדף",
@@ -1010,9 +1030,11 @@ export const ar = {
     "bell.retry": "ניסיון נוסף",
     "bell.markFailed": "לא הצלחנו לסמן כנקרא כרגע.",
 
-    "nav.shifts": "זמינות למשמרות",
+    "nav.shifts": "משמרות",
     "guide.shifts.1": "כאן מסמנים לאילו משמרות את זמינה בשבוע הקרוב, ושומרים.",
     "guide.shifts.2": "אחראית המשמרת רואה מי כבר הגישה, ויכולה לרשום זמינות במקום מי שלא הספיקה.",
+    // F40: the third step. Role-blind by design, like steps 1-2.
+    "guide.shifts.3": "כאן בונים את סידור העבודה לשבוע ומפרסמים אותו לצוות.",
     "shifts.myWeekHeading": "הזמינות שלי",
     "shifts.weekLabel": "שבוע",
     "shifts.prevWeek": "השבוע הקודם",
@@ -1073,5 +1095,70 @@ export const ar = {
     "shifts.errors.alreadySeeded": "כבר קיימות משמרות. אפשר לערוך אותן ידנית.",
     "shifts.errors.notAuthorized": "אין הרשאה לרשום זמינות עבור אשת צוות אחרת כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
     "shifts.errors.notFound": "המשמרת או אשת הצוות כבר לא זמינות. הרשימה תתוקן בעדכון הבא.",
+    // --- F40: the roster builder (spec D1-D17, design §9) --------------------
+    //
+    // ⚠ ZERO EXCLAMATION MARKS (pre-decided #5, asserted below). Feminine
+    // address throughout, and every interpolated human NAME is wrapped in a
+    // BARE <bdi> inside the value — never <bdi dir="ltr">, which would reverse a
+    // Hebrew name. `aria-*` rows are the exception and carry no markup at all,
+    // because an aria-label takes none.
+    //
+    // A bare integer between Hebrew words is NOT isolated — that is the shipped
+    // bundle's own practice (`shifts.answered`, `shifts.deadline`). Only runs
+    // containing a direction-neutral, like `HH:MM–HH:MM`, get <bdi dir="ltr">,
+    // and those are composed in JSX rather than here.
+    "shifts.rosterHeading": "סידור עבודה",
+    "shifts.rosterDraft": "טיוטה. הסידור אינו גלוי לצוות ואינו קובע מי במשמרת.",
+    "shifts.rosterPublished": "פורסם על ידי <bdi>{{name}}</bdi> ב־{{date}} בשעה {{time}}.",
+    "shifts.rosterEditedSincePublish": "בוצעו שינויים מאז הפרסום. הם כבר בתוקף בלוח הקומה.",
+    "shifts.rosterInProgressWeek": "השבוע הזה כבר בעיצומו. כל שינוי משפיע על לוח הקומה מיד.",
+    "shifts.rosterPastWeek": "השבוע הזה כבר הסתיים.",
+    "shifts.publish": "פרסום הסידור",
+    "shifts.republish": "פרסום מחדש",
+    "shifts.publishDone": "הסידור פורסם.",
+    "shifts.shortageCount": "משמרות שחסר בהן איוש: {{total}}",
+    "shifts.shortageNone": "כל יעדי האיוש מולאו.",
+    "shifts.shortageFilter": "הצגת משמרות שחסר בהן איוש בלבד",
+    "shifts.shortageFilterOn": "מוצגות משמרות שחסר בהן איוש בלבד.",
+    "shifts.noSubmissionsWeek": "אף אחת מהצוות לא סימנה זמינות לשבוע הזה. אפשר לשבץ בכל זאת.",
+    "shifts.managerNoneEligible": "אף אחת מהצוות אינה מסומנת כמתאימה לניהול משמרת. אפשר לסמן במסך צוות.",
+    "shifts.coverage": "{{role}}: {{assigned}} מתוך {{target}}",
+    "shifts.coverageNoTarget": "{{role}}: {{total}}",
+    "shifts.coverageShort": "חסר איוש",
+    "shifts.emptyShift": "עדיין לא שובצה אף אחת למשמרת הזו.",
+    "shifts.managerLine": "אחראית משמרת: <bdi>{{name}}</bdi>",
+    "shifts.managerNone": "לא נבחרה אחראית משמרת.",
+    "shifts.setManager": "סימון כאחראית משמרת",
+    "shifts.setManagerAria": "סימון כאחראית משמרת — {{name}}",
+    "shifts.clearManager": "ביטול הסימון כאחראית משמרת",
+    "shifts.clearManagerAria": "ביטול הסימון כאחראית משמרת — {{name}}",
+    "shifts.overrideBadge": "שובצה בחריגה",
+    "shifts.unavailableAfterAssign": "<bdi>{{name}}</bdi> סימנה שאינה זמינה אחרי השיבוץ.",
+    "shifts.addToShift": "הוספה למשמרת",
+    "shifts.addToShiftAria": "הוספה למשמרת {{shift}}",
+    "shifts.removeAssignment": "הסרה",
+    "shifts.removeAssignmentAria": "הסרה — {{name}} ממשמרת {{shift}}",
+    "shifts.cellDialogTitle": "שיבוץ למשמרת",
+    "shifts.cellAssigned": "שובצה",
+    "shifts.cellWeekCount": "שובצה השבוע: {{total}}",
+    "shifts.cellAdd": "הוספה",
+    "shifts.cellAddAria": "הוספה — {{name}}",
+    "shifts.cellRemove": "הסרה",
+    "shifts.cellRemoveAria": "הסרה — {{name}}",
+    "shifts.assignAnyway": "שיבוץ בכל זאת",
+    "shifts.overrideWarning": "<bdi>{{name}}</bdi> סימנה שאינה זמינה במשמרת הזו. השיבוץ יירשם כחריגה.",
+    "shifts.cellAllUnavailable": "כל מי שהגישה סימנה שאינה זמינה במשמרת הזו.",
+    "shifts.cellAssignedCue": "<bdi>{{name}}</bdi> שובצה למשמרת.",
+    "shifts.cellRemovedCue": "<bdi>{{name}}</bdi> הוסרה מהמשמרת.",
+    "shifts.myRosterHeading": "המשמרות שלי",
+    "shifts.myRosterUnpublished": "סידור העבודה לשבוע הזה טרם פורסם.",
+    "shifts.myRosterNone": "לא שובצת למשמרות בשבוע הזה.",
+    "shifts.coverageTargets": "יעדי איוש",
+    "shifts.coverageTargetsHelp": "שדה ריק — אין יעד. אפס — במפורש אף אחת.",
+    "shifts.errors.availabilityConflict": "<bdi>{{name}}</bdi> סימנה שאינה זמינה. צריך לאשר את החריגה.",
+    "shifts.errors.notEligible": "אפשר לשבץ כאחראית משמרת רק מי שסומנה כמתאימה לכך.",
+    "shifts.errors.managerSlotTaken": "כבר שובצה אחראית משמרת למשמרת הזו.",
+    "shifts.errors.coverageTargetInvalid": "יעד האיוש חייב להיות מספר שלם בין 0 ל־{{max}}.",
+    "shifts.errors.rosterNotAuthorized": "אין הרשאה לבנות או לפרסם סידור עבודה כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
   },
 } as const;

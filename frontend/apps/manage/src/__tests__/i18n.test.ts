@@ -1872,12 +1872,24 @@ describe("the ar bundle", () => {
 
 describe("F39 shift-availability keys resolve", () => {
   it("carries the whole copy deck", () => {
-    // 60 `shifts.*` rows plus `nav.shifts` plus the two guide steps.
-    expect(HE_F39.length).toBeGreaterThanOrEqual(60);
+    // 60 `shifts.*` rows plus `nav.shifts` plus the two guide steps — and F40
+    // adds 53 more `shifts.*` rows, which this selector sweeps too (its term is
+    // the `shifts.` prefix). A separate HE_F40 block selecting the same prefix
+    // would DOUBLE-COUNT and red the shipped no-duplicates guard, which is the
+    // trap the `guide.` filter above already records once.
+    expect(HE_F39.length).toBeGreaterThanOrEqual(113);
   });
 
   it("resolves the seventeenth nav item beside the nested nav object", () => {
-    expect(i18n.t("nav.shifts")).toBe("זמינות למשמרות");
+    // ⚠ RENAMED BY F40 (D17). The row now leads to TWO jobs — answering a week
+    // and building the roster — and «זמינות למשמרות» names one of them. This is
+    // one of SIX sites: both bundles, this line, and three in `Nav.test.tsx`,
+    // two of which are `toEqual([…])` ordering assertions carrying the literal.
+    //
+    // ⚠ THE ROW COUNT, THE `.slice(0, 13)`s, THE ROLE SETS AND `NAV_LABELS`'
+    // SHAPE DO NOT MOVE — asserted in `Nav.test.tsx`, because a rename that
+    // quietly became a re-order is the failure this pair exists to separate.
+    expect(i18n.t("nav.shifts")).toBe("משמרות");
   });
 
   it("carries no exclamation mark anywhere in the namespace", () => {
@@ -1979,5 +1991,118 @@ describe("F39 shift-availability keys resolve", () => {
     expect(i18n.t("shifts.dayHeading", { day: "ראשון", date: "8.11" })).toBe("ראשון · 8.11");
     expect(i18n.t("shifts.answered", { answered: 9, total: 12 })).toBe("נענו: 9 מתוך 12");
     expect(i18n.t("shifts.submittedCount", { submitted: 5, total: 8 })).toBe("הגישו 5 מתוך 8");
+  });
+});
+
+// ⚠ NO `HE_F40` BLOCK, AND THAT IS THE POINT. `HE_F39`'s selector is the
+// `shifts.` PREFIX and `HE_F57`'s is `floor.`, so every row F40 adds is already
+// swept into `HE` exactly once. A block selecting `shifts.roster*` beside them
+// would DOUBLE-COUNT and red the shipped no-duplicates guard — the same trap the
+// `guide.` filter in the `HE` spread records for F42.
+const F40_SHIFTS = entries(he.translation, (key) => key.startsWith("shifts.roster")
+  || key.startsWith("shifts.cell")
+  || key.startsWith("shifts.coverage")
+  || key.startsWith("shifts.manager")
+  || key.startsWith("shifts.shortage")
+  || key.startsWith("shifts.myRoster"));
+const F40_FLOOR = entries(
+  he.translation,
+  (key) => key.startsWith("floor.onShift") || key.startsWith("floor.offShift")
+    || key.startsWith("floor.mark") || key.startsWith("floor.clearOnShift"),
+);
+
+describe("F40 roster keys resolve", () => {
+  it("carries both halves of the deck", () => {
+    expect(F40_SHIFTS.length).toBeGreaterThanOrEqual(20);
+    expect(F40_FLOOR.length).toBeGreaterThanOrEqual(14);
+  });
+
+  it("carries no exclamation mark anywhere in either half", () => {
+    // Pre-decided #5, asserted where the copy is read.
+    expect([...F40_SHIFTS, ...F40_FLOOR].filter(([, v]) => v.includes("!"))).toEqual([]);
+  });
+
+  it("mirrors every row into ar, untranslated", () => {
+    // Q3 / #47: `ar` carries the APPROVED HEBREW standing in, never `""` — an
+    // empty string renders as an empty string, which is worse than a language
+    // she can read.
+    const arabic = ar.translation as Record<string, string>;
+    for (const [key, value] of [...F40_SHIFTS, ...F40_FLOOR]) {
+      expect(arabic[key], key).toBe(value);
+    }
+  });
+
+  it("wraps every interpolated NAME in a bare bdi, and never in a dir=ltr one", () => {
+    // ⚠ BARE `<bdi>`, because an LTR base direction REVERSES a Hebrew name.
+    // Named one by one rather than filtered, so a row that LOST its isolate is
+    // as red as one that never had it — a filter over «rows containing <bdi>»
+    // would quietly shrink to nothing.
+    const isolated = [
+      "shifts.rosterPublished",
+      "shifts.managerLine",
+      "shifts.unavailableAfterAssign",
+      "shifts.overrideWarning",
+      "shifts.cellAssignedCue",
+      "shifts.cellRemovedCue",
+      "shifts.errors.availabilityConflict",
+    ];
+    const hebrew = he.translation as unknown as Record<string, string>;
+    for (const key of isolated) {
+      const value = hebrew[key];
+      expect(value, key).toContain("<bdi>{{name}}</bdi>");
+      expect(value, key).not.toContain('dir="ltr"');
+    }
+  });
+
+  it("keeps markup out of every aria row and out of the floor cues", () => {
+    // ⚠ AN `aria-label` TAKES NO MARKUP, so there is nothing to isolate — the
+    // shipped `floor.breakStartAria` shape. The three FLOOR cues are the second
+    // case: they are written through the panel's existing cue writer, which
+    // applies `isolateBidi(text, name)` itself, so a `<bdi>` here would be
+    // rendered as literal text into a live region.
+    for (const [key, value] of [...F40_SHIFTS, ...F40_FLOOR]) {
+      if (key.endsWith("Aria") || key.startsWith("floor.")) {
+        expect(value, key).not.toContain("<bdi");
+      }
+    }
+  });
+
+  it("keeps the published line's name out of sentence-final position", () => {
+    // ⚠ DESIGN F-31, AND THE ISOLATE ALONE IS NOT THE FIX. `<bdi>` isolates a
+    // name's INTERIOR; it does not move a trailing full stop. The isolate
+    // resolves as a NEUTRAL, so stop + isolate both take the RTL paragraph level
+    // and the stop lays out to the LEFT of «Ronit Bar» — F-22's «על ידי
+    // .Ronit Bar», on the header line of a legally gated RTL screen.
+    const line = he.translation["shifts.rosterPublished"];
+    expect(line).toContain("<bdi>{{name}}</bdi>");
+    expect(line.endsWith("</bdi>.")).toBe(false);
+    expect(line.trimEnd().endsWith(".")).toBe(true);
+  });
+
+  it("states the rule rather than the render in the no-roster line", () => {
+    // ⚠ «נחשבת», NOT «מוצגת» (design §6.2). A `fallback` card renders NO
+    // on-shift line at all, so a sentence promising what is DISPLAYED would send
+    // a shift manager looking under Dana's badge for a word that is not there.
+    const line = he.translation["floor.onShiftNoRoster"];
+    expect(line).toContain("נחשבת");
+    expect(line).not.toContain("מוצגת");
+  });
+
+  it("does not borrow F39's on-behalf 403 sentence for the roster's", () => {
+    // ⚠ DESIGN F-7. `shifts.errors.notAuthorized` is a sentence about the
+    // on-behalf AVAILABILITY write and would be a wrong claim here. The new row
+    // names the owner as who to ASK, never as the gate.
+    expect(he.translation["shifts.errors.rosterNotAuthorized"]).not.toBe(
+      he.translation["shifts.errors.notAuthorized"],
+    );
+    expect(he.translation["shifts.errors.rosterNotAuthorized"]).toContain("לבעלת הבוטיק");
+  });
+
+  it("parameterises the coverage bound instead of typing it", () => {
+    // Design F-33 / O3: the constant will move, and a literal here would leave
+    // this sentence and `validation.ts`' disagreeing about the same field.
+    const message = he.translation["shifts.errors.coverageTargetInvalid"];
+    expect(message).toContain("{{max}}");
+    expect(message).not.toContain("20");
   });
 });
