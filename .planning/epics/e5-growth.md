@@ -29,7 +29,7 @@ v1 (E1–E4) proves one boutique end-to-end with an operator holding its hand; E
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
 | 22 | Waitlist join + entries model | done (PR #49) | [spec](../specs/waitlist-join.md) | [plan](../plans/waitlist-join.md) | E3 #12, #13, #14 |
-| 23 | Auto-reallocation loop | todo | — | — | #22, E3 #16, E4 #19 |
+| 23 | Auto-reallocation loop | done (PR #56) | [spec](../specs/waitlist-auto-reallocation.md) | [plan](../plans/waitlist-auto-reallocation.md) | #22, E3 #16, E4 #19 |
 | 24 | Client portal: OTP login, "My Bookings", `.ics`, bell | done (PR #50) | [spec](../specs/client-portal.md) | [plan](../plans/client-portal.md) | E3 #11, #13, #16 |
 | 25 | Web platform console (replaces v1 CLI) | done (PR #52) | [spec](../specs/platform-console.md) | [plan](../plans/platform-console.md) | E1 #6 |
 | 26 | Self-serve boutique signup + gateway-connect onboarding | todo | — | — | #25, E1 #4, E4 #17 · **public launch gated by #29** |

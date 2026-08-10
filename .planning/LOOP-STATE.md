@@ -2422,7 +2422,24 @@ queue:
     slug: waitlist-auto-reallocation
     epic: E5
     title: Auto-reallocation loop
-    status: queued                # 2026-08-06: spec+design(gate ACCEPTED)+plan (20 tasks, 7 commits) READY.
+    status: merged                # PR #56, merged 2026-08-10. Migration 0033. THREE defects the db lane had
+                                  # been hiding surfaced only once these files first EXECUTED: _seed wrote
+                                  # deposit_amount_agorot=0 (migration 0005's CHECK has always rejected it),
+                                  # so two whole files were 0-collected red on a fresh DB at HEAD; and a
+                                  # fixture DELETEd from append-only terms_versions. Clearing both unmasked a
+                                  # PRODUCT bug: decline answered «ההצעה בתוקף» over a surrendered offer,
+                                  # because cancel is a bulk UPDATE with synchronize_session=False and by_id
+                                  # returned the stale identity-mapped instance (fixed with populate_existing).
+                                  # ⚠ CASCADE STARVATION, found in review: _ISSUE_BATCH_SIZE=50 was a
+                                  # DETERMINISTIC first-50, not a rotating window — a pair only leaves the
+                                  # candidate set once it PRODUCES an offer, and a full day (the normal
+                                  # waitlist case) produces nothing, so pair 51 was never read. A cancellation
+                                  # 13 days out went unnoticed indefinitely and SILENTLY. Fixed with a
+                                  # saturation-gated keyset cursor; the plain cursor was tried first and
+                                  # rejected because it regressed a shipped test.
+                                  # ⚠ Re-parented 0033 0031->0032 at the final rebase (F38's 0032 also named
+                                  # 0031): two revisions naming one parent BRANCHES the history and reds
+                                  # every db test with a message pointing at nothing in the diff.
                                   # ⚠ SERIALIZE AGAINST F28 — DO NOT BUILD THEM CONCURRENTLY. F23 EXTRACTS
                                   # claim_seat() out of create_booking (the most race-tested function in
                                   # the repo) while F28 ADDS a DRESS_UNAVAILABLE check inside that same
