@@ -60,6 +60,8 @@ from app.db.repositories.fitting_room_assignments import (
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
 from app.db.repositories.queue_tickets import WAITLIST_LIMIT, QueueTicketsRepository
+from app.db.repositories.roster_assignments import RosterAssignmentsRepository
+from app.db.repositories.rosters import RostersRepository
 from app.db.repositories.sessions import SessionsRepository
 from app.db.repositories.sos_alerts import SosAlertRow, SosAlertsRepository
 from app.db.repositories.staff_notifications import StaffNotificationsRepository
@@ -82,6 +84,7 @@ from app.models.booking import Booking
 from app.models.constants import (
     AuditAction,
     BookingStatus,
+    OnShiftSource,
     QueueTicketStatus,
     SosStatus,
     StaffCardStatus,
@@ -93,6 +96,7 @@ from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.sos_alert import SosAlert
 from app.models.staff_user import StaffUser
 from app.queue.validation import QueueTicketNotFoundError
+from app.shifts.validation import current_week_start, jerusalem_moment, on_shift_at
 from app.storefront.validation import BOUTIQUE_TIMEZONE, today_jerusalem
 
 # Frozen as a module constant so the membership test reads as the rule it is.
@@ -148,6 +152,22 @@ def card_status(row: StaffUser, *, occupied: bool) -> StaffCardStatus:
     if row.break_started_at is not None:
         return StaffCardStatus.BREAK
     return StaffCardStatus.AVAILABLE
+
+
+@dataclasses.dataclass(frozen=True)
+class StaffCardRead:
+    """One card's inputs, pre-joined — what the two break writers answer.
+
+    Frozen and flat so `StaffCard.from_row` stays a pure renderer: the schema
+    module never grows a query, and the mutation's answer is the SAME shape the
+    payload's `staff[]` elements carry, so the panel patches one card in place
+    from the server's own row and cannot disagree with itself.
+    """
+
+    row: StaffUser
+    occupancy: RoomRow | None
+    on_shift: bool
+    on_shift_source: OnShiftSource
 
 
 @dataclasses.dataclass(frozen=True)
@@ -309,6 +329,12 @@ class FloorRead:
 
     staff_rows: list[StaffUser]
     occupancy_by_staff_id: dict[UUID, RoomRow]
+    # F40's resolved answer PER STAFF ID — the boolean AND the rule that produced
+    # it, computed together so they cannot disagree (spec D2). Pre-joined here
+    # for the same reason everything else on this dataclass is: `FloorResponse`
+    # renders and does not query, and keeping it that way is what stops this
+    # module growing a second read.
+    on_shift_by_staff_id: dict[UUID, tuple[bool, OnShiftSource]]
     room_rows: list[RoomRow]
     bindings_by_assignment_id: dict[UUID, list[FittingAssignmentDress]]
     server_now: datetime.datetime
@@ -360,6 +386,15 @@ class FloorService:
         self._customers = CustomersRepository()
         self._tickets = QueueTicketsRepository()
         self._sos = SosAlertsRepository()
+        # F40's two reads, and they are the WHOLE of the cutover's cost on this
+        # tick: the week's live `rosters` row and the set of staff ids the
+        # published roster puts on shift right now.
+        self._rosters = RostersRepository()
+        # ⚠ NAMED `_roster_assignments` because `self._assignments` is already
+        # F36's FITTING-ROOM assignments on this class — two very different
+        # things one word apart, and `_session_rows`/`_sessions` above records the
+        # same collision being avoided for the same reason.
+        self._roster_assignments = RosterAssignmentsRepository()
         # F35's bell. Four writers in this class and no reader — the list and the
         # count live in `app/floor/notifications.py`, because nothing in the
         # dispatch or SOS paths ever reads a notification back.
@@ -421,16 +456,69 @@ class FloorService:
                 [row.assignment_id for row in room_rows if row.assignment_id is not None],
             )
             waitlist = await self._waitlist(session, tenant_id)
+            server_now = self._clock()
+            on_shift = await self._on_shift(session, tenant_id, staff_rows, at=server_now)
         return FloorRead(
             staff_rows=staff_rows,
             occupancy_by_staff_id={
                 row.staff_user_id: row for row in room_rows if row.staff_user_id is not None
             },
+            on_shift_by_staff_id=on_shift,
             room_rows=room_rows,
             bindings_by_assignment_id=bindings,
-            server_now=self._clock(),
+            server_now=server_now,
             waitlist=waitlist,
         )
+
+    async def _on_shift(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        staff_rows: list[StaffUser],
+        *,
+        at: datetime.datetime,
+    ) -> dict[UUID, tuple[bool, OnShiftSource]]:
+        """F40's three-rule answer for every staffer on the board, gathered on the
+        session the caller already holds.
+
+        ⚠ FOUR INPUTS AND NOTHING ELSE (spec D2). Two come off the row itself
+        (`on_shift_on`, `on_shift_override`), one is «does a PUBLISHED `rosters`
+        row exist for this week» and one is «is she rostered at this instant».
+        The rule that answers is returned WITH the answer, in one tuple, so the
+        board's word and its label cannot disagree.
+
+        ⚠ RULE 2 KEYS ON THE `rosters` ROW AND NEVER ON `EXISTS(assignments)`
+        (D5). That is why `published` is read separately rather than inferred
+        from an empty id set: «published with nobody on this shift» is
+        `(False, ROSTER)` and «no roster published» is `(True, FALLBACK)`, and
+        collapsing them would report a whole boutique on shift on a Saturday its
+        owner deliberately emptied.
+
+        TWO extra statements on a published week and ONE on an unpublished one —
+        the id set is not read at all when rule 2 cannot fire.
+
+        ⚠ NOTHING HERE FILTERS, REORDERS OR DROPS A ROW (D1). It answers a
+        question ABOUT each staffer; `list_live` still decides who is on the
+        board, and every live staffer is.
+        """
+        local_date, _, _ = jerusalem_moment(at)
+        roster = await self._rosters.by_week(session, tenant_id, current_week_start(local_date))
+        published = roster is not None and roster.published_at is not None
+        rostered = (
+            await self._roster_assignments.on_shift_staff_ids(session, tenant_id, at)
+            if published
+            else set()
+        )
+        return {
+            row.id: on_shift_at(
+                override_on=row.on_shift_on,
+                override_value=row.on_shift_override,
+                roster_published=published,
+                rostered_now=row.id in rostered,
+                local_date=local_date,
+            )
+            for row in staff_rows
+        }
 
     async def _waitlist(self, session: AsyncSession, tenant_id: UUID) -> WaitlistRead:
         """D2's read plus D9's flag, on the session the caller already holds.
@@ -477,7 +565,7 @@ class FloorService:
 
     async def start_break(
         self, tenant_id: UUID, staff_id: UUID, *, actor: StaffContext
-    ) -> tuple[StaffUser, RoomRow | None]:
+    ) -> "StaffCardRead":
         self._authorize(staff_id, actor)
         at = self._clock()
         async with tenant_session(self._sessions, tenant_id) as session:
@@ -504,11 +592,11 @@ class FloorService:
             # False, it's just the break route" is the shortcut that ships a card
             # contradicting the panel it lands in five seconds later. One indexed
             # lookup on a path that already holds a session.
-            return row, await self._rooms.occupancy_for_staff(session, tenant_id, staff_id)
+            return await self._card_read(session, tenant_id, row, at=at)
 
     async def end_break(
         self, tenant_id: UUID, staff_id: UUID, *, actor: StaffContext
-    ) -> tuple[StaffUser, RoomRow | None]:
+    ) -> "StaffCardRead":
         self._authorize(staff_id, actor)
         async with tenant_session(self._sessions, tenant_id) as session:
             # ⚠ CAPTURED BEFORE THE WRITE, into a local, and that is not style.
@@ -539,7 +627,24 @@ class FloorService:
                         "previous_break_started_at": _isoformat(previous),
                     },
                 )
-            return row, await self._rooms.occupancy_for_staff(session, tenant_id, staff_id)
+            return await self._card_read(session, tenant_id, row, at=self._clock())
+
+    async def _card_read(
+        self, session: AsyncSession, tenant_id: UUID, row: StaffUser, *, at: datetime.datetime
+    ) -> "StaffCardRead":
+        """Everything one card needs, resolved on the writer's own session.
+
+        ⚠ THE BREAK ROUTES RESOLVE THE ON-SHIFT PAIR TOO, rather than letting the
+        router re-derive it (design F-1). The client cannot compute
+        `on_shift_source` — that is the whole of D8 — and a route that answered
+        without it would force the panel to guess, which prints the wrong Hebrew
+        rule label on a live floor screen.
+        """
+        occupancy = await self._rooms.occupancy_for_staff(session, tenant_id, row.id)
+        on_shift, source = (await self._on_shift(session, tenant_id, [row], at=at))[row.id]
+        return StaffCardRead(
+            row=row, occupancy=occupancy, on_shift=on_shift, on_shift_source=source
+        )
 
     # --- F36: the claim, the release, the handover ----------------------------
 

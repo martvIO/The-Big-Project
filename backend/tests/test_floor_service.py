@@ -16,15 +16,18 @@ UPDATE and its `populate_existing` re-read behave under a real identity map.
 
 import dataclasses
 import datetime
+import inspect
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.atelier import schemas as atelier_schemas
 from app.auth.dependencies import NotAuthorizedError
 from app.auth.service import StaffContext
 from app.db.repositories.audit_log import AuditLogRepository
@@ -40,12 +43,16 @@ from app.db.repositories.fitting_room_assignments import (
 )
 from app.db.repositories.fitting_rooms import FittingRoomsRepository, RoomRow
 from app.db.repositories.queue_tickets import WAITLIST_LIMIT, QueueTicketsRepository
+from app.db.repositories.roster_assignments import RosterAssignmentsRepository
+from app.db.repositories.rosters import RostersRepository
 from app.db.repositories.staff_notifications import StaffNotificationsRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.errors import DomainNotFoundError
+from app.floor import service as app_service
 from app.floor.service import (
     CLIENT_PICKER_LIMIT,
     DRESS_PICKER_LIMIT,
+    FloorRead,
     FloorService,
     card_status,
 )
@@ -61,6 +68,7 @@ from app.models.booking import Booking
 from app.models.constants import (
     AuditAction,
     BookingStatus,
+    OnShiftSource,
     QueueTicketStatus,
     StaffCardStatus,
     StaffRole,
@@ -70,7 +78,9 @@ from app.models.dress import Dress
 from app.models.fitting_room import FittingRoom
 from app.models.fitting_room_assignment import FittingRoomAssignment
 from app.models.staff_user import StaffUser
+from app.privacy import retention as retention_module
 from app.queue.validation import QueueTicketNotFoundError
+from app.shifts.validation import jerusalem_moment
 
 TENANT_ID = uuid.uuid4()
 NOW = datetime.datetime(2026, 8, 2, 11, 20, tzinfo=datetime.UTC)
@@ -148,6 +158,23 @@ class _Writes:
         self.calls: list[dict[str, Any]] = []
 
 
+def _install_no_roster(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⚠ F40's DEFAULT IS RULE 3, and that is the whole of C1's promise: with no
+    published `rosters` row every live staffer counts as on shift, so the board
+    this suite describes is byte-identical to the pre-cutover one.
+
+    `on_shift_staff_ids` is deliberately NOT stubbed — it is not reached at all
+    when rule 2 cannot fire, and a test that had to stub it would be hiding that
+    saving."""
+
+    async def _no_roster(
+        _self: object, _session: object, _tenant_id: uuid.UUID, _week_start: datetime.date
+    ) -> None:
+        return None
+
+    monkeypatch.setattr(RostersRepository, "by_week", _no_roster)
+
+
 def _install(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -207,6 +234,9 @@ def _install(
         it answers."""
         return None
 
+    # ⚠ NOT recorded in `order`: F57's shipped sequence assertions are about the
+    # WRITE ordering, and F40's roster read is a read added after them.
+    _install_no_roster(monkeypatch)
     monkeypatch.setattr(StaffUsersRepository, "by_id", _by_id)
     monkeypatch.setattr(StaffUsersRepository, "start_break", _start)
     monkeypatch.setattr(StaffUsersRepository, "end_break", _end)
@@ -225,7 +255,7 @@ async def test_an_elevated_role_may_toggle_anybody(
     target = _staff_user(break_started_at=NOW)
     writes = _install(monkeypatch, wrote=True, row=target)
 
-    result, _ = await _service().start_break(TENANT_ID, target.id, actor=_actor(role))
+    result = (await _service().start_break(TENANT_ID, target.id, actor=_actor(role))).row
 
     assert result is target
     assert writes.order == ["start_break", "audit"]
@@ -241,7 +271,7 @@ async def test_a_floor_role_may_toggle_herself(
     me = _staff_user(role=role.value, break_started_at=NOW)
     writes = _install(monkeypatch, wrote=True, row=me)
 
-    result, _ = await _service().start_break(TENANT_ID, me.id, actor=_actor(role, me.id))
+    result = (await _service().start_break(TENANT_ID, me.id, actor=_actor(role, me.id))).row
 
     assert result is me
     assert writes.order == ["start_break", "audit"]
@@ -304,7 +334,7 @@ async def test_a_write_answers_the_row_and_records_one_audit_row(
     writes = _install(monkeypatch, wrote=True, row=target)
     actor = _actor(StaffRole.OWNER)
 
-    result, _ = await _service().start_break(TENANT_ID, target.id, actor=actor)
+    result = (await _service().start_break(TENANT_ID, target.id, actor=actor)).row
 
     assert result is target
     assert writes.calls[0]["at"] == NOW
@@ -326,7 +356,7 @@ async def test_a_no_op_answers_the_row_unchanged_and_records_nothing(
     target = _staff_user(break_started_at=BREAK_BEGAN)
     writes = _install(monkeypatch, wrote=False, row=target)
 
-    result, _ = await _service().start_break(TENANT_ID, target.id, actor=_actor(StaffRole.OWNER))
+    result = (await _service().start_break(TENANT_ID, target.id, actor=_actor(StaffRole.OWNER))).row
 
     assert result is target
     assert result.break_started_at == BREAK_BEGAN
@@ -371,7 +401,7 @@ async def test_the_end_audit_row_carries_the_timestamp_captured_before_the_write
     writes = _install(monkeypatch, wrote=True, row=after, before=before)
     actor = _actor(StaffRole.SHIFT_MANAGER)
 
-    result, _ = await _service().end_break(TENANT_ID, before.id, actor=actor)
+    result = (await _service().end_break(TENANT_ID, before.id, actor=actor)).row
 
     assert result is after
     assert writes.order == ["by_id", "end_break", "audit"]
@@ -394,7 +424,7 @@ async def test_an_end_on_a_staffer_who_was_not_on_a_break_records_nothing(
     target = _staff_user(break_started_at=None)
     writes = _install(monkeypatch, wrote=False, row=target, before=target)
 
-    result, _ = await _service().end_break(TENANT_ID, target.id, actor=_actor(StaffRole.OWNER))
+    result = (await _service().end_break(TENANT_ID, target.id, actor=_actor(StaffRole.OWNER))).row
 
     assert result is target
     assert writes.audit == []
@@ -1479,12 +1509,10 @@ async def test_a_break_route_answers_occupied_when_she_is_in_a_room(
     rig.occupancy = _occupied_room_row(target.id)
     _install_rooms(monkeypatch, rig)
 
-    row, occupancy = await _service().start_break(
-        TENANT_ID, target.id, actor=_actor(StaffRole.OWNER)
-    )
-    ended_row, ended_occupancy = await _service().end_break(
-        TENANT_ID, target.id, actor=_actor(StaffRole.OWNER)
-    )
+    started = await _service().start_break(TENANT_ID, target.id, actor=_actor(StaffRole.OWNER))
+    ended = await _service().end_break(TENANT_ID, target.id, actor=_actor(StaffRole.OWNER))
+    row, occupancy = started.row, started.occupancy
+    ended_row, ended_occupancy = ended.row, ended.occupancy
 
     assert row is target
     assert occupancy is not None
@@ -1511,6 +1539,7 @@ async def test_the_floor_read_keys_occupancy_by_staff_id_off_the_rooms_join(
 
     monkeypatch.setattr(StaffUsersRepository, "list_live", _list_live)
     monkeypatch.setattr(FittingRoomsRepository, "list_with_occupancy", _list_with_occupancy)
+    _install_no_roster(monkeypatch)
 
     read = await _service().floor(TENANT_ID)
 
@@ -2117,6 +2146,7 @@ async def test_the_waitlist_asks_for_todays_jerusalem_day_and_renders_the_rows_i
 
     monkeypatch.setattr(StaffUsersRepository, "list_live", _list_live)
     monkeypatch.setattr(FittingRoomsRepository, "list_with_occupancy", _list_with_occupancy)
+    _install_no_roster(monkeypatch)
 
     read = await _service().floor(TENANT_ID)
 
@@ -2788,3 +2818,193 @@ async def test_a_release_whose_ticket_a_manager_already_removed_still_frees_the_
 
     assert read.row.room_id == ROOM_ID
     assert len(rig.audit) == 1
+
+
+# --- F40 C1: the cutover, and the six things it must NOT change ---------------
+
+
+def _install_roster(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    published: bool,
+    rostered: set[uuid.UUID] | None = None,
+) -> list[str]:
+    """The two reads `_on_shift` makes, and a record of WHICH it made.
+
+    The list is the assertion `test_the_resolver_reads_nothing_it_does_not_need`
+    rests on: with no published roster the id set is never asked for at all.
+    """
+    reads: list[str] = []
+
+    async def _by_week(
+        _self: object, _session: object, _tenant_id: uuid.UUID, _week_start: datetime.date
+    ) -> Any:
+        reads.append("by_week")
+        if not published:
+            return None
+        return SimpleNamespace(id=uuid.uuid4(), published_at=NOW, week_start=_week_start)
+
+    async def _ids(
+        _self: object, _session: object, _tenant_id: uuid.UUID, _at: datetime.datetime
+    ) -> set[uuid.UUID]:
+        reads.append("on_shift_staff_ids")
+        return set() if rostered is None else rostered
+
+    monkeypatch.setattr(RostersRepository, "by_week", _by_week)
+    monkeypatch.setattr(RosterAssignmentsRepository, "on_shift_staff_ids", _ids)
+    return reads
+
+
+async def _board(
+    monkeypatch: pytest.MonkeyPatch, staff: list[StaffUser], *, occupied: uuid.UUID | None = None
+) -> FloorRead:
+    rig = _Rig()
+    _install_rooms(monkeypatch, rig)
+
+    async def _list_live(_s: Any, _sess: Any, _t: Any) -> list[StaffUser]:
+        return staff
+
+    async def _list_with_occupancy(_s: Any, _sess: Any, _t: Any) -> list[RoomRow]:
+        return [] if occupied is None else [_occupied_room_row(occupied)]
+
+    monkeypatch.setattr(StaffUsersRepository, "list_live", _list_live)
+    monkeypatch.setattr(FittingRoomsRepository, "list_with_occupancy", _list_with_occupancy)
+    return await _service().floor(TENANT_ID)
+
+
+async def test_the_board_never_drops_a_card_under_any_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ D1's REGRESSION GUARD, ASSERTED PER RULE RATHER THAN ONCE. The board
+    LABELS and never filters: `GET /manage/floor` is what a seamstress opens to
+    find out who else is in the building, and a colleague who walked in anyway —
+    covering a sick call, collecting something, working a day nobody rostered —
+    must not vanish from it. The failure would be silent and would look like an
+    empty boutique.
+    """
+    on, off = _staff_user(), _staff_user()
+    staff = [on, off]
+
+    for published, rostered in ((False, None), (True, set()), (True, {on.id})):
+        _install_roster(monkeypatch, published=published, rostered=rostered)
+        read = await _board(monkeypatch, staff)
+        assert [row.id for row in read.staff_rows] == [on.id, off.id], (published, rostered)
+        assert set(read.on_shift_by_staff_id) == {on.id, off.id}, (published, rostered)
+
+
+async def test_the_three_rules_reach_the_board_from_the_three_input_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The four inputs are gathered from the ROW and the two reads and nothing
+    else — the resolver itself is proved exhaustively in
+    `test_shifts_resolver.py`, so what this asserts is the WIRING."""
+    rostered = _staff_user()
+    unrostered = _staff_user()
+    marked = _staff_user()
+    marked.on_shift_on = jerusalem_moment(NOW)[0]
+    marked.on_shift_override = False
+
+    _install_roster(monkeypatch, published=True, rostered={rostered.id, marked.id})
+    read = await _board(monkeypatch, [rostered, unrostered, marked])
+
+    assert read.on_shift_by_staff_id[rostered.id] == (True, OnShiftSource.ROSTER)
+    assert read.on_shift_by_staff_id[unrostered.id] == (False, OnShiftSource.ROSTER)
+    # ⚠ THE SICK CALL: she is on the published roster and she is not coming in.
+    assert read.on_shift_by_staff_id[marked.id] == (False, OnShiftSource.MANUAL_TODAY)
+
+
+async def test_a_boutique_with_no_published_roster_sees_the_board_it_saw_before(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ C1'S PROMISE, LITERALLY. Rule 3 resolves to today's exact behaviour —
+    every live staffer counts as on shift — so a boutique that never publishes
+    sees no change at all beyond two new keys."""
+    staff = [_staff_user(), _staff_user()]
+    reads = _install_roster(monkeypatch, published=False)
+    read = await _board(monkeypatch, staff)
+
+    assert all(read.on_shift_by_staff_id[row.id] == (True, OnShiftSource.FALLBACK) for row in staff)
+    # ⚠ ONE statement, not two: the id set is never asked for when rule 2 cannot
+    # fire, so an unpublishing boutique pays nothing for the cutover on a read
+    # that runs every five seconds per device.
+    assert reads == ["by_week"]
+
+
+async def test_an_occupied_staffer_can_be_off_shift_and_the_card_says_both(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ D9's whole point. `status` answers WHAT SHE IS DOING RIGHT NOW and
+    `on_shift` answers WHETHER SHE IS SUPPOSED TO BE HERE TODAY — both are true
+    at once, and that tuple is the single most useful thing this feature puts on
+    the board. A fourth `StaffCardStatus` would make it unrepresentable."""
+    her = _staff_user()
+    _install_roster(monkeypatch, published=True, rostered=set())
+    read = await _board(monkeypatch, [her], occupied=her.id)
+
+    occupancy = read.occupancy_by_staff_id[her.id]
+    assert card_status(her, occupied=occupancy is not None) is StaffCardStatus.OCCUPIED
+    assert read.on_shift_by_staff_id[her.id] == (False, OnShiftSource.ROSTER)
+
+
+async def test_the_break_writers_answer_the_resolved_pair_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Design F-1: the client cannot compute `on_shift_source` — that is the whole
+    of D8 — so a break route answering without it would force the panel to guess,
+    and a guess prints the wrong Hebrew rule label on a live floor screen."""
+    target = _staff_user(break_started_at=NOW)
+    _install(monkeypatch, wrote=True, row=target, before=target)
+    _install_roster(monkeypatch, published=True, rostered={target.id})
+
+    started = await _service().start_break(TENANT_ID, target.id, actor=_actor(StaffRole.OWNER))
+    assert (started.on_shift, started.on_shift_source) == (True, OnShiftSource.ROSTER)
+
+    ended = await _service().end_break(TENANT_ID, target.id, actor=_actor(StaffRole.OWNER))
+    assert (ended.on_shift, ended.on_shift_source) == (True, OnShiftSource.ROSTER)
+
+
+def test_the_card_status_enum_is_still_exactly_three(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⚠ NOT FOUR (D9). `on_shift` is two new keys on the card and never a fourth
+    status — folding it in would also break the console's deliberate no-fallback
+    `STATUS_BADGE` Record."""
+    assert {member.value for member in StaffCardStatus} == {"occupied", "break", "available"}
+
+
+def test_the_on_shift_columns_stay_out_of_the_retention_scrub() -> None:
+    """⚠ D16: the two new `staff_users` columns are a DATE and a BOOLEAN — no
+    name, no phone, nothing a subject request could name — so they stay out of
+    `_scrub_staff_users`' UPDATE. Asserted on the source, because the scrub is the
+    one place where «add the new column» is the reflex and doing it would destroy
+    an override for no privacy gain at all."""
+    source = inspect.getsource(retention_module._scrub_staff_users)
+    assert "on_shift_on" not in source
+    assert "on_shift_override" not in source
+
+
+def test_the_sos_audience_and_the_reachability_probe_are_not_rewired() -> None:
+    """⚠ C2/D15: F37's SOS is NOT rewired, and this asserts it on the source
+    rather than on behaviour, because the failure would be an ADDITION.
+
+    `sos_alerts` has no role column: a page is at one named staffer or at NULL,
+    and NULL means the two-member elevated audience computed at read time. The
+    one reachability probe reads `sessions.has_live_session` — «is she signed in
+    right now» — which is a strictly better proxy for «is she in the building»
+    than a roster published a week ago. Wiring the roster in would page people who
+    are rostered but logged out and un-page people who walked in and signed in,
+    CREATING the epic's own stated risk rather than mitigating it.
+    """
+    source = inspect.getsource(app_service)
+    for verb in ("raise_sos", "_for_me"):
+        block = source.split(f"def {verb}", 1)[1].split("\n    async def ", 1)[0]
+        assert "on_shift" not in block, verb
+        assert "_roster_assignments" not in block, verb
+
+
+def test_the_atelier_assignable_predicate_is_not_rewired() -> None:
+    """⚠ C3/D15: F42 shipped with its F40 dependency explicitly dropped, and
+    `assignable` stays `deleted_at IS NULL AND role == seamstress`. The
+    published-roster projection is the recorded UPGRADE PATH and not this
+    build — one derived boolean, separately reviewable."""
+    source = inspect.getsource(atelier_schemas)
+    assert "assignable=" in source
+    assert "on_shift" not in source

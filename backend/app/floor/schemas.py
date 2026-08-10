@@ -54,7 +54,7 @@ from app.floor.service import (
     WaitlistRead,
     card_status,
 )
-from app.models.constants import StaffCardStatus
+from app.models.constants import OnShiftSource, StaffCardStatus
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.staff_user import StaffUser
 from app.schemas import ForbidExtraModel
@@ -96,6 +96,23 @@ class StaffCard(BaseModel):
     # polls, so a panel keyed on the URL would re-download every face forever.
     # This changes exactly when the image behind it does.
     photo_confirmed_at: datetime.datetime | None
+    # F40, and a NINTH and TENTH key on a payload every one of the five roles can
+    # open — so the set-equality assertions over this card had to be edited by
+    # hand again, which is exactly what they are for.
+    #
+    # ⚠ TWO NEW KEYS AND NOT A FOURTH `StaffCardStatus` (D9). `status` answers
+    # WHAT SHE IS DOING RIGHT NOW (occupied / on a break / free); `on_shift`
+    # answers WHETHER SHE IS SUPPOSED TO BE HERE TODAY. Both are true at once — a
+    # staffer who is off-shift and standing in room 2 is `occupied` AND
+    # `on_shift: false`, and that combination is the single most useful thing this
+    # feature puts on the board. Folding it into the enum makes the tuple
+    # unrepresentable and breaks `STATUS_BADGE`'s deliberate no-fallback Record.
+    on_shift: bool
+    # WHICH of the three rules answered (D8). One of three literals from the
+    # SERVER — the console maps it through a `Record` with no fallback, so a
+    # fourth source is a compile error there rather than a wrong Hebrew word that
+    # ships silently.
+    on_shift_source: OnShiftSource
 
     @classmethod
     def from_row(
@@ -104,11 +121,22 @@ class StaffCard(BaseModel):
         *,
         occupancy: "RoomRow | None" = None,
         storage: MediaStorage,
+        on_shift: bool,
+        on_shift_source: OnShiftSource,
     ) -> "StaffCard":
         """`storage` is REQUIRED and keyword-only. Defaulting it to None would
         make a forgotten call site render a board with every avatar silently
         missing — which looks like "nobody has uploaded a photo yet" and would
-        survive review."""
+        survive review.
+
+        ⚠ `on_shift` AND `on_shift_source` ARE REQUIRED FOR THE SAME REASON, AND
+        THAT IS THE MECHANISM RATHER THAN A STYLE CHOICE. Defaults would make
+        every call site compile while silently reporting `FALLBACK` for everyone
+        — which reads as «no roster published» on a boutique that has one, i.e.
+        the wrong Hebrew rule label on a live floor screen, on a green build.
+        Required, mypy reds all three call sites the moment the signature moves,
+        so none can be missed.
+        """
         return cls(
             id=row.id,
             display_name=row.display_name,
@@ -120,6 +148,8 @@ class StaffCard(BaseModel):
             # awaiting it would cost an await per staffer on every poll tick.
             photo_url=sign_staff_photo(storage, row),
             photo_confirmed_at=row.photo_confirmed_at,
+            on_shift=on_shift,
+            on_shift_source=on_shift_source,
         )
 
 
@@ -149,6 +179,8 @@ class FloorResponse(BaseModel):
                     row,
                     occupancy=read.occupancy_by_staff_id.get(row.id),
                     storage=storage,
+                    on_shift=read.on_shift_by_staff_id[row.id][0],
+                    on_shift_source=read.on_shift_by_staff_id[row.id][1],
                 )
                 for row in read.staff_rows
             ],

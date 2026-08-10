@@ -49,7 +49,7 @@ from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.floor.service import FloorService
 from app.models.audit_log import AuditLog
-from app.models.constants import AuditAction, StaffRole
+from app.models.constants import AuditAction, OnShiftSource, StaffRole
 
 # F38 made `last_day` a REQUIRED argument on StaffUsersRepository.soft_delete —
 # the retention policy's predicate needs `last_day IS NOT NULL`, so a row
@@ -414,11 +414,17 @@ async def test_the_end_audit_row_carries_the_timestamp_the_break_actually_starte
         # F36 gave both break writers a second return value: the room this
         # staffer is standing in, or None. The card's `occupied` is derived from
         # it, so the route cannot answer «פנויה» about somebody in room 2.
-        row, occupancy = await FloorService(factory, clock=lambda: LATER).end_break(
+        # F40: the break writers now answer a `StaffCardRead` — the row, the
+        # room she is standing in, AND the resolved on-shift pair, because the
+        # client cannot compute `on_shift_source` (design F-1).
+        read = await FloorService(factory, clock=lambda: LATER).end_break(
             tenant_id, staff_id, actor=actor
         )
-        assert row.break_started_at is None
-        assert occupancy is None
+        assert read.row.break_started_at is None
+        assert read.occupancy is None
+        # No published roster on this tenant, so rule 3 answers — today's exact
+        # behaviour, which is C1's promise (spec C1).
+        assert (read.on_shift, read.on_shift_source) == (True, OnShiftSource.FALLBACK)
 
         async with tenant_session(factory, tenant_id) as session:
             rows = list(

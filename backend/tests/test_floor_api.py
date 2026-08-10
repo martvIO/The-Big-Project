@@ -53,6 +53,7 @@ from app.floor.service import (
     RoomRead,
     SosListRead,
     SosRead,
+    StaffCardRead,
     WaitlistEntryRead,
     WaitlistRead,
 )
@@ -67,16 +68,24 @@ from app.floor.validation import (
 )
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.booking import Booking
-from app.models.constants import SosStatus, StaffCardStatus, StaffRole
+from app.models.constants import OnShiftSource, SosStatus, StaffCardStatus, StaffRole
 from app.models.dress import Dress
 from app.models.fitting_assignment_dress import FittingAssignmentDress
 from app.models.sos_alert import SosAlert
 from app.models.staff_user import StaffUser
 from app.tenancy.middleware import TenantContext
 
-# The floor card's wire shape. EIGHT keys after F38, asserted by set equality on
-# every path that emits one — a card is the payload every role in the boutique
-# can open, so both directions of drift matter.
+# The floor card's wire shape. EIGHT keys after F38, TEN after F40 — asserted by
+# set equality on every path that emits one, because a card is the payload every
+# role in the boutique can open and both directions of drift matter.
+#
+# ⚠ EDITED BY HAND, and F38's comment says why that is a feature: the set
+# equality is what catches a ninth key arriving unreviewed on a five-role
+# payload. F40's two are `on_shift` and `on_shift_source`, and they are TWO NEW
+# KEYS rather than a fourth `StaffCardStatus` (D9) — `status` answers what she is
+# doing right now and `on_shift` answers whether she is supposed to be here
+# today, BOTH are true at once, and folding them together would make the
+# `occupied` + `on_shift: false` tuple unrepresentable.
 STAFF_CARD_KEYS = {
     "id",
     "display_name",
@@ -86,6 +95,8 @@ STAFF_CARD_KEYS = {
     "occupancy",
     "photo_url",
     "photo_confirmed_at",
+    "on_shift",
+    "on_shift_source",
 }
 
 TENANT = TenantContext(id=uuid.uuid4(), slug="bella", name="Bella Bridal", settings={})
@@ -424,6 +435,10 @@ class FakeFloorService:
         # empty, which is every staffer's bell on the day she starts.
         self.notification_rows: list[StaffNotificationRow] = []
         self.unread = 0
+        # F40. The DEFAULT is rule 3 — no roster published, everybody counts as
+        # on shift — which is byte-identical to the board this fake described
+        # before the cutover (spec C1). A test that wants another rule sets it.
+        self.on_shift: dict[uuid.UUID, tuple[bool, OnShiftSource]] = {}
 
     async def floor(self, tenant_id: uuid.UUID) -> FloorRead:
         self.floor_calls.append(tenant_id)
@@ -445,6 +460,10 @@ class FakeFloorService:
                 ),
             ],
             occupancy_by_staff_id=self.occupancy_by_staff_id,
+            on_shift_by_staff_id={
+                staff_id: self.on_shift.get(staff_id, (True, OnShiftSource.FALLBACK))
+                for staff_id in (STAFF_ID, TARGET_ID)
+            },
             room_rows=self.room_rows,
             bindings_by_assignment_id=self.bindings,
             server_now=SERVER_NOW,
@@ -453,13 +472,23 @@ class FakeFloorService:
 
     async def start_break(
         self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor: StaffContext
-    ) -> tuple[StaffUser, RoomRow | None]:
-        return self._toggle("start", tenant_id, staff_id, actor, BREAK_BEGAN), self.occupancy
+    ) -> StaffCardRead:
+        return self._card(self._toggle("start", tenant_id, staff_id, actor, BREAK_BEGAN), staff_id)
 
     async def end_break(
         self, tenant_id: uuid.UUID, staff_id: uuid.UUID, *, actor: StaffContext
-    ) -> tuple[StaffUser, RoomRow | None]:
-        return self._toggle("end", tenant_id, staff_id, actor, None), self.occupancy
+    ) -> StaffCardRead:
+        return self._card(self._toggle("end", tenant_id, staff_id, actor, None), staff_id)
+
+    def _card(self, row: StaffUser, staff_id: uuid.UUID) -> StaffCardRead:
+        """⚠ THE BREAK WRITERS RESOLVE THE ON-SHIFT PAIR TOO (design F-1). The
+        client cannot compute `on_shift_source` — that is the whole of D8 — so a
+        route answering without it would force the panel to guess, and a guess
+        prints the wrong Hebrew rule label on a live floor screen."""
+        on_shift, source = self.on_shift.get(staff_id, (True, OnShiftSource.FALLBACK))
+        return StaffCardRead(
+            row=row, occupancy=self.occupancy, on_shift=on_shift, on_shift_source=source
+        )
 
     def _toggle(
         self,
@@ -1062,6 +1091,12 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
                 "occupancy": None,
                 "photo_url": None,
                 "photo_confirmed_at": None,
+                # ⚠ F40's TWO NEW KEYS, and the default pair is RULE 3 — no
+                # roster published, so every live staffer counts as on shift.
+                # That is today's exact behaviour (spec C1) and the reason a
+                # boutique that never publishes sees no change at all.
+                "on_shift": True,
+                "on_shift_source": "fallback",
             },
             {
                 "id": str(TARGET_ID),
@@ -1072,6 +1107,8 @@ def test_the_floor_payload_is_an_envelope_with_one_card_per_live_staffer() -> No
                 "occupancy": None,
                 "photo_url": None,
                 "photo_confirmed_at": None,
+                "on_shift": True,
+                "on_shift_source": "fallback",
             },
         ],
         "rooms": [],
