@@ -2548,6 +2548,14 @@ export const he = {
     // offer BADGE must not promise the SMS F23 has not sent yet. «הוצע תור»
     // states the status itself and nothing about a message.
     "bookingWaitlist.statusOffered": "הוצע תור",
+    // --- F23: the offer column (design §9) ---------------------------------
+    "bookingWaitlist.colOffer": "ההצעה",
+    // R19's lead — the expiry time follows in its own <bdi dir="ltr"> island.
+    "bookingWaitlist.offerUntil": "בתוקף עד",
+    // The danger label on an OFFERED row. The generic «אישור הביטול» does not
+    // say what this click costs: the row is a live offer a bride may be reading
+    // her SMS about this second, and cancelling it takes the slot back from her.
+    "bookingWaitlist.cancelOfferedConfirm": "אישור — ההצעה תבוטל",
     "bookingWaitlist.cancel": "ביטול",
     // The danger half of the in-place swap (design P3) — the second click.
     "bookingWaitlist.cancelConfirm": "אישור הביטול",

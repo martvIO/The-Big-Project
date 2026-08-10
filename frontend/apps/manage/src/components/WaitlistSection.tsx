@@ -4,7 +4,13 @@ import { Badge, Button, Card, DateField, EmptyState, Skeleton, VisuallyHidden } 
 import { api } from "../api";
 import type { BookingWaitlistRow } from "../api";
 import { isolateLtr } from "../lib/booking";
-import { jerusalemTime, plainDate, todayJerusalem } from "../lib/jerusalem";
+import {
+  jerusalemIsoDate,
+  jerusalemTime,
+  plainDate,
+  plainDayMonth,
+  todayJerusalem,
+} from "../lib/jerusalem";
 
 // F22's console section (design §4). NOT `WaitlistPanel` — that is F58's
 // walk-in queue on the floor (F-W2); this one lists the BOOKING waitlist.
@@ -23,6 +29,14 @@ const STATUS_KEY: Record<string, string> = {
   offered: "bookingWaitlist.statusOffered",
 };
 
+// F23 P4. `neutral` was F22's placeholder for a status that could not yet
+// occur. Now that it can, the in-flight row must separate from the merely
+// waiting ones — an owner scanning to clear a day is one click from taking a
+// slot back off a bride who is reading her SMS about it.
+const STATUS_VARIANT: Record<string, "neutral" | "warning"> = {
+  offered: "warning",
+};
+
 // he-IL short weekday for the day column — the design's «ה׳ 20.8» shape rides
 // plainDate for the numerals, so no Date object ever meets the wire date.
 const WEEKDAY = new Intl.DateTimeFormat("he-IL", { weekday: "short", timeZone: "Asia/Jerusalem" });
@@ -31,6 +45,42 @@ function weekdayOf(isoDay: string): string {
   // Noon UTC is the same Jerusalem calendar day everywhere — the storefront's
   // own trick, so the weekday can never straddle midnight.
   return WEEKDAY.format(new Date(`${isoDay}T12:00:00Z`));
+}
+
+/**
+ * The offer column (design §4) — the two instants and NOTHING else.
+ *
+ * ⚠ It does not tick, and it must never start. The deadline is a fact the
+ * server owns, not a timer: R1 removed countdowns from the storefront's offer
+ * page for three prior rulings and a legal gate, and an owner's table is the
+ * other place one would have been tempting. There is also no cascade history
+ * here — no offer counter, no expiry log, no per-entry trail. The audit trail
+ * lives in `audit_log`; the one thing this row owes an owner is whether anyone
+ * is holding the slot right now, and until when.
+ */
+function OfferCell({
+  startsAt,
+  expiresAt,
+}: {
+  startsAt: string | null;
+  expiresAt: string | null;
+}) {
+  const { t } = useTranslation();
+  if (startsAt === null) return <>—</>;
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-base">
+        {weekdayOf(jerusalemIsoDate(startsAt))}{" "}
+        <bdi dir="ltr">{plainDayMonth(jerusalemIsoDate(startsAt))}</bdi>{" "}
+        <bdi dir="ltr">{jerusalemTime(startsAt)}</bdi>
+      </span>
+      {expiresAt !== null && (
+        <span className="text-sm text-ink-muted">
+          {t("bookingWaitlist.offerUntil")} <bdi dir="ltr">{jerusalemTime(expiresAt)}</bdi>
+        </span>
+      )}
+    </div>
+  );
 }
 
 export function WaitlistSection() {
@@ -154,6 +204,9 @@ export function WaitlistSection() {
                   {t("bookingWaitlist.colStatus")}
                 </th>
                 <th className="px-2 py-2 text-start font-normal">
+                  {t("bookingWaitlist.colOffer")}
+                </th>
+                <th className="px-2 py-2 text-start font-normal">
                   {t("bookingWaitlist.colJoined")}
                 </th>
                 <th className="px-2 py-2" />
@@ -170,7 +223,15 @@ export function WaitlistSection() {
                     {entry.customer_name ?? isolateLtr(entry.phone, entry.phone)}
                   </td>
                   <td className="px-2 py-3">
-                    <Badge variant="neutral">{t(STATUS_KEY[entry.status] ?? entry.status)}</Badge>
+                    <Badge variant={STATUS_VARIANT[entry.status] ?? "neutral"}>
+                      {t(STATUS_KEY[entry.status] ?? entry.status)}
+                    </Badge>
+                  </td>
+                  <td className="px-2 py-3">
+                    <OfferCell
+                      startsAt={entry.offer_starts_at}
+                      expiresAt={entry.offer_expires_at}
+                    />
                   </td>
                   <td className="px-2 py-3">
                     <bdi dir="ltr">{jerusalemTime(entry.created_at)}</bdi>
@@ -195,7 +256,14 @@ export function WaitlistSection() {
                         }}
                         onClick={() => void cancel(entry.id)}
                       >
-                        {t("bookingWaitlist.cancelConfirm")}
+                        {/* An `offered` row is a live offer a bride may be
+                            reading right now, so its danger label names the
+                            consequence rather than the generic action. */}
+                        {t(
+                          entry.status === "offered"
+                            ? "bookingWaitlist.cancelOfferedConfirm"
+                            : "bookingWaitlist.cancelConfirm",
+                        )}
                       </Button>
                     ) : (
                       <Button
