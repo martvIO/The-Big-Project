@@ -1284,7 +1284,13 @@ test("manage staff: a photo upload runs presign → storage → confirm and pain
   // srcless or unreadable avatar is a failing test rather than a passing one.
   const face = staffRow(page, DANA).locator("img");
   await expect(face).toHaveAttribute("alt", "");
-  expect(await face.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+  // ⚠ POLLED, not sampled. Decode is asynchronous, so reading naturalWidth once
+  // the instant the element appears is a race: under full-suite load this read
+  // has returned 0 for an image that decoded correctly a tick later. Polling
+  // keeps the assertion — the image really must decode — without racing it.
+  await expect
+    .poll(() => face.evaluate((img: HTMLImageElement) => img.naturalWidth))
+    .toBeGreaterThan(0);
 });
 
 test("manage staff: a failed confirm keeps the previous photo on screen and offers a retry", async ({
@@ -1494,7 +1500,13 @@ test("manage board: a staff card paints a decoded 44px face beside an initial fa
   // a board that lists the whole shift. The photo is decorative by definition.
   await expect(face).toHaveAttribute("alt", "");
   await expect(face).toHaveAttribute("loading", "lazy");
-  expect(await face.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+  // ⚠ POLLED, not sampled. Decode is asynchronous, so reading naturalWidth once
+  // the instant the element appears is a race: under full-suite load this read
+  // has returned 0 for an image that decoded correctly a tick later. Polling
+  // keeps the assertion — the image really must decode — without racing it.
+  await expect
+    .poll(() => face.evaluate((img: HTMLImageElement) => img.naturalWidth))
+    .toBeGreaterThan(0);
   const faceBox = await face.boundingBox();
   expect(faceBox).not.toBeNull();
   expect(faceBox!.width).toBe(TOUCH_TARGET_MIN);

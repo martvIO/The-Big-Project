@@ -32,7 +32,7 @@ v1 (E1–E4) proves one boutique end-to-end with an operator holding its hand; E
 | 23 | Auto-reallocation loop | done (PR #56) | [spec](../specs/waitlist-auto-reallocation.md) | [plan](../plans/waitlist-auto-reallocation.md) | #22, E3 #16, E4 #19 |
 | 24 | Client portal: OTP login, "My Bookings", `.ics`, bell | done (PR #50) | [spec](../specs/client-portal.md) | [plan](../plans/client-portal.md) | E3 #11, #13, #16 |
 | 25 | Web platform console (replaces v1 CLI) | done (PR #52) | [spec](../specs/platform-console.md) | [plan](../plans/platform-console.md) | E1 #6 |
-| 26 | Self-serve boutique signup + gateway-connect onboarding | todo | — | — | #25, E1 #4, E4 #17 · **public launch gated by #29** |
+| 26 | Invite-code boutique signup (Q10: no public funnel) | done (PR #57) | [spec](../specs/invite-signup.md) | [plan](../plans/invite-signup.md) | #25 · Q10 overrode the public-funnel scope, so #29 no longer gates it |
 | 27 | Full feature-toggle matrix UI (§2 grid) | done (PR #51) | [spec](../specs/toggle-matrix-ui.md) | [plan](../plans/toggle-matrix-ui.md) | E2 #7 |
 | 28 | Date-bound dress reservation semantics | done (PR #53) | [spec](../specs/dress-reservation.md) | [plan](../plans/dress-reservation.md) | E2 #8, E3 #13 · Q9 settled it: RENTAL |
 | 29 | Pre-scale gate: refund-API automation, k6, Redis caching | todo | — | — | E4 #18, #21 |
