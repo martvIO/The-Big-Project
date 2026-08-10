@@ -2714,7 +2714,29 @@ queue:
     slug: f39-placeholder
     epic: E8
     title: "Staff availability submission (templates + weekly window)"
-    status: queued
+    status: merged                # PR #58, merged 2026-08-10. Migration 0035. F40 IS NOW UNBLOCKED.
+                                  # ⚠ THE DESIGN GATE PAID FOR ITSELF BEFORE A LINE WAS WRITTEN: the deadline
+                                  # line — the string every staffer sees on every load — was specified as
+                                  # plainDayMonth(deadline_at), and that helper splits a PLAIN calendar date
+                                  # on "-". Fed an ISO instant it yields day "04T16:00:00Z", so the most-viewed
+                                  # string in the feature would have rendered «יום רביעי, NaN.11, 18:00».
+                                  # Hand-slicing the instant avoids the NaN and reproduces a DST day-slip
+                                  # instead; the composition is plainDayMonth(jerusalemIsoDate(...)) and its
+                                  # guard runs under TZ=America/New_York so a correctly-zoned machine cannot
+                                  # hide it. Two more the gate caught: three elevated panes had NO loading and
+                                  # NO load-failure render at all, and there was no path back to «לא נרשם», so
+                                  # a mis-tap was permanent for the week.
+                                  # ⚠ R9 PROVES WHY THE COUNT IS MEASURED, NEVER COMPUTED: F39 adds EIGHT
+                                  # routes and the driven/discriminating pair moved only (67,65) -> (70,68),
+                                  # because five carry no tenant-owned id (two ?week_start= reads take a
+                                  # calendar DATE, plus a list, a create and the seed). Adding 8 would have
+                                  # been wrong by five. The same pass found NO_TENANT_OWNED_ID still reading
+                                  # 44 against a measured 51 even after F26's correction.
+                                  # Review: 3 findings, ALL confirmed by probe, none rejected. The major one
+                                  # was worse than reported — ShiftsSection ran its own templates fetch and
+                                  # gated every pane's mount on it, so a seamstress's week read did not fire
+                                  # until an unrelated read resolved, and one failed read collapsed panes that
+                                  # had nothing to do with it.
     deps: [F7, F9, F11, F12, F31, F38]
     note: >-
       Pre-decided #33: owner-defined shift templates per weekday, pre-filled from opening
