@@ -437,6 +437,28 @@ export interface ManageBookingResponse {
   boutique: ManageBoutique;
 }
 
+// --- F23 offer wire types (mirror backend/app/waitlist/schemas.py) ---
+
+export interface WaitlistOfferView {
+  // "offered" | "claimed" | "expired" | "cancelled". A PROJECTION, not the
+  // row's column: an `offered` row whose deadline has passed answers "expired",
+  // because the cascade sweeps on a 60-second tick and the page must never
+  // render a live offer over a dead deadline.
+  status: string;
+  starts_at: string | null;
+  expires_at: string | null;
+  appointment_type_name: string | null;
+}
+
+export interface WaitlistOfferClaimRequest {
+  // EXACTLY three fields. No phone (the entry carries the proven one) and no
+  // verification token — possession of the offer token IS the proof, the same
+  // posture as /b/{token}.
+  token: string;
+  name: string;
+  terms_version: number;
+}
+
 // --- portal wire types (mirror backend/app/portal/schemas.py) ---
 
 export interface PortalSession {
@@ -653,6 +675,21 @@ export const api = {
   // booking.
   joinWaitlist(body: WaitlistJoinRequest): Promise<WaitlistJoinResponse> {
     return apiFetch("/storefront/waitlist", { method: "POST", body });
+  },
+
+  // F23's offer surface. All three take the token in the BODY for the reason
+  // the manage trio does: /w/{token} is a CLIENT-side path the SPA parses, and
+  // a GET would put a live claim credential into every access log on the way.
+  lookupOffer(token: string): Promise<WaitlistOfferView> {
+    return apiFetch("/storefront/waitlist/offer", { method: "POST", body: { token } });
+  },
+  // Answers the SAME body the booking create does, so the deposit hand-off is
+  // F19's shipped one and not a second checkout.
+  claimOffer(body: WaitlistOfferClaimRequest): Promise<BookingCreateResponse> {
+    return apiFetch("/storefront/waitlist/claim", { method: "POST", body });
+  },
+  declineOffer(token: string): Promise<WaitlistOfferView> {
+    return apiFetch("/storefront/waitlist/decline", { method: "POST", body: { token } });
   },
 
   // Both check-in routes are POSTs, the read included, and both answer the same
