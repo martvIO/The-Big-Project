@@ -71,6 +71,21 @@ async function openShifts(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "הזמינות שלי" })).toBeVisible();
 }
 
+// Every option is a native radio rendered `sr-only` INSIDE the <label> that
+// carries its visible text (D13 — `SlotPicker`'s shipped contract reduced to
+// four options), so THE LABEL IS WHAT A FINGER LANDS ON and it is what these
+// click. `storefront.spec.ts`'s `chip()` states the same rule for the same
+// markup. A `.check()` on the input targets its 1 px box instead, and the
+// label sitting over it intercepts the pointer.
+//
+// ⚠ `exact` IS LOAD-BEARING, NOT TIDINESS. Playwright matches an accessible
+// name by SUBSTRING, and «לא זמינה» CONTAINS «זמינה» — so the bare name
+// resolves to two radios whose meanings are opposites, on the one control in
+// this feature where "available" and "unavailable" must never be confusable.
+function stateChip(scope: Locator, name: string): Locator {
+  return scope.locator("label").filter({ has: scope.page().getByRole("radio", { name, exact: true }) });
+}
+
 // --- the staffer's journey ---------------------------------------------------
 
 test("a seamstress lands on the floor, opens her week, marks it and saves", async ({ page }) => {
@@ -111,7 +126,7 @@ test("a seamstress lands on the floor, opens her week, marks it and saves", asyn
   await expect(page.getByRole("heading", { name: "ראשון · 11.1" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "חמישי · 15.1" })).toBeVisible();
 
-  await page.getByRole("group").first().getByRole("radio", { name: "זמינה" }).check();
+  await stateChip(page.getByRole("group").first(), "זמינה").click();
   await page.getByRole("button", { name: "שמירת זמינות" }).click();
   await expect(page.getByText("נשמר לפני רגע")).toBeVisible();
 
@@ -216,7 +231,7 @@ test("SUBMISSION_CLOSED mid-save locks the screen and moves focus to the banner"
   });
   await openShifts(page);
 
-  await page.getByRole("group").first().getByRole("radio", { name: "זמינה" }).check();
+  await stateChip(page.getByRole("group").first(), "זמינה").click();
   await page.getByRole("button", { name: "שמירת זמינות" }).click();
 
   const banner = page.getByText(/מועד ההגשה לשבוע הזה עבר\. אפשר לפנות/);
@@ -424,7 +439,7 @@ test("an owner reads the readiness list and records on a staffer's behalf", asyn
   await expect(expanded.getByRole("heading", { name: "ראשון · 11.1" })).toBeVisible();
   await expect(expanded.getByRole("heading", { name: "חמישי · 15.1" })).toBeVisible();
 
-  await expanded.getByRole("group").first().getByRole("radio", { name: "זמינה" }).check();
+  await stateChip(expanded.getByRole("group").first(), "זמינה").click();
   await expectAxeClean(page);
 
   await page.getByRole("button", { name: /שמירה עבור מיכל ברזילי/ }).click();
