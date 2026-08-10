@@ -31,3 +31,19 @@ export function slugProblem(slug: string): SlugProblem {
   if ((RESERVED_SLUGS as readonly string[]).includes(slug)) return "reserved";
   return null;
 }
+
+// F26 design B1: the join field accepts a PASTED FULL LINK, not just a bare
+// code. The owner was given a link, so a link is what she will paste, and
+// refusing it would spend a failures-only limiter attempt on a formatting
+// mistake — at 5 per 15 minutes, three of those lock her out of her own
+// boutique.
+//
+// Here rather than in JoinPanel.tsx so that file exports components only (fast
+// refresh), and because a pure string function is worth testing without a DOM.
+export function extractCode(pasted: string): string {
+  const trimmed = pasted.trim();
+  const marker = trimmed.indexOf("code=");
+  if (marker === -1) return trimmed;
+  const tail = trimmed.slice(marker + "code=".length);
+  return decodeURIComponent(tail.split(/[&#\s]/, 1)[0] ?? "");
+}
