@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import {
   PLATFORM,
@@ -152,11 +152,23 @@ test("platform: logout returns to the login panel", async ({ page }) => {
 
 // --- provision ---------------------------------------------------------------
 
+// ⚠ SCOPED TO THE NAMED FORM, and every fill goes through this helper for that
+// reason. F26's «הזמנה חדשה» puts a second control with each of the first three
+// labels on the same page — deliberately, reusing the shipped provision copy
+// rather than duplicating it — so a bare `getByLabel` is genuinely ambiguous.
+// `.first()` would resolve that by document order, i.e. by coin flip; the form's
+// accessible name (Console.tsx's `aria-labelledby`) says WHICH form is meant, and
+// it is what a screen-reader user navigates by too.
+function provisionForm(page: Page): Locator {
+  return page.getByRole("form", { name: "בוטיק חדש" });
+}
+
 async function fillProvision(page: Page, slug: string): Promise<void> {
-  await page.getByLabel("כתובת (תת־דומיין)").fill(slug);
-  await page.getByLabel("שם הבוטיק").fill("בוטיק של חן");
-  await page.getByLabel("אימייל של בעלת הבוטיק").fill("owner@chen.example");
-  await page.getByLabel("סיסמה ראשונית").fill("first-owner-pw");
+  const form = provisionForm(page);
+  await form.getByLabel("כתובת (תת־דומיין)").fill(slug);
+  await form.getByLabel("שם הבוטיק").fill("בוטיק של חן");
+  await form.getByLabel("אימייל של בעלת הבוטיק").fill("owner@chen.example");
+  await form.getByLabel("סיסמה ראשונית").fill("first-owner-pw");
 }
 
 test("platform: provisioning appends the row and clears the password", async ({ page }) => {
@@ -178,7 +190,7 @@ test("platform: provisioning appends the row and clears the password", async ({ 
   await expect(page.getByRole("status")).toContainText("הבוטיק הוקם");
   // The console holds no lasting secret: the field is emptied and the done-line
   // never repeats what was typed.
-  await expect(page.getByLabel("סיסמה ראשונית")).toHaveValue("");
+  await expect(provisionForm(page).getByLabel("סיסמה ראשונית")).toHaveValue("");
   await expect(page.getByRole("status")).not.toContainText("first-owner-pw");
   // ⚠ ONE list GET FOR THE WHOLE JOURNEY. Every one writes a TENANTS_LISTED row
   // into the platform's audit book, so a refetch-after-mutation would be visible
@@ -200,7 +212,7 @@ test("platform: a taken slug gets its own sentence and keeps the typed values", 
   await page.getByRole("button", { name: "הקמת בוטיק" }).click();
 
   await expect(page.getByRole("alert")).toHaveText("הכתובת הזו כבר תפוסה.");
-  await expect(page.getByLabel("שם הבוטיק")).toHaveValue("בוטיק של חן");
+  await expect(provisionForm(page).getByLabel("שם הבוטיק")).toHaveValue("בוטיק של חן");
 });
 
 test("platform: a reserved slug is refused client-side before any request", async ({ page }) => {
@@ -392,7 +404,7 @@ test("platform (axe): a filter that matches nothing", async ({ page }) => {
 test("platform (axe): the provision form, including its invalid-slug state", async ({ page }) => {
   await signedIn(page, [BELLA]);
   await axeClean(page, "provision form");
-  await page.getByLabel("כתובת (תת־דומיין)").fill("Not A Slug");
+  await provisionForm(page).getByLabel("כתובת (תת־דומיין)").fill("Not A Slug");
   await expect(page.getByText("הכתובת יכולה להכיל אותיות לטיניות קטנות, ספרות ומקפים בלבד.")).toBeVisible();
   await axeClean(page, "provision form invalid");
 });
