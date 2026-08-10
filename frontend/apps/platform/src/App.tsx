@@ -3,18 +3,32 @@ import { useTranslation } from "react-i18next";
 import { api, onSessionExpired } from "./api";
 import type { Operator } from "./api";
 import { Console } from "./components/Console";
+import { JoinPanel } from "./components/JoinPanel";
 import { LoginPanel } from "./components/LoginPanel";
+
+// F26 D1. The redeemer's screen is served from THIS bundle at a second exact
+// path (`main.py`'s `_serve_file`), because the apex 404s by design, the tenant
+// host does not exist until redemption succeeds, and a new label would cost a
+// fourth workspace app for one form.
+const JOIN_PATH = "/platform/join";
 
 // The manage app's no-client-router pattern: one screen, driven from useState.
 // `GET /platform/auth/me` is the whole bootstrap — 401 renders the login panel,
 // 200 renders the console.
 export function App() {
   const { t } = useTranslation();
+  // ⚠ READ ONCE, AND THE BRANCH IS BEFORE THE BOOTSTRAP. The redeemer is not an
+  // operator and has no session: calling `/platform/auth/me` for her would be a
+  // guaranteed 401 on every load, one pointless round trip on the one screen a
+  // non-operator opens, most likely on a phone. There is no client router, so
+  // the path cannot change under the app.
+  const isJoin = window.location.pathname === JOIN_PATH;
   const [operator, setOperator] = useState<Operator | null>(null);
   const [ready, setReady] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
+    if (isJoin) return;
     let cancelled = false;
     api
       .me()
@@ -32,7 +46,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isJoin]);
 
   // ⚠ A MID-SESSION 401 FLIPS BACK TO THE LOGIN PANEL WITH A CALM LINE, not an
   // error one. The 4h TTL is fixed and nothing slides it, so a working console
@@ -58,6 +72,9 @@ export function App() {
     return () => onSessionExpired(null);
   }, [operator, signOut]);
 
+  // Before the `ready` gate, which the join screen never sets: nothing on this
+  // path waits on the console's bootstrap.
+  if (isJoin) return <JoinPanel />;
   if (!ready) return null;
   if (operator === null) {
     return (

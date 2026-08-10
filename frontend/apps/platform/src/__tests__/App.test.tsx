@@ -104,3 +104,38 @@ describe("the console bootstrap", () => {
     expect(screen.queryByText("ההתחברות הסתיימה. יש להיכנס שוב.")).not.toBeInTheDocument();
   });
 });
+
+describe("the join branch", () => {
+  // F26 D1. The console's bootstrap and the redeemer's screen live in ONE
+  // bundle at two exact paths; the branch is what keeps them from touching.
+  afterEach(() => {
+    window.history.replaceState({}, "", "/platform");
+  });
+
+  it("renders the join panel on /platform/join and NEVER calls me()", async () => {
+    // ⚠ THE ASSERTION THAT MATTERS IS THE ABSENCE. `me()` for a redeemer is a
+    // guaranteed 401 — one pointless round trip on the one screen in this app a
+    // non-operator opens, and a 401 that would arm the session-expired listener
+    // for somebody who never had a session.
+    window.history.replaceState({}, "", "/platform/join");
+    fetchMock.mockResolvedValue(json(200, { tenants: [] }));
+    render(<App />);
+    expect(
+      await screen.findByRole("heading", { name: "הזנת קוד הזמנה", level: 2 }),
+    ).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "כניסה" })).not.toBeInTheDocument();
+  });
+
+  it("still bootstraps normally on /platform", async () => {
+    window.history.replaceState({}, "", "/platform");
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        url === "/platform/auth/me" ? json(200, OPERATOR) : json(200, { tenants: [], invites: [] }),
+      ),
+    );
+    render(<App />);
+    await screen.findByRole("heading", { name: "ניהול הפלטפורמה", level: 1 });
+    expect(fetchMock).toHaveBeenCalledWith("/platform/auth/me", expect.anything());
+  });
+});
