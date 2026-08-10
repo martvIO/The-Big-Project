@@ -122,12 +122,21 @@ export function MyWeekPanel({ elevated }: MyWeekPanelProps) {
   // shipped rescue: a `-1` destination focused in an effect keyed on the state
   // that carries the answer. A `.focus()` on the trigger is a no-op once the
   // trigger is gone.
+  //
+  // ⚠ `week` IS IN THE DEPS AND IT IS THE WHOLE FIX. The refusal sets
+  // `justClosed` and THEN awaits a refetch, so on the render `justClosed` alone
+  // would key, `week` is still the pre-refusal payload with `locked: false` —
+  // the banner is not mounted, `lockedBanner.current` is null, and the guard
+  // silently does nothing. `justClosed` never changes again, so keyed on it
+  // alone the effect never re-runs and focus stays on <body> with every
+  // assertion below it still passing. It must fire on the render that MOUNTS
+  // the destination, which is the one where `week` arrives locked.
   useEffect(() => {
     if (justClosed && lockedBanner.current !== null) {
       lockedBanner.current.focus();
       setJustClosed(false);
     }
-  }, [justClosed]);
+  }, [justClosed, week]);
 
   const step = (weeks: number) => {
     if (week === null) {
