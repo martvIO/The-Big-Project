@@ -17,7 +17,8 @@ against a two-hour window (spec Risk 1, accepted).
    nobody claimed stays locked behind a dead offer until 08:00 and is not even
    directly bookable. D7 decides where the entry lands: `expired` only if its
    offer SMS actually reached `sent`, otherwise back to `waiting`, because the
-   clock does not get to run on a text that never left.
+   clock does not get to run on a text that never left. `waiting` is a
+   DESTINATION, not a rest stop — step 3 below re-offers her in this same tick.
 2. **Quiet gate.** Inside `[21:00, 08:00)` Jerusalem, return. **Quiet hours gate
    the cascade, never the window** — an offer issued at 20:59 keeps its full
    window to 22:59, and extending it across the block would hold a live slot
@@ -75,7 +76,8 @@ OFFER_KIND = ScheduledMessageKind.WAITLIST_OFFER.value
 #
 # She lands in `expired`, not `cancelled`: `expired` is the terminal the manage
 # console already renders, it takes her out of the active-unique predicate so she
-# can rejoin, and the queue behind her advances on the next tick.
+# can rejoin, and the queue behind her advances at step 3 of this same tick —
+# her pair stops holding a live offer the moment step 1 commits.
 _MAX_OFFER_SEND_FAILURES = 3
 
 
@@ -143,6 +145,15 @@ class WaitlistCascade:
                 now, start_hour=self._quiet_start_hour, end_hour=self._quiet_end_hour
             ):
                 return result
+            # ⚠ Step 3 SEES the rows step 1 just put back to `waiting`, and
+            # re-offers them in this same tick. That is D7 arriving, not leaking:
+            # her turn was never consumed, so the FIFO read finds her first again
+            # and she gets a fresh token and a fresh FULL window rather than a
+            # leftover one. Holding her out for a tick would delay her by the
+            # poll interval and change nothing else — the same bride is still
+            # oldest, so the queue behind her does not move either way. The
+            # operator's signal that the provider is broken is `_expire`'s log
+            # line, not a sixty-second flicker of `waiting` in the console.
             return result + await self._issue(session, tenant_id, now)
 
     async def _expire(

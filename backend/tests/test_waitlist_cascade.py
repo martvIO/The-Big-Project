@@ -5,7 +5,10 @@ Two halves, matching D2's two steps:
 
 * **Expiry runs at ALL hours** (D2.1), and D7's rule decides where the entry
   lands: `expired` only if its offer SMS actually reached `sent`, otherwise back
-  to `waiting`. The offer clock does not get to run on a text that never left.
+  to `waiting`. The offer clock does not get to run on a text that never left —
+  and since `run()` is expire-then-issue in ONE transaction, `waiting` is where
+  the expiry puts her, not somewhere she sits: the same tick re-offers her on a
+  fresh token and a fresh full window. What D7 protects is the WINDOW.
 * **The offer write is gated by quiet hours, never the window** (D3). Inside
   `[21:00, 08:00)` nothing is issued; the deadline of an offer issued at 20:59
   falls inside the block and is not extended.
@@ -216,6 +219,17 @@ async def _message(
         row = await SCHEDULED.latest_for_entry(
             session, tenant_id, waitlist_entry_id=entry_id, kind=KIND
         )
+    assert row is not None
+    return row
+
+
+async def _message_by_id(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID, message_id: uuid.UUID
+) -> ScheduledMessage:
+    """By id, because a re-offered entry has TWO rows and `latest_for_entry`
+    answers the new one — the dead offer has to be named to be asserted on."""
+    async with tenant_session(factory, tenant_id) as session:
+        row = await session.get(ScheduledMessage, message_id)
     assert row is not None
     return row
 
@@ -443,16 +457,24 @@ def test_a_sent_offer_that_runs_out_expires(app_role_url: str) -> None:
     _run(check)
 
 
-def test_an_offer_whose_sms_never_left_returns_to_waiting(app_role_url: str) -> None:
+def test_an_offer_whose_sms_never_left_does_not_consume_her_turn(app_role_url: str) -> None:
     """**D7, and the residual it accepts.** With no provider configured the row
     is left `pending` by `drain_due` (F16's rule, unchanged), so the bride was
     never told anything — expiring her would consume a window she never had. She
     goes back to `waiting`, the pending message is cancelled so a late adapter
-    cannot send a text about a dead offer, and the next tick re-offers her.
+    cannot send a text about a dead offer.
 
-    The loop this admits is bounded to ONE entry per window and self-heals on the
-    first tick after the adapter lands; expiring the whole queue unread is
-    strictly worse."""
+    **And step 3 of the SAME tick re-offers her**, which is what "the clock does
+    not run on an unsent SMS" cashes out to: `waiting` is where the expiry puts
+    her, not where she waits. `run()` is expire-then-issue in one transaction
+    (D2), she is still FIFO-oldest, and her pair stops holding a live offer the
+    moment the return commits — so she leaves this tick `offered` again on a
+    fresh token with a fresh FULL window. Asserting she rests in `waiting` would
+    be asserting a poll interval, and it is the WINDOW D7 protects.
+
+    The loop this admits is one entry per window, not per tick, and it
+    self-heals on the first tick after the adapter lands; expiring the whole
+    queue unread is strictly worse."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     later = NOW + datetime.timedelta(seconds=WINDOW_SECONDS)
@@ -462,22 +484,34 @@ def test_an_offer_whose_sms_never_left_returns_to_waiting(app_role_url: str) -> 
             type_id = await _seed(factory, tenant_id)
             entry_id = await _join(factory, tenant_id, type_id)
             assert (await _cascade(factory, NOW).run(tenant_id)).offered == 1
+            first = await _message(factory, tenant_id, entry_id)
 
             result = await _cascade(factory, later).run(tenant_id)
-            assert (result.expired, result.returned) == (0, 1)
+            assert (result.expired, result.returned, result.offered) == (0, 1, 1), (
+                "she did not expire, and the same tick put her back on offer"
+            )
+
+            # The dead offer is properly dead: its text is cancelled, so a late
+            # adapter cannot send a link to a window that has closed.
+            dead = await _message_by_id(factory, tenant_id, first.id)
+            assert dead.status == ScheduledMessageStatus.CANCELLED.value
+            assert dead.manage_token is None, "a cancelled row keeps no live token"
 
             entry = await _entry(factory, tenant_id, entry_id)
-            assert entry.status == WaitlistEntryStatus.WAITING.value
-            assert entry.offer_token_hash is None
-            assert entry.offer_expires_at is None
-            # She holds NOTHING now. Design §4's offer column renders whatever
-            # `offer_starts_at` says, so a survivor shows the owner a hold on a
-            # slot that is free and directly bookable — «ממתינה» beside an
-            # offered instant, with no «בתוקף עד» line under it.
-            assert entry.offer_starts_at is None
-            message = await _message(factory, tenant_id, entry_id)
-            assert message.status == ScheduledMessageStatus.CANCELLED.value
-            assert message.manage_token is None, "a cancelled row keeps no live token"
+            assert entry.status == WaitlistEntryStatus.OFFERED.value
+            assert entry.offer_starts_at == _at(9, 0)
+            # A FULL window from this tick — the one that never left took none
+            # of it with it.
+            assert entry.offer_expires_at == later + datetime.timedelta(seconds=WINDOW_SECONDS)
+            assert entry.offer_token_hash is not None
+
+            reissued = await _message(factory, tenant_id, entry_id)
+            assert reissued.id != first.id
+            assert reissued.status == ScheduledMessageStatus.PENDING.value
+            assert reissued.manage_token is not None
+            assert reissued.manage_token != first.manage_token, (
+                "a re-offer mints a new token — the dead one is not resent"
+            )
         finally:
             await _purge(factory, tenant_id)
             await engine.dispose()
@@ -485,10 +519,14 @@ def test_an_offer_whose_sms_never_left_returns_to_waiting(app_role_url: str) -> 
     _run(check)
 
 
-def test_a_failed_offer_sms_also_returns_to_waiting(app_role_url: str) -> None:
+def test_a_failed_offer_sms_is_answered_the_same_way_as_an_unsent_one(app_role_url: str) -> None:
     """The other failure shape `_deliver` produces — a configured provider that
     refused. Same answer as the unconfigured one, because the question D7 asks is
-    "did it reach `sent`", not "which way did it fail"."""
+    "did it reach `sent`", not "which way did it fail": returned rather than
+    expired, and re-offered on the same tick.
+
+    One refusal, so `_MAX_OFFER_SEND_FAILURES` has no opinion yet — the test
+    below is where the third one ends the loop."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     later = NOW + datetime.timedelta(seconds=WINDOW_SECONDS)
@@ -502,10 +540,10 @@ def test_a_failed_offer_sms_also_returns_to_waiting(app_role_url: str) -> None:
             await _mark(factory, tenant_id, message.id, status=ScheduledMessageStatus.FAILED.value)
 
             result = await _cascade(factory, later).run(tenant_id)
-            assert (result.expired, result.returned) == (0, 1)
-            assert (
-                await _entry(factory, tenant_id, entry_id)
-            ).status == WaitlistEntryStatus.WAITING.value
+            assert (result.expired, result.returned, result.offered) == (0, 1, 1)
+            entry = await _entry(factory, tenant_id, entry_id)
+            assert entry.status == WaitlistEntryStatus.OFFERED.value
+            assert entry.offer_expires_at == later + datetime.timedelta(seconds=WINDOW_SECONDS)
         finally:
             await _purge(factory, tenant_id)
             await engine.dispose()

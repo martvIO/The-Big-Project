@@ -258,7 +258,8 @@ class WaitlistEntriesRepository:
         renders whatever that column says — a survivor is a phantom hold on a
         slot the owner should be booking directly. Her token goes too: it was
         never delivered (that IS D7's condition) and a `waiting` row has no
-        designed page state. The next tick writes both afresh when it re-offers.
+        designed page state. The cascade writes both afresh when it re-offers,
+        which is the offer step of this same tick.
 
         Empty input short-circuits: an UPDATE with `IN ()` is legal but pointless
         and the steady state is empty.
