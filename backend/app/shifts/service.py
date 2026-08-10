@@ -36,17 +36,25 @@ from app.auth.dependencies import NotAuthorizedError
 from app.auth.service import StaffContext
 from app.db.repositories.audit_log import AuditLogRepository
 from app.db.repositories.availability import AvailabilityRulesRepository
+from app.db.repositories.roster_assignments import RosterAssignmentsRepository
+from app.db.repositories.rosters import RostersRepository
 from app.db.repositories.shift_templates import ShiftTemplatesRepository
 from app.db.repositories.staff_availability import StaffAvailabilityRepository
 from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
 from app.errors import DomainNotFoundError
 from app.models.constants import AuditAction, AvailabilityState, StaffRole
+from app.models.roster_assignment import RosterAssignment
 from app.models.shift_template import ShiftTemplate
 from app.models.staff_availability import StaffAvailability
 from app.models.staff_user import StaffUser
 from app.shifts.schemas import (
     AvailabilityEntryResponse,
+    CreateAssignmentRequest,
+    RosterAssignmentResponse,
+    RosterShiftResponse,
+    RosterStaffRefResponse,
+    RosterWeekResponse,
     SeedTemplatesResponse,
     ShiftTemplateInput,
     ShiftTemplateListResponse,
@@ -88,6 +96,12 @@ HEBREW_DAY_NAMES = ("ראשון", "שני", "שלישי", "רביעי", "חמי�
 # typo fix cost other people's answers.
 MATERIAL_FIELDS = ("day_of_week", "starts_at_time", "ends_at_time")
 
+# The partial unique index behind D12. Matched against the driver's own error
+# text so the manager conflict can be told apart from the assignment triple's:
+# one is a genuine 409 and the other is a race worth retrying once, and a
+# handler that could not tell them apart would answer the wrong code for both.
+_MANAGER_INDEX = "idx_roster_assignments_manager_unique"
+
 
 class ShiftNotFoundError(DomainNotFoundError):
     """No live template or staffer by that id for this tenant — including another
@@ -125,6 +139,43 @@ class SubmissionClosedError(Exception):
     """
 
 
+class AvailabilityConflictError(Exception):
+    """F40 D11: she submitted `unavailable` for this shift and the request did not
+    carry `acknowledge_override: true`. 409 `AVAILABILITY_CONFLICT`.
+
+    ⚠ THE ASSIGNMENT IS NOT REFUSED — the ACKNOWLEDGEMENT is. «A real Thursday
+    needs cover regardless of what was submitted on Sunday» is the brief's own
+    sentence and it is right; what D11 buys is that an override is always a
+    second, deliberate act rather than a slip.
+
+    Same non-subclassing rule as its neighbours: a coded error without its own
+    handler answers a quiet, plausible 400 the console has no Hebrew string for.
+    """
+
+
+class NotShiftManagerEligibleError(Exception):
+    """F40 D12: `staff_users.shift_manager_eligible` is false. 400
+    `NOT_SHIFT_MANAGER_ELIGIBLE`.
+
+    ⚠ THE COLUMN ALONE, NEVER `role`. F38 shipped that boolean specifically to
+    separate «may be assigned as shift manager» from «her job is shift manager»,
+    and deriving one from the other deletes the distinction it was created to
+    make. The visible cost is real and accepted: on a fresh boutique NOBODY is
+    eligible and the slot is unfillable until the owner ticks a box on «צוות» —
+    one action, once, versus a permanent silent conflation.
+    """
+
+
+class ShiftManagerSlotTakenError(Exception):
+    """F40 D12: another live assignment on that (roster, shift) already carries
+    the flag. 409 `SHIFT_MANAGER_SLOT_TAKEN`.
+
+    ⚠ RAISED FROM `idx_roster_assignments_manager_unique`'s `IntegrityError`,
+    never from a read that raced. A service that read first and then wrote would
+    let two managers through under exactly the interleaving this exists for.
+    """
+
+
 class NoOpeningHoursError(Exception):
     """D3's other refusal: there is nothing to seed FROM. 409 `NO_OPENING_HOURS`.
 
@@ -145,6 +196,8 @@ class ShiftsService:
         self._sessions = session_factory
         self._templates = ShiftTemplatesRepository()
         self._availability = StaffAvailabilityRepository()
+        self._rosters = RostersRepository()
+        self._assignments = RosterAssignmentsRepository()
         self._rules = AvailabilityRulesRepository()
         self._staff = StaffUsersRepository()
         self._audit = AuditLogRepository()
@@ -614,6 +667,330 @@ class ShiftsService:
             rows=rows,
         )
 
+    # --- F40: the roster ------------------------------------------------------
+
+    async def roster(
+        self,
+        tenant_id: UUID,
+        *,
+        actor: StaffContext,
+        week_start: datetime.date | None = None,
+    ) -> RosterWeekResponse:
+        """The builder's payload — ELEVATED, because it carries every colleague's
+        submitted state (F39's own reason for gating `/shifts/week/submissions`).
+
+        ⚠ `assert_readable_week`, NOT `assert_writable_week`, AND THAT IS THE
+        LIKELIEST BUILD ERROR IN THIS FEATURE. F39's forward-only guard is about
+        SUBMISSIONS; the roster reaches ±4 weeks so a RUNNING week can still be
+        edited (D7) — which is exactly what the same-day override exists NOT to
+        have to substitute for. Every backend test on future weeks passes under
+        the wrong one.
+        """
+        self._assert_elevated(actor)
+        today = today_jerusalem(self._clock)
+        current = current_week_start(today)
+        target = (
+            validate_week_start(week_start) if week_start is not None else default_week_start(today)
+        )
+        assert_readable_week(target, current=current)
+        ends_on = week_end(target)
+        async with tenant_session(self._sessions, tenant_id) as session:
+            templates = await self._templates.list_live(session, tenant_id)
+            staff = [
+                row
+                for row in await self._staff.list_live(session, tenant_id)
+                if is_available_for_week(row, week_end_date=ends_on)
+            ]
+            entries = await self._availability.live_for_week(session, tenant_id, week_start=target)
+            roster = await self._rosters.by_week(session, tenant_id, target)
+            assignments = (
+                []
+                if roster is None
+                else await self._assignments.by_roster(session, tenant_id, roster.id)
+            )
+            published_by_name = None
+            edited = False
+            if roster is not None and roster.published_at is not None:
+                # ⚠ THE SAME PREDICATE PUBLISH'S NO-OP BRANCH USES. Two
+                # implementations of «has the set moved since the stamp» is two
+                # answers to one question — the header saying «בוצעו שינויים מאז
+                # הפרסום» while publish refuses to write, or the reverse.
+                edited = await self._assignments.changed_since(
+                    session, tenant_id, roster.id, roster.published_at
+                )
+                if roster.published_by is not None:
+                    row = await self._staff.by_id(session, tenant_id, roster.published_by)
+                    published_by_name = None if row is None else row.display_name
+
+        staff_by_id = {row.id: row for row in staff}
+        return RosterWeekResponse(
+            week_start=target,
+            week_end=ends_on,
+            published_at=None if roster is None else roster.published_at,
+            published_by_name=published_by_name,
+            edited_since_publish=edited,
+            shifts=[
+                self._shift_response(template, assignments, staff_by_id) for template in templates
+            ],
+            staff=[self._staff_ref(row, entries) for row in staff],
+        )
+
+    async def assign(
+        self, tenant_id: UUID, *, actor: StaffContext, body: CreateAssignmentRequest
+    ) -> RosterShiftResponse:
+        """D11/D12's write, and an UPSERT on the live `(roster, template, staffer)`
+        triple (design F-2) — so it answers 200 on both paths.
+
+        ⚠ RETRIED EXACTLY ONCE ON THE TRIPLE'S `IntegrityError`, F39's shipped
+        optimistic shape: two devices assigning the same woman at the same moment
+        both see no live row and both INSERT, and the loser's transaction is then
+        unusable, so the retry runs in a FRESH `tenant_session` and finds the row.
+        NO ADVISORY LOCK — a tenant-wide key is far too coarse for a per-tap
+        write, and the index is a structural guarantee where the lock would only
+        be a serialisation.
+
+        ⚠ THE MANAGER INDEX'S `IntegrityError` IS NOT RETRIED. It is a genuine
+        conflict — somebody else holds that shift's slot — and retrying would
+        answer 409 one round-trip later having written nothing either way.
+        """
+        self._assert_elevated(actor)
+        current = current_week_start(today_jerusalem(self._clock))
+        validate_week_start(body.week_start)
+        assert_readable_week(body.week_start, current=current)
+        try:
+            return await self._apply_assignment(tenant_id, actor=actor, body=body)
+        except IntegrityError as exc:
+            if _MANAGER_INDEX in str(exc.orig):
+                raise ShiftManagerSlotTakenError from None
+            return await self._apply_assignment(tenant_id, actor=actor, body=body)
+
+    async def _apply_assignment(
+        self, tenant_id: UUID, *, actor: StaffContext, body: CreateAssignmentRequest
+    ) -> RosterShiftResponse:
+        async with tenant_session(self._sessions, tenant_id) as session:
+            template = await self._templates.by_id(session, tenant_id, body.shift_template_id)
+            if template is None:
+                raise ShiftNotFoundError
+            staffer = await self._staff.by_id(session, tenant_id, body.staff_user_id)
+            if staffer is None or not is_available_for_week(
+                staffer, week_end_date=week_end(body.week_start)
+            ):
+                raise ShiftNotFoundError
+            assert_manager_eligible(staffer, is_shift_manager=body.is_shift_manager)
+
+            roster = await self._rosters.by_week(session, tenant_id, body.week_start)
+            if roster is None:
+                # Created lazily by the FIRST assignment, IN THIS TRANSACTION, so
+                # an owner who opens the builder and closes it leaves no row.
+                roster = await self._rosters.create(
+                    session, tenant_id=tenant_id, week_start=body.week_start
+                )
+            live = await self._assignments.live_for_triple(
+                session,
+                tenant_id,
+                roster_id=roster.id,
+                shift_template_id=template.id,
+                staff_user_id=staffer.id,
+            )
+            if live is not None:
+                # ⚠ THE UPSERT MOVES `is_shift_manager` AND NOTHING ELSE.
+                # `override_of_state` is the stamp from ASSIGNMENT time (design
+                # F-5) and re-deriving it here would erase the record of what the
+                # owner knowingly did — or invent one she never made.
+                if live.is_shift_manager != body.is_shift_manager:
+                    await self._assignments.set_manager_flag(
+                        session, tenant_id, live.id, is_shift_manager=body.is_shift_manager
+                    )
+                    await self._audit_assignment(
+                        session,
+                        tenant_id=tenant_id,
+                        actor=actor,
+                        assignment_id=live.id,
+                        week_start=body.week_start,
+                        template_id=template.id,
+                        staff_user_id=staffer.id,
+                        is_shift_manager=body.is_shift_manager,
+                        override_of_state=live.override_of_state,
+                    )
+                # else: a write that changes nothing writes no audit row.
+            else:
+                submitted = await self._availability.live_for_week(
+                    session,
+                    tenant_id,
+                    week_start=body.week_start,
+                    staff_user_id=staffer.id,
+                )
+                state = next(
+                    (row.state for row in submitted if row.shift_template_id == template.id),
+                    None,
+                )
+                override = override_stamp(state, acknowledged=body.acknowledge_override)
+                row = await self._assignments.insert(
+                    session,
+                    tenant_id=tenant_id,
+                    roster_id=roster.id,
+                    shift_template_id=template.id,
+                    staff_user_id=staffer.id,
+                    assigned_by=actor.id,
+                    is_shift_manager=body.is_shift_manager,
+                    override_of_state=override,
+                )
+                await self._audit_assignment(
+                    session,
+                    tenant_id=tenant_id,
+                    actor=actor,
+                    assignment_id=row.id,
+                    week_start=body.week_start,
+                    template_id=template.id,
+                    staff_user_id=staffer.id,
+                    is_shift_manager=body.is_shift_manager,
+                    override_of_state=override,
+                )
+            return await self._shift_payload(session, tenant_id, template, roster.id)
+
+    async def unassign(
+        self, tenant_id: UUID, *, actor: StaffContext, assignment_id: UUID
+    ) -> RosterShiftResponse:
+        """Soft delete, and it answers the affected shift so the pane patches one
+        block in place rather than refetching a week."""
+        self._assert_elevated(actor)
+        async with tenant_session(self._sessions, tenant_id) as session:
+            removed = await self._assignments.soft_delete(session, tenant_id, assignment_id)
+            if removed is None:
+                raise ShiftNotFoundError
+            roster = await self._rosters.by_id(session, tenant_id, removed.roster_id)
+            template = await self._templates.by_id(session, tenant_id, removed.shift_template_id)
+            if roster is None or template is None:
+                raise ShiftNotFoundError
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.ROSTER_UNASSIGNED.value,
+                actor_id=actor.id,
+                entity=str(assignment_id),
+                details={
+                    "week_start": roster.week_start.isoformat(),
+                    "shift_template_id": str(removed.shift_template_id),
+                    "staff_user_id": str(removed.staff_user_id),
+                    "is_shift_manager": removed.is_shift_manager,
+                },
+            )
+            return await self._shift_payload(session, tenant_id, template, roster.id)
+
+    async def _audit_assignment(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: UUID,
+        actor: StaffContext,
+        assignment_id: UUID,
+        week_start: datetime.date,
+        template_id: UUID,
+        staff_user_id: UUID,
+        is_shift_manager: bool,
+        override_of_state: str | None,
+    ) -> None:
+        """⚠ IDS AND FLAGS ONLY, NEVER A DISPLAY NAME (`CUSTOMER_UPDATED`'s rule):
+        `audit_log` has no retention class and platform operators read across
+        tenants."""
+        await self._audit.record(
+            session,
+            tenant_id=tenant_id,
+            action=AuditAction.ROSTER_ASSIGNED.value,
+            actor_id=actor.id,
+            entity=str(assignment_id),
+            details={
+                "week_start": week_start.isoformat(),
+                "shift_template_id": str(template_id),
+                "staff_user_id": str(staff_user_id),
+                "is_shift_manager": is_shift_manager,
+                "override_of_state": override_of_state,
+            },
+        )
+
+    async def _shift_payload(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        template: ShiftTemplate,
+        roster_id: UUID,
+    ) -> RosterShiftResponse:
+        """⚠ ONE SHIFT, NEVER THE WHOLE WEEK (plan §0.1). A whole-week payload per
+        tap breaks under the pane's deliberate per-control concurrency: two writes
+        in flight from one dialog, the earlier-issued response arriving second,
+        and the later assignment silently lost."""
+        assignments = await self._assignments.by_roster(session, tenant_id, roster_id)
+        staff_by_id = {row.id: row for row in await self._staff.list_live(session, tenant_id)}
+        return self._shift_response(template, assignments, staff_by_id)
+
+    @staticmethod
+    def _shift_response(
+        template: ShiftTemplate,
+        assignments: list[RosterAssignment],
+        staff_by_id: dict[UUID, StaffUser],
+    ) -> RosterShiftResponse:
+        """⚠ AN ASSIGNMENT WHOSE STAFFER HAS BEEN OFFBOARDED IS DROPPED rather
+        than rendered nameless — F39's `submissions` rule, and for its reason: a
+        name on this list is a name the owner would roster."""
+        rows = [
+            row
+            for row in assignments
+            if row.shift_template_id == template.id and row.staff_user_id in staff_by_id
+        ]
+        assigned_by_role: dict[str, int] = {}
+        for row in rows:
+            role = staff_by_id[row.staff_user_id].role
+            assigned_by_role[role] = assigned_by_role.get(role, 0) + 1
+        return RosterShiftResponse(
+            template=ShiftsService._template_response(template, None),
+            assignments=[
+                RosterAssignmentResponse(
+                    id=row.id,
+                    staff_user_id=row.staff_user_id,
+                    display_name=staff_by_id[row.staff_user_id].display_name,
+                    role=staff_by_id[row.staff_user_id].role,
+                    is_shift_manager=row.is_shift_manager,
+                    override_of_state=(
+                        None
+                        if row.override_of_state is None
+                        else AvailabilityState(row.override_of_state)
+                    ),
+                )
+                for row in rows
+            ],
+            coverage_targets=dict(template.coverage_targets),
+            assigned_by_role=assigned_by_role,
+        )
+
+    @staticmethod
+    def _staff_ref(row: StaffUser, entries: list[StaffAvailability]) -> RosterStaffRefResponse:
+        return RosterStaffRefResponse(
+            id=row.id,
+            display_name=row.display_name,
+            role=row.role,
+            shift_manager_eligible=row.shift_manager_eligible,
+            # An ABSENT key is «not answered» (D8). There is no fourth state.
+            states={
+                str(entry.shift_template_id): AvailabilityState(entry.state)
+                for entry in entries
+                if entry.staff_user_id == row.id
+            },
+        )
+
+    @staticmethod
+    def _assert_elevated(actor: StaffContext) -> None:
+        """C4/D13: build, publish and the same-day override are ALL elevated, and
+        none of them is owner-only. A shift manager who may assign but not publish
+        has built a roster nobody can see, and this console has no
+        submit-for-approval concept to give her.
+
+        The router carries the same gate; this is the repositories' redundant
+        `tenant_id` predicate applied to authorization — a second, agreeing guard
+        that makes the 403 provable with no HTTP in the way.
+        """
+        if actor.role not in ELEVATED_ROLES:
+            raise NotAuthorizedError
+
     # --- shared --------------------------------------------------------------
 
     def _deadline(
@@ -728,6 +1105,44 @@ def plan_week_write(
     ]
     cleared = [template_id for template_id in existing if template_id not in requested]
     return changed, cleared
+
+
+def assert_manager_eligible(staffer: StaffUser, *, is_shift_manager: bool) -> None:
+    """D12's gate, as a total function so the whole of it is provable with no
+    database in the way.
+
+    ⚠ `shift_manager_eligible` ALONE, AND NEVER `role`. F38 shipped the boolean
+    specifically to separate «may be assigned as shift manager» from «her job is
+    shift manager» (F38 O4 hands the enforcement here), so a `seamstress` whose
+    column is true IS eligible and a `shift_manager` whose column is false is
+    NOT. Deriving one from the other deletes the distinction the column was
+    created to make, and the deletion is invisible until the day a boutique has
+    a shift manager it does not want running a Saturday.
+    """
+    if is_shift_manager and not staffer.shift_manager_eligible:
+        raise NotShiftManagerEligibleError
+
+
+def override_stamp(submitted_state: str | None, *, acknowledged: bool) -> str | None:
+    """What `roster_assignments.override_of_state` gets, if anything (D11).
+
+    Exactly three outcomes, and the middle one is the feature:
+
+        she said `unavailable`, acknowledged      -> stamp it
+        she said `unavailable`, NOT acknowledged  -> 409, nothing written
+        anything else, INCLUDING no answer at all -> None
+
+    ⚠ NOT-ANSWERED IS NOT AN OVERRIDE (D8's absence-is-not-a-state). A staffer
+    with no `staff_availability` row assigns with no ceremony; so does one who
+    said `available` or `preferred`. F39 O2 leaves the preferred cap to F40 and
+    F40 declines to impose one — a boutique that wants everyone's preferred shift
+    honoured does not need the platform to count for it.
+    """
+    if submitted_state != AvailabilityState.UNAVAILABLE.value:
+        return None
+    if not acknowledged:
+        raise AvailabilityConflictError
+    return submitted_state
 
 
 def is_available_for_week(staffer: StaffUser, *, week_end_date: datetime.date) -> bool:

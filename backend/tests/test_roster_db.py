@@ -33,12 +33,24 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from app.auth.dependencies import NotAuthorizedError
+from app.auth.service import StaffContext
 from app.db.repositories.roster_assignments import RosterAssignmentsRepository
 from app.db.repositories.rosters import RostersRepository
 from app.db.repositories.shift_templates import ShiftTemplatesRepository
+from app.db.repositories.staff_availability import StaffAvailabilityRepository
+from app.db.repositories.staff_users import StaffUsersRepository
 from app.db.tenant import tenant_session
-from app.models.constants import AvailabilityState
-from app.shifts.validation import current_week_start, jerusalem_moment
+from app.models.constants import AvailabilityState, StaffRole
+from app.shifts.schemas import CreateAssignmentRequest
+from app.shifts.service import (
+    AvailabilityConflictError,
+    NotShiftManagerEligibleError,
+    ShiftManagerSlotTakenError,
+    ShiftNotFoundError,
+    ShiftsService,
+)
+from app.shifts.validation import WeekOutOfRangeError, current_week_start, jerusalem_moment
 
 pytestmark = pytest.mark.db
 
@@ -665,3 +677,539 @@ async def test_two_concurrent_manager_writes_leave_exactly_one(app_role_url: str
         async with tenant_session(factory, tenant_id) as session:
             rows = await RosterAssignmentsRepository().by_roster(session, tenant_id, roster_id)
             assert [row.is_shift_manager for row in rows] == [True]
+
+
+# --- the service, end to end through real rows --------------------------------
+
+
+def _service(factory: async_sessionmaker[AsyncSession]) -> ShiftsService:
+    return ShiftsService(factory, clock=lambda: AT)
+
+
+def _actor(tenant_id: uuid.UUID, staff_id: uuid.UUID, role: str) -> StaffContext:
+    return StaffContext(
+        id=staff_id,
+        tenant_id=tenant_id,
+        email="owner@bella.example",
+        display_name="בעלת הבוטיק",
+        role=role,
+    )
+
+
+async def _staff(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    *,
+    role: str = StaffRole.SALES_ASSISTANT.value,
+    eligible: bool = False,
+    display_name: str = "דנה כהן",
+    last_day: datetime.date | None = None,
+    deleted: bool = False,
+) -> uuid.UUID:
+    repo = StaffUsersRepository()
+    async with tenant_session(factory, tenant_id) as session:
+        row = await repo.insert(
+            session,
+            tenant_id=tenant_id,
+            email=f"{uuid.uuid4().hex[:10]}@bella.example",
+            password_hash="not-a-real-hash",
+            display_name=display_name,
+            role=role,
+        )
+        row.shift_manager_eligible = eligible
+        row.last_day = last_day
+        staff_id = row.id
+    if deleted:
+        async with tenant_session(factory, tenant_id) as session:
+            # F38's offboarding sets `last_day` and `deleted_at` in ONE
+            # transaction, which is why the repository takes both.
+            await repo.soft_delete(session, tenant_id, staff_id, last_day=LOCAL_DATE)
+    return staff_id
+
+
+async def _submit(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    *,
+    staff_user_id: uuid.UUID,
+    template_id: uuid.UUID,
+    state: AvailabilityState,
+    week: datetime.date = WEEK,
+) -> None:
+    async with tenant_session(factory, tenant_id) as session:
+        await StaffAvailabilityRepository().set_state(
+            session,
+            tenant_id=tenant_id,
+            staff_user_id=staff_user_id,
+            shift_template_id=template_id,
+            week_start=week,
+            state=state.value,
+            recorded_by=None,
+        )
+
+
+async def _audit_actions(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID
+) -> list[tuple[str, dict[str, object]]]:
+    async with tenant_session(factory, tenant_id) as session:
+        rows = (
+            await session.execute(
+                text("SELECT action, details FROM audit_log ORDER BY created_at, action")
+            )
+        ).all()
+        return [(str(row[0]), dict(row[1] or {})) for row in rows]
+
+
+async def test_the_first_assignment_creates_the_roster_row_in_the_same_transaction(
+    app_role_url: str,
+) -> None:
+    """D5's row is created lazily by the FIRST write, in that write's own
+    transaction — so an owner who opens the builder and closes it leaves nothing
+    behind, and a failed assignment leaves no orphan week either."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert await RostersRepository().by_week(session, tenant_id, WEEK) is None
+
+        shift = await service.assign(
+            tenant_id,
+            actor=_actor(tenant_id, owner, StaffRole.OWNER.value),
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+            ),
+        )
+        assert [row.staff_user_id for row in shift.assignments] == [her]
+
+        async with tenant_session(factory, tenant_id) as session:
+            roster = await RostersRepository().by_week(session, tenant_id, WEEK)
+            assert roster is not None
+            assert roster.published_at is None
+
+
+async def test_a_failed_assignment_leaves_neither_the_roster_nor_the_row(
+    app_role_url: str,
+) -> None:
+    """The other half of «same transaction»: the `AVAILABILITY_CONFLICT` refusal
+    happens AFTER the roster row is created in that transaction, so the rollback
+    has to take it with it — otherwise a boutique that never confirms an override
+    accumulates empty published-nothing weeks."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        await _submit(
+            factory,
+            tenant_id,
+            staff_user_id=her,
+            template_id=template_id,
+            state=AvailabilityState.UNAVAILABLE,
+        )
+        service = _service(factory)
+
+        with pytest.raises(AvailabilityConflictError):
+            await service.assign(
+                tenant_id,
+                actor=_actor(tenant_id, owner, StaffRole.OWNER.value),
+                body=CreateAssignmentRequest(
+                    week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+                ),
+            )
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert await RostersRepository().by_week(session, tenant_id, WEEK) is None
+
+
+async def test_an_acknowledged_override_stamps_the_row_and_the_audit_entry(
+    app_role_url: str,
+) -> None:
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id, display_name="מיכל ברזילי")
+        await _submit(
+            factory,
+            tenant_id,
+            staff_user_id=her,
+            template_id=template_id,
+            state=AvailabilityState.UNAVAILABLE,
+        )
+        service = _service(factory)
+
+        shift = await service.assign(
+            tenant_id,
+            actor=_actor(tenant_id, owner, StaffRole.OWNER.value),
+            body=CreateAssignmentRequest(
+                week_start=WEEK,
+                shift_template_id=template_id,
+                staff_user_id=her,
+                acknowledge_override=True,
+            ),
+        )
+        assert [row.override_of_state for row in shift.assignments] == [
+            AvailabilityState.UNAVAILABLE
+        ]
+
+        actions = await _audit_actions(factory, tenant_id)
+        assigned = [details for action, details in actions if action == "roster_assigned"]
+        assert len(assigned) == 1
+        assert assigned[0]["override_of_state"] == AvailabilityState.UNAVAILABLE.value
+        # ⚠ IDS ONLY, NEVER A DISPLAY NAME: audit_log has no retention class and
+        # platform operators read across tenants.
+        assert "מיכל ברזילי" not in str(assigned[0])
+
+
+async def test_the_upsert_moves_the_manager_flag_and_leaves_the_override_stamp(
+    app_role_url: str,
+) -> None:
+    """Design F-2: without the UPSERT, «make Dana the manager» costs a DELETE and
+    a POST — two audit rows, a window in which she is not on the shift at all,
+    and the silent loss of her `override_of_state` stamp."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id, eligible=True)
+        await _submit(
+            factory,
+            tenant_id,
+            staff_user_id=her,
+            template_id=template_id,
+            state=AvailabilityState.UNAVAILABLE,
+        )
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK,
+                shift_template_id=template_id,
+                staff_user_id=her,
+                acknowledge_override=True,
+            ),
+        )
+        # ⚠ The second call carries NO `acknowledge_override` and must still
+        # succeed: the live row is not re-derived, only its flag moves.
+        shift = await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK,
+                shift_template_id=template_id,
+                staff_user_id=her,
+                is_shift_manager=True,
+            ),
+        )
+        assert len(shift.assignments) == 1
+        assert shift.assignments[0].is_shift_manager is True
+        assert shift.assignments[0].override_of_state == AvailabilityState.UNAVAILABLE
+
+
+async def test_an_upsert_that_changes_nothing_writes_no_audit_row(app_role_url: str) -> None:
+    """The shipped no-op rule. A row asserting otherwise names an act nobody
+    performed, and «who put whom on which shift» is exactly the question this
+    table gets asked."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+        body = CreateAssignmentRequest(
+            week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+        )
+
+        await service.assign(tenant_id, actor=actor, body=body)
+        await service.assign(tenant_id, actor=actor, body=body)
+
+        actions = [action for action, _ in await _audit_actions(factory, tenant_id)]
+        assert actions.count("roster_assigned") == 1
+
+
+async def test_an_offboarded_staffer_is_absent_from_the_builder_and_is_a_404(
+    app_role_url: str,
+) -> None:
+    """D10's rule reaching F40: a name on this list is a name the owner would
+    roster, so a woman who has left is neither offered nor assignable."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        gone = await _staff(factory, tenant_id, deleted=True)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        week = await service.roster(tenant_id, actor=actor, week_start=WEEK)
+        assert gone not in [row.id for row in week.staff]
+
+        with pytest.raises(ShiftNotFoundError):
+            await service.assign(
+                tenant_id,
+                actor=actor,
+                body=CreateAssignmentRequest(
+                    week_start=WEEK, shift_template_id=template_id, staff_user_id=gone
+                ),
+            )
+
+
+async def test_the_running_week_and_the_four_behind_it_are_readable_and_writable(
+    app_role_url: str,
+) -> None:
+    """⚠ R-F's guard, end to end. `assert_writable_week` is forward-only and would
+    make a RUNNING week un-editable — which is exactly what D7 permits and what
+    the same-day override exists NOT to have to substitute for. Every test on a
+    future week passes under the wrong helper, so this one names the current week
+    and the four behind it."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        for weeks_back in range(5):
+            week = WEEK - datetime.timedelta(days=7 * weeks_back)
+            template_id = await _template(factory, tenant_id, day_of_week=weeks_back)
+            payload = await service.roster(tenant_id, actor=actor, week_start=week)
+            assert payload.week_start == week
+            shift = await service.assign(
+                tenant_id,
+                actor=actor,
+                body=CreateAssignmentRequest(
+                    week_start=week, shift_template_id=template_id, staff_user_id=her
+                ),
+            )
+            assert len(shift.assignments) == 1
+
+
+async def test_a_week_beyond_the_window_is_refused(app_role_url: str) -> None:
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+        with pytest.raises(WeekOutOfRangeError):
+            await service.roster(
+                tenant_id, actor=actor, week_start=WEEK + datetime.timedelta(days=7 * 5)
+            )
+
+
+async def test_a_non_sunday_week_is_refused_by_the_db_check_with_the_guard_removed(
+    app_role_url: str,
+) -> None:
+    """⚠ THE SERVICE GUARD IS NOT THE ONLY GUARD. Written as a raw INSERT so the
+    service's `validate_week_start` is genuinely out of the way — the same shape
+    `test_shifts_db.py` drives for `staff_availability`."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        with pytest.raises(IntegrityError):
+            async with tenant_session(factory, tenant_id) as session:
+                await session.execute(
+                    text("INSERT INTO rosters (tenant_id, week_start) VALUES (:t, :w)"),
+                    {"t": tenant_id, "w": WEEK + datetime.timedelta(days=1)},
+                )
+
+
+async def test_the_builder_read_carries_every_state_and_the_eligibility_flag(
+    app_role_url: str,
+) -> None:
+    """The payload the dialog sorts on. An ABSENT key is «not answered» and there
+    is no fourth state (D8)."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        morning = await _template(factory, tenant_id)
+        evening = await _template(
+            factory, tenant_id, starts=datetime.time(14, 0), ends=datetime.time(20, 0)
+        )
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        eligible = await _staff(factory, tenant_id, eligible=True, display_name="שירה לוי")
+        quiet = await _staff(factory, tenant_id, display_name="נועה כץ")
+        await _submit(
+            factory,
+            tenant_id,
+            staff_user_id=eligible,
+            template_id=morning,
+            state=AvailabilityState.PREFERRED,
+        )
+        service = _service(factory)
+
+        week = await service.roster(
+            tenant_id, actor=_actor(tenant_id, owner, StaffRole.OWNER.value), week_start=WEEK
+        )
+        refs = {row.id: row for row in week.staff}
+        assert refs[eligible].shift_manager_eligible is True
+        assert refs[quiet].shift_manager_eligible is False
+        assert refs[eligible].states == {str(morning): AvailabilityState.PREFERRED}
+        # Absence, not a fourth state.
+        assert refs[quiet].states == {}
+        assert str(evening) not in refs[eligible].states
+        assert [shift.template.id for shift in week.shifts] == [morning, evening]
+        assert week.published_at is None
+        assert week.edited_since_publish is False
+
+
+async def test_removing_an_assignment_answers_the_shift_and_audits_the_removal(
+    app_role_url: str,
+) -> None:
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        shift = await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+            ),
+        )
+        assignment_id = shift.assignments[0].id
+
+        after = await service.unassign(tenant_id, actor=actor, assignment_id=assignment_id)
+        assert after.assignments == []
+        assert after.template.id == template_id
+
+        actions = [action for action, _ in await _audit_actions(factory, tenant_id)]
+        assert actions.count("roster_unassigned") == 1
+
+        with pytest.raises(ShiftNotFoundError):
+            await service.unassign(tenant_id, actor=actor, assignment_id=assignment_id)
+
+
+async def test_the_shift_payload_counts_assignments_by_role(app_role_url: str) -> None:
+    """`assigned_by_role` is SERVER-computed so the pane's coverage line and the
+    server's own shortage count in the publish audit row cannot disagree."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+        for role in (
+            StaffRole.SALES_ASSISTANT.value,
+            StaffRole.SALES_ASSISTANT.value,
+            StaffRole.SEAMSTRESS.value,
+        ):
+            her = await _staff(factory, tenant_id, role=role)
+            shift = await service.assign(
+                tenant_id,
+                actor=actor,
+                body=CreateAssignmentRequest(
+                    week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+                ),
+            )
+        assert shift.assigned_by_role == {"sales_assistant": 2, "seamstress": 1}
+        assert shift.coverage_targets == {}
+
+
+@pytest.mark.parametrize(
+    "role",
+    [StaffRole.RECEPTION.value, StaffRole.SALES_ASSISTANT.value, StaffRole.SEAMSTRESS.value],
+)
+async def test_a_non_elevated_actor_is_refused_every_roster_verb(
+    app_role_url: str, role: str
+) -> None:
+    """C4/D13 through the service, over real rows: nothing here is owner-only and
+    nothing here is open."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        her = await _staff(factory, tenant_id, role=role)
+        service = _service(factory)
+        actor = _actor(tenant_id, her, role)
+
+        with pytest.raises(NotAuthorizedError):
+            await service.roster(tenant_id, actor=actor, week_start=WEEK)
+        with pytest.raises(NotAuthorizedError):
+            await service.assign(
+                tenant_id,
+                actor=actor,
+                body=CreateAssignmentRequest(
+                    week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+                ),
+            )
+        with pytest.raises(NotAuthorizedError):
+            await service.unassign(tenant_id, actor=actor, assignment_id=uuid.uuid4())
+
+
+async def test_a_shift_manager_may_build_the_roster(app_role_url: str) -> None:
+    """C4: a shift manager who may assign but not publish has built a roster
+    nobody can see, and this console has no submit-for-approval concept."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        manager = await _staff(factory, tenant_id, role=StaffRole.SHIFT_MANAGER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, manager, StaffRole.SHIFT_MANAGER.value)
+
+        await service.roster(tenant_id, actor=actor, week_start=WEEK)
+        shift = await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+            ),
+        )
+        assert len(shift.assignments) == 1
+
+
+async def test_the_manager_slot_refuses_an_ineligible_staffer_and_a_second_holder(
+    app_role_url: str,
+) -> None:
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        eligible = await _staff(factory, tenant_id, eligible=True)
+        also_eligible = await _staff(factory, tenant_id, eligible=True)
+        ineligible = await _staff(factory, tenant_id, role=StaffRole.SHIFT_MANAGER.value)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        with pytest.raises(NotShiftManagerEligibleError):
+            await service.assign(
+                tenant_id,
+                actor=actor,
+                body=CreateAssignmentRequest(
+                    week_start=WEEK,
+                    shift_template_id=template_id,
+                    staff_user_id=ineligible,
+                    is_shift_manager=True,
+                ),
+            )
+
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK,
+                shift_template_id=template_id,
+                staff_user_id=eligible,
+                is_shift_manager=True,
+            ),
+        )
+        # ⚠ 409 FROM THE PARTIAL UNIQUE INDEX, not from a read that raced.
+        with pytest.raises(ShiftManagerSlotTakenError):
+            await service.assign(
+                tenant_id,
+                actor=actor,
+                body=CreateAssignmentRequest(
+                    week_start=WEEK,
+                    shift_template_id=template_id,
+                    staff_user_id=also_eligible,
+                    is_shift_manager=True,
+                ),
+            )

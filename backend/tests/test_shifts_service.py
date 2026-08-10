@@ -17,12 +17,22 @@ from app.shifts.service import (
     ELEVATED_ROLES,
     HEBREW_DAY_NAMES,
     MATERIAL_FIELDS,
+    AvailabilityConflictError,
+    NotShiftManagerEligibleError,
     ShiftsService,
     _state_counts,
+    assert_manager_eligible,
     is_available_for_week,
     is_material_edit,
+    override_stamp,
     plan_week_write,
     seed_label,
+)
+from app.shifts.validation import (
+    WeekOutOfRangeError,
+    assert_readable_week,
+    assert_writable_week,
+    current_week_start,
 )
 
 
@@ -270,3 +280,112 @@ def test_the_state_counts_name_every_member_including_the_zeroes() -> None:
     counts = _state_counts([AvailabilityState.AVAILABLE, AvailabilityState.AVAILABLE])
     assert counts == {"available": 2, "unavailable": 0, "preferred": 0}
     assert set(counts) == {member.value for member in AvailabilityState}
+
+
+# --- F40: the roster's total functions ---------------------------------------
+
+
+def _roster_staffer(*, role: str, eligible: bool) -> StaffUser:
+    return StaffUser(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        email="dana@bella.example",
+        password_hash="x",
+        display_name="דנה",
+        role=role,
+        shift_manager_eligible=eligible,
+    )
+
+
+@pytest.mark.parametrize("role", [member.value for member in StaffRole])
+def test_only_an_elevated_actor_may_touch_the_roster(role: str) -> None:
+    """⚠ THE MATRIX, ALL FIVE ROLES, over every roster verb — build, publish and
+    the same-day override are ALL elevated and NONE is owner-only (C4/D13). A
+    shift manager who may assign but not publish has built a roster nobody can
+    see, and this console has no submit-for-approval concept to give her.
+
+    Putting any of these in `OWNER_ONLY` is the one edit that would silently make
+    D13 false, which is why this asserts the predicate rather than a route.
+    """
+    actor = _actor(role, uuid.uuid4())
+    if role in ELEVATED_ROLES:
+        ShiftsService._assert_elevated(actor)
+    else:
+        with pytest.raises(NotAuthorizedError):
+            ShiftsService._assert_elevated(actor)
+
+
+def test_an_eligible_seamstress_may_hold_the_manager_slot() -> None:
+    """⚠ D12'S WHOLE POINT, and the assertion that dies the moment somebody
+    derives eligibility from `role`. `shift_manager_eligible` is a claim about
+    the PERSON and `role` is a claim about her JOB — F38 shipped the boolean
+    precisely to keep them apart."""
+    assert_manager_eligible(
+        _roster_staffer(role=StaffRole.SEAMSTRESS.value, eligible=True), is_shift_manager=True
+    )
+
+
+def test_a_shift_manager_whose_column_is_false_is_refused() -> None:
+    """The mirror, and the one a role-derived implementation would let through."""
+    with pytest.raises(NotShiftManagerEligibleError):
+        assert_manager_eligible(
+            _roster_staffer(role=StaffRole.SHIFT_MANAGER.value, eligible=False),
+            is_shift_manager=True,
+        )
+
+
+def test_an_owner_whose_column_is_false_is_refused_too() -> None:
+    """The visible cost D12 accepts by name: on a fresh boutique NOBODY is
+    eligible, including the owner, and the pane says so with a line pointing at
+    «צוות» — one action, once, versus a permanent silent conflation."""
+    with pytest.raises(NotShiftManagerEligibleError):
+        assert_manager_eligible(
+            _roster_staffer(role=StaffRole.OWNER.value, eligible=False), is_shift_manager=True
+        )
+
+
+@pytest.mark.parametrize("role", [member.value for member in StaffRole])
+def test_an_ordinary_assignment_never_consults_eligibility(role: str) -> None:
+    """The gate is on the SLOT, not on the shift. Every role may be rostered."""
+    assert_manager_eligible(_roster_staffer(role=role, eligible=False), is_shift_manager=False)
+
+
+def test_assigning_against_unavailable_without_acknowledgement_is_refused() -> None:
+    """D11: an override is always a SECOND, DELIBERATE ACT, never a slip."""
+    with pytest.raises(AvailabilityConflictError):
+        override_stamp(AvailabilityState.UNAVAILABLE.value, acknowledged=False)
+
+
+def test_an_acknowledged_override_is_stamped_on_the_row() -> None:
+    assert (
+        override_stamp(AvailabilityState.UNAVAILABLE.value, acknowledged=True)
+        == AvailabilityState.UNAVAILABLE.value
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [None, AvailabilityState.AVAILABLE.value, AvailabilityState.PREFERRED.value],
+    ids=["not answered", "available", "preferred"],
+)
+def test_every_other_answer_assigns_with_no_ceremony(state: str | None) -> None:
+    """⚠ NOT-ANSWERED IS NOT AN OVERRIDE (D8's absence-is-not-a-state), and
+    neither `available` nor `preferred` is. F39 O2 leaves the preferred cap to
+    F40 and F40 declines to impose one."""
+    for acknowledged in (True, False):
+        assert override_stamp(state, acknowledged=acknowledged) is None
+
+
+def test_the_roster_reads_the_readable_window_and_not_the_writable_one() -> None:
+    """⚠ THE TWO ADJACENT HELPERS, ONE LETTER APART IN INTENT (plan R-F). The
+    CURRENT week is readable and NOT writable, so a roster verb reaching for
+    `assert_writable_week` would make a running week un-editable — which is
+    exactly what D7 permits and what the same-day override exists NOT to have to
+    substitute for. Every backend test on FUTURE weeks passes under the wrong
+    one, which is why this test names the current week specifically."""
+    current = current_week_start(datetime.date(2026, 11, 10))
+    assert_readable_week(current, current=current)
+    with pytest.raises(WeekOutOfRangeError):
+        assert_writable_week(current, current=current)
+    # And four weeks behind is readable too — she may be correcting a record.
+    assert_readable_week(current - datetime.timedelta(days=28), current=current)

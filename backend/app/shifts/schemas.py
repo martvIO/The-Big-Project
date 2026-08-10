@@ -170,3 +170,116 @@ class WeekSubmissionsResponse(BaseModel):
     submitted_count: int
     total: int
     rows: list[WeekSubmissionRowResponse]
+
+
+# --- F40: the roster ----------------------------------------------------------
+
+
+class RosterAssignmentResponse(BaseModel):
+    id: uuid.UUID
+    staff_user_id: uuid.UUID
+    # A NAME, resolved server-side, so the pane never joins staff rows to render
+    # a row — `recorded_by_name`'s rule, and the reason `staff[]` and `shifts[]`
+    # can be read independently by the client.
+    display_name: str
+    role: str
+    is_shift_manager: bool
+    # NON-NULL = she was assigned against what she had submitted (D11). Stamped
+    # at assignment time and never updated: a staffer who goes unavailable AFTER
+    # she was rostered is a DIFFERENT fact, rendered from her live
+    # `RosterStaffRef.states` entry instead (design F-5). Both are on the wire
+    # and neither overwrites the other.
+    override_of_state: AvailabilityState | None = None
+
+
+class RosterShiftResponse(BaseModel):
+    """One shift of one week, with everybody on it.
+
+    ⚠ THE UNIT BOTH ASSIGNMENT ROUTES ANSWER WITH, never the whole week (plan
+    §0.1). A whole-week payload per tap is the obvious shape and it breaks under
+    the pane's deliberate per-control concurrency: two writes in flight from one
+    dialog, the earlier-issued response arriving second, and the later assignment
+    silently lost.
+    """
+
+    template: ShiftTemplateResponse
+    assignments: list[RosterAssignmentResponse]
+    # SPARSE, keyed by `StaffRole` (D10). A missing key is «no target» and renders
+    # as a plain count; `0` is «deliberately nobody» and renders as a target.
+    coverage_targets: dict[str, int]
+    # Server-computed so the pane's shortage line and the server's own shortage
+    # count in the publish audit row cannot disagree about one shift.
+    assigned_by_role: dict[str, int]
+
+
+class RosterStaffRefResponse(BaseModel):
+    id: uuid.UUID
+    display_name: str
+    role: str
+    # D12's gate, on the wire so the dialog can render the manager control for
+    # exactly the women the server would accept.
+    shift_manager_eligible: bool
+    # By `shift_template_id`. An ABSENT key is «not answered» (D8's
+    # absence-is-not-a-state) and is NOT a fourth state — the console renders it
+    # as «לא נרשם», F39's per-shift word.
+    states: dict[str, AvailabilityState]
+
+
+class RosterWeekResponse(BaseModel):
+    """The builder's payload. ELEVATED — it carries every colleague's submitted
+    state, which is F39's own reason for gating `/shifts/week/submissions`."""
+
+    week_start: datetime.date
+    week_end: datetime.date
+    # NULL = draft (D6). An ISO-8601 UTC instant when it is not.
+    published_at: datetime.datetime | None
+    published_by_name: str | None
+    # D7: edits after a publish take effect immediately and do NOT move
+    # `published_at`, so the pane says so in one muted line rather than pretending
+    # the week is locked. Computed from the SAME repository predicate publish's
+    # no-op branch uses, so the line and the button cannot disagree.
+    edited_since_publish: bool
+    shifts: list[RosterShiftResponse]
+    staff: list[RosterStaffRefResponse]
+
+
+class PublishedRosterResponse(BaseModel):
+    """The read-only week, open to every role.
+
+    ⚠ NEVER A 404 FOR AN UNPUBLISHED WEEK (D6). «No roster yet» is a real,
+    renderable answer — `{published: false, shifts: []}` — and a 404 would make
+    the console branch on a status code to say it.
+    """
+
+    published: bool
+    published_at: datetime.datetime | None
+    week_start: datetime.date
+    week_end: datetime.date
+    shifts: list[RosterShiftResponse]
+
+
+class CreateAssignmentRequest(ForbidExtraModel):
+    """⚠ AN UPSERT ON THE LIVE `(roster, template, staffer)` TRIPLE (design F-2),
+    which is why it answers 200 on both paths and not 201 on one of them. A route
+    that is sometimes a create and sometimes an update, answering two codes,
+    forces the client to branch on a status to decide what it just did.
+
+    `acknowledge_override` is required to be `true` ONLY when the live
+    `staff_availability` row for that (staffer, template, week) says
+    `unavailable` — else `409 AVAILABILITY_CONFLICT`. An override is always a
+    second, deliberate act, never a slip (D11).
+    """
+
+    week_start: datetime.date
+    shift_template_id: uuid.UUID
+    staff_user_id: uuid.UUID
+    is_shift_manager: bool = False
+    acknowledge_override: bool = False
+
+
+class PublishRosterRequest(ForbidExtraModel):
+    """Idempotent (D7). A publish on a week whose assignment set has not moved
+    since the stamp writes nothing and audits nothing, and answers 200 with the
+    same payload. THERE IS NO UNPUBLISH."""
+
+    week_start: datetime.date

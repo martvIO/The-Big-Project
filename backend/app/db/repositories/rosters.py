@@ -30,6 +30,14 @@ class RostersRepository:
         )
         return (await session.execute(stmt)).scalar_one_or_none()
 
+    async def by_id(self, session: AsyncSession, tenant_id: UUID, roster_id: UUID) -> Roster | None:
+        stmt = select(Roster).where(
+            Roster.tenant_id == tenant_id,
+            Roster.id == roster_id,
+            Roster.deleted_at.is_(None),
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
     async def create(
         self, session: AsyncSession, *, tenant_id: UUID, week_start: datetime.date
     ) -> Roster:
