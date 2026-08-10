@@ -3,6 +3,9 @@ import type { Locator, Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import {
   MANAGE,
+  PHOTO_CONFIRMED_AT,
+  PHOTO_DATA_URI,
+  SELF_ID,
   appointmentTypes,
   assignment,
   availabilityPayload,
@@ -14,6 +17,7 @@ import {
   floorPayload,
   gatewayStatus,
   installManageApi,
+  installStorageUpload,
   ok,
   privacyPayload,
   queuePath,
@@ -22,9 +26,12 @@ import {
   roomPath,
   settingsAfterToggle,
   settingsPayload,
+  settleAnimations,
   staff,
   staffCard,
   staffList,
+  staffPath,
+  staffPresign,
   termsHistory,
   waitlist,
   waitlistEntry,
@@ -816,7 +823,14 @@ const AXE_SECTIONS: [
     "צוות",
     { "/manage/staff": [ok(staffList())] },
     // F61's control, by name. `דנה כהן` is the non-self row.
-    (page) => page.getByRole("button", { name: "השבתה — דנה כהן" }),
+    //
+    // ⚠ «סיום העסקה» AND NOT «השבתה». F38 changed the VALUE of
+    // `staff.deactivateAria` (design §copy 3 — «השבתה» understated an act that
+    // now sets a last working day and deletes her photo) and left this settle
+    // tell reading the old string, so this row had been failing since that
+    // commit. The tell is the anti-vacuity leg of the whole sweep, so it can
+    // never be softened to a role-only match.
+    (page) => page.getByRole("button", { name: "סיום העסקה — דנה כהן" }),
   ],
   [
     "gateway",
@@ -1067,4 +1081,431 @@ test("manage profile: the matrix lays out RTL — switch inline-start, cue inlin
   // cue. Asserting the pair rather than a class keeps this true if the layout
   // changes but the reading order does not.
   expect(switchBox!.x).toBeGreaterThan(cueBox!.x);
+});
+
+// --- F38: the HR directory's staff journeys ----------------------------------
+//
+// ⚠ **EVERY TEST BELOW EXISTS BECAUSE jsdom CANNOT ANSWER IT.**
+// `StaffSection.test.tsx` already pins each branch these journeys walk — the
+// presign→POST→confirm sequence, the failed-replace alert, the send-only-what-
+// moved patch, the last-day default. What it structurally cannot reach, and
+// what each block here measures instead:
+//
+//   1. `<dialog>`. jsdom has none — `setup.ts` stubs `showModal()` — so Esc,
+//      the focus trap and the focus RETURN to the row control that opened it
+//      are unobservable there (`.memory/jsdom-has-no-dialog`).
+//   2. A RENDERED BOX. `Button size="sm"` is `min-h-9` (36px) and fails the
+//      44px floor; `md` is `min-h-11`. jsdom applies no stylesheet, so every
+//      height there is 0 and an `sm` slipped into this section would pass the
+//      whole unit suite.
+//   3. A DECODED IMAGE. jsdom loads no images, so `naturalWidth` is always 0
+//      and «the face actually paints» is not a claim it can make.
+//   4. A REAL FILE INPUT and a real multipart POST straight at storage — the
+//      one call in this feature that never touches the API.
+//
+// ⚠ **Risk 6 again: the harness stubs the API, so these prove the CONSOLE and
+// not the CONTRACT.** `test_staff_api.py`'s set-equality assertions hold the
+// wire. The axe half of H1 lives in `a11y.spec.ts`, where design.md §a11y puts
+// it and where `color-contrast` — skipped entirely by axe under jsdom — is a
+// measurement a real browser can take.
+
+// --- copy, verbatim from apps/manage/src/i18n/he.ts --------------------------
+
+const NAV_STAFF = "צוות";
+const STAFF_HEADING = "צוות";
+const PHOTO_UPLOAD_LABEL = "תמונת פרופיל";
+const PHOTO_REPLACE_LABEL = "החלפת תמונת פרופיל";
+const PHOTO_ADDED = "התמונה נוספה.";
+const PHOTO_REMOVE_CTA = "הסרת תמונה";
+const PHOTO_RETRY_CTA = "נסי שוב";
+const MEDIA_MISMATCH = "הקובץ אינו תמונה תקינה.";
+const ELIGIBLE_LABEL = "יכולה לנהל משמרת";
+const STAFF_SAVE = "שמירה";
+const STAFF_CANCEL = "ביטול";
+const OFFBOARD_TITLE = "לסיים את ההעסקה?";
+const OFFBOARD_CONFIRM = "סיום העסקה";
+const LAST_DAY_LABEL = "יום עבודה אחרון";
+const OFFBOARD_RETENTION_NOTE =
+  "רישומי העבודה שלה — שיבוצים לחדרים, קריאות ותיקונים — נשמרים כפי שהם. " +
+  "הפרטים האישיים שלה יימחקו מהמערכת בתום תקופת השמירה. " +
+  "אפשר להוסיף אותה מחדש בעתיד כאשת צוות חדשה.";
+
+const editAria = (name: string) => `עריכה — ${name}`;
+const offboardAria = (name: string) => `סיום העסקה — ${name}`;
+const offboardDone = (name: string, date: string) =>
+  `ההעסקה של ${name} הסתיימה בתאריך ${date}. רישומי העבודה שלה נשמרו.`;
+
+// --- fixture data ------------------------------------------------------------
+
+// `staffList()` ships two rows and the split is load-bearing: רונית IS the
+// signed-in owner (SELF_ID) and carries a photo, so she is the only row with a
+// replace-and-remove control; דנה is the non-self row, so she is the only one
+// with an offboard control at all — and she carries no photo, which is the
+// upload-from-empty path.
+const [, DANA_ROW] = staffList() as Record<string, unknown>[];
+const RONIT = "רונית";
+const DANA = "דנה כהן";
+const DANA_ID = "st-2";
+
+// ⚠ 2048 bytes and not a token buffer: `validateStaffPhotoFile` refuses
+// anything under MIN_UPLOAD_BYTES (1024) client-side, with no request at all,
+// so a tiny file would fail these tests as a rendered Hebrew rejection that
+// reads like a broken harness.
+const PHOTO_FILE = {
+  name: "photo.png",
+  mimeType: "image/png",
+  buffer: Buffer.alloc(2048, 7),
+};
+
+// The same Jerusalem calendar day `lib/jerusalem.ts`'s todayJerusalem() builds,
+// spelled the same way (en-CA is the ISO spelling) — so this is the default the
+// offboard dialog is expected to pre-fill, not a restatement of the device clock.
+const JERUSALEM_TODAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Jerusalem",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+}).format(new Date());
+// plainDate()'s d.m.yyyy, unpadded — the spelling the status line renders.
+const JERUSALEM_TODAY_HUMAN = (() => {
+  const [year, month, day] = JERUSALEM_TODAY.split("-");
+  return `${Number(day)}.${Number(month)}.${year}`;
+})();
+
+// --- helpers -----------------------------------------------------------------
+
+async function openStaff(page: Page): Promise<void> {
+  await page.goto(MANAGE);
+  await expect(page.getByRole("heading", { level: 2, name: NAV_DASHBOARD })).toBeVisible();
+  await page.getByRole("navigation").getByRole("button", { name: NAV_STAFF, exact: true }).click();
+  // The settle tell is the per-row offboard control, which only a POPULATED list
+  // renders and only on a row that is not the signed-in staffer. The h2 renders
+  // over the skeleton while the first fetch is in flight, so waiting on it would
+  // wait for nothing.
+  await expect(page.getByRole("button", { name: offboardAria(DANA) })).toBeVisible();
+}
+
+// ⚠ SCOPED TO <main>, never a bare `getByRole("status")`. GuideOverlay ships an
+// sr-only live region of its own inside a `<dialog>` mounted on every console
+// screen, and `visible=true` does NOT separate the two — Playwright counts
+// sr-only content as visible because clip-based hiding still leaves a box.
+// `.first()` would be a coin flip on DOM order. The shell renders the guide in
+// its header and the section inside <main>, so the landmark is what actually
+// disambiguates them.
+function staffStatus(page: Page): Locator {
+  return page.getByRole("main").getByRole("status");
+}
+
+function staffRow(page: Page, name: string): Locator {
+  return page.getByRole("main").getByRole("listitem").filter({ hasText: name });
+}
+
+// The open edit panel — identified by the one control only it can contain. Its
+// name inputs hold their values as PROPERTIES, so `hasText` cannot find it.
+function editPanel(page: Page): Locator {
+  return page
+    .getByRole("main")
+    .getByRole("listitem")
+    .filter({ has: page.locator('input[type="file"]') });
+}
+
+async function assertTouchFloor(target: Locator, label: string): Promise<void> {
+  // ⚠ SETTLE FIRST. `boundingBox()` returns the VISUAL box, transforms included,
+  // and `Modal` scales its panel 0.97 → 1 on open — so the two footer buttons
+  // measure 42.68px (44 × 0.97) for the length of that animation. Measuring
+  // there fails on motion rather than on a defect, and "relax the floor to 42"
+  // is the wrong reading of it.
+  await settleAnimations(target.page());
+  const box = await target.boundingBox();
+  expect(box, `${label} has no box`).not.toBeNull();
+  expect(box!.height, `${label} is under the ${String(TOUCH_TARGET_MIN)}px touch floor`).toBeGreaterThanOrEqual(
+    TOUCH_TARGET_MIN,
+  );
+}
+
+// --- 1. the photo, end to end ------------------------------------------------
+
+test("manage staff: a photo upload runs presign → storage → confirm and paints a real face", async ({
+  page,
+}) => {
+  const confirmed = {
+    ...DANA_ROW,
+    photo_url: PHOTO_DATA_URI,
+    photo_confirmed_at: PHOTO_CONFIRMED_AT,
+  };
+  const api = await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "/manage/staff": [ok(staffList())],
+      [`${staffPath(DANA_ID)}/photo/presign`]: [ok(staffPresign())],
+      [`${staffPath(DANA_ID)}/photo/confirm`]: [ok(confirmed)],
+    },
+  });
+  const storage = await installStorageUpload(page);
+
+  await openStaff(page);
+  await page.getByRole("button", { name: editAria(DANA) }).click();
+
+  // ⚠ A REAL, VISIBLE, FOCUSABLE `<input type="file">` — design §1's first rule,
+  // and the one jsdom cannot settle: visibility there is a string on a style
+  // object rather than a rendered box, and `display:none` plus a label shim
+  // (which breaks Safari/VoiceOver) reads identically to this in that suite.
+  const picker = page.getByLabel(PHOTO_UPLOAD_LABEL);
+  await expect(picker).toBeVisible();
+  await expect(picker).toBeEnabled();
+  await picker.focus();
+  await expect(picker).toBeFocused();
+
+  await picker.setInputFiles(PHOTO_FILE);
+
+  // The terminal state lands on the SAME region the running ones used, which is
+  // why a failure after «מאמת…» can never be left silent.
+  await expect(staffStatus(page)).toHaveText(PHOTO_ADDED);
+  // The control relabels and the remove control appears — both keyed off
+  // `photo_url`, so both prove the row was patched from the confirm RESPONSE.
+  await expect(page.getByLabel(PHOTO_REPLACE_LABEL)).toBeVisible();
+  await expect(page.getByRole("button", { name: PHOTO_REMOVE_CTA })).toBeVisible();
+
+  const presigned = api.of(`${staffPath(DANA_ID)}/photo/presign`);
+  expect(presigned).toHaveLength(1);
+  expect(presigned[0].body).toEqual({
+    content_type: PHOTO_FILE.mimeType,
+    byte_size: PHOTO_FILE.buffer.length,
+  });
+  // The middle call is not optional and the recorder cannot see it — it goes
+  // straight at storage, past the API interceptor entirely.
+  expect(storage.count, "the file never reached storage").toBe(1);
+  expect(api.of(`${staffPath(DANA_ID)}/photo/confirm`)).toHaveLength(1);
+
+  await editPanel(page).getByRole("button", { name: STAFF_CANCEL }).click();
+
+  // ⚠ THE IMAGE ACTUALLY DECODED. jsdom fetches nothing, so `naturalWidth` is 0
+  // there for a correct <img> and a broken one alike — this is the only place a
+  // srcless or unreadable avatar is a failing test rather than a passing one.
+  const face = staffRow(page, DANA).locator("img");
+  await expect(face).toHaveAttribute("alt", "");
+  expect(await face.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+});
+
+test("manage staff: a failed confirm keeps the previous photo on screen and offers a retry", async ({
+  page,
+}) => {
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "/manage/staff": [ok(staffList())],
+      [`${staffPath(SELF_ID)}/photo/presign`]: [ok(staffPresign())],
+      [`${staffPath(SELF_ID)}/photo/confirm`]: [refuse(400, "MEDIA_MISMATCH")],
+    },
+  });
+  const storage = await installStorageUpload(page);
+
+  await openStaff(page);
+  await page.getByRole("button", { name: editAria(RONIT) }).click();
+  await page.getByLabel(PHOTO_REPLACE_LABEL).setInputFiles(PHOTO_FILE);
+
+  const alert = editPanel(page).getByRole("alert");
+  await expect(alert).toHaveText(MEDIA_MISMATCH);
+  // The fixture's message is ENGLISH on purpose, exactly as every backend
+  // message is. Painting the server's sentence onto a Hebrew-only console is
+  // the failure this pins, and it is invisible to axe.
+  const text = await alert.innerText();
+  expect(text, "the alert is empty").toMatch(/[֐-׿]/);
+  expect(text, "an English server message reached the page").not.toMatch(/[A-Za-z]{4,}/);
+
+  // ⚠ THE PREVIOUS PHOTO IS STILL SHOWN. Nothing in the failed run touched the
+  // live triple, which is the whole reason the pending/live column pair exists —
+  // a failed replace must never blank the cell.
+  await expect(editPanel(page).locator("img")).toHaveAttribute("src", PHOTO_DATA_URI);
+  await expect(page.getByRole("button", { name: PHOTO_RETRY_CTA })).toBeVisible();
+  // …and the region is EMPTY rather than still reading «מאמת…», so no terminal
+  // failure is left standing under a stale progress message.
+  await expect(staffStatus(page)).toBeEmpty();
+
+  expect(storage.count, "the upload itself is not what failed here").toBe(1);
+});
+
+// --- 2. eligibility ----------------------------------------------------------
+
+test("manage staff: unchecking eligibility patches that field alone, on a 44px row", async ({
+  page,
+}) => {
+  const api = await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "/manage/staff": [ok(staffList())],
+      [`PATCH ${staffPath(DANA_ID)}`]: [ok({ ...DANA_ROW, shift_manager_eligible: false })],
+    },
+  });
+
+  await openStaff(page);
+  // MUTED WORDS on the row, never a second Badge — the row already carries the
+  // role pill and F36's ruling is one pill per row.
+  await expect(staffRow(page, DANA).getByText(ELIGIBLE_LABEL)).toBeVisible();
+
+  await page.getByRole("button", { name: editAria(DANA) }).click();
+  // ⚠ SCOPED TO THE PANEL. The create form carries a second Checkbox with the
+  // SAME label — design R1 puts the three HR fields on both — so a bare
+  // `getByRole("checkbox", { name })` resolves to two elements and trips strict
+  // mode. `.first()` would be a coin flip on DOM order rather than a fix.
+  const eligible = editPanel(page).getByRole("checkbox", { name: ELIGIBLE_LABEL });
+  await expect(eligible).toBeChecked();
+
+  // ⚠ MEASURED HERE AND NOT IN VITEST: `Checkbox`'s box is `size-6` (24px) and
+  // is NOT the hit target — the wrapping <label> is, at `min-h-11`. jsdom
+  // applies no stylesheet, so that height is 0 there for a compliant row and a
+  // broken one alike.
+  await assertTouchFloor(eligible.locator("xpath=ancestor::label[1]"), "the eligibility row");
+
+  await eligible.click();
+  await expect(eligible).not.toBeChecked();
+  await editPanel(page).getByRole("button", { name: STAFF_SAVE }).click();
+
+  const patched = api.of(staffPath(DANA_ID)).filter((entry) => entry.method === "PATCH");
+  expect(patched).toHaveLength(1);
+  // ⚠ EXACTLY ONE KEY. F51's send-only-what-moved rule is not an optimisation —
+  // each field earns its own audit row, so a patch carrying the untouched name
+  // and role would write three where the owner changed one.
+  expect(patched[0].body).toEqual({ shift_manager_eligible: false });
+
+  // The editor closed and the word is gone from her row.
+  await expect(staffRow(page, DANA).getByText(ELIGIBLE_LABEL)).toHaveCount(0);
+});
+
+// --- 3. offboarding, in a real <dialog> --------------------------------------
+
+test("manage staff: the offboard dialog defaults to today-Jerusalem, returns focus on Esc, then sends the date", async ({
+  page,
+}) => {
+  const api = await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "/manage/staff": [ok(staffList())],
+      [`DELETE ${staffPath(DANA_ID)}`]: [ok({ ok: true })],
+    },
+  });
+
+  await openStaff(page);
+  const trigger = page.getByRole("button", { name: offboardAria(DANA) });
+  await assertTouchFloor(trigger, "the offboard row control");
+  await trigger.click();
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: OFFBOARD_TITLE })).toBeVisible();
+  // <Trans> puts her name inside a bare <bdi> — a Latin display name reorders
+  // inside a Hebrew sentence without an isolate, and every founding owner is
+  // seeded with display_name = owner_email.
+  await expect(dialog.locator("bdi")).toHaveText(DANA);
+  await expect(dialog.getByText(OFFBOARD_RETENTION_NOTE)).toBeVisible();
+
+  // ⚠ PRE-FILLED WITH TODAY, and a blank would silently exempt her from the
+  // retention clock: the policy's predicate needs `last_day IS NOT NULL`.
+  const lastDay = dialog.getByLabel(LAST_DAY_LABEL);
+  await expect(lastDay).toHaveValue(JERUSALEM_TODAY);
+
+  // ⚠ THE ASSERTION jsdom STRUCTURALLY CANNOT MAKE. `setup.ts` stubs
+  // showModal(), so there is no top layer, no focus trap and no native focus
+  // return there — Esc dismissing without acting, and focus landing back on the
+  // row control that opened it, are only real in Chromium.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(api.of(staffPath(DANA_ID)), "Esc sent something").toHaveLength(0);
+
+  await trigger.click();
+  await assertTouchFloor(dialog.getByRole("button", { name: OFFBOARD_CONFIRM }), "the offboard confirm");
+  await assertTouchFloor(dialog.getByRole("button", { name: STAFF_CANCEL }), "the offboard cancel");
+  await dialog.getByRole("button", { name: OFFBOARD_CONFIRM }).click();
+
+  await expect(staffRow(page, DANA)).toHaveCount(0);
+  const sent = api.of(staffPath(DANA_ID));
+  expect(sent).toHaveLength(1);
+  expect(sent[0].method).toBe("DELETE");
+  expect(sent[0].query).toBe(`?last_day=${JERUSALEM_TODAY}`);
+
+  // The row is gone from the list, so this line is the ONLY feedback there is —
+  // which is exactly why it names her AND the date.
+  await expect(staffStatus(page)).toHaveText(offboardDone(DANA, JERUSALEM_TODAY_HUMAN));
+  await expect(staffStatus(page).locator("bdi")).toHaveText(DANA);
+
+  // Her trigger unmounted under the open dialog, so the native focus return
+  // lands on <body>; the section's fallback is its own heading.
+  await expect(page.getByRole("heading", { level: 2, name: STAFF_HEADING })).toBeFocused();
+});
+
+// --- 4. the rest of the section's touch targets ------------------------------
+
+test("manage staff: the photo controls and the editor's own pair clear the 44px floor", async ({
+  page,
+}) => {
+  // F-W1, MEASURED not eyeballed. `size="sm"` is `min-h-9` (36px) and reads as
+  // harmless in a diff; the whole unit suite would stay green under it.
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: { "/manage/staff": [ok(staffList())] },
+  });
+
+  await openStaff(page);
+  await assertTouchFloor(page.getByRole("button", { name: editAria(RONIT) }), "the edit row control");
+
+  await page.getByRole("button", { name: editAria(RONIT) }).click();
+  const panel = editPanel(page);
+  await assertTouchFloor(panel.getByRole("button", { name: PHOTO_REMOVE_CTA }), PHOTO_REMOVE_CTA);
+  await assertTouchFloor(panel.getByRole("button", { name: STAFF_SAVE }), STAFF_SAVE);
+  await assertTouchFloor(panel.getByRole("button", { name: STAFF_CANCEL }), STAFF_CANCEL);
+});
+
+// --- 5. the board's faces ----------------------------------------------------
+
+test("manage board: a staff card paints a decoded 44px face beside an initial fallback", async ({
+  page,
+}) => {
+  // Two cards, one of each branch. `photo_url === null` is how BOTH renderers
+  // choose the fallback, and `undefined === null` is false — which is why the
+  // harness sends the field rather than omitting it.
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "/manage/floor": [
+        ok(
+          floorPayload({
+            staff: [
+              staffCard({
+                id: "st-1",
+                display_name: RONIT,
+                photo_url: PHOTO_DATA_URI,
+                photo_confirmed_at: PHOTO_CONFIRMED_AT,
+              }),
+              staffCard({ id: "st-2", display_name: DANA }),
+            ],
+            rooms: [ROOM_ONE],
+          }),
+        ),
+      ],
+    },
+  });
+
+  await gotoBoardFloor(page);
+
+  const face = page.locator('[data-staff-id="st-1"]').locator("img");
+  // ⚠ alt="" DELIBERATELY. The display name is a text node immediately beside
+  // it, so `alt="תמונה של {{name}}"` would announce her name twice per card on
+  // a board that lists the whole shift. The photo is decorative by definition.
+  await expect(face).toHaveAttribute("alt", "");
+  await expect(face).toHaveAttribute("loading", "lazy");
+  expect(await face.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+  const faceBox = await face.boundingBox();
+  expect(faceBox).not.toBeNull();
+  expect(faceBox!.width).toBe(TOUCH_TARGET_MIN);
+  expect(faceBox!.height).toBe(TOUCH_TARGET_MIN);
+
+  // The fallback: the first GRAPHEME, aria-hidden, holding the same box so a
+  // mixed board does not jitter between rows.
+  const fallback = page.locator('[data-staff-id="st-2"] span[aria-hidden="true"]').first();
+  await expect(fallback).toHaveText("ד");
+  const fallbackBox = await fallback.boundingBox();
+  expect(fallbackBox).not.toBeNull();
+  expect(fallbackBox!.width).toBe(TOUCH_TARGET_MIN);
+  expect(fallbackBox!.height).toBe(TOUCH_TARGET_MIN);
 });

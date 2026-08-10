@@ -985,3 +985,104 @@ export function sosPath(alertId: string): string {
 export function capacityPath(staffUserId: string): string {
   return `/manage/atelier/seamstresses/${encodeURIComponent(staffUserId)}/capacity`;
 }
+
+// --- settling motion before a measurement ------------------------------------
+
+/**
+ * Waits for every BOUNDED animation on the page to finish.
+ *
+ * ⚠ **REQUIRED BEFORE ANY axe SCAN OR ANY `boundingBox()` TAKEN ON SOMETHING
+ * THAT JUST APPEARED.** `Modal` fades and SCALES its panel (0.97 → 1) and fades
+ * its `::backdrop`, and `toBeVisible()` resolves when the panel paints, not when
+ * the transition ends. Scanning inside that window makes axe composite a
+ * half-faded layer and report a contrast the page never renders at rest;
+ * MEASURING inside it returns the transformed box, so a compliant 44px control
+ * reads as 42.68px (44 × 0.97) and a touch-floor assertion fails on motion
+ * rather than on a defect.
+ *
+ * ⚠ **INFINITE ANIMATIONS ARE FILTERED OUT.** `--animate-skeleton` and Button's
+ * `animate-spin` never resolve `.finished`, and the console renders a Skeleton
+ * in every section's loading state — awaiting one hangs until the test times
+ * out. The 1s race is the belt to that braces.
+ *
+ * The same shape `notifications.spec.ts`, `waitlist.spec.ts` and
+ * `platform.spec.ts` each inline; it lives here because F38 is the first feature
+ * to need it in two files at once.
+ */
+export async function settleAnimations(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const bounded = document
+      .getAnimations()
+      .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+      .map((a) => a.finished);
+    await Promise.race([
+      Promise.allSettled(bounded),
+      new Promise((resolve) => setTimeout(resolve, 1000)),
+    ]);
+  });
+}
+
+// --- F38: the staff photo pipeline -------------------------------------------
+
+/** `/manage/staff/{id}`. The three photo routes hang off it: `/photo/presign`,
+ *  `/photo/confirm` and `/photo` — the same composition `api.ts`'s staffPath
+ *  does, so a reply key and the app's URL cannot spell the id differently. */
+export function staffPath(staffId: string): string {
+  return `/manage/staff/${encodeURIComponent(staffId)}`;
+}
+
+// ⚠ **THE PRESIGN URL IS SAME-ORIGIN, AND THAT IS A DECISION RATHER THAN A
+// SHORTCUT.** `uploadToStorage` (apps/manage/src/api.ts) POSTs a FormData
+// straight at whatever `url` the presign answered, with `credentials: "omit"`,
+// no headers of its own, and it reads `response.ok` and never a body. Pointing
+// it at a bucket origin would drag CORS into a test about the CONSOLE — a
+// fulfilled cross-origin response has to carry its own ACAO header before
+// `fetch` will even let the app see `ok` — and the app cannot tell the two
+// apart. `/fixture-storage/…` is not a `/manage` path, so `isManageApi` leaves
+// it alone and `installStorageUpload` below owns it outright.
+export const STORAGE_UPLOAD_URL = "http://localhost:4174/fixture-storage/staff-photo";
+
+export function staffPresign(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    url: STORAGE_UPLOAD_URL,
+    // Bearer material for its whole TTL in production. Non-empty here on
+    // purpose: `uploadToStorage` appends every field to the FormData BEFORE
+    // `file` (S3 ignores everything after it), and an empty object would leave
+    // that loop unexercised.
+    fields: { key: "tenants/t-1/staff/st-2/photo/ph-1.png", policy: "fixture-policy" },
+    expires_in: 300,
+    max_bytes: 2_097_152,
+    ...overrides,
+  };
+}
+
+export interface StorageUpload {
+  /** How many multipart POSTs actually reached the fixture bucket. */
+  count: number;
+}
+
+/**
+ * Intercepts the presigned POST the browser makes DIRECTLY to storage — the one
+ * call in this feature that never touches the API and is therefore invisible to
+ * `installManageApi`'s recorder.
+ *
+ * `hold` is how a test parks the upload in flight: the «מעלה…» phase lasts
+ * exactly as long as this request does, so an axe scan of it has no other way
+ * to exist. Resolve the promise to let the upload finish.
+ */
+export async function installStorageUpload(
+  page: Page,
+  options: { hold?: Promise<unknown>; status?: number } = {},
+): Promise<StorageUpload> {
+  const record: StorageUpload = { count: 0 };
+  await page.route(STORAGE_UPLOAD_URL, async (route) => {
+    record.count += 1;
+    if (options.hold !== undefined) {
+      await options.hold;
+    }
+    // S3 answers 204 with an EMPTY body on success and XML on error, and
+    // `uploadToStorage` parses neither — it reads `response.ok` and stops.
+    await route.fulfill({ status: options.status ?? 204 });
+  });
+  return record;
+}

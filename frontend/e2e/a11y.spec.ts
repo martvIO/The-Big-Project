@@ -1,6 +1,18 @@
 import { test, expect } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import {
+  PHOTO_CONFIRMED_AT,
+  PHOTO_DATA_URI,
+  installManageApi,
+  installStorageUpload,
+  ok,
+  settleAnimations,
+  staff,
+  staffList,
+  staffPath,
+  staffPresign,
+} from "./fixtures/manage";
 
 const STOREFRONT = "http://localhost:4173";
 // Trailing /manage/ because apps/manage builds with base: "/manage/" — `vite
@@ -169,4 +181,164 @@ test("manage: printing a screen with no print sheet does not blank the page", as
   // the element keeps its box and stops being painted.
   await expect(submit, "the print stylesheet hid a screen that owns no sheet").toBeVisible();
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+});
+
+// --- F38: the staff directory's five photo states ----------------------------
+//
+// `.planning/design/screens/hr-directory/design.md` §accessibility names these
+// five by name — list with photos, list without, edit panel mid-upload, both
+// modals, RTL — and calls the gate LEGAL (IS 5568 / WCAG 2.0 AA). Zero is the
+// only passing number, so nothing below carries a `.disableRules()` or an
+// `.exclude()`: if one of these reds, the markup is wrong and the component is
+// what changes.
+//
+// ⚠ **THEY LIVE HERE RATHER THAN IN `StaffSection.test.tsx`, WHICH ALREADY RUNS
+// axe, BECAUSE jsdom APPLIES NO STYLESHEET AND axe THEREFORE SKIPS
+// `color-contrast` ENTIRELY THERE.** Every colour decision this feature makes is
+// invisible to that suite: the initial-letter fallback (`--color-ink-muted` on
+// `--color-surface`), the muted eligibility word, the danger «הסרת תמונה», the
+// retention paragraph and the two dialog bodies on `--color-surface-raised`.
+//
+// ⚠ **AND THE TWO CONFIRMS ARE NOT REALLY DIALOGS THERE.** `setup.ts` stubs
+// `showModal()`, so jsdom's «open» modal is an ordinary element with no top
+// layer and no `inert` siblings — a scan of it is a scan of a different DOM.
+
+const STAFF_NAV = "צוות";
+const DASHBOARD_HEADING = "סקירה";
+const PHOTO_REPLACE_LABEL = "החלפת תמונת פרופיל";
+const PHOTO_UPLOADING = "מעלה…";
+// REPLACED and not «נוספה»: the row this block edits already carries a photo,
+// which is what makes «הסרת תמונה» — and therefore the photo-remove modal —
+// reachable at all. The two terminal strings are different keys, and picking
+// the wrong one here would have made state ② unreachable.
+const PHOTO_REPLACED = "התמונה הוחלפה.";
+const PHOTO_REMOVE_CTA = "הסרת תמונה";
+const PHOTO_REMOVE_TITLE = "להסיר את התמונה?";
+const OFFBOARD_TITLE = "לסיים את ההעסקה?";
+const STAFF_CANCEL = "ביטול";
+
+const RONIT = "רונית";
+const DANA = "דנה כהן";
+const offboardAria = (name: string) => `סיום העסקה — ${name}`;
+const editAria = (name: string) => `עריכה — ${name}`;
+
+const OWNER = staff({ role: "owner", display_name: RONIT });
+
+// ≥ MIN_UPLOAD_BYTES (1024), or `validateStaffPhotoFile` refuses it client-side
+// and the upload phase this file needs to scan never begins.
+const PHOTO_FILE = { name: "photo.png", mimeType: "image/png", buffer: Buffer.alloc(2048, 7) };
+
+const rows = () => staffList() as Record<string, unknown>[];
+const withPhotos = () =>
+  rows().map((row) => ({
+    ...row,
+    photo_url: PHOTO_DATA_URI,
+    photo_confirmed_at: PHOTO_CONFIRMED_AT,
+  }));
+const withoutPhotos = () =>
+  rows().map((row) => ({ ...row, photo_url: null, photo_confirmed_at: null }));
+
+async function staffAxeViolations(page: Page): Promise<string[]> {
+  // ⚠ SETTLE BOUNDED ANIMATIONS BEFORE SCANNING — see `settleAnimations`. The
+  // two confirms below are `Modal`s, which fade AND scale their panel on open,
+  // and `toBeVisible()` resolves when the panel paints rather than when the
+  // transition ends. Scanning there makes axe composite a half-faded layer and
+  // report a contrast the page never renders at rest.
+  await settleAnimations(page);
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
+  // The raw violation objects dump ~10 KB of axe internals into the failure;
+  // only the rule id and the offending selectors say anything useful.
+  return results.violations.map(
+    (v) => `${v.id} — ${v.nodes.map((n) => n.target.join(" ")).join(" | ")}`,
+  );
+}
+
+async function openStaffSection(page: Page): Promise<void> {
+  await page.goto(MANAGE);
+  await expect(page.getByRole("heading", { level: 2, name: DASHBOARD_HEADING })).toBeVisible();
+  await page.getByRole("navigation").getByRole("button", { name: STAFF_NAV, exact: true }).click();
+  // The per-row offboard control, which only a POPULATED list renders and only
+  // on a row that is not the signed-in staffer. A scan taken over the skeleton —
+  // `aria-hidden`, no text — would pass while proving nothing.
+  await expect(page.getByRole("button", { name: offboardAria(DANA) })).toBeVisible();
+}
+
+// The open edit panel, identified by the one control only it can contain. Its
+// text inputs hold their values as PROPERTIES, so `hasText` cannot find it.
+function editPanel(page: Page): Locator {
+  return page
+    .getByRole("main")
+    .getByRole("listitem")
+    .filter({ has: page.locator('input[type="file"]') });
+}
+
+for (const [label, list] of [
+  ["with photos on every row", withPhotos],
+  ["with no photo anywhere", withoutPhotos],
+] as const) {
+  test(`manage staff: zero axe A/AA violations on a list ${label}`, async ({ page }) => {
+    await installManageApi(page, {
+      staff: OWNER,
+      replies: { "/manage/staff": [ok(list())] },
+    });
+    await openStaffSection(page);
+
+    // Makes «all RTL» a claim rather than an assumption: every scan in this
+    // block is taken on a document whose direction is the product's own, and a
+    // build that lost `dir` on <html> would otherwise pass all of them.
+    expect(await page.evaluate(() => document.documentElement.dir)).toBe("rtl");
+
+    expect(await staffAxeViolations(page)).toEqual([]);
+  });
+}
+
+test("manage staff: zero axe A/AA violations mid-upload and with either confirm open", async ({
+  page,
+}) => {
+  // Three states on ONE navigation: each needs the same page, and a fresh
+  // navigation per state would triple the run for no more coverage.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await installManageApi(page, {
+    staff: OWNER,
+    replies: {
+      "/manage/staff": [ok(withPhotos())],
+      [`${staffPath(OWNER.id)}/photo/presign`]: [ok(staffPresign())],
+      [`${staffPath(OWNER.id)}/photo/confirm`]: [ok(withPhotos()[0])],
+    },
+  });
+  await installStorageUpload(page, { hold: held });
+
+  await openStaffSection(page);
+  await page.getByRole("button", { name: editAria(RONIT) }).click();
+
+  // ① MID-UPLOAD. The phase lasts exactly as long as the storage POST does,
+  // which is why the fixture holds it: the disabled file input, its two
+  // description lines and the live «מעלה…» region are only on screen here.
+  await page.getByLabel(PHOTO_REPLACE_LABEL).setInputFiles(PHOTO_FILE);
+  await expect(page.getByRole("main").getByRole("status")).toHaveText(PHOTO_UPLOADING);
+  await expect(page.getByLabel(PHOTO_REPLACE_LABEL)).toBeDisabled();
+  expect(await staffAxeViolations(page)).toEqual([]);
+
+  release();
+  await expect(page.getByRole("main").getByRole("status")).toHaveText(PHOTO_REPLACED);
+
+  // ② THE PHOTO-REMOVE CONFIRM — a real <dialog> in the top layer, with its
+  // danger footer button on a raised surface.
+  await page.getByRole("button", { name: PHOTO_REMOVE_CTA }).click();
+  await expect(page.getByRole("dialog").getByRole("heading", { name: PHOTO_REMOVE_TITLE })).toBeVisible();
+  expect(await staffAxeViolations(page)).toEqual([]);
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await editPanel(page).getByRole("button", { name: STAFF_CANCEL }).click();
+
+  // ③ THE OFFBOARD CONFIRM — the same one <Modal>, second body (design R3): a
+  // <Trans> paragraph with a bare <bdi>, a labelled date field with its own
+  // help line, and the retention paragraph in the muted register.
+  await page.getByRole("button", { name: offboardAria(DANA) }).click();
+  await expect(page.getByRole("dialog").getByRole("heading", { name: OFFBOARD_TITLE })).toBeVisible();
+  expect(await staffAxeViolations(page)).toEqual([]);
 });
