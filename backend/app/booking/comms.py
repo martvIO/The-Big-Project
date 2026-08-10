@@ -445,7 +445,7 @@ class BookingCommsService:
                     failed += outcome == ScheduledMessageStatus.FAILED.value
                     cancelled += outcome == ScheduledMessageStatus.CANCELLED.value
                     continue
-                # `booking_id` is nullable from 0032 — a `waitlist_offer` row's
+                # `booking_id` is nullable from 0033 — a `waitlist_offer` row's
                 # subject is an ENTRY. None here therefore falls into the
                 # cancel branch below, which is also the right answer for the
                 # impossible case of a reminder row with no booking.

@@ -1,9 +1,9 @@
 """waitlist offers: offer columns on waitlist_entries, offer subject on scheduled_messages
 
-Revision ID: 0032
+Revision ID: 0033
 Revises: 0031
 
-Built as 0032 / down_revision 0031 — resolved from `alembic heads` on the day of
+Built as 0033 / down_revision 0031 — resolved from `alembic heads` on the day of
 writing, and re-resolved immediately before the pre-push rebase (0018's header
 records the renumber-at-rebase hazard this paragraph inherits, and 0026's own
 header repeats it for this very table).
@@ -17,7 +17,7 @@ precisely so F23 would not have to widen it (spec D1, conflict 4).
 
 from alembic import op
 
-revision = "0032"
+revision = "0033"
 down_revision = "0031"
 branch_labels = None
 depends_on = None

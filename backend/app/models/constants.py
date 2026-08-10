@@ -162,7 +162,7 @@ class MessageKind(StrEnum):
     # refund and names no new time, because neither is decided at send time.
     PAYMENT_RECEIVED_NO_SLOT = "payment_received_no_slot"
     # F23: the offer text. It carries no booking — `message_log.booking_id` has
-    # been nullable since 0007 — and 0032 widens this table's kind CHECK beside
+    # been nullable since 0007 — and 0033 widens this table's kind CHECK beside
     # the queue's, because "what may be queued" and "what may be recorded as
     # sent" are two different sets on two different tables.
     WAITLIST_OFFER = "waitlist_offer"
@@ -286,7 +286,7 @@ class MarketingConsentSource(StrEnum):
 
 
 class ScheduledMessageKind(StrEnum):
-    # The DB pins this exact set (0010, widened by 0032). The rule 0010 wrote —
+    # The DB pins this exact set (0010, widened by 0033). The rule 0010 wrote —
     # a kind lands with its producer, never speculatively — is MET here rather
     # than waived: F23's cascade writes WAITLIST_OFFER rows and `drain_due`
     # branches on it in the same change.
@@ -294,7 +294,7 @@ class ScheduledMessageKind(StrEnum):
     # ⚠ A WAITLIST_OFFER row's subject is a waitlist ENTRY, not a booking
     # (`ck_scheduled_messages_subject` is an XOR). Anything reading a
     # `scheduled_messages` row must branch on this field before dereferencing
-    # `booking_id`, which is nullable from 0032 onward.
+    # `booking_id`, which is nullable from 0033 onward.
     REMINDER = "reminder"
     WAITLIST_OFFER = "waitlist_offer"
 

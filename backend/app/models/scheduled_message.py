@@ -26,7 +26,7 @@ class ScheduledMessage(StandardColumns, Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     # No FK by house rule; the booking is re-read at claim time anyway, which is
     # also the defence against races the schedule-time rules cannot see.
-    # NULLABLE from 0032: a `waitlist_offer` row's subject is an ENTRY, not a
+    # NULLABLE from 0033: a `waitlist_offer` row's subject is an ENTRY, not a
     # booking, and `ck_scheduled_messages_subject` is an XOR over the pair.
     # ⚠ Branch on `kind` before dereferencing either one.
     booking_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)

@@ -4485,7 +4485,7 @@ def test_the_hr_directory_migration_round_trips(migrated_db: str) -> None:
 
 # --- F23: the offer columns and the scheduled-message subject XOR -------------
 #
-# ⚠ db-marked: these run on CI only (no local Docker). 0032 is ADDITIVE on two
+# ⚠ db-marked: these run on CI only (no local Docker). 0033 is ADDITIVE on two
 # shipped tables, so unlike every block above there is no table to prove exists —
 # what has to be pinned is that nothing already there was weakened.
 
@@ -4523,7 +4523,7 @@ _OFFER_PENDING_INDEX_DEF = (
 _SUBJECT_CHECK_DEF = "CHECK (((booking_id IS NULL) <> (waitlist_entry_id IS NULL)))"
 _KIND_CHECK_DEF = "CHECK ((kind = ANY (ARRAY['reminder'::text, 'waitlist_offer'::text])))"
 
-# The one index 0032 must NOT have disturbed. NULLs are distinct in a unique
+# The one index 0033 must NOT have disturbed. NULLs are distinct in a unique
 # index, so an offer row (booking_id NULL) is invisible to it — but only while
 # its definition still reads exactly this, which is why it is pinned HERE rather
 # than argued for in a comment.
@@ -4598,7 +4598,7 @@ _MESSAGE_LOG_INSERT = (
 
 
 def _message_kind_admitted(url: str, kind: str) -> bool:
-    """`message_log.kind` is a SECOND bounded set on a SECOND table, and 0032
+    """`message_log.kind` is a SECOND bounded set on a SECOND table, and 0033
     widens it beside the queue's. They are not the same fact: one says what may
     be QUEUED, the other what may be RECORDED as sent."""
 
@@ -4647,7 +4647,7 @@ def _subject_insert_admitted(url: str, *, booking: bool, entry: bool, kind: str)
 
 
 @pytest.mark.db
-def test_migration_0032_adds_the_offer_columns(migrated_db: str) -> None:
+def test_migration_0033_adds_the_offer_columns(migrated_db: str) -> None:
     """Four nullable offer columns on waitlist_entries, and the second possible
     subject on scheduled_messages. `booking_id` going nullable is the whole price
     of pre-decided #16 (offers ride the shipped table rather than growing a
@@ -4719,8 +4719,8 @@ def test_the_message_log_kind_check_admits_exactly_the_enum(migrated_db: str) ->
 
 
 @pytest.mark.db
-def test_migration_0032_round_trips(migrated_db: str) -> None:
-    """downgrade() removes every column, index and CHECK 0032 added and restores
+def test_migration_0033_round_trips(migrated_db: str) -> None:
+    """downgrade() removes every column, index and CHECK 0033 added and restores
     `booking_id NOT NULL`, which is only safe because it deletes the offer rows
     first — they are the only rows that can carry a NULL booking_id."""
     cfg = _alembic_config()

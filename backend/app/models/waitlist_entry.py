@@ -40,7 +40,7 @@ class WaitlistEntry(StandardColumns, Base):
     # both booked and waited.
     phone: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'waiting'"))
-    # --- F23's offer bookkeeping (0032), all four NULL until she is offered ---
+    # --- F23's offer bookkeeping (0033), all four NULL until she is offered ---
     #
     # They move and clear TOGETHER, always inside one guarded UPDATE: the offer
     # write sets all four, the expiry sweep clears the token and the deadline,
