@@ -2502,7 +2502,23 @@ queue:
     slug: invite-signup
     epic: E5
     title: Invite-code boutique signup + gateway onboarding
-    status: queued                # 2026-08-09: spec+design(gate ACCEPTED r3)+plan READY. F25's merge
+    status: merged                # PR #57, merged 2026-08-10. Migration 0034 (re-parented 0032 -> 0033
+                                  # at the rebase, F23's 0033 having landed first). Q10 held: invite codes
+                                  # only, no public funnel, so F29 no longer gates this feature's launch.
+                                  # ⚠ THE HARDCODED-DOMAIN CLASS OF BUG, worth remembering because the TESTS
+                                  # COLLUDED WITH IT: five places composed an address from a literal
+                                  # "modryn.co.il" while the server already computed one from
+                                  # settings.base_domain, and every fixture pinned the SAME literal, so each
+                                  # component agreed with its own test forever. base_domain now rides
+                                  # OperatorResponse (console) and InvitePreviewResponse (anonymous claim);
+                                  # fixtures carry boutiques.example.test; verified BY MUTATION — reverting
+                                  # the literal reds three tests across two files.
+                                  # ⚠ R9's row had ROTTED: 116/5/44 checked in against a measured 147/17/51,
+                                  # because ONLY the driven/discriminating pair is machine-pinned and the rest
+                                  # was prose nothing asserted. Re-derived by building the walker's own app.
+                                  # And nine SPA/static routes register ONLY when a dist/ exists, so a tree
+                                  # where someone ran `make fe-build` counts 76 driven where CI counts 67 —
+                                  # that gap is a measurement artefact, not a hole.
                                   # unblocked it. Built to Q10 (INVITE CODES ONLY) with a five-row
                                   # CONFLICTS table against the STALE epic brief, which still describes a
                                   # public funnel with slug claiming, captcha and an F29 gate.
