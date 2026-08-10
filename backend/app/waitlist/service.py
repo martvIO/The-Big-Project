@@ -262,6 +262,8 @@ class WaitlistService:
                 customer_name=names.get(entry.phone),
                 status=entry.status,
                 created_at=entry.created_at,
+                offer_starts_at=entry.offer_starts_at,
+                offer_expires_at=entry.offer_expires_at,
             )
             for entry in entries
         ]

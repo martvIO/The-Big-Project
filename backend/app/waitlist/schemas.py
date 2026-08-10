@@ -89,6 +89,15 @@ class ManageWaitlistRow(BaseModel):
     customer_name: str | None
     status: str
     created_at: datetime.datetime
+    # F23 D8. The console's WHOLE share of the offer: is anyone holding this
+    # slot right now, and until when. Null on every row that is not `offered`.
+    #
+    # ⚠ NOT `offer_token_hash`, which sits one column away on the same row. It
+    # is the live claim credential and it ships to nobody — not even an owner,
+    # who has no use for it and whose session is one shoulder away from a bride
+    # whose seat it would take.
+    offer_starts_at: datetime.datetime | None = None
+    offer_expires_at: datetime.datetime | None = None
 
 
 class ManageWaitlistResponse(BaseModel):
