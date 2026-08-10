@@ -4,7 +4,7 @@ import "../i18n";
 import { ApiError, api } from "../api";
 import type { ShiftTemplate } from "../api";
 import { ShiftTemplatesPane } from "../components/ShiftTemplatesPane";
-import { MAX_TEMPLATES_PER_DAY } from "../validation";
+import { MAX_COVERAGE_TARGET, MAX_TEMPLATES_PER_DAY } from "../validation";
 
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
@@ -330,5 +330,107 @@ describe("reporting the list upward", () => {
     await waitFor(() => {
       expect(onTemplates).toHaveBeenLastCalledWith([template()]);
     });
+  });
+});
+
+describe("F40 D10: the coverage-target fieldset", () => {
+  it("renders one numeric input per role, each with its OWN help line", async () => {
+    // ⚠ DESIGN F-30. `Input` builds `helpId` from its own `useId()` and links it
+    // with `aria-describedby` PER FIELD, so one <p> under the <legend> would be
+    // linked to nothing — and the empty-vs-zero rule would never be spoken to
+    // the person who most needs it.
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "עריכה" }));
+    for (const label of ["בעלת הבוטיק", "אחראית משמרת", "קבלה", "יועצת מכירות", "תופרת"]) {
+      const field = screen.getByLabelText(label) as HTMLInputElement;
+      expect(field.type).toBe("number");
+      expect(field.getAttribute("inputmode")).toBe("numeric");
+      expect(field.min).toBe("0");
+      expect(field.max).toBe(String(MAX_COVERAGE_TARGET));
+      // 44px floor without touching packages/ui.
+      expect(field.className).toContain("min-h-11");
+      const describedBy = field.getAttribute("aria-describedby");
+      expect(describedBy, label).toBeTruthy();
+      expect(document.getElementById(String(describedBy))?.textContent).toBe(
+        "שדה ריק — אין יעד. אפס — במפורש אף אחת.",
+      );
+    }
+  });
+
+  it("seeds the draft from the row, so a label edit cannot clear the targets", async () => {
+    // ⚠ THE SILENT LOSS D2's FULL-REPLACE RULE EXISTS TO PREVENT, arriving
+    // through the one control that writes targets. `draftOf` must seed.
+    listShiftTemplates.mockResolvedValue({
+      templates: [template({ coverage_targets: { sales_assistant: 2, seamstress: 0 } })],
+    });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "עריכה" }));
+    expect((screen.getByLabelText("יועצת מכירות") as HTMLInputElement).value).toBe("2");
+    expect((screen.getByLabelText("תופרת") as HTMLInputElement).value).toBe("0");
+
+    fireEvent.change(screen.getByLabelText("שם המשמרת"), { target: { value: "בוקר" } });
+    fireEvent.click(screen.getByRole("button", { name: "שמירת המשמרת" }));
+    await waitFor(() => {
+      expect(updateShiftTemplate).toHaveBeenCalledWith(
+        MORNING,
+        expect.objectContaining({
+          label: "בוקר",
+          coverage_targets: { sales_assistant: 2, seamstress: 0 },
+        }),
+      );
+    });
+  });
+
+  it("omits a blank key and sends a zero, which are different facts", async () => {
+    // ⚠ D10 ON THE WIRE. An ABSENT key is «no target» and renders as a plain
+    // count; `0` is «deliberately nobody» and renders as a target that is short
+    // the moment somebody is assigned. A filter testing truthiness would collapse
+    // the second into the first.
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "עריכה" }));
+    fireEvent.change(screen.getByLabelText("יועצת מכירות"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("תופרת"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("קבלה"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "שמירת המשמרת" }));
+    await waitFor(() => {
+      const call = updateShiftTemplate.mock.calls.at(-1);
+      expect(call).toBeDefined();
+      const targets = call![1].coverage_targets;
+      expect(targets).toEqual({ sales_assistant: 2, seamstress: 0 });
+      // ⚠ ABSENT, not zero. The two are different facts (D10) and this is the
+      // assertion that dies if `bodyOf` ever filters on truthiness.
+      expect("reception" in targets).toBe(false);
+    });
+  });
+
+  it("refuses an out-of-range target with the INTERPOLATED bound", async () => {
+    // Design F-33 / O3: the constant will move, and a literal in the sentence
+    // would leave client and server disagreeing about the same field.
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "עריכה" }));
+    fireEvent.change(screen.getByLabelText("יועצת מכירות"), { target: { value: "99" } });
+    fireEvent.click(screen.getByRole("button", { name: "שמירת המשמרת" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      `יעד האיוש חייב להיות מספר שלם בין 0 ל־${MAX_COVERAGE_TARGET}.`,
+    );
+    expect(updateShiftTemplate).not.toHaveBeenCalled();
+  });
+
+  it("opens NO confirm for a targets-only edit", async () => {
+    // ⚠ F-12 / D10. A coverage number changes nothing any staffer answered, so
+    // `isMaterialEdit` must NOT gain a fourth field — doing so would soft-delete
+    // every future submission on the template the first time somebody fixes a
+    // target from 2 to 3.
+    listShiftTemplates.mockResolvedValue({
+      templates: [template({ future_submission_count: 4 })],
+    });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "עריכה" }));
+    fireEvent.change(screen.getByLabelText("יועצת מכירות"), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "שמירת המשמרת" }));
+    await waitFor(() => {
+      expect(updateShiftTemplate).toHaveBeenCalled();
+    });
+    expect(screen.queryByText(/תבטל את הזמינות/)).toBeNull();
   });
 });

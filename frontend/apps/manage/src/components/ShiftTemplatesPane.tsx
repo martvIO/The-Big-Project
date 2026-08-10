@@ -4,7 +4,13 @@ import { Button, Card, EmptyState, Input, Modal, Select, Skeleton, TimeField } f
 import { api, ApiError, errorMessage } from "../api";
 import type { ShiftTemplate, ShiftTemplateInput, StaffRole } from "../api";
 import { DAY_NAMES } from "../lib/week";
-import { MAX_TEMPLATES_PER_DAY, validateShiftTemplate } from "../validation";
+import { ROLE_LABEL_KEY, ROLE_OPTIONS } from "../lib/roles";
+import {
+  MAX_COVERAGE_TARGET,
+  MAX_TEMPLATES_PER_DAY,
+  validateCoverageTarget,
+  validateShiftTemplate,
+} from "../validation";
 
 // The owner's shift editor (elevated only). ONE Card with seven hairline-
 // separated weekday sections — NOT seven Cards: seven `p-6` boxes is 336px of
@@ -206,6 +212,16 @@ export function ShiftTemplatesPane({ onTemplates }: ShiftTemplatesPaneProps) {
     if (message !== null) {
       setDraftError(message);
       return;
+    }
+    // F40 D10, refused client-side so the bound is immediate and Hebrew. The
+    // server carries the same rule and answers `COVERAGE_TARGET_INVALID` for
+    // anything that reaches it anyway.
+    for (const raw of Object.values(current.coverageTargets)) {
+      const targetMessage = validateCoverageTarget(raw);
+      if (targetMessage !== null) {
+        setDraftError(targetMessage);
+        return;
+      }
     }
     setDraftError(null);
     setBusy(true);
@@ -433,6 +449,47 @@ export function ShiftTemplatesPane({ onTemplates }: ShiftTemplatesPaneProps) {
               setDraft({ ...draft, endsAtTime: event.target.value });
             }}
           />
+          {/* ⚠ F40 D10's fieldset, AFTER the end time (design §5). The help line
+              is a PER-`Input` `help` prop and NOT one <p> under the <legend>:
+              `Input` builds its `helpId` from its own `useId()` and links it with
+              `aria-describedby` per field, so a fieldset-level paragraph is
+              linked to nothing — and a screen-reader user tabbing into «מוכרת»
+              would hear the legend and the label and never the one rule that
+              makes the control usable. She would then clear the field intending
+              «אף אחת», write an ABSENT key instead of `0`, and the shift would
+              render a plain count with no «חסר איוש» badge for a role she
+              believed she had zeroed (F-30 / F-13). */}
+          <fieldset className="border-0 p-0 m-0">
+            <legend className="text-sm font-semibold text-ink">
+              {t("shifts.coverageTargets")}
+            </legend>
+            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {ROLE_OPTIONS.map((role) => (
+                <Input
+                  key={role}
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={MAX_COVERAGE_TARGET}
+                  // 44px floor without touching packages/ui — a five-field block
+                  // on a phone is where `size` would otherwise be reached for.
+                  className="min-h-11"
+                  label={t(ROLE_LABEL_KEY[role])}
+                  help={t("shifts.coverageTargetsHelp")}
+                  value={draft.coverageTargets[role] ?? ""}
+                  onChange={(event) => {
+                    setDraft({
+                      ...draft,
+                      coverageTargets: {
+                        ...draft.coverageTargets,
+                        [role]: event.target.value,
+                      },
+                    });
+                  }}
+                />
+              ))}
+            </div>
+          </fieldset>
           {draftError !== null && (
             <p role="alert" className="text-base text-danger">
               {draftError}

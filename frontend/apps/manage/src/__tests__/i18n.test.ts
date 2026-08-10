@@ -2046,8 +2046,9 @@ describe("F40 roster keys resolve", () => {
       "shifts.cellRemovedCue",
       "shifts.errors.availabilityConflict",
     ];
+    const hebrew = he.translation as unknown as Record<string, string>;
     for (const key of isolated) {
-      const value = he.translation[key];
+      const value = hebrew[key];
       expect(value, key).toContain("<bdi>{{name}}</bdi>");
       expect(value, key).not.toContain('dir="ltr"');
     }
