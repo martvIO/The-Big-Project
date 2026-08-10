@@ -52,6 +52,11 @@ const SECTIONS = [
   // F22, the sixteenth — the booking waitlist. `bookingWaitlist`, never
   // `waitlist` (F58's namespace), and the same spelled-out-not-derived rule.
   "bookingWaitlist",
+  // F39, the seventeenth — shift availability. Same spelled-out-not-derived
+  // rule: `i18n.test.ts` derives ITS walk from `GUIDE_STEPS`, so if this list
+  // derived too, a section added to the union with no steps could never be
+  // caught by either.
+  "shifts",
 ];
 
 /**
