@@ -1,12 +1,19 @@
 """waitlist offers: offer columns on waitlist_entries, offer subject on scheduled_messages
 
 Revision ID: 0033
-Revises: 0031
+Revises: 0032
 
 Built as 0033 / down_revision 0031 — resolved from `alembic heads` on the day of
 writing, and re-resolved immediately before the pre-push rebase (0018's header
 records the renumber-at-rebase hazard this paragraph inherits, and 0026's own
 header repeats it for this very table).
+
+RE-PARENTED 0031 -> 0032 AT THAT REBASE, and this is the hazard above actually
+firing. F38 merged while this branch was open and its 0032 ALSO named 0031 as
+its parent. Two revisions naming one parent BRANCHES the history: `alembic
+heads` then reports two heads and every db-marked test reds with a message that
+points at nothing in the diff. House rule — whichever migration merges SECOND
+re-parents onto the other. The chain is linear again: 0031 -> 0032 -> 0033.
 
 ADDITIVE ONLY on two shipped tables. No RLS re-run: `ALTER TABLE … ADD COLUMN`
 preserves the policies 0026 and 0010 installed, so
@@ -18,7 +25,7 @@ precisely so F23 would not have to widen it (spec D1, conflict 4).
 from alembic import op
 
 revision = "0033"
-down_revision = "0031"
+down_revision = "0032"
 branch_labels = None
 depends_on = None
 
