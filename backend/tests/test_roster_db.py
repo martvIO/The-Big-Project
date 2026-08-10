@@ -1445,6 +1445,59 @@ async def test_the_published_read_answers_an_unpublished_week_rather_than_404ing
         assert [row.staff_user_id for shift in live.shifts for row in shift.assignments] == [her]
 
 
+async def test_the_open_published_read_carries_no_submitted_state(
+    app_role_url: str,
+) -> None:
+    """⚠ D13's OWN JUSTIFICATION, ASSERTED RATHER THAN NARRATED. The published
+    week is open to every role because «the floor board already names every
+    colleague, a roster discloses nothing new». `override_of_state` is not
+    nothing new — it is the submitted answer, and it is the exact datum that
+    gates `/shifts/week/submissions` and the builder read beside it. Shipping it
+    on the open route tells a seamstress which named colleagues said they could
+    not work and were rostered anyway.
+
+    The BUILDER still carries it (F-5's stamp is the whole point of the pane's
+    «שובצה למרות…» line), so this pins the split rather than the field.
+    """
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        await _submit(
+            factory,
+            tenant_id,
+            staff_user_id=her,
+            template_id=template_id,
+            state=AvailabilityState.UNAVAILABLE,
+        )
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK,
+                shift_template_id=template_id,
+                staff_user_id=her,
+                acknowledge_override=True,
+            ),
+        )
+        await service.publish(tenant_id, actor=actor, week_start=WEEK)
+
+        builder = await service.roster(tenant_id, actor=actor, week_start=WEEK)
+        assigned = [row for shift in builder.shifts for row in shift.assignments]
+        assert [row.override_of_state for row in assigned] == [AvailabilityState.UNAVAILABLE]
+
+        open_read = await service.published(tenant_id, week_start=WEEK)
+        rows = [row for shift in open_read.shifts for row in shift.assignments]
+        # She is on the published roster — the route's whole job — but WHY she is
+        # on it is the builder's business.
+        assert [row.staff_user_id for row in rows] == [her]
+        assert [row.override_of_state for row in rows] == [None]
+
+
 async def test_her_week_carries_the_published_flag_and_only_her_shifts(
     app_role_url: str,
 ) -> None:

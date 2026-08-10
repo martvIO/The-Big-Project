@@ -746,7 +746,8 @@ class ShiftsService:
             published_by_name=published_by_name,
             edited_since_publish=edited,
             shifts=[
-                self._shift_response(template, assignments, staff_by_id) for template in templates
+                self._shift_response(template, assignments, staff_by_id, reveal_override=True)
+                for template in templates
             ],
             staff=[self._staff_ref(row, entries) for row in staff],
         )
@@ -937,17 +938,28 @@ class ShiftsService:
         and the later assignment silently lost."""
         assignments = await self._assignments.by_roster(session, tenant_id, roster_id)
         staff_by_id = {row.id: row for row in await self._staff.list_live(session, tenant_id)}
-        return self._shift_response(template, assignments, staff_by_id)
+        return self._shift_response(template, assignments, staff_by_id, reveal_override=True)
 
     @staticmethod
     def _shift_response(
         template: ShiftTemplate,
         assignments: list[RosterAssignment],
         staff_by_id: dict[UUID, StaffUser],
+        *,
+        reveal_override: bool,
     ) -> RosterShiftResponse:
         """⚠ AN ASSIGNMENT WHOSE STAFFER HAS BEEN OFFBOARDED IS DROPPED rather
         than rendered nameless — F39's `submissions` rule, and for its reason: a
-        name on this list is a name the owner would roster."""
+        name on this list is a name the owner would roster.
+
+        ⚠ `reveal_override` IS REQUIRED AND KEYWORD-ONLY, and that is the
+        mechanism rather than a style choice: `override_of_state` is the
+        SUBMITTED answer, which is D13's stated reason for gating the builder
+        read and `/shifts/week/submissions`. `GET /shifts/roster/published` is
+        open to all five roles, so a default here would silently hand every
+        seamstress the list of colleagues who said «לא זמינה» and were rostered
+        anyway. With no default, a new call site cannot forget to decide.
+        """
         rows = [
             row
             for row in assignments
@@ -968,7 +980,7 @@ class ShiftsService:
                     is_shift_manager=row.is_shift_manager,
                     override_of_state=(
                         None
-                        if row.override_of_state is None
+                        if row.override_of_state is None or not reveal_override
                         else AvailabilityState(row.override_of_state)
                     ),
                 )
@@ -1056,7 +1068,8 @@ class ShiftsService:
             templates = await self._templates.list_live(session, tenant_id)
             staff_by_id = {row.id: row for row in await self._staff.list_live(session, tenant_id)}
             shifts = [
-                self._shift_response(template, assignments, staff_by_id) for template in templates
+                self._shift_response(template, assignments, staff_by_id, reveal_override=True)
+                for template in templates
             ]
             await self._audit.record(
                 session,
@@ -1115,7 +1128,8 @@ class ShiftsService:
             week_start=target,
             week_end=week_end(target),
             shifts=[
-                self._shift_response(template, assignments, staff_by_id) for template in templates
+                self._shift_response(template, assignments, staff_by_id, reveal_override=False)
+                for template in templates
             ],
         )
 

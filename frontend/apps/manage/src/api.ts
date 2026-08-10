@@ -1709,6 +1709,11 @@ export interface PublishedRoster {
   published_at: string | null;
   week_start: string;
   week_end: string;
+  // ⚠ `assignments[].override_of_state` IS ALWAYS `null` HERE AND THAT IS A
+  // SERVER GUARANTEE, not an accident of the data. This read is open to all five
+  // roles (D13) and the stamp is the SUBMITTED answer — the exact datum that
+  // gates the builder read and `/shifts/week/submissions` beside it. Anything
+  // needing the stamp reads `getRoster()`, which is `ELEVATED`.
   shifts: RosterShift[];
 }
 

@@ -269,7 +269,10 @@ ROSTER_PUBLISH = ("POST", "/manage/shifts/roster/publish")
 # ⚠ THE ONE OPEN ROUTE. The floor board already names every colleague, so a
 # published roster discloses nothing new — and a staffer who cannot see it
 # cannot plan (D13). It carries no submitted state, which is what separates it
-# from the builder read above.
+# from the builder read above — and that is an ASSERTION, not a claim: see
+# `test_roster_db.py::test_the_open_published_read_carries_no_submitted_state`,
+# which reads the same week through both routes and pins `override_of_state` to
+# the builder alone.
 ROSTER_PUBLISHED_READ = ("GET", "/manage/shifts/roster/published")
 
 SHIFTS_ELEVATED = {
