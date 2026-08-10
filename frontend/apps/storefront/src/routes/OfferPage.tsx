@@ -62,8 +62,16 @@ export function OfferPage({ token }: { token: string }) {
   // The one-line error ABOVE the form — a lost race, stale terms, a throttle.
   // Not a field error: none of them is about something she typed.
   const [formError, setFormError] = useState<string | null>(null);
-  // Written on DISCRETE events only (R16): claiming, claimed, declined, gone.
-  // Never on a keystroke and never per render.
+  // Written on DISCRETE events only (R16), and ONLY for an event that mounts no
+  // live region of its own — which leaves exactly one: `claiming`, the in-flight
+  // state, whose sole visible sign is a spinner inside the button.
+  //
+  // ⚠ Every TERMINAL event clears this instead of repeating itself into it. Each
+  // terminal line is already a `role="status"` (design §123) that the transition
+  // focuses, so writing its sentence here too mounted the SAME sentence in two
+  // live regions in one commit and a screen reader read «התור נקבע. נתראה.»
+  // twice. It also put a second, unfocusable copy of that text ahead of the real
+  // line in DOM order, which is what `getByText(...).first()` was resolving to.
   const [announced, setAnnounced] = useState<string | null>(null);
 
   const revealRef = useRef<HTMLParagraphElement | null>(null);
@@ -133,7 +141,7 @@ export function OfferPage({ token }: { token: string }) {
         name: trimmed,
         terms_version: terms.version,
       });
-      setAnnounced(t("offer.claimed"));
+      setAnnounced(null);
       moveFocusTo.current = "claimed";
       setView({ kind: "claimed", booking });
       // §2.2 — F19's SHIPPED hand-off, verbatim. Once she leaves for the hosted
@@ -153,7 +161,7 @@ export function OfferPage({ token }: { token: string }) {
         // back — so a reload deliberately re-renders the live offer until the
         // deadline passes. Correct, and not to be "fixed" client-side.
         setFormError(t("offer.gone"));
-        setAnnounced(t("offer.gone"));
+        setAnnounced(null);
         moveFocusTo.current = "gone";
       } else if (error instanceof ApiError && error.status === 404) {
         setView({ kind: "invalid" });
@@ -174,7 +182,7 @@ export function OfferPage({ token }: { token: string }) {
     setFormError(null);
     try {
       await api.declineOffer(token);
-      setAnnounced(t("offer.declined"));
+      setAnnounced(null);
       moveFocusTo.current = "declined";
       setView({ kind: "declined" });
     } catch (error: unknown) {

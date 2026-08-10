@@ -110,11 +110,14 @@ function t(key: string): string {
 /**
  * The VISIBLE occurrence of a string.
  *
- * `offer.claimed`, `offer.declined` and `offer.gone` are each rendered twice by
- * design — once on the page and once inside the visually-hidden status region
- * that announces the outcome — so a bare getByText matches both. Filtering by
- * `.sr-only` ancestry keeps these assertions about what she SEES, with the
- * announcement asserted separately through role="status".
+ * `offer.claimed`, `offer.declined` and `offer.gone` USED to render twice — once
+ * on the page and once inside the visually-hidden status region — so a bare
+ * getByText matched both. They no longer do: each terminal line is its own
+ * `role="status"`, so repeating it into the hidden region announced it twice and
+ * put an unfocusable copy ahead of the real line in DOM order.
+ *
+ * The filter stays as the guard against that coming back: it throws on a second
+ * occurrence rather than silently asserting the hidden one.
  */
 function visible(value: string): HTMLElement {
   const matches = screen.getAllByText(value).filter((node) => node.closest(".sr-only") === null);
