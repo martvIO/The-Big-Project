@@ -143,7 +143,14 @@ def test_the_login_lifecycle_works_as_the_app_role_and_audits_both_outcomes(
 
         me = client.get("/platform/auth/me")
         assert me.status_code == 200
-        assert me.json() == {"email": email, "display_name": "Dana"}
+        # base_domain rides this response so the console composes addresses from
+        # what the server sent rather than a hardcoded domain. Exact dict equality
+        # keeps it here; this is the app-role twin of the two api-lane assertions.
+        assert me.json() == {
+            "email": email,
+            "display_name": "Dana",
+            "base_domain": "localtest.me",
+        }
 
         assert client.post("/platform/auth/logout").status_code == 200
         # The revoke is real, not just a cleared cookie: replaying the token the
