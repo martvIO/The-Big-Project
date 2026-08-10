@@ -15,6 +15,7 @@ vi.mock("../api", async () => {
       seedShiftTemplates: vi.fn(),
       getShiftWeek: vi.fn(),
       getWeekSubmissions: vi.fn(),
+      getRoster: vi.fn(),
       getSettings: vi.fn(),
     },
   };
@@ -24,6 +25,7 @@ const listShiftTemplates = vi.mocked(api.listShiftTemplates);
 const seedShiftTemplates = vi.mocked(api.seedShiftTemplates);
 const getShiftWeek = vi.mocked(api.getShiftWeek);
 const getWeekSubmissions = vi.mocked(api.getWeekSubmissions);
+const getRoster = vi.mocked(api.getRoster);
 const getSettings = vi.mocked(api.getSettings);
 
 const MORNING = "11111111-1111-1111-1111-111111111111";
@@ -65,6 +67,15 @@ beforeEach(() => {
       { staff_user_id: "s1", display_name: "דנה כהן", submitted: false, entries: [] },
     ],
   });
+  getRoster.mockResolvedValue({
+    week_start: WEEK_START,
+    week_end: "2026-11-14",
+    published_at: null,
+    published_by_name: null,
+    edited_since_publish: false,
+    shifts: [{ template: TEMPLATE, assignments: [], coverage_targets: {}, assigned_by_role: {} }],
+    staff: [],
+  });
   getSettings.mockResolvedValue({
     profile: {},
     toggles: {},
@@ -81,25 +92,29 @@ describe("the pane set", () => {
     ]);
   });
 
-  it("gives an owner four, her own week FIRST", async () => {
+  it("gives an owner five, her own week FIRST and the roster in the middle", async () => {
     // One mental model and one e2e path for every role — and an owner who has to
     // scroll past a list she reads first is an owner who stops answering her own
     // week. Configuration last.
+    //
+    // ⚠ F40 D17 / design F-14: the roster goes between the readiness list and
+    // the deadline — READINESS ABOVE THE BUILD, CONFIGURATION BELOW IT.
     render(<ShiftsSection role="owner" />);
     await screen.findByRole("heading", { name: "מי הגישה" });
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
       "הזמינות שלי",
       "מי הגישה",
+      "סידור עבודה",
       "מועד ההגשה",
       "משמרות הבוטיק",
     ]);
   });
 
-  it("gives a shift manager the same four as the owner", async () => {
+  it("gives a shift manager the same five as the owner", async () => {
     // ⚠ D5: she is admitted EVERYWHERE in this feature.
     render(<ShiftsSection role="shift_manager" />);
     await screen.findByRole("heading", { name: "מי הגישה" });
-    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(4);
+    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(5);
   });
 });
 
@@ -144,6 +159,7 @@ describe("first run", () => {
       expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
         "הזמינות שלי",
         "מי הגישה",
+        "סידור עבודה",
         "מועד ההגשה",
         "משמרות הבוטיק",
       ]);
@@ -185,7 +201,7 @@ describe("independence", () => {
     expect(await screen.findByText("טרם הגישה")).toBeInTheDocument();
     // And the failed pane keeps its own heading, so the heading order is
     // unchanged in every state.
-    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(4);
+    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(5);
     await waitFor(() => {
       expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
     });
@@ -200,10 +216,12 @@ describe("independence", () => {
     // templates exist» and collapse an owner onto the first-run screen.
     listShiftTemplates.mockRejectedValueOnce(new Error("boom"));
     render(<ShiftsSection role="owner" />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("לא הצלחנו לטעון את הנתונים כרגע.");
-    expect(screen.getByRole("button", { name: "ניסיון נוסף" })).toBeInTheDocument();
+    expect((await screen.findAllByRole("alert"))[0]).toHaveTextContent(
+      "לא הצלחנו לטעון את הנתונים כרגע.",
+    );
+    expect(screen.getAllByRole("button", { name: "ניסיון נוסף" })[0]).toBeInTheDocument();
     expect(await screen.findByText("הגישו 0 מתוך 1")).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(4);
+    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(5);
   });
 
   it("issues the templates read ONCE per elevated mount", async () => {
