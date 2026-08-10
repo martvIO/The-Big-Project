@@ -116,3 +116,34 @@ object graph holds. The two disagree, and that disagreement is the bug.
 ⚠ A false lead cost time here and is worth writing down: an intermediate test of Defect B was run
 against a uvicorn started **before** the booking-side edit. A stale server reads exactly like a failed
 fix — the same trap as Playwright serving a stale `dist/`. Restart before believing any result.
+
+---
+
+## Addendum 2 — E8 boundary QA (F38 + F39 + F40), 2026-08-11
+
+Same environment, migrated to **0036**. Full suite on merged `main`: **286 passed**, 39 axe
+assertions executed, zero violations — read from the results, not the exit code.
+
+Real-Chromium roster journey, on the screen that did not exist until this run:
+
+| Step | Result |
+|---|---|
+| Nav row renamed | ✅ «משמרות» (F40 E2), 13 rows |
+| Roster pane, unpublished | ✅ «טיוטה. הסידור אינו גלוי לצוות ואינו קובע מי במשמרת.» — D6 |
+| Heading hierarchy | ✅ h2 «סידור עבודה» → h3 weekday → h4 shift, per design P2/F-10 |
+| Assignment dialog | ✅ five-bucket sort puts the one who submitted («זמינה») first; role + «שובצה השבוע» per row |
+| Assign | ✅ live region «נועה ברזילי שובצה למשמרת.»; one `roster_assignments` row; roster still `published = f` |
+| Publish | ✅ «פורסם על ידי נועה ברזילי ב־11.8.2026 בשעה 00:50» — Jerusalem local, from a UTC+03 instant |
+| **The cutover, rule 3** | ✅ «אין סידור עבודה לשבוע הזה. כל מי שלא סומנה ידנית נחשבת כמי שבמשמרת.» |
+
+The last row is the epic's whole thesis, demonstrated rather than asserted. Today (11 Aug) is not in
+the published week (16 Aug), so the board falls to **rule 3** and renders the label **once at week
+level** — never on a card — with «סימון שאינה במשמרת» on each staffer. **A boutique that never
+publishes a roster sees exactly today's behaviour**, which is why F40 turned out additive rather than
+the cutover its epic described.
+
+### One thing to watch, not filed as a defect
+
+After publishing, `MyWeekPanel`'s own block still read «סידור העבודה לשבוע הזה טרם פורסם.» The panes
+each own their read by design (§1.2), so it is stale-until-refetch rather than wrong. Worth a look if
+an owner publishes and then wonders why her own block disagrees.
