@@ -508,7 +508,14 @@ test("platform: the invites table renders no code column and only open rows can 
   await expect(table.getByRole("columnheader")).toHaveCount(6);
   await expect(table.getByRole("button", { name: "ביטול ההזמנה" })).toHaveCount(1);
   // The Latin runs are isolated; the Hebrew boutique name is NOT forced LTR.
-  await expect(page.locator("bdi[dir='ltr']", { hasText: "chen@x.example" })).toBeVisible();
+  //
+  // ⚠ SCOPED TO ONE ROW. All three fixtures carry the SAME owner email — only
+  // the id, slug, name and lifecycle differ — so a page-wide `bdi[dir='ltr']`
+  // filtered on it matches three nodes and says nothing about which. The claim
+  // is about the shape of a ROW, so the locator is anchored to one.
+  const chenRow = table.getByRole("row", { name: /בוטיק של חן/ });
+  await expect(chenRow.locator("bdi[dir='ltr']", { hasText: "chen@x.example" })).toBeVisible();
+  await expect(chenRow.locator("bdi[dir='ltr']", { hasText: "בוטיק של חן" })).toHaveCount(0);
 });
 
 test("platform: the revoke dialog traps focus, restores it, and reds only the confirm", async ({
