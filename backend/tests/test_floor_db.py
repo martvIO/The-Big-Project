@@ -35,7 +35,8 @@ import uuid
 from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -482,5 +483,104 @@ async def test_another_tenants_staffer_can_neither_be_read_nor_toggled(
             survivor = await repo.by_id(session, elsewhere, theirs)
         assert survivor is not None
         assert survivor.break_started_at is None
+    finally:
+        await engine.dispose()
+
+
+# --- F40 C2: the override expires with no sweep -------------------------------
+
+
+async def test_the_override_survives_exactly_one_jerusalem_day_with_no_writer(
+    app_role_url: str,
+) -> None:
+    """⚠ D4'S COMPUTE-ON-READ DISCIPLINE, PROVED RATHER THAN ASSERTED.
+
+    An override set at 23:59 Jerusalem is still live; the SAME ROW read at 00:01
+    the next Jerusalem day resolves through rule 2 or 3 instead — with NO worker,
+    NO scheduled job and NO writer having run in between. That is the whole
+    answer to «what stops it becoming a permanent override nobody notices»: the
+    date simply stops matching.
+
+    Both reads run against the same untouched row, and the row is asserted to
+    still carry its date afterwards — a test that let something clear it would
+    prove the opposite of what it claims.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        actor = StaffContext(
+            id=staff_id,
+            tenant_id=tenant_id,
+            email="owner@bella.example",
+            display_name="Staff",
+            role=StaffRole.OWNER.value,
+        )
+        # 23:59 Jerusalem on 2026-11-08 is 21:59Z (winter, UTC+2).
+        just_before = datetime(2026, 11, 8, 21, 59, tzinfo=UTC)
+        just_after = datetime(2026, 11, 8, 22, 1, tzinfo=UTC)
+
+        marked = await FloorService(factory, clock=lambda: just_before).set_on_shift(
+            tenant_id, staff_id, on_shift=False, actor=actor
+        )
+        assert (marked.on_shift, marked.on_shift_source) == (False, OnShiftSource.MANUAL_TODAY)
+
+        # ⚠ NOTHING RUNS HERE. No sweep, no worker, no second write.
+        read = await FloorService(factory, clock=lambda: just_after).floor(tenant_id)
+        assert read.on_shift_by_staff_id[staff_id] == (True, OnShiftSource.FALLBACK)
+
+        # And the row still carries yesterday's pair — it is SILENT, not cleared.
+        async with tenant_session(factory, tenant_id) as session:
+            row = await StaffUsersRepository().by_id(session, tenant_id, staff_id)
+            assert row is not None
+            assert row.on_shift_on == date(2026, 11, 8)
+            assert row.on_shift_override is False
+    finally:
+        await engine.dispose()
+
+
+async def test_the_pair_check_refuses_half_an_override_through_the_repository(
+    app_role_url: str,
+) -> None:
+    """The DB CHECK is the last line of defence, and the repository's «both
+    columns in one statement» is what keeps it unreachable."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        with pytest.raises(IntegrityError):
+            async with tenant_session(factory, tenant_id) as session:
+                await session.execute(
+                    text("UPDATE staff_users SET on_shift_on = :d WHERE id = :i"),
+                    {"d": date(2026, 11, 8), "i": staff_id},
+                )
+    finally:
+        await engine.dispose()
+
+
+async def test_clearing_an_override_hands_the_answer_back_with_no_roster(
+    app_role_url: str,
+) -> None:
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    try:
+        staff_id = await _seed_staff(factory, tenant_id)
+        actor = StaffContext(
+            id=staff_id,
+            tenant_id=tenant_id,
+            email="owner@bella.example",
+            display_name="Staff",
+            role=StaffRole.OWNER.value,
+        )
+        service = FloorService(factory, clock=lambda: NOW)
+        await service.set_on_shift(tenant_id, staff_id, on_shift=False, actor=actor)
+        cleared = await service.clear_on_shift(tenant_id, staff_id, actor=actor)
+        assert (cleared.on_shift, cleared.on_shift_source) == (True, OnShiftSource.FALLBACK)
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await StaffUsersRepository().by_id(session, tenant_id, staff_id)
+            assert row is not None
+            assert row.on_shift_on is None
+            assert row.on_shift_override is None
     finally:
         await engine.dispose()

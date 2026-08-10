@@ -3008,3 +3008,231 @@ def test_the_atelier_assignable_predicate_is_not_rewired() -> None:
     source = inspect.getsource(atelier_schemas)
     assert "assignable=" in source
     assert "on_shift" not in source
+
+
+# --- F40 C2: the same-day override --------------------------------------------
+
+
+def _install_override(monkeypatch: pytest.MonkeyPatch, row: StaffUser | None) -> list[Any]:
+    """Records the `(on_shift_on, on_shift_override)` pair every write sends, so
+    the pair invariant is observable without a database."""
+    writes: list[Any] = []
+
+    async def _set(
+        _self: object,
+        _session: object,
+        _tenant_id: uuid.UUID,
+        staff_id: uuid.UUID,
+        *,
+        on_shift_on: datetime.date | None,
+        on_shift_override: bool | None,
+    ) -> StaffUser | None:
+        writes.append(
+            {
+                "staff_id": staff_id,
+                "on_shift_on": on_shift_on,
+                "on_shift_override": on_shift_override,
+            }
+        )
+        return row
+
+    monkeypatch.setattr(StaffUsersRepository, "set_on_shift_override", _set)
+    return writes
+
+
+@pytest.mark.parametrize("role", FLOOR)
+async def test_a_floor_role_may_not_mark_anybody_on_shift_not_even_herself(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    """⚠ D13, AND THE «not even herself» HALF IS THE POINT. A staffer marking
+    herself present is an attendance punch and the epic's labour-law row puts
+    attendance visibly out of scope — so this is `ELEVATED_ROLES` alone and NEVER
+    the self-or-elevated guard the break toggle uses.
+
+    It is also the assertion design F-26 depends on: the console must not render
+    the mark button on a seamstress's own card, because her press would be a 403
+    and `mutate`'s P-6 rule makes a 403 terminal for the whole floor panel — she
+    would lose the board for the session by pressing a button that should never
+    have existed.
+    """
+    me = _staff_user(role=role.value)
+    writes = _install_override(monkeypatch, me)
+    actor = _actor(role, me.id)
+
+    with pytest.raises(NotAuthorizedError):
+        await _service().set_on_shift(TENANT_ID, me.id, on_shift=False, actor=actor)
+    with pytest.raises(NotAuthorizedError):
+        await _service().set_on_shift(TENANT_ID, uuid.uuid4(), on_shift=True, actor=actor)
+    with pytest.raises(NotAuthorizedError):
+        await _service().clear_on_shift(TENANT_ID, me.id, actor=actor)
+
+    # ⚠ REFUSED BEFORE ANY WRITE — a 403 raised after one is a change nobody
+    # asked for, and after a READ it is an existence oracle.
+    assert writes == []
+
+
+@pytest.mark.parametrize("role", ELEVATED)
+async def test_both_elevated_roles_may_mark_a_colleague(
+    monkeypatch: pytest.MonkeyPatch, role: StaffRole
+) -> None:
+    """C4/D13: the override is ELEVATED and never owner-only. A shift manager is
+    the person standing on the floor when somebody calls in sick."""
+    target = _staff_user()
+    writes = _install_override(monkeypatch, target)
+    # ⚠ `_install` re-patches `RostersRepository.by_week` to «no roster»
+    # (rule 3 is its default), so it MUST run before `_install_roster` or the
+    # roster this test is about is silently replaced by no roster at all.
+    _install(monkeypatch, wrote=True, row=target, before=target)
+    _install_roster(monkeypatch, published=False)
+
+    read = await _service().set_on_shift(TENANT_ID, target.id, on_shift=False, actor=_actor(role))
+    assert read.row is target
+    assert [write["staff_id"] for write in writes] == [target.id]
+
+
+async def test_the_date_is_the_servers_jerusalem_today_and_never_the_bodys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ THE ROUTE ACCEPTS NO DATE AT ALL (D3). Accepting one would make rule 1
+    pre-settable for TOMORROW — a roster edit wearing an override's clothes — and
+    would let a client's clock decide what «today» means. NOW is 11:20 UTC on
+    2026-08-02, i.e. 14:20 in Jerusalem."""
+    target = _staff_user()
+    writes = _install_override(monkeypatch, target)
+    # ⚠ `_install` re-patches `RostersRepository.by_week` to «no roster»
+    # (rule 3 is its default), so it MUST run before `_install_roster` or the
+    # roster this test is about is silently replaced by no roster at all.
+    _install(monkeypatch, wrote=True, row=target, before=target)
+    _install_roster(monkeypatch, published=False)
+
+    await _service().set_on_shift(
+        TENANT_ID, target.id, on_shift=True, actor=_actor(StaffRole.OWNER)
+    )
+    assert writes[0]["on_shift_on"] == datetime.date(2026, 8, 2)
+    assert writes[0]["on_shift_override"] is True
+
+
+async def test_both_columns_move_together_on_set_and_on_clear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ D4's PAIR INVARIANT. `staff_users_on_shift_pair_check` refuses one
+    without the other, so a writer that set only the date would be a `psycopg`
+    error rather than half an override — and half an override would make rule 1
+    fire on a NULL answer."""
+    target = _staff_user()
+    writes = _install_override(monkeypatch, target)
+    # ⚠ `_install` re-patches `RostersRepository.by_week` to «no roster»
+    # (rule 3 is its default), so it MUST run before `_install_roster` or the
+    # roster this test is about is silently replaced by no roster at all.
+    _install(monkeypatch, wrote=True, row=target, before=target)
+    _install_roster(monkeypatch, published=False)
+    actor = _actor(StaffRole.OWNER)
+
+    await _service().set_on_shift(TENANT_ID, target.id, on_shift=False, actor=actor)
+    await _service().clear_on_shift(TENANT_ID, target.id, actor=actor)
+
+    assert writes[0]["on_shift_on"] is not None
+    assert writes[0]["on_shift_override"] is False
+    assert writes[1]["on_shift_on"] is None
+    assert writes[1]["on_shift_override"] is None
+
+
+async def test_the_override_write_returns_the_patched_card_with_its_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ DESIGN F-1. The client CANNOT compute `on_shift_source` — that is the
+    whole of D8 — so a route answering `204` would force a refetch or a guess,
+    and a guess is the panel disagreeing with itself in Hebrew on a shared floor
+    tablet."""
+    target = _staff_user()
+    target.on_shift_on = jerusalem_moment(NOW)[0]
+    target.on_shift_override = False
+    _install_override(monkeypatch, target)
+    # ⚠ `_install` re-patches `RostersRepository.by_week` to «no roster»
+    # (rule 3 is its default), so it MUST run before `_install_roster` or the
+    # roster this test is about is silently replaced by no roster at all.
+    _install(monkeypatch, wrote=True, row=target, before=target)
+    _install_roster(monkeypatch, published=True, rostered={target.id})
+
+    read = await _service().set_on_shift(
+        TENANT_ID, target.id, on_shift=False, actor=_actor(StaffRole.OWNER)
+    )
+    assert (read.on_shift, read.on_shift_source) == (False, OnShiftSource.MANUAL_TODAY)
+
+
+async def test_clearing_hands_the_answer_back_to_the_roster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a clear the source moves to `roster` or `fallback`, and only the
+    server can say which — which is the second half of F-1's argument."""
+    target = _staff_user()
+    _install_override(monkeypatch, target)
+    # ⚠ `_install` re-patches `RostersRepository.by_week` to «no roster»
+    # (rule 3 is its default), so it MUST run before `_install_roster` or the
+    # roster this test is about is silently replaced by no roster at all.
+    _install(monkeypatch, wrote=True, row=target, before=target)
+    _install_roster(monkeypatch, published=True, rostered={target.id})
+
+    read = await _service().clear_on_shift(TENANT_ID, target.id, actor=_actor(StaffRole.OWNER))
+    assert (read.on_shift, read.on_shift_source) == (True, OnShiftSource.ROSTER)
+
+
+async def test_both_override_writes_audit_with_ids_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ THE AUDIT ROW IS THE ONLY DURABLE RECORD of who flipped it and when — D4
+    puts no `set_at`/`set_by` on `staff_users` (F38's precedent verbatim). Ids and
+    flags only, never a display name: `audit_log` has no retention class and
+    platform operators read across tenants."""
+    target = _staff_user(display_name="דנה כהן")
+    _install_override(monkeypatch, target)
+    writes = _install(monkeypatch, wrote=True, row=target, before=target)
+    _install_roster(monkeypatch, published=False)
+    actor = _actor(StaffRole.OWNER)
+
+    await _service().set_on_shift(TENANT_ID, target.id, on_shift=False, actor=actor)
+    await _service().clear_on_shift(TENANT_ID, target.id, actor=actor)
+
+    assert [entry["action"] for entry in writes.audit] == [
+        AuditAction.ON_SHIFT_OVERRIDE_SET.value,
+        AuditAction.ON_SHIFT_OVERRIDE_CLEARED.value,
+    ]
+    assert writes.audit[0]["details"] == {
+        "target": str(target.id),
+        "on_shift_on": "2026-08-02",
+        "on_shift": False,
+    }
+    assert "דנה כהן" not in str(writes.audit)
+
+
+async def test_an_unknown_staffer_is_a_404_on_both_verbs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_override(monkeypatch, None)
+    actor = _actor(StaffRole.OWNER)
+    with pytest.raises(DomainNotFoundError):
+        await _service().set_on_shift(TENANT_ID, uuid.uuid4(), on_shift=True, actor=actor)
+    with pytest.raises(DomainNotFoundError):
+        await _service().clear_on_shift(TENANT_ID, uuid.uuid4(), actor=actor)
+
+
+async def test_a_second_set_overwrites_rather_than_appending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠ D4's «no table» argument, observable: one override per person per day,
+    only today's is ever read, so there is no sort order, no per-parent cap, no
+    count and no sweep loop. A table would buy a repository and an RLS policy to
+    express «at most one»."""
+    target = _staff_user()
+    writes = _install_override(monkeypatch, target)
+    # ⚠ `_install` re-patches `RostersRepository.by_week` to «no roster»
+    # (rule 3 is its default), so it MUST run before `_install_roster` or the
+    # roster this test is about is silently replaced by no roster at all.
+    _install(monkeypatch, wrote=True, row=target, before=target)
+    _install_roster(monkeypatch, published=False)
+    actor = _actor(StaffRole.OWNER)
+
+    await _service().set_on_shift(TENANT_ID, target.id, on_shift=False, actor=actor)
+    await _service().set_on_shift(TENANT_ID, target.id, on_shift=True, actor=actor)
+
+    assert [write["on_shift_override"] for write in writes] == [False, True]

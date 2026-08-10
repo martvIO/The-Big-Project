@@ -264,6 +264,55 @@ class StaffUsersRepository:
             return None
         return await self._refreshed(session, tenant_id, staff_id)
 
+    async def set_on_shift_override(
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        staff_id: UUID,
+        *,
+        on_shift_on: date | None,
+        on_shift_override: bool | None,
+    ) -> StaffUser | None:
+        """F40 D4's same-day override — BOTH COLUMNS IN ONE STATEMENT, always.
+
+        ⚠ `staff_users_on_shift_pair_check` refuses one without the other, so a
+        writer that set only the date would be a `psycopg` error rather than half
+        an override. Clearing passes `(None, None)`; setting passes
+        `(today_jerusalem(), True|False)`.
+
+        ⚠ NO SWEEP AND NO EXPIRY WRITER. At Jerusalem midnight the date stops
+        matching and rule 2 or 3 answers again with nobody having acted — the
+        same compute-on-read discipline `card_status`, F37's escalation and F36's
+        occupancy already use, and for F37's stated reason: a worker-stamped
+        expiry would arrive up to a poll interval late and would race a
+        concurrent write. The stale row stays on the table and is simply never
+        consulted; the next override overwrites it.
+
+        LAST-WRITE-WINS with an unconditional predicate, `set_weekly_capacity_hours`'
+        shipped rule: an elevated actor marking a colleague off for today is
+        making a call that is hers, and a conflict dialog because another manager
+        touched the row four seconds ago is the platform second-guessing it.
+
+        ⚠ NO `updated_at = now()` — the DB trigger owns it, and the re-read is
+        what picks the trigger's value back up. The answer comes through
+        `_refreshed` and NOT off the returning row, because this is ORM-enabled
+        DML whose `evaluate` synchronisation has already stamped the new values
+        onto the identity-mapped instance whatever the database matched.
+        """
+        wrote = await session.execute(
+            update(StaffUser)
+            .where(
+                StaffUser.tenant_id == tenant_id,
+                StaffUser.id == staff_id,
+                StaffUser.deleted_at.is_(None),
+            )
+            .values(on_shift_on=on_shift_on, on_shift_override=on_shift_override)
+            .returning(StaffUser.id)
+        )
+        if wrote.scalar_one_or_none() is None:
+            return None
+        return await self._refreshed(session, tenant_id, staff_id)
+
     async def _refreshed(
         self, session: AsyncSession, tenant_id: UUID, staff_id: UUID
     ) -> StaffUser | None:

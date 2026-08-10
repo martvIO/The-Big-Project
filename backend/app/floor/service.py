@@ -646,6 +646,90 @@ class FloorService:
             row=row, occupancy=occupancy, on_shift=on_shift, on_shift_source=source
         )
 
+    # --- F40: the same-day on-shift override ---------------------------------
+
+    async def set_on_shift(
+        self, tenant_id: UUID, staff_id: UUID, *, on_shift: bool, actor: StaffContext
+    ) -> StaffCardRead:
+        """Rule 1's write (spec D3/D4/D13).
+
+        ⚠ `ELEVATED_ROLES` ALONE, AND EMPHATICALLY NOT `_authorize`. The break
+        toggle is SELF-OR-elevated because a seamstress may record her own break;
+        this is a statement about SOMEBODY ELSE'S DAY, and D13 puts self-service
+        on-shift marking out of scope by name — a staffer marking herself present
+        is an attendance punch, which the epic's labour-law row forbids. Reusing
+        the shipped guard here is the one edit that would silently make D13 false.
+
+        ⚠ THE DATE IS ALWAYS SERVER-SIDE `today_jerusalem()` AND THE BODY CARRIES
+        NONE. Accepting a date would make rule 1 pre-settable for tomorrow —
+        which is a roster edit wearing an override's clothes — and would let a
+        client's clock decide what «today» means.
+
+        ⚠ TWO-VALUED, not a one-way «mark her on». The commonest same-day event
+        in a boutique is somebody NOT coming in, and it is the only way to say so
+        at all in a boutique with no roster, where rule 3 puts everyone on.
+        """
+        self._assert_elevated(actor)
+        today = today_jerusalem(self._clock)
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._staff.set_on_shift_override(
+                session, tenant_id, staff_id, on_shift_on=today, on_shift_override=on_shift
+            )
+            if row is None:
+                raise DomainNotFoundError("staff_user")
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.ON_SHIFT_OVERRIDE_SET.value,
+                actor_id=actor.id,
+                entity=str(staff_id),
+                # ⚠ THIS ROW IS THE ONLY DURABLE RECORD OF WHO FLIPPED IT AND
+                # WHEN — D4 puts no `set_at`/`set_by` on `staff_users`, which is
+                # F38's precedent verbatim. Ids and flags only, never a name.
+                details={
+                    "target": str(staff_id),
+                    "on_shift_on": today.isoformat(),
+                    "on_shift": on_shift,
+                },
+            )
+            return await self._card_read(session, tenant_id, row, at=self._clock())
+
+    async def clear_on_shift(
+        self, tenant_id: UUID, staff_id: UUID, *, actor: StaffContext
+    ) -> StaffCardRead:
+        """Clears the pair, so rule 2 or 3 answers again on the next read.
+
+        Answers the patched card for design F-1's reason: after a clear the
+        source moves to `roster` or `fallback`, and only the server can say
+        which.
+        """
+        self._assert_elevated(actor)
+        async with tenant_session(self._sessions, tenant_id) as session:
+            row = await self._staff.set_on_shift_override(
+                session, tenant_id, staff_id, on_shift_on=None, on_shift_override=None
+            )
+            if row is None:
+                raise DomainNotFoundError("staff_user")
+            await self._audit.record(
+                session,
+                tenant_id=tenant_id,
+                action=AuditAction.ON_SHIFT_OVERRIDE_CLEARED.value,
+                actor_id=actor.id,
+                entity=str(staff_id),
+                details={"target": str(staff_id)},
+            )
+            return await self._card_read(session, tenant_id, row, at=self._clock())
+
+    @staticmethod
+    def _assert_elevated(actor: StaffContext) -> None:
+        """D13: no self-service on-shift marking, anywhere, for anyone. Spelled
+        as its own guard beside `_authorize` and never sharing a name with it —
+        the two predicates differ by exactly the `isSelf` term, and that term is
+        the whole of the difference between recording your own break and making a
+        statement about a colleague's day."""
+        if actor.role not in ELEVATED_ROLES:
+            raise NotAuthorizedError
+
     # --- F36: the claim, the release, the handover ----------------------------
 
     async def claim(
