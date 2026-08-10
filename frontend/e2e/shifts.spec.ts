@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
+import type { Reply } from "./fixtures/manage";
 import AxeBuilder from "@axe-core/playwright";
 import {
   MANAGE,
@@ -8,6 +9,10 @@ import {
   installManageApi,
   ok,
   refuse,
+  rosterAssignment,
+  rosterShift,
+  rosterStaffRef,
+  rosterWeek,
   settingsPayload,
   settleAnimations,
   shiftSubmissionRow,
@@ -30,6 +35,11 @@ import {
 const MORNING = "sh-morning";
 const EVENING = "sh-evening";
 const MICHAL = "st-michal";
+// ⚠ «משמרות», NOT F39's «זמינות למשמרות». F40 renamed the row because it now
+// leads to two jobs, and `exact` is load-bearing: Playwright matches an
+// accessible name by SUBSTRING, and this pane's «משמרות הבוטיק» heading and its
+// «הוספה למשמרת» buttons both contain it.
+const NAV_SHIFTS = "משמרות";
 
 const TEMPLATES = [
   shiftTemplate(),
@@ -67,7 +77,7 @@ async function expectAxeClean(page: Page): Promise<void> {
 
 async function openShifts(page: Page): Promise<void> {
   await page.goto(MANAGE);
-  await page.getByRole("button", { name: "זמינות למשמרות" }).click();
+  await page.getByRole("button", { name: NAV_SHIFTS, exact: true }).click();
   await expect(page.getByRole("heading", { name: "הזמינות שלי" })).toBeVisible();
 }
 
@@ -118,7 +128,7 @@ test("a seamstress lands on the floor, opens her week, marks it and saves", asyn
   await page.goto(MANAGE);
   await expect(page.getByRole("heading", { name: "צוות בקומה" })).toBeVisible();
 
-  await page.getByRole("button", { name: "זמינות למשמרות" }).click();
+  await page.getByRole("button", { name: NAV_SHIFTS, exact: true }).click();
   await expect(page.getByRole("heading", { name: "הזמינות שלי" })).toBeVisible();
   // The deadline line, and the whole point of `jerusalemIsoDate` before
   // `plainDayMonth`: a raw instant renders «NaN.11» here.
@@ -274,12 +284,13 @@ test("an owner seeds from the opening hours and lands focus on the count", async
       "/manage/shifts/templates/seed": [ok({ created: 3, templates: TEMPLATES })],
       "GET /manage/shifts/week": [ok(shiftWeek({ templates: TEMPLATES }))],
       "/manage/shifts/week/submissions": [ok(shiftSubmissions([shiftSubmissionRow()]))],
+      "GET /manage/shifts/roster": [ok(rosterWeek())],
       "/manage/settings": [ok(settingsPayload())],
     },
   });
 
   await page.goto(MANAGE);
-  await page.getByRole("button", { name: "זמינות למשמרות" }).click();
+  await page.getByRole("button", { name: NAV_SHIFTS, exact: true }).click();
   await expect(page.getByRole("heading", { name: "משמרות הבוטיק" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "הזמינות שלי" })).toHaveCount(0);
 
@@ -303,7 +314,7 @@ test("the seed refusal teaches instead of being pre-checked away", async ({ page
     },
   });
   await page.goto(MANAGE);
-  await page.getByRole("button", { name: "זמינות למשמרות" }).click();
+  await page.getByRole("button", { name: NAV_SHIFTS, exact: true }).click();
   await page.getByRole("button", { name: "יצירת משמרות משעות הפעילות" }).click();
 
   await expect(
@@ -323,6 +334,7 @@ test("an owner splits a shift, sees the invalidation count, and removes one", as
       "/manage/shifts/templates": [ok({ templates: withAnswers })],
       "GET /manage/shifts/week": [ok(shiftWeek({ templates: withAnswers }))],
       "/manage/shifts/week/submissions": [ok(shiftSubmissions([shiftSubmissionRow()]))],
+      "GET /manage/shifts/roster": [ok(rosterWeek())],
       "/manage/settings": [ok(settingsPayload())],
       [shiftTemplatePath(MORNING)]: [
         ok({ template: shiftTemplate(), invalidated_submissions: 4 }),
@@ -363,6 +375,7 @@ test("removing a shift returns focus to that weekday's add button", async ({ pag
       ],
       "GET /manage/shifts/week": [ok(shiftWeek({ templates: TEMPLATES }))],
       "/manage/shifts/week/submissions": [ok(shiftSubmissions([shiftSubmissionRow()]))],
+      "GET /manage/shifts/roster": [ok(rosterWeek())],
       "/manage/settings": [ok(settingsPayload())],
       [shiftTemplatePath(MORNING)]: [ok({ template: null, invalidated_submissions: 0 })],
     },
@@ -408,6 +421,7 @@ test("an owner reads the readiness list and records on a staffer's behalf", asyn
           ]),
         ),
       ],
+      "GET /manage/shifts/roster": [ok(rosterWeek())],
       "/manage/settings": [ok(settingsPayload())],
       "/manage/shifts/week/availability": [
         ok(
@@ -463,6 +477,7 @@ test("the deadline card saves both fields in one request", async ({ page }) => {
       "/manage/shifts/templates": [ok({ templates: TEMPLATES })],
       "GET /manage/shifts/week": [ok(shiftWeek({ templates: TEMPLATES }))],
       "/manage/shifts/week/submissions": [ok(shiftSubmissions([shiftSubmissionRow()]))],
+      "GET /manage/shifts/roster": [ok(rosterWeek())],
       "/manage/settings": [ok(settingsPayload())],
     },
   });
@@ -495,17 +510,231 @@ test("every pane's load failure is axe-clean and offers a retry", async ({ page 
       "/manage/shifts/templates": [ok({ templates: TEMPLATES })],
       "GET /manage/shifts/week": [refuse(500, "SERVER_ERROR")],
       "/manage/shifts/week/submissions": [refuse(500, "SERVER_ERROR")],
+      "GET /manage/shifts/roster": [refuse(500, "SERVER_ERROR")],
       "/manage/settings": [refuse(500, "SERVER_ERROR")],
     },
   });
   await openShifts(page);
 
-  await expect(page.getByText("לא הצלחנו לטעון את הנתונים כרגע.")).toHaveCount(3);
-  await expect(page.getByRole("button", { name: "ניסיון נוסף" })).toHaveCount(3);
+  await expect(page.getByText("לא הצלחנו לטעון את הנתונים כרגע.")).toHaveCount(4);
+  await expect(page.getByRole("button", { name: "ניסיון נוסף" })).toHaveCount(4);
   // The `h2`s survive every failure, so the heading order never changes.
-  await expect(page.getByRole("heading", { level: 2 })).toHaveCount(4);
+  await expect(page.getByRole("heading", { level: 2 })).toHaveCount(5);
 
   await expectTouchTargets(page, page.locator("#console-main"));
+  await expectAxeClean(page);
+});
+
+// --- F40: the roster builder -------------------------------------------------
+//
+// ⚠ THE FOCUS AND MEASUREMENT ASSERTIONS FOR `RosterCellDialog` LIVE HERE AND
+// NOWHERE ELSE. jsdom has no `<dialog>` and `setup.ts` stubs `showModal()`, so
+// the unit file asserts content only. And `Modal`'s 0.97→1 open animation makes
+// a compliant 44 px control measure 42.68 px mid-transition, which is why every
+// measurement below runs after `settleAnimations`.
+
+const TARGETED = shiftTemplate({ coverage_targets: { sales_assistant: 2 } });
+const DANA = rosterStaffRef();
+const MICHAL_REF = rosterStaffRef({
+  id: MICHAL,
+  display_name: "מיכל ברזילי",
+  role: "seamstress",
+  shift_manager_eligible: false,
+  // She said «לא זמינה» for this shift, which is the override path's whole
+  // reason to exist.
+  states: { [MORNING]: "unavailable" },
+});
+
+function rosterReplies(overrides: Record<string, Reply[]> = {}): Record<string, Reply[]> {
+  return {
+    "/manage/shifts/templates": [ok({ templates: [TARGETED] })],
+    "GET /manage/shifts/week": [ok(shiftWeek({ templates: [TARGETED] }))],
+    "/manage/shifts/week/submissions": [ok(shiftSubmissions([shiftSubmissionRow()]))],
+    "/manage/settings": [ok(settingsPayload())],
+    ...overrides,
+  };
+}
+
+test("an owner builds a shift, overrides a refusal on the second tap, and publishes", async ({
+  page,
+}) => {
+  const draft = rosterWeek({
+    staff: [DANA, MICHAL_REF],
+    shifts: [rosterShift(TARGETED)],
+  });
+  const withDana = rosterShift(TARGETED, {
+    assignments: [rosterAssignment()],
+    assigned_by_role: { sales_assistant: 1 },
+  });
+  const withBoth = rosterShift(TARGETED, {
+    assignments: [
+      rosterAssignment(),
+      rosterAssignment({
+        id: "ra-2",
+        staff_user_id: MICHAL,
+        display_name: "מיכל ברזילי",
+        role: "seamstress",
+        override_of_state: "unavailable",
+      }),
+    ],
+    assigned_by_role: { sales_assistant: 1, seamstress: 1 },
+  });
+  const recorder = await installManageApi(page, {
+    staff: staff({ id: "st-owner", display_name: "ורד", role: "owner" }),
+    replies: rosterReplies({
+      "GET /manage/shifts/roster": [ok(draft)],
+      "/manage/shifts/roster/assignments": [ok(withDana), ok(withBoth)],
+      "/manage/shifts/roster/publish": [
+        ok(
+          rosterWeek({
+            staff: [DANA, MICHAL_REF],
+            shifts: [withBoth],
+            published_at: "2099-01-08T12:00:00Z",
+            published_by_name: "ורד",
+          }),
+        ),
+      ],
+    }),
+  });
+  await openShifts(page);
+
+  await expect(page.getByRole("heading", { level: 2, name: "סידור עבודה" })).toBeVisible();
+  await expect(page.getByText("טיוטה. הסידור אינו גלוי לצוות ואינו קובע מי במשמרת.")).toBeVisible();
+  await expect(page.getByText("משמרות שחסר בהן איוש: 1")).toBeVisible();
+  await expectAxeClean(page);
+
+  await page.getByRole("button", { name: "הוספה למשמרת ראשון · משמרת בוקר" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  // The dialog announces WHICH shift on open, through `describedById`.
+  await expect(dialog.getByText("ראשון · משמרת בוקר ·")).toBeVisible();
+  await settleAnimations(page);
+  await expectAxeClean(page);
+  await expectTouchTargets(page, dialog);
+
+  await dialog.getByRole("button", { name: "הוספה — דנה כהן" }).click();
+  await expect(dialog.getByRole("button", { name: "הסרה — דנה כהן" })).toBeVisible();
+
+  // ⚠ THE FIRST TAP ON AN «לא זמינה» ROW WRITES NOTHING (D11). The warning
+  // renders IN THE ROW, beside the button whose meaning it just changed.
+  const michal = dialog.getByRole("listitem").filter({ hasText: "מיכל ברזילי" });
+  await michal.getByRole("button", { name: "הוספה — מיכל ברזילי" }).click();
+  await expect(
+    michal.getByText("מיכל ברזילי סימנה שאינה זמינה במשמרת הזו. השיבוץ יירשם כחריגה."),
+  ).toBeVisible();
+  expect(recorder.of("/manage/shifts/roster/assignments")).toHaveLength(1);
+  await settleAnimations(page);
+  await expectAxeClean(page);
+
+  await michal.getByRole("button", { name: "שיבוץ בכל זאת" }).click();
+  await expect(dialog.getByRole("button", { name: "הסרה — מיכל ברזילי" })).toBeVisible();
+  const writes = recorder.of("/manage/shifts/roster/assignments");
+  expect(writes).toHaveLength(2);
+  const bodies = writes.map((entry) => entry.body as { acknowledge_override: boolean });
+  // ⚠ THE FIRST WRITE CARRIES NO ACKNOWLEDGEMENT AND THE SECOND DOES. That pair
+  // IS D11: an override is always a second, deliberate act, never a slip.
+  expect(bodies.map((body) => body.acknowledge_override)).toEqual([false, true]);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  // `Modal` returns focus to its own trigger, which survived the whole flow.
+  await expect(page.getByRole("button", { name: "הוספה למשמרת ראשון · משמרת בוקר" })).toBeFocused();
+
+  await expect(page.getByText("שובצה בחריגה")).toBeVisible();
+  await page.getByRole("button", { name: "פרסום הסידור" }).click();
+  await expect(page.getByText("הסידור פורסם.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "פרסום מחדש" })).toBeVisible();
+  await expect(page.getByText(/פורסם על ידי/)).toBeVisible();
+  await expectAxeClean(page);
+});
+
+test("the shortage filter shortens the list and says so, in both directions", async ({ page }) => {
+  const short = rosterShift(TARGETED, { assigned_by_role: { sales_assistant: 1 } });
+  const covered = rosterShift(
+    shiftTemplate({ id: EVENING, day_of_week: 4, label: "משמרת ערב", sort_order: 1 }),
+    { assigned_by_role: {} },
+  );
+  await installManageApi(page, {
+    staff: staff({ id: "st-owner", role: "owner" }),
+    replies: rosterReplies({
+      "GET /manage/shifts/roster": [ok(rosterWeek({ shifts: [short, covered] }))],
+    }),
+  });
+  await openShifts(page);
+
+  await expect(page.getByRole("heading", { level: 4, name: /משמרת ערב/ })).toBeVisible();
+  await page.getByRole("checkbox", { name: "הצגת משמרות שחסר בהן איוש בלבד" }).check();
+  // ⚠ THE COUNT IS NOT THE FILTER'S VOICE — ticking does not change the number,
+  // and a region whose text does not change never fires.
+  await expect(page.getByText("מוצגות משמרות שחסר בהן איוש בלבד.")).toBeVisible();
+  await expect(page.getByRole("heading", { level: 4, name: /משמרת ערב/ })).toHaveCount(0);
+  await expectAxeClean(page);
+
+  await page.getByRole("checkbox", { name: "הצגת משמרות שחסר בהן איוש בלבד" }).uncheck();
+  await expect(page.getByText("מוצגות משמרות שחסר בהן איוש בלבד.")).toHaveCount(0);
+  await expect(page.getByRole("heading", { level: 4, name: /משמרת ערב/ })).toBeVisible();
+});
+
+test("with no coverage target anywhere the pane offers no shortage question at all", async ({
+  page,
+}) => {
+  // E7, and it is the DEFAULT render on a boutique that has never used D10. A
+  // control whose predicate cannot be true on this tenant must not be on this
+  // tenant's screen.
+  await installManageApi(page, {
+    staff: staff({ id: "st-owner", role: "owner" }),
+    replies: {
+      "/manage/shifts/templates": [ok({ templates: TEMPLATES })],
+      "GET /manage/shifts/week": [ok(shiftWeek({ templates: TEMPLATES }))],
+      "/manage/shifts/week/submissions": [ok(shiftSubmissions([shiftSubmissionRow()]))],
+      "GET /manage/shifts/roster": [ok(rosterWeek())],
+      "/manage/settings": [ok(settingsPayload())],
+    },
+  });
+  await openShifts(page);
+
+  await expect(page.getByRole("heading", { level: 2, name: "סידור עבודה" })).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: "הצגת משמרות שחסר בהן איוש בלבד" }),
+  ).toHaveCount(0);
+  await expect(page.getByText(/משמרות שחסר בהן איוש:/)).toHaveCount(0);
+  await expect(page.getByText("כל יעדי האיוש מולאו.")).toHaveCount(0);
+  await expect(page.getByText("חסר איוש")).toHaveCount(0);
+  await expectAxeClean(page);
+});
+
+test("a staffer reads her published shifts, and never a draft", async ({ page }) => {
+  await installManageApi(page, {
+    staff: staff({ id: MICHAL, display_name: "מיכל", role: "seamstress" }),
+    replies: {
+      "/manage/shifts/templates": [ok({ templates: TEMPLATES })],
+      "GET /manage/shifts/week": [
+        ok(shiftWeek({ templates: TEMPLATES })),
+        ok(
+          shiftWeek({
+            templates: TEMPLATES,
+            roster_published: true,
+            rostered_template_ids: [MORNING],
+          }),
+        ),
+      ],
+    },
+  });
+  await page.goto(MANAGE);
+  await page.getByRole("button", { name: NAV_SHIFTS, exact: true }).click();
+
+  await expect(page.getByRole("heading", { level: 3, name: "המשמרות שלי" })).toBeVisible();
+  await expect(page.getByText("סידור העבודה לשבוע הזה טרם פורסם.")).toBeVisible();
+  // ⚠ SHE NEVER SEES THE BUILDER. The roster pane is elevated, and the read
+  // behind it is too.
+  await expect(page.getByRole("heading", { level: 2, name: "סידור עבודה" })).toHaveCount(0);
+  await expectAxeClean(page);
+
+  // The same block, once a roster has been published: three distinct facts,
+  // three distinct sentences, and NO control of any kind inside it.
+  await page.getByRole("button", { name: "השבוע הבא" }).first().click();
+  await expect(page.getByText("סידור העבודה לשבוע הזה טרם פורסם.")).toHaveCount(0);
+  await expect(page.getByText("לא שובצת למשמרות בשבוע הזה.")).toHaveCount(0);
   await expectAxeClean(page);
 });
 
@@ -522,6 +751,21 @@ test("nothing scrolls sideways at 375, 768 or 1440", async ({ page }) => {
           shiftSubmissions([
             shiftSubmissionRow({ display_name: "מיכל ברזילי אברמוביץ' לוינשטיין" }),
           ]),
+        ),
+      ],
+      "GET /manage/shifts/roster": [
+        ok(
+          rosterWeek({
+            staff: [rosterStaffRef({ display_name: "מיכל ברזילי אברמוביץ' לוינשטיין" })],
+            shifts: [
+              rosterShift(shiftTemplate({ coverage_targets: { sales_assistant: 2 } }), {
+                assignments: [
+                  rosterAssignment({ display_name: "מיכל ברזילי אברמוביץ' לוינשטיין" }),
+                ],
+                assigned_by_role: { sales_assistant: 1 },
+              }),
+            ],
+          }),
         ),
       ],
       "/manage/settings": [ok(settingsPayload())],

@@ -19,6 +19,7 @@ import {
   installManageApi,
   installStorageUpload,
   ok,
+  onShiftPath,
   privacyPayload,
   queuePath,
   refuse,
@@ -55,7 +56,9 @@ import type { Reply, WaitlistEntry } from "./fixtures/manage";
 
 const LOGIN_SUBMIT = "כניסה";
 const NAV_FLOOR = "הצוות בקומה";
-const NAV_SHIFTS = "זמינות למשמרות";
+// ⚠ RENAMED BY F40: the row now leads to two jobs — her own availability AND
+// the roster builder — so «זמינות למשמרות» became «משמרות».
+const NAV_SHIFTS = "משמרות";
 const NAV_BOARD = "לוח היום";
 const DASHBOARD_HEADING = "סקירה";
 const FLOOR_HEADING = "צוות בקומה";
@@ -192,7 +195,7 @@ test("manage floor: reception signs in and the floor renders with a populated wa
   await expect(page.getByRole("heading", { level: 2, name: FLOOR_HEADING })).toBeVisible();
   await expect(page.getByRole("heading", { level: 3, name: ROOMS_HEADING })).toBeVisible();
 
-  // Reception reaches two sections: the floor, and F39's «זמינות למשמרות»
+  // Reception reaches two sections: the floor, and F39's «משמרות»
   // (D12 — the shifts row is EVERY_ROLE, which is the whole point of it).
   //
   // ⚠ THE ORDER IS THE ASSERTION, not the count. `activeKey` is
@@ -665,6 +668,138 @@ test("manage floor: zero axe A/AA violations on a populated floor with a reveal 
   await expect(tile(page, "rm-1").getByRole("alert")).toBeVisible();
 
   expect(await axeViolations(page)).toEqual([]);
+});
+
+// --- F40: the on-shift line, and the same-day override -----------------------
+
+test("manage board: all three rule labels render, and rule 3 says so ONCE above the list", async ({
+  page,
+}) => {
+  // ⚠ AN OFF-SHIFT CARD IS NOT DIMMED, GREYED, REORDERED OR HIDDEN (D1). The
+  // board answers «who is in the building» and it must keep answering that for a
+  // colleague who walked in anyway.
+  await installManageApi(page, {
+    staff: MANAGER,
+    replies: {
+      "/manage/floor": [
+        ok(
+          floorPayload({
+            staff: [
+              staffCard({ id: "st-a", display_name: "רונית", on_shift: true, on_shift_source: "roster" }),
+              staffCard({
+                id: "st-b",
+                display_name: "מיכל",
+                on_shift: false,
+                on_shift_source: "roster",
+              }),
+              staffCard({
+                id: "st-c",
+                display_name: "נועה",
+                on_shift: true,
+                on_shift_source: "manual_today",
+              }),
+              MANAGER_CARD,
+            ],
+            rooms: [ROOM_ONE],
+            waitlist: waitlist([]),
+          }),
+        ),
+      ],
+    },
+  });
+  await gotoBoardFloor(page);
+
+  // ⚠ TWO ELEMENTS WITH « · » BETWEEN THEM, never one interpolated sentence —
+  // so the assertion is on the composed line, per card.
+  const onShiftLine = (staffId: string) =>
+    page.locator(`[data-staff-id="${staffId}"]`).getByText(/·/).first();
+  await expect(onShiftLine("st-a")).toHaveText("במשמרת · לפי סידור העבודה");
+  await expect(onShiftLine("st-b")).toHaveText("לא במשמרת · לפי סידור העבודה");
+  await expect(onShiftLine("st-c")).toHaveText("במשמרת · נקבע ידנית להיום");
+  // ⚠ A `fallback` CARD RENDERS NO LINE AT ALL. Eight cards each saying «אין
+  // סידור עבודה» is eight copies of a sentence that says nothing about the
+  // person it is attached to — so FOUR cards carry THREE lines.
+  await expect(page.getByText(/^(לא )?במשמרת · /)).toHaveCount(3);
+  await expect(page.locator('[data-staff-id="st-mgr"]').getByText(/^(לא )?במשמרת · /)).toHaveCount(0);
+
+  // ⚠ RULE 3 RENDERS NOTHING ON THE CARD. One muted week-level line above the
+  // list instead — twelve copies of one sentence is the repetition §6.2 exists
+  // to remove — and the override note likewise renders ONCE.
+  await expect(page.getByText("אין סידור עבודה לשבוע הזה. כל מי שלא סומנה ידנית נחשבת כמי שבמשמרת.")).toHaveCount(1);
+  await expect(page.getByText("הסימון הידני תקף להיום בלבד ומתאפס בחצות.")).toHaveCount(1);
+
+  expect(await axeViolations(page)).toEqual([]);
+});
+
+test("manage board: an elevated actor marks a rostered colleague off, then clears the override", async ({
+  page,
+}) => {
+  const rostered = staffCard({
+    id: "st-b",
+    display_name: "מיכל",
+    on_shift: true,
+    on_shift_source: "roster",
+  });
+  await installManageApi(page, {
+    staff: MANAGER,
+    replies: {
+      "/manage/floor": [
+        ok(floorPayload({ staff: [rostered, MANAGER_CARD], rooms: [ROOM_ONE], waitlist: waitlist([]) })),
+      ],
+      // ⚠ BOTH VERBS ANSWER THE PATCHED CARD (design F-1). The client cannot
+      // compute `on_shift_source`, and a 204 forces a guess that prints the
+      // wrong Hebrew rule label on a live floor screen.
+      [`POST ${onShiftPath("st-b")}`]: [
+        ok({ ...rostered, on_shift: false, on_shift_source: "manual_today" }),
+      ],
+      [`DELETE ${onShiftPath("st-b")}`]: [ok(rostered)],
+    },
+  });
+  await gotoBoardFloor(page);
+
+  await page.getByRole("button", { name: "סימון שאינה במשמרת — מיכל" }).click();
+  // Both the WORD and the RULE LABEL change, from the SERVER's own card — the
+  // client cannot compute `on_shift_source`, and a guess prints the wrong
+  // Hebrew rule label on a live floor screen.
+  await expect(page.locator('[data-staff-id="st-b"]').getByText(/·/).first()).toHaveText(
+    "לא במשמרת · נקבע ידנית להיום",
+  );
+  await expect(page.getByText("מיכל מסומנת כמי שאינה במשמרת היום.")).toBeVisible();
+  expect(await axeViolations(page)).toEqual([]);
+
+  // §10's one named exception: clearing unmounts its own button, so focus goes
+  // to the mark button on the SAME card.
+  await page.getByRole("button", { name: "ביטול הסימון הידני — מיכל" }).click();
+  await expect(page.locator('[data-staff-id="st-b"]').getByText(/·/).first()).toHaveText(
+    "במשמרת · לפי סידור העבודה",
+  );
+  await expect(page.getByRole("button", { name: "סימון שאינה במשמרת — מיכל" })).toBeFocused();
+  await expect(page.getByText("הסימון הידני עבור מיכל בוטל.")).toBeVisible();
+});
+
+test("manage floor: reception is offered no on-shift control, not even on her own card", async ({
+  page,
+}) => {
+  // D13: there is NO self-service here, which is what separates these two
+  // buttons from the break toggle beside them.
+  await installManageApi(page, {
+    replies: {
+      "/manage/floor": [
+        ok(
+          floorPayload({
+            staff: [staffCard({ on_shift: true, on_shift_source: "roster" })],
+            rooms: [ROOM_ONE],
+            waitlist: waitlist([]),
+          }),
+        ),
+      ],
+    },
+  });
+  await gotoFloor(page);
+
+  await expect(page.getByText("במשמרת · לפי סידור העבודה")).toBeVisible();
+  await expect(page.getByRole("button", { name: /סימון .*במשמרת/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /ביטול הסימון הידני/ })).toHaveCount(0);
 });
 
 test("manage board: zero axe A/AA violations with the remove confirm open", async ({ page }) => {
