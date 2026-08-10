@@ -35,7 +35,7 @@ The retention half is not decoration. Amendment 13 is in force, employee records
 |---|---------|--------|------|------|------------|
 | 38 | HR directory full: photos, shift-manager eligibility, offboarding + retention scrub | done (PR #55) | [spec](../specs/hr-directory.md) | [plan](../plans/hr-directory.md) | F31 · F8 · F20 · F9 |
 | 39 | Staff availability submission (shift templates + weekly Sunday-start window) | done (PR #58) | [spec](../specs/availability-submission.md) | [plan](../plans/availability-submission.md) | F38 · F31 · F11 · F12 · F7 · F9 |
-| 40 | Roster builder + published roster as the current-shift source | todo | — | — | F39 · F38 · F34 · F37 · F9 |
+| 40 | Roster builder + published roster as the current-shift source | done (PR #59) | [spec](../specs/roster-builder.md) | [plan](../plans/roster-builder.md) | F39 · F38 · F37 · F9 · F57 (NOT F34 — it carries no staff row) |
 
 **Sequencing is the pre-decided #37 chain and there is no parallelism worth taking.** F38 → F39 → F40 is a straight dependency line: F39's submission screen lists staff that F38 completed, and F40 assigns from submissions F39 collected. The only work that could start early is F39's `shift_templates` seeding (it reads F12's `availability_rules` and needs nothing from F38), and it is not worth splitting a feature for. **F40 is last and is the feature that changes shipped behaviour** — it rewires F34 and F37's read of "on shift" — so it should not be started while either is still settling.
 

@@ -2745,7 +2745,30 @@ queue:
     slug: f40-placeholder
     epic: E8
     title: "Roster builder + published roster as current-shift source"
-    status: building              # 15 of 19 plan tasks committed on feature/roster-builder, migration
+    status: merged                # PR #59, merged 2026-08-11. Migration 0036. E8 IS COMPLETE.
+                                  # ⚠ THE EPIC'S PREMISE WAS FICTION and this is the durable correction:
+                                  # there is NO F31 on-shift toggle — no column, no route, nothing — so
+                                  # NOTHING was demoted. F40 supersedes LIVENESS; rule 3 resolves to exactly
+                                  # today's behaviour, and a boutique that never publishes sees no change.
+                                  # The epic's riskiest-sounding feature was additive.
+                                  # F37's SOS and F42's assignable were deliberately NOT rewired: SOS has no
+                                  # role column and its reachability probe is "is she signed in", a better
+                                  # proxy for "in the building" than a week-old roster; F42 shipped with its
+                                  # F40 dep already dropped. The epic's own "a published roster silently
+                                  # widens who gets paged" risk is CREATED by the wiring it assumed.
+                                  # ⚠ BUILD RAN OUT OF CONTEXT AT 15/19 AND SAID SO — F1, F2, F3, G1 were
+                                  # unbuilt, so the roster SCREEN did not exist and there was NO F40 e2e at
+                                  # all. The task-walk instruction is the only reason that surfaced; a diff
+                                  # cannot show an absent task. Finished in a follow-up pass.
+                                  # Two finds from running rather than reading: stamp_published now uses
+                                  # func.now() because changed_since was COMPARING a service clock with
+                                  # Postgres clocks (skew could swallow a real edit or invent one); and the
+                                  # walker needed an assignment_id disambiguation, since a fitting-room
+                                  # assignment and a roster assignment share a path shape — unclassified,
+                                  # the roster DELETE was driven with the wrong id and proved nothing while
+                                  # the pinned pair still moved.
+                                  # R9 (74,72), MEASURED: seven routes moved it by FOUR, because two
+                                  # ?week_start= reads and the publish carry a calendar week, not a handle.
                                   # 0036, all gates green at that commit (fast lane 3096, db lane 1228,
                                   # frontend 3090). FOUR TASKS ARE MISSING and the builder said so rather
                                   # than letting the diff imply otherwise: F1 RosterCellDialog, F2
