@@ -977,8 +977,11 @@ export function bookingWaitlistRow(
 }
 
 // F23. A row the cascade has offered and a bride is holding right now: the slot
-// at 14:30 Jerusalem, held until 12:15. Built ON bookingWaitlistRow rather than
-// beside it, so a wire field added to one can never be missing from the other.
+// at 13:30 Jerusalem, held until 11:15. ⚠ 20 January is WINTER — Asia/Jerusalem
+// is UTC+2 (IST) on these instants, not the UTC+3 (IDT) it keeps in summer, so
+// they read an hour earlier than the same UTC times would in July. Built ON
+// bookingWaitlistRow rather than beside it, so a wire field added to one can
+// never be missing from the other.
 //
 // The instants are UTC because the wire is UTC; the console renders them in
 // Jerusalem, which is the whole point of asserting the rendered strings in the

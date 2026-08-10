@@ -49,8 +49,14 @@ const TERMS = {
   forfeit_percent: 50,
 };
 
-// 11:30Z is 14:30 Jerusalem; 09:15Z is 12:15. A year far enough out that the
-// fixture cannot age into the past and start rendering a different state.
+// ⚠ 20 JANUARY IS WINTER: Asia/Jerusalem is UTC+2 (IST) here, NOT the UTC+3
+// (IDT) it keeps from spring to autumn. So 11:30Z is 13:30 Jerusalem and 09:15Z
+// is 11:15 — an hour earlier than the same instants would read in July, and an
+// hour earlier than WaitlistSection.test.tsx's 14:30/12:15, whose fixture sits
+// in AUGUST. Move this date and both expectations below move with it.
+//
+// A year far enough out that the fixture cannot age into the past and start
+// rendering a different state.
 const OFFER = {
   status: "offered",
   starts_at: "2099-01-20T11:30:00Z",
@@ -175,12 +181,13 @@ test("offer - the link opens the live offer, and the deadline is a STATIC time",
   await installStorefront(page);
   await gotoOffer(page);
 
-  // The facts, in the boutique's calendar: 14:30 Jerusalem from an 11:30Z
-  // instant, under the labels /book and /b/{token} already use.
+  // The facts, in the boutique's calendar: 13:30 Jerusalem from an 11:30Z
+  // instant (UTC+2 — see the fixture), under the labels /book and /b/{token}
+  // already use.
   await expect(page.getByText(OFFER.appointment_type_name)).toBeVisible();
-  await expect(page.getByText("14:30")).toBeVisible();
+  await expect(page.getByText("13:30")).toBeVisible();
   await expect(page.getByText(DEADLINE_LEAD)).toBeVisible();
-  await expect(page.getByText("12:15")).toBeVisible();
+  await expect(page.getByText("11:15")).toBeVisible();
 
   // ⚠ R1, AND THE SC 2.2.1 AUDIT ANSWER. The page has a deadline and NOTHING
   // that counts toward it. This is the assertion a real browser can make that
@@ -215,7 +222,7 @@ test("offer - tick, name, claim: the confirmation replaces the form and takes fo
   // The form is gone whole; the facts she just booked stay.
   await expect(page.getByLabel(NAME_LABEL)).toHaveCount(0);
   await expect(page.getByRole("button", { name: DECLINE_CTA })).toHaveCount(0);
-  await expect(page.getByText("14:30")).toBeVisible();
+  await expect(page.getByText("13:30")).toBeVisible();
   expect(await axeViolations(page)).toEqual([]);
 
   // The token travels in the BODY on both calls and never in a URL — a GET
@@ -351,9 +358,9 @@ test("offer - the console shows who is holding the slot and until when, axe clea
   // The column, its two runs, and the badge that separates an in-flight row
   // from a merely waiting one (P4).
   await expect(page.getByRole("columnheader", { name: COL_OFFER })).toBeVisible();
-  await expect(page.getByText("14:30")).toBeVisible();
+  await expect(page.getByText("13:30")).toBeVisible();
   await expect(page.getByText(OFFER_UNTIL)).toBeVisible();
-  await expect(page.getByText("12:15")).toBeVisible();
+  await expect(page.getByText("11:15")).toBeVisible();
   await expect(page.getByText(STATUS_OFFERED)).toBeVisible();
   expect(await axeViolations(page)).toEqual([]);
 
