@@ -46,7 +46,6 @@ from app.models.constants import (
 )
 from app.models.customer import Customer
 from app.models.scheduled_message import ScheduledMessage
-from app.models.terms_version import TermsVersion
 from app.models.waitlist_entry import WaitlistEntry
 from app.storefront.validation import BOUTIQUE_TIMEZONE
 from app.waitlist.cascade import WaitlistCascade
@@ -174,6 +173,13 @@ async def _entry(
 
 
 async def _purge(factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID) -> None:
+    """⚠ `terms_versions` is NOT purged, and must not be. Migration 0005 makes it
+    append-only in the DATABASE — `REVOKE ALL` then `GRANT SELECT, INSERT` — so
+    the app role this suite connects as cannot DELETE from it, and a `delete()`
+    here raises `permission denied` in teardown and reddens every test in the
+    file regardless of what it was asserting. Every sibling db test that seeds a
+    terms row leaves it: each test owns a fresh uuid4 tenant, so the row is
+    invisible to everything else through RLS."""
     async with tenant_session(factory, tenant_id) as session:
         await session.execute(
             delete(ScheduledMessage).where(ScheduledMessage.tenant_id == tenant_id)
@@ -181,7 +187,6 @@ async def _purge(factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID
         await session.execute(delete(Booking).where(Booking.tenant_id == tenant_id))
         await session.execute(delete(WaitlistEntry).where(WaitlistEntry.tenant_id == tenant_id))
         await session.execute(delete(Customer).where(Customer.tenant_id == tenant_id))
-        await session.execute(delete(TermsVersion).where(TermsVersion.tenant_id == tenant_id))
         await session.execute(
             delete(AvailabilityRule).where(AvailabilityRule.tenant_id == tenant_id)
         )
@@ -550,6 +555,12 @@ def test_decline_cancels_the_entry_and_its_pending_message(app_role_url: str) ->
 
 
 def test_a_declined_offer_cannot_be_claimed_afterwards(app_role_url: str) -> None:
+    """**409, not 404** — and the difference is the design, not a detail. `cancel`
+    KEEPS the token hash (design row G: a lookup on `cancelled` must render
+    «ויתרת על ההצעה»), so the token still resolves and the refusal has to come
+    from the claim's own `status='offered'` guard. A 404 here would mean the hash
+    had been cleared, which would break the link the test above proves still
+    answers."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
 
@@ -559,10 +570,11 @@ def test_a_declined_offer_cannot_be_claimed_afterwards(app_role_url: str) -> Non
             _, token = await _armed(factory, tenant_id, type_id)
             await _offers(factory).decline(tenant_id, token=token)
 
-            with pytest.raises(OfferNotFoundError):
+            with pytest.raises(OfferNotClaimableError) as refused:
                 await _offers(factory).claim(
                     tenant_id, token=token, name="רותם לוי", terms_version=1
                 )
+            assert refused.value.state == WaitlistEntryStatus.CANCELLED.value
         finally:
             await _purge(factory, tenant_id)
             await engine.dispose()

@@ -138,9 +138,11 @@ class WaitlistEntriesRepository:
         sha256 of 32 random bytes the caller must already possess, so keeping it
         hands a prober nothing.
 
-        `synchronize_session=False`: the WHERE is not Python-evaluable and no
-        caller reads an identity-mapped instance afterwards — the entity is
-        re-read fresh below. `updated_at` is the trigger's."""
+        `synchronize_session=False`: the WHERE is not Python-evaluable, so the
+        freshness of what the caller gets back rests entirely on `by_id`'s
+        `populate_existing` — `decline` DOES hold an identity-mapped instance
+        here (`_resolve` loaded it two statements ago). `updated_at` is the
+        trigger's."""
         stmt = (
             update(WaitlistEntry)
             .where(
@@ -458,9 +460,22 @@ class WaitlistEntriesRepository:
     async def by_id(
         self, session: AsyncSession, tenant_id: UUID, entry_id: UUID
     ) -> WaitlistEntry | None:
-        stmt = select(WaitlistEntry).where(
-            WaitlistEntry.tenant_id == tenant_id,
-            WaitlistEntry.id == entry_id,
-            WaitlistEntry.deleted_at.is_(None),
+        """⚠ `populate_existing` is LOAD-BEARING, not tidiness. Every mutation
+        here is a bulk `update()` with `synchronize_session=False`, so a session
+        that already loaded this row holds an instance the statement did not
+        touch — and a plain SELECT returning that same identity hands the CALLER
+        the stale object rather than the row it just read. `decline` is exactly
+        that shape (`_resolve` loads, `cancel` updates, this re-reads), and
+        without this it answered the bride «ההצעה בתוקף» over the offer she had
+        just given up. `claim`'s losing branch reads the state a rival session
+        committed, which no `synchronize_session` setting could reach at all."""
+        stmt = (
+            select(WaitlistEntry)
+            .where(
+                WaitlistEntry.tenant_id == tenant_id,
+                WaitlistEntry.id == entry_id,
+                WaitlistEntry.deleted_at.is_(None),
+            )
+            .execution_options(populate_existing=True)
         )
         return (await session.execute(stmt)).scalar_one_or_none()
