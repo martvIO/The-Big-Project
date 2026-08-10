@@ -2633,7 +2633,28 @@ queue:
     slug: f38-placeholder
     epic: E8
     title: "HR directory full: photos, eligibility, offboarding"
-    status: queued                # 2026-08-08: spec+design(gate ACCEPTED)+plan (20 tasks) READY.
+    status: merged                # 2026-08-10: MERGED, PR #55. 19 commits, 74 backend tests + 6 e2e
+                                  # journeys, migration 0032. TWO review rounds (6 fix commits).
+                                  # FOUR stale-brief traps resolved against SHIPPED code, all recorded:
+                                  # phone is NOT a login (Q11 overridden by F31), no nullability
+                                  # migration on email/password_hash, the retention registry went 7->8
+                                  # (verified as 7 immediately before editing), and the 7-year period
+                                  # stayed an app CONSTANT per F20's shipped ruling, not a tenant setting.
+                                  # Two decisions STRICTER than asked: the phone audit row records
+                                  # PRESENCE not digits (audit_log has no retention class, so digits
+                                  # there would outlive the scrub built to destroy them), and
+                                  # soft_delete takes a REQUIRED last_day — 13 call-site edits, but a
+                                  # default would have made forgetting it silent.
+                                  # ⚠ H1 (e2e) WAS MISSING when the builder ran out of context: 17
+                                  # commits and two review rounds existed with fixtures extended but NO
+                                  # spec. Written afterwards; it then found a shipped settle-tell left
+                                  # pointing at F51's old string after this feature changed the copy,
+                                  # and Modal's 0.97->1 open animation making a compliant 44px control
+                                  # measure 42.68px mid-transition (settled the animation, did NOT lower
+                                  # the floor). LESSON: a reviewer reading a diff cannot see a task that
+                                  # was never started — check the plan's task list against the commits.
+                                  # F39 IS NOW UNBLOCKED.
+                                  # (was: spec+design(gate ACCEPTED)+plan (20 tasks) READY.
                                   # Build ATTEMPTED and died on "API Error: Connection closed mid-response"
                                   # mid-task-1 (270 lines of migration-pinning test, no migration file yet —
                                   # correct TDD order, caught mid-flight). Partial edit DISCARDED, worktree

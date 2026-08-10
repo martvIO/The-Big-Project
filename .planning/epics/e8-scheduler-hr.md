@@ -33,7 +33,7 @@ The retention half is not decoration. Amendment 13 is in force, employee records
 
 | # | Feature | Status | Spec | Plan | Depends On |
 |---|---------|--------|------|------|------------|
-| 38 | HR directory full: photos, shift-manager eligibility, offboarding + retention scrub | todo | — | — | F31 · F8 · F20 · F9 |
+| 38 | HR directory full: photos, shift-manager eligibility, offboarding + retention scrub | done (PR #55) | [spec](../specs/hr-directory.md) | [plan](../plans/hr-directory.md) | F31 · F8 · F20 · F9 |
 | 39 | Staff availability submission (shift templates + weekly Sunday-start window) | todo | — | — | F38 · F31 · F11 · F12 · F7 · F9 |
 | 40 | Roster builder + published roster as the current-shift source | todo | — | — | F39 · F38 · F34 · F37 · F9 |
 
