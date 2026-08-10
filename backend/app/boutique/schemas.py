@@ -76,6 +76,35 @@ class AtelierSettingsUpdate(ForbidExtraModel):
     default_weekly_capacity_hours: StrictInt | None = Field(ge=0, le=MAX_WEEKLY_CAPACITY_HOURS)
 
 
+class SchedulingSettingsUpdate(ForbidExtraModel):
+    """F39 D6 — the submission deadline, and a FULL REPLACE of the whole
+    `scheduling` block: both fields REQUIRED, no default anywhere.
+
+    `AtelierSettingsUpdate`'s rule directly above, load-bearing for its exact
+    reason: `merge_settings` merges at the TOP LEVEL ONLY, so a patch carrying a
+    PARTIAL `scheduling` object replaces the whole key and DELETES the field it
+    did not name. One writer, one Card, one save, both fields, always —
+    structural rather than a convention, which is also why the console cannot
+    have a "save day" button and a "save time" button: they would erase each
+    other.
+
+    ⚠ `StrictInt`, NOT `int`, AND `validate_scheduling_settings`' RANGE CHECK IS
+    HALF-BLIND WITHOUT IT. `ForbidExtraModel` sets `extra="forbid"` and nothing
+    else (`app/schemas.py:13-18` — there is no `strict=True` on it), so a plain
+    `int` COERCES before any validator runs: `{"submission_deadline_day_of_week":
+    true}` becomes `1` and the deadline silently moves to Monday.
+
+    The TIME is a `str` and not a `datetime.time`, deliberately. It is a LOCAL
+    wall-clock time that lives in JSONB and is resolved against a target week's
+    date per read (D6); typing it as `time` would let pydantic accept
+    `18:00:00.000001` and would put a non-JSON-native object into a `||` patch.
+    `validate_scheduling_settings` owns the `HH:MM` shape.
+    """
+
+    submission_deadline_day_of_week: StrictInt
+    submission_deadline_time: str
+
+
 class UpdateSettingsRequest(ForbidExtraModel):
     profile: ProfileUpdate | None = None
     # F27 D4 — THE REGISTRY IS THE SCHEMA. This was a `TogglesUpdate` class with
@@ -92,6 +121,10 @@ class UpdateSettingsRequest(ForbidExtraModel):
     # any validator runs and a typo becomes a legitimate deposit-gate flip.
     toggles: dict[str, StrictBool] | None = None
     atelier: AtelierSettingsUpdate | None = None
+    # F39's fifth key. WHOLE-BLOCK, `atelier`'s rule and NOT `toggles`': there
+    # is one writer, one dialog and one save, so an omitted field is a CLEAR
+    # and deepening the merge would silently turn every clear into a no-op.
+    scheduling: SchedulingSettingsUpdate | None = None
 
 
 class SettingsResponse(BaseModel):
@@ -100,6 +133,11 @@ class SettingsResponse(BaseModel):
     # F42. On the READ so the console's settings dialog opens with the tenant's
     # own bands and default already in hand and costs no second request.
     atelier: dict[str, Any]
+    # F39, and it ships DEFAULT-COMPLETE (`{**SCHEDULING_DEFAULTS, **stored}`,
+    # the `toggles` D3 shape): every tenant carries the whole pair on the wire
+    # whether or not she has ever opened the dialog, so neither the console nor
+    # the lock predicate needs `?? default` anywhere.
+    scheduling: dict[str, Any]
 
 
 # --- appointment types ---

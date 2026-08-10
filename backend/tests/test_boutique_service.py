@@ -31,7 +31,11 @@ from app.boutique.service import (
     TermsVersionConflictError,
 )
 from app.boutique.toggles import TOGGLE_DEFAULTS, TOGGLE_KEYS
-from app.boutique.validation import BoutiqueValidationError, WeeklyRuleInput
+from app.boutique.validation import (
+    SCHEDULING_DEFAULTS,
+    BoutiqueValidationError,
+    WeeklyRuleInput,
+)
 from app.db.repositories.appointment_types import AppointmentTypesRepository
 from app.db.repositories.tenants import TenantsRepository
 from app.db.repositories.terms import TermsVersionsRepository
@@ -1239,5 +1243,136 @@ async def test_cross_tenant_invisibility_for_all_new_resources(app_role_url: str
         assert [rule.day_of_week for rule in availability_a.rules] == [0]
         assert [item.id for item in availability_a.exceptions] == [exception.id]
         assert (await service.get_terms_history(tenant_a)).total == 1
+    finally:
+        await engine.dispose()
+
+
+# --- F39: the submission deadline as a fifth settings key (D6) ---------------
+
+
+async def test_a_scheduling_save_lands_whole_leaves_its_siblings_and_writes_its_audit_row(
+    app_role_url: str,
+) -> None:
+    """F39 D6 against the REAL service and a real Postgres — the only place the
+    validator call, the JSONB round trip and the audit row are exercised
+    together. The fast API tests run a FAKE service that calls
+    `validate_scheduling_settings` itself, so `update_settings` dropping that
+    call is invisible to every one of them.
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    block = {"submission_deadline_day_of_week": 2, "submission_deadline_time": "17:30"}
+    try:
+        tenant = await tenants.insert(slug=f"sched-{uuid.uuid4().hex[:8]}", name="Sched")
+        actor = _actor(tenant.id)
+
+        await service.update_settings(
+            tenant.id,
+            actor=actor,
+            profile={"phone": "+972-3-555-0100"},
+            atelier={"effort_bands": ATELIER_BANDS, "default_weekly_capacity_hours": 36},
+        )
+        saved = await service.update_settings(tenant.id, actor=actor, scheduling=dict(block))
+
+        assert saved.scheduling == block
+        # The top level is safe by the atomic `||`, not by anything F39 added.
+        assert saved.profile == {"phone": "+972-3-555-0100"}
+        assert saved.atelier["default_weekly_capacity_hours"] == 36
+
+        again = await service.get_settings(tenant.id)
+        assert again.scheduling == block
+
+        async with tenant_session(factory, tenant.id) as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(AuditLog).where(
+                            AuditLog.action == AuditAction.SCHEDULING_SETTINGS_UPDATED.value
+                        )
+                    )
+                ).all()
+            )
+        # ONE row: the profile/atelier save carried no `scheduling` block.
+        assert len(rows) == 1
+        assert rows[0].actor_id == actor.id
+        assert rows[0].entity == str(tenant.id)
+        # The whole NEW block and no `from` — ATELIER_SETTINGS_UPDATED's rule.
+        assert rows[0].details == block
+    finally:
+        await engine.dispose()
+
+
+async def test_a_tenant_that_never_saved_a_deadline_reads_the_complete_default_pair(
+    app_role_url: str,
+) -> None:
+    """⚠ DEFAULT-COMPLETE ON THE WIRE (`toggles` D3's shape), and it is
+    load-bearing rather than tidy: the deadline governs a LOCK a staffer hits, so
+    an absent key cannot be allowed to mean «no deadline». Every tenant carries
+    the whole pair whether or not she has ever opened the dialog, and neither the
+    console nor the lock predicate needs `?? default` anywhere."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"fresh-{uuid.uuid4().hex[:8]}", name="Fresh")
+        assert (await service.get_settings(tenant.id)).scheduling == SCHEDULING_DEFAULTS
+        # A save of a DIFFERENT key must not invent a `scheduling` object, and
+        # must still read back complete.
+        await service.update_settings(
+            tenant.id, actor=_actor(tenant.id), profile={"phone": "+972-3-555-0100"}
+        )
+        assert (await service.get_settings(tenant.id)).scheduling == SCHEDULING_DEFAULTS
+    finally:
+        await engine.dispose()
+
+
+async def test_a_scheduling_save_and_a_concurrent_toggles_save_do_not_clobber_each_other(
+    app_role_url: str,
+) -> None:
+    """R-J. `merge_settings` is ONE atomic `settings = settings || :patch::jsonb`,
+    so two writers of two different top-level keys both survive — which is the
+    property the whole-block rule depends on, and the reason the deadline could
+    be a settings key at all."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    block = {"submission_deadline_day_of_week": 4, "submission_deadline_time": "20:00"}
+    try:
+        tenant = await tenants.insert(slug=f"race-{uuid.uuid4().hex[:8]}", name="Race")
+        actor = _actor(tenant.id)
+        await asyncio.gather(
+            service.update_settings(tenant.id, actor=actor, scheduling=dict(block)),
+            service.update_settings(tenant.id, actor=actor, toggles={"deposits_enabled": True}),
+        )
+        settled = await service.get_settings(tenant.id)
+        assert settled.scheduling == block
+        assert settled.toggles["deposits_enabled"] is True
+    finally:
+        await engine.dispose()
+
+
+async def test_the_service_refuses_a_partial_scheduling_block_before_it_writes(
+    app_role_url: str,
+) -> None:
+    """The data-loss bug at the layer below the schema: a patch naming one field
+    would replace the key and delete the other, so the service refuses it and the
+    stored pair is untouched."""
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = _service(factory)
+    tenants = TenantsRepository(factory)
+    try:
+        tenant = await tenants.insert(slug=f"part-{uuid.uuid4().hex[:8]}", name="Partial")
+        actor = _actor(tenant.id)
+        await service.update_settings(tenant.id, actor=actor, scheduling=dict(SCHEDULING_DEFAULTS))
+        with pytest.raises(BoutiqueValidationError):
+            await service.update_settings(
+                tenant.id, actor=actor, scheduling={"submission_deadline_time": "09:00"}
+            )
+        assert (await service.get_settings(tenant.id)).scheduling == SCHEDULING_DEFAULTS
     finally:
         await engine.dispose()

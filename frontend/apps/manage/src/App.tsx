@@ -18,6 +18,7 @@ import { LoginForm } from "./components/LoginForm";
 import { PrivacySection } from "./components/PrivacySection";
 import { ProfileSection } from "./components/ProfileSection";
 import { SosOverlay } from "./components/SosOverlay";
+import { ShiftsSection } from "./components/ShiftsSection";
 import { StaffSection } from "./components/StaffSection";
 import { TermsSection } from "./components/TermsSection";
 import { WaitlistSection } from "./components/WaitlistSection";
@@ -38,6 +39,11 @@ const ALL = ["owner", "shift_manager"] as const;
 // Nav.test.tsx's count assertions (owner ten, shift manager eight) are what make
 // this a test rather than a preference.
 const FLOOR_ONLY = ["reception", "sales_assistant", "seamstress"] as const;
+// F39. Every role the product has, spelled as the union of the two shipped
+// lists rather than as five literals — a sixth role added to either one is
+// admitted here by default, which is right for a section whose whole content
+// is «the week YOU are being asked about».
+const EVERY_ROLE = [...ALL, ...FLOOR_ONLY] as const;
 
 // F41's three, and the three are SPELLED rather than derived. A receptionist and
 // a sales assistant have no business in the workroom, and a sixth role added
@@ -124,6 +130,18 @@ const NAV: readonly NavItem[] = [
   // on the atelier instead of the floor. One line, three consequences —
   // Nav.test.tsx's seamstress ORDER assertion is what makes that a test.
   { key: "atelier", labelKey: "nav.atelier", roles: ATELIER_ROLES },
+  // F39, IMMEDIATELY AFTER `atelier` and before `checkinQr`, and the slot is
+  // forced from BOTH sides. It must sit AFTER `floor` so `reachable[0]?.key`
+  // still lands the three floor roles on «הצוות בקומה» — put it before and a
+  // seamstress opens the console on a form instead of on her floor. And it
+  // must sit BEFORE the three owner-only rows so the shift manager's reach
+  // stays a contiguous prefix, which is what `Nav.test.tsx`'s `.slice(0, n)`
+  // assertions are.
+  //
+  // ⚠ EVERY_ROLE, and it is the FIRST nav row in the console that all five
+  // roles reach. Every staffer answers her own week; the four panes behind
+  // this one row are role-branched inside `ShiftsSection`, not here.
+  { key: "shifts", labelKey: "nav.shifts", roles: EVERY_ROLE },
   // F33, and `roles: ALL` is a decision rather than a default — it mirrors the
   // server, which admits both console roles to GET /manage/checkin-qr. The
   // payload is a public URL and a picture of it, the same URL printed on a sign
@@ -295,6 +313,7 @@ export function App() {
               own usePoll instance, and the console renders one section at a time
               precisely so a workroom phone is not running two loops. */}
           {activeKey === "atelier" && <AtelierSection selfId={staff.id} role={staff.role} />}
+          {activeKey === "shifts" && <ShiftsSection role={staff.role} />}
           {activeKey === "checkinQr" && <CheckinQrSection />}
           {activeKey === "staff" && <StaffSection staffId={staff.id} />}
           {activeKey === "gateway" && <GatewaySection />}

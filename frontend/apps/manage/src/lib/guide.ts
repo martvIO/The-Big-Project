@@ -36,7 +36,10 @@ export type SectionKey =
   // sketch's `waitlist`: GuideOverlay derives its dialog title as
   // `t(`nav.${section}`)`, so the key and the labelKey are one spelling by
   // mechanism — and `waitlist` is F58's namespace in this app besides (F-W2).
-  | "bookingWaitlist";
+  | "bookingWaitlist"
+  // F39's shift availability — the SEVENTEENTH, and the first section every
+  // one of the five roles can open.
+  | "shifts";
 
 // One NON-EMPTY tuple of i18n keys per section, listed in `NAV` order
 // (`App.tsx:83-152`), which is deliberately not the union's declaration order
@@ -68,6 +71,11 @@ export const GUIDE_STEPS = {
   board: ["guide.board.1", "guide.board.2", "guide.board.3"],
   floor: ["guide.floor.1", "guide.floor.2", "guide.floor.3"],
   atelier: ["guide.atelier.1", "guide.atelier.2", "guide.atelier.3"],
+  // Listed HERE because `GUIDE_STEPS` runs in NAV order, and the shifts row
+  // sits immediately after `atelier`. Role-blind by design: `GuideOverlay`
+  // renders one step list per section, and a staffer knowing that
+  // `recorded_by` exists is the transparency D5 is built on.
+  shifts: ["guide.shifts.1", "guide.shifts.2"],
   checkinQr: ["guide.checkinQr.1", "guide.checkinQr.2"],
   staff: ["guide.staff.1", "guide.staff.2"],
   gateway: ["guide.gateway.1", "guide.gateway.2"],

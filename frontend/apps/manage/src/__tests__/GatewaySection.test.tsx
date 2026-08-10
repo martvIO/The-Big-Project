@@ -43,7 +43,14 @@ function status(overrides: Partial<GatewayStatus> = {}): GatewayStatus {
 }
 
 function settings(depositsEnabled: boolean): Settings {
-  return { profile: {}, toggles: { deposits_enabled: depositsEnabled, brides_only: false } };
+  // F39 added `scheduling` to `Settings`, and it is REQUIRED on the wire
+  // (default-complete, so every tenant carries the whole pair whether or not
+  // she has ever opened the dialog). Nothing on this surface reads it.
+  return {
+    profile: {},
+    toggles: { deposits_enabled: depositsEnabled, brides_only: false },
+    scheduling: { submission_deadline_day_of_week: 3, submission_deadline_time: "18:00" },
+  };
 }
 
 // GatewaySection renders inside ConsoleShell's <main>, which owns the console's

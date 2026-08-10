@@ -222,6 +222,50 @@ ATELIER_OPEN = {
     *ATELIER_ELEVATED,
 }
 
+# F39's eight, same templates-not-urls rule. `test_shifts_api.ROUTES` is the
+# CONCRETE spelling, used by the HTTP walks below.
+#
+# ⚠ NOTHING HERE ENTERS `OWNER_ONLY`, and that is the one edit that would
+# silently make spec D5 false. A shift manager is admitted EVERYWHERE in this
+# feature: she is `ELEVATED_ROLES`, so she configures the templates, reads the
+# roster-readiness list and records on a staffer's behalf past the deadline. Both
+# gates on all five tightened routes admit her, so
+# `test_route_table_matches_the_permission_matrix`'s `all(...)` branch passes
+# unedited.
+#
+# ⚠ THE FIVE TIGHTENED ROUTES ARE SPLIT OUT for `ATELIER_ELEVATED`'s reason,
+# which is not tidiness: the walker classifies on
+# `frozenset.intersection(*role_sets)`, and each of these carries a per-route
+# require_role(OWNER, SHIFT_MANAGER) on top of the router's five — so its
+# effective set is {owner, shift_manager} and the three floor roles are NOT in
+# it. A reach row naming one of them would be larger than reality and would RED A
+# CORRECT BUILD.
+SHIFTS_TEMPLATES_READ = ("GET", "/manage/shifts/templates")
+SHIFTS_WEEK_READ = ("GET", "/manage/shifts/week")
+# ⚠ OPEN AT THE GATE AND NARROWED IN THE SERVICE. Its real rule is
+# target-dependent — herself, or elevated on anyone — which no `RoleGate` can
+# express, so the 403 comes from `ShiftsService._authorize`. This is the same
+# shape as the floor claim and release, and it belongs in every non-elevated
+# role's row because every staffer legitimately saves her own week.
+SHIFTS_WEEK_WRITE = ("PUT", "/manage/shifts/week/availability")
+SHIFTS_TEMPLATE_CREATE = ("POST", "/manage/shifts/templates")
+SHIFTS_TEMPLATE_UPDATE = ("PATCH", "/manage/shifts/templates/{template_id}")
+SHIFTS_TEMPLATE_DELETE = ("DELETE", "/manage/shifts/templates/{template_id}")
+SHIFTS_TEMPLATE_SEED = ("POST", "/manage/shifts/templates/seed")
+# Carries every colleague's display name and what she said, which is why it is
+# the one READ in this feature that narrows.
+SHIFTS_SUBMISSIONS = ("GET", "/manage/shifts/week/submissions")
+
+SHIFTS_ELEVATED = {
+    SHIFTS_TEMPLATE_CREATE,
+    SHIFTS_TEMPLATE_UPDATE,
+    SHIFTS_TEMPLATE_DELETE,
+    SHIFTS_TEMPLATE_SEED,
+    SHIFTS_SUBMISSIONS,
+}
+SHIFTS_OPEN = {SHIFTS_TEMPLATES_READ, SHIFTS_WEEK_READ, SHIFTS_WEEK_WRITE}
+
+
 # ⚠ THE EXHAUSTIVE REACH OF EACH NON-ELEVATED ROLE, one row each, asserted as a
 # SET EQUALITY per role.
 #
@@ -240,9 +284,11 @@ ATELIER_OPEN = {
 # copy-pastes a wide gate, and now ALSO fails if one of these roles is admitted
 # to a route the other two reach.
 NON_ELEVATED_REACH: dict[str, frozenset[tuple[str, str]]] = {
-    StaffRole.RECEPTION.value: frozenset(FLOOR_OPEN),
-    StaffRole.SALES_ASSISTANT.value: frozenset(FLOOR_OPEN),
-    StaffRole.SEAMSTRESS.value: frozenset(FLOOR_OPEN | (ATELIER_OPEN - ATELIER_ELEVATED)),
+    StaffRole.RECEPTION.value: frozenset(FLOOR_OPEN | SHIFTS_OPEN),
+    StaffRole.SALES_ASSISTANT.value: frozenset(FLOOR_OPEN | SHIFTS_OPEN),
+    StaffRole.SEAMSTRESS.value: frozenset(
+        FLOOR_OPEN | SHIFTS_OPEN | (ATELIER_OPEN - ATELIER_ELEVATED)
+    ),
 }
 
 # The probe for "a role the enum does not know", shared verbatim by
@@ -488,9 +534,73 @@ def test_each_non_elevated_role_reaches_exactly_its_own_routes() -> None:
     #    the router, and this test stays GREEN. That is the vacuity this line
     #    exists to prevent, and it is the same reason both had to be named as
     #    constants at all.
-    declared = FLOOR_OPEN | ATELIER_OPEN
+    #    F39's five tightened routes join ATELIER_ELEVATED as routes in NOBODY's
+    #    reach row — invisible to all three equalities, so they must be named
+    #    here or deleting one from the router keeps this test GREEN.
+    declared = FLOOR_OPEN | ATELIER_OPEN | SHIFTS_OPEN | SHIFTS_ELEVATED
     missing = declared - seen
     assert not missing, f"the tables name routes that no longer exist: {sorted(missing)}"
+
+
+def test_every_elevated_shifts_route_is_tightened_in_the_route_table() -> None:
+    """F39's structural half, `test_the_capacity_route_is_tightened_in_the_route_table`'s
+    idiom and for its stated reason: a route in nobody's reach row is invisible to
+    all three per-role equalities, and the anti-vacuity half only notices it
+    disappearing entirely. This asserts the per-route gate is THERE and narrows to
+    exactly {owner, shift_manager}.
+
+    ⚠ NONE of them is in `OWNER_ONLY`, and that is not an omission: both gates on
+    each admit the shift manager, so
+    `test_route_table_matches_the_permission_matrix`'s `all(...)` branch passes
+    unedited. Putting one there would silently revoke a permission spec D5
+    explicitly grants — a shift manager configures the shifts and records on a
+    staffer's behalf.
+
+    ⚠ THE `pytest.fail` FALLTHROUGH IS NOT DECORATION. Without it a renamed or
+    removed route makes this test pass by never entering the loop.
+    """
+    app = create_app(resolver=_null_resolver)
+    elevated = frozenset({StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value})
+    for method, path in sorted(SHIFTS_ELEVATED):
+        for route in _leaf_routes(app):
+            if getattr(route, "path", None) != path:
+                continue
+            if method not in (getattr(route, "methods", None) or ()):
+                continue
+            role_sets = list(_gate_role_sets(route.dependant))
+            assert elevated in role_sets, f"{method} {path} lost its per-route tightening"
+            assert frozenset.intersection(*role_sets) == elevated, (
+                f"{method} {path} admits {sorted(frozenset.intersection(*role_sets))}"
+            )
+            break
+        else:
+            pytest.fail(f"{method} {path} not found in the route table")
+
+
+def test_the_weekly_availability_write_stays_open_to_every_role() -> None:
+    """⚠ THE MIRROR IMAGE, asserted POSITIVELY —
+    `test_marketing_withdraw_is_not_owner_only_in_the_route_table`'s idiom.
+
+    `PUT /manage/shifts/week/availability` carries the CLAIM's target-dependent
+    rule verbatim: herself, or elevated on anyone. No `RoleGate` can express it,
+    so the route is open and the 403 comes from `ShiftsService._authorize`. A
+    default-deny walker cannot tell a deliberate omission from a forgotten one, so
+    tightening this route to the two elevated roles would pass every other test in
+    this file while silently taking her own week away from three of the five roles.
+    """
+    app = create_app(resolver=_null_resolver)
+    method, path = SHIFTS_WEEK_WRITE
+    for route in _leaf_routes(app):
+        if getattr(route, "path", None) != path:
+            continue
+        if method not in (getattr(route, "methods", None) or ()):
+            continue
+        effective = frozenset.intersection(*_gate_role_sets(route.dependant))
+        assert effective == {role.value for role in StaffRole}, (
+            f"{method} {path} admits only {sorted(effective)}"
+        )
+        return
+    pytest.fail(f"{method} {path} not found in the route table")
 
 
 def test_the_capacity_route_is_tightened_in_the_route_table() -> None:

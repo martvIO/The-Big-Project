@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   jerusalemDate,
+  jerusalemIsoDate,
   jerusalemTime,
+  jerusalemWeekday,
   plainDate,
   plainDayMonth,
   todayJerusalem,
@@ -73,5 +75,34 @@ describe("todayJerusalem", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-04T21:30:00Z"));
     expect(todayJerusalem()).toBe("2026-08-05");
+  });
+});
+
+describe("jerusalemWeekday", () => {
+  it("names the boutique's weekday, not the device's", () => {
+    // 16:00Z on Wednesday 4 November is 18:00 Wednesday in Jerusalem — F39's
+    // default deadline instant.
+    expect(jerusalemWeekday("2026-11-04T16:00:00Z")).toBe("יום רביעי");
+    // 22:00Z on Wednesday is already Thursday in Jerusalem and still Wednesday
+    // afternoon in New York.
+    expect(jerusalemWeekday("2026-11-04T22:00:00Z")).toBe("יום חמישי");
+  });
+
+  it("agrees with plainDayMonth(jerusalemIsoDate(...)) on the same instant", () => {
+    // ⚠ THE ASSERTION THAT CATCHES BOTH F39 FAILURES AT ONCE (design F-14).
+    //
+    // 1. `plainDayMonth(instant)` splits the instant on `-`, so its day part is
+    //    "04T16:00:00Z" and `Number(...)` is NaN — «יום רביעי, NaN.11, 18:00» on
+    //    the most-viewed line in the feature.
+    // 2. Slicing the instant by hand instead reads a UTC calendar day as if it
+    //    were Jerusalem's. For a tenant whose deadline is «01:00», Wednesday
+    //    01:00 Jerusalem resolves to 23:00Z on TUESDAY — so the slice names
+    //    Tuesday beside a weekday that says Wednesday.
+    const wednesdayAtOne = "2026-11-03T23:00:00Z";
+    expect(jerusalemWeekday(wednesdayAtOne)).toBe("יום רביעי");
+    expect(plainDayMonth(jerusalemIsoDate(wednesdayAtOne))).toBe("4.11");
+    // And the sliced-by-hand spelling really does disagree — asserted so the
+    // shortcut cannot be reintroduced as an equivalent.
+    expect(plainDayMonth(wednesdayAtOne.slice(0, 10))).toBe("3.11");
   });
 });

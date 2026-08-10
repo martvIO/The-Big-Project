@@ -1252,3 +1252,130 @@ describe("atelier capacity and settings", () => {
     expect(Object.keys(settings.toggles).sort()).toEqual([...TOGGLE_KEYS].sort());
   });
 });
+
+// --- F39: shift availability ---
+
+const TEMPLATE = "33333333-3333-3333-3333-333333333333";
+const WEEK = "2026-11-08";
+
+const TEMPLATE_INPUT = {
+  day_of_week: 4,
+  label: "משמרת בוקר",
+  starts_at_time: "09:00:00",
+  ends_at_time: "14:00:00",
+  sort_order: 0,
+};
+
+describe("shift availability", () => {
+  it("builds all eight paths and verbs", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.listShiftTemplates();
+    await api.createShiftTemplate(TEMPLATE_INPUT);
+    await api.updateShiftTemplate(TEMPLATE, TEMPLATE_INPUT);
+    await api.deleteShiftTemplate(TEMPLATE);
+    await api.seedShiftTemplates();
+    await api.getShiftWeek();
+    await api.submitAvailability({ week_start: WEEK, entries: [] });
+    await api.getWeekSubmissions();
+
+    const seen = fetchMock.mock.calls.map(([url, init]) => [
+      String(url),
+      (init as RequestInit | undefined)?.method ?? "GET",
+    ]);
+    expect(seen).toEqual([
+      ["/manage/shifts/templates", "GET"],
+      ["/manage/shifts/templates", "POST"],
+      [`/manage/shifts/templates/${TEMPLATE}`, "PATCH"],
+      [`/manage/shifts/templates/${TEMPLATE}`, "DELETE"],
+      ["/manage/shifts/templates/seed", "POST"],
+      ["/manage/shifts/week", "GET"],
+      ["/manage/shifts/week/availability", "PUT"],
+      ["/manage/shifts/week/submissions", "GET"],
+    ]);
+  });
+
+  it("omits ?week_start= entirely when no week is named", async () => {
+    // D1: no parameter means NEXT week, resolved server-side from the Jerusalem
+    // clock. Sending a client-computed «next» would disagree with the server for
+    // part of every day on a browser in another zone.
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.getShiftWeek();
+    await api.getShiftWeek(WEEK);
+    await api.getWeekSubmissions();
+    await api.getWeekSubmissions(WEEK);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      "/manage/shifts/week",
+      `/manage/shifts/week?week_start=${WEEK}`,
+      "/manage/shifts/week/submissions",
+      `/manage/shifts/week/submissions?week_start=${WEEK}`,
+    ]);
+  });
+
+  it("sends the whole-week replace body verbatim, including an empty clear", async () => {
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.submitAvailability({
+      week_start: WEEK,
+      staff_user_id: HER,
+      entries: [{ shift_template_id: TEMPLATE, state: "preferred" }],
+    });
+    // An EMPTY list is legal and means «clear my whole week» — D8's clear path,
+    // reached by putting every shift back on «לא נרשם».
+    await api.submitAvailability({ week_start: WEEK, entries: [] });
+    const bodies = fetchMock.mock.calls.map(([, init]) =>
+      JSON.parse(String((init as RequestInit).body)),
+    );
+    expect(bodies[0]).toEqual({
+      week_start: WEEK,
+      staff_user_id: HER,
+      entries: [{ shift_template_id: TEMPLATE, state: "preferred" }],
+    });
+    expect(bodies[1]).toEqual({ week_start: WEEK, entries: [] });
+  });
+
+  it("sends all five template fields on the PATCH", async () => {
+    // D2's full replace: an omitted key can never silently clear a value, and
+    // `sort_order` is resent from the row because the console never shows it.
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.updateShiftTemplate(TEMPLATE, { ...TEMPLATE_INPUT, sort_order: 2 });
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(Object.keys(body).sort()).toEqual([
+      "day_of_week",
+      "ends_at_time",
+      "label",
+      "sort_order",
+      "starts_at_time",
+    ]);
+  });
+
+  it("reads the wire's default-complete scheduling block", async () => {
+    // D6: every tenant carries the whole pair whether or not she has opened the
+    // dialog, so the deadline Card needs no `?? default` anywhere.
+    stubFetch(() =>
+      jsonResponse(200, {
+        profile: {},
+        toggles: {},
+        scheduling: { submission_deadline_day_of_week: 3, submission_deadline_time: "18:00" },
+      }),
+    );
+    const settings = await api.getSettings();
+    expect(settings.scheduling).toEqual({
+      submission_deadline_day_of_week: 3,
+      submission_deadline_time: "18:00",
+    });
+  });
+
+  it("sends the scheduling block WHOLE, both fields, in one save", async () => {
+    // ⚠ `merge_settings` merges at the top level only, so a patch naming one of
+    // the two DELETES the other. Asserted on `Object.keys` because that is the
+    // shape of the data-loss bug, not the values.
+    const fetchMock = stubFetch(() => jsonResponse(200, {}));
+    await api.updateSettings({
+      scheduling: { submission_deadline_day_of_week: 2, submission_deadline_time: "17:30" },
+    });
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(Object.keys(body.scheduling).sort()).toEqual([
+      "submission_deadline_day_of_week",
+      "submission_deadline_time",
+    ]);
+  });
+});

@@ -10,14 +10,15 @@ import { defineConfig } from "vite";
 // applies to `vite preview` too, which inherits `server.proxy`, so the e2e run
 // breaks the same way.
 //
-// A leading "^" is what makes Vite read the key as a RegExp. The seventeen
+// A leading "^" is what makes Vite read the key as a RegExp. The eighteen
 // names are exactly the second path segments the backend's /manage routers
 // declare, and Backend/tests/test_spa_serving.py derives that set from the live
 // route table and asserts this line matches it — an eighteenth segment added
 // without touching this file fails there rather than silently 404ing in dev
-// only.
+// only. F39 added `shifts` — a NEW second segment, which is why this line moves
+// in the same commit as its routes.
 const MANAGE_API =
-  "^/manage/(appointment-types|atelier|auth|availability|bookings|checkin-qr|customers|dashboard|dresses|floor|gateway|privacy|settings|slots|staff|terms|waitlist)";
+  "^/manage/(appointment-types|atelier|auth|availability|bookings|checkin-qr|customers|dashboard|dresses|floor|gateway|privacy|settings|shifts|slots|staff|terms|waitlist)";
 
 export default defineConfig({
   // The console lives at {slug}.{domain}/manage, same origin as the storefront

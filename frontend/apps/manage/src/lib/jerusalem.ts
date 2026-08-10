@@ -74,3 +74,24 @@ export function plainDayMonth(iso: string): string {
 export function todayJerusalem(): string {
   return jerusalemIsoDate(new Date().toISOString());
 }
+
+// The Hebrew weekday of an INSTANT, in the boutique's calendar — «יום רביעי».
+//
+// It lives here rather than in a component for this file's own stated rule:
+// every formatter passes `timeZone: JERusalem` and is never re-declared. A
+// component-local `Intl.DateTimeFormat("he-IL", { weekday: "long" })` would read
+// the DEVICE's zone, and 22:00Z on a Wednesday is already Thursday in Jerusalem.
+//
+// ⚠ ITS PARTNER IS `plainDayMonth(jerusalemIsoDate(instant))`, NEVER
+// `plainDayMonth(instant)`. `plainDayMonth` splits a plain `YYYY-MM-DD` on `-`,
+// so handing it `"2026-11-04T16:00:00Z"` yields a day part of `"04T16:00:00Z"`
+// and renders «NaN.11» — on the most-viewed line in F39. Slicing the instant by
+// hand instead is worse and quieter: it reads a UTC calendar day as if it were
+// already Jerusalem's, which is the DST day-slip the whole file exists to
+// prevent, and for a deadline set to «01:00» it names the wrong day every time.
+// The unit block below asserts the two agree on the same instant.
+const WEEKDAY = new Intl.DateTimeFormat("he-IL", { timeZone: JERusalem, weekday: "long" });
+
+export function jerusalemWeekday(instant: string): string {
+  return WEEKDAY.format(new Date(instant));
+}

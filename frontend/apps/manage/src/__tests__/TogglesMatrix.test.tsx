@@ -33,7 +33,10 @@ function wire(overrides: Record<string, boolean> = {}): Record<string, boolean> 
 }
 
 function settings(toggles: Record<string, boolean> = wire()): Settings {
-  return { profile: {}, toggles };
+  // F39 added `scheduling` to `Settings`, and it is REQUIRED on the wire
+  // (default-complete, so every tenant carries the whole pair whether or not
+  // she has ever opened the dialog). Nothing on this surface reads it.
+  return { profile: {}, toggles, scheduling: { submission_deadline_day_of_week: 3, submission_deadline_time: "18:00" } };
 }
 
 function renderMatrix(toggles: Record<string, boolean> = wire()) {

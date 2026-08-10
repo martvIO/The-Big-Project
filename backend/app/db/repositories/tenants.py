@@ -91,6 +91,7 @@ class TenantsRepository:
         toggles: dict[str, Any] | None = None,
         atelier: dict[str, Any] | None = None,
         privacy: dict[str, Any] | None = None,
+        scheduling: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """ONE atomic `settings = settings || :patch::jsonb` — never a Python
         read-modify-write — so a concurrent writer of a sibling top-level key
@@ -142,6 +143,13 @@ class TenantsRepository:
         # sends the whole block. That is what makes the shallow `||` safe here.
         if privacy is not None:
             patch["privacy"] = privacy
+        # F39's fifth key, and it obeys the ⚠ above rather than escaping it:
+        # `SchedulingSettingsUpdate` requires BOTH of its fields, exactly as
+        # `AtelierSettingsUpdate` and `PrivacyUpdate` require all of theirs, so the
+        # one writer always sends the whole block. That is what makes the shallow
+        # `||` safe here — a partial patch would DELETE the field it did not name.
+        if scheduling is not None:
+            patch["scheduling"] = scheduling
         merged_settings = Tenant.settings.op("||", return_type=JSONB)(cast(patch, JSONB))
         if toggles is not None:
             # Appended LAST so it wins the `||` chain for the `toggles` key.

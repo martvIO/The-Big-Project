@@ -93,6 +93,12 @@ const API_FAMILIES = new Set([
   // segment in the same commit, and test_spa_serving.py is what keeps the two
   // sets agreeing with the live route table.
   "waitlist",
+  // F39's shift availability (`/manage/shifts`). Same rule again, and the same
+  // hole it would have been: an unlisted family falls THROUGH the
+  // interception to `vite preview`'s proxy, which serves the SPA shell for an
+  // unproxied path — so every pane would render its outage line with nothing
+  // anywhere saying why.
+  "shifts",
 ]);
 
 function isManageApi(pathname: string): boolean {
@@ -383,6 +389,11 @@ export function settingsPayload(): unknown {
     // an extra or missing row. D8's growth protocol makes that step ④, and it is
     // one line — which is the proof the protocol costs what it claims.
     toggles: { deposits_enabled: true, brides_only: false },
+    // ⚠ F39's FIFTH KEY, and it is REQUIRED on the wire — the server ships it
+    // DEFAULT-COMPLETE (D6), so a fixture that omits it is not merely thinner
+    // than production: `ShiftsDeadlineCard` reads both fields with no
+    // `?? default` anywhere, exactly because the wire promises them.
+    scheduling: { submission_deadline_day_of_week: 3, submission_deadline_time: "18:00" },
   };
 }
 
@@ -393,8 +404,16 @@ export function settingsAfterToggle(
   key: string,
   value: boolean,
 ): Record<string, unknown> {
-  const base = settingsPayload() as { profile: unknown; toggles: Record<string, boolean> };
-  return { profile: base.profile, toggles: { ...base.toggles, [key]: value } };
+  const base = settingsPayload() as {
+    profile: unknown;
+    toggles: Record<string, boolean>;
+    scheduling: unknown;
+  };
+  return {
+    profile: base.profile,
+    toggles: { ...base.toggles, [key]: value },
+    scheduling: base.scheduling,
+  };
 }
 
 export function availabilityPayload(): unknown {
@@ -1114,4 +1133,86 @@ export async function installStorageUpload(
     await route.fulfill({ status: options.status ?? 204 });
   });
   return record;
+}
+
+
+// --- F39: shift availability -------------------------------------------------
+//
+// ⚠ EVERY WEEK KEY HERE IS A REAL SUNDAY. `staff_availability_week_start_check`
+// refuses anything else, and a fixture week that is not one would pass in a
+// stubbed browser and fail against the real API — which is precisely the Risk 6
+// gap this harness is honest about, so the fixtures at least do not widen it.
+// 2099-01-04 is `SERVER_NOW`'s day and a Sunday; 2099-01-11 is the week after.
+export const SHIFT_WEEK_START = "2099-01-11";
+export const SHIFT_WEEK_END = "2099-01-17";
+// Wednesday 18:00 Jerusalem in the week before, as the UTC instant the wire
+// carries. January, so UTC+2.
+export const SHIFT_DEADLINE_AT = "2099-01-07T16:00:00Z";
+
+export interface ShiftTemplateFixture {
+  id: string;
+  day_of_week: number;
+  label: string;
+  starts_at_time: string;
+  ends_at_time: string;
+  sort_order: number;
+  future_submission_count: number | null;
+}
+
+export function shiftTemplate(
+  overrides: Partial<ShiftTemplateFixture> = {},
+): ShiftTemplateFixture {
+  return {
+    id: "sh-morning",
+    day_of_week: 0,
+    label: "משמרת בוקר",
+    // HH:MM:SS, which is what the server serialises a TIME as — the panes slice
+    // it for `<input type="time">`.
+    starts_at_time: "09:00:00",
+    ends_at_time: "14:00:00",
+    sort_order: 0,
+    future_submission_count: 0,
+    ...overrides,
+  };
+}
+
+export function shiftWeek(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    week_start: SHIFT_WEEK_START,
+    week_end: SHIFT_WEEK_END,
+    deadline_at: SHIFT_DEADLINE_AT,
+    // ACTOR-RELATIVE on the server (design F-1); the fixture just carries what
+    // it decided.
+    locked: false,
+    templates: [shiftTemplate()],
+    entries: [],
+    ...overrides,
+  };
+}
+
+export function shiftSubmissions(rows: unknown[]): unknown {
+  return {
+    week_start: SHIFT_WEEK_START,
+    week_end: SHIFT_WEEK_END,
+    submitted_count: (rows as { submitted: boolean }[]).filter((row) => row.submitted).length,
+    total: rows.length,
+    rows,
+  };
+}
+
+export function shiftSubmissionRow(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    staff_user_id: "st-dana",
+    display_name: "דנה כהן",
+    submitted: false,
+    entries: [],
+    ...overrides,
+  };
+}
+
+/** `/manage/shifts/templates/{id}` — the PATCH and DELETE target. */
+export function shiftTemplatePath(templateId: string): string {
+  return `/manage/shifts/templates/${encodeURIComponent(templateId)}`;
 }

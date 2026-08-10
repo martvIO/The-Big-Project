@@ -11,11 +11,13 @@ import {
   MAX_PASSWORD_LENGTH,
   MAX_PRICE_AGOROT,
   MAX_SEARCH_LENGTH,
+  MAX_SHIFT_LABEL_LENGTH,
   MAX_SIZE_LABEL_LENGTH,
   MAX_SORT_ORDER,
   MAX_STAFF_PHOTO_BYTES,
   MAX_TAGS,
   MAX_TAG_LENGTH,
+  MAX_TEMPLATES_PER_DAY,
   MAX_UPLOAD_BYTES,
   MAX_VARIANTS_PER_DRESS,
   MAX_VARIANT_QUANTITY,
@@ -29,6 +31,7 @@ import {
   validateCustomerNotes,
   validateDress,
   validateExceptionTimes,
+  validateShiftTemplate,
   validateStaffDraft,
   validateStaffPhotoFile,
   validateTag,
@@ -563,5 +566,46 @@ describe("validateStaffPhotoFile", () => {
       "סוג הקובץ אינו נתמך — JPG, PNG או WebP בלבד",
     );
     expect(validateStaffPhotoFile(jpeg(MIN_UPLOAD_BYTES - 1))).toBe("הקובץ אינו תמונה תקינה.");
+  });
+});
+
+describe("validateShiftTemplate", () => {
+  it("accepts an ordinary morning shift", () => {
+    expect(validateShiftTemplate("משמרת בוקר", "09:00", "14:00")).toBeNull();
+  });
+
+  it("refuses a blank or whitespace-only label", () => {
+    expect(validateShiftTemplate("", "09:00", "14:00")).toBe("יש להזין שם למשמרת.");
+    expect(validateShiftTemplate("   ", "09:00", "14:00")).toBe("יש להזין שם למשמרת.");
+  });
+
+  it("bounds the label at the mirrored length", () => {
+    expect(validateShiftTemplate("א".repeat(MAX_SHIFT_LABEL_LENGTH), "09:00", "14:00")).toBeNull();
+    expect(validateShiftTemplate("א".repeat(MAX_SHIFT_LABEL_LENGTH + 1), "09:00", "14:00")).toBe(
+      "שם המשמרת ארוך מדי.",
+    );
+  });
+
+  it("refuses an overnight shift and a zero-length one", () => {
+    // A bridal boutique does not run an overnight shift, and
+    // `shift_templates_order_check` says so in the DDL too.
+    expect(validateShiftTemplate("לילה", "22:00", "02:00")).toBe(
+      "שעת הסיום חייבת להיות אחרי שעת ההתחלה.",
+    );
+    expect(validateShiftTemplate("ריק", "09:00", "09:00")).toBe(
+      "שעת הסיום חייבת להיות אחרי שעת ההתחלה.",
+    );
+  });
+
+  it("refuses a missing time rather than comparing an empty string", () => {
+    expect(validateShiftTemplate("בוקר", "", "14:00")).toBe(
+      "שעת הסיום חייבת להיות אחרי שעת ההתחלה.",
+    );
+  });
+
+  it("keeps the per-day cap unreachable from the total one", () => {
+    // 6 × 7 = 42 exactly, so MAX_TEMPLATES is a server-side guard with no screen
+    // — asserted here so nobody mirrors it and builds a meter for it.
+    expect(MAX_TEMPLATES_PER_DAY).toBe(6);
   });
 });

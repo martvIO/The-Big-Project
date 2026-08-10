@@ -71,6 +71,29 @@ class SosStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class AvailabilityState(StrEnum):
+    # F39 (spec D8). The DB PINS this exact set
+    # (`staff_availability_state_check`, held byte-identical in
+    # test_migrations.py) — SosStatus' rule and for its reason: unlike
+    # StaffCardStatus and TicketStage, which are DERIVED on read, this one is
+    # STORED.
+    #
+    # THREE values and deliberately no fourth `pending`. The absence of a ROW is
+    # "not answered": the roster-readiness read counts missing rows, and a stored
+    # "pending" would make «she has not answered» and «she answered *pending*»
+    # indistinguishable in exactly the query the owner opens that screen to run.
+    # The console's fourth radio «לא נרשם» is the rendered NAME of that absence —
+    # selecting it omits the template from the PUT, which is D8's own clear path —
+    # and it is not a value that ever reaches this enum or the column.
+    #
+    # PREFERRED is ADVISORY INPUT TO F40 AND NEVER A CONSTRAINT. F39 stores it,
+    # enforces nothing, and imposes no cap on how many a staffer may mark; a cap
+    # is F40's if it wants one (O2).
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    PREFERRED = "preferred"
+
+
 class StaffNotificationKind(StrEnum):
     # F35. The DB PINS this exact set (0030's staff_notifications_kind_check,
     # held byte-identical in test_migrations.py), so a fourth kind is a migration
@@ -623,6 +646,37 @@ class AuditAction(StrEnum):
     # also make every row read as a full rewrite of a matrix on which the owner
     # moved one switch.
     TOGGLES_UPDATED = "toggles_updated"
+
+    # F39's six, and the ELEVENTH block to rely on the same fact: audit_log.action
+    # is plain TEXT with no CHECK (0003), so none of these needs a migration.
+    #
+    # SCHEDULING_SETTINGS_UPDATED is the FIFTH `tenants.settings` key and it goes
+    # through the same shared `_record_settings_audit` its two neighbours use,
+    # carrying the WHOLE new block and no `from` — ATELIER_SETTINGS_UPDATED's
+    # rule verbatim, for its reason: the trail IS the history, so the previous
+    # pair is the previous row's, and computing a diff would need exactly the
+    # read-modify-write `merge_settings`' single atomic statement exists to avoid.
+    # Boutique configuration; no personal data.
+    SCHEDULING_SETTINGS_UPDATED = "scheduling_settings_updated"
+    # The template verbs. `_UPDATED` and `_DELETED` carry
+    # `invalidated_submissions` — D4's invalidation is VISIBLE rather than
+    # silent, and a count in `details` is what lets a pilot review ask «how many
+    # answers did that typo fix cost» without a JSONB walk.
+    SHIFT_TEMPLATE_CREATED = "shift_template_created"
+    SHIFT_TEMPLATE_UPDATED = "shift_template_updated"
+    SHIFT_TEMPLATE_DELETED = "shift_template_deleted"
+    SHIFT_TEMPLATES_SEEDED = "shift_templates_seeded"
+    # ⚠ ONE action for the whole-week write, not one per state. The question this
+    # table gets asked is «who recorded whose availability, when, and was it past
+    # the deadline», and each half stays one `WHERE action = …`: `details` carry
+    # `week_start`, the per-state counts, `on_behalf_of` and `after_deadline`.
+    #
+    # IDS ONLY, NEVER A DISPLAY NAME (CUSTOMER_UPDATED's rule): `audit_log` has
+    # no retention class and platform operators read across tenants.
+    #
+    # A SAVE THAT CHANGES NOTHING WRITES NO ROW — the shipped no-op rule. A row
+    # asserting otherwise names an act nobody performed.
+    AVAILABILITY_SUBMITTED = "availability_submitted"
 
     # F37's SOS paging (D13). The EIGHTH block to rely on the same fact:
     # audit_log.action is plain TEXT with no CHECK (0003), so these four need no

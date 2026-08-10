@@ -50,6 +50,22 @@ MAX_RULE_CAPACITY = 1000
 MAX_REFUNDABLE_HOURS = 24 * 365 * 10
 MAX_SORT_ORDER = 1_000_000
 
+# F39 D6. The FIFTH `tenants.settings` top-level key, and the only one that is a
+# submission DEADLINE rather than a description of the boutique.
+#
+# `(3, "18:00")` — Wednesday 18:00 — leaves Thursday–Saturday to build the roster
+# before Sunday. It is a GUESS at the pilot's norm (spec O1) and costs one dialog
+# to change, never a migration.
+#
+# ⚠ THE WHOLE PAIR IS ALWAYS PRESENT ON THE WIRE (`{**SCHEDULING_DEFAULTS,
+# **stored}`, the `toggles` D3 shape), so neither the console nor the lock
+# predicate needs `?? default` anywhere and the two cannot disagree about what an
+# absent key means.
+SCHEDULING_DEFAULTS: dict[str, Any] = {
+    "submission_deadline_day_of_week": 3,
+    "submission_deadline_time": "18:00",
+}
+
 ALLOWED_MAPS_URL_SCHEMES = frozenset({"http", "https"})
 _PHONE_SAFE_CHARS = frozenset("0123456789 ()-")
 _PROFILE_FIELDS = frozenset({"phone", "address", "description", "maps_url", "essence", "instagram"})
@@ -58,6 +74,12 @@ _PROFILE_FIELDS = frozenset({"phone", "address", "description", "maps_url", "ess
 # link — ContactPanel builds https://instagram.com/{handle} from this verbatim.
 _INSTAGRAM_HANDLE = re.compile(r"^[A-Za-z0-9._]{1,30}\Z")
 _ATELIER_FIELDS = frozenset({"effort_bands", "default_weekly_capacity_hours"})
+_SCHEDULING_FIELDS = frozenset({"submission_deadline_day_of_week", "submission_deadline_time"})
+# `HH:MM`, 24-hour, anchored. A LOCAL wall-clock time and never an instant
+# (D6): "18:00 Wednesday" is 16:00Z in winter and 15:00Z in summer, so a
+# stored UTC value drifts an hour twice a year. `app/shifts/validation.py`
+# resolves the instant per week from this pair and the target week's date.
+_DEADLINE_TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d\Z")
 _BAND_KEYS = frozenset(band.value for band in EffortBand)
 _AUDIENCE_VALUES = frozenset(member.value for member in AppointmentAudience)
 
@@ -198,6 +220,34 @@ def validate_atelier_settings(atelier: dict[str, Any]) -> None:
         raise BoutiqueValidationError(
             f"default_weekly_capacity_hours must be between 0 and {MAX_WEEKLY_CAPACITY_HOURS}"
         )
+
+
+def validate_scheduling_settings(scheduling: dict[str, Any]) -> None:
+    """F39's `scheduling` block (D6). It owns EXACTLY what a request model cannot
+    express, and nothing else.
+
+    ⚠ THE INT-NESS AND THE ANTI-`bool` RULE ARE `SchedulingSettingsUpdate`'s, NOT
+    THIS FUNCTION'S — `AtelierSettingsUpdate`'s recorded argument, one key over.
+    `ForbidExtraModel` is `extra="forbid"` and nothing else, so without
+    `StrictInt` up there pydantic would coerce `{"submission_deadline_day_of_week":
+    true}` to `1` before this function ever ran and an `isinstance` check here
+    would be unreachable code.
+
+    What it does own: the DAY RANGE and the TIME SHAPE, both of which reach this
+    blob from a hand-edited JSONB as well as from the console — which is why they
+    are checked on the way in rather than trusted on the way out.
+    """
+    unknown = set(scheduling) - _SCHEDULING_FIELDS
+    if unknown:
+        raise BoutiqueValidationError(f"unknown scheduling keys: {', '.join(sorted(unknown))}")
+
+    day = scheduling.get("submission_deadline_day_of_week")
+    if not isinstance(day, int) or isinstance(day, bool) or not 0 <= day <= 6:
+        raise BoutiqueValidationError("submission_deadline_day_of_week must be between 0 and 6")
+
+    deadline_time = scheduling.get("submission_deadline_time")
+    if not isinstance(deadline_time, str) or not _DEADLINE_TIME.match(deadline_time):
+        raise BoutiqueValidationError("submission_deadline_time must be HH:MM")
 
 
 def validate_appointment_type(

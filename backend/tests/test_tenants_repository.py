@@ -1,8 +1,10 @@
+import asyncio
 import uuid
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.db.repositories.tenants import TenantsRepository
 from app.models.constants import TenantStatus
@@ -125,5 +127,66 @@ async def test_update_trigger_sets_updated_at(app_role_url: str) -> None:
         await repo.suspend(tenant.id)
         suspended = await repo.by_id(tenant.id)
         assert suspended is not None and suspended.updated_at is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_a_scheduling_merge_and_a_concurrent_toggles_merge_both_survive(
+    app_role_url: str,
+) -> None:
+    """F39 D6 at the repository. `merge_settings` is ONE atomic
+    `settings = settings || :patch::jsonb`, never a Python read-modify-write, so
+    a writer of the fifth top-level key cannot clobber a concurrent writer of the
+    fourth — and `toggles`' deep merge, which is appended LAST in the `||` chain,
+    still wins for its own key."""
+    engine = create_async_engine(app_role_url, poolclass=NullPool)
+    repo = TenantsRepository(async_sessionmaker(engine, expire_on_commit=False))
+    block = {"submission_deadline_day_of_week": 5, "submission_deadline_time": "12:15"}
+    try:
+        tenant = await repo.insert(slug=_unique_slug("sched"), name="Sched")
+        await asyncio.gather(
+            repo.merge_settings(tenant.id, scheduling=dict(block)),
+            repo.merge_settings(tenant.id, toggles={"deposits_enabled": True}),
+        )
+        settled = await repo.by_id(tenant.id)
+        assert settled is not None
+        assert settled.settings["scheduling"] == block
+        assert settled.settings["toggles"] == {"deposits_enabled": True}
+    finally:
+        await engine.dispose()
+
+
+async def test_a_scheduling_merge_leaves_every_sibling_key_alone(app_role_url: str) -> None:
+    """⚠ THE SHALLOW `||` IS SAFE AT THE TOP LEVEL AND NOWHERE ELSE. Four
+    sibling keys survive a `scheduling` patch; a PARTIAL `scheduling` object
+    would replace the whole key and delete the field it did not name, which is
+    why `SchedulingSettingsUpdate` requires both and the service refuses the
+    rest."""
+    engine, repo = _make(app_role_url)
+    try:
+        tenant = await repo.insert(slug=_unique_slug("sib"), name="Siblings")
+        await repo.merge_settings(
+            tenant.id,
+            profile={"phone": "+972-3-555-0100"},
+            atelier={"default_weekly_capacity_hours": 36},
+            privacy={"published": True},
+        )
+        await repo.merge_settings(
+            tenant.id,
+            scheduling={"submission_deadline_day_of_week": 3, "submission_deadline_time": "18:00"},
+        )
+        settled = await repo.by_id(tenant.id)
+        assert settled is not None
+        assert settled.settings["profile"] == {"phone": "+972-3-555-0100"}
+        assert settled.settings["atelier"] == {"default_weekly_capacity_hours": 36}
+        assert settled.settings["privacy"] == {"published": True}
+        assert settled.settings["scheduling"]["submission_deadline_time"] == "18:00"
+
+        # And the other direction: a later PARTIAL patch really does delete —
+        # asserted so nobody "fixes" the whole-block rule by relaxing it.
+        await repo.merge_settings(tenant.id, scheduling={"submission_deadline_time": "09:00"})
+        after = await repo.by_id(tenant.id)
+        assert after is not None
+        assert after.settings["scheduling"] == {"submission_deadline_time": "09:00"}
     finally:
         await engine.dispose()

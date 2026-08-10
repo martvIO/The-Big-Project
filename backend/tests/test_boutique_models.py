@@ -11,7 +11,9 @@ from sqlalchemy import Table
 from app.models.appointment_type import AppointmentType
 from app.models.availability import AvailabilityException, AvailabilityRule
 from app.models.base import Base
-from app.models.constants import AppointmentAudience
+from app.models.constants import AppointmentAudience, AvailabilityState
+from app.models.shift_template import ShiftTemplate
+from app.models.staff_availability import StaffAvailability
 from app.models.staff_user import StaffUser  # noqa: F401  (registers staff_users on Base)
 from app.models.terms_version import TermsVersion
 
@@ -134,3 +136,76 @@ def test_staff_user_photo_columns_are_all_nullable_together() -> None:
             assert columns[name].nullable is False
         else:
             assert columns[name].nullable is True, name
+
+
+# --- F39: shift_templates + staff_availability ------------------------------
+
+# GLOBBED for the same reason `_HR_MIGRATION` is: a migration's number is claim
+# order and moves at every rebase.
+_SHIFTS_MIGRATION = next(
+    (Path(__file__).resolve().parent.parent / "migrations" / "versions").glob(
+        "*_shift_availability.py"
+    )
+)
+
+
+def _shifts_migration_module() -> object:
+    spec = importlib.util.spec_from_file_location("shifts_migration", _SHIFTS_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_shift_models_declare_every_column_their_migration_creates() -> None:
+    """F38's parity mechanism, applied to two whole new tables.
+
+    The lists come out of the MIGRATION ITSELF (`_SHIFT_TEMPLATE_COLUMNS`,
+    `_STAFF_AVAILABILITY_COLUMNS`), never out of a copy retyped here — a retyped
+    list is a list the same hand that forgot the model would have to edit.
+    """
+    module = _shifts_migration_module()
+    for table_name, declarations in (
+        ("shift_templates", module._SHIFT_TEMPLATE_COLUMNS),  # type: ignore[attr-defined]
+        ("staff_availability", module._STAFF_AVAILABILITY_COLUMNS),  # type: ignore[attr-defined]
+    ):
+        declared = {declaration.split()[0] for declaration in declarations}
+        missing = declared - set(_table(table_name).columns.keys())
+        assert missing == set(), f"{table_name} model is missing {missing}"
+        # The other direction too: a model column the migration never creates is
+        # an UndefinedColumn at first read rather than a red test.
+        extra = set(_table(table_name).columns.keys()) - declared - STANDARD_COLUMNS
+        assert extra == set(), f"{table_name} model declares {extra}, which no migration creates"
+
+
+def test_both_shift_tables_carry_standard_columns() -> None:
+    for model in (ShiftTemplate, StaffAvailability):
+        missing = STANDARD_COLUMNS - set(_table(model.__tablename__).columns.keys())
+        assert missing == set(), f"{model.__tablename__} missing {missing}"
+
+
+def test_shift_template_shape() -> None:
+    assert ShiftTemplate.__tablename__ == "shift_templates"
+    cols = _table("shift_templates").columns
+    for name in ("day_of_week", "label", "starts_at_time", "ends_at_time", "sort_order"):
+        assert not cols[name].nullable, name
+
+
+def test_staff_availability_shape() -> None:
+    assert StaffAvailability.__tablename__ == "staff_availability"
+    cols = _table("staff_availability").columns
+    for name in ("staff_user_id", "shift_template_id", "week_start", "state"):
+        assert not cols[name].nullable, name
+    # NULL when she recorded it herself (D5) — the whole point of the column.
+    assert cols["recorded_by"].nullable
+
+
+def test_availability_state_has_exactly_three_members() -> None:
+    """D8: no fourth `pending`. The console's «לא נרשם» is the rendered name of
+    an ABSENT row and never a stored value, so a fourth member here would be the
+    exact ambiguity the roster-readiness read exists to remove."""
+    assert {member.value for member in AvailabilityState} == {
+        "available",
+        "unavailable",
+        "preferred",
+    }
