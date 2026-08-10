@@ -16,6 +16,7 @@ from app.boutique.validation import (
     MAX_PROFILE_DESCRIPTION_LENGTH,
     MAX_PROFILE_PHONE_LENGTH,
     MAX_TERMS_TEXT_BYTES,
+    SCHEDULING_DEFAULTS,
     BoutiqueValidationError,
     WeeklyRuleInput,
     validate_appointment_type,
@@ -24,6 +25,7 @@ from app.boutique.validation import (
     validate_maps_url,
     validate_phone,
     validate_profile,
+    validate_scheduling_settings,
     validate_terms,
     validate_toggles,
     validate_weekly_rules,
@@ -469,3 +471,76 @@ def test_a_default_outside_the_columns_own_bound_is_refused(hours: int) -> None:
 def test_a_bands_value_that_is_not_a_mapping_is_refused(bands: Any) -> None:
     with pytest.raises(BoutiqueValidationError):
         validate_atelier_settings({"effort_bands": bands, "default_weekly_capacity_hours": None})
+
+
+# --- F39: the submission deadline (D6) ---------------------------------------
+
+
+def test_the_scheduling_defaults_are_wednesday_at_six() -> None:
+    """O1: a GUESS at the pilot's norm, recorded so the guess is visible. It
+    leaves Thursday–Saturday to build the roster before Sunday, and a wrong
+    default costs one dialog rather than a migration."""
+    assert SCHEDULING_DEFAULTS == {
+        "submission_deadline_day_of_week": 3,
+        "submission_deadline_time": "18:00",
+    }
+
+
+def test_the_defaults_pass_their_own_validator() -> None:
+    """A default that its validator would refuse is a tenant nobody can save
+    without first changing something — asserted, not assumed."""
+    validate_scheduling_settings(dict(SCHEDULING_DEFAULTS))
+
+
+@pytest.mark.parametrize("day", [-1, 7, 100])
+def test_a_deadline_day_outside_the_week_is_refused(day: int) -> None:
+    with pytest.raises(BoutiqueValidationError):
+        validate_scheduling_settings(
+            {"submission_deadline_day_of_week": day, "submission_deadline_time": "18:00"}
+        )
+
+
+def test_a_bool_day_is_refused_here_too() -> None:
+    """⚠ BELT AND BRACES, AND BOTH ARE LOAD-BEARING. `SchedulingSettingsUpdate`'s
+    `StrictInt` is what stops `true` becoming `1` on the REQUEST path; this check
+    is what stops it on the hand-edited-JSONB path, which no request model can
+    see. `isinstance(True, int)` is True in Python, so without the explicit bool
+    test the range check would admit it."""
+    with pytest.raises(BoutiqueValidationError):
+        validate_scheduling_settings(
+            {"submission_deadline_day_of_week": True, "submission_deadline_time": "18:00"}
+        )
+
+
+@pytest.mark.parametrize("value", ["24:00", "18:0", "6:00", "18:60", "18:00:00", "", "evening"])
+def test_a_malformed_deadline_time_is_refused(value: str) -> None:
+    with pytest.raises(BoutiqueValidationError):
+        validate_scheduling_settings(
+            {"submission_deadline_day_of_week": 3, "submission_deadline_time": value}
+        )
+
+
+@pytest.mark.parametrize("value", ["00:00", "09:30", "18:00", "23:59"])
+def test_a_well_formed_deadline_time_is_accepted(value: str) -> None:
+    validate_scheduling_settings(
+        {"submission_deadline_day_of_week": 3, "submission_deadline_time": value}
+    )
+
+
+def test_an_unknown_scheduling_key_is_refused() -> None:
+    with pytest.raises(BoutiqueValidationError):
+        validate_scheduling_settings({**SCHEDULING_DEFAULTS, "submission_deadline_zone": "UTC"})
+
+
+def test_a_partial_scheduling_block_is_refused_by_the_validator_too() -> None:
+    """⚠ THE DATA-LOSS BUG, GUARDED TWICE. `merge_settings` is a top-level `||`,
+    so a patch naming one of the two fields DELETES the other. The schema makes
+    the partial unconstructible on the request path; this makes it a 400 on every
+    other path into the service."""
+    for partial in (
+        {"submission_deadline_day_of_week": 3},
+        {"submission_deadline_time": "18:00"},
+        {},
+    ):
+        with pytest.raises(BoutiqueValidationError):
+            validate_scheduling_settings(partial)

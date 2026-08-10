@@ -50,7 +50,12 @@ Service = Annotated[BoutiqueSettingsService, Depends(get_boutique_service)]
 async def get_settings(request: Request, staff: Staff, service: Service) -> SettingsResponse:
     tenant = get_current_tenant(request)
     result = await service.get_settings(tenant.id)
-    return SettingsResponse(profile=result.profile, toggles=result.toggles, atelier=result.atelier)
+    return SettingsResponse(
+        profile=result.profile,
+        toggles=result.toggles,
+        atelier=result.atelier,
+        scheduling=result.scheduling,
+    )
 
 
 @router.put("/settings")
@@ -75,10 +80,24 @@ async def update_settings(
     # for `exclude_unset` to exclude, and `mode="json"` keeps the `EffortBand`
     # keys plain strings on their way into a JSONB column and an audit row.
     atelier = body.atelier.model_dump(mode="json") if body.atelier is not None else None
+    # ⚠ NO `exclude_unset` HERE EITHER, and for `atelier`'s reason exactly: both
+    # fields of `SchedulingSettingsUpdate` are required, so a partial
+    # `scheduling` object cannot be constructed and there is nothing to exclude.
+    scheduling = body.scheduling.model_dump() if body.scheduling is not None else None
     result = await service.update_settings(
-        tenant.id, actor=staff, profile=profile, toggles=toggles, atelier=atelier
+        tenant.id,
+        actor=staff,
+        profile=profile,
+        toggles=toggles,
+        atelier=atelier,
+        scheduling=scheduling,
     )
-    return SettingsResponse(profile=result.profile, toggles=result.toggles, atelier=result.atelier)
+    return SettingsResponse(
+        profile=result.profile,
+        toggles=result.toggles,
+        atelier=result.atelier,
+        scheduling=result.scheduling,
+    )
 
 
 # --- appointment types ---

@@ -11,12 +11,14 @@ from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
 from app.boutique.toggles import TOGGLE_DEFAULTS
 from app.boutique.validation import (
+    SCHEDULING_DEFAULTS,
     WeeklyRuleInput,
     validate_appointment_type,
     validate_atelier_settings,
     validate_exception_note,
     validate_exception_times,
     validate_profile,
+    validate_scheduling_settings,
     validate_terms,
     validate_toggles,
     validate_weekly_rules,
@@ -70,6 +72,7 @@ class SettingsResult:
     profile: dict[str, Any]
     toggles: dict[str, Any]
     atelier: dict[str, Any]
+    scheduling: dict[str, Any]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -114,6 +117,13 @@ def _settings_result(settings: dict[str, Any]) -> SettingsResult:
         # rather than a defensive habit: no writer could reach `settings["atelier"]`
         # before this feature, so an absent key is NORMAL.
         atelier=dict(settings.get("atelier") or {}),
+        # F39 D6 — DEFAULT-COMPLETE, `toggles` D3's shape rather than `atelier`'s
+        # raw one. The deadline governs a LOCK a staffer hits, so an absent key
+        # cannot mean «no deadline»: it means the platform default, and the wire
+        # says so once here rather than in every reader. `MyWeekPanel` never reads
+        # this block at all (GET /manage/settings is gated OWNER, SHIFT_MANAGER —
+        # design F-8); `deadline_at` on the week payload is her only source.
+        scheduling={**SCHEDULING_DEFAULTS, **(settings.get("scheduling") or {})},
     )
 
 
@@ -153,6 +163,7 @@ class BoutiqueSettingsService:
         profile: dict[str, Any] | None = None,
         toggles: dict[str, Any] | None = None,
         atelier: dict[str, Any] | None = None,
+        scheduling: dict[str, Any] | None = None,
     ) -> SettingsResult:
         """`actor` is F42's (D5 edit #7) and it is REQUIRED rather than optional:
         `audit_log.actor_id` is nullable, so an actor-less row would insert
@@ -170,8 +181,14 @@ class BoutiqueSettingsService:
             validate_toggles(toggles)
         if atelier is not None:
             validate_atelier_settings(atelier)
+        if scheduling is not None:
+            validate_scheduling_settings(scheduling)
         merged = await self._tenants.merge_settings(
-            tenant_id, profile=profile, toggles=toggles, atelier=atelier
+            tenant_id,
+            profile=profile,
+            toggles=toggles,
+            atelier=atelier,
+            scheduling=scheduling,
         )
         if merged is None:
             raise NotFoundError
@@ -187,6 +204,17 @@ class BoutiqueSettingsService:
             # comment in `models/constants.py`.
             await self._record_settings_audit(
                 tenant_id, actor=actor, action=AuditAction.TOGGLES_UPDATED, details=toggles
+            )
+        if scheduling is not None:
+            # F39 D6. The WHOLE new block, `ATELIER_SETTINGS_UPDATED`'s rule and not
+            # `TOGGLES_UPDATED`'s patch: this key is always written whole, so the
+            # patch and the block are the same object and the row records the pair
+            # that was in force. Boutique configuration; no personal data.
+            await self._record_settings_audit(
+                tenant_id,
+                actor=actor,
+                action=AuditAction.SCHEDULING_SETTINGS_UPDATED,
+                details=scheduling,
             )
         return _settings_result(merged)
 

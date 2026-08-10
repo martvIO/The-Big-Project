@@ -24,10 +24,12 @@ from app.boutique.service import (
     TermsVersionConflictError,
 )
 from app.boutique.validation import (
+    SCHEDULING_DEFAULTS,
     BoutiqueValidationError,
     WeeklyRuleInput,
     validate_atelier_settings,
     validate_profile,
+    validate_scheduling_settings,
     validate_toggles,
 )
 from app.main import create_app
@@ -110,6 +112,7 @@ class FakeBoutiqueService:
             profile={"phone": "+972-3-555-0100"},
             toggles={"deposits_enabled": True},
             atelier={},
+            scheduling=dict(SCHEDULING_DEFAULTS),
         )
         self.type_row = AppointmentType(
             id=TYPE_ID,
@@ -171,6 +174,7 @@ class FakeBoutiqueService:
         profile: dict[str, Any] | None = None,
         toggles: dict[str, Any] | None = None,
         atelier: dict[str, Any] | None = None,
+        scheduling: dict[str, Any] | None = None,
     ) -> SettingsResult:
         # The real service gates on validate_profile before it touches storage,
         # and the profile field rules (instagram handle shape, essence length)
@@ -190,6 +194,10 @@ class FakeBoutiqueService:
             validate_toggles(toggles)
         if atelier is not None:
             validate_atelier_settings(atelier)
+        # F39's block, same argument one key over: the DAY RANGE and the `HH:MM`
+        # shape are the validator's and no request model can see them.
+        if scheduling is not None:
+            validate_scheduling_settings(scheduling)
         self._record(
             "update_settings",
             tenant_id=tenant_id,
@@ -197,6 +205,7 @@ class FakeBoutiqueService:
             profile=profile,
             toggles=toggles,
             atelier=atelier,
+            scheduling=scheduling,
         )
         return self.settings_result
 
@@ -297,6 +306,7 @@ def test_get_settings_returns_profile_and_toggles() -> None:
         "profile": {"phone": "+972-3-555-0100"},
         "toggles": {"deposits_enabled": True},
         "atelier": {},
+        "scheduling": SCHEDULING_DEFAULTS,
     }
     assert fake.call("get_settings") == {"tenant_id": TENANT.id}
 
@@ -388,7 +398,9 @@ def test_put_settings_rejects_an_unknown_toggle_key_in_the_house_shape() -> None
 def test_put_settings_round_trips_essence_and_instagram() -> None:
     fake = FakeBoutiqueService()
     profile = {"essence": "שמלות כלה בעבודת יד", "instagram": "bella.bridal"}
-    fake.settings_result = SettingsResult(profile=profile, toggles={}, atelier={})
+    fake.settings_result = SettingsResult(
+        profile=profile, toggles={}, atelier={}, scheduling=dict(SCHEDULING_DEFAULTS)
+    )
     with _client(fake) as client:
         resp = client.put("/manage/settings", json={"profile": profile})
     assert resp.status_code == 200
@@ -462,7 +474,9 @@ def test_put_settings_passes_the_whole_atelier_block_through() -> None:
     One writer, one dialog, one save, both keys — made structural by the request
     model rather than left as a convention."""
     fake = FakeBoutiqueService()
-    fake.settings_result = SettingsResult(profile={}, toggles={}, atelier=ATELIER_BLOCK)
+    fake.settings_result = SettingsResult(
+        profile={}, toggles={}, atelier=ATELIER_BLOCK, scheduling=dict(SCHEDULING_DEFAULTS)
+    )
     with _client(fake) as client:
         resp = client.put("/manage/settings", json=_atelier())
     assert resp.status_code == 200
@@ -949,3 +963,102 @@ def test_invalid_json_body_is_house_shape_400() -> None:
         )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+# --- F39's scheduling block (D6) ---
+#
+# ⚠ THE `StrictInt` ROW IS THE POINT, exactly as it is for `atelier` above:
+# `{"submission_deadline_day_of_week": true}` is a 200 against a plain `int`,
+# because `ForbidExtraModel` is `extra="forbid"` and NOTHING ELSE — pydantic
+# coerces before any validator runs, and the deadline silently moves to Monday.
+
+
+def _scheduling(**overrides: Any) -> dict[str, Any]:
+    return {"scheduling": {**SCHEDULING_DEFAULTS, **overrides}}
+
+
+def test_put_settings_passes_the_whole_scheduling_block_through() -> None:
+    """⚠ THE WHOLE BLOCK, ALWAYS — `atelier`'s rule one key over. A patch naming
+    one of the two fields would replace the key and DELETE the other, which is
+    also why the console has one save and not two."""
+    fake = FakeBoutiqueService()
+    block = {"submission_deadline_day_of_week": 2, "submission_deadline_time": "17:30"}
+    fake.settings_result = SettingsResult(
+        profile={}, toggles={}, atelier={}, scheduling=dict(block)
+    )
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"scheduling": block})
+    assert resp.status_code == 200
+    call = fake.call("update_settings")
+    assert call["scheduling"] == block
+    assert call["profile"] is None and call["toggles"] is None and call["atelier"] is None
+    assert resp.json()["scheduling"] == block
+
+
+def test_put_settings_without_a_scheduling_block_leaves_it_none() -> None:
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json={"profile": {"phone": "03-5550100"}})
+    assert resp.status_code == 200
+    assert fake.call("update_settings")["scheduling"] is None
+
+
+def test_a_partial_scheduling_block_is_unconstructible_on_the_wire() -> None:
+    """Both fields REQUIRED with no default, so pydantic refuses before the
+    service is reached — the schema is what makes the data-loss bug structurally
+    impossible rather than merely validated against."""
+    for partial in (
+        {"submission_deadline_day_of_week": 3},
+        {"submission_deadline_time": "18:00"},
+        {},
+    ):
+        fake = FakeBoutiqueService()
+        with _client(fake) as client:
+            resp = client.put("/manage/settings", json={"scheduling": partial})
+        # A 422 or a 400 — the house handler maps pydantic's own refusal; what
+        # matters is that the REQUEST never reached the service.
+        assert resp.status_code in (400, 422), partial
+        assert fake.calls == []
+
+
+def test_a_bool_deadline_day_is_refused_and_never_a_coerced_one() -> None:
+    """⚠ THE `StrictInt` ASSERTION, AND IT IS VACUOUS WITHOUT THE BOOL CASE.
+    With a plain `int` this body is a 200 that silently stores `1` — Monday —
+    and every staffer's lock fires two days early."""
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put(
+            "/manage/settings",
+            json=_scheduling(submission_deadline_day_of_week=True),
+        )
+    assert resp.status_code in (400, 422)
+    assert fake.calls == []
+
+
+def test_an_out_of_range_deadline_day_is_a_house_shape_400() -> None:
+    """The RANGE is the validator's, not the schema's — the fake runs the real
+    one, so dropping the call from `update_settings` is visible here."""
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json=_scheduling(submission_deadline_day_of_week=9))
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_a_malformed_deadline_time_is_a_house_shape_400() -> None:
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put("/manage/settings", json=_scheduling(submission_deadline_time="6pm"))
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_an_unknown_scheduling_key_is_refused_by_the_schema() -> None:
+    fake = FakeBoutiqueService()
+    with _client(fake) as client:
+        resp = client.put(
+            "/manage/settings",
+            json={"scheduling": {**SCHEDULING_DEFAULTS, "submission_deadline_zone": "UTC"}},
+        )
+    assert resp.status_code in (400, 422)
+    assert fake.calls == []
