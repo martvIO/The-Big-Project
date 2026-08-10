@@ -125,7 +125,7 @@ async def _seed(
             duration_minutes=60,
             audience=AppointmentAudience.ALL.value,
             deposit_required=False,
-            deposit_amount_agorot=0,
+            deposit_amount_agorot=None,
             sort_order=0,
         )
         return type_row.id
@@ -145,7 +145,7 @@ async def _second_type(
             duration_minutes=60,
             audience=AppointmentAudience.ALL.value,
             deposit_required=False,
-            deposit_amount_agorot=0,
+            deposit_amount_agorot=None,
             sort_order=1,
         )
         return row.id
@@ -692,6 +692,66 @@ def test_offers_never_reach_into_a_past_day(app_role_url: str) -> None:
             assert (
                 await _entry(factory, tenant_id, entry_id)
             ).status == WaitlistEntryStatus.WAITING.value
+        finally:
+            await _purge(factory, tenant_id)
+            await engine.dispose()
+
+    _run(check)
+
+
+def test_a_pair_past_the_batch_is_reached_on_a_later_tick(
+    app_role_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**The cap must bound the WORK, never which brides exist.**
+
+    `waiting_pairs` is `ORDER BY day, type LIMIT N`, and the cap's original
+    defence was that a LIMIT rotates on its own because an offered pair drops out
+    of the `NOT EXISTS`. That is only true of a pair that PRODUCES an offer. A
+    pair whose day has no free slot past the lead produces nothing and stays a
+    candidate forever — and a full day is the normal state of a waitlist, which
+    is why those brides joined it. So a deterministic first-N walk re-reads the
+    same full days on every tick and never reads pair N+1: a cancellation behind
+    the horizon is missed indefinitely, and silently, because `_issue` logs
+    nothing when it offers nothing.
+
+    The batch size is patched down rather than seeding fifty-one appointment
+    types: the starvation is a property of the walk, not of the number 50.
+
+    ⚠ ONE cascade instance across both ticks — the worker builds it once in
+    `main()` and reuses it, and the resume cursor lives there.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    # Sorts BEFORE the seeded day and has no rule for its weekday, so it is a
+    # standing candidate that can never yield an offer — `test_a_closed_day_
+    # offers_nothing`'s shape, used here as the blocker.
+    closed = TARGET_DATE - datetime.timedelta(days=1)
+    monkeypatch.setattr("app.db.repositories.waitlist_entries.ISSUE_BATCH_SIZE", 1)
+
+    async def check() -> None:
+        try:
+            type_id = await _seed(factory, tenant_id)
+            blocked = await _join(factory, tenant_id, type_id, day=closed)
+            behind = await _join(factory, tenant_id, type_id, day=TARGET_DATE)
+
+            cascade = _cascade(factory, NOW)
+            # Tick one reads the closed day and offers nothing at all.
+            assert (await cascade.run(tenant_id)).offered == 0
+            assert (
+                await _entry(factory, tenant_id, blocked)
+            ).status == WaitlistEntryStatus.WAITING.value
+
+            # Tick two must move PAST it. On a first-N walk it reads the same
+            # closed day again and this entry waits out the whole cancellation.
+            assert (await cascade.run(tenant_id)).offered == 1
+            assert (
+                await _entry(factory, tenant_id, behind)
+            ).status == WaitlistEntryStatus.OFFERED.value
+
+            # And the walk wraps: running off the end clears the cursor, so the
+            # blocked pair is a candidate again rather than skipped forever.
+            assert (await cascade.run(tenant_id)).offered == 0
+            assert cascade._issue_cursor.get(tenant_id) is None
         finally:
             await _purge(factory, tenant_id)
             await engine.dispose()

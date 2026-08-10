@@ -37,6 +37,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.booking.slots_io import day_slots
 from app.booking.tokens import manage_token_hash, mint_manage_token
+
+# The MODULE, not `from … import ISSUE_BATCH_SIZE`: a from-import binds a second
+# name, and `_issue`'s saturation test would then read a different number from
+# the LIMIT that produced the page the moment anything rebinds one of them.
+from app.db.repositories import waitlist_entries as entries_repo
 from app.db.repositories.availability import (
     AvailabilityExceptionsRepository,
     AvailabilityRulesRepository,
@@ -112,6 +117,12 @@ class WaitlistCascade:
         # claim, and a test that cannot move all three together cannot pin the
         # race at all.
         self._clock = clock
+        # Where the last tick stopped walking this tenant's (day, type) pairs.
+        # In-process on purpose: it is a fairness hint, not a fact — a restart
+        # or a second worker simply starts its own walk at the top, which costs
+        # a repeat, never a miss. Persisting it would buy nothing and add a
+        # write to the hottest path in the poller.
+        self._issue_cursor: dict[uuid.UUID, tuple[datetime.date, uuid.UUID]] = {}
         self._entries = WaitlistEntriesRepository()
         self._scheduled = ScheduledMessagesRepository()
         self._rules = AvailabilityRulesRepository()
@@ -211,10 +222,32 @@ class WaitlistCascade:
     ) -> CascadeResult:
         """Steps 3-6. Silence is the steady state: no slot, no waiting entry, or
         a lost guard all fall through without a log line or an error, because
-        every boutique reaches this on every 60-second tick."""
+        every boutique reaches this on every 60-second tick.
+
+        **The walk RESUMES, but only when the cap actually bit.**
+        `waiting_pairs` is capped so one tick cannot materialize a thousand
+        day-grids inside a transaction a bride's claim is queued behind. A cap on
+        its own starves, though: only a pair that PRODUCES an offer leaves the
+        candidate set, so the first N FULL days — which is exactly why those
+        brides are on a waitlist — get re-read on every tick and pair N+1 is
+        never reached at all.
+
+        So the cursor advances on a SATURATED read and is cleared on a short one.
+        A short page means this read reached the end of the list, so there is no
+        horizon to resume past. That distinction is the whole point rather than a
+        tidy-up: an unconditional cursor would make every boutique pay for the
+        big one's problem — a seat freed behind the cursor would wait for the walk
+        to wrap instead of being offered on the very next tick, and almost every
+        boutique has a handful of pairs and never reaches the cap at all.
+        """
+        cursor = self._issue_cursor.get(tenant_id)
         pairs = await self._entries.waiting_pairs(
-            session, tenant_id, from_day=today_jerusalem(lambda: now)
+            session, tenant_id, from_day=today_jerusalem(lambda: now), after=cursor
         )
+        if len(pairs) < entries_repo.ISSUE_BATCH_SIZE:
+            self._issue_cursor.pop(tenant_id, None)
+        else:
+            self._issue_cursor[tenant_id] = pairs[-1]
         offered = 0
         for day, appointment_type_id in pairs:
             if await self._offer_one(session, tenant_id, now, day, appointment_type_id):

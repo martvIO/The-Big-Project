@@ -126,7 +126,7 @@ async def _seed(factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID)
             duration_minutes=60,
             audience=AppointmentAudience.ALL.value,
             deposit_required=False,
-            deposit_amount_agorot=0,
+            deposit_amount_agorot=None,
             sort_order=0,
         )
         await TermsVersionsRepository().insert(

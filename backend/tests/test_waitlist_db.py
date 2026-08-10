@@ -466,7 +466,7 @@ def test_waiting_pairs_is_capped_so_one_tick_cannot_walk_the_whole_window(
     Patched down rather than seeded past 50: the assertion is that the LIMIT is
     applied, and 51 rows would test Postgres.
     """
-    monkeypatch.setattr("app.db.repositories.waitlist_entries._ISSUE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.db.repositories.waitlist_entries.ISSUE_BATCH_SIZE", 1)
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
 

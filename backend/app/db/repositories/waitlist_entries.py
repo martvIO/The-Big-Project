@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -22,10 +22,17 @@ _EXPIRY_BATCH_SIZE = 200
 # type count is ~1,200 grids inside a single transaction — a bride's claim POST
 # blocks behind it, and every later tenant's drain and sweep queue behind that.
 #
-# A LIMIT rotates fairly on its own and needs no cursor: a pair that gets an
-# offer drops out of the `NOT EXISTS` below for the whole window, so the next
-# tick's first N are different pairs.
-_ISSUE_BATCH_SIZE = 50
+# **The LIMIT does NOT rotate on its own, and this is why `after` exists.** Only
+# a pair that PRODUCES an offer drops out of the `NOT EXISTS` below. A pair whose
+# day has no free slot at least `min_lead` out produces nothing, stays a
+# candidate, and a plain `ORDER BY … LIMIT N` therefore re-reads the same first N
+# full days on every tick, forever — and a full day is the normal state of a
+# waitlist, not the exception. So `_issue` resumes after the last pair of a
+# SATURATED read and starts from the top after a short one, and the cap bounds
+# the WORK per tick without bounding which pairs are reachable. Public because
+# that rule needs the number: a short page is how the cascade knows it reached
+# the end of the list rather than the edge of a window.
+ISSUE_BATCH_SIZE = 50
 
 # The two states the active-unique index predicate names — "on the list" as far
 # as the join's dedup and the manage list are concerned. Spelled once here so
@@ -327,7 +334,12 @@ class WaitlistEntriesRepository:
         return (await session.execute(stmt)).scalar_one_or_none() is not None
 
     async def waiting_pairs(
-        self, session: AsyncSession, tenant_id: UUID, *, from_day: datetime.date
+        self,
+        session: AsyncSession,
+        tenant_id: UUID,
+        *,
+        from_day: datetime.date,
+        after: tuple[datetime.date, UUID] | None = None,
     ) -> Sequence[tuple[datetime.date, UUID]]:
         """D2 step 3: the distinct `(day, appointment_type_id)` pairs that have a
         `waiting` entry and NO live offer.
@@ -340,9 +352,14 @@ class WaitlistEntriesRepository:
 
         Ordered so two workers walk the pairs in the same sequence — not
         required for correctness (the guarded UPDATE arbitrates) but it makes a
-        log read the same twice. Capped at `_ISSUE_BATCH_SIZE`: see that
+        log read the same twice. Capped at `ISSUE_BATCH_SIZE`: see that
         constant for why an uncapped walk is a tick that holds locks for
-        everybody else.
+        everybody else, and why the cap alone would starve the tail.
+
+        `after` is that cap's other half — the caller's keyset cursor, the last
+        pair it walked. Spelled as `day > d OR (day = d AND type > t)` rather
+        than a row-value comparison so every bind lands against a typed column
+        and asyncpg has no type to guess.
         """
         live_offer = aliased(WaitlistEntry, name="live_offer")
         offered = (
@@ -356,18 +373,28 @@ class WaitlistEntriesRepository:
             )
             .exists()
         )
-        stmt = (
-            select(WaitlistEntry.day, WaitlistEntry.appointment_type_id)
-            .where(
-                WaitlistEntry.tenant_id == tenant_id,
-                WaitlistEntry.day >= from_day,
-                WaitlistEntry.status == WaitlistEntryStatus.WAITING.value,
-                WaitlistEntry.deleted_at.is_(None),
-                ~offered,
+        stmt = select(WaitlistEntry.day, WaitlistEntry.appointment_type_id).where(
+            WaitlistEntry.tenant_id == tenant_id,
+            WaitlistEntry.day >= from_day,
+            WaitlistEntry.status == WaitlistEntryStatus.WAITING.value,
+            WaitlistEntry.deleted_at.is_(None),
+            ~offered,
+        )
+        if after is not None:
+            after_day, after_type = after
+            stmt = stmt.where(
+                or_(
+                    WaitlistEntry.day > after_day,
+                    and_(
+                        WaitlistEntry.day == after_day,
+                        WaitlistEntry.appointment_type_id > after_type,
+                    ),
+                )
             )
-            .distinct()
+        stmt = (
+            stmt.distinct()
             .order_by(WaitlistEntry.day, WaitlistEntry.appointment_type_id)
-            .limit(_ISSUE_BATCH_SIZE)
+            .limit(ISSUE_BATCH_SIZE)
         )
         return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
 
