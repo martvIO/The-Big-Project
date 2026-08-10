@@ -644,3 +644,43 @@ def test_the_ci_copy_step_carries_all_three_trees() -> None:
     assert copied == {"manage", "storefront", "platform"}, copied
     asserted = set(re.findall(r"backend/app/static/(\w+)/index\.html", workflow))
     assert asserted == {"manage", "storefront", "platform"}, asserted
+
+
+def test_the_join_screen_is_served_at_exactly_slash_platform_join(
+    console_client: TestClient,
+) -> None:
+    """F26 D1 — the redeemer's screen is the SAME bundle at a second exact path,
+    not a fourth app and not a subtree fallback. Exact for `/platform`'s reason:
+    apps/platform has no client router, so a subtree would invent deep links it
+    cannot restore."""
+    resp = console_client.get("/platform/join")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "platform" in resp.text
+    assert resp.headers["cache-control"] == "no-cache"
+    # Still exact: a path BELOW it is not the shell.
+    assert console_client.get("/platform/join/not-a-screen").status_code == 404
+
+
+def test_the_storefront_catch_all_declines_the_join_path(client: TestClient) -> None:
+    """R-E's tripwire. `_RESERVED_SEGMENTS` is what stops a GET /platform/join on
+    a TENANT host being answered with that boutique's own HTML shell at 200 —
+    which would look like nothing was wrong while serving the wrong app on the
+    wrong host."""
+    resp = client.get("/platform/join")
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "TENANT_NOT_FOUND"
+
+
+def test_the_join_path_degrades_with_the_rest_of_the_console(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`_serve_file` no-ops when the file is absent, so a deploy whose copy step
+    dropped the console answers 404 here rather than raising at boot — the same
+    degradation `/platform` already has."""
+    static_root = tmp_path / "static"
+    _build_static(static_root)
+    shutil.rmtree(static_root / "platform")
+    console = _client(monkeypatch, static_root, host=CONSOLE_HOST)
+    assert console.get("/platform").status_code == 404
+    assert console.get("/platform/join").status_code == 404

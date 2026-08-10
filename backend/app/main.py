@@ -632,6 +632,16 @@ def _register_spas(app: FastAPI) -> None:
     # it cannot restore. `_serve_file` no-ops when the file is absent, which is
     # what makes the missing-console case degrade rather than raise.
     _serve_file(app, "/platform", platform / "index.html")
+    # F26 D1. A SECOND exact path into the SAME bundle — not a subtree fallback,
+    # for the rule above: apps/platform has no client router, so exactly two URLs
+    # are screens and anything else must stay a 404. `App.tsx` branches on
+    # `location.pathname` before its `me()` bootstrap, so this path renders the
+    # join panel and never calls the console's auth.
+    #
+    # The alternatives were an apex that 404s by design, a tenant host that does
+    # not exist until redemption succeeds, and a fourth workspace app for one
+    # form (spec D1). This is one line.
+    _serve_file(app, "/platform/join", platform / "index.html")
 
     storefront_index = storefront / "index.html"
 

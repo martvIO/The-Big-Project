@@ -383,3 +383,68 @@ def test_catalog_is_no_longer_the_module_with_zero_audit_rows() -> None:
     assert len(catalog) == 11, f"catalog's mutating route count moved: {sorted(catalog)}"
     unaudited = {key for key in catalog if not _route_writes_audit(routes[key])}
     assert not unaudited, f"catalog mutations with no audit row: {sorted(unaudited)}"
+
+
+# --- F26: the two console READS, and why they differ from each other ----------
+
+
+def test_the_anonymous_invite_read_writes_no_row_while_the_tenant_list_still_does() -> None:
+    """⚠ THREE READS UNDER `/platform`, TWO OF WHICH DELIBERATELY WRITE NOTHING.
+    The walk above only sees mutations, so without this test the decision would
+    live nowhere a reviewer could find it.
+
+    `GET /platform/tenants` writes `TENANTS_LISTED` — F21's D6 made it the single
+    audited read in the product because it is a FULL cross-tenant enumeration:
+    every boutique's slug, trading name and status in one answer
+    (`platform/service.py`'s `list_tenants` docstring).
+
+    `GET /platform/join/invite` writes nothing. A read of ONE'S OWN invite is not
+    a platform event: the caller already holds the 256-bit secret for that single
+    row, so `TENANTS_LISTED`'s enumeration argument does not reach it, and a row
+    per read would let an anonymous caller fill an INSERT-only table the app can
+    neither read back nor prune. Its refusals DO write `INVITE_REDEEM_FAILED`,
+    which is the record that somebody tried (`platform/join_router.py`).
+
+    `GET /platform/invites` writes nothing either, and for a third reason: it
+    lists authorisations the operator population issued itself and names no
+    boutique that exists (`platform/service.py`'s `list_invites`).
+    """
+    app = create_app(resolver=_null_resolver)
+    reads = {}
+    for route in _leaf_routes(app):
+        path = getattr(route, "path", None)
+        endpoint = getattr(route, "endpoint", None)
+        if path is None or endpoint is None or not path.startswith("/platform"):
+            continue
+        if "GET" in (getattr(route, "methods", None) or set()):
+            reads[path] = endpoint
+
+    assert set(reads) == {
+        "/platform/auth/me",
+        "/platform/tenants",
+        "/platform/invites",
+        "/platform/join/invite",
+    }, sorted(reads)
+    assert _route_writes_audit(reads["/platform/tenants"]), (
+        "GET /platform/tenants stopped writing TENANTS_LISTED — F21's D6 row R12 "
+        "travelled from the shell to HTTP on the strength of that write"
+    )
+    assert not _route_writes_audit(reads["/platform/join/invite"])
+    assert not _route_writes_audit(reads["/platform/invites"])
+    assert not _route_writes_audit(reads["/platform/auth/me"])
+
+
+def test_the_four_new_mutating_platform_routes_all_reach_the_audit_repository() -> None:
+    """F26's three operator routes and its one anonymous mutation, resolved
+    through delegation rather than asserted by inspection. The redemption route
+    is the one that matters most: it creates a whole boutique from an
+    unauthenticated request, and the row naming the operator who authorised it is
+    the only accountability the act has."""
+    routes = _mutating_audited_routes()
+    for key in (
+        ("POST", "/platform/invites"),
+        ("POST", "/platform/invites/revoke"),
+        ("POST", "/platform/join/redeem"),
+    ):
+        assert key in routes, f"{key} is no longer a mutating /platform route"
+        assert _route_writes_audit(routes[key]), f"{key} writes no audit row"

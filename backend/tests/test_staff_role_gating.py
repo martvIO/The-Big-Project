@@ -1031,7 +1031,7 @@ def test_head_and_options_on_a_gated_route_are_405_before_the_gate() -> None:
 # --- F25's console: the same default-deny walk, for the other population -------
 
 
-def test_every_platform_route_but_the_two_public_ones_requires_an_operator() -> None:
+def test_every_platform_route_but_the_four_public_ones_requires_an_operator() -> None:
     """The `/manage` RoleGate walker's analogue for the platform console, and it
     exists for the identical reason: a console route added later WITHOUT
     `Depends(get_current_operator)` must be a red build, not a convention nobody
@@ -1043,13 +1043,29 @@ def test_every_platform_route_but_the_two_public_ones_requires_an_operator() -> 
     dependency guarding a different population against a different table (spec
     D3), and this is that gate's walk.
 
-    Two routes are deliberately open, and both must be: login has nobody to
-    authenticate yet, and logout must answer the same 200 with or without a live
-    cookie or it becomes an oracle for "was that token live".
+    FOUR routes are deliberately open, and each must be. ⚠ THIS TEST'S WHOLE JOB
+    IS TO MAKE A NEW ANONYMOUS ROUTE ON THE PLATFORM'S HOST A DELIBERATE ACT, so
+    the count is in the name: renaming it is the cost of opening a fifth, and the
+    rename is what a reviewer sees in the diff.
     """
     open_by_design = {
+        # Login has nobody to authenticate yet.
         ("POST", "/platform/auth/login"),
+        # Logout must answer the same 200 with or without a live cookie, or it
+        # becomes an oracle for "was that token live".
         ("POST", "/platform/auth/logout"),
+        # F26's redeemer holds a 256-bit invite code and NO account — the account
+        # is what redemption creates. Gating this on an operator session would
+        # mean the operator typing the owner's password again, which is the exact
+        # gap F26 exists to close (spec Problem). The controls that replace a
+        # session are: the code itself, single-use by an atomic conditional
+        # UPDATE, an expiry, a failures-only limiter on its own instance, and the
+        # host fence that keeps both off every boutique's subdomain.
+        ("GET", "/platform/join/invite"),
+        # The preview read, on the same footing and the same budget. It discloses
+        # a boutique name to a caller holding the secret for that one row, which
+        # is what lets an owner see what she is claiming BEFORE she spends it.
+        ("POST", "/platform/join/redeem"),
     }
     app = create_app(resolver=_null_resolver)
     walked: set[tuple[str, str]] = set()
