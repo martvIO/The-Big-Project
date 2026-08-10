@@ -20,6 +20,7 @@ import uuid
 
 from pydantic import BaseModel, Field
 
+from app.catalog.validation import MAX_SORT_ORDER
 from app.models.constants import AvailabilityState
 from app.schemas import ForbidExtraModel
 from app.shifts.validation import MAX_SHIFT_LABEL_LENGTH
@@ -59,7 +60,13 @@ class ShiftTemplateInput(ForbidExtraModel):
     label: str = Field(min_length=1, max_length=MAX_SHIFT_LABEL_LENGTH)
     starts_at_time: datetime.time
     ends_at_time: datetime.time
-    sort_order: int = 0
+    # ⚠ BOUNDED, because the column is `INTEGER` and nothing downstream catches
+    # the overflow: `validate_template` does not read this field, and asyncpg's
+    # «value out of int32 range» arrives as a `DBAPIError`, which no handler in
+    # `main.py` maps — so an unbounded value is a 500 with no code the console can
+    # render. Same `MAX_SORT_ORDER` every other sort_order on the wire carries
+    # (`catalog/schemas.py`, `floor/schemas.py`); F39 was the one that missed it.
+    sort_order: int = Field(default=0, ge=-MAX_SORT_ORDER, le=MAX_SORT_ORDER)
 
 
 class TemplateWriteResponse(BaseModel):

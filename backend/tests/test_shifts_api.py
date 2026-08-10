@@ -612,6 +612,23 @@ def test_an_unknown_state_is_refused_by_the_schema() -> None:
     assert fake.calls == []
 
 
+@pytest.mark.parametrize("sort_order", [3_000_000_000, -3_000_000_000])
+def test_an_out_of_range_sort_order_is_refused_by_the_schema(sort_order: int) -> None:
+    """⚠ `sort_order` IS THE ONE TEMPLATE FIELD NO DOMAIN RULE READS.
+
+    `validate_template` never sees it, so unbounded it rides straight into an
+    `INTEGER` column and asyncpg answers «value out of int32 range» as a
+    `DBAPIError` — whose `__mro__` `main.py` maps nowhere, making it a 500 with no
+    code `MAPPED_CODES` can render. Bounded at the schema it is the house-shape
+    400 every other out-of-range field already produces, before the service.
+    """
+    fake = FakeShiftsService()
+    with _client(fake) as client:
+        resp = client.post(TEMPLATES_PATH, json={**TEMPLATE_BODY, "sort_order": sort_order})
+    assert resp.status_code in (400, 422)
+    assert fake.calls == []
+
+
 def test_an_unknown_body_key_is_refused() -> None:
     fake = FakeShiftsService()
     with _client(fake) as client:
