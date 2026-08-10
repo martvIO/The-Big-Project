@@ -2642,5 +2642,155 @@ export const he = {
     // Reused VERBATIM from `booking.retry` / `checkinQr.retry`. No drift.
     "bell.retry": "ניסיון נוסף",
     "bell.markFailed": "לא הצלחנו לסמן כנקרא כרגע.",
+
+    // --- F39: shift availability (design §9) ---------------------------------
+    //
+    // ZERO EXCLAMATION MARKS (pre-decided #5) and feminine address throughout.
+    //
+    // ⚠ TWO MECHANICAL RULES EVERY ROW HERE OBEYS.
+    //
+    // (a) NO PLURAL HEBREW NOUN AFTER AN INTERPOLATED NUMERAL, and never the
+    //     variable name `count`. `atelier.stageCount` states it in words:
+    //     «{{total}} כרטיסים» is wrong at 1 and wrong at 2 (Hebrew takes a dual),
+    //     and doing it properly needs four plural suffixes per string in two
+    //     bundles. The house shape is LABEL-THEN-NUMBER. `count` is i18next's
+    //     plural-resolution trigger, so these use `{{total}}`.
+    //     «נוצרו 1 משמרות משעות הפעילות» is the literal first-run render for a
+    //     boutique with one opening-hours row — not an edge case.
+    //
+    // (b) EVERY INTERPOLATED HUMAN NAME IS `<bdi>`-WRAPPED INSIDE THE VALUE and
+    //     its row renders through `<Trans components={{ bdi: <bdi /> }}>`
+    //     (`staff.deactivateBody`'s shipped shape). A name interpolated by `t()`
+    //     cannot be isolated any other way. ⚠ BARE `<bdi>`, never
+    //     `<bdi dir="ltr">`: three of the four names on this surface are Hebrew
+    //     and an LTR base direction reorders them.
+    //     `shifts.recordedBy` ends with a full stop IMMEDIATELY after the name, so
+    //     for «Ronit Bar» it renders «נרשם על ידי .Ronit Bar» without the island —
+    //     on a line that is both seen and spoken (it is the fieldset's
+    //     `aria-describedby`).
+    "nav.shifts": "זמינות למשמרות",
+    "guide.shifts.1": "כאן מסמנים לאילו משמרות את זמינה בשבוע הקרוב, ושומרים.",
+    // Role-blind BY DESIGN: `GuideOverlay` renders one step list per section, and
+    // a staffer knowing that `recorded_by` exists is the transparency D5 is built on.
+    "guide.shifts.2": "אחראית המשמרת רואה מי כבר הגישה, ויכולה לרשום זמינות במקום מי שלא הספיקה.",
+    // --- MyWeekPanel ---
+    "shifts.myWeekHeading": "הזמינות שלי",
+    "shifts.weekLabel": "שבוע",
+    // WORDS, NOT CHEVRONS (DL20): this console ships no icon-only control, and an
+    // `aria-label` on a glyph is a name no sighted user can verify. A second
+    // benefit falls out free — there is no directional glyph to get backwards in RTL.
+    "shifts.prevWeek": "השבוע הקודם",
+    "shifts.nextWeek": "השבוע הבא",
+    // {{day}} is `jerusalemWeekday(deadline_at)` + ", " +
+    // `plainDayMonth(jerusalemIsoDate(deadline_at))`. ⚠ THE RE-ZONE STEP IS NOT
+    // OPTIONAL: `plainDayMonth` on the raw instant renders «NaN.11», and slicing
+    // the instant by hand reads a UTC calendar day as Jerusalem's.
+    "shifts.deadline": "מועד ההגשה: {{day}}, {{time}}",
+    // The weekday <section> heading. « · » is `atelier.stageCount`'s shipped
+    // separator; {{date}} is `plainDayMonth(addDays(week_start, n))`.
+    "shifts.dayHeading": "{{day}} · {{date}}",
+    // Fills ONLY shifts still sitting on «לא נרשם» — non-destructive by
+    // construction, which is what removes any need for an undo. It writes nothing;
+    // she still taps «שמירת זמינות». Its RESULT is announced by the progress
+    // line's role="status", not by a cue of its own that could drift from it.
+    "shifts.markRestAvailable": "סימון כל השאר כזמינה",
+    "shifts.states.available": "זמינה",
+    "shifts.states.unavailable": "לא זמינה",
+    // Advisory input to F40 and NEVER a constraint: F39 stores it, enforces
+    // nothing, and caps nothing.
+    "shifts.states.preferred": "מעדיפה",
+    // ⚠ TWO MOUNTS, ONE STRING, because it is one state: the fourth radio's label
+    // and the locked <dl>'s value for a shift she never answered. It is NOT a
+    // stored state — selecting it OMITS the template from the PUT, which is D8's
+    // own clear path — and it exists because A NATIVE RADIO CANNOT BE UN-CHECKED.
+    "shifts.stateUnanswered": "לא נרשם",
+    // Derived, never fetched, and a role="status" live region: P1's bulk fill
+    // mutates up to twelve groups and has no other voice. REUSED VERBATIM as
+    // WeekSubmissionsPane's per-row progress — one string measuring one thing.
+    "shifts.answered": "נענו: {{answered}} מתוך {{total}}",
+    "shifts.save": "שמירת זמינות",
+    "shifts.recordedBy": "נרשם על ידי <bdi>{{name}}</bdi>.",
+    "shifts.locked": "מועד ההגשה לשבוע הזה עבר. אפשר לפנות לאחראית המשמרת כדי לעדכן.",
+    // Elevated only (D5): she must know she is acting past the deadline, because
+    // `after_deadline: true` is going into her audit row either way.
+    "shifts.lockedElevated": "מועד ההגשה עבר. הרישום שלך עדיין אפשרי.",
+    "shifts.goToOpenWeek": "מעבר לשבוע פתוח",
+    "shifts.noTemplates": "עדיין לא הוגדרו משמרות לשבוע הזה.",
+    // So a blank screen reads as a fact and not as her fault. No action: the seed
+    // lives in ShiftTemplatesPane and has exactly one owner.
+    "shifts.noTemplatesStaffBody": "כשאחראית המשמרת תגדיר משמרות, אפשר יהיה לסמן כאן זמינות.",
+    // ⚠ FEATURE-WIDE, not this pane's — all four panes render it on their own load
+    // failure, which is why it says «הנתונים» and not «הזמינות». One {ns} pair per
+    // SECTION is the shipped shape.
+    "shifts.loadFailed": "לא הצלחנו לטעון את הנתונים כרגע.",
+    // VERBATIM from booking.retry / checkinQr.retry / bell.retry. No drift.
+    "shifts.retry": "ניסיון נוסף",
+    // --- WeekSubmissionsPane ---
+    "shifts.submissionsHeading": "מי הגישה",
+    "shifts.submittedCount": "הגישו {{submitted}} מתוך {{total}}",
+    "shifts.notSubmitted": "טרם הגישה",
+    "shifts.submitted": "הגישה",
+    // The expand button's VISIBLE label, which is therefore also its accessible
+    // name — so the <bdi> costs it nothing.
+    "shifts.expandRow": "רישום עבור <bdi>{{name}}</bdi>",
+    "shifts.close": "סגירה",
+    // BEFORE the act, because `recorded_by` is about to make it permanent and
+    // visible on her screen.
+    "shifts.onBehalfNote": "הזמינות תירשם על שמך כמי שרשמה אותה.",
+    "shifts.onBehalfSave": "שמירה עבור <bdi>{{name}}</bdi>",
+    // The name sits MID-STRING — the one position where a Latin-script name
+    // reorders visibly.
+    "shifts.onBehalfDone": "הזמינות של <bdi>{{name}}</bdi> נשמרה.",
+    // --- the deadline Card ---
+    "shifts.deadlineHeading": "מועד ההגשה",
+    "shifts.deadlineDay": "יום ההגשה האחרון",
+    "shifts.deadlineTime": "שעת ההגשה",
+    // The second sentence is D5 stated to the person who SETS the number: an owner
+    // choosing Wednesday 18:00 needs to know it does not lock her.
+    "shifts.deadlineHelp": "הזמינות לכל שבוע נסגרת ביום ובשעה האלה, בשבוע שלפניו. אחראית משמרת יכולה לרשום זמינות גם אחרי המועד.",
+    "shifts.deadlineSave": "שמירת מועד ההגשה",
+    // --- ShiftTemplatesPane ---
+    "shifts.templatesHeading": "משמרות הבוטיק",
+    "shifts.templatesEmptyBody": "המשמרות נוצרות פעם אחת משעות הפעילות, ואפשר לפצל ולשנות אותן אחר כך.",
+    "shifts.seed": "יצירת משמרות משעות הפעילות",
+    // role="status", and the focus destination on the seed success path — the
+    // EmptyState holding the button she pressed is unmounted by her own press.
+    "shifts.seedDone": "משמרות שנוצרו משעות הפעילות: {{total}}",
+    // Rendered from `409 NO_OPENING_HOURS`, NEVER from a pre-check: a second reader
+    // of availability_rules can disagree with the writer.
+    "shifts.seedNoHours": "לא הוגדרו שעות פעילות. אפשר להגדיר אותן במסך שעות פעילות.",
+    "shifts.addTemplate": "הוספת משמרת",
+    // The disabled-button REASON and the `400 TEMPLATE_LIMIT_REACHED` message —
+    // one string, two arrivals. A reason living only in a `title` is unreachable
+    // by keyboard and by AT.
+    "shifts.dayLimitReached": "מספר המשמרות המרבי ליום: {{total}}",
+    "shifts.templateDay": "יום",
+    "shifts.templateLabel": "שם המשמרת",
+    "shifts.templateStart": "שעת התחלה",
+    "shifts.templateEnd": "שעת סיום",
+    "shifts.templateSave": "שמירת המשמרת",
+    "shifts.templateCancel": "ביטול",
+    "shifts.edit": "עריכה",
+    "shifts.remove": "הסרה",
+    "shifts.editTitle": "לשמור את השינוי במשמרת?",
+    "shifts.removeTitle": "להסיר את המשמרת?",
+    "shifts.removeBody": "המשמרת לא תופיע יותר בשבועות הבאים.",
+    // PRE-COMMIT (D4), and SUPPRESSED when the count is 0 — «will delete 0
+    // answers» is noise on the overwhelmingly common case.
+    "shifts.invalidateWarning": "שינוי המשמרת ימחק תשובות שכבר נרשמו לשבועות הבאים. תשובות שיימחקו: {{total}}",
+    // POST-commit, the count the response RETURNED — which may differ from the
+    // prediction if somebody submitted in between. Suppressed at 0.
+    "shifts.invalidateDone": "תשובות שנמחקו לשבועות הבאים: {{total}}",
+    // --- error codes -> Hebrew (each pane's own MAPPED_CODES) ---
+    "shifts.errors.closed": "מועד ההגשה לשבוע הזה עבר.",
+    "shifts.errors.weekOutOfRange": "אפשר להגיש רק לשבועות הקרובים.",
+    "shifts.errors.alreadySeeded": "כבר קיימות משמרות. אפשר לערוך אותן ידנית.",
+    // ⚠ ITS OWN KEY, because the three shipped *.error.NOT_AUTHORIZED strings all
+    // say the action is «לבעלת הבוטיק בלבד» — which D5 makes FALSE here: a shift
+    // manager is admitted to the on-behalf write. This follows
+    // `board.accessEnded`'s shape instead: the owner is named as who to ASK, never
+    // as the gate, which is also what the «no role in a 403 body» guard requires.
+    "shifts.errors.notAuthorized": "אין הרשאה לרשום זמינות עבור אשת צוות אחרת כרגע. לבירור אפשר לפנות לבעלת הבוטיק.",
+    "shifts.errors.notFound": "המשמרת או אשת הצוות כבר לא זמינות. הרשימה תתוקן בעדכון הבא.",
   },
 } as const;

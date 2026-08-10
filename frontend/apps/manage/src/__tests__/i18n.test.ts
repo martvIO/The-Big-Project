@@ -157,6 +157,26 @@ const HE_F23 = entries(he.translation, (key) =>
   ].includes(key),
 );
 const HE_F27 = entries(he.translation, (key) => key.startsWith("togglesMatrix."));
+// F39's shift availability. Its own constant and its own floor, for the reason
+// every block above has one: folded into an existing list, this feature's rows
+// could shrink by this many and still pass.
+//
+// ⚠ ITS TWO `guide.shifts.*` STEPS ARE SELECTED HERE AND NOT LEFT TO HE_F60,
+// and that is the one place this block departs from the namespace-names-the-
+// payload rule. `guide.shifts.*` is not a `shifts.` prefix, so without the
+// explicit term the two steps would ride HE_F60 — whose floor is a COUNT, so
+// deleting them would still pass there. Named here, they cannot vanish quietly.
+// The union below spreads this block, so `HE` sees them exactly once either way
+// (HE_F60's selector is `guide.` and would double-count them if BOTH swept
+// them — which is why the term is by exact key).
+const HE_F39 = entries(
+  he.translation,
+  (key) =>
+    key === "nav.shifts" ||
+    key.startsWith("shifts.") ||
+    key === "guide.shifts.1" ||
+    key === "guide.shifts.2",
+);
 const HE = [
   ...HE_F15,
   ...HE_F51,
@@ -176,6 +196,11 @@ const HE = [
   ...HE_F22,
   ...HE_F27,
   ...HE_F35,
+  // ⚠ THE TWO `guide.shifts.*` STEPS ARE FILTERED OUT HERE — HE_F60's `guide.`
+  // selector already sweeps them into `HE`, and a second spread would
+  // DOUBLE-COUNT them and red the shipped no-duplicates guard (F42's lesson).
+  // They stay named in HE_F39 so its own floor covers them.
+  ...HE_F39.filter(([key]) => !key.startsWith("guide.")),
 ];
 
 describe("F15 keys resolve", () => {
@@ -1842,5 +1867,117 @@ describe("the ar bundle", () => {
       ([key]) => key,
     );
     expect(drifted).toEqual([]);
+  });
+});
+
+describe("F39 shift-availability keys resolve", () => {
+  it("carries the whole copy deck", () => {
+    // 60 `shifts.*` rows plus `nav.shifts` plus the two guide steps.
+    expect(HE_F39.length).toBeGreaterThanOrEqual(60);
+  });
+
+  it("resolves the seventeenth nav item beside the nested nav object", () => {
+    expect(i18n.t("nav.shifts")).toBe("זמינות למשמרות");
+  });
+
+  it("carries no exclamation mark anywhere in the namespace", () => {
+    // Pre-decided #5, scoped to this block so the rule is stated where the copy
+    // is read.
+    expect(HE_F39.filter(([, value]) => value.includes("!"))).toEqual([]);
+  });
+
+  it("mirrors every key into ar with the approved Hebrew VALUE, not merely the key", () => {
+    // `ar[key] === he[key]`, NOT "non-empty": presence alone passes on an English
+    // string, on a `TODO`, and on a DIFFERENT Hebrew wording — and 63 rows are
+    // transcribed into two files.
+    const arTranslation = ar.translation as Record<string, string>;
+    const drifted = HE_F39.filter(([key, value]) => arTranslation[key] !== value).map(
+      ([key]) => key,
+    );
+    expect(drifted).toEqual([]);
+  });
+
+  it("keeps the <bdi> island inside the value on every name-carrying row", () => {
+    // ⚠ R19. A name interpolated by `t()` cannot be isolated any other way, so
+    // the markup lives in the VALUE and the row renders through <Trans>. It must
+    // SURVIVE in the raw string rather than being pre-resolved away.
+    //
+    // BARE <bdi>, never dir="ltr": three of the four names on this surface are
+    // Hebrew and an LTR base direction reorders them.
+    for (const key of [
+      "shifts.recordedBy",
+      "shifts.expandRow",
+      "shifts.onBehalfSave",
+      "shifts.onBehalfDone",
+    ]) {
+      const raw = i18n.t(key, { name: "Ronit Bar" });
+      expect(raw).toContain("<bdi>");
+      expect(raw).not.toContain('dir="ltr"');
+      expect(raw).toContain("Ronit Bar");
+    }
+  });
+
+  it("puts the label before every interpolated numeral and never uses {{count}}", () => {
+    // ⚠ HEBREW NUMBER AGREEMENT (design §9.0a). «נוצרו 1 משמרות…» is the literal
+    // first-run render for a boutique with one opening-hours row, and «ימחק 1
+    // תשובות» is the common single-answer case — neither is an edge. The house
+    // shape is label-then-number, and `{{total}}` rather than `{{count}}` because
+    // `count` is i18next's plural-resolution trigger.
+    for (const [key, value] of HE_F39) {
+      expect(value, key).not.toContain("{{count}}");
+    }
+    // Every NUMERAL placeholder sits LAST in its phrase — the only word allowed
+    // to follow one is «מתוך», the shipped «X מתוך Y» shape (`booking.dayCount`,
+    // `customers.count`). A plural Hebrew noun there is the defect. Scoped to the
+    // three numeral names, because `{{name}}`, `{{day}}` and `{{time}}` are not
+    // numerals and take an ordinary sentence after them.
+    const NUMERALS = /\{\{(total|answered|submitted)\}\}(.*)$/;
+    const trailing = HE_F39.map(([key, value]) => [key, NUMERALS.exec(value)] as const)
+      .filter(([, match]) => match !== null)
+      .map(([key, match]) => [key, (match as RegExpExecArray)[2].trim()])
+      .filter(([, rest]) => rest !== "" && !rest.startsWith("מתוך"));
+    expect(trailing).toEqual([]);
+  });
+
+  it("resolves the five mapped error codes plus the two the house strings cannot cover", () => {
+    for (const key of [
+      "shifts.errors.closed",
+      "shifts.errors.weekOutOfRange",
+      "shifts.errors.alreadySeeded",
+      "shifts.seedNoHours",
+      "shifts.dayLimitReached",
+      "shifts.errors.notAuthorized",
+      "shifts.errors.notFound",
+    ]) {
+      expect(i18n.t(key)).not.toBe(key);
+    }
+  });
+
+  it("never claims the on-behalf write is the owner's alone", () => {
+    // ⚠ THE ASSERTION THAT MADE THE KEY NECESSARY. All three shipped
+    // `*.error.NOT_AUTHORIZED` strings say «לבעלת הבוטיק בלבד» — owner only —
+    // which D5 makes false: a shift manager is admitted to this write. Borrowing
+    // one would be a lie about who may act.
+    expect(i18n.t("shifts.errors.notAuthorized")).not.toContain("בלבד");
+  });
+
+  it("reuses the house retry word verbatim", () => {
+    expect(i18n.t("shifts.retry")).toBe(i18n.t("booking.retry"));
+  });
+
+  it("names one state string for «not answered», used on both its mounts", () => {
+    // The fourth radio's label and the locked <dl>'s value for a shift she never
+    // answered are ONE string, because they are one state — and it is not a
+    // stored one.
+    expect(i18n.t("shifts.stateUnanswered")).toBe("לא נרשם");
+  });
+
+  it("interpolates the deadline, the day heading and both progress lines", () => {
+    expect(i18n.t("shifts.deadline", { day: "יום רביעי, 4.11", time: "18:00" })).toBe(
+      "מועד ההגשה: יום רביעי, 4.11, 18:00",
+    );
+    expect(i18n.t("shifts.dayHeading", { day: "ראשון", date: "8.11" })).toBe("ראשון · 8.11");
+    expect(i18n.t("shifts.answered", { answered: 9, total: 12 })).toBe("נענו: 9 מתוך 12");
+    expect(i18n.t("shifts.submittedCount", { submitted: 5, total: 8 })).toBe("הגישו 5 מתוך 8");
   });
 });
