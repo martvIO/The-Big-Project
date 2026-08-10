@@ -122,6 +122,15 @@ const F19_KEYS = [
   "errors.bookingAwaitingPayment",
 ];
 
+// F23. The whole `offer.*` block plus the tab title, enumerated MECHANICALLY
+// off he.ts for F24's reason: a fifteenth offer string added to one bundle and
+// forgotten in the other is a red here rather than an Arabic page rendering its
+// own key at a bride who was texted a two-hour deadline.
+const F23_KEYS = [
+  ...Object.keys(he.translation.offer).map((name) => `offer.${name}`),
+  "document.offer",
+];
+
 // F28's three. Same rule, same file — and the ar mirror is the half that gets
 // forgotten, because nothing renders from it today.
 const F28_KEYS = [
@@ -227,6 +236,20 @@ describe("the ar bundle", () => {
     expect(F24_KEYS.length).toBeGreaterThanOrEqual(30);
     const missing = F24_KEYS.filter((key) => typeof resolve(key, ar.translation) !== "string");
     expect(missing).toEqual([]);
+  });
+
+  it("carries every F23 offer key with the same Hebrew value as he.ts", () => {
+    // The anti-vacuity floor is design §8's table: fourteen rows plus the tab
+    // title. A scanner that found nothing would make the walk below pass on an
+    // empty bundle.
+    expect(F23_KEYS.length).toBeGreaterThanOrEqual(15);
+    // VALUE parity, not presence: ar is the half that gets forgotten because
+    // nothing renders from it today, and a presence check passes on a TODO.
+    for (const key of F23_KEYS) {
+      expect(resolve(key, ar.translation), `${key} missing from ar.ts`).toBe(
+        resolve(key, he.translation),
+      );
+    }
   });
 
   it("carries F28's three with the same Hebrew value as he.ts", () => {

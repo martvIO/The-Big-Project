@@ -28,6 +28,9 @@ vi.mock("../routes/QueuePositionPage", () => ({
 vi.mock("../routes/QueueBoardPage", () => ({ QueueBoardPage: () => "לוח" }));
 vi.mock("../routes/PrivacyPage", () => ({ PrivacyPage: () => "פרטיות" }));
 vi.mock("../routes/PortalPage", () => ({ PortalPage: () => "האזור האישי" }));
+vi.mock("../routes/OfferPage", () => ({
+  OfferPage: ({ token }: { token: string }) => `הצעה ${token}`,
+}));
 
 function go(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -150,6 +153,37 @@ describe("matchRoute", () => {
   it("does not read a deeper or bare /b path as a manage route", () => {
     expect(matchRoute("/b")).toEqual({ name: "catalog" });
     expect(matchRoute("/b/tok/extra")).toEqual({ name: "catalog" });
+  });
+
+  // F23's offer link. One letter from MANAGE_PATH and for the identical reason:
+  // the URL rides inside a UCS-2 Hebrew SMS where every character is budget.
+  it("extracts the offer token from /w/:token", () => {
+    expect(matchRoute("/w/ot-abc123")).toEqual({ name: "offer", token: "ot-abc123" });
+  });
+
+  it("accepts every character mint_manage_token can emit in an offer token", () => {
+    expect(matchRoute("/w/aB0_-xyz")).toEqual({ name: "offer", token: "aB0_-xyz" });
+  });
+
+  it("ignores a trailing slash on the offer path", () => {
+    expect(matchRoute("/w/tok/")).toEqual({ name: "offer", token: "tok" });
+  });
+
+  it("routes an UNKNOWN offer token to the page, not to the catalog", () => {
+    // The manage rule verbatim, and load-bearing for the SAME reason: an expired
+    // or declined offer's token must reach OfferPage so the page renders its own
+    // expired/invalid state. Swallowed into the catalogue, a bride who tapped a
+    // day-old text lands on a dress grid with no explanation of what happened to
+    // the slot she was texted about.
+    expect(matchRoute("/w/anything-at-all")).toEqual({
+      name: "offer",
+      token: "anything-at-all",
+    });
+  });
+
+  it("does not read a deeper or bare /w path as an offer route", () => {
+    expect(matchRoute("/w")).toEqual({ name: "catalog" });
+    expect(matchRoute("/w/tok/extra")).toEqual({ name: "catalog" });
   });
 
   // F33's walk-in queue. /checkin is printed on a physical sign in the shop
@@ -514,6 +548,20 @@ describe("Router document title, focus and scroll", () => {
   it("never puts the manage token in the document title", () => {
     renderRoute("/b/mt-secret-token");
     expect(document.title).not.toContain("mt-secret-token");
+  });
+
+  it("titles the offer route with its own single title", () => {
+    // One title for all ten states of /w/{token}, the manage rule verbatim.
+    renderRoute("/w/ot-abc123");
+    expect(document.title).toBe(i18n.t("document.offer"));
+    expect(document.title).not.toBe("document.offer");
+  });
+
+  it("never puts the offer token in the document title", () => {
+    // The token is a live CLAIM credential, not just a lookup key — a tab strip
+    // is read over a shoulder and a title lands in browser history.
+    renderRoute("/w/ot-secret-token");
+    expect(document.title).not.toContain("ot-secret-token");
   });
 
   it("titles the check-in route from the catalogue", () => {
