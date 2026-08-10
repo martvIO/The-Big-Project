@@ -13,6 +13,7 @@ from app.auth.dependencies import NotAuthorizedError
 from app.auth.service import StaffContext
 from app.models.constants import AvailabilityState, StaffRole
 from app.models.staff_user import StaffUser
+from app.shifts.schemas import RosterShiftResponse, ShiftTemplateResponse
 from app.shifts.service import (
     ELEVATED_ROLES,
     HEBREW_DAY_NAMES,
@@ -27,6 +28,7 @@ from app.shifts.service import (
     override_stamp,
     plan_week_write,
     seed_label,
+    shortage_count,
 )
 from app.shifts.validation import (
     WeekOutOfRangeError,
@@ -389,3 +391,67 @@ def test_the_roster_reads_the_readable_window_and_not_the_writable_one() -> None
         assert_writable_week(current, current=current)
     # And four weeks behind is readable too — she may be correcting a record.
     assert_readable_week(current - datetime.timedelta(days=28), current=current)
+
+
+# --- F40: the shortage predicate publish audits and the pane displays ---------
+
+
+def _shift(*, targets: dict[str, int], assigned: dict[str, int]) -> RosterShiftResponse:
+    return RosterShiftResponse(
+        template=ShiftTemplateResponse(
+            id=uuid.uuid4(),
+            day_of_week=0,
+            label="משמרת בוקר",
+            starts_at_time=datetime.time(9, 0),
+            ends_at_time=datetime.time(14, 0),
+            sort_order=0,
+        ),
+        assignments=[],
+        coverage_targets=targets,
+        assigned_by_role=assigned,
+    )
+
+
+def test_a_role_with_no_target_is_never_short() -> None:
+    """⚠ D10'S DISTINCTION, IN THE PREDICATE. An absent key is «no target» and a
+    shift full of unassigned roles is not short — otherwise a boutique that has
+    never used coverage targets would publish with «12 shifts short» every week
+    and the number would mean nothing."""
+    assert shortage_count([_shift(targets={}, assigned={"seamstress": 0})]) == 0
+
+
+def test_a_zero_target_is_a_target_and_can_never_be_short() -> None:
+    """`0` is «deliberately nobody», which is satisfied by nobody — and is still
+    a different fact from an absent key, which is why both branches exist."""
+    assert shortage_count([_shift(targets={"seamstress": 0}, assigned={})]) == 0
+
+
+def test_a_shift_under_its_target_is_counted_once_however_many_roles_are_short() -> None:
+    """One shift, one unit of «I published and missed one» — the failure §0.1
+    names. Counting role-shortfalls instead would report «4» for two shifts and
+    make the number unreadable."""
+    short = _shift(targets={"sales_assistant": 2, "seamstress": 1}, assigned={"sales_assistant": 1})
+    assert shortage_count([short]) == 1
+    assert shortage_count([short, short]) == 2
+
+
+def test_a_fully_covered_shift_is_not_short() -> None:
+    assert (
+        shortage_count([_shift(targets={"sales_assistant": 2}, assigned={"sales_assistant": 2})])
+        == 0
+    )
+    # Over-covered is not short either — the platform shows the load and does not
+    # judge it.
+    assert (
+        shortage_count([_shift(targets={"sales_assistant": 2}, assigned={"sales_assistant": 5})])
+        == 0
+    )
+
+
+def test_a_missing_shift_manager_is_not_counted_as_a_shortage() -> None:
+    """⚠ DESIGN P8, and the reason is D12: on a fresh boutique NOBODY is
+    `shift_manager_eligible`, so counting the empty slot would park a permanent
+    «5 problems» banner on the screen of every boutique that has not yet ticked a
+    checkbox on «צוות». Two counters would also be two numbers competing to be
+    the one she watches."""
+    assert shortage_count([_shift(targets={}, assigned={"sales_assistant": 3})]) == 0

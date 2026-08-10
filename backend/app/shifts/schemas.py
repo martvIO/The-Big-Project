@@ -120,6 +120,14 @@ class ShiftWeekResponse(BaseModel):
     # HER OWN entries — the ones for `staff_user_id` if the caller named one and
     # is allowed to, otherwise the actor's.
     entries: list[AvailabilityEntryResponse]
+    # F40 D17's read-only block on `MyWeekPanel`. ⚠ THREE DISTINCT SENTENCES FOR
+    # THREE DISTINCT FACTS (D5), which is why this is a boolean beside a list and
+    # not an empty list standing in for both: «the roster is not published yet»,
+    # «it is published and you are on no shift» and «here are your shifts» are
+    # different things to be told, and the middle one is the one a staffer needs
+    # to see before she makes other plans.
+    roster_published: bool = False
+    rostered_template_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class AvailabilityEntryInput(ForbidExtraModel):

@@ -72,9 +72,7 @@ async def _seed_week(
         template_id, roster_id = template.id, roster.id
     staff_id = uuid.uuid4()
     async with tenant_session(factory, tenant_id) as session:
-        await RostersRepository().stamp_published(
-            session, tenant_id, roster_id, at=AT, by=uuid.uuid4()
-        )
+        await RostersRepository().stamp_published(session, tenant_id, roster_id, by=uuid.uuid4())
         await RosterAssignmentsRepository().insert(
             session,
             tenant_id=tenant_id,
@@ -229,8 +227,7 @@ async def test_a_second_tenant_cannot_publish_the_firsts_week(app_role_url: str)
 
         async with tenant_session(factory, tenant_b) as session:
             assert (
-                await rosters.stamp_published(session, tenant_b, roster_id, at=AT, by=uuid.uuid4())
-                is None
+                await rosters.stamp_published(session, tenant_b, roster_id, by=uuid.uuid4()) is None
             )
 
         async with tenant_session(factory, tenant_a) as session:

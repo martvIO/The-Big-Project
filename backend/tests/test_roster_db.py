@@ -14,6 +14,20 @@ the superuser one: a superuser bypasses RLS and would make the isolation half of
 this feature pass vacuously. The concurrency tests need NullPool for their own
 reason — `asyncio.gather` over a pooled engine hands both coroutines the same
 connection and the race never happens.
+
+⚠ **THIS MODULE COMMITS INTO A SESSION-SCOPED DATABASE, so no row it commits may
+hold a FLOOR ROLE.** `migrated_db` and `app_role_url` are `scope="session"`, and
+`test_migrations.py`'s round trips downgrade past the migration that widened
+`staff_users_role_check` — a committed `seamstress` row reddens
+`test_adding_the_role_check_validates_existing_rows` there, in a file that never
+mentions rosters. `test_shifts_db.py` and `test_atelier_db.py` both record the
+same trap and the same answer, and `_staff` below refuses a floor role outright
+rather than trusting a reader to remember.
+
+**Nothing here depends on a staffer's STORED role except `assigned_by_role`,
+which is a grouping and works the same over any two roles.** The authorization
+matrix varies the ACTOR's role — resolved from the session cookie and never
+looked up — while every committed row stays `owner` or `shift_manager`.
 """
 
 import asyncio
@@ -120,13 +134,7 @@ async def _roster(
         roster_id = row.id
     if published:
         async with tenant_session(factory, tenant_id) as session:
-            await repo.stamp_published(
-                session,
-                tenant_id,
-                roster_id,
-                at=datetime.datetime.now(datetime.UTC),
-                by=uuid.uuid4(),
-            )
+            await repo.stamp_published(session, tenant_id, roster_id, by=uuid.uuid4())
     return roster_id
 
 
@@ -176,10 +184,9 @@ async def test_a_roster_round_trips_as_a_draft_and_then_as_published(app_role_ur
             assert row is not None
             assert (row.id, row.published_at, row.published_by) == (roster_id, None, None)
 
-        at = datetime.datetime.now(datetime.UTC)
         who = uuid.uuid4()
         async with tenant_session(factory, tenant_id) as session:
-            stamped = await repo.stamp_published(session, tenant_id, roster_id, at=at, by=who)
+            stamped = await repo.stamp_published(session, tenant_id, roster_id, by=who)
             assert stamped is not None
             assert stamped.published_by == who
             assert stamped.published_at is not None
@@ -700,12 +707,18 @@ async def _staff(
     factory: async_sessionmaker[AsyncSession],
     tenant_id: uuid.UUID,
     *,
-    role: str = StaffRole.SALES_ASSISTANT.value,
+    role: str = StaffRole.OWNER.value,
     eligible: bool = False,
     display_name: str = "דנה כהן",
     last_day: datetime.date | None = None,
     deleted: bool = False,
 ) -> uuid.UUID:
+    """Seeds `owner` by default and REFUSES a floor role — see the module
+    docstring. This module COMMITS, and a floor role here reddens
+    `test_migrations.py` in a file that never mentions rosters."""
+    assert role in {StaffRole.OWNER.value, StaffRole.SHIFT_MANAGER.value}, (
+        "this module COMMITS its rows; a floor role here reddens test_migrations.py"
+    )
     repo = StaffUsersRepository()
     async with tenant_session(factory, tenant_id) as session:
         row = await repo.insert(
@@ -1097,10 +1110,12 @@ async def test_the_shift_payload_counts_assignments_by_role(app_role_url: str) -
         owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
         service = _service(factory)
         actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+        # ⚠ `owner`/`shift_manager` and not a floor role: this module COMMITS.
+        # The grouping is what is under test and it works the same over any two.
         for role in (
-            StaffRole.SALES_ASSISTANT.value,
-            StaffRole.SALES_ASSISTANT.value,
-            StaffRole.SEAMSTRESS.value,
+            StaffRole.OWNER.value,
+            StaffRole.OWNER.value,
+            StaffRole.SHIFT_MANAGER.value,
         ):
             her = await _staff(factory, tenant_id, role=role)
             shift = await service.assign(
@@ -1110,7 +1125,7 @@ async def test_the_shift_payload_counts_assignments_by_role(app_role_url: str) -
                     week_start=WEEK, shift_template_id=template_id, staff_user_id=her
                 ),
             )
-        assert shift.assigned_by_role == {"sales_assistant": 2, "seamstress": 1}
+        assert shift.assigned_by_role == {"owner": 2, "shift_manager": 1}
         assert shift.coverage_targets == {}
 
 
@@ -1126,7 +1141,10 @@ async def test_a_non_elevated_actor_is_refused_every_roster_verb(
     tenant_id = uuid.uuid4()
     async with _engine(app_role_url) as factory:
         template_id = await _template(factory, tenant_id)
-        her = await _staff(factory, tenant_id, role=role)
+        # ⚠ THE ROW IS `owner`; THE ACTOR IS NOT. The guard reads
+        # `StaffContext.role`, resolved from the session cookie and never looked
+        # up, so the matrix varies freely while the committed row stays legal.
+        her = await _staff(factory, tenant_id)
         service = _service(factory)
         actor = _actor(tenant_id, her, role)
 
@@ -1175,6 +1193,8 @@ async def test_the_manager_slot_refuses_an_ineligible_staffer_and_a_second_holde
         owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
         eligible = await _staff(factory, tenant_id, eligible=True)
         also_eligible = await _staff(factory, tenant_id, eligible=True)
+        # ⚠ HER JOB IS SHIFT MANAGER AND HER COLUMN IS FALSE — D12's whole
+        # point, and the row a role-derived implementation would let through.
         ineligible = await _staff(factory, tenant_id, role=StaffRole.SHIFT_MANAGER.value)
         service = _service(factory)
         actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
@@ -1213,3 +1233,317 @@ async def test_the_manager_slot_refuses_an_ineligible_staffer_and_a_second_holde
                     is_shift_manager=True,
                 ),
             )
+
+
+# --- publish, republish, and the no-op ----------------------------------------
+
+
+async def test_publishing_an_unpublished_week_stamps_and_audits(app_role_url: str) -> None:
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(
+            factory, tenant_id, role=StaffRole.OWNER.value, display_name="בעלת הבוטיק"
+        )
+        her = await _staff(factory, tenant_id, display_name="דנה כהן")
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+            ),
+        )
+        week = await service.publish(tenant_id, actor=actor, week_start=WEEK)
+        assert week.published_at is not None
+        # ⚠ RESOLVED FROM THE STAFF ROW, not from the acting `StaffContext`: the
+        # header says who published it, and that stays true when a different
+        # elevated actor opens the pane a week later.
+        assert week.published_by_name == "בעלת הבוטיק"
+        assert week.edited_since_publish is False
+
+        published = [
+            d for a, d in await _audit_actions(factory, tenant_id) if a == "roster_published"
+        ]
+        assert len(published) == 1
+        assert published[0]["republish"] is False
+        assert published[0]["assignments"] == 1
+        assert published[0]["shortages"] == 0
+        # ⚠ IDS AND COUNTS ONLY, NEVER A DISPLAY NAME.
+        assert "דנה כהן" not in str(published[0])
+
+
+async def test_a_publish_that_changes_nothing_writes_no_row(app_role_url: str) -> None:
+    """D7's no-op rule. The pane still shows its cue — telling her «nothing
+    happened» when the outcome she wanted is the outcome that holds would be
+    telling her she was wrong when she was right — but the table does not gain a
+    row naming an act nobody performed."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+            ),
+        )
+        first = await service.publish(tenant_id, actor=actor, week_start=WEEK)
+        second = await service.publish(tenant_id, actor=actor, week_start=WEEK)
+
+        assert second.published_at == first.published_at
+        assert second.edited_since_publish is False
+        actions = [a for a, _ in await _audit_actions(factory, tenant_id)]
+        assert actions.count("roster_published") == 1
+
+
+async def test_a_republish_after_an_edit_restamps_and_audits(app_role_url: str) -> None:
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        also = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+            ),
+        )
+        await service.publish(tenant_id, actor=actor, week_start=WEEK)
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=also
+            ),
+        )
+        # ⚠ THE EDIT DOES NOT MOVE `published_at` (D3's failure mode); it flips
+        # the header line instead.
+        mid = await service.roster(tenant_id, actor=actor, week_start=WEEK)
+        assert mid.published_at is not None
+        assert mid.edited_since_publish is True
+
+        await service.publish(tenant_id, actor=actor, week_start=WEEK)
+        published = [
+            d for a, d in await _audit_actions(factory, tenant_id) if a == "roster_published"
+        ]
+        assert [row["republish"] for row in published] == [False, True]
+        assert published[1]["assignments"] == 2
+
+
+async def test_a_publish_after_a_removal_counts_as_changed(app_role_url: str) -> None:
+    """⚠ A REMOVAL IS AN EDIT, and it is the case a naive `MAX(created_at)`
+    misses — the owner takes somebody off a published week and presses «פרסום
+    מחדש», and a no-op there would leave the board reporting a woman who is not
+    coming."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        shift = await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+            ),
+        )
+        await service.publish(tenant_id, actor=actor, week_start=WEEK)
+        await service.unassign(tenant_id, actor=actor, assignment_id=shift.assignments[0].id)
+        await service.publish(tenant_id, actor=actor, week_start=WEEK)
+
+        published = [
+            d for a, d in await _audit_actions(factory, tenant_id) if a == "roster_published"
+        ]
+        assert [row["republish"] for row in published] == [False, True]
+        assert published[1]["assignments"] == 0
+
+
+async def test_a_week_with_no_roster_row_is_publishable_and_says_nobody(
+    app_role_url: str,
+) -> None:
+    """⚠ D5 END TO END. «Published with nobody on it» is a real, deliberate
+    statement — it is how an owner says the boutique is closed that Saturday —
+    and it is NOT the same fact as «no roster published»: the first answers
+    `(False, ROSTER)` for every staffer and the second `(True, FALLBACK)`."""
+    tenant_id = uuid.uuid4()
+    repo = RosterAssignmentsRepository()
+    rosters = RostersRepository()
+    async with _engine(app_role_url) as factory:
+        await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        async with tenant_session(factory, tenant_id) as session:
+            # No roster row at all: rule 3's input.
+            assert await rosters.by_week(session, tenant_id, WEEK) is None
+            assert await repo.on_shift_staff_ids(session, tenant_id, AT) == set()
+
+        week = await service.publish(tenant_id, actor=actor, week_start=WEEK)
+        assert week.published_at is not None
+        assert all(shift.assignments == [] for shift in week.shifts)
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await rosters.by_week(session, tenant_id, WEEK)
+            assert row is not None and row.published_at is not None
+            # Published, and nobody is on: the SET is empty for the same reason
+            # as before, but the ROW now exists, which is what rule 2 keys on.
+            assert await repo.on_shift_staff_ids(session, tenant_id, AT) == set()
+
+
+async def test_the_published_read_answers_an_unpublished_week_rather_than_404ing(
+    app_role_url: str,
+) -> None:
+    """D6: «no roster yet» is a real, renderable answer. A 404 would make the
+    console branch on a status code to say it."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        template_id = await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        payload = await service.published(tenant_id, week_start=WEEK)
+        assert payload.published is False
+        assert payload.published_at is None
+        assert payload.shifts == []
+        assert payload.week_start == WEEK
+
+        # A DRAFT with somebody on it answers exactly the same way (D6).
+        await service.assign(
+            tenant_id,
+            actor=actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=template_id, staff_user_id=her
+            ),
+        )
+        draft = await service.published(tenant_id, week_start=WEEK)
+        assert draft.published is False
+        assert draft.shifts == []
+
+        await service.publish(tenant_id, actor=actor, week_start=WEEK)
+        live = await service.published(tenant_id, week_start=WEEK)
+        assert live.published is True
+        assert live.published_at is not None
+        assert [row.staff_user_id for shift in live.shifts for row in shift.assignments] == [her]
+
+
+async def test_her_week_carries_the_published_flag_and_only_her_shifts(
+    app_role_url: str,
+) -> None:
+    """D17's block, and the three distinct facts it renders as three distinct
+    sentences (D5): not published; published and she is on nothing; published
+    with her shifts."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        morning = await _template(factory, tenant_id)
+        evening = await _template(
+            factory, tenant_id, starts=datetime.time(14, 0), ends=datetime.time(20, 0)
+        )
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        owner_actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+        her_actor = _actor(tenant_id, her, StaffRole.SEAMSTRESS.value)
+        settings: dict[str, object] = {}
+
+        week = await service.week(tenant_id, actor=her_actor, settings=settings, week_start=WEEK)
+        assert week.roster_published is False
+        assert week.rostered_template_ids == []
+
+        await service.assign(
+            tenant_id,
+            actor=owner_actor,
+            body=CreateAssignmentRequest(
+                week_start=WEEK, shift_template_id=morning, staff_user_id=her
+            ),
+        )
+        # ⚠ A DRAFT ANSWERS `(False, [])` EVEN WITH HER ON IT (D6). Telling her
+        # «you work Sunday morning» off an unpublished week is exactly the promise
+        # this feature must not make.
+        draft = await service.week(tenant_id, actor=her_actor, settings=settings, week_start=WEEK)
+        assert draft.roster_published is False
+        assert draft.rostered_template_ids == []
+
+        await service.publish(tenant_id, actor=owner_actor, week_start=WEEK)
+        mine = await service.week(tenant_id, actor=her_actor, settings=settings, week_start=WEEK)
+        assert mine.roster_published is True
+        assert mine.rostered_template_ids == [morning]
+        assert evening not in mine.rostered_template_ids
+
+        # And a colleague on nothing gets the OTHER sentence: published, empty.
+        nobody = await _staff(factory, tenant_id)
+        hers = await service.week(
+            tenant_id,
+            actor=_actor(tenant_id, nobody, StaffRole.RECEPTION.value),
+            settings=settings,
+            week_start=WEEK,
+        )
+        assert hers.roster_published is True
+        assert hers.rostered_template_ids == []
+
+
+async def test_a_published_week_with_zero_assignments_differs_from_no_roster(
+    app_role_url: str,
+) -> None:
+    """⚠ R-G's guard through REAL ROWS rather than through A2's pure matrix. The
+    two answers differ only in whether a published `rosters` row exists, and
+    collapsing them puts the whole boutique on shift on a Saturday the owner
+    deliberately emptied."""
+    tenant_id = uuid.uuid4()
+    rosters = RostersRepository()
+    async with _engine(app_role_url) as factory:
+        await _template(factory, tenant_id)
+        owner = await _staff(factory, tenant_id, role=StaffRole.OWNER.value)
+        service = _service(factory)
+        actor = _actor(tenant_id, owner, StaffRole.OWNER.value)
+
+        async with tenant_session(factory, tenant_id) as session:
+            assert await rosters.by_week(session, tenant_id, WEEK) is None
+
+        await service.publish(tenant_id, actor=actor, week_start=WEEK)
+
+        async with tenant_session(factory, tenant_id) as session:
+            row = await rosters.by_week(session, tenant_id, WEEK)
+            assert row is not None
+            assert row.published_at is not None
+
+
+@pytest.mark.parametrize(
+    "role",
+    [StaffRole.RECEPTION.value, StaffRole.SALES_ASSISTANT.value, StaffRole.SEAMSTRESS.value],
+)
+async def test_publish_is_elevated_but_the_published_read_is_open(
+    app_role_url: str, role: str
+) -> None:
+    """D13's split: the BUILDER is elevated, the PUBLISHED week reads to every
+    role. A staffer who cannot see the published roster cannot plan."""
+    tenant_id = uuid.uuid4()
+    async with _engine(app_role_url) as factory:
+        await _template(factory, tenant_id)
+        her = await _staff(factory, tenant_id)
+        service = _service(factory)
+        actor = _actor(tenant_id, her, role)
+
+        with pytest.raises(NotAuthorizedError):
+            await service.publish(tenant_id, actor=actor, week_start=WEEK)
+
+        payload = await service.published(tenant_id, week_start=WEEK)
+        assert payload.published is False
