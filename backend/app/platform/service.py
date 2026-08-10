@@ -115,27 +115,66 @@ class ProvisioningService:
         try:
             # Atomic: tenant + owner + audit commit together, or none of them.
             async with tenant_session(self._session_factory, tenant_id) as session:
-                session.add(Tenant(id=tenant_id, slug=slug, name=name))
-                await session.flush()
-                await self._staff.insert(
+                await self._create_tenant(
                     session,
                     tenant_id=tenant_id,
-                    email=owner_email.lower(),
-                    password_hash=hash_password(owner_password),
-                    display_name=owner_email,
-                )
-                await self._audit.record(
-                    session,
+                    slug=slug,
+                    name=name,
+                    owner_email=owner_email,
+                    owner_password=owner_password,
                     operator=operator,
-                    action=PlatformAuditAction.TENANT_PROVISIONED,
-                    target_tenant_id=tenant_id,
-                    details={"slug": slug},
                 )
         except IntegrityError:
             # Race/suspended-slug backstop behind the partial unique index.
             return await self._fail_provision(operator, slug, "slug_taken")
 
         return CommandResult(ok=True, message="provisioned", tenant_id=tenant_id)
+
+    async def _create_tenant(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: UUID,
+        slug: str,
+        name: str,
+        owner_email: str,
+        owner_password: str,
+        operator: str,
+    ) -> None:
+        """⚠ THE ONE PLACE A BOUTIQUE COMES INTO EXISTENCE (spec D4).
+
+        Extracted from `provision` VERBATIM and called by `provision` and
+        `redeem_invite` alike, so an invite redemption writes the UNCHANGED
+        `TENANT_PROVISIONED` row rather than a parallel one that drifts. That
+        row's presence after a redemption is the mechanical proof the two share
+        a path — pre-decided #20's one audited command layer, applied to the one
+        operation that has two callers.
+
+        Takes an OPEN session and opens no transaction of its own: the caller
+        owns the transaction, because redemption's first statement must be the
+        single-use claim and a helper that began its own would put the claim in a
+        different transaction from the tenant it authorises.
+
+        `operator` is the accountable identity, NOT the caller: for a redemption
+        it is the invite's `created_by`, since the redeemer authenticates as
+        nobody.
+        """
+        session.add(Tenant(id=tenant_id, slug=slug, name=name))
+        await session.flush()
+        await self._staff.insert(
+            session,
+            tenant_id=tenant_id,
+            email=owner_email.lower(),
+            password_hash=hash_password(owner_password),
+            display_name=owner_email,
+        )
+        await self._audit.record(
+            session,
+            operator=operator,
+            action=PlatformAuditAction.TENANT_PROVISIONED,
+            target_tenant_id=tenant_id,
+            details={"slug": slug},
+        )
 
     async def suspend(self, *, slug: str, operator: str) -> CommandResult:
         tenant = await self._tenants.by_slug(slug)
