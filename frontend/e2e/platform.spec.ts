@@ -521,7 +521,17 @@ test("platform: the invites table renders no code column and only open rows can 
 test("platform: the revoke dialog traps focus, restores it, and reds only the confirm", async ({
   page,
 }) => {
-  const recorder = await signedInWithInvites(page, [invite()]);
+  // ⚠ THE REVOKE ITSELF MUST BE STUBBED. An unstubbed path answers the fixture's
+  // loud 404 (`NOT_FOUND`), the console shows its row error and KEEPS the row —
+  // so the removal assertion below would fail for want of a stub rather than for
+  // anything the console did.
+  const recorder = await installPlatformApi(page, {
+    tenants: [BELLA],
+    invites: [invite()],
+    replies: { "/platform/invites/revoke": [ok({ ok: true })] },
+  });
+  await page.goto(PLATFORM);
+  await expect(page.getByRole("heading", { name: "ניהול הפלטפורמה", level: 1 })).toBeVisible();
   const trigger = page.getByRole("row", { name: /בוטיק של חן/ }).getByRole("button", {
     name: "ביטול ההזמנה",
   });
@@ -529,16 +539,31 @@ test("platform: the revoke dialog traps focus, restores it, and reds only the co
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
 
-  // Trapped: tabbing round the dialog never lands outside it. Evaluated in ONE
-  // page call so the check reads `document.activeElement` in the same frame the
-  // browser just moved it — a handle round-trip would sample it a tick late.
+  // Trapped: tabbing round the dialog never lands on a control behind it.
+  // Evaluated in ONE page call so the check reads `document.activeElement` in the
+  // same frame the browser just moved it — a handle round-trip would sample it a
+  // tick late.
+  //
+  // ⚠ `:modal` IS HALF THE ASSERTION, and it is what earns the <body> landing its
+  // pass. Only `showModal()` puts a <dialog> in the top layer and makes the whole
+  // console behind it INERT; `show()` and a bare `open` attribute paint an
+  // identical dialog and match neither. With the page behind inert, Chromium
+  // parks focus on the document for exactly ONE press before wrapping back to the
+  // first control — dialog-focus.spec.ts:162 names that stop and carries the M1/M2
+  // mutation ledger for it. So <body> means the press went NOWHERE, while ANY
+  // other element outside the dialog means it reached the console behind, which
+  // is the escape this loop exists to catch. Demanding `inside` on every press
+  // instead is a claim no correct <dialog> in Chromium can satisfy: this dialog
+  // holds two controls, so the third Tab is always the park.
   for (let step = 0; step < 8; step += 1) {
     await page.keyboard.press("Tab");
-    const inside = await page.evaluate(() => {
+    const landing = await page.evaluate(() => {
       const open = document.querySelector("dialog[open]");
-      return open !== null && open.contains(document.activeElement);
+      if (open === null || !open.matches(":modal")) return "not a top-layer modal";
+      if (open.contains(document.activeElement)) return "inside";
+      return document.activeElement === document.body ? "nowhere" : "outside";
     });
-    expect(inside, `focus escaped the revoke dialog after ${step + 1} tabs`).toBe(true);
+    expect(["inside", "nowhere"], `after ${step + 1} tabs focus was ${landing}`).toContain(landing);
   }
 
   const cancel = dialog.getByRole("button", { name: "חזרה" });
