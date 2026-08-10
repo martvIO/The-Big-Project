@@ -17,7 +17,8 @@ from typing import Any
 from app.booking.validation import jerusalem_day_index
 from app.boutique.validation import SCHEDULING_DEFAULTS
 from app.errors import DomainValidationError
-from app.models.constants import AvailabilityState
+from app.models.constants import AvailabilityState, OnShiftSource
+from app.models.shift_template import ShiftTemplate
 from app.storefront.validation import BOUTIQUE_TIMEZONE
 
 # How far either side of the current week a READ may reach (D1). Writes are
@@ -224,3 +225,103 @@ def scheduling_pair(settings: dict[str, Any]) -> tuple[int, datetime.time]:
     except ValueError:
         raise ShiftsValidationError("submission_deadline_time must be HH:MM") from None
     return day_of_week, deadline_time
+
+
+def jerusalem_moment(at: datetime.datetime) -> tuple[datetime.date, datetime.time, int]:
+    """A UTC instant, converted to the boutique's wall clock ONCE (F40 D14).
+
+    Returns `(local_date, local_time, day_index)` together rather than three
+    helpers, because the whole DST argument depends on there being exactly one
+    conversion: `astimezone` picks exactly one local wall time for any UTC
+    instant, so the direction instant → local is ALWAYS unambiguous, including
+    inside the autumn fold. Two conversions, taken a microsecond apart across a
+    boundary, is how a date and a time start disagreeing about which day it is.
+
+    ⚠ THE BOUTIQUE'S WALL CLOCK IS THE AUTHORITY, and that is a decision rather
+    than a convenience. A 25-hour Jerusalem day has one hour whose clock reads
+    01:xx twice, and both instants are correctly inside a shift covering 01:00 —
+    the boutique was open for both. A 23-hour day has no local 02:xx at all, so a
+    shift spanning it is one real hour shorter, which is also correct. Storing
+    UTC instants per shift instead would need a per-week materialisation and
+    would drift an hour twice a year (F39 D6's argument, second instance).
+
+    Neither `BOUTIQUE_TIMEZONE` nor `jerusalem_day_index` is re-derived here —
+    both are imported, for the reason this module's header already states.
+    """
+    local = at.astimezone(BOUTIQUE_TIMEZONE)
+    local_date = local.date()
+    return local_date, local.time(), jerusalem_day_index(local_date)
+
+
+def template_covers(template: ShiftTemplate, *, local_time: datetime.time, day_index: int) -> bool:
+    """Does this shift contain that Jerusalem wall-clock moment (F40 D14)?
+
+    ⚠ HALF-OPEN: `starts_at_time <= local_time < ends_at_time`, and the `<` on
+    the right end is the decision. F39 permits overlapping templates on one
+    weekday (its D2), so a back-to-back 09:00–14:00 and 14:00–20:00 pair BOTH
+    contain 14:00 under a closed interval and the board would credit the outgoing
+    staffer with the incoming shift. `<` is what makes a handover instantaneous.
+
+    NO WRAPAROUND, because `shift_templates_order_check` bars
+    `ends_at_time <= starts_at_time` — there is no overnight shift to split
+    across two dates.
+
+    Overlapping templates that both cover an instant are legal and produce ONE
+    answer: the caller ORs them, and a boolean cannot be double-counted.
+    """
+    return (
+        template.day_of_week == day_index
+        and template.starts_at_time <= local_time < template.ends_at_time
+    )
+
+
+def on_shift_at(
+    *,
+    override_on: datetime.date | None,
+    override_value: bool | None,
+    roster_published: bool,
+    rostered_now: bool,
+    local_date: datetime.date,
+) -> tuple[bool, OnShiftSource]:
+    """Is she on shift, and WHICH RULE SAID SO (F40, spec D2).
+
+        1. override_on == local_date  ->  (override_value, MANUAL_TODAY)
+        2. roster_published           ->  (rostered_now,   ROSTER)
+        3. otherwise                  ->  (True,           FALLBACK)
+
+    ⚠ THE TUPLE IS THE POINT. The answer and the rule are computed together, so
+    they cannot disagree — the console maps the source through a `Record` with no
+    fallback and prints one of three Hebrew phrases beside the answer, on a
+    shared floor tablet two women read at once.
+
+    ⚠ RULE 2 KEYS ON THE EXISTENCE OF A PUBLISHED ROSTER, NEVER ON ASSIGNMENTS
+    (D5). "Published with nobody on this shift" is `(False, ROSTER)` — she is
+    genuinely not on, the owner said so by publishing a week that does not
+    include her — while "no roster published" is `(True, FALLBACK)`, because the
+    boutique has not told the system anything and the system does not pretend to
+    know. Deriving `roster_published` from `EXISTS(assignments)` collapses the
+    two in the dangerous direction: an owner who publishes a genuinely empty
+    Saturday would find the whole boutique reported as on shift.
+
+    ⚠ RULE 3 IS TODAY'S EXACT BEHAVIOUR (spec C1). There is no F31 flag being
+    demoted — what is demoted is LIVENESS as an implicit on-shift claim, so a
+    boutique that never publishes and never overrides sees no change at all.
+
+    ⚠ NO COMPARISON AGAINST `published_at`, deliberately (D3). The epic phrases
+    rule 1 as "a same-day flag set AFTER the roster was published wins", and that
+    comparison causes a concrete failure: the owner marks Dana off for Sunday at
+    08:00, edits THURSDAY's shift at 15:00 and republishes, `published_at` moves
+    past Dana's flag, and Dana silently reappears as on-shift for the rest of
+    Sunday. Scoping the override to a Jerusalem calendar DATE delivers the whole
+    of what that comparison was reaching for, with no clock arithmetic to get
+    wrong.
+
+    `override_value is not None` narrows the pair rather than trusting it: the DB
+    CHECK makes a half-written pair unreachable, and a function that returned
+    `None` where the wire promises a boolean would be a 500 on the floor board.
+    """
+    if override_value is not None and override_on == local_date:
+        return override_value, OnShiftSource.MANUAL_TODAY
+    if roster_published:
+        return rostered_now, OnShiftSource.ROSTER
+    return True, OnShiftSource.FALLBACK
