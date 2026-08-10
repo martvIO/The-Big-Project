@@ -393,3 +393,86 @@ describe("the empty week", () => {
     expect(screen.queryByRole("button", { name: "שמירת זמינות" })).not.toBeInTheDocument();
   });
 });
+
+describe("F40 D17: her published shifts", () => {
+  it("says the roster is not published yet, and never the other two sentences", async () => {
+    // ⚠ THREE DISTINCT FACTS, THREE DISTINCT SENTENCES (D5). A draft answers
+    // this one EVEN WITH HER ON IT — a draft is invisible to staff (D6), and
+    // telling her «you work Sunday morning» off an unpublished week is exactly
+    // the promise this feature must not make.
+    getShiftWeek.mockResolvedValue(week({ roster_published: false, rostered_template_ids: [] }));
+    mount();
+    expect(await screen.findByText("סידור העבודה לשבוע הזה טרם פורסם.")).toBeInTheDocument();
+    expect(screen.queryByText("לא שובצת למשמרות בשבוע הזה.")).toBeNull();
+  });
+
+  it("says she is on nothing when the week IS published and her list is empty", async () => {
+    getShiftWeek.mockResolvedValue(week({ roster_published: true, rostered_template_ids: [] }));
+    mount();
+    expect(await screen.findByText("לא שובצת למשמרות בשבוע הזה.")).toBeInTheDocument();
+    expect(screen.queryByText("סידור העבודה לשבוע הזה טרם פורסם.")).toBeNull();
+  });
+
+  it("lists only her shifts, in the server's order", async () => {
+    getShiftWeek.mockResolvedValue(
+      week({
+        templates: [template(), template({ id: EVENING, label: "משמרת ערב" })],
+        roster_published: true,
+        rostered_template_ids: [EVENING],
+      }),
+    );
+    mount();
+    const heading = await screen.findByRole("heading", { name: "המשמרות שלי" });
+    const block = heading.parentElement as HTMLElement;
+    const rows = within(block).getAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("משמרת ערב");
+    expect(within(block).queryByText(/משמרת בוקר/)).toBeNull();
+  });
+
+  it("carries NO control and NO total of any kind", async () => {
+    // ⚠ §0.3, on the surface most tempting to add one to. This is not an
+    // hours-worked record: no «סה"כ שעות», no weekly sum, no count of shifts —
+    // and no button, because a staffer accepting a shift is the attendance punch
+    // D13 and the epic's labour-law row put out of scope.
+    getShiftWeek.mockResolvedValue(
+      week({ roster_published: true, rostered_template_ids: [MORNING] }),
+    );
+    mount();
+    const heading = await screen.findByRole("heading", { name: "המשמרות שלי" });
+    const block = heading.parentElement as HTMLElement;
+    expect(within(block).queryAllByRole("button")).toEqual([]);
+    expect(within(block).queryAllByRole("link")).toEqual([]);
+    expect(within(block).queryAllByRole("textbox")).toEqual([]);
+    expect(within(block).queryAllByRole("radio")).toEqual([]);
+    expect(block.textContent).not.toContain('סה"כ');
+  });
+
+  it("leaves the shipped radios, the deadline line and the save button untouched", async () => {
+    // The block is ADDITIVE. F39's whole panel must keep working, which is why
+    // its own tests above are unedited.
+    getShiftWeek.mockResolvedValue(
+      week({ roster_published: true, rostered_template_ids: [MORNING] }),
+    );
+    mount();
+    expect(await screen.findAllByRole("group")).not.toHaveLength(0);
+    expect(screen.getByRole("button", { name: "שמירת זמינות" })).toBeInTheDocument();
+    expect(screen.getByText(/מועד ההגשה/)).toBeInTheDocument();
+  });
+
+  it("puts the block's h3 between the pane h2 and the weekday h3s", async () => {
+    // Heading levels: Card h2 -> this h3 -> the form's weekday h3s. Same level,
+    // two siblings, nothing skipped (design §10).
+    getShiftWeek.mockResolvedValue(
+      week({ roster_published: true, rostered_template_ids: [MORNING] }),
+    );
+    mount();
+    await screen.findByRole("heading", { name: "המשמרות שלי" });
+    const levels = screen
+      .getAllByRole("heading")
+      .map((node) => Number(node.tagName.slice(1)));
+    expect(levels[0]).toBe(2);
+    expect(levels[1]).toBe(3);
+    expect(Math.max(...levels)).toBe(3);
+  });
+});
