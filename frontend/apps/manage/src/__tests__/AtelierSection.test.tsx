@@ -2652,7 +2652,11 @@ describe("the capacity save — patched onto the held row, three keys and no mor
 describe("the settings save — one request, and nothing patched on the way back", () => {
   it("sends the whole atelier block and announces it", async () => {
     getAtelierBoard.mockResolvedValue(board([ticket()], { default_weekly_capacity_hours: 30 }));
-    updateSettings.mockResolvedValue({ profile: {}, toggles: {} });
+    updateSettings.mockResolvedValue({
+      profile: {},
+      toggles: {},
+      scheduling: { submission_deadline_day_of_week: 3, submission_deadline_time: "18:00" },
+    });
     mount();
     await screen.findByText("מיכל לוי");
 
@@ -2690,7 +2694,11 @@ describe("the settings save — one request, and nothing patched on the way back
     // the previous mapping's. The dialog's own cue already told her the write
     // landed.
     getAtelierBoard.mockResolvedValue(board([ticket()], { default_weekly_capacity_hours: 30 }));
-    updateSettings.mockResolvedValue({ profile: {}, toggles: {} });
+    updateSettings.mockResolvedValue({
+      profile: {},
+      toggles: {},
+      scheduling: { submission_deadline_day_of_week: 3, submission_deadline_time: "18:00" },
+    });
     mount();
     await screen.findByText("מיכל לוי");
 

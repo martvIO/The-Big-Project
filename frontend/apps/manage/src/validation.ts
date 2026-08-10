@@ -549,3 +549,45 @@ export const MAX_ROOM_LABEL_LENGTH = 40;
 // copy rule that names both thresholds as STATES rather than durations the
 // bundle carries no number for them at all.
 export const MAX_SOS_NOTE_LENGTH = 120;
+
+// --- shift availability (Feature 39) ---
+//
+// Mirror of backend/app/shifts/validation.py. backend/tests/
+// test_frontend_constant_parity.py fails if either drifts.
+//
+// Applied as a disabled «הוספת משמרת» button at the cap and as `maxLength` on
+// the label input. Without the mirror the owner types a 61st character, the row
+// saves, the API answers a house 400 carrying an ENGLISH message, and the Hebrew
+// editor renders it — for an input error that fails identically on every retry.
+//
+// ⚠ MAX_TEMPLATES (42) is deliberately NOT mirrored: it is 6 × 7 exactly, so the
+// per-day cap always bites first and the total is unreachable through this
+// console. It is a server-side guard against a non-UI caller, and a mirror here
+// would invite a total-count meter for a number that cannot be hit.
+export const MAX_TEMPLATES_PER_DAY = 6;
+export const MAX_SHIFT_LABEL_LENGTH = 60;
+
+// Hardcoded Hebrew, like every other message in this file: `validation.ts`
+// returns strings and not keys, and minting i18n keys for three client-side
+// guards in a file that has never had one is the drift, not the fix.
+export function validateShiftTemplate(
+  label: string,
+  startsAtTime: string,
+  endsAtTime: string,
+): string | null {
+  if (!label.trim()) {
+    return "יש להזין שם למשמרת.";
+  }
+  if (label.trim().length > MAX_SHIFT_LABEL_LENGTH) {
+    return "שם המשמרת ארוך מדי.";
+  }
+  // ⚠ STRING COMPARISON ON "HH:MM", which is correct BECAUSE both are
+  // zero-padded 24-hour and lexicographic order is chronological order there.
+  // The server carries the same rule as `shift_templates_order_check`, so this
+  // one exists to make the refusal immediate and Hebrew — and it is what makes
+  // «no overnight shift» visible before a round trip.
+  if (!startsAtTime || !endsAtTime || endsAtTime <= startsAtTime) {
+    return "שעת הסיום חייבת להיות אחרי שעת ההתחלה.";
+  }
+  return null;
+}

@@ -22,7 +22,14 @@ const getSettings = vi.mocked(api.getSettings);
 const updateSettings = vi.mocked(api.updateSettings);
 
 function settings(profile: Settings["profile"] = {}): Settings {
-  return { profile, toggles: { deposits_enabled: false, brides_only: false } };
+  // F39 added `scheduling` to `Settings`, and it is REQUIRED on the wire
+  // (default-complete, so every tenant carries the whole pair whether or not
+  // she has ever opened the dialog). Nothing on this surface reads it.
+  return {
+    profile,
+    toggles: { deposits_enabled: false, brides_only: false },
+    scheduling: { submission_deadline_day_of_week: 3, submission_deadline_time: "18:00" },
+  };
 }
 
 const SAVE_BUTTON = "שמירת פרופיל";

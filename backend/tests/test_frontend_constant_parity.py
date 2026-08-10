@@ -42,6 +42,7 @@ from app.catalog import validation as catalog_validation
 from app.customers import validation as customers_validation
 from app.floor import validation as floor_validation
 from app.privacy import validation as privacy_validation
+from app.shifts import validation as shifts_validation
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANAGE_VALIDATION_TS = REPO_ROOT / "frontend/apps/manage/src/validation.ts"
@@ -138,6 +139,25 @@ MIRRORS = (
         privacy_validation,
         ("MAX_PRIVACY_TEXT_BYTES",),
         id="manage-privacy",
+    ),
+    # F39's two. `MAX_TEMPLATES` is DELIBERATELY absent: it is
+    # `MAX_TEMPLATES_PER_DAY * 7` exactly, so the per-day cap always bites first
+    # and the total is unreachable through the console — mirroring it would
+    # invite a total-count meter for a number that cannot be hit. Note it is
+    # also an ARITHMETIC expression on the backend, which `_CONST_RE`'s twin
+    # would skip on the TS side anyway (`MAX_TERMS_TEXT_BYTES`'s recorded trap).
+    #
+    # The drift these guard: the editor disables «הוספת משמרת» at the cap and
+    # caps the label input at `maxLength`, so a bound raised on the server alone
+    # makes the console refuse a shift the API would accept, and lowered on the
+    # server alone lets the owner type a 61st character, press save, and read an
+    # ENGLISH 400 in a Hebrew editor — for an input error that fails identically
+    # on every retry.
+    pytest.param(
+        MANAGE_VALIDATION_TS,
+        shifts_validation,
+        ("MAX_TEMPLATES_PER_DAY", "MAX_SHIFT_LABEL_LENGTH"),
+        id="manage-shifts",
     ),
     pytest.param(
         STOREFRONT_VALIDATION_TS,

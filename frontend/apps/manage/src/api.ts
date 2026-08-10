@@ -125,6 +125,21 @@ export type ToggleSettings = Record<string, boolean>;
 export interface Settings {
   profile: ProfileSettings;
   toggles: ToggleSettings;
+  // F39. Unlike `atelier` directly above, this one IS mirrored: the deadline
+  // Card is the only reader of it and there is no poll envelope carrying it,
+  // so the settings read is where it has to come from. It arrives
+  // DEFAULT-COMPLETE (`{...SCHEDULING_DEFAULTS, ...stored}` on the server), so
+  // no control here ever needs `?? default`.
+  scheduling: SchedulingSettings;
+}
+
+// F39 D6. A WEEKDAY AND A LOCAL TIME, never a stored instant: «18:00 רביעי» is
+// 16:00Z in winter and 15:00Z in summer, so a UTC value would drift an hour
+// twice a year. The server resolves the instant per week and puts it on the
+// week payload as `deadline_at`.
+export interface SchedulingSettings {
+  submission_deadline_day_of_week: number; // 0=Sunday … 6=Saturday
+  submission_deadline_time: string; // "HH:MM"
 }
 
 // F42. ⚠ A FULL REPLACE OF THE WHOLE `atelier` BLOCK — both keys REQUIRED, no
@@ -154,6 +169,12 @@ export interface UpdateSettingsRequest {
   // stops compiling at its call sites.
   toggles?: Partial<Record<ToggleKey, boolean>>;
   atelier?: AtelierSettingsUpdate;
+  // ⚠ WHOLE-BLOCK, BOTH FIELDS, ALWAYS — `atelier`'s rule and NOT `toggles`'.
+  // `merge_settings` merges at the top level only (see `atelier`'s comment
+  // above, which states it in full rather than being re-derived here), so a
+  // patch naming one of the two DELETES the other. That is also why the
+  // deadline Card has one save button and not two.
+  scheduling?: SchedulingSettings;
 }
 
 export type AppointmentAudience = "all" | "brides_only";
@@ -1542,6 +1563,107 @@ function ticketPath(ticketId: string): string {
 
 // --- endpoints ---
 
+// --- shift availability wire types (mirror backend/app/shifts/schemas.py) ---
+//
+// ⚠ `week_start` / `week_end` are PLAIN `YYYY-MM-DD` and `deadline_at` is an
+// ISO-8601 UTC INSTANT. They are different kinds of thing: a week is a page of
+// the boutique's calendar with no offset to get wrong, a deadline is a moment.
+// `plainDayMonth` refuses to meet a Date for exactly this reason — an instant
+// handed to it renders «NaN.11» — so an instant must go through
+// `jerusalemIsoDate` first.
+
+export type AvailabilityState = "available" | "unavailable" | "preferred";
+
+export interface ShiftTemplateInput {
+  day_of_week: number; // 0=Sunday … 6=Saturday
+  label: string;
+  // "HH:MM:SS" on the wire; <input type="time"> wants "HH:MM", so the panes
+  // slice — `HoursSection`'s shipped `toInputTime` rule.
+  starts_at_time: string;
+  ends_at_time: string;
+  sort_order: number;
+}
+
+export interface ShiftTemplate extends ShiftTemplateInput {
+  id: string;
+  // D4's PRE-COMMIT count, and the only route that can answer it: after the
+  // write it exists solely in the audit row's `details`. `null` for a
+  // non-elevated reader — she has no editor and no confirm dialog, and `null`
+  // rather than `0` because "not asked" and "no answers exist" are different
+  // facts.
+  future_submission_count: number | null;
+}
+
+export interface AvailabilityEntry {
+  id: string;
+  shift_template_id: string;
+  state: AvailabilityState;
+  // NULL when she recorded it herself. A NAME, resolved server-side, so no pane
+  // ever joins staff rows to render one line.
+  recorded_by_name: string | null;
+}
+
+export interface ShiftWeek {
+  week_start: string;
+  week_end: string;
+  deadline_at: string;
+  // ⚠ ACTOR-RELATIVE. It is «this actor cannot write this week», not «the
+  // deadline has passed»: an elevated actor is exempt from the deadline (D5) and
+  // NOBODY may write a week that has already begun (D1). The panel renders its
+  // save button off this and the server enforces the same predicate, so the two
+  // cannot disagree.
+  locked: boolean;
+  templates: ShiftTemplate[];
+  entries: AvailabilityEntry[];
+}
+
+export interface AvailabilityEntryInput {
+  shift_template_id: string;
+  state: AvailabilityState;
+}
+
+export interface SubmitAvailabilityRequest {
+  week_start: string;
+  // Absent means herself. It names WHOM to record and never WHO is asking — the
+  // acting identity is the session cookie, always.
+  staff_user_id?: string;
+  // ⚠ A WHOLE-WEEK REPLACE: a template ABSENT from this list has its live answer
+  // soft-deleted, which is D8's clear path and what the fourth radio «לא נרשם»
+  // maps to. An empty list clears the week.
+  entries: AvailabilityEntryInput[];
+}
+
+export interface TemplateWriteResponse {
+  // `null` on delete: there is no row left to render.
+  template: ShiftTemplate | null;
+  // The count that REALLY moved, which may differ from the prediction the
+  // confirm dialog opened with if somebody submitted in between.
+  invalidated_submissions: number;
+}
+
+export interface SeedTemplatesResponse {
+  created: number;
+  templates: ShiftTemplate[];
+}
+
+export interface WeekSubmissionRow {
+  staff_user_id: string;
+  display_name: string;
+  // "At least one live row", not "answered every template" — D8 cannot tell a
+  // deliberate blank from a refusal, so the boolean says she STARTED and the
+  // entries say how far she got.
+  submitted: boolean;
+  entries: AvailabilityEntry[];
+}
+
+export interface WeekSubmissions {
+  week_start: string;
+  week_end: string;
+  submitted_count: number;
+  total: number;
+  rows: WeekSubmissionRow[];
+}
+
 export const api = {
   login(email: string, password: string): Promise<Staff> {
     return apiFetch("/manage/auth/login", { method: "POST", body: { email, password } });
@@ -2056,5 +2178,52 @@ export const api = {
     return apiFetch(`/manage/waitlist/${encodeURIComponent(entryId)}/cancel`, {
       method: "POST",
     });
+  },
+  // F39's shift availability. Three reads and five writes; the console never
+  // polls any of them — this is a form, not a board.
+  listShiftTemplates(): Promise<{ templates: ShiftTemplate[] }> {
+    return apiFetch("/manage/shifts/templates");
+  },
+  createShiftTemplate(body: ShiftTemplateInput): Promise<ShiftTemplate> {
+    return apiFetch("/manage/shifts/templates", { method: "POST", body });
+  },
+  updateShiftTemplate(
+    templateId: string,
+    body: ShiftTemplateInput,
+  ): Promise<TemplateWriteResponse> {
+    // A FULL REPLACE of all five fields (D2) — the caller resends the row's
+    // existing `sort_order`, which the console never shows.
+    return apiFetch(`/manage/shifts/templates/${encodeURIComponent(templateId)}`, {
+      method: "PATCH",
+      body,
+    });
+  },
+  deleteShiftTemplate(templateId: string): Promise<TemplateWriteResponse> {
+    return apiFetch(`/manage/shifts/templates/${encodeURIComponent(templateId)}`, {
+      method: "DELETE",
+    });
+  },
+  seedShiftTemplates(): Promise<SeedTemplatesResponse> {
+    return apiFetch("/manage/shifts/templates/seed", { method: "POST" });
+  },
+  getShiftWeek(weekStart?: string): Promise<ShiftWeek> {
+    // No parameter means NEXT week, resolved server-side from the Jerusalem
+    // clock — "next" changes meaning at Saturday midnight and a browser on a New
+    // York clock disagrees with the server for part of every day.
+    return apiFetch(
+      weekStart === undefined
+        ? "/manage/shifts/week"
+        : `/manage/shifts/week?week_start=${encodeURIComponent(weekStart)}`,
+    );
+  },
+  submitAvailability(body: SubmitAvailabilityRequest): Promise<ShiftWeek> {
+    return apiFetch("/manage/shifts/week/availability", { method: "PUT", body });
+  },
+  getWeekSubmissions(weekStart?: string): Promise<WeekSubmissions> {
+    return apiFetch(
+      weekStart === undefined
+        ? "/manage/shifts/week/submissions"
+        : `/manage/shifts/week/submissions?week_start=${encodeURIComponent(weekStart)}`,
+    );
   },
 };
