@@ -84,6 +84,13 @@ export const he = {
     "platform.error.password_too_short": "הסיסמה חייבת להכיל לפחות 10 תווים.",
     "platform.error.tenant_not_found": "הבוטיק לא נמצא. כדאי לרענן את הרשימה.",
     "platform.error.owner_not_found": "האימייל אינו תואם את בעלת הבוטיק הרשומה.",
+    // F26's operator-side twin of `invalid_invite`, and it is REACHABLE: two
+    // tabs, two operators, or one stale table, and the second revoke of the same
+    // row answers 404 `invite_not_found` (platform/router.py's `_REFUSAL_STATUS`).
+    // Without a sentence here `refusalMessage` falls through to `errorMessage`,
+    // which paints the server's fixed ENGLISH «The platform refused that command.»
+    // onto a Hebrew-only screen — the one thing api.ts says never happens.
+    "platform.error.invite_not_found": "ההזמנה לא נמצאה. כדאי לרענן את הרשימה.",
 
     // ⚠ TWO KEYS BEYOND THE DECK, and the addition is recorded rather than
     // slipped in. The design covers login, the table, both forms and both

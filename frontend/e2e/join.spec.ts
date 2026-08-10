@@ -52,12 +52,12 @@ test("join: a pasted FULL LINK is accepted, not just a bare code", async ({ page
   // spend a failures-only limiter attempt on a formatting mistake.
   const recorder = await installPlatformApi(page, {
     operator: null,
-    replies: { "GET /platform/join/invite": [ok(PREVIEW)] },
+    replies: { "POST /platform/join/invite": [ok(PREVIEW)] },
   });
   await page.goto(JOIN);
   await page
     .getByLabel("קוד ההזמנה")
-    .fill(`https://admin.modryn.co.il/platform/join?code=${CODE}`);
+    .fill(`https://admin.modryn.co.il/platform/join#code=${CODE}`);
   await page.getByRole("button", { name: "המשך" }).click();
 
   await expect(page.getByRole("heading", { name: "הקמת הבוטיק", level: 2 })).toBeVisible();
@@ -72,9 +72,9 @@ test("join: an invalid code shows the one Hebrew sentence and never the server's
   // not undo that by distinguishing them.
   await installPlatformApi(page, {
     operator: null,
-    replies: { "GET /platform/join/invite": [refuse(404, "invalid_invite")] },
+    replies: { "POST /platform/join/invite": [refuse(404, "invalid_invite")] },
   });
-  await page.goto(`${JOIN}?code=nope`);
+  await page.goto(`${JOIN}#code=nope`);
   await expect(page.getByRole("alert")).toContainText(
     "ההזמנה אינה תקפה. אפשר לבקש מ‑MODRYN הזמנה חדשה.",
   );
@@ -88,9 +88,9 @@ test("join: the three facts are read-only and the only input is the password", a
   // choosing".
   await installPlatformApi(page, {
     operator: null,
-    replies: { "GET /platform/join/invite": [ok(PREVIEW)] },
+    replies: { "POST /platform/join/invite": [ok(PREVIEW)] },
   });
-  await page.goto(`${JOIN}?code=${CODE}`);
+  await page.goto(`${JOIN}#code=${CODE}`);
   await expect(page.getByRole("heading", { name: "הקמת הבוטיק", level: 2 })).toBeVisible();
   await expect(page.getByText("בוטיק של חן")).toBeVisible();
   await expect(page.getByText("chen.modryn.co.il")).toBeVisible();
@@ -108,11 +108,11 @@ test("join: a weak password is refused INTO the field, then a good one succeeds"
   await installPlatformApi(page, {
     operator: null,
     replies: {
-      "GET /platform/join/invite": [ok(PREVIEW)],
+      "POST /platform/join/invite": [ok(PREVIEW)],
       "POST /platform/join/redeem": [refuse(400, "password_too_short"), ok(REDEEMED)],
     },
   });
-  await page.goto(`${JOIN}?code=${CODE}`);
+  await page.goto(`${JOIN}#code=${CODE}`);
   await expect(page.getByRole("heading", { name: "הקמת הבוטיק", level: 2 })).toBeVisible();
 
   const password = page.getByLabel("בחירת סיסמה");
@@ -155,7 +155,7 @@ test("join (axe): the code step, the claim step and the success screen", async (
   await installPlatformApi(page, {
     operator: null,
     replies: {
-      "GET /platform/join/invite": [ok(PREVIEW)],
+      "POST /platform/join/invite": [ok(PREVIEW)],
       "POST /platform/join/redeem": [ok(REDEEMED)],
     },
   });
@@ -178,9 +178,9 @@ test("join (axe): the code step, the claim step and the success screen", async (
 test("join (axe): the code step carrying a refusal", async ({ page }) => {
   await installPlatformApi(page, {
     operator: null,
-    replies: { "GET /platform/join/invite": [refuse(429, "TOO_MANY_ATTEMPTS")] },
+    replies: { "POST /platform/join/invite": [refuse(429, "TOO_MANY_ATTEMPTS")] },
   });
-  await page.goto(`${JOIN}?code=${CODE}`);
+  await page.goto(`${JOIN}#code=${CODE}`);
   // 429 is matched on STATUS, LoginPanel's shipped precedent for the same
   // refusal — the body's code is a wire constant, not a copy key.
   await expect(page.getByRole("alert")).toContainText(

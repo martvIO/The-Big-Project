@@ -17,7 +17,7 @@ an exemption.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Request
 
 from app.auth.client_ip import client_ip
 from app.auth.rate_limit import FixedWindowRateLimiter
@@ -26,8 +26,8 @@ from app.auth.tokens import hash_token
 from app.core.config import get_settings
 from app.platform.router import ConsoleCommandRefused, get_provisioning_service
 from app.platform.schemas import (
-    MAX_INVITE_CODE_LENGTH,
     InvitePreviewResponse,
+    PreviewInviteRequest,
     RedeemInviteRequest,
     RedeemInviteResponse,
 )
@@ -92,30 +92,36 @@ def _record_failure(request: Request, code: str) -> None:
     global_limiter.record_failure(_GLOBAL_KEY)
 
 
-@router.get("/invite")
+@router.post("/invite")
 async def preview_invite(
-    request: Request,
-    service: ServiceDep,
-    code: Annotated[str, Query(min_length=1, max_length=MAX_INVITE_CODE_LENGTH)],
+    request: Request, body: PreviewInviteRequest, service: ServiceDep
 ) -> InvitePreviewResponse:
     """A read that discloses a boutique name to an unauthenticated caller holding
     a 256-bit secret, and that is the whole point: the owner sees which boutique
     and which address she is claiming BEFORE she spends the invite, so a mistyped
     one is caught while revoke-and-reissue still fixes it (D2).
 
+    ⚠ A POST BECAUSE IT IS A READ OF A CAPABILITY, not because it changes
+    anything. `queue/router.py:16-20` argues this at length for the walk-in
+    ticket and `booking/schemas.py:74-83` for the manage token: a `?code=` puts
+    the credential in every access log and proxy trace on the path, and this one
+    creates a boutique. The join LINK carries it in a fragment for the same
+    reason (`router.py`'s `join_url`), so no server ever sees it in a request
+    line. `test_audit_coverage.py`'s `UNAUDITED_BY_DECISION` carries the note
+    that this POST writes no row, since the mutation walk classifies by method.
+
     Writes NO audit row. A read of one's own invite is not a platform event, and
     `TENANTS_LISTED`'s cross-tenant-enumeration argument does not reach a caller
-    who already holds the secret for this single row. Registered in
-    `test_audit_coverage.py`'s read exemptions with that reason.
+    who already holds the secret for this single row.
 
     Unknown, expired, redeemed and revoked all answer the same 404
     `invalid_invite` — a distinct "already redeemed" would confirm to an
     anonymous caller that a code was real (D5).
     """
-    _spend(request, code)
-    found = await service.preview_invite(code=code)
+    _spend(request, body.code)
+    found = await service.preview_invite(code=body.code)
     if found is None:
-        _record_failure(request, code)
+        _record_failure(request, body.code)
         raise ConsoleCommandRefused("invalid_invite")
     return InvitePreviewResponse(slug=found.slug, name=found.name, owner_email=found.owner_email)
 

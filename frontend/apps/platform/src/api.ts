@@ -162,12 +162,14 @@ export const api = {
   // one happens to exist — harmless, because the server's join router carries no
   // operator dependency and reads none.
   //
-  // The code travels in the QUERY STRING for the preview because it is a read,
-  // and in the BODY for the redeem. Neither is logged by this app, and the
-  // console's own history never sees either: the operator copies the link, she
-  // never opens it (design A2 r5).
+  // ⚠ THE CODE TRAVELS IN THE BODY ON BOTH, INCLUDING THE READ. A `?code=` puts
+  // a live boutique-creation credential into every access log and proxy trace on
+  // the path, where it stays readable for the invite's whole TTL — the same
+  // argument `queue/router.py` makes for the walk-in ticket and
+  // `booking/schemas.py` for the manage token. The join LINK carries it in the
+  // fragment for the same reason, so not even the document load logs it.
   previewInvite: (code: string) =>
-    apiFetch<InvitePreview>(`/platform/join/invite?code=${encodeURIComponent(code)}`),
+    apiFetch<InvitePreview>("/platform/join/invite", { method: "POST", body: { code } }),
   redeemInvite: (code: string, owner_password: string) =>
     apiFetch<{ slug: string; manage_url: string }>("/platform/join/redeem", {
       method: "POST",

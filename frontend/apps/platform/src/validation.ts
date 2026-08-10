@@ -33,7 +33,10 @@ export function slugProblem(slug: string): SlugProblem {
 }
 
 // F26 design B1: the join field accepts a PASTED FULL LINK, not just a bare
-// code. The owner was given a link, so a link is what she will paste, and
+// code. The link carries the code in its FRAGMENT (`…/platform/join#code=…`, so
+// no request line ever holds it), which this already handles: the marker search
+// is position-independent and `#` is only a terminator.
+// The owner was given a link, so a link is what she will paste, and
 // refusing it would spend a failures-only limiter attempt on a formatting
 // mistake — at 5 per 15 minutes, three of those lock her out of her own
 // boutique.

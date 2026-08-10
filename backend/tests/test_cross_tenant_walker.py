@@ -165,7 +165,7 @@ NOT_TENANT_SCOPED = frozenset(
         ("POST", "/platform/invites"),
         ("GET", "/platform/invites"),
         ("POST", "/platform/invites/revoke"),
-        ("GET", "/platform/join/invite"),
+        ("POST", "/platform/join/invite"),
         ("POST", "/platform/join/redeem"),
     }
 )

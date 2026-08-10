@@ -212,9 +212,18 @@ async def create_invite(
         # operator copies this and hands it over, so it has to be the address the
         # owner will actually open rather than whatever host the console is being
         # driven from.
+        # ⚠ A FRAGMENT, NOT A QUERY STRING. Browsers never send `#…` to the
+        # server, so opening this link puts NOTHING in uvicorn's access log, the
+        # edge proxy's log or a support bundle. With `?code=` the document load
+        # alone would have written a live, unexpired, boutique-creating
+        # credential into every log on the path for the invite's whole TTL —
+        # making a log export as good as the database, which is precisely what
+        # hashing the code at rest (D3) exists to prevent. `JoinPanel` reads
+        # `location.hash` and `POST /platform/join/invite` carries the code in
+        # its body, so no request line ever holds it.
         join_url=(
             f"https://{settings.platform_host_label}.{settings.base_domain}"
-            f"/platform/join?code={result.code}"
+            f"/platform/join#code={result.code}"
         ),
         invite=_invite_row(result.invite),
     )

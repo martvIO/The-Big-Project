@@ -97,12 +97,19 @@ export function JoinPanel() {
     [refusal, t],
   );
 
-  // Bootstrap: `?code=` present -> look it up; absent -> the manual code step.
+  // Bootstrap: `#code=` present -> look it up; absent -> the manual code step.
+  //
+  // ⚠ THE FRAGMENT, NOT THE QUERY STRING. A browser never sends `#…` to the
+  // server, so opening the join link writes nothing into uvicorn's access log,
+  // the edge proxy's log or a support bundle — which a `?code=` would, for a
+  // credential that creates a boutique and stays live for the invite's whole
+  // TTL. The link the operator hands over is built to match
+  // (`platform/router.py`'s `join_url`).
   useEffect(() => {
-    const fromUrl = new URLSearchParams(window.location.search).get("code");
+    const fromUrl = new URLSearchParams(window.location.hash.slice(1)).get("code");
     if (fromUrl === null || fromUrl.trim() === "") return;
     void lookup(fromUrl.trim());
-    // Once, on mount. The app has no client router, so the query string cannot
+    // Once, on mount. The app has no client router, so the fragment cannot
     // change under it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -142,6 +142,21 @@ class InvitePreviewResponse(BaseModel):
     owner_email: str
 
 
+class PreviewInviteRequest(ForbidExtraModel):
+    """⚠ A BODY FOR A READ, and that is the whole reason this class exists.
+
+    `app/queue/router.py:16-20` and `app/booking/schemas.py:74-83` already rule
+    this way twice in writing: a capability in the query string is a capability
+    in every access log, proxy trace and Referer header on the path. This one is
+    a 256-bit credential that CREATES A BOUTIQUE and stays live for
+    `invite_ttl_seconds`, so a log reader with no other access could redeem it
+    ahead of the real owner — which is exactly what hashing the code at rest (D3)
+    was supposed to make impossible.
+    """
+
+    code: str = Field(min_length=1, max_length=MAX_INVITE_CODE_LENGTH)
+
+
 class RedeemInviteRequest(ForbidExtraModel):
     code: str = Field(min_length=1, max_length=MAX_INVITE_CODE_LENGTH)
     # No MIN length HERE for `ProvisionRequest`'s reason, restated because this

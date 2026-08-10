@@ -1061,7 +1061,7 @@ def test_every_platform_route_but_the_four_public_ones_requires_an_operator() ->
         # session are: the code itself, single-use by an atomic conditional
         # UPDATE, an expiry, a failures-only limiter on its own instance, and the
         # host fence that keeps both off every boutique's subdomain.
-        ("GET", "/platform/join/invite"),
+        ("POST", "/platform/join/invite"),
         # The preview read, on the same footing and the same budget. It discloses
         # a boutique name to a caller holding the secret for that one row, which
         # is what lets an owner see what she is claiming BEFORE she spends it.

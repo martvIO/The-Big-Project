@@ -374,7 +374,7 @@ def test_the_invite_lifecycle_over_http_attributes_every_row_to_the_signed_in_op
         assert created.status_code == 200, created.text
         body = created.json()
         assert body["code"]
-        assert body["join_url"].endswith(f"/platform/join?code={body['code']}")
+        assert body["join_url"].endswith(f"/platform/join#code={body['code']}")
         assert body["join_url"].startswith("https://admin.")
         invite_id = body["invite"]["id"]
         assert "code" not in body["invite"]

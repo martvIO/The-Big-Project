@@ -255,6 +255,20 @@ UNAUDITED_BY_DECISION: dict[tuple[str, str], str] = {
         "rows to catalog + list_tenants, so F21 records the silence rather than "
         "widening its own charter. Owner: F62, alongside the audit READ surface."
     ),
+    # F26's invite preview: a POST that READS, so the method-based walk above
+    # cannot tell it from a mutation. It is a POST because a `?code=` would put a
+    # live boutique-creation credential into every access log and proxy trace on
+    # the path — `queue/router.py:14` argues the identical trade for the walk-in
+    # ticket. It changes nothing and therefore writes nothing; its REFUSALS still
+    # spend the shared limiter, and the redemption it precedes is fully audited.
+    ("POST", "/platform/join/invite"): (
+        "a POST that is a read: the code travels in the body so it never reaches an "
+        "access log, and a read of one's own invite is not a platform event — the "
+        "caller already holds the 256-bit secret for that single row, so "
+        "TENANTS_LISTED's enumeration argument does not reach it, and a row per read "
+        "would let an anonymous caller fill an INSERT-only table nothing prunes "
+        "(platform/join_router.py:104)"
+    ),
     ("POST", "/manage/floor/notifications/read"): (
         "a person marking her OWN notification read is not an administrative act: it "
         "changes nothing anybody else can see, it is scoped to her own rows by the "
@@ -349,9 +363,20 @@ def test_the_exemption_list_is_exactly_the_recorded_decisions() -> None:
         )
     modules = {path.split("/")[2] for _, path in UNAUDITED_BY_DECISION}
     # "auth" joined them in F25 and it is the PLATFORM's auth, not the tenant's —
-    # /manage/auth/logout still writes its row. The shape assertion is what makes
-    # a new silent module a review rather than a diff nobody read.
-    assert modules == {"appointment-types", "availability", "terms", "floor", "privacy", "auth"}, (
+    # /manage/auth/logout still writes its row. "join" joined in F26 and is the
+    # only entry here that is not a mutation at all: the invite preview is a READ
+    # posted rather than got, so that the code stays out of every request line.
+    # The shape assertion is what makes a new silent module a review rather than
+    # a diff nobody read.
+    assert modules == {
+        "appointment-types",
+        "availability",
+        "terms",
+        "floor",
+        "privacy",
+        "auth",
+        "join",
+    }, (
         "the exemption set changed shape — a new module went quiet, or one was closed "
         f"and not removed: {sorted(modules)}"
     )
@@ -389,7 +414,7 @@ def test_catalog_is_no_longer_the_module_with_zero_audit_rows() -> None:
 
 
 def test_the_anonymous_invite_read_writes_no_row_while_the_tenant_list_still_does() -> None:
-    """⚠ THREE READS UNDER `/platform`, TWO OF WHICH DELIBERATELY WRITE NOTHING.
+    """⚠ THREE GET READS UNDER `/platform`, TWO OF WHICH DELIBERATELY WRITE NOTHING.
     The walk above only sees mutations, so without this test the decision would
     live nowhere a reviewer could find it.
 
@@ -398,16 +423,19 @@ def test_the_anonymous_invite_read_writes_no_row_while_the_tenant_list_still_doe
     every boutique's slug, trading name and status in one answer
     (`platform/service.py`'s `list_tenants` docstring).
 
-    `GET /platform/join/invite` writes nothing. A read of ONE'S OWN invite is not
-    a platform event: the caller already holds the 256-bit secret for that single
-    row, so `TENANTS_LISTED`'s enumeration argument does not reach it, and a row
-    per read would let an anonymous caller fill an INSERT-only table the app can
-    neither read back nor prune. Its refusals DO write `INVITE_REDEEM_FAILED`,
-    which is the record that somebody tried (`platform/join_router.py`).
+    `GET /platform/invites` writes nothing, and for a second reason: it lists
+    authorisations the operator population issued itself and names no boutique
+    that exists (`platform/service.py`'s `list_invites`).
 
-    `GET /platform/invites` writes nothing either, and for a third reason: it
-    lists authorisations the operator population issued itself and names no
-    boutique that exists (`platform/service.py`'s `list_invites`).
+    `GET /platform/auth/me` writes nothing for the third: it reads the caller's
+    own session back to her.
+
+    ⚠ **THE INVITE PREVIEW IS NOT IN THIS SET AND MUST NOT BE.** It is a read,
+    but it is a `POST /platform/join/invite` so that the code travels in a body
+    rather than a request line, which puts it on the MUTATION walk above — its
+    "writes nothing" decision therefore lives in `UNAUDITED_BY_DECISION`, and the
+    assertion below is what stops it drifting back to a GET without that note
+    moving too.
     """
     app = create_app(resolver=_null_resolver)
     reads = {}
@@ -423,13 +451,11 @@ def test_the_anonymous_invite_read_writes_no_row_while_the_tenant_list_still_doe
         "/platform/auth/me",
         "/platform/tenants",
         "/platform/invites",
-        "/platform/join/invite",
     }, sorted(reads)
     assert _route_writes_audit(reads["/platform/tenants"]), (
         "GET /platform/tenants stopped writing TENANTS_LISTED — F21's D6 row R12 "
         "travelled from the shell to HTTP on the strength of that write"
     )
-    assert not _route_writes_audit(reads["/platform/join/invite"])
     assert not _route_writes_audit(reads["/platform/invites"])
     assert not _route_writes_audit(reads["/platform/auth/me"])
 

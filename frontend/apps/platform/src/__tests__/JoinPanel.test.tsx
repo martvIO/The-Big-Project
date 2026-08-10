@@ -17,8 +17,10 @@ function refusal(code: string, status: number): Response {
 
 const INVITE = { slug: "bella", name: "בלה כלות", owner_email: "dana@bella.example" };
 
-function atPath(search: string) {
-  window.history.replaceState({}, "", `/platform/join${search}`);
+// The FRAGMENT, matching the link the server now builds: `#code=` is never sent
+// to any server, so the credential reaches no access log.
+function atPath(fragment: string) {
+  window.history.replaceState({}, "", `/platform/join${fragment}`);
 }
 
 beforeEach(() => {
@@ -36,8 +38,12 @@ describe("extractCode", () => {
     // Design B1. The owner was GIVEN a link, so a link is what she pastes, and
     // refusing it would spend a failures-only limiter attempt on a formatting
     // mistake — three of those lock her out for fifteen minutes.
+    // The shipped link is a FRAGMENT link — that is the shape she actually holds.
+    expect(extractCode("https://admin.modryn.co.il/platform/join#code=abc123")).toBe("abc123");
+    expect(extractCode("  https://admin.modryn.co.il/platform/join#code=abc123  ")).toBe("abc123");
+    // A query-shaped one still works: an older link, or a mail client that
+    // rewrote it, must not cost her a limiter attempt.
     expect(extractCode("https://admin.modryn.co.il/platform/join?code=abc123")).toBe("abc123");
-    expect(extractCode("  https://admin.modryn.co.il/platform/join?code=abc123  ")).toBe("abc123");
     expect(extractCode("https://admin.modryn.co.il/platform/join?code=abc123&x=1")).toBe("abc123");
     expect(extractCode("abc123")).toBe("abc123");
     expect(extractCode("  abc123 ")).toBe("abc123");
@@ -57,7 +63,7 @@ describe("the join panel", () => {
     // ⚠ THE ASSERTION THAT CARRIES D2. The redeemer's form has exactly ONE
     // input — her password. A slug or email box here would make a leaked link a
     // bearer token for "become the owner of a boutique of my choosing".
-    atPath("?code=abc123");
+    atPath("#code=abc123");
     fetchMock.mockResolvedValue(json(200, INVITE));
     render(<JoinPanel />);
 
@@ -80,7 +86,7 @@ describe("the join panel", () => {
   it("shows ONE sentence for every invalid state and never the server's English", async () => {
     // D5 anti-enumeration: unknown / expired / redeemed / revoked are one 404
     // with one code, and the UI must not undo that by distinguishing them.
-    atPath("?code=nope");
+    atPath("#code=nope");
     fetchMock.mockResolvedValue(refusal("invalid_invite", 404));
     render(<JoinPanel />);
 
@@ -92,7 +98,7 @@ describe("the join panel", () => {
   });
 
   it("puts a weak-password refusal in the FIELD's error slot, not the form alert", async () => {
-    atPath("?code=abc123");
+    atPath("#code=abc123");
     fetchMock.mockImplementation((url: string) =>
       Promise.resolve(
         url.startsWith("/platform/join/invite")
@@ -125,7 +131,7 @@ describe("the join panel", () => {
     // Revoked or redeemed between the preview and the submit. There is nothing
     // left to retry, and leaving a live password in a dead form invites her to
     // keep pressing.
-    atPath("?code=abc123");
+    atPath("#code=abc123");
     fetchMock.mockImplementation((url: string) =>
       Promise.resolve(
         url.startsWith("/platform/join/invite") ? json(200, INVITE) : refusal("invalid_invite", 404),
@@ -149,7 +155,7 @@ describe("the join panel", () => {
   });
 
   it("shows the rate-limited sentence on a 429, keyed on status", async () => {
-    atPath("?code=abc123");
+    atPath("#code=abc123");
     fetchMock.mockResolvedValue(refusal("TOO_MANY_ATTEMPTS", 429));
     render(<JoinPanel />);
     expect(
@@ -158,7 +164,7 @@ describe("the join panel", () => {
   });
 
   it("reaches the success screen with the manage link and never repeats the password", async () => {
-    atPath("?code=abc123");
+    atPath("#code=abc123");
     fetchMock.mockImplementation((url: string) =>
       Promise.resolve(
         url.startsWith("/platform/join/invite")
@@ -182,7 +188,7 @@ describe("the join panel", () => {
   });
 
   it("passes no size to any control — 44px is the floor (F-W1)", async () => {
-    atPath("?code=abc123");
+    atPath("#code=abc123");
     fetchMock.mockResolvedValue(json(200, INVITE));
     const { container } = render(<JoinPanel />);
     await screen.findByRole("heading", { name: "הקמת הבוטיק", level: 2 });

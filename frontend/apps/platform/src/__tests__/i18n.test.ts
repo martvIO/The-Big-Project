@@ -60,6 +60,11 @@ describe("the platform copy deck", () => {
       "platform.join.loadFailed",
       "platform.join.retry",
       "platform.error.invalid_invite",
+      // The OPERATOR-side refusal, and the one this list was first written
+      // without: revoking an already-revoked invite is reachable from two tabs,
+      // and an untranslated code renders the server's English into the console's
+      // row alert.
+      "platform.error.invite_not_found",
       "platform.error.rate_limited",
       "platform.join.error.slug_taken",
       "platform.join.error.invalid_or_reserved_slug",

@@ -616,19 +616,36 @@ def test_the_platform_dev_proxy_names_the_console_api(monkeypatch: pytest.Monkey
 
     Derived from the live route table rather than transcribed: a fifth console
     router would otherwise work in production, in this suite and in CI, and break
-    only on a developer's machine."""
+    only on a developer's machine.
+
+    ⚠ DRIVEN OVER PATHS, NOT COMPARED AS A SET OF FAMILY NAMES, because the two
+    halves of the invariant are not the same assertion. Every API path must be
+    proxied AND every SHELL path must not: F26 D1 serves the join screen at
+    exactly `/platform/join`, one segment shy of the `join` API family, and Vite's
+    proxy runs before the static middleware — so a key matching that path forwards
+    the SCREEN to the backend and dev serves a 404 where the bundle should be. A
+    family-set comparison cannot see the difference; compiling the key and
+    driving it can. The SPA file routes (`include_in_schema=False`) are excluded
+    for the same reason: `_serve_file(app, "/platform/join", …)` is a document,
+    not an API path, and counting it would make the shell mandate its own
+    proxying."""
     monkeypatch.setattr("app.main.get_settings", _settings)
-    expected = {
-        route.path.split("/")[2]
+    api_paths = {
+        route.path
         for route in _leaf_routes(create_app(resolver=_resolver))
         if getattr(route, "path", "").startswith("/platform/")
+        and getattr(route, "include_in_schema", True)
     }
-    assert expected, "no /platform API route was discovered — the walker is broken"
+    assert api_paths, "no /platform API route was discovered — the walker is broken"
 
     source = PLATFORM_VITE_CONFIG.read_text(encoding="utf-8")
-    match = re.search(r'"\^/platform/\(([a-z|-]+)\)"', source)
-    assert match is not None, f"no ^/platform/(...) proxy key found in {PLATFORM_VITE_CONFIG}"
-    assert set(match.group(1).split("|")) == expected
+    match = re.search(r'const PLATFORM_API = "([^"]+)";', source)
+    assert match is not None, f"no PLATFORM_API proxy key found in {PLATFORM_VITE_CONFIG}"
+    key = re.compile(match.group(1))
+    for path in sorted(api_paths):
+        assert key.search(path), f"{path} is not forwarded by the dev proxy"
+    for shell in ("/platform", "/platform/", "/platform/join", "/platform/assets/index.js"):
+        assert not key.search(shell), f"the dev proxy forwards {shell}, which is the console itself"
 
 
 def test_the_ci_copy_step_carries_all_three_trees() -> None:

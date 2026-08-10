@@ -327,7 +327,8 @@ class ProvisioningService:
         return CommandResult(ok=True, message="invite_revoked")
 
     async def preview_invite(self, *, code: str) -> InviteSummary | None:
-        """The anonymous read behind `GET /platform/join/invite`.
+        """The anonymous read behind `POST /platform/join/invite` (a POST because
+        the code must not travel in a request line — see the router).
 
         Returns None for unknown, expired, redeemed AND revoked alike — one
         refusal for four states, because a distinct "already redeemed" would tell

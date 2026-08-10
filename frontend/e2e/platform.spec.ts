@@ -424,7 +424,7 @@ test("platform (axe): the reset dialog", async ({ page }) => {
 const INVITE_CODE = "s3cret-invite-code-value";
 const CREATED = {
   code: INVITE_CODE,
-  join_url: `https://admin.modryn.co.il/platform/join?code=${INVITE_CODE}`,
+  join_url: `https://admin.modryn.co.il/platform/join#code=${INVITE_CODE}`,
   invite: invite(),
 };
 

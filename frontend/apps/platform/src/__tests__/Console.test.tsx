@@ -331,7 +331,7 @@ const EXPIRED_INVITE = {
 const CODE = "s3cret-invite-code-value";
 const CREATED = {
   code: CODE,
-  join_url: `https://admin.modryn.co.il/platform/join?code=${CODE}`,
+  join_url: `https://admin.modryn.co.il/platform/join#code=${CODE}`,
   invite: OPEN_INVITE,
 };
 

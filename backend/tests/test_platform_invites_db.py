@@ -703,7 +703,7 @@ def test_the_join_routes_preview_and_redeem_an_invite_anonymously(
 
         app = _console_app(factory, monkeypatch)
         with TestClient(app, base_url="http://admin.localtest.me") as client:
-            preview = client.get("/platform/join/invite", params={"code": created.code})
+            preview = client.post("/platform/join/invite", json={"code": created.code})
             assert preview.status_code == 200, preview.text
             assert preview.json() == {
                 "slug": slug,
@@ -722,7 +722,7 @@ def test_the_join_routes_preview_and_redeem_an_invite_anonymously(
             }
 
             # Spent. Same body for redeemed as for unknown (D5).
-            spent = client.get("/platform/join/invite", params={"code": created.code})
+            spent = client.post("/platform/join/invite", json={"code": created.code})
             assert spent.status_code == 404
             assert spent.json()["error"]["code"] == "invalid_invite"
     finally:
@@ -757,6 +757,6 @@ def test_repeated_bad_codes_are_throttled_after_the_budget(
             assert blocked.json()["error"]["code"] == "TOO_MANY_ATTEMPTS"
             # The SAME budget, so a caller who exhausted redeem cannot keep
             # hammering preview with the code it already spent it on.
-            assert client.get("/platform/join/invite", params={"code": bad}).status_code == 429
+            assert client.post("/platform/join/invite", json={"code": bad}).status_code == 429
     finally:
         asyncio.run(engine.dispose())

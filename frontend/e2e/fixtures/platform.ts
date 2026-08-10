@@ -40,8 +40,20 @@ const API_FAMILIES = new Set(["auth", "tenants", "invites", "join"]);
 function isPlatformApi(pathname: string): boolean {
   // ["", "platform", family, …]. A bare "/platform/" splits to a third element
   // of "", which is in no family — the shell's own URL is never intercepted.
+  //
+  // ⚠ **"join" IS BOTH AN API FAMILY AND THE SHELL'S OWN SECOND SEGMENT**, which
+  // the family-set rule alone cannot tell apart. `page.route` intercepts MAIN-
+  // FRAME navigations, so a predicate that says yes to `/platform/join` fulfils
+  // every `page.goto(JOIN)` in join.spec.ts with a JSON error body instead of the
+  // bundle — every test in that file fails, including the two axe gates, which
+  // then never run at all. Exactly `/platform/join` is the SCREEN (F26 D1's
+  // second `_serve_file` path); only `/platform/join/...` is API. Mirrors
+  // apps/platform/vite.config.ts's `join/` alternative for the same reason.
   const segments = pathname.split("/");
-  return segments[1] === "platform" && API_FAMILIES.has(segments[2] ?? "");
+  if (segments[1] !== "platform") return false;
+  const family = segments[2] ?? "";
+  if (family === "join") return segments.length > 3;
+  return API_FAMILIES.has(family);
 }
 
 export interface Reply {

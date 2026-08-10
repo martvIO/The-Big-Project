@@ -120,7 +120,7 @@ def test_the_invite_refusals_map_to_the_statuses_the_console_keys_on() -> None:
 # --- C2: the anonymous pair ---------------------------------------------------
 
 JOIN_ROUTES = {
-    ("GET", "/platform/join/invite"),
+    ("POST", "/platform/join/invite"),
     ("POST", "/platform/join/redeem"),
 }
 
@@ -187,7 +187,9 @@ def test_both_join_routes_share_one_budget_and_only_failures_spend_it(
         limiter = app.state.invite_redeem_rate_limiter
         for _ in range(get_settings().invite_redeem_max_attempts):
             limiter.record_failure(f"code:{hash_token(code)}")
-        assert client.get("/platform/join/invite", params={"code": code}).status_code == 429
+        # The code is in the BODY on both routes now — a `?code=` would put a
+        # live boutique-creation credential into every access log on the path.
+        assert client.post("/platform/join/invite", json={"code": code}).status_code == 429
         redeemed = client.post(
             "/platform/join/redeem", json={"code": code, "owner_password": "a-long-enough-pw"}
         )
