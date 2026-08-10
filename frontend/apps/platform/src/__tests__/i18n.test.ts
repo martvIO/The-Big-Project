@@ -11,10 +11,87 @@ const HE = Object.entries(he.translation).filter(
 
 describe("the platform copy deck", () => {
   it("carries every key the design deck approved", () => {
-    // A floor, not an exact count: the deck's §1–§6 rows plus the two recorded
-    // crash-state keys. It exists so a bundle gutted by a bad merge fails here
-    // rather than rendering key names onto the screen.
-    expect(HE.length).toBeGreaterThanOrEqual(45);
+    // A floor, not an exact count: F25's §1–§6 rows plus the two recorded
+    // crash-state keys, plus F26's invites and join decks. It exists so a bundle
+    // gutted by a bad merge fails here rather than rendering key names onto the
+    // screen.
+    expect(HE.length).toBeGreaterThanOrEqual(100);
+  });
+
+  it("carries every key F26's two surfaces render", () => {
+    // Named rather than counted. A missing key renders as itself, and on the
+    // JOIN screen — the one screen in this app a non-operator opens — that is a
+    // dotted identifier where a Hebrew sentence should be.
+    const required = [
+      "platform.invites.heading",
+      "platform.invites.createHeading",
+      "platform.invites.createdFor",
+      "platform.invites.linkOnce",
+      "platform.invites.linkLabel",
+      "platform.invites.linkExpires",
+      "platform.invites.linkDeliver",
+      "platform.invites.copy",
+      "platform.invites.copied",
+      "platform.invites.copyFailed",
+      "platform.invites.dismiss",
+      "platform.invites.revokeTitle",
+      "platform.invites.revokeBody",
+      "platform.invites.revokeConfirm",
+      "platform.invites.revokeCancel",
+      "platform.invites.statusOpen",
+      "platform.invites.statusRedeemed",
+      "platform.invites.statusExpired",
+      "platform.join.title",
+      "platform.join.headingCode",
+      "platform.join.heading",
+      "platform.join.headingDone",
+      "platform.join.codeLabel",
+      "platform.join.codePrompt",
+      "platform.join.codeSubmit",
+      "platform.join.claiming",
+      "platform.join.boutiqueLabel",
+      "platform.join.addressLabel",
+      "platform.join.emailLabel",
+      "platform.join.password",
+      "platform.join.submit",
+      "platform.join.success",
+      "platform.join.successBody",
+      "platform.join.toManage",
+      "platform.join.loadFailed",
+      "platform.join.retry",
+      "platform.error.invalid_invite",
+      "platform.error.rate_limited",
+      "platform.join.error.slug_taken",
+      "platform.join.error.invalid_or_reserved_slug",
+    ];
+    const missing = required.filter((key) => !(key in he.translation));
+    expect(missing).toEqual([]);
+  });
+
+  it("carries the isolate markup INSIDE the three interpolated strings", () => {
+    // ⚠ THE <Trans> CONTRACT, mechanised. These three sentences interpolate a
+    // Latin run into RTL text beside neutral characters (a comma, parentheses),
+    // and without the isolate the run reorders on screen. A later editor
+    // "simplifying" them back to t() would drop the tags and nothing else in the
+    // suite would notice — the string would still render, just wrongly.
+    //
+    // Two tag names, because the two isolates differ: <bdi> takes dir="ltr" at
+    // the call site (always-Latin), <name> is a bare <bdi /> (a boutique name
+    // may be Hebrew).
+    const trans: Record<string, string[]> = {
+      "platform.invites.createdFor": ["<name>{{name}}</name>", "<bdi>{{url}}</bdi>"],
+      "platform.invites.revokeBody": ["<name>{{name}}</name>", "<bdi>{{slug}}</bdi>"],
+      "platform.join.successBody": ["<bdi>{{email}}</bdi>"],
+    };
+    for (const [key, fragments] of Object.entries(trans)) {
+      const value = (he.translation as Record<string, string>)[key];
+      for (const fragment of fragments) {
+        expect(value).toContain(fragment);
+      }
+      // No token OUTSIDE a tag — that is the defect shape. Whole tagged
+      // segments are removed, so anything left holding a token was bare.
+      expect(value.replace(/<(\w+)>.*?<\/\1>/g, "")).not.toMatch(/\{\{/);
+    }
   });
 
   it("resolves every key through i18next rather than echoing it back", () => {
