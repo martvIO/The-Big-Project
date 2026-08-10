@@ -20,6 +20,8 @@ import type { Page } from "@playwright/test";
 // session table, and no host fence (the preview server is `localhost`).
 
 export const PLATFORM = "http://localhost:4175/platform/";
+// F26 D1 — the redeemer's screen, the SAME bundle at a second exact path.
+export const JOIN = "http://localhost:4175/platform/join";
 
 // ⚠ **THE SAME TRAP `manage.ts` EXISTS TO MAKE UN-STEPPABLE-ON: a route on
 // `**​/platform/**` ALSO MATCHES THE APP ITSELF.** `apps/platform` builds with
@@ -33,7 +35,7 @@ export const PLATFORM = "http://localhost:4175/platform/";
 // alternation verbatim, and `backend/tests/test_spa_serving.py` derives it from
 // the live route table and asserts the two agree — so this cannot drift from the
 // server without that test going red first.
-const API_FAMILIES = new Set(["auth", "tenants"]);
+const API_FAMILIES = new Set(["auth", "tenants", "invites", "join"]);
 
 function isPlatformApi(pathname: string): boolean {
   // ["", "platform", family, …]. A bare "/platform/" splits to a third element
@@ -96,6 +98,20 @@ export interface Tenant {
   created_at: string;
 }
 
+// ⚠ NO `code` FIELD, mirroring `InviteRow` on the wire — the absence is what the
+// backend asserts structurally, and a fixture that carried one would let a
+// console rendering codes into its table pass every test here.
+export interface Invite {
+  id: string;
+  slug: string;
+  name: string;
+  owner_email: string;
+  created_by: string;
+  expires_at: string;
+  redeemed_at: string | null;
+  created_at: string;
+}
+
 export function operator(overrides: Partial<Operator> = {}): Operator {
   return { email: "dana@modryn.example", display_name: "דנה", ...overrides };
 }
@@ -110,10 +126,27 @@ export function tenant(overrides: Partial<Tenant> = {}): Tenant {
   };
 }
 
+export function invite(overrides: Partial<Invite> = {}): Invite {
+  return {
+    id: "11111111-1111-4111-8111-111111111111",
+    slug: "chen",
+    name: "בוטיק של חן",
+    owner_email: "chen@x.example",
+    created_by: "dana@modryn.example",
+    // Far future, so the client-side "expired" derivation never flips this row
+    // under a slow run.
+    expires_at: "2099-08-20T09:04:00Z",
+    redeemed_at: null,
+    created_at: "2026-08-06T09:04:00Z",
+    ...overrides,
+  };
+}
+
 export interface PlatformApiOptions {
   /** Omit to boot SIGNED OUT — `me` then answers 401 and the login panel renders. */
   operator?: Operator | null;
   tenants?: Tenant[];
+  invites?: Invite[];
   replies?: Record<string, Reply[]>;
 }
 
@@ -128,6 +161,9 @@ export async function installPlatformApi(
         ? [refuse(401, "NOT_AUTHENTICATED")]
         : [ok(identity)],
     "/platform/tenants": [ok({ tenants: options.tenants ?? [] })],
+    // Method-qualified, because the console GETs and POSTs the same path: an
+    // unqualified entry would answer the create with a list.
+    "GET /platform/invites": [ok({ invites: options.invites ?? [] })],
     ...options.replies,
   };
 

@@ -4,12 +4,13 @@ import AxeBuilder from "@axe-core/playwright";
 import {
   PLATFORM,
   installPlatformApi,
+  invite,
   ok,
   operator,
   refuse,
   tenant,
 } from "./fixtures/platform";
-import type { Recorder, Tenant } from "./fixtures/platform";
+import type { Invite, Recorder, Tenant } from "./fixtures/platform";
 
 // F25's platform console — the operator journeys and the axe gate.
 //
@@ -411,4 +412,167 @@ test("platform (axe): the reset dialog", async ({ page }) => {
     .click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await axeClean(page, "reset dialog");
+});
+
+// --- F26: invites, the one-time link, and revoke ------------------------------
+//
+// ⚠ THE FOCUS-RESTORE AND FOCUS-TRAP CLAIMS FOR THE REVOKE MODAL LIVE HERE, for
+// the reason stated at the top of this file: jsdom has no real `<dialog>` and
+// `src/test/setup.ts` stubs `showModal()`, so a vitest assertion about trapped
+// focus proves the stub (`.memory/jsdom-has-no-dialog`).
+
+const INVITE_CODE = "s3cret-invite-code-value";
+const CREATED = {
+  code: INVITE_CODE,
+  join_url: `https://admin.modryn.co.il/platform/join?code=${INVITE_CODE}`,
+  invite: invite(),
+};
+
+async function signedInWithInvites(page: Page, invites: Invite[] = []): Promise<Recorder> {
+  const recorder = await installPlatformApi(page, { tenants: [BELLA], invites });
+  await page.goto(PLATFORM);
+  await expect(page.getByRole("heading", { name: "ניהול הפלטפורמה", level: 1 })).toBeVisible();
+  return recorder;
+}
+
+async function createOne(page: Page): Promise<void> {
+  const form = page.getByRole("form", { name: "הזמנה חדשה" });
+  await form.getByLabel("כתובת (תת־דומיין)").fill("chen");
+  await form.getByLabel("שם הבוטיק").fill("בוטיק של חן");
+  await form.getByLabel("אימייל של בעלת הבוטיק").fill("chen@x.example");
+  await form.getByRole("button", { name: "יצירת הזמנה" }).click();
+}
+
+test("platform: the link is shown once, copied, and gone after dismiss", async ({
+  page,
+  context,
+}) => {
+  // The whole point of A2: after the dismiss there is no path back to the code —
+  // not in the DOM, not in the table, not in storage.
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await installPlatformApi(page, {
+    tenants: [BELLA],
+    invites: [],
+    replies: { "POST /platform/invites": [ok(CREATED)] },
+  });
+  await page.goto(PLATFORM);
+  await expect(page.getByRole("heading", { name: "ניהול הפלטפורמה", level: 1 })).toBeVisible();
+
+  await createOne(page);
+  await expect(page.getByRole("heading", { name: "ההזמנה נוצרה", level: 3 })).toBeVisible();
+  // The create form is NOT rendered while the panel is open (A2 r3).
+  await expect(page.getByRole("form", { name: "הזמנה חדשה" })).toHaveCount(0);
+
+  const link = page.getByLabel("קישור ההזמנה");
+  await expect(link).toHaveValue(CREATED.join_url);
+  await expect(link).toHaveAttribute("readonly", "");
+
+  await page.getByRole("button", { name: "העתקת הקישור" }).click();
+  await expect(page.getByRole("status")).toContainText("הקישור הועתק.");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(CREATED.join_url);
+
+  await page.getByRole("button", { name: "שמרתי את הקישור — סגירה" }).click();
+  await expect(page.getByRole("form", { name: "הזמנה חדשה" })).toBeVisible();
+  expect(await page.content()).not.toContain(INVITE_CODE);
+  expect(
+    await page.evaluate(() => [window.sessionStorage.length, window.localStorage.length]),
+  ).toEqual([0, 0]);
+  // Focus moved to the field she types into next, not to the top of the page.
+  await expect(page.getByRole("form", { name: "הזמנה חדשה" }).getByLabel("כתובת (תת־דומיין)")).toBeFocused();
+});
+
+test("platform: the invites table renders no code column and only open rows can be revoked", async ({
+  page,
+}) => {
+  await signedInWithInvites(page, [
+    invite(),
+    invite({ id: "22222222-2222-4222-8222-222222222222", slug: "noa", name: "נועה", redeemed_at: "2026-08-07T10:00:00Z" }),
+    invite({ id: "33333333-3333-4333-8333-333333333333", slug: "gal", name: "גל", expires_at: "2020-01-01T09:00:00Z" }),
+  ]);
+  const table = page.getByRole("table", { name: /רשימת ההזמנות/ });
+  await expect(table.getByText("פתוחה")).toBeVisible();
+  await expect(table.getByText("נוצלה")).toBeVisible();
+  await expect(table.getByText("פג תוקף")).toBeVisible();
+  await expect(table.getByRole("columnheader")).toHaveCount(6);
+  await expect(table.getByRole("button", { name: "ביטול ההזמנה" })).toHaveCount(1);
+  // The Latin runs are isolated; the Hebrew boutique name is NOT forced LTR.
+  await expect(page.locator("bdi[dir='ltr']", { hasText: "chen@x.example" })).toBeVisible();
+});
+
+test("platform: the revoke dialog traps focus, restores it, and reds only the confirm", async ({
+  page,
+}) => {
+  const recorder = await signedInWithInvites(page, [invite()]);
+  const trigger = page.getByRole("row", { name: /בוטיק של חן/ }).getByRole("button", {
+    name: "ביטול ההזמנה",
+  });
+  await trigger.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+
+  // Trapped: tabbing round the dialog never lands outside it. Evaluated in ONE
+  // page call so the check reads `document.activeElement` in the same frame the
+  // browser just moved it — a handle round-trip would sample it a tick late.
+  for (let step = 0; step < 8; step += 1) {
+    await page.keyboard.press("Tab");
+    const inside = await page.evaluate(() => {
+      const open = document.querySelector("dialog[open]");
+      return open !== null && open.contains(document.activeElement);
+    });
+    expect(inside, `focus escaped the revoke dialog after ${step + 1} tabs`).toBe(true);
+  }
+
+  const cancel = dialog.getByRole("button", { name: "חזרה" });
+  const confirm = dialog.getByRole("button", { name: "ביטול ההזמנה" });
+  await expect(cancel).toBeVisible();
+  await expect(confirm).toHaveClass(/bg-danger/);
+  await expect(cancel).not.toHaveClass(/bg-danger/);
+
+  await cancel.click();
+  await expect(dialog).toBeHidden();
+  // Restored to the row trigger, not dropped at the document top.
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await page.getByRole("dialog").getByRole("button", { name: "ביטול ההזמנה" }).click();
+  await expect(page.getByText("בוטיק של חן")).toHaveCount(0);
+  // Patched locally: exactly ONE list GET for the whole journey.
+  expect(recorder.of("/platform/invites").filter((r) => r.method === "GET")).toHaveLength(1);
+});
+
+test("platform (axe): the invites table, the create form, the link panel and the revoke dialog", async ({
+  page,
+}) => {
+  await installPlatformApi(page, {
+    tenants: [BELLA],
+    invites: [invite()],
+    replies: { "POST /platform/invites": [ok(CREATED)] },
+  });
+  await page.goto(PLATFORM);
+  await expect(page.getByRole("table", { name: /רשימת ההזמנות/ })).toBeVisible();
+  await axeClean(page, "invites table and create form");
+
+  await page.getByRole("row", { name: /בוטיק של חן/ }).getByRole("button", { name: "ביטול ההזמנה" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await axeClean(page, "revoke dialog");
+  await page.getByRole("dialog").getByRole("button", { name: "חזרה" }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+
+  await createOne(page);
+  await expect(page.getByRole("heading", { name: "ההזמנה נוצרה", level: 3 })).toBeVisible();
+  await axeClean(page, "one-time link panel");
+});
+
+test("platform: the invites surface carries no exclamation mark", async ({ page }) => {
+  // The shipped register rule (#5), asserted on RENDERED text rather than only
+  // in the bundle — a string assembled at runtime would pass the i18n guard.
+  await installPlatformApi(page, {
+    tenants: [BELLA],
+    invites: [invite()],
+    replies: { "POST /platform/invites": [ok(CREATED)] },
+  });
+  await page.goto(PLATFORM);
+  await createOne(page);
+  await expect(page.getByRole("heading", { name: "ההזמנה נוצרה", level: 3 })).toBeVisible();
+  expect(await page.locator("body").innerText()).not.toContain("!");
 });
