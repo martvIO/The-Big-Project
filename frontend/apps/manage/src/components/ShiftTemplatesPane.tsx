@@ -73,7 +73,21 @@ function isMaterialEdit(before: ShiftTemplate, draft: Draft): boolean {
   );
 }
 
-export function ShiftTemplatesPane() {
+export interface ShiftTemplatesPaneProps {
+  /**
+   * ⚠ THIS PANE OWNS THE TEMPLATES READ FOR THE WHOLE SECTION, and the container
+   * OBSERVES it rather than repeating it. §1.1's first-run collapse keys on the
+   * resolved list, and a second `listShiftTemplates()` in the container both
+   * doubled the request on every elevated mount and never learned about the seed
+   * — so §1.1's `if` stayed collapsed until a page reload, which is exactly what
+   * §5.2 says must not happen («the other three panes mount for the first time»).
+   *
+   * Called on every resolved list: first load, seed, and every write's refetch.
+   */
+  onTemplates: (templates: ShiftTemplate[]) => void;
+}
+
+export function ShiftTemplatesPane({ onTemplates }: ShiftTemplatesPaneProps) {
   const { t } = useTranslation();
   const [templates, setTemplates] = useState<ShiftTemplate[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -104,6 +118,15 @@ export function ShiftTemplatesPane() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // One report per resolved list, from the one component that reads it. A load
+  // FAILURE reports nothing — the container must not collapse to first-run on a
+  // 500, and this pane is already rendering the alert and the retry for it.
+  useEffect(() => {
+    if (templates !== null) {
+      onTemplates(templates);
+    }
+  }, [templates, onTemplates]);
 
   // ⚠ SEED SUCCESS UNMOUNTS THE BUTTON SHE JUST PRESSED — the `EmptyState`
   // holding it is replaced by seven populated weekday groups, and the container
