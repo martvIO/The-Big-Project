@@ -98,12 +98,13 @@ says.
 ```bash
 createdb "$DB" 2>/dev/null || true
 cd "$REPO/backend" && uv run alembic upgrade head
-uv run alembic heads            # 0024 (head) — exactly one line
+uv run alembic heads            # 0035 (head) — exactly one line
 uv run alembic current          # must print the same revision
 ```
 
-Verified head is **`0024`** (F20, `0024_privacy_consent`), and a fresh `createdb`
-+ `upgrade head` lands there. Re-check this number after every merge that ships a
+Verified head is **`0035`** (F39, `0035_shift_availability`), and a fresh
+`createdb` + `upgrade head` lands there — re-verified 2026-08-10 against a fresh
+`modryn_demo`, all 35 revisions applying cleanly with `current` == `heads`. Re-check this number after every merge that ships a
 migration — a stale head in this document reads as a broken database.
 A pre-existing local `boutique` database is very likely *stale* — mine was
 sitting at `0011`. `alembic current` disagreeing with `alembic heads` is the
@@ -260,17 +261,29 @@ rm -rf backend/app/static
 mkdir -p backend/app/static
 cp -R frontend/apps/manage/dist     backend/app/static/manage
 cp -R frontend/apps/storefront/dist backend/app/static/storefront
+cp -R frontend/apps/platform/dist   backend/app/static/platform
 
 # same assertion CI makes before `railway up`
 test -s backend/app/static/manage/index.html
 test -s backend/app/static/storefront/index.html
-find backend/app/static -type f | wc -l      # expect ~85; under 20 = truncated copy
+test -s backend/app/static/platform/index.html
+find backend/app/static -type f | wc -l      # expect ~127; under 40 = truncated copy
 ```
 
-Those four lines are verbatim `.github/workflows/ci.yml` (the "Copy the SPAs into
-the backend upload" step). `apps/manage` builds with `base: "/manage/"`; there
-are **no `VITE_*` variables** — both SPAs use relative paths and are same-origin
-with the API.
+Those lines are verbatim `.github/workflows/ci.yml` (the "Copy the SPAs into
+the backend upload" step). `apps/manage` builds with `base: "/manage/"` and
+`apps/platform` with `base: "/platform/"`; there are **no `VITE_*` variables** —
+all three SPAs use relative paths and are same-origin with the API.
+
+> ⚠ **THERE ARE THREE BUNDLES, NOT TWO.** F25's platform console is the third,
+> and this section listed only two until 2026-08-10, when a boundary-QA run hit
+> the consequence: `_register_spas` reads `STATIC_ROOT / "platform"`, so with the
+> bundle missing `http://admin.localtest.me:8000/platform` answers **404** and
+> the console — and with it §2.5's whole provisioning step, which is the only way
+> to create a tenant since F25 retired the CLI subcommand — is unreachable. The
+> 404 is indistinguishable at a glance from the host-fence 404 two blocks below,
+> which is exactly what makes it cost twenty minutes. CI has always copied all
+> three; only this document was short one.
 
 **Without the copy every browser step below is unwalkable while `/health` still
 answers 200.** Absence is a supported state by design, not a boot failure — so
