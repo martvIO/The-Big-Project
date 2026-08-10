@@ -193,6 +193,20 @@ describe("the step table", () => {
     );
     expect(empty).toEqual([]);
   });
+
+  it("gives «משמרות» its third step, the one that names the roster builder", () => {
+    // ⚠ THE COPY IS NOT THE FEATURE. `guide.shifts.3` was translated into he.ts
+    // AND mirrored into ar.ts, and both i18n guards stayed green while the table
+    // still listed two steps — because they assert that every key RESOLVES and
+    // that `ar` matches `he`, never that a shipped string is reachable. A step
+    // this table does not name is a step no screen can render, so the console's
+    // own onboarding never mentions the section's second job (F40 D17).
+    expect(GUIDE_STEPS.shifts).toEqual([
+      "guide.shifts.1",
+      "guide.shifts.2",
+      "guide.shifts.3",
+    ]);
+  });
 });
 
 describe("the guide shows the section she is looking at", () => {

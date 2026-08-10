@@ -75,7 +75,11 @@ export const GUIDE_STEPS = {
   // sits immediately after `atelier`. Role-blind by design: `GuideOverlay`
   // renders one step list per section, and a staffer knowing that
   // `recorded_by` exists is the transparency D5 is built on.
-  shifts: ["guide.shifts.1", "guide.shifts.2"],
+  // F40 D17 adds the THIRD step, and the tuple type is
+  // `readonly [string, ...string[]]` — so no `SectionKey` change and no
+  // `satisfies` change. The string was translated into both bundles when the
+  // roster copy deck landed and was dead until the pane it names was mounted.
+  shifts: ["guide.shifts.1", "guide.shifts.2", "guide.shifts.3"],
   checkinQr: ["guide.checkinQr.1", "guide.checkinQr.2"],
   staff: ["guide.staff.1", "guide.staff.2"],
   gateway: ["guide.gateway.1", "guide.gateway.2"],
