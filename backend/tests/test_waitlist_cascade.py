@@ -50,7 +50,11 @@ from app.models.constants import (
 from app.models.scheduled_message import ScheduledMessage
 from app.models.waitlist_entry import WaitlistEntry
 from app.storefront.validation import BOUTIQUE_TIMEZONE
-from app.waitlist.cascade import CascadeResult, WaitlistCascade
+from app.waitlist.cascade import (
+    _MAX_OFFER_SEND_FAILURES,
+    CascadeResult,
+    WaitlistCascade,
+)
 
 pytestmark = pytest.mark.db
 
@@ -125,6 +129,57 @@ async def _seed(
             sort_order=0,
         )
         return type_row.id
+
+
+async def _second_type(
+    factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID
+) -> uuid.UUID:
+    """A second appointment type on the SAME grid — `_seed` provisions one, and
+    the day grid is type-agnostic, so this is what makes two (day, type) pairs
+    compete for one instant."""
+    async with tenant_session(factory, tenant_id) as session:
+        row = await AppointmentTypesRepository().insert(
+            session,
+            tenant_id=tenant_id,
+            name="מדידה שנייה",
+            duration_minutes=60,
+            audience=AppointmentAudience.ALL.value,
+            deposit_required=False,
+            deposit_amount_agorot=0,
+            sort_order=1,
+        )
+        return row.id
+
+
+async def _refused_offers(
+    factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    *,
+    count: int,
+) -> None:
+    """Prior offer texts the provider refused. `_offer_one` writes exactly one
+    row per offer, so these ARE the attempt history `_MAX_OFFER_SEND_FAILURES`
+    counts.
+
+    Aged a real day back — `created_at` is a DB default off the WALL clock, not
+    off the test clock — so `latest_for_entry` still picks the cascade's own
+    message. `failed`, so the pending-unique index has no opinion about them.
+    """
+    stale = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1)
+    async with tenant_session(factory, tenant_id) as session:
+        for _ in range(count):
+            session.add(
+                ScheduledMessage(
+                    tenant_id=tenant_id,
+                    waitlist_entry_id=entry_id,
+                    kind=KIND,
+                    send_after=stale,
+                    status=ScheduledMessageStatus.FAILED.value,
+                    created_at=stale,
+                )
+            )
+        await session.flush()
 
 
 async def _join(
@@ -441,6 +496,118 @@ def test_a_failed_offer_sms_also_returns_to_waiting(app_role_url: str) -> None:
             assert (
                 await _entry(factory, tenant_id, entry_id)
             ).status == WaitlistEntryStatus.WAITING.value
+        finally:
+            await _purge(factory, tenant_id)
+            await engine.dispose()
+
+    _run(check)
+
+
+def test_an_entry_the_provider_keeps_refusing_stops_blocking_its_queue(
+    app_role_url: str,
+) -> None:
+    """**D7's loop, bounded.** The two tests above cover the shape D7 reasoned
+    about — a provider-wide outage, which self-heals on the first tick after the
+    adapter lands. They do NOT cover a permanently unreachable RECIPIENT: a
+    number that replied STOP fails every time, so offer -> failed -> waiting
+    never terminates, and because `waiting_pairs` excludes a pair holding a live
+    offer, every bride behind her in that (day, type) is frozen out for a full
+    window on every cycle, forever, at one `logger.warning` per turn.
+
+    After `_MAX_OFFER_SEND_FAILURES` refusals she lands in `expired` instead —
+    off the active-unique predicate, free to rejoin — and the queue advances.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    later = NOW + datetime.timedelta(seconds=WINDOW_SECONDS)
+
+    async def check() -> None:
+        try:
+            type_id = await _seed(factory, tenant_id)
+            unreachable = await _join(factory, tenant_id, type_id)
+            behind = await _join(factory, tenant_id, type_id)
+            await _refused_offers(
+                factory, tenant_id, unreachable, count=_MAX_OFFER_SEND_FAILURES - 1
+            )
+
+            assert (await _cascade(factory, NOW).run(tenant_id)).offered == 1
+            assert (
+                await _entry(factory, tenant_id, unreachable)
+            ).status == WaitlistEntryStatus.OFFERED.value, "FIFO — she is still first in line"
+            message = await _message(factory, tenant_id, unreachable)
+            await _mark(factory, tenant_id, message.id, status=ScheduledMessageStatus.FAILED.value)
+
+            result = await _cascade(factory, later).run(tenant_id)
+            assert (result.expired, result.returned) == (1, 0), (
+                "the third refusal ends the loop rather than restarting it"
+            )
+            assert (
+                await _entry(factory, tenant_id, unreachable)
+            ).status == WaitlistEntryStatus.EXPIRED.value
+
+            # The point of the cap: the bride behind her gets the slot. This tick
+            # or the next — the cap is what makes either possible.
+            await _cascade(factory, later).run(tenant_id)
+            assert (
+                await _entry(factory, tenant_id, behind)
+            ).status == WaitlistEntryStatus.OFFERED.value
+        finally:
+            await _purge(factory, tenant_id)
+            await engine.dispose()
+
+    _run(check)
+
+
+def test_two_types_on_one_day_are_never_offered_the_same_instant(app_role_url: str) -> None:
+    """**"No broadcast" (#13) is a claim about INSTANTS, not about pairs.**
+
+    `waiting_pairs` de-duplicates on (day, appointment_type_id) and its NOT
+    EXISTS only excludes a pair already holding an offer — but `day_slots` is
+    type-AGNOSTIC, one grid per day for every type. Two pairs on one day
+    therefore walk the same grid, and without the held-instant read both take the
+    earliest free slot and text two brides about one seat. Whoever claims second
+    gets «התור הזה נתפס בינתיים», and per D4/F-O2 her entry stays `offered` for
+    the full window, so her queue does not advance either.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+
+    async def check() -> None:
+        try:
+            first_type = await _seed(factory, tenant_id)
+            second_type = await _second_type(factory, tenant_id)
+            rotem = await _join(factory, tenant_id, first_type)
+            noa = await _join(factory, tenant_id, second_type)
+
+            assert (await _cascade(factory, NOW).run(tenant_id)).offered == 2
+            assert {
+                (await _entry(factory, tenant_id, rotem)).offer_starts_at,
+                (await _entry(factory, tenant_id, noa)).offer_starts_at,
+            } == {_at(9, 0), _at(9, 30)}, "one seat, one offer — the second pair walks on"
+        finally:
+            await _purge(factory, tenant_id)
+            await engine.dispose()
+
+    _run(check)
+
+
+def test_a_two_seat_instant_carries_two_offers(app_role_url: str) -> None:
+    """The other half of the same read: held instants are COUNTED against
+    `Slot.remaining`, not skipped outright. Two seats at 09:00 are two seats, and
+    blanket-skipping would silently halve a boutique's throughput."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+
+    async def check() -> None:
+        try:
+            first_type = await _seed(factory, tenant_id, capacity=2)
+            second_type = await _second_type(factory, tenant_id)
+            rotem = await _join(factory, tenant_id, first_type)
+            noa = await _join(factory, tenant_id, second_type)
+
+            assert (await _cascade(factory, NOW).run(tenant_id)).offered == 2
+            assert (await _entry(factory, tenant_id, rotem)).offer_starts_at == _at(9, 0)
+            assert (await _entry(factory, tenant_id, noa)).offer_starts_at == _at(9, 0)
         finally:
             await _purge(factory, tenant_id)
             await engine.dispose()

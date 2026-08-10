@@ -113,14 +113,23 @@ class WaitlistOfferService:
         return now.astimezone(datetime.UTC)
 
     def _meter(self, tenant_id: uuid.UUID) -> None:
-        """Per TENANT, and all three verbs share the budget.
+        """Per TENANT, and **the LOOKUP only** — never the two mutations.
 
-        The token is 32 random bytes, so this is not guess protection — it is
-        scrape and cost protection: a token-shaped body is a free database read
-        on an anonymous route, and metering the lookup alone would leave `claim`
-        and `decline` as the same read behind a different path. Keyed on the
-        tenant rather than the token because a per-token key is a budget an
-        attacker mints for free.
+        The token is 32 random bytes, so this is not guess protection, it is
+        scrape protection: a token-shaped body is a free database read on an
+        anonymous route. Keyed on the tenant rather than the token because a
+        per-token key is a budget an attacker mints for free.
+
+        Metering `claim` and `decline` too looks like closing the same hole
+        through a different path, and it inverts two shipped rules. The limiter's
+        own docstring: "metering BEFORE the proof would let an unauthenticated
+        caller spend a tenant's whole budget with garbage tokens and lock out
+        every real customer". `ManageBookingTokenService` says the same for the
+        same shape — it meters `lookup` and `ics` and leaves the mutations alone,
+        "because a guess that reaches them still has to pass the same token
+        check". `max_attempts` lives on the LIMITER, so one budget covers the
+        whole boutique: sixty junk POSTs to /claim would otherwise deny every
+        bride her claim until the window rolled, killing live offers by timeout.
         """
         key = f"waitlist:offer:{tenant_id}"
         if self._lookup_limiter.is_blocked(key):
@@ -199,8 +208,10 @@ class WaitlistOfferService:
         `name` comes from the request because `waitlist_entries` has no name
         column and F22 deliberately gave it none — one field, one ask, no prefill
         from `customers`.
+
+        Unmetered — see `_meter`. The offer token is the proof, and it is
+        checked one statement below.
         """
-        self._meter(tenant_id)
         validate_booking_request(name=name, notes=None, dress_id=None, dress_size=None)
         now = self._now()
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -282,8 +293,9 @@ class WaitlistOfferService:
         state F22 already has for "off the list", and it is what takes her out of
         the active-unique predicate so she can rejoin later if she changes her
         mind. The cascade advances to the next bride on its next tick.
+
+        Unmetered, for `claim`'s reason.
         """
-        self._meter(tenant_id)
         now = self._now()
         async with tenant_session(self._session_factory, tenant_id) as session:
             entry = await self._resolve(session, token, tenant_id=tenant_id)

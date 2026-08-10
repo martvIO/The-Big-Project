@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -14,6 +14,18 @@ from app.models.waitlist_entry import WaitlistEntry
 # the shape that turns one bad night into a lock storm. Anything left over is
 # still due sixty seconds later.
 _EXPIRY_BATCH_SIZE = 200
+
+# The ISSUE half's ceiling, and it exists for `_EXPIRY_BATCH_SIZE`'s reason one
+# step further: every pair this returns costs the cascade a day-grid
+# materialization AND an `offer` UPDATE that row-locks its entry until the whole
+# tick commits. Uncapped, one phone on SLOT_WINDOW_MAX_DAYS+1 days times the
+# type count is ~1,200 grids inside a single transaction — a bride's claim POST
+# blocks behind it, and every later tenant's drain and sweep queue behind that.
+#
+# A LIMIT rotates fairly on its own and needs no cursor: a pair that gets an
+# offer drops out of the `NOT EXISTS` below for the whole window, so the next
+# tick's first N are different pairs.
+_ISSUE_BATCH_SIZE = 50
 
 # The two states the active-unique index predicate names — "on the list" as far
 # as the join's dedup and the manage list are concerned. Spelled once here so
@@ -109,10 +121,15 @@ class WaitlistEntriesRepository:
         service tells apart with `by_id`: gone/foreign (404) and already-terminal
         (the idempotent double-tap, answered with the row as-is).
 
-        The offer half of the row is cleared with the transition, for the same
-        reason `scheduled_messages` clears `manage_token` on every terminal
-        status: a live offer token outliving the entry it authorises would let a
-        bride claim a seat off a list she has been taken off.
+        **The deadline is cleared, the token hash is KEPT.** Clearing the hash
+        would be a belt on braces that were never loose — `claim` below guards
+        `status = 'offered'`, so a cancelled row cannot be claimed off a stale
+        link whatever its hash says — and it costs the product design row G:
+        "declined | decline 200, **or lookup on `cancelled`**". A bride who
+        re-opens her SMS link after declining, or after the owner cancelled her,
+        must read «ויתרת על ההצעה» and not «הקישור אינו תקין». The hash is a
+        sha256 of 32 random bytes the caller must already possess, so keeping it
+        hands a prober nothing.
 
         `synchronize_session=False`: the WHERE is not Python-evaluable and no
         caller reads an identity-mapped instance afterwards — the entity is
@@ -127,7 +144,6 @@ class WaitlistEntriesRepository:
             )
             .values(
                 status=WaitlistEntryStatus.CANCELLED.value,
-                offer_token_hash=None,
                 offer_expires_at=None,
             )
             .returning(WaitlistEntry.id)
@@ -268,8 +284,13 @@ class WaitlistEntriesRepository:
         with no lock. Zero rows means somebody or something else already moved
         the row; the SERVICE re-reads it to say which.
 
-        The token hash is cleared here so a second delivery of the same SMS
-        cannot even resolve the row — belt to the guard's braces.
+        **The token hash SURVIVES the transition**, for `cancel`'s reason. The
+        guard above is what stops a second delivery of the same SMS from booking
+        twice — it matches zero rows and the loser is TOLD `claimed` — and
+        clearing the hash on top of it only cost design row D: "already claimed
+        by you | lookup 200, `claimed`". A bride re-opening her SMS link half an
+        hour after booking has that thread as her only artefact, and it must
+        answer «התור הזה כבר נקבע.» rather than «הקישור אינו תקין».
         """
         stmt = (
             update(WaitlistEntry)
@@ -280,7 +301,7 @@ class WaitlistEntriesRepository:
                 WaitlistEntry.offer_expires_at > now,
                 WaitlistEntry.deleted_at.is_(None),
             )
-            .values(status=WaitlistEntryStatus.CLAIMED.value, offer_token_hash=None)
+            .values(status=WaitlistEntryStatus.CLAIMED.value)
             .returning(WaitlistEntry.id)
             .execution_options(synchronize_session=False)
         )
@@ -300,7 +321,9 @@ class WaitlistEntriesRepository:
 
         Ordered so two workers walk the pairs in the same sequence — not
         required for correctness (the guarded UPDATE arbitrates) but it makes a
-        log read the same twice.
+        log read the same twice. Capped at `_ISSUE_BATCH_SIZE`: see that
+        constant for why an uncapped walk is a tick that holds locks for
+        everybody else.
         """
         live_offer = aliased(WaitlistEntry, name="live_offer")
         offered = (
@@ -325,8 +348,41 @@ class WaitlistEntriesRepository:
             )
             .distinct()
             .order_by(WaitlistEntry.day, WaitlistEntry.appointment_type_id)
+            .limit(_ISSUE_BATCH_SIZE)
         )
         return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+    async def offered_instants(
+        self, session: AsyncSession, tenant_id: UUID, *, day: datetime.date
+    ) -> dict[datetime.datetime, int]:
+        """How many LIVE offers already name each instant on this day.
+
+        `waiting_pairs`' `NOT EXISTS` keys on `(day, appointment_type_id)`, but
+        `day_slots` is type-AGNOSTIC — one grid per day for every type — so two
+        pairs on the same day walk the same grid and, without this, pick the same
+        earliest free slot and text two brides about one seat (#13's "no
+        broadcast" is a claim about instants, not about pairs). The `offered`
+        rows are the record: `offer_starts_at` IS the instant held.
+
+        Counted rather than collected as a set, because a slot's capacity may be
+        more than one and two offers on a two-seat instant are two seats, not a
+        double-book. The caller compares against `Slot.remaining`.
+
+        No deadline predicate: the cascade expires due offers before it issues,
+        in the same transaction, so every surviving `offered` row is live.
+        """
+        stmt = (
+            select(WaitlistEntry.offer_starts_at, func.count())
+            .where(
+                WaitlistEntry.tenant_id == tenant_id,
+                WaitlistEntry.day == day,
+                WaitlistEntry.status == WaitlistEntryStatus.OFFERED.value,
+                WaitlistEntry.offer_starts_at.is_not(None),
+                WaitlistEntry.deleted_at.is_(None),
+            )
+            .group_by(WaitlistEntry.offer_starts_at)
+        )
+        return {row[0]: row[1] for row in (await session.execute(stmt)).all()}
 
     async def oldest_waiting(
         self,

@@ -395,7 +395,10 @@ def test_the_claim_guard_refuses_an_expired_offer_and_a_second_claim(app_role_ur
                 claimed = await REPO.by_id(session, tenant_id, live)
                 assert claimed is not None
                 assert claimed.status == WaitlistEntryStatus.CLAIMED.value
-                assert claimed.offer_token_hash is None
+                # The `status='offered'` guard above is what refused the second
+                # claim — the hash SURVIVES, so design row D (a lookup on a
+                # claimed entry) is reachable.
+                assert claimed.offer_token_hash is not None
         finally:
             await engine.dispose()
 
@@ -438,6 +441,69 @@ def test_waiting_pairs_skips_a_pair_that_already_holds_a_live_offer(app_role_url
     _run(check)
 
 
+def test_waiting_pairs_is_capped_so_one_tick_cannot_walk_the_whole_window(
+    app_role_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The expiry half has `_EXPIRY_BATCH_SIZE`; the issue half needs its own.
+
+    Every pair this returns costs the cascade a day-grid materialization AND an
+    `offer` UPDATE that row-locks its entry until the whole tick commits, all in
+    ONE transaction — so an uncapped walk (SLOT_WINDOW_MAX_DAYS+1 days times the
+    type count, which one verified phone can fill) blocks a bride's claim POST
+    and every later tenant's drain and sweep behind it.
+
+    Patched down rather than seeded past 50: the assertion is that the LIMIT is
+    applied, and 51 rows would test Postgres.
+    """
+    monkeypatch.setattr("app.db.repositories.waitlist_entries._ISSUE_BATCH_SIZE", 1)
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+
+    async def check() -> None:
+        try:
+            await _insert(factory, tenant_id, type_id=uuid.uuid4(), phone="+972501111111")
+            await _insert(factory, tenant_id, type_id=uuid.uuid4(), phone="+972502222222")
+            async with tenant_session(factory, tenant_id) as session:
+                assert len(await REPO.waiting_pairs(session, tenant_id, from_day=DAY)) == 1
+        finally:
+            await engine.dispose()
+
+    _run(check)
+
+
+def test_offered_instants_counts_the_live_offers_on_one_day(app_role_url: str) -> None:
+    """The cascade's cross-TYPE guard. `waiting_pairs` keys on (day, type) but
+    `day_slots` is type-agnostic, so the only record that an instant is already
+    spoken for is the live `offered` rows themselves — counted, not collected,
+    because a two-seat instant can carry two offers without being a broadcast."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+
+    async def check() -> None:
+        try:
+            first = await _insert(factory, tenant_id, type_id=uuid.uuid4(), phone="+972501111111")
+            second = await _insert(factory, tenant_id, type_id=uuid.uuid4(), phone="+972502222222")
+            waiting = await _insert(factory, tenant_id, type_id=uuid.uuid4(), phone="+972503333333")
+            async with tenant_session(factory, tenant_id) as session:
+                assert await REPO.offered_instants(session, tenant_id, day=DAY) == {}
+            await _offer(factory, tenant_id, first, token_hash="hash-first")
+            await _offer(factory, tenant_id, second, token_hash="hash-second")
+            async with tenant_session(factory, tenant_id) as session:
+                assert await REPO.offered_instants(session, tenant_id, day=DAY) == {SLOT: 2}
+                # A `waiting` row holds nothing, and another day is another grid.
+                assert await REPO.by_id(session, tenant_id, waiting) is not None
+                assert (
+                    await REPO.offered_instants(
+                        session, tenant_id, day=DAY + datetime.timedelta(days=1)
+                    )
+                    == {}
+                )
+        finally:
+            await engine.dispose()
+
+    _run(check)
+
+
 def test_oldest_waiting_is_fifo_and_ignores_the_offered_row(app_role_url: str) -> None:
     """#14, by join time. The already-offered bride is not the answer twice —
     she has left `waiting`, so the next tick after her offer resolves picks the
@@ -469,12 +535,14 @@ def test_oldest_waiting_is_fifo_and_ignores_the_offered_row(app_role_url: str) -
     _run(check)
 
 
-def test_the_owner_cancel_now_also_takes_an_offered_entry_and_clears_its_token(
+def test_the_owner_cancel_now_also_takes_an_offered_entry_and_clears_its_deadline(
     app_role_url: str,
 ) -> None:
-    """D8's widened guard, at the repository. A live offer token outliving the
-    entry it authorises would let a bride claim a seat off a list the owner has
-    just taken her off — so the transition clears it in the same statement."""
+    """D8's widened guard, at the repository. The deadline goes; the token hash
+    stays. `claim` guards `status='offered'`, so a cancelled row cannot be
+    claimed off a stale link whatever its hash says, and keeping the hash is what
+    makes design row G — a LOOKUP on `cancelled` — answer «ויתרת על ההצעה»
+    instead of «הקישור אינו תקין»."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
 
@@ -486,7 +554,7 @@ def test_the_owner_cancel_now_also_takes_an_offered_entry_and_clears_its_token(
                 cancelled = await REPO.cancel(session, tenant_id, entry_id)
                 assert cancelled is not None
                 assert cancelled.status == WaitlistEntryStatus.CANCELLED.value
-                assert cancelled.offer_token_hash is None
+                assert cancelled.offer_token_hash == "hash-offered"
                 assert cancelled.offer_expires_at is None
         finally:
             await engine.dispose()

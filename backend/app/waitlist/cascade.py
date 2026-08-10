@@ -57,6 +57,22 @@ logger = logging.getLogger("app")
 
 OFFER_KIND = ScheduledMessageKind.WAITLIST_OFFER.value
 
+# How many refused offer texts an entry gets before D7's return-to-`waiting`
+# stops applying to it.
+#
+# D7 reasoned about a provider-wide OUTAGE, which self-heals on the first tick
+# after the adapter recovers. It does not cover a permanently unreachable
+# RECIPIENT — a number that replied STOP — for whom the loop offer -> failed ->
+# waiting never terminates, and who blocks her whole (day, type) queue for the
+# full window on every cycle because `waiting_pairs` excludes a pair holding a
+# live offer. Three is enough windows (six hours at the shipped two) for a real
+# outage to recover, and it bounds the undeliverable case at three.
+#
+# She lands in `expired`, not `cancelled`: `expired` is the terminal the manage
+# console already renders, it takes her out of the active-unique predicate so she
+# can rejoin, and the queue behind her advances on the next tick.
+_MAX_OFFER_SEND_FAILURES = 3
+
 
 @dataclasses.dataclass(frozen=True)
 class CascadeResult:
@@ -137,21 +153,42 @@ class WaitlistCascade:
         # state is single digits; batch it if F29's scale pass ever measures it.
         sent: list[uuid.UUID] = []
         unsent: list[uuid.UUID] = []
+        undeliverable: list[uuid.UUID] = []
         for entry in due:
             message = await self._scheduled.latest_for_entry(
                 session, tenant_id, waitlist_entry_id=entry.id, kind=OFFER_KIND
             )
-            reached_sent = (
-                message is not None and message.status == ScheduledMessageStatus.SENT.value
+            if message is not None and message.status == ScheduledMessageStatus.SENT.value:
+                sent.append(entry.id)
+                continue
+            # D7's rule, BOUNDED. Without the cap an entry the provider will
+            # never accept cycles back to the head of its queue forever and
+            # freezes every bride behind her out of that (day, type) for a full
+            # window per cycle — see `_MAX_OFFER_SEND_FAILURES`.
+            failures = await self._scheduled.count_failed_for_entry(
+                session, tenant_id, waitlist_entry_id=entry.id, kind=OFFER_KIND
             )
-            (sent if reached_sent else unsent).append(entry.id)
+            (undeliverable if failures >= _MAX_OFFER_SEND_FAILURES else unsent).append(entry.id)
 
         expired = await self._entries.close_offer(
-            session, tenant_id, sent, status=WaitlistEntryStatus.EXPIRED.value
+            session, tenant_id, sent + undeliverable, status=WaitlistEntryStatus.EXPIRED.value
         )
         returned = await self._entries.close_offer(
             session, tenant_id, unsent, status=WaitlistEntryStatus.WAITING.value
         )
+        moved = set(expired)
+        for entry_id in undeliverable:
+            # Only the rows that really moved, exactly as the `returned` loop
+            # below only sees `close_offer`'s RETURNING. Louder than that one,
+            # because this is a bride dropped off her queue rather than one put
+            # back on it.
+            if entry_id in moved:
+                logger.warning(
+                    "waitlist offers for entry %s failed %d times — "
+                    "expiring it so the queue advances",
+                    entry_id,
+                    _MAX_OFFER_SEND_FAILURES,
+                )
         for entry_id in expired + returned:
             # An entry leaving `offered` must not leave a text about that offer
             # queued behind it. For the `expired` half this is usually a no-op
@@ -211,11 +248,23 @@ class WaitlistCascade:
             exceptions=self._exceptions,
             bookings=self._bookings,
         )
+        # `day_slots` is type-AGNOSTIC — one grid per day for every appointment
+        # type — while `waiting_pairs` keys on (day, TYPE). Two pairs on one day
+        # therefore walk the same grid, and without this read they both pick the
+        # same earliest free slot and text two brides about one seat. Live
+        # `offered` rows are the record of what is already spoken for; the
+        # cascade's own UPDATE lands in this transaction, so the same read covers
+        # the second pair in THIS tick and every pair in a later one.
+        held = await self._entries.offered_instants(session, tenant_id, day=day)
         # ⚠ The lead rule lives in ONE place — `offer_expiry` returning None —
         # and the walk is what makes that possible. Taking the earliest slot and
         # THEN testing the lead would drop a whole day when only its opening hour
         # is too close, silently losing every later slot on it.
         for slot in slots:
+            # Counted against `remaining`, not skipped outright: a two-seat
+            # instant can carry two live offers without either being a broadcast.
+            if slot.remaining <= held.get(slot.starts_at, 0):
+                continue
             expires_at = offer_expiry(
                 now, slot.starts_at, window=self._window, min_lead=self._min_lead
             )

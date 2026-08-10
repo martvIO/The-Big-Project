@@ -544,7 +544,11 @@ async def test_cancelling_an_offered_entry_kills_its_live_offer_too(app_role_url
                 kind=ScheduledMessageKind.WAITLIST_OFFER.value,
             )
         assert cancelled is not None
-        assert cancelled.offer_token_hash is None, "a live token must not outlive its entry"
+        # The hash outlives the entry on purpose: `claim`'s `status='offered'`
+        # guard is what stops a stale link booking a seat, and design row G is a
+        # LOOKUP on `cancelled`.
+        assert cancelled.offer_token_hash is not None
+        assert cancelled.offer_expires_at is None, "the deadline does not outlive the entry"
         assert message is not None
         assert message.status == ScheduledMessageStatus.CANCELLED.value
         assert message.manage_token is None

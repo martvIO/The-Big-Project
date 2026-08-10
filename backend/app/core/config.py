@@ -177,8 +177,15 @@ class Settings(BaseSettings):
     # never a second key on the booking-lookup limiter: max_attempts lives on the
     # LIMITER, so a shared instance is one shared ceiling and the tighter budget
     # could never trip first (.memory/limiter-max-is-per-instance).
+    #
+    # Sized EXACTLY like `booking_lookup_*` below, because it is the same risk on
+    # the same shape: a per-tenant ceiling on a public read that answers a secret.
+    # It gates the LOOKUP only (see WaitlistOfferService._meter), so the window
+    # is the one number a throttled bride feels — a 12x longer one than the
+    # booking link's would lock a real rush out of the page for an hour while
+    # buying nothing against a 32-random-byte token space.
     waitlist_offer_lookup_max_per_window: int = 60
-    waitlist_offer_lookup_window_seconds: int = 3600
+    waitlist_offer_lookup_window_seconds: int = 300
     # F24's portal session. THIRTY DAYS, deliberately far longer than the staff
     # `session_ttl_seconds` above (12h) and its own setting rather than a reuse:
     # every customer re-login costs the tenant a real SMS, so a short TTL here is

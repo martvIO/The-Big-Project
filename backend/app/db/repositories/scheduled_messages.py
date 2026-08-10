@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.constants import ScheduledMessageStatus
@@ -111,6 +111,33 @@ class ScheduledMessagesRepository:
             .limit(1)
         )
         return (await session.execute(stmt)).scalars().first()
+
+    async def count_failed_for_entry(
+        self, session: AsyncSession, tenant_id: UUID, *, waitlist_entry_id: UUID, kind: str
+    ) -> int:
+        """How many of this entry's offer texts the provider has REFUSED.
+
+        D7 sends an offer whose SMS never reached `sent` back to `waiting`, and
+        for a provider outage that is right and self-healing. For a permanently
+        unreachable recipient — a number that replied STOP, a disconnected line —
+        it is an unbounded loop: offer, fail, wait, offer, once per window
+        forever, and because `waiting_pairs` excludes any pair holding a live
+        offer, every bride behind her in that queue is frozen out for the whole
+        window each cycle.
+
+        These rows are the attempt counter the entry does not carry: `_offer_one`
+        inserts exactly one per offer, and a `failed` one means the adapter was
+        called and said no. A `sent` message never leaves the entry `offered`
+        long enough to accumulate, so a nonzero count here really is refusals.
+        """
+        stmt = select(func.count()).where(
+            ScheduledMessage.tenant_id == tenant_id,
+            ScheduledMessage.waitlist_entry_id == waitlist_entry_id,
+            ScheduledMessage.kind == kind,
+            ScheduledMessage.status == ScheduledMessageStatus.FAILED.value,
+            ScheduledMessage.deleted_at.is_(None),
+        )
+        return (await session.execute(stmt)).scalar_one()
 
     async def cancel_pending_for_entry(
         self, session: AsyncSession, tenant_id: UUID, *, waitlist_entry_id: UUID, kind: str

@@ -55,6 +55,7 @@ from app.waitlist.offer_service import (
     OfferNotFoundError,
     WaitlistOfferService,
 )
+from app.waitlist.validation import WaitlistThrottledError
 
 pytestmark = pytest.mark.db
 
@@ -274,9 +275,11 @@ def test_the_happy_claim_books_and_returns_a_manage_token(app_role_url: str) -> 
 
             entry = await _entry(factory, tenant_id, entry_id)
             assert entry.status == WaitlistEntryStatus.CLAIMED.value
-            # Cleared with the transition: a second delivery of the same SMS
-            # cannot even resolve the row.
-            assert entry.offer_token_hash is None
+            # KEPT, so design row D is reachable: a bride re-opening her SMS
+            # link after booking reads «התור הזה כבר נקבע.», not «הקישור אינו
+            # תקין». The guarded UPDATE, not the missing hash, is what stops a
+            # second delivery booking twice.
+            assert entry.offer_token_hash is not None
             async with tenant_session(factory, tenant_id) as session:
                 message = await SCHEDULED.latest_for_entry(
                     session, tenant_id, waitlist_entry_id=entry_id, kind=KIND
@@ -320,9 +323,10 @@ def test_a_claim_on_an_expired_offer_is_refused_and_books_nothing(app_role_url: 
 
 
 def test_a_second_claim_on_a_claimed_entry_is_refused(app_role_url: str) -> None:
-    """The sequential shape of race 2. The token is cleared by the first claim,
-    so the second cannot even resolve the row — a 404, not a 409, and that is the
-    stronger answer of the two."""
+    """The sequential shape of race 2, and D4 step 2's answer verbatim: the
+    guarded UPDATE matches nothing and the re-read says `claimed`. A 409, not a
+    404 — the token still resolves, because design row D is a LOOKUP on a
+    claimed entry."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
 
@@ -332,10 +336,107 @@ def test_a_second_claim_on_a_claimed_entry_is_refused(app_role_url: str) -> None
             _, token = await _armed(factory, tenant_id, type_id)
             await _offers(factory).claim(tenant_id, token=token, name="רותם לוי", terms_version=1)
 
-            with pytest.raises(OfferNotFoundError):
+            with pytest.raises(OfferNotClaimableError) as caught:
                 await _offers(factory).claim(
                     tenant_id, token=token, name="רותם לוי", terms_version=1
                 )
+            assert caught.value.state == WaitlistEntryStatus.CLAIMED.value
+        finally:
+            await _purge(factory, tenant_id)
+            await engine.dispose()
+
+    _run(check)
+
+
+def test_the_link_still_answers_after_the_claim_and_after_the_decline(
+    app_role_url: str,
+) -> None:
+    """Design rows D and G. Her SMS thread is the ONLY artefact she has, and she
+    re-opens it — after booking, and after declining. Both must answer the state
+    («התור הזה כבר נקבע.» / «ויתרת על ההצעה»), never «הקישור אינו תקין».
+
+    This is why `claim` and `cancel` keep `offer_token_hash`: clearing it made
+    both of these a 404 and made `offer.claimedReturning` a key no server could
+    ever produce.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+
+    async def check() -> None:
+        try:
+            type_id = await _seed(factory, tenant_id)
+            _, claimed_token = await _armed(factory, tenant_id, type_id)
+            await _offers(factory).claim(
+                tenant_id, token=claimed_token, name="רותם לוי", terms_version=1
+            )
+            view = await _offers(factory).lookup(tenant_id, token=claimed_token)
+            assert view.status == WaitlistEntryStatus.CLAIMED.value
+
+            _, declined_token = await _armed(factory, tenant_id, type_id)
+            await _offers(factory).decline(tenant_id, token=declined_token)
+            view = await _offers(factory).lookup(tenant_id, token=declined_token)
+            assert view.status == WaitlistEntryStatus.CANCELLED.value
+        finally:
+            await _purge(factory, tenant_id)
+            await engine.dispose()
+
+    _run(check)
+
+
+def test_the_lookup_budget_never_denies_a_bride_her_claim(app_role_url: str) -> None:
+    """The BLOCKER: `_meter` is the lookup's, not the claim's.
+
+    An anonymous client can exhaust a tenant's whole anti-scrape budget with
+    junk tokens — `max_attempts` lives on the LIMITER, so it is one budget for
+    the boutique. If `claim` were metered too, that would deny every bride with
+    a live offer until the window rolled, and the cascade would then expire her
+    offer and hand her slot back to the pool. Sixty requests, one boutique, one
+    hour, repeatable.
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    # One event, so the first junk lookup exhausts it.
+    tight = FixedWindowRateLimiter(max_attempts=1, window_seconds=3600, clock=lambda: 0.0)
+    offers = WaitlistOfferService(factory, lookup_limiter=tight, clock=lambda: NOW)
+
+    async def check() -> None:
+        try:
+            type_id = await _seed(factory, tenant_id)
+            _, token = await _armed(factory, tenant_id, type_id)
+
+            with pytest.raises(OfferNotFoundError):
+                await offers.lookup(tenant_id, token="0" * 43)
+            with pytest.raises(WaitlistThrottledError):
+                await offers.lookup(tenant_id, token=token)
+
+            claim = await offers.claim(tenant_id, token=token, name="רותם לוי", terms_version=1)
+            assert claim.manage_token is not None
+        finally:
+            await _purge(factory, tenant_id)
+            await engine.dispose()
+
+    _run(check)
+
+
+def test_the_lookup_budget_never_denies_a_bride_her_decline(app_role_url: str) -> None:
+    """`claim`'s twin — the decline is a mutation behind the same token check."""
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    tight = FixedWindowRateLimiter(max_attempts=1, window_seconds=3600, clock=lambda: 0.0)
+    offers = WaitlistOfferService(factory, lookup_limiter=tight, clock=lambda: NOW)
+
+    async def check() -> None:
+        try:
+            type_id = await _seed(factory, tenant_id)
+            _, token = await _armed(factory, tenant_id, type_id)
+
+            with pytest.raises(OfferNotFoundError):
+                await offers.lookup(tenant_id, token="0" * 43)
+            with pytest.raises(WaitlistThrottledError):
+                await offers.lookup(tenant_id, token=token)
+
+            view = await offers.decline(tenant_id, token=token)
+            assert view.status == WaitlistEntryStatus.CANCELLED.value
         finally:
             await _purge(factory, tenant_id)
             await engine.dispose()
@@ -371,9 +472,9 @@ def test_stale_terms_refuse_the_claim_and_move_no_row(app_role_url: str) -> None
 
 def test_decline_cancels_the_entry_and_its_pending_message(app_role_url: str) -> None:
     """«ויתור» takes her off the list for that day — F22's `cancelled`, not a
-    sixth state and not a skip. Two writes in one transaction, because a live
-    token or a queued text outliving the entry it belongs to is a claim on a seat
-    she has said no to."""
+    sixth state and not a skip. Two writes in one transaction, because a queued
+    text outliving the entry it belongs to is an offer for a seat she has said
+    no to. The token hash stays: design row G is a LOOKUP on `cancelled`."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
 
@@ -387,7 +488,7 @@ def test_decline_cancels_the_entry_and_its_pending_message(app_role_url: str) ->
 
             entry = await _entry(factory, tenant_id, entry_id)
             assert entry.status == WaitlistEntryStatus.CANCELLED.value
-            assert entry.offer_token_hash is None
+            assert entry.offer_token_hash is not None
             async with tenant_session(factory, tenant_id) as session:
                 message = await SCHEDULED.latest_for_entry(
                     session, tenant_id, waitlist_entry_id=entry_id, kind=KIND
