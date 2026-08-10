@@ -137,6 +137,7 @@ from app.payments.webhook_router import router as webhook_router
 from app.platform.auth import OperatorAuthService
 from app.platform.auth_router import router as platform_auth_router
 from app.platform.router import ConsoleCommandRefused
+from app.platform.router import invites_router as platform_invites_router
 from app.platform.router import router as platform_router
 from app.platform.service import ProvisioningService
 from app.portal.router import router as portal_router
@@ -1674,6 +1675,9 @@ def create_app(resolver: TenantResolver | None = None) -> FastAPI:
     app.include_router(platform_auth_router)
     # The console's four lifecycle routes, on the same fenced prefix.
     app.include_router(platform_router)
+    # F26's three operator invite routes. Its own APIRouter only because the
+    # prefix differs; the operator gate is declared the same way, on the router.
+    app.include_router(platform_invites_router)
     app.include_router(boutique_router)
     # After the boutique router: both mount prefix="/manage", so a duplicated
     # path would silently shadow. The ROUTES table in test_catalog_api.py is

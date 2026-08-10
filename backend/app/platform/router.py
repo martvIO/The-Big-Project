@@ -18,15 +18,21 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
+from app.core.config import get_settings
 from app.platform.auth import OperatorContext, get_current_operator
 from app.platform.schemas import (
+    CreateInviteRequest,
+    InviteCreatedResponse,
+    InviteListResponse,
+    InviteRow,
     ProvisionRequest,
     ResetOwnerPasswordRequest,
+    RevokeInviteRequest,
     SuspendRequest,
     TenantListResponse,
     TenantRow,
 )
-from app.platform.service import CommandResult, ProvisioningService
+from app.platform.service import CommandResult, InviteSummary, ProvisioningService
 from app.schemas import OkResponse
 
 # Reachable ONLY on the console host and ONLY with a live operator session: the
@@ -51,6 +57,15 @@ _REFUSAL_STATUS = {
     "slug_taken": 409,
     "tenant_not_found": 404,
     "owner_not_found": 404,
+    # F26. `invalid_invite` is ONE code for four states — unknown, expired,
+    # already redeemed, revoked — at 404. A distinct "already redeemed" would
+    # tell an unauthenticated caller that a code was real, which is exactly the
+    # anti-enumeration reading `TENANT_NOT_FOUND` already carries (spec D5).
+    "invalid_invite": 404,
+    # The operator-side twin, and deliberately NOT the same code: the console is
+    # authenticated and revoking an id that is already gone is a stale screen,
+    # not an enumeration attempt.
+    "invite_not_found": 404,
 }
 
 
@@ -145,3 +160,81 @@ async def list_tenants(service: ServiceDep, operator: OperatorDep) -> TenantList
             for row in rows
         ]
     )
+
+
+# --- F26 invites -------------------------------------------------------------
+#
+# A SECOND router rather than more paths on the one above, for one reason: the
+# prefix differs (`/platform/invites` vs `/platform/tenants`). The dependency is
+# the same and is declared the same way — on the router, so a route added here
+# later cannot be born ungated. The anonymous join pair lives in its OWN module
+# (`join_router.py`, spec D6) precisely so that no route can acquire or lose an
+# operator context by somebody editing a shared dependency list.
+invites_router = APIRouter(prefix="/platform/invites", dependencies=[Depends(get_current_operator)])
+
+
+def _invite_row(summary: InviteSummary) -> InviteRow:
+    return InviteRow(
+        id=summary.id,
+        slug=summary.slug,
+        name=summary.name,
+        owner_email=summary.owner_email,
+        created_by=summary.created_by,
+        expires_at=summary.expires_at,
+        redeemed_at=summary.redeemed_at,
+        created_at=summary.created_at,
+    )
+
+
+@invites_router.post("")
+async def create_invite(
+    body: CreateInviteRequest, service: ServiceDep, operator: OperatorDep
+) -> InviteCreatedResponse:
+    """⚠ THE ONE RESPONSE IN THIS PRODUCT THAT CARRIES A LIVE INVITE CODE.
+
+    It is built here from the service's return value and never touched again:
+    no logger, no audit `details`, no error message, no second read (spec R-C).
+    The console shows it once in a panel with no dismissal vector, and after
+    that nothing anywhere can produce it.
+    """
+    result = await service.create_invite(
+        slug=body.slug,
+        name=body.name,
+        owner_email=body.owner_email,
+        operator=operator.email,
+    )
+    if not result.ok or result.code is None or result.invite is None:
+        raise ConsoleCommandRefused(result.message)
+    settings = get_settings()
+    return InviteCreatedResponse(
+        code=result.code,
+        # Always https and the configured base domain, `manage_link`'s rule: the
+        # operator copies this and hands it over, so it has to be the address the
+        # owner will actually open rather than whatever host the console is being
+        # driven from.
+        join_url=(
+            f"https://{settings.platform_host_label}.{settings.base_domain}"
+            f"/platform/join?code={result.code}"
+        ),
+        invite=_invite_row(result.invite),
+    )
+
+
+@invites_router.get("")
+async def list_invites(service: ServiceDep, operator: OperatorDep) -> InviteListResponse:
+    """A GET that writes NO row, unlike `GET /platform/tenants` one file above.
+
+    The asymmetry is the point and it is argued in the service: that one is a
+    full cross-tenant enumeration of every boutique trading on the platform
+    (F21 D6); this lists authorisations the operator population issued itself and
+    names no boutique that exists. Registered in `test_audit_coverage.py` so the
+    difference is reviewable rather than silent.
+    """
+    return InviteListResponse(invites=[_invite_row(row) for row in await service.list_invites()])
+
+
+@invites_router.post("/revoke")
+async def revoke_invite(
+    body: RevokeInviteRequest, service: ServiceDep, operator: OperatorDep
+) -> OkResponse:
+    return _ok(await service.revoke_invite(invite_id=body.id, operator=operator.email))

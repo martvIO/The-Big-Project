@@ -347,3 +347,120 @@ def test_row_actions_against_a_boutique_that_is_not_there_are_404s(
         assert wrong_owner.json()["error"]["code"] == "owner_not_found"
     finally:
         client.__exit__(None, None, None)
+
+
+# --- F26: the operator's invite surface, over HTTP ---------------------------
+
+
+def test_the_invite_lifecycle_over_http_attributes_every_row_to_the_signed_in_operator(
+    app: FastAPI, factory: async_sessionmaker, migrated_db: str
+) -> None:
+    """create → list → revoke as an AUTHENTICATED operator, and the assertion
+    that matters is the `operator` column: the CLI wrote whatever `--operator`
+    said, and the console writes an identity somebody had to authenticate as.
+
+    The list response is checked for the ABSENCE of the code, not just for the
+    row: the one-time panel is the only place a code is ever rendered, and a
+    `code` field leaking onto the table would re-render every live credential on
+    every console mount (design A2 rule 7)."""
+    operator_email = _operator_email()
+    client = _signed_in(app, factory, operator_email)
+    try:
+        slug = _slug()
+        created = client.post(
+            "/platform/invites",
+            json={"slug": slug, "name": "Bella Bridal", "owner_email": "owner@bella.example"},
+        )
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["code"]
+        assert body["join_url"].endswith(f"/platform/join?code={body['code']}")
+        assert body["join_url"].startswith("https://admin.")
+        invite_id = body["invite"]["id"]
+        assert "code" not in body["invite"]
+        assert "code_hash" not in body["invite"]
+
+        listed = client.get("/platform/invites")
+        assert listed.status_code == 200, listed.text
+        rows = listed.json()["invites"]
+        row = next(r for r in rows if r["id"] == invite_id)
+        assert row["slug"] == slug
+        assert row["created_by"] == operator_email
+        assert row["redeemed_at"] is None
+        assert "code" not in row and "code_hash" not in row
+        # …and nowhere in the whole payload either, not just in the named row.
+        assert body["code"] not in listed.text
+
+        revoked = client.post("/platform/invites/revoke", json={"id": invite_id})
+        assert revoked.status_code == 200, revoked.text
+        assert invite_id not in {r["id"] for r in client.get("/platform/invites").json()["invites"]}
+
+        again = client.post("/platform/invites/revoke", json={"id": invite_id})
+        assert again.status_code == 404
+        assert again.json()["error"]["code"] == "invite_not_found"
+
+        rows_audited = _audit(migrated_db, operator_email)
+        assert [action for action, _ in rows_audited] == [
+            "operator_login",
+            "invite_created",
+            "invite_revoked",
+        ]
+        assert body["code"] not in repr(rows_audited)
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_creating_an_invite_for_a_taken_slug_is_a_409_that_commits_its_failure_audit(
+    app: FastAPI, factory: async_sessionmaker, migrated_db: str
+) -> None:
+    operator_email = _operator_email()
+    client = _signed_in(app, factory, operator_email)
+    try:
+        slug = _slug()
+        assert (
+            client.post(
+                "/platform/tenants/provision",
+                json={
+                    "slug": slug,
+                    "name": "Bella",
+                    "owner_email": f"owner-{uuid.uuid4().hex[:8]}@bella.example",
+                    "owner_password": OWNER_PASSWORD,
+                },
+            ).status_code
+            == 200
+        )
+        refused = client.post(
+            "/platform/invites",
+            json={"slug": slug, "name": "Bella Bridal", "owner_email": "owner@bella.example"},
+        )
+        assert refused.status_code == 409
+        assert refused.json()["error"]["code"] == "slug_taken"
+
+        actions = [action for action, _ in _audit(migrated_db, operator_email)]
+        assert actions == [
+            "operator_login",
+            "tenant_provisioned",
+            "invite_create_failed",
+        ]
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_the_invite_routes_are_closed_without_an_operator_session(app: FastAPI) -> None:
+    """The router-level gate, over the wire. `test_staff_role_gating` proves it
+    structurally for every /platform route; this proves the three that matter
+    answer 401 rather than, say, a 422 from body validation running first."""
+    client = TestClient(app, base_url=CONSOLE)
+    with client:
+        assert client.get("/platform/invites").status_code == 401
+        assert (
+            client.post(
+                "/platform/invites",
+                json={"slug": _slug(), "name": "X", "owner_email": "o@x.example"},
+            ).status_code
+            == 401
+        )
+        assert (
+            client.post("/platform/invites/revoke", json={"id": str(uuid.uuid4())}).status_code
+            == 401
+        )
