@@ -332,10 +332,11 @@ def test_due_offers_returns_only_the_expired_ones_and_close_offer_moves_them(
                 expired = await REPO.by_id(session, tenant_id, due)
                 assert expired is not None
                 assert expired.status == WaitlistEntryStatus.EXPIRED.value
-                assert expired.offer_token_hash is None
                 assert expired.offer_expires_at is None
-                # `offer_starts_at` SURVIVES the transition deliberately — the
-                # manage column can still say what was offered.
+                # Both SURVIVE the transition deliberately: the token so her SMS
+                # link still answers design row E (`expired`) instead of the
+                # invalid state, and the instant so that answer can name the slot.
+                assert expired.offer_token_hash == "hash-due"
                 assert expired.offer_starts_at == SLOT
                 still_live = await REPO.by_id(session, tenant_id, live)
                 assert still_live is not None
@@ -361,6 +362,16 @@ def test_close_offer_can_return_an_unsent_offer_to_waiting(app_role_url: str) ->
                 await REPO.close_offer(
                     session, tenant_id, [entry_id], status=WaitlistEntryStatus.WAITING.value
                 )
+            async with tenant_session(factory, tenant_id) as session:
+                returned = await REPO.by_id(session, tenant_id, entry_id)
+                assert returned is not None
+                assert returned.status == WaitlistEntryStatus.WAITING.value
+                # NOTHING about the dead offer survives on a row that holds
+                # nothing: the manage column would otherwise render a phantom
+                # hold, and the undelivered token has no page state to answer.
+                assert returned.offer_token_hash is None
+                assert returned.offer_expires_at is None
+                assert returned.offer_starts_at is None
             assert await _offer(factory, tenant_id, entry_id, token_hash="hash-retry")
         finally:
             await engine.dispose()

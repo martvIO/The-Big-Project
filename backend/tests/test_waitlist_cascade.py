@@ -410,8 +410,10 @@ def test_quiet_hours_issue_nothing(app_role_url: str) -> None:
 
 def test_a_sent_offer_that_runs_out_expires(app_role_url: str) -> None:
     """D7's ordinary case: the SMS reached `sent`, she had her window, the offer
-    dies and the slot goes back to the pool. `offer_starts_at` deliberately
-    survives so manage can still say what was offered."""
+    dies and the slot goes back to the pool. `offer_starts_at` AND the token hash
+    both survive: her SMS link must keep answering design row E («תוקף ההצעה הזו
+    פג» + the rebook CTA) rather than «הקישור אינו תקין», and expiry is the most
+    common way an offer ends."""
     engine, factory = _factory(app_role_url)
     tenant_id = uuid.uuid4()
     later = NOW + datetime.timedelta(seconds=WINDOW_SECONDS)
@@ -429,9 +431,11 @@ def test_a_sent_offer_that_runs_out_expires(app_role_url: str) -> None:
 
             entry = await _entry(factory, tenant_id, entry_id)
             assert entry.status == WaitlistEntryStatus.EXPIRED.value
-            assert entry.offer_token_hash is None
             assert entry.offer_expires_at is None
             assert entry.offer_starts_at == _at(9, 0)
+            assert entry.offer_token_hash is not None, (
+                "row E is a LOOKUP on an expired entry — clearing the hash 404s her link"
+            )
         finally:
             await _purge(factory, tenant_id)
             await engine.dispose()
@@ -465,6 +469,12 @@ def test_an_offer_whose_sms_never_left_returns_to_waiting(app_role_url: str) -> 
             entry = await _entry(factory, tenant_id, entry_id)
             assert entry.status == WaitlistEntryStatus.WAITING.value
             assert entry.offer_token_hash is None
+            assert entry.offer_expires_at is None
+            # She holds NOTHING now. Design §4's offer column renders whatever
+            # `offer_starts_at` says, so a survivor shows the owner a hold on a
+            # slot that is free and directly bookable — «ממתינה» beside an
+            # offered instant, with no «בתוקף עד» line under it.
+            assert entry.offer_starts_at is None
             message = await _message(factory, tenant_id, entry_id)
             assert message.status == ScheduledMessageStatus.CANCELLED.value
             assert message.manage_token is None, "a cancelled row keeps no live token"

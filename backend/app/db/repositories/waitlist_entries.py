@@ -232,15 +232,34 @@ class WaitlistEntriesRepository:
         guarded on `status = 'offered'`, answer read off RETURNING.
 
         `status` is the destination — `expired` for an offer that was really
-        sent, `waiting` for one whose SMS never left (D7). Both clear the token
-        and the deadline; `offer_starts_at` deliberately survives so the manage
-        column can still say what was offered until the next tick overwrites it.
+        sent, `waiting` for one whose SMS never left (D7) — and the two clear
+        DIFFERENT columns. Both clear the deadline.
+
+        **`expired` KEEPS the token hash**, for `claim` and `cancel`'s reason and
+        because expiry is the most common end of an offer. Her SMS thread is the
+        only artefact she has: clearing the hash made `/w/{token}` 404 into
+        «הקישור אינו תקין» from the first sweep after the deadline — about a
+        minute — so design row E («תוקף ההצעה הזו פג» + the rebook CTA) was
+        reachable only in `_view`'s pre-sweep projection and never in production.
+        Nothing is loosened by keeping it: `claim` guards `status = 'offered'`,
+        so an expired row cannot be claimed off a stale link.
+
+        **`waiting` clears everything the dead offer wrote**, `offer_starts_at`
+        included. The row holds no instant any more, and design §4's offer column
+        renders whatever that column says — a survivor is a phantom hold on a
+        slot the owner should be booking directly. Her token goes too: it was
+        never delivered (that IS D7's condition) and a `waiting` row has no
+        designed page state. The next tick writes both afresh when it re-offers.
 
         Empty input short-circuits: an UPDATE with `IN ()` is legal but pointless
         and the steady state is empty.
         """
         if not entry_ids:
             return []
+        values: dict[str, str | None] = {"status": status, "offer_expires_at": None}
+        if status == WaitlistEntryStatus.WAITING.value:
+            values["offer_token_hash"] = None
+            values["offer_starts_at"] = None
         stmt = (
             update(WaitlistEntry)
             .where(
@@ -249,7 +268,7 @@ class WaitlistEntriesRepository:
                 WaitlistEntry.status == WaitlistEntryStatus.OFFERED.value,
                 WaitlistEntry.deleted_at.is_(None),
             )
-            .values(status=status, offer_token_hash=None, offer_expires_at=None)
+            .values(**values)
             .returning(WaitlistEntry.id)
             .execution_options(synchronize_session=False)
         )

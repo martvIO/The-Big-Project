@@ -383,6 +383,52 @@ def test_the_link_still_answers_after_the_claim_and_after_the_decline(
     _run(check)
 
 
+def test_the_link_still_answers_after_the_cascade_has_expired_the_offer(
+    app_role_url: str,
+) -> None:
+    """Design row E, AFTER the sweep — and expiry is the most common way an
+    offer ends, so this is the ordinary path rather than an edge.
+
+    `test_a_passed_deadline_reads_expired_before_the_cascade_sweeps_it` covers
+    the <=60-second gap where the ROW still says `offered` and `_view` projects.
+    Once the cascade really moves her, the projection is not involved and only
+    the surviving `offer_token_hash` keeps the lookup answering: SMS at 10:00,
+    deadline at 12:00, sweep at 12:00:30, she opens her thread at 12:05 and must
+    read «תוקף ההצעה הזו פג» with the rebook CTA, not «הקישור אינו תקין».
+    """
+    engine, factory = _factory(app_role_url)
+    tenant_id = uuid.uuid4()
+    later = NOW + datetime.timedelta(seconds=WINDOW_SECONDS)
+
+    async def check() -> None:
+        try:
+            type_id = await _seed(factory, tenant_id)
+            entry_id, token = await _armed(factory, tenant_id, type_id)
+            # D7: only an offer that really reached `sent` is allowed to burn its
+            # window, so the sweep lands her in `expired` rather than `waiting`.
+            async with tenant_session(factory, tenant_id) as session:
+                message = await SCHEDULED.latest_for_entry(
+                    session, tenant_id, waitlist_entry_id=entry_id, kind=KIND
+                )
+                assert message is not None
+                await SCHEDULED.mark(
+                    session, tenant_id, message.id, status=ScheduledMessageStatus.SENT.value
+                )
+
+            assert (await _cascade(factory, later).run(tenant_id)).expired == 1
+            assert (
+                await _entry(factory, tenant_id, entry_id)
+            ).status == WaitlistEntryStatus.EXPIRED.value
+
+            view = await _offers(factory, later).lookup(tenant_id, token=token)
+            assert view.status == WaitlistEntryStatus.EXPIRED.value
+        finally:
+            await _purge(factory, tenant_id)
+            await engine.dispose()
+
+    _run(check)
+
+
 def test_the_lookup_budget_never_denies_a_bride_her_claim(app_role_url: str) -> None:
     """The BLOCKER: `_meter` is the lookup's, not the claim's.
 
