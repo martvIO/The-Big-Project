@@ -135,6 +135,7 @@ from app.floor.schemas import (
     RaisedAlert,
     RaiseSosRequest,
     Room,
+    SetOnShiftRequest,
     SkipRequest,
     SosAlertView,
     SosResponse,
@@ -232,6 +233,59 @@ async def end_break(
 # four need, and why widening the catalog or bookings routers was never the
 # alternative for the two pickers below.
 ELEVATED = Depends(require_role(StaffRole.OWNER, StaffRole.SHIFT_MANAGER))
+
+
+# --- F40: the same-day on-shift override (owner + shift_manager) --------------
+#
+# ⚠ BOTH ARE ELEVATED, and neither is self-or-elevated like the break toggle
+# two routes above (D13). A staffer marking herself present is an attendance
+# punch, which the epic's labour-law row puts visibly out of scope — so the gate
+# is the router's `ELEVATED` and the service refuses her again.
+#
+# The second path segment is `floor`, already in `vite.config.ts`' alternation,
+# so neither route needs a frontend config change.
+
+
+@router.post("/floor/staff/{staff_id}/on-shift", dependencies=[ELEVATED])
+async def set_on_shift(
+    request: Request,
+    staff_id: uuid.UUID,
+    service: Service,
+    staff: Staff,
+    storage: Storage,
+    body: SetOnShiftRequest,
+) -> StaffCard:
+    """⚠ ANSWERS THE PATCHED CARD (design F-1). The client cannot compute
+    `on_shift_source` — that is the whole of D8 — so a `204` would force a
+    refetch or a guess, and a guess prints the wrong Hebrew rule label on a live
+    floor screen."""
+    read = await service.set_on_shift(
+        get_current_tenant(request).id, staff_id, on_shift=body.on_shift, actor=staff
+    )
+    return StaffCard.from_row(
+        read.row,
+        occupancy=read.occupancy,
+        storage=storage,
+        on_shift=read.on_shift,
+        on_shift_source=read.on_shift_source,
+    )
+
+
+@router.delete("/floor/staff/{staff_id}/on-shift", dependencies=[ELEVATED])
+async def clear_on_shift(
+    request: Request, staff_id: uuid.UUID, service: Service, staff: Staff, storage: Storage
+) -> StaffCard:
+    """Clears the pair. Answers the patched card for the same reason: after a
+    clear the source moves to `roster` or `fallback`, and only the server can say
+    which."""
+    read = await service.clear_on_shift(get_current_tenant(request).id, staff_id, actor=staff)
+    return StaffCard.from_row(
+        read.row,
+        occupancy=read.occupancy,
+        storage=storage,
+        on_shift=read.on_shift,
+        on_shift_source=read.on_shift_source,
+    )
 
 
 def _room(read: RoomRead) -> Room:

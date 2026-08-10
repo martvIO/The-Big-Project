@@ -22,14 +22,20 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.auth.dependencies import NotAuthorizedError, get_auth_service
 from app.auth.rate_limit import FixedWindowRateLimiter
 from app.auth.service import StaffContext
+from app.floor.schemas import SetOnShiftRequest
 from app.main import NOT_AUTHORIZED_BODY, create_app
 from app.models.constants import AvailabilityState, StaffRole
 from app.shifts.schemas import (
     AvailabilityEntryResponse,
+    CreateAssignmentRequest,
+    PublishedRosterResponse,
+    RosterShiftResponse,
+    RosterWeekResponse,
     SeedTemplatesResponse,
     ShiftTemplateInput,
     ShiftTemplateListResponse,
@@ -41,7 +47,10 @@ from app.shifts.schemas import (
     WeekSubmissionsResponse,
 )
 from app.shifts.service import (
+    AvailabilityConflictError,
     NoOpeningHoursError,
+    NotShiftManagerEligibleError,
+    ShiftManagerSlotTakenError,
     ShiftNotFoundError,
     SubmissionClosedError,
     TemplatesAlreadySeededError,
@@ -70,6 +79,8 @@ SCHEDULED_TENANT = TenantContext(
 STAFF_ID = uuid.uuid4()
 OTHER_STAFF_ID = uuid.uuid4()
 TEMPLATE_ID = uuid.uuid4()
+# F40: the assignment the DELETE names in its path.
+ASSIGNMENT_ID = uuid.uuid4()
 ENTRY_ID = uuid.uuid4()
 TOKEN = "session-token-abc"
 
@@ -83,6 +94,11 @@ SEED_PATH = "/manage/shifts/templates/seed"
 WEEK_PATH = "/manage/shifts/week"
 SUBMIT_PATH = "/manage/shifts/week/availability"
 SUBMISSIONS_PATH = "/manage/shifts/week/submissions"
+ROSTER_PATH = "/manage/shifts/roster"
+ASSIGNMENTS_PATH = "/manage/shifts/roster/assignments"
+ASSIGNMENT_PATH = f"/manage/shifts/roster/assignments/{ASSIGNMENT_ID}"
+PUBLISH_PATH = "/manage/shifts/roster/publish"
+PUBLISHED_PATH = "/manage/shifts/roster/published"
 
 TEMPLATE_BODY: dict[str, Any] = {
     "day_of_week": 4,
@@ -95,6 +111,13 @@ TEMPLATE_BODY: dict[str, Any] = {
     # edit — which is why the schema carries no default and every body here
     # gained the field rather than the field gaining a default.
     "coverage_targets": {},
+}
+ASSIGN_BODY: dict[str, Any] = {
+    "week_start": WEEK_START.isoformat(),
+    "shift_template_id": str(TEMPLATE_ID),
+    "staff_user_id": str(STAFF_ID),
+    "is_shift_manager": False,
+    "acknowledge_override": False,
 }
 SUBMIT_BODY: dict[str, Any] = {
     "week_start": WEEK_START.isoformat(),
@@ -117,6 +140,15 @@ SHIFTS_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", WEEK_PATH, None),
     ("PUT", SUBMIT_PATH, SUBMIT_BODY),
     ("GET", SUBMISSIONS_PATH, None),
+    # F40's five. Thirteen rows on one router now, and the shadow guard matters
+    # more with every one: `/shifts/roster/assignments` and
+    # `/shifts/roster/published` both sit under `/shifts/roster`, so a stray
+    # `{week}`-style path parameter on the parent would swallow either.
+    ("GET", ROSTER_PATH, None),
+    ("POST", ASSIGNMENTS_PATH, ASSIGN_BODY),
+    ("DELETE", ASSIGNMENT_PATH, None),
+    ("POST", PUBLISH_PATH, {"week_start": WEEK_START.isoformat()}),
+    ("GET", PUBLISHED_PATH, None),
 ]
 
 # The FIVE routes carrying a per-route tightening on top of the router's five
@@ -128,6 +160,13 @@ ELEVATED_ROUTES = {
     ("DELETE", TEMPLATE_PATH),
     ("POST", SEED_PATH),
     ("GET", SUBMISSIONS_PATH),
+    # F40's four builder verbs. ⚠ `PUBLISHED_PATH` IS DELIBERATELY ABSENT: the
+    # published week reads to EVERY role (D13), because the floor board already
+    # names every colleague and a staffer who cannot see the roster cannot plan.
+    ("GET", ROSTER_PATH),
+    ("POST", ASSIGNMENTS_PATH),
+    ("DELETE", ASSIGNMENT_PATH),
+    ("POST", PUBLISH_PATH),
 }
 
 # The spec's error table, verbatim. F39 adds EXACTLY FIVE codes; asserting the
@@ -145,6 +184,11 @@ SPEC_ERROR_CODES = {
     "TEMPLATES_ALREADY_SEEDED",
     "NO_OPENING_HOURS",
     "TEMPLATE_LIMIT_REACHED",
+    # F40's four.
+    "AVAILABILITY_CONFLICT",
+    "NOT_SHIFT_MANAGER_ELIGIBLE",
+    "SHIFT_MANAGER_SLOT_TAKEN",
+    "COVERAGE_TARGET_INVALID",
 }
 
 ALL_ROLES = [role.value for role in StaffRole]
@@ -165,6 +209,27 @@ def _template(**overrides: Any) -> ShiftTemplateResponse:
         "sort_order": 0,
     }
     return ShiftTemplateResponse(**{**base, **overrides})
+
+
+def _roster_shift() -> RosterShiftResponse:
+    return RosterShiftResponse(
+        template=_template(),
+        assignments=[],
+        coverage_targets={},
+        assigned_by_role={},
+    )
+
+
+def _roster_week() -> RosterWeekResponse:
+    return RosterWeekResponse(
+        week_start=WEEK_START,
+        week_end=WEEK_START,
+        published_at=None,
+        published_by_name=None,
+        edited_since_publish=False,
+        shifts=[_roster_shift()],
+        staff=[],
+    )
 
 
 def _entry() -> AvailabilityEntryResponse:
@@ -305,6 +370,46 @@ class FakeShiftsService:
             locked=False,
             templates=[_template()],
             entries=[_entry()],
+        )
+
+    async def roster(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        actor: StaffContext,
+        week_start: datetime.date | None = None,
+    ) -> RosterWeekResponse:
+        self._record("roster", tenant_id=tenant_id, actor=actor, week_start=week_start)
+        return _roster_week()
+
+    async def assign(
+        self, tenant_id: uuid.UUID, *, actor: StaffContext, body: CreateAssignmentRequest
+    ) -> RosterShiftResponse:
+        self._record("assign", tenant_id=tenant_id, actor=actor, body=body)
+        return _roster_shift()
+
+    async def unassign(
+        self, tenant_id: uuid.UUID, *, actor: StaffContext, assignment_id: uuid.UUID
+    ) -> RosterShiftResponse:
+        self._record("unassign", tenant_id=tenant_id, actor=actor, assignment_id=assignment_id)
+        return _roster_shift()
+
+    async def publish(
+        self, tenant_id: uuid.UUID, *, actor: StaffContext, week_start: datetime.date
+    ) -> RosterWeekResponse:
+        self._record("publish", tenant_id=tenant_id, actor=actor, week_start=week_start)
+        return _roster_week()
+
+    async def published(
+        self, tenant_id: uuid.UUID, *, week_start: datetime.date | None = None
+    ) -> PublishedRosterResponse:
+        self._record("published", tenant_id=tenant_id, week_start=week_start)
+        return PublishedRosterResponse(
+            published=False,
+            published_at=None,
+            week_start=WEEK_START,
+            week_end=WEEK_START,
+            shifts=[],
         )
 
     async def submissions(
@@ -560,6 +665,14 @@ def test_every_response_is_no_store(method: str, path: str, body: dict[str, Any]
         (NoOpeningHoursError(), 409, "NO_OPENING_HOURS"),
         (ShiftNotFoundError(), 404, "NOT_FOUND"),
         (NotAuthorizedError(), 403, "NOT_AUTHORIZED"),
+        # F40's four. `NOT_SHIFT_MANAGER_ELIGIBLE` and `COVERAGE_TARGET_INVALID`
+        # are 400s — the request is malformed against the server's rules. The
+        # other two are 409s: the body is well-formed and conflicts with server
+        # state.
+        (AvailabilityConflictError(), 409, "AVAILABILITY_CONFLICT"),
+        (NotShiftManagerEligibleError(), 400, "NOT_SHIFT_MANAGER_ELIGIBLE"),
+        (ShiftManagerSlotTakenError(), 409, "SHIFT_MANAGER_SLOT_TAKEN"),
+        (CoverageTargetInvalidError(), 400, "COVERAGE_TARGET_INVALID"),
     ],
 )
 def test_each_service_refusal_maps_to_its_own_code(exc: Exception, status: int, code: str) -> None:
@@ -591,6 +704,13 @@ def test_the_error_codes_are_exactly_the_spec_table() -> None:
         SubmissionClosedError(),
         TemplatesAlreadySeededError(),
         NoOpeningHoursError(),
+        # F40's four. Every one is re-derived from a LIVE response, so a handler
+        # that was never registered shows up here as a `VALIDATION_ERROR` rather
+        # than as a missing member of a literal.
+        AvailabilityConflictError(),
+        NotShiftManagerEligibleError(),
+        ShiftManagerSlotTakenError(),
+        CoverageTargetInvalidError(),
     ):
         with _client(FakeShiftsService(raises=exc)) as client:
             observed.add(client.put(SUBMIT_PATH, json=SUBMIT_BODY).json()["error"]["code"])
@@ -734,3 +854,109 @@ def test_an_invalid_target_maps_to_its_own_coded_400() -> None:
     # O3 says the constant will move, so the bound is INTERPOLATED rather than
     # typed into the sentence (design F-33).
     assert str(MAX_COVERAGE_TARGET) in resp.json()["error"]["message"]
+
+
+# --- F40: the five roster routes ----------------------------------------------
+
+
+def test_the_assignment_write_answers_200_on_both_paths_and_never_201() -> None:
+    """⚠ PLAN §0.1's RESOLUTION OF A SPEC/DESIGN CONFLICT, pinned. Design F-2
+    turns this route into an UPSERT on the live `(roster, template, staffer)`
+    triple, and a route that is sometimes a create and sometimes an update,
+    answering two codes, forces the client to branch on a status to decide what
+    it just did. One code, one client path — the spec's `201` row is superseded.
+    """
+    fake = FakeShiftsService()
+    with _client(fake) as client:
+        first = client.post(ASSIGNMENTS_PATH, json=ASSIGN_BODY)
+        second = client.post(ASSIGNMENTS_PATH, json=ASSIGN_BODY)
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+
+def test_both_assignment_routes_answer_the_affected_shift_and_not_the_week() -> None:
+    """⚠ PLAN §0.1 AGAIN, and the reason is R-C. The pane permits two concurrent
+    writes on one shift BY DESIGN (per-control `loading`, nothing else disables),
+    so a whole-week payload per tap lets the earlier-issued response arriving
+    second overwrite the later assignment — the owner sees one fewer woman on a
+    shift she then publishes, and it fails no functional test."""
+    week_keys = {
+        "week_start",
+        "week_end",
+        "published_at",
+        "published_by_name",
+        "edited_since_publish",
+        "shifts",
+        "staff",
+    }
+    shift_keys = {"template", "assignments", "coverage_targets", "assigned_by_role"}
+    with _client(FakeShiftsService()) as client:
+        assert set(client.post(ASSIGNMENTS_PATH, json=ASSIGN_BODY).json()) == shift_keys
+        assert set(client.delete(ASSIGNMENT_PATH).json()) == shift_keys
+        # And the two WEEK routes answer the week, so the shapes are not
+        # accidentally the same thing.
+        assert set(client.get(ROSTER_PATH).json()) == week_keys
+        assert (
+            set(client.post(PUBLISH_PATH, json={"week_start": WEEK_START.isoformat()}).json())
+            == week_keys
+        )
+
+
+def test_the_published_read_is_open_to_every_role_and_the_builder_is_not() -> None:
+    """D13's split, over HTTP. A staffer who cannot see the published roster
+    cannot plan; a staffer who could open the BUILDER would see every
+    colleague's submitted state, which is F39's own reason for gating
+    `/shifts/week/submissions`."""
+    for role in ALL_ROLES:
+        with _client(FakeShiftsService(), role=role) as client:
+            assert client.get(PUBLISHED_PATH).status_code == 200, role
+            expected = 200 if role in {"owner", "shift_manager"} else 403
+            assert client.get(ROSTER_PATH).status_code == expected, role
+
+
+def test_the_week_keys_are_plain_dates_and_published_at_is_a_utc_instant() -> None:
+    """⚠ DIFFERENT KINDS OF THING, AND THE WIRE SAYS SO (F39's schema header). A
+    week is a page of the boutique's calendar — `YYYY-MM-DD`, no offset to get
+    wrong — and `published_at` is an INSTANT. The console's `plainDayMonth`
+    refuses to meet a `Date` for exactly this reason."""
+    with _client(FakeShiftsService()) as client:
+        body = client.get(ROSTER_PATH).json()
+    assert body["week_start"] == WEEK_START.isoformat()
+    assert "T" not in body["week_start"]
+    # Null here because the fake answers a draft; the instant shape is asserted
+    # against real rows in test_roster_db.py.
+    assert body["published_at"] is None
+
+
+def test_the_override_body_carries_no_date_and_a_supplied_one_is_refused() -> None:
+    """⚠ D3: the override is ALWAYS today, computed server-side. Accepting a date
+    would make rule 1 pre-settable for tomorrow — a roster edit wearing an
+    override's clothes — and would let a client's clock decide what «today»
+    means. `ForbidExtraModel` is what turns a supplied one into a house-shape 400
+    rather than a silently ignored field."""
+    assert set(SetOnShiftRequest.model_fields) == {"on_shift"}
+    with pytest.raises(ValidationError):
+        SetOnShiftRequest(on_shift=True, on_shift_on="2026-11-08")  # type: ignore[call-arg]
+
+
+def test_the_five_roster_routes_reach_their_own_service_method() -> None:
+    """The wiring walk, per verb: a shadowed path would answer another handler's
+    method and this is what names it."""
+    for path, method, verb, body in (
+        (ROSTER_PATH, "GET", "roster", None),
+        (ASSIGNMENTS_PATH, "POST", "assign", ASSIGN_BODY),
+        (ASSIGNMENT_PATH, "DELETE", "unassign", None),
+        (PUBLISH_PATH, "POST", "publish", {"week_start": WEEK_START.isoformat()}),
+        (PUBLISHED_PATH, "GET", "published", None),
+    ):
+        fake = FakeShiftsService()
+        with _client(fake) as client:
+            assert client.request(method, path, json=body).status_code == 200, path
+        assert [call["verb"] for call in fake.calls] == [verb], path
+
+
+def test_the_delete_takes_its_assignment_id_from_the_path() -> None:
+    fake = FakeShiftsService()
+    with _client(fake) as client:
+        client.delete(ASSIGNMENT_PATH)
+    assert fake.call("unassign")["assignment_id"] == ASSIGNMENT_ID

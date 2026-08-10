@@ -484,6 +484,23 @@ class FloorClientList(BaseModel):
 # --- F36: the request bodies --------------------------------------------------
 
 
+class SetOnShiftRequest(ForbidExtraModel):
+    """F40's same-day override body — ONE BOOLEAN AND NOTHING ELSE (spec §API).
+
+    ⚠ NO DATE. It is always today, computed server-side from `today_jerusalem()`.
+    Accepting one would make rule 1 pre-settable for tomorrow, which is a roster
+    edit wearing an override's clothes, and would let a client's clock decide
+    what «today» means. `ForbidExtraModel`, so a client that sends one gets a
+    house-shape 400 rather than a silently ignored field.
+
+    TWO-VALUED: `true` = on shift, `false` = off shift. The commonest same-day
+    event in a boutique is somebody NOT coming in, and a one-way flag cannot
+    express it.
+    """
+
+    on_shift: bool
+
+
 class CreateRoomRequest(ForbidExtraModel):
     """`label` carries NO Field bound: `normalize_room_label` strips first and
     bounds the stripped string, and a `max_length` here would refuse a legal

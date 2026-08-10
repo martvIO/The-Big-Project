@@ -701,3 +701,27 @@ def test_the_join_path_degrades_with_the_rest_of_the_console(
     console = _client(monkeypatch, static_root, host=CONSOLE_HOST)
     assert console.get("/platform").status_code == 404
     assert console.get("/platform/join").status_code == 404
+
+
+def test_f40_adds_no_new_manage_api_segment() -> None:
+    """⚠ ASSERTED, NOT ASSUMED (plan §4.4). F40's seven routes sit on two second
+    path segments — `shifts` and `floor` — and BOTH are already in
+    `vite.config.ts`' proxy alternation, so this feature needs no frontend config
+    change at all.
+
+    `test_the_manage_dev_proxy_names_every_manage_api_segment` above set-equals
+    the alternation against the LIVE route table and must stay green with no
+    edit. A red there would mean somebody invented a third segment the design
+    does not have — and the failure mode is nasty: it breaks only a developer's
+    machine while production, CI and the whole suite stay green.
+    """
+    app = create_app(resolver=_resolver)
+    paths = [
+        str(getattr(route, "path", ""))
+        for route in _leaf_routes(app)
+        if str(getattr(route, "path", "")).startswith("/manage/")
+    ]
+    segments = {path.split("/")[2] for path in paths if len(path.split("/")) > 2}
+    roster = {path.split("/")[2] for path in paths if "roster" in path or "on-shift" in path}
+    assert roster == {"shifts", "floor"}, sorted(roster)
+    assert roster <= segments

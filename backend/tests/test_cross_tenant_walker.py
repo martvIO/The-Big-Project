@@ -198,6 +198,7 @@ class Kind(StrEnum):
     WAITLIST_ENTRY = "waitlist_entry"
     DRESS_RESERVATION = "dress_reservation"
     SHIFT_TEMPLATE = "shift_template"
+    ROSTER_ASSIGNMENT = "roster_assignment"
 
 
 # Path-parameter name -> entity kind. An unknown name is a hard failure in
@@ -227,13 +228,27 @@ def _path_kind(path: str, param: str) -> Kind:
     `queue_tickets` row and `/manage/atelier/tickets/{ticket_id}` is an
     `alteration_tickets` row — same parameter name, different tables, different
     routers. Feeding the wrong fixture yields a 404 that proves nothing, because
-    the id genuinely does not exist in EITHER tenant."""
+    the id genuinely does not exist in EITHER tenant.
+
+    ⚠ `assignment_id` IS THE SECOND INSTANCE, and F40 is the feature that created
+    it. `/manage/floor/assignments/{assignment_id}/…` is a
+    `fitting_room_assignments` row; `/manage/shifts/roster/assignments/{assignment_id}`
+    is a `roster_assignments` row. Left unclassified, the roster DELETE would be
+    driven with a fitting-room id and answer a 404 that means «no such row
+    anywhere» rather than «not yours» — a route silently proving nothing while
+    the pinned pair still moved."""
     if param == "ticket_id":
         if path.startswith("/manage/floor/queue/"):
             return Kind.QUEUE_TICKET
         if path.startswith("/manage/atelier/tickets/"):
             return Kind.ATELIER_TICKET
         raise AssertionError(f"unclassified ticket_id on {path}")
+    if param == "assignment_id":
+        if path.startswith("/manage/floor/assignments/"):
+            return Kind.ASSIGNMENT
+        if path.startswith("/manage/shifts/roster/assignments/"):
+            return Kind.ROSTER_ASSIGNMENT
+        raise AssertionError(f"unclassified assignment_id on {path}")
     kind = PATH_PARAM_KIND.get(param)
     if kind is None:
         raise AssertionError(f"unclassified path parameter {param!r} on {path}")
@@ -396,6 +411,19 @@ PROBES: dict[tuple[str, str], dict[str, Any]] = {
         "staff_user_id": Kind.STAFF,
         "entries": [{"shift_template_id": Kind.SHIFT_TEMPLATE, "state": "available"}],
     },
+    # F40. BOTH tenant-owned ids are in the body — B's shift and B's staffer —
+    # and the week is a real future Sunday so the ONLY things left to refuse are
+    # the two foreign handles. Without a body this answers 400 before the tenant
+    # check ever runs, and a 400 is not evidence of isolation.
+    ("POST", "/manage/shifts/roster/assignments"): {
+        "week_start": _FUTURE_SUNDAY,
+        "shift_template_id": Kind.SHIFT_TEMPLATE,
+        "staff_user_id": Kind.STAFF,
+        "is_shift_manager": False,
+        "acknowledge_override": False,
+    },
+    # F40's override. The id is in the PATH; this body only has to be valid.
+    ("POST", "/manage/floor/staff/{staff_id}/on-shift"): {"on_shift": False},
     # F28. WITHOUT a body this route answers 400 VALIDATION_ERROR before the
     # tenant check ever runs, and a 400 is not evidence of isolation — it only
     # says the request never got far enough to be refused. The dates are valid
@@ -615,6 +643,14 @@ NO_TENANT_OWNED_ID = frozenset(
         ("POST", "/manage/shifts/templates/seed"),
         ("GET", "/manage/shifts/week"),
         ("GET", "/manage/shifts/week/submissions"),
+        # F40. ⚠ THREE OF THE FIVE ROSTER ROUTES CARRY NO TENANT-OWNED ID, and
+        # this is the arithmetic the plan's R-B warns against getting from
+        # addition: `?week_start=` is a CALENDAR DATE, not a handle — every
+        # boutique's Sunday is the same Sunday — and publish's body is a week for
+        # the same reason. There is nothing foreign to substitute.
+        ("GET", "/manage/shifts/roster"),
+        ("GET", "/manage/shifts/roster/published"),
+        ("POST", "/manage/shifts/roster/publish"),
         ("GET", "/storefront/dresses"),
         ("GET", "/storefront/boutique"),
         ("GET", "/storefront/slots"),
@@ -655,7 +691,9 @@ MODULE_WALK_FLOOR = {
     "booking": 10,
     "customers": 2,
     "privacy": 2,
-    "floor": 12,
+    # F40 adds TWO: both override verbs take `{staff_id}` in the path, so both
+    # are driven with tenant B's staffer.
+    "floor": 14,
     "queue": 4,
     "atelier": 6,
     "storefront": 1,
@@ -670,7 +708,13 @@ MODULE_WALK_FLOOR = {
     # tenant B's template id, and the weekly write, driven with B's staffer AND
     # B's template in the body. The other five carry no tenant-owned id and sit
     # in NO_TENANT_OWNED_ID with their siblings.
-    "shifts": 3,
+    #
+    # F40 adds TWO more, not five: the assignment POST (B's template AND B's
+    # staffer in the body) and the assignment DELETE (B's assignment id in the
+    # path). The builder read, the published read and the publish are keyed on a
+    # calendar week and carry no handle at all — measured by RUNNING this walk,
+    # never by adding five to three.
+    "shifts": 5,
 }
 
 # Modules that expose no route carrying a tenant-owned id, with the reason. A
@@ -1007,6 +1051,30 @@ def _populate(client: TestClient, storage: InMemoryMediaStorage) -> dict[Kind, u
         "shift template",
     )
     ids[Kind.SHIFT_TEMPLATE] = uuid.UUID(template["id"])
+
+    # F40. A REAL roster assignment for this tenant, so the DELETE is driven with
+    # a handle that genuinely exists — in the other tenant. Seeded through the
+    # route rather than the repository: the assignment creates its own `rosters`
+    # row in that write's transaction, and a hand-inserted pair could drift from
+    # what the service actually produces.
+    #
+    # ⚠ The staffer is the OWNER seeding this tenant — `_populate`'s rule — and
+    # she is on the payroll for that week, which is what `is_available_for_week`
+    # requires before the row is written at all.
+    assignment = _ok(
+        client.post(
+            "/manage/shifts/roster/assignments",
+            json={
+                "week_start": _FUTURE_SUNDAY,
+                "shift_template_id": template["id"],
+                "staff_user_id": str(ids[Kind.STAFF]),
+                "is_shift_manager": False,
+                "acknowledge_override": False,
+            },
+        ),
+        "roster assignment",
+    )
+    ids[Kind.ROSTER_ASSIGNMENT] = uuid.UUID(assignment["assignments"][0]["id"])
 
     ticket = _ok(
         client.post(
@@ -1381,7 +1449,12 @@ def test_the_state_guarded_routes_are_walked_and_named(
     # adding the route count to the previous pair: five of F39's eight carry no
     # tenant-owned id and are exempt, so arithmetic on eight would have been
     # wrong by five.
-    assert (len(responses), discriminating) == (70, 68), (
+    # ⚠ (70, 68) after F39; (74, 72) after F40 — MEASURED BY RUNNING THIS WALK,
+    # never by adding the route count. F40 ships SEVEN routes and the pair moved
+    # by FOUR: the two `?week_start=` reads and the publish carry a calendar week
+    # rather than a handle, so there is nothing foreign to substitute and all
+    # three sit in NO_TENANT_OWNED_ID. F39 is the precedent — eight routes, +3.
+    assert (len(responses), discriminating) == (74, 72), (
         f"the walk drove {len(responses)} routes, {discriminating} of them "
         "discriminating. Both numbers are quoted as evidence in "
         ".planning/security-checklist-v1.md's R9 row — update it in the same commit."
