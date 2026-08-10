@@ -28,6 +28,16 @@ An operator clicks «הזמנה חדשה», types slug + boutique name + owner e
 
 Second conflict, with shipped code: `test_staff_role_gating.py::test_every_platform_route_but_the_two_public_ones_requires_an_operator` names **two** public `/platform` routes. F26 makes it four. Extending that allowlist is a **task in the plan and a review item**, never an incidental edit — it is the test whose whole job is to make a new anonymous route on the platform's host a deliberate act.
 
+**Third conflict — this spec vs the code it produced (built to the code; amended here rather than left stale).** Gate 1 approved a preview at `GET /platform/join/invite?code=…` reached from a link carrying `?code=` in the query string. Review round 1 changed both, and the change is right: **the code is a live 14-day boutique-creation credential**, and a query string puts it in every access log, proxy trace, `Referer` header and support bundle on the path. The repo already argues exactly this for two lesser secrets (`queue/router.py:16-20` for the walk-in ticket, `booking/schemas.py:74-83` for the manage token), so F26 following them is consistency, not novelty. What shipped, and what the sections below now describe:
+
+| Gate-1 contract | Shipped | Why |
+|---|---|---|
+| `GET /platform/join/invite?code=…` | **`POST /platform/join/invite`**, code in the JSON body | The credential never reaches a request line. Still a pure read — writes no audit row, and `test_audit_coverage.py`'s `UNAUDITED_BY_DECISION` carries that note **because** the mutation walk classifies by method |
+| `join_url` = `…/platform/join?code=…` | **`…/platform/join#code=…`** | A fragment is never sent to any server, so no origin on the path — ours or the edge's — can log it |
+| `JoinPanel` bootstraps off `location.search` | **`location.hash`** | Follows the link above |
+
+Everything else about the preview is unchanged: same one `invalid_invite` for four states, same shared limiter budget, same anonymous router.
+
 ## What already exists to build on (verified against merged code)
 
 - **`ProvisioningService.provision`** (`app/platform/service.py:94`) already does the exact work redemption needs — `is_valid_slug` → `_password_problem` (the `MIN_STAFF_PASSWORD_LENGTH` floor) → `by_slug` → one `tenant_session` transaction inserting `Tenant` + owner `StaffUser` + the `TENANT_PROVISIONED` audit row, with an `IntegrityError` backstop mapping to `slug_taken`. Business failures are **returned**, never raised, so failure audits commit (the F5 lesson).
@@ -64,14 +74,14 @@ Second conflict, with shipped code: `test_staff_role_gating.py::test_every_platf
 
 ## Design
 
-### D1 — Where the redeemer lands: `admin.{base}/platform/join?code=…`, in the shipped bundle
+### D1 — Where the redeemer lands: `admin.{base}/platform/join#code=…`, in the shipped bundle
 
 There is no public app to host this. The three candidates and why one wins:
 
 - **Apex** — deliberately 404s (F4's anti-enumeration posture, re-affirmed by F25 D1). Re-opening it re-litigates a settled decision and needs a new DNS record. **No.**
 - **Tenant host `{slug}.modryn.co.il`** — the tenant does not exist until redemption succeeds; the resolver 404s it. Provisioning a "pending" tenant first would fork the audited path in two and burn the slug on an unredeemed invite. **No.**
 - **A new reserved label `join.{base}`** — the wildcard cert `*.modryn.co.il` and wildcard DNS cover it for free, but the platform bundle is built with `base: "/platform/"`, so its assets resolve under `/platform/*`; serving it on an invite host means either leaking `/platform*` through that host's fence or standing up a **fourth workspace app** for one form. **No** — the cost is a whole app and a fourth e2e webServer.
-- **Chosen: the console host, anonymous routes under the existing `/platform` prefix.** Zero DNS, zero cert, zero new SPA, zero new fence. The link is `https://admin.modryn.co.il/platform/join?code=…`.
+- **Chosen: the console host, anonymous routes under the existing `/platform` prefix.** Zero DNS, zero cert, zero new SPA, zero new fence. The link is `https://admin.modryn.co.il/platform/join#code=…` — a **fragment**, never a query string, so the credential reaches no server's log (see CONFLICTS, third item).
 
 **The honest cost, recorded:** F25 D6 named an edge IP-allowlist on `admin.{base}` as the cheaper, stronger sibling of TOTP, and F62 owns that decision. A blanket allowlist would now break signup. **F62's allowlist must be path-scoped** — `/platform/join*` open, `/platform/*` restricted — which every edge/WAF does natively. This constraint is carried to F62's open questions, not left to be discovered.
 
@@ -154,12 +164,12 @@ All under the existing `/platform` prefix on `admin.{base}` — fenced off every
 | `POST /platform/invites` | operator | `{slug, name, owner_email}` | `{code, join_url, expires_at}` — **the only time `code` exists in a response** |
 | `GET /platform/invites` | operator | — | open + redeemed invites (no code, no hash) |
 | `POST /platform/invites/revoke` | operator | `{id}` | `{ok}` |
-| `GET /platform/join/invite?code=…` | **anonymous** | `code` | `{slug, name, owner_email}` or 404 `invalid_invite` |
+| `POST /platform/join/invite` | **anonymous** | `{code}` | `{slug, name, owner_email}` or 404 `invalid_invite` — **a POST because it is a read of a CAPABILITY**; see CONFLICTS, third item |
 | `POST /platform/join/redeem` | **anonymous** | `{code, owner_password}` | `{slug, manage_url}` |
 
 Two routers: the operator one extends the fenced `app/platform/router.py` pattern (`Depends(get_current_operator)` on the router); the anonymous one is **its own `APIRouter`** with no auth dependency, so no route can acquire or lose an operator context by editing a shared list. Refusal codes join `_REFUSAL_STATUS`: `invalid_invite` → 404, `invalid_or_reserved_slug`/`empty_password`/`password_too_short` → 400, `slug_taken` → 409.
 
-`GET /platform/join/invite` is a **read that discloses a boutique name to an unauthenticated caller holding a 256-bit secret**. It is the whole point of showing the owner what she is claiming before she claims it. It is rate-limited on the same budget as redeem and writes no audit row (a read of one's own invite is not a platform event; `TENANTS_LISTED`'s cross-tenant-enumeration argument does not apply).
+`POST /platform/join/invite` is a **read that discloses a boutique name to an unauthenticated caller holding a 256-bit secret**. It is the whole point of showing the owner what she is claiming before she claims it. It is rate-limited on the same budget as redeem and writes no audit row (a read of one's own invite is not a platform event; `TENANTS_LISTED`'s cross-tenant-enumeration argument does not apply).
 
 ### D7 — Gateway onboarding is a link, not a step
 
@@ -175,7 +185,7 @@ So: the redemption success screen states the boutique is live and links to `http
 
 `apps/platform`, no new app, no new build config.
 
-- **`JoinPanel`** (`components/JoinPanel.tsx`): reads `?code=` from `location.search`, calls `GET /platform/join/invite`, renders boutique name + `{slug}.modryn.co.il` + owner email **read-only**, one password field (`minLength` mirroring `MIN_STAFF_PASSWORD_LENGTH`), submit → success screen with the manage link. No code in the URL, or a 404 → a manual code entry field, then the same panel. Server refusals map by `ApiError.code` to their own Hebrew sentences; anything unlisted falls through to `errorMessage()`.
+- **`JoinPanel`** (`components/JoinPanel.tsx`): reads `code` from `location.hash` (`#code=…`), calls `POST /platform/join/invite`, renders boutique name + `{slug}.modryn.co.il` + owner email **read-only**, one password field (`minLength` mirroring `MIN_STAFF_PASSWORD_LENGTH`), submit → success screen with the manage link. No code in the URL, or a 404 → a manual code entry field, then the same panel. Server refusals map by `ApiError.code` to their own Hebrew sentences; anything unlisted falls through to `errorMessage()`.
 - **`InvitesSection`** in `Console.tsx`: «הזמנות» — create form (slug + name + owner email, reusing the shipped `slugProblem()` mirror), a table of open/redeemed invites, revoke with a confirm dialog (destructive red on the **final** confirm only — the manage precedent). The created link is shown once in a copyable field with «הקישור מוצג פעם אחת בלבד» and disappears on dismiss.
 - **i18n**: `he.ts` + `ar.ts` (untranslated, Q3/#47), **zero exclamation marks** (#5). New keys under `platform.invites.*` and `platform.join.*`: `title`, `slug`, `name`, `ownerEmail`, `create`, `linkOnce`, `copy`, `copied`, `revoke`, `revokeConfirm`, `expiresAt`, `redeemed`, `open`, `join.heading`, `join.claiming`, `join.password`, `join.submit`, `join.success`, `join.toManage`, `join.codePrompt`, and one sentence per refusal code (`invalid_invite`, `slug_taken`, `invalid_or_reserved_slug`, `password_too_short`, `empty_password`, `rate_limited`).
 - **Touch targets**: every control on the join screen is `size="md"` — F-W1, `sm` is 36px and fails the 44px floor. The join screen is the one screen in this app a non-operator uses, likely on a phone.
@@ -204,7 +214,7 @@ Every operator action and every redemption writes to `platform_audit_log` throug
 **Walkers (registration is the task, not a side effect)**:
 - `test_cross_tenant_walker` — the five new `/platform` routes join `NOT_TENANT_SCOPED` so `walked ∪ exempt == route table` keeps holding.
 - `test_staff_role_gating::test_every_platform_route_but_the_two_public_ones_requires_an_operator` — **renamed and extended to four**, with the two new anonymous routes named and justified in the allowlist comment (the Conflicts section's second item).
-- `test_audit_coverage` — the four mutating routes resolve to `_audit.record` through delegation; `GET /platform/join/invite` joins the read exemptions with its reason.
+- `test_audit_coverage` — the four mutating routes resolve to `_audit.record` through delegation; `POST /platform/join/invite` joins `UNAUDITED_BY_DECISION` with its reason (it is a read wearing a POST, and the walk classifies by method).
 - `test_spa_serving` — `/platform/join` serves the console index; the storefront catch-all still declines it; missing bundle still degrades.
 - `test_middleware` — `/platform/join*` is refused on a tenant host and on the apex with the one `TENANT_NOT_FOUND` body.
 - `test_frontend_constant_parity` — unchanged and must stay green (no new mirrored constant; the password floor is expressed as `minLength`, not re-derived).

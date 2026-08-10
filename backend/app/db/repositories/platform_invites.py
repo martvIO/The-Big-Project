@@ -41,19 +41,27 @@ class PlatformInvitesRepository:
         await session.refresh(row)
         return row
 
-    async def by_code_hash(self, session: AsyncSession, code_hash: str) -> PlatformInvite | None:
+    async def by_code_hash(
+        self, session: AsyncSession, code_hash: str, *, include_revoked: bool = False
+    ) -> PlatformInvite | None:
         """A READ, used ONLY to shape a refusal — never to decide that a
         redemption may proceed. The decision is `claim`'s conditional UPDATE, and
         keeping those two apart is what makes the race safe: this read can be
         arbitrarily stale without consequence.
 
-        Soft-deleted rows are excluded, so a revoked invite reads as absent and
-        answers the same `invalid_invite` as an unknown one (D5's
-        anti-enumeration posture)."""
-        stmt = select(PlatformInvite).where(
-            PlatformInvite.code_hash == code_hash,
-            PlatformInvite.deleted_at.is_(None),
-        )
+        Soft-deleted rows are excluded by default, so a revoked invite reads as
+        absent and answers the same `invalid_invite` as an unknown one (D5's
+        anti-enumeration posture).
+
+        ⚠ `include_revoked=True` widens the read for ONE caller: the redemption
+        path, which must name the invite's issuer on its audit row even when the
+        invite is revoked (spec § Audit contract). It changes no wire response —
+        the caller still refuses every unredeemable state with the one
+        `invalid_invite` — so do not reach for it to decide anything a client
+        can observe."""
+        stmt = select(PlatformInvite).where(PlatformInvite.code_hash == code_hash)
+        if not include_revoked:
+            stmt = stmt.where(PlatformInvite.deleted_at.is_(None))
         return (await session.execute(stmt)).scalar_one_or_none()
 
     async def list_visible(self, session: AsyncSession) -> list[PlatformInvite]:

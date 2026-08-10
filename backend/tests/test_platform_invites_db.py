@@ -52,6 +52,7 @@ async def _insert(
     code: str,
     slug: str,
     expires_at: datetime | None = None,
+    created_by: str = "op@modryn.example",
 ) -> uuid.UUID:
     repo = PlatformInvitesRepository()
     async with factory() as session, session.begin():
@@ -61,7 +62,7 @@ async def _insert(
             slug=slug,
             name="Bella Bridal",
             owner_email="Owner@Bella.example",
-            created_by="op@modryn.example",
+            created_by=created_by,
             expires_at=expires_at or (_now() + timedelta(days=14)),
         )
         return row.id
@@ -575,6 +576,79 @@ def test_an_expired_or_revoked_invite_answers_the_one_refusal(
             assert result.ok is False
             assert result.message == "invalid_invite"
             assert asyncio.run(service.preview_invite(code=code)) is None
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_a_failed_redemption_names_the_issuer_of_a_real_invite(
+    app_role_url: str, migrated_db: str
+) -> None:
+    """⚠ THE REFUSAL IS ONE CODE; THE AUDIT ROW IS NOT.
+
+    Operator issues an invite for a slug, spots a typo, revokes it — and the
+    link leaks. The replay must leave a book entry that answers "which
+    authorisation was being replayed and who issued it", which `anonymous:join`
+    with no slug cannot. Expired and revoked both have their issuer in the row
+    the read already returned. Only an UNKNOWN code has no issuer, and it is the
+    only one that stays anonymous.
+
+    The wire answer is `invalid_invite` in all three cases — asserted here so
+    the attribution cannot be mistaken for a widened disclosure (D5).
+    """
+    engine = _engine(app_role_url)
+    factory = _factory(engine)
+    service = ProvisioningService(factory)
+    try:
+        operator = _operator()
+        expired_slug = _slug()
+        expired_code = generate_session_token()
+        asyncio.run(
+            _insert(
+                factory,
+                code=expired_code,
+                slug=expired_slug,
+                expires_at=_now() - timedelta(seconds=1),
+                created_by=operator,
+            )
+        )
+        revoked_slug = _slug()
+        created = asyncio.run(
+            service.create_invite(
+                slug=revoked_slug, name="Bella", owner_email="o@bella.example", operator=operator
+            )
+        )
+        assert created.ok and created.invite is not None and created.code is not None
+        asyncio.run(service.revoke_invite(invite_id=created.invite.id, operator=operator))
+
+        for code in (expired_code, created.code):
+            result = asyncio.run(service.redeem_invite(code=code, owner_password=REDEEM_PASSWORD))
+            assert result.ok is False and result.message == "invalid_invite"
+
+        failures = [
+            details
+            for action, details in _audit(migrated_db, operator)
+            if action == "invite_redeem_failed"
+        ]
+        assert len(failures) == 2
+        assert {details["slug"] for details in failures} == {expired_slug, revoked_slug}
+        # Still the prefix, never the code and never the whole hash.
+        assert {details["code_hash_prefix"] for details in failures} == {
+            hash_token(expired_code)[:8],
+            hash_token(created.code)[:8],
+        }
+        assert expired_code not in repr(failures) and created.code not in repr(failures)
+
+        unknown = generate_session_token()
+        result = asyncio.run(service.redeem_invite(code=unknown, owner_password=REDEEM_PASSWORD))
+        assert result.ok is False and result.message == "invalid_invite"
+        anonymous = [
+            details
+            for action, details in _audit(migrated_db, "anonymous:join")
+            if action == "invite_redeem_failed"
+            and details["code_hash_prefix"] == hash_token(unknown)[:8]
+        ]
+        assert len(anonymous) == 1
+        assert "slug" not in anonymous[0]
     finally:
         asyncio.run(engine.dispose())
 

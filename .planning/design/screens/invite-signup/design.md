@@ -7,7 +7,7 @@
 Two surfaces in the **same shipped bundle**, no new app, no new component in `packages/ui`:
 
 1. **Operator side** — an «הזמנות» Card + an «הזמנה חדשה» Card in `Console.tsx`, beside F25's tenants table and provision form. The generated join link is a **one-time secret**; §Screen A2 is the whole delicate part of this feature.
-2. **Redeemer side** — `JoinPanel` at `/platform/join?code=…`, the one screen in this app a non-operator ever opens, likely on a phone.
+2. **Redeemer side** — `JoinPanel` at `/platform/join#code=…` (a **fragment**, so the credential reaches no server log — spec CONFLICTS #3), the one screen in this app a non-operator ever opens, likely on a phone.
 
 **Components** — all shipped, all already used by this app: `Card` · `Input` · `Button` / `ButtonLink` · `Badge` · `Modal` · `Skeleton` · `EmptyState`. Deliberately unused: `ToastProvider` (F25 ruled success is an inline `role="status"` line — so the clipboard confirmation is a status line, not the storefront's `ShareButton` toast), `ConsoleShell`, `Select`, `Toggle`.
 
@@ -95,13 +95,13 @@ The footer's cancel is **«חזרה», not «ביטול»** — a dialog whose c
 
 ---
 
-## Screen B — Redeemer: `/platform/join?code=…`
+## Screen B — Redeemer: `/platform/join#code=…`
 
 Shape follows `LoginPanel.tsx`: centered, the MODRYN lockup as the single `h1` (decorative `img alt=""`, `aria-hidden` Latin wordmark, `sr-only` Hebrew title), one `Card`. Three steps, one at a time.
 
 ⚠ One DELIBERATE departure from that precedent, called out so it is not read as a mis-citation: the column is `max-w-md` (448px) where `LoginPanel.tsx` uses `max-w-sm` (384px). The claim step renders a `<dl>` of three read-only facts rather than login's two inputs, and at 384px the label-over-value stack wraps at 375.
 
-**Bootstrap**: read `?code=`; absent → step "code". Present → `GET /platform/join/invite`, `Skeleton` + a `role="status"` «בודקים את ההזמנה.» while in flight; 200 → step "claim"; 404 → step "code" with the `invalid_invite` sentence already in its alert slot.
+**Bootstrap**: read `code` from `location.hash`; absent → step "code". Present → `POST /platform/join/invite` (code in the body), `Skeleton` + a `role="status"` «בודקים את ההזמנה.» while in flight; 200 → step "claim"; 404 → step "code" with the `invalid_invite` sentence already in its alert slot.
 
 ⚠ THIS AUTO-FETCH HAS THE SAME FAILURE MODES AS A MANUAL SUBMIT, AND D5 PUTS IT ON THE SAME BUDGET, so a 429 here is reachable by an owner who merely reloads the link. Every non-200 lands on step "code" with the sentence already in its alert slot — the step is reached BY the failure, so the alert needs no `role="alert"` (focus arrives with it, B1's rule). The mapping is exactly B1's, not a second vocabulary:
 

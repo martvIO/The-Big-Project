@@ -70,6 +70,17 @@ def _password_problem(password: str) -> str | None:
     return None
 
 
+def _redeemable(row: PlatformInvite) -> bool:
+    """The three predicates `by_code_hash` does not carry, in one place so the
+    preview and the redemption cannot disagree about what "usable" means.
+
+    This is NOT the single-use guard — `claim`'s conditional UPDATE is, and it
+    re-checks every one of these inside the transaction. This decides only which
+    refusal a caller is shaped into and, through it, whose name goes on the
+    audit row."""
+    return row.deleted_at is None and row.redeemed_at is None and row.expires_at > datetime.now(UTC)
+
+
 @dataclasses.dataclass(frozen=True)
 class CommandResult:
     ok: bool
@@ -354,9 +365,16 @@ class ProvisioningService:
         `TENANT_PROVISIONED` row.
         """
         code_hash = hash_token(code)
-        row = await self._readable_invite(code)
-        if row is None:
-            return await self._fail_redeem(code_hash, None, "invalid_invite")
+        # ⚠ THE REVOKED ROW IS READ ON PURPOSE. The refusal is identical for all
+        # four states, but the AUDIT ROW is not: an expired, redeemed or revoked
+        # invite has an accountable issuer sitting right here, and dropping the
+        # row on the floor would attribute a replay of a REAL authorisation to
+        # "anonymous:join" (spec § Audit contract). Only an unknown code has no
+        # issuer. `_redeemable` — not the query — decides who may proceed.
+        async with self._session_factory() as session:
+            row = await self._invites.by_code_hash(session, code_hash, include_revoked=True)
+        if row is None or not _redeemable(row):
+            return await self._fail_redeem(code_hash, row, "invalid_invite")
         password_problem = _password_problem(owner_password)
         if password_problem is not None:
             return await self._fail_redeem(code_hash, row, password_problem)
@@ -406,13 +424,11 @@ class ProvisioningService:
         return RedeemResult(ok=True, message="redeemed", slug=row.slug, tenant_id=tenant_id)
 
     async def _readable_invite(self, code: str) -> PlatformInvite | None:
-        """by_code_hash plus the two predicates it does not carry. Soft-deleted
-        rows are already excluded by the repository."""
+        """by_code_hash plus the predicates it does not carry. Soft-deleted rows
+        are already excluded by the repository's default."""
         async with self._session_factory() as session:
             row = await self._invites.by_code_hash(session, hash_token(code))
-        if row is None or row.redeemed_at is not None or row.expires_at <= datetime.now(UTC):
-            return None
-        return row
+        return row if row is not None and _redeemable(row) else None
 
     async def _fail_invite(self, operator: str, slug: str, reason: str) -> InviteCreated:
         """`_fail_provision` for the invite pair. Outside any transaction the
@@ -438,9 +454,12 @@ class ProvisioningService:
         characters are enough to correlate a burst of failures against one
         invite and are useless as a credential.
 
-        `operator` is the invite's issuer when there is one. An unknown code has
-        no issuer at all, so the row is attributed to the anonymous surface it
-        arrived on — a row claiming an operator who did nothing would be false.
+        `operator` is the invite's issuer whenever the code names a real row —
+        expired, already-redeemed and revoked included, since the whole question
+        the book has to answer is "which authorisation was being replayed, and
+        who issued it". ONLY an unknown code has no issuer at all, and only that
+        row is attributed to the anonymous surface it arrived on; a row claiming
+        an operator who does not exist would be false.
         """
         details: dict[str, Any] = {"reason": reason, "code_hash_prefix": code_hash[:8]}
         if row is not None:
