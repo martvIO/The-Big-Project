@@ -78,7 +78,15 @@ export function RosterPane() {
   // that closes a shortage — focus to `<body>`, the dialog's return target gone,
   // and the list reflowing on every single assignment.
   const [heldShort, setHeldShort] = useState<string[] | null>(null);
-  const [openShift, setOpenShift] = useState<string | null>(null);
+  // ⚠ TWO PIECES OF STATE, NOT ONE, AND `Modal` STAYS MOUNTED THROUGH THE CLOSE.
+  // `packages/ui`'s Modal is a native `<dialog>`: the browser returns focus to
+  // the trigger when `close()` runs, and unmounting the element instead drops
+  // focus to `<body>` on every Esc — which the e2e leg caught. Every shipped
+  // call site passes `open={x !== null}` on an always-mounted Modal, and this is
+  // that shape with the shift id kept so the body has something to render while
+  // it closes.
+  const [dialogShiftId, setDialogShiftId] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   // F-A, the response-ordering guard. §2.0 permits two concurrent writes on ONE
   // shift by design, so without a per-shift ticket the earlier-issued response
@@ -88,6 +96,10 @@ export function RosterPane() {
   // focus lands on that shift's «הוספה למשמרת» — the nearest surviving control
   // in the same group. `ShiftTemplatesPane`'s shipped `addButtons` shape.
   const addButtons = useRef(new Map<string, HTMLButtonElement | null>());
+  // §10's one guard on the shipped return-to-trigger: if that shift's section is
+  // gone on close (a template soft-deleted under her), the trigger is gone too,
+  // so focus lands on the pane's own heading rather than on `<body>`.
+  const headingRef = useRef<HTMLHeadingElement>(null);
 
   const load = useCallback(async () => {
     setLoadFailed(false);
@@ -103,6 +115,22 @@ export function RosterPane() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // §10's guard on `Modal`'s shipped return-to-trigger: the trigger is that
+  // shift's «הוספה למשמרת», so if the shift itself has gone (a template
+  // soft-deleted under her, or a refetch that dropped it) there is nothing to
+  // return to and the browser would leave focus on `<body>`.
+  const shiftGone =
+    dialogShiftId !== null &&
+    week !== null &&
+    !week.shifts.some((shift) => shift.template.id === dialogShiftId);
+  useEffect(() => {
+    if (shiftGone) {
+      setDialogShiftId(null);
+      setDialogOpen(false);
+      headingRef.current?.focus();
+    }
+  }, [shiftGone]);
 
   const fail = (error: unknown) => {
     const code = error instanceof ApiError ? error.code : null;
@@ -158,7 +186,8 @@ export function RosterPane() {
     }
     // Everything transient belongs to the week she is leaving — including the
     // held filter set, which is a cut of THAT week's shortages.
-    setOpenShift(null);
+    setDialogOpen(false);
+    setDialogShiftId(null);
     setWriteError(null);
     setPublishCue(false);
     setHeldShort(null);
@@ -189,7 +218,9 @@ export function RosterPane() {
   if (week === null) {
     return (
       <Card>
-        <h2 className="text-xl font-semibold text-ink">{t("shifts.rosterHeading")}</h2>
+        <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold text-ink">
+          {t("shifts.rosterHeading")}
+        </h2>
         {loadFailed ? (
           <div className="mt-4 flex flex-col items-start gap-2">
             <p role="alert" className="text-base text-danger">
@@ -232,11 +263,13 @@ export function RosterPane() {
     heldShort === null
       ? week.shifts
       : week.shifts.filter((shift) => heldShort.includes(shift.template.id));
-  const open = week.shifts.find((shift) => shift.template.id === openShift) ?? null;
+  const open = week.shifts.find((shift) => shift.template.id === dialogShiftId) ?? null;
 
   return (
     <Card>
-      <h2 className="text-xl font-semibold text-ink">{t("shifts.rosterHeading")}</h2>
+      <h2 ref={headingRef} tabIndex={-1} className="text-xl font-semibold text-ink">
+        {t("shifts.rosterHeading")}
+      </h2>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {/* Words, not chevrons (DL20) — and there is no directional glyph to get
@@ -340,7 +373,7 @@ export function RosterPane() {
         </div>
       )}
 
-      {writeError !== null && openShift === null && (
+      {writeError !== null && !dialogOpen && (
         <p role="alert" className="mt-2 text-base text-danger">
           {writeError}
         </p>
@@ -523,7 +556,8 @@ export function RosterPane() {
                     onClick={() => {
                       setWriteError(null);
                       setPublishCue(false);
-                      setOpenShift(shift.template.id);
+                      setDialogShiftId(shift.template.id);
+                      setDialogOpen(true);
                     }}
                   >
                     {t("shifts.addToShift")}
@@ -537,9 +571,9 @@ export function RosterPane() {
 
       {open !== null && (
         <RosterCellDialog
-          open
+          open={dialogOpen}
           onClose={() => {
-            setOpenShift(null);
+            setDialogOpen(false);
           }}
           dayName={DAY_NAMES[open.template.day_of_week]}
           template={open.template}
